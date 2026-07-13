@@ -66,6 +66,7 @@
 .placement-workbench__header span { display: flex; align-items: baseline; gap: 8px; color: var(--text); }
 .placement-workbench__header strong { font-size: 12px; }
 .placement-workbench__header small { color: var(--muted); font-size: 9px; }
+.placement-reference-error { margin-left: auto; padding: 4px 7px; color: #9f2f25; background: #fff3f1; border: 1px solid #e7b4ae; border-radius: 4px; font-size: 9px; font-weight: 600; }
 .placement-workbench__body { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(360px, 1fr) 238px; }
 .placement-board-stage { min-width: 0; min-height: 0; display: grid; place-items: center; padding: 22px; overflow: auto; background-color: #e5eaed; background-image: linear-gradient(45deg, rgba(123, 137, 147, 0.08) 25%, transparent 25%), linear-gradient(-45deg, rgba(123, 137, 147, 0.08) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(123, 137, 147, 0.08) 75%), linear-gradient(-45deg, transparent 75%, rgba(123, 137, 147, 0.08) 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
 .placement-board { position: relative; width: min(100%, 450px); max-height: 100%; background: #ffffff; box-shadow: 0 5px 20px rgba(35, 45, 53, 0.17); overflow: visible; touch-action: none; user-select: none; }
@@ -96,7 +97,7 @@
 .placement-handle.is-w { left: -6px; top: calc(50% - 4px); cursor: ew-resize; }
 .placement-rotate { position: absolute; left: calc(50% - 12px); top: -32px; width: 24px; height: 24px; display: grid; place-items: center; padding: 0; color: var(--accent); background: white; border: 1px solid var(--accent); border-radius: 50%; cursor: grab; }
 .placement-inspector { min-width: 0; padding: 12px; overflow-y: auto; background: var(--surface); border-left: 1px solid var(--border); }
-.placement-upload-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.placement-upload-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .placement-upload { position: relative; height: 56px; display: grid; place-items: center; color: #4c5a64; background: var(--surface-muted); border: 1px dashed var(--border-strong); border-radius: 5px; cursor: pointer; font-size: 10px; }
 .placement-upload:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .placement-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 const idSchema = z.string().min(1);
 const normalizedSchema = z.number().min(0).max(1);
+export const MAX_GENERATION_REFERENCES = 20;
 
 export const referenceRoleSchema = z.enum([
   'product_identity',
@@ -54,7 +55,12 @@ const placementBoardMetaSchema = z.object({
 
 export const placementBoardSchema = z.object({
   board: placementBoardMetaSchema,
-  objects: z.array(placementObjectSchema).default([]),
+  objects: z.array(placementObjectSchema).default([]).superRefine((objects, context) => {
+    const userReferenceCount = objects.filter((object) => !object.assetId.startsWith('starter-')).length;
+    if (userReferenceCount > MAX_GENERATION_REFERENCES) {
+      context.addIssue({ code: z.ZodIssueCode.too_big, type: 'array', maximum: MAX_GENERATION_REFERENCES, inclusive: true, message: '参考图最多 20 张' });
+    }
+  }),
 }).strict();
 
 export const modelJobSchema = z.object({

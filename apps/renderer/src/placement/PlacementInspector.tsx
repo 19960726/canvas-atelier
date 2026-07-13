@@ -40,6 +40,7 @@ export function PlacementInspector({ value, selectedObjectId, onChange, onUpload
         <UploadField label="产品" ariaLabel="上传产品参考" onChange={upload('product_identity')} />
         <UploadField label="场景" ariaLabel="上传场景参考" onChange={upload('scene_composition')} />
         <UploadField label="道具" ariaLabel="上传道具参考" onChange={upload('prop_reference')} />
+        <UploadField label="材质" ariaLabel="上传材质光照参考" onChange={upload('material_lighting')} />
       </div>
 
       {selected ? (

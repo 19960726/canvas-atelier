@@ -1,3 +1,5 @@
+export { MAX_GENERATION_REFERENCES, parseGenerationRequest } from './generation-request';
+export type { GenerationReference, GenerationRequest } from './generation-request';
 export { cancelAgentPlan, confirmAgentPlan, validateAgentPlan } from './agent-plan';
 export { applyTransaction, revertTransaction } from './canvas-transaction';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';

@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PlacementObject } from '@agent-canvas/domain';
 import { createStarterProject, useAppStore } from '../app/app-store';
 import { CanvasWorkspace } from './CanvasWorkspace';
 
@@ -45,6 +46,7 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByLabelText('上传产品参考')).toBeInTheDocument();
     expect(screen.getByLabelText('上传场景参考')).toBeInTheDocument();
     expect(screen.getByLabelText('上传道具参考')).toBeInTheDocument();
+    expect(screen.getByLabelText('上传材质光照参考')).toBeInTheDocument();
   });
 
   it('keeps temporary preview URLs outside project JSON and revokes them on unmount', () => {
@@ -63,6 +65,7 @@ describe('CanvasWorkspace', () => {
     expect(createObjectUrl).toHaveBeenCalledOnce();
     expect(sceneObject?.assetId).toMatch(/^local-reference-/);
     expect(sceneObject?.assetId).not.toContain('blob:');
+    expect(placementNode?.type === 'placement_preview' ? placementNode.data.objects.some((object) => object.assetId === 'starter-product') : false).toBe(true);
     expect(screen.getByAltText('场景参考')).toHaveAttribute('src', 'blob:scene-preview');
     expect(within(screen.getByLabelText('当前参考职责')).getByText('已添加 1 张')).toBeInTheDocument();
 
@@ -101,4 +104,44 @@ describe('CanvasWorkspace', () => {
     expect(useAppStore.getState().agentPlan).toBeNull();
     expect(screen.queryByText('方案已应用')).not.toBeInTheDocument();
   });
-});
+
+  it('blocks image 21 before allocating a preview URL', () => {
+    const project = createStarterProject();
+    const objects: PlacementObject[] = Array.from({ length: 20 }, (_, index) => ({
+      id: `uploaded-${index}`,
+      assetId: `local-reference-${index}`,
+      role: index % 4 === 0 ? 'product_identity' : index % 4 === 1 ? 'scene_composition' : index % 4 === 2 ? 'prop_reference' : 'material_lighting',
+      x: 0,
+      y: 0,
+      w: 0.2,
+      h: 0.2,
+      rotation: 0,
+      zIndex: index,
+      locked: false,
+      visible: true,
+      flipX: false,
+      flipY: false,
+      semanticLayer: 'midground',
+    }));
+    useAppStore.setState({
+      project: {
+        ...project,
+        nodes: project.nodes.map((node) => node.type === 'placement_preview'
+          ? { ...node, data: { ...node.data, objects } }
+          : node),
+      },
+    });
+    const createObjectUrl = vi.fn(() => 'blob:should-not-exist');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByLabelText('摆放预览'));
+    fireEvent.change(screen.getByLabelText('上传材质光照参考'), {
+      target: { files: [new File(['material'], 'material.png', { type: 'image/png' })] },
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('参考图最多 20 张');
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    const placement = useAppStore.getState().project.nodes.find((node) => node.type === 'placement_preview');
+    expect(placement?.type === 'placement_preview' ? placement.data.objects : []).toHaveLength(20);
+  });});

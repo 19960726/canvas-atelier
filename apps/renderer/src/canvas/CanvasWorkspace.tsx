@@ -6,6 +6,7 @@ import type {
   PlacementObject,
   ReferenceRole,
 } from '@agent-canvas/domain';
+import { MAX_GENERATION_REFERENCES } from '@agent-canvas/domain';
 import {
   Box,
   ChevronRight,
@@ -36,12 +37,13 @@ function isPlacementNode(node: CanvasNode): node is PlacementNode {
 }
 
 const uploadDefaults: Record<
-  'product_identity' | 'scene_composition' | 'prop_reference',
+  'product_identity' | 'scene_composition' | 'prop_reference' | 'material_lighting',
   Pick<PlacementObject, 'x' | 'y' | 'w' | 'h' | 'zIndex' | 'semanticLayer' | 'name'>
 > = {
   product_identity: { x: 0.34, y: 0.42, w: 0.32, h: 0.38, zIndex: 30, semanticLayer: 'hero_product', name: '主产品' },
   scene_composition: { x: 0, y: 0, w: 1, h: 1, zIndex: 0, semanticLayer: 'background', name: '场景参考' },
   prop_reference: { x: 0.66, y: 0.58, w: 0.18, h: 0.22, zIndex: 20, semanticLayer: 'optional_prop', name: '道具参考' },
+  material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground', name: '材质光照参考' },
 };
 
 export function CanvasWorkspace() {
@@ -60,6 +62,7 @@ export function CanvasWorkspace() {
   const undo = useAppStore((state) => state.undo);
   const [agentMessage, setAgentMessage] = useState('');
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
+  const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const previewUrlsRef = useRef(new Map<string, string>());
   const uploadSequenceRef = useRef(0);
 
@@ -113,6 +116,12 @@ export function CanvasWorkspace() {
 
   const uploadReference = (role: ReferenceRole, file: File) => {
     if (!placementNode || !(role in uploadDefaults)) return;
+    const currentObjects = placementNode.data.objects.filter((object) => !object.assetId.startsWith('starter-'));
+    if (currentObjects.length >= MAX_GENERATION_REFERENCES) {
+      setReferenceUploadError('参考图最多 20 张');
+      return;
+    }
+    setReferenceUploadError(null);
     const supportedRole = role as keyof typeof uploadDefaults;
     const objectId = `${supportedRole}-${Date.now()}-${uploadSequenceRef.current++}`;
     const assetId = `local-reference-${objectId}`;
@@ -210,6 +219,7 @@ export function CanvasWorkspace() {
                 <LayoutTemplate size={17} />
                 <span><strong>摆放预览</strong><small>4:5 固定比例</small></span>
               </div>
+              {referenceUploadError && <span className="placement-reference-error" role="alert">{referenceUploadError}</span>}
               <button className="icon-button" type="button" aria-label="关闭摆放工作台" title="关闭摆放工作台" onClick={() => setActiveTool('select')}>
                 <X size={17} />
               </button>

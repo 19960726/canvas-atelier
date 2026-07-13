@@ -88,14 +88,64 @@ describe('parseCanvasProject', () => {
 describe('public domain API', () => {
   it('exposes only the approved runtime functions', () => {
     expect(Object.keys(publicApi).sort()).toEqual([
+      'MAX_GENERATION_REFERENCES',
       'applyTransaction',
       'cancelAgentPlan',
       'confirmAgentPlan',
       'normalizePlacementObject',
       'parseCanvasProject',
+      'parseGenerationRequest',
       'placementToPromptConstraints',
       'revertTransaction',
       'validateAgentPlan',
     ]);
+  });
+});
+
+describe('reference image budget', () => {
+  const placementObject = (index: number) => ({
+    id: `reference-${index}`,
+    assetId: `asset-${index}`,
+    role: index % 4 === 0 ? 'product_identity' : index % 4 === 1 ? 'scene_composition' : index % 4 === 2 ? 'prop_reference' : 'material_lighting',
+    x: 0,
+    y: 0,
+    w: 0.2,
+    h: 0.2,
+    rotation: 0,
+    zIndex: index,
+    locked: false,
+    visible: true,
+    flipX: false,
+    flipY: false,
+    semanticLayer: 'midground',
+  });
+  const projectWithCount = (count: number) => ({
+    version: 1,
+    id: 'reference-budget',
+    name: 'reference budget',
+    nodes: [{
+      id: 'placement-budget',
+      type: 'placement_preview',
+      position: { x: 0, y: 0 },
+      data: {
+        board: { id: 'board-budget', aspectRatio: '4:5', width: 1080, height: 1350, safeAreas: [] },
+        objects: Array.from({ length: count }, (_, index) => placementObject(index)),
+      },
+    }],
+    edges: [],
+  });
+
+  it('accepts exactly 20 combined reference images', () => {
+    expect(parseCanvasProject(projectWithCount(20)).nodes).toHaveLength(1);
+  });
+
+
+  it('does not count a starter placeholder against the 20 user references', () => {
+    const project = projectWithCount(20);
+    const placement = project.nodes[0]!;
+    placement.data.objects.unshift({ ...placementObject(99), id: 'starter-placeholder', assetId: 'starter-product' });
+    expect(parseCanvasProject(project).nodes).toHaveLength(1);
+  });  it('rejects the 21st combined reference image', () => {
+    expect(() => parseCanvasProject(projectWithCount(21))).toThrow(/参考图最多 20 张/);
   });
 });
