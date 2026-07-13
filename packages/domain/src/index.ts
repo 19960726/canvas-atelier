@@ -1,13 +1,4 @@
-﻿export {
-  agentPlanSchema,
-  canvasEdgeSchema,
-  canvasNodeSchema,
-  canvasProjectSchema,
-  modelJobSchema,
-  parseCanvasProject,
-  placementBoardSchema,
-  referenceRoleSchema,
-} from './project-schema';
+﻿export { parseCanvasProject } from './project-schema';
 
 export type {
   AgentPlan,

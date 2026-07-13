@@ -44,12 +44,16 @@ export const placementObjectSchema = z.object({
   name: z.string().min(1).optional(),
 }).strict();
 
-export const placementBoardSchema = z.object({
+const placementBoardMetaSchema = z.object({
   id: idSchema,
   aspectRatio: z.string().min(1),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   safeAreas: z.array(placementSafeAreaSchema).default([]),
+}).strict();
+
+export const placementBoardSchema = z.object({
+  board: placementBoardMetaSchema,
   objects: z.array(placementObjectSchema).default([]),
 }).strict();
 
@@ -90,15 +94,13 @@ const referenceNodeSchema = z.object({
   data: z.object({
     assetId: idSchema,
     role: referenceRoleSchema,
-    name: z.string().min(1).optional(),
-    mimeType: z.string().min(1).optional(),
   }).strict(),
 }).strict();
 
 const placementNodeSchema = z.object({
   ...nodeBase,
   type: z.literal('placement_preview'),
-  data: z.object({ board: placementBoardSchema }).strict(),
+  data: placementBoardSchema,
 }).strict();
 
 const promptNodeSchema = z.object({
@@ -190,3 +192,4 @@ export type CanvasProject = z.infer<typeof canvasProjectSchema>;
 export function parseCanvasProject(input: unknown): CanvasProject {
   return canvasProjectSchema.parse(input);
 }
+
