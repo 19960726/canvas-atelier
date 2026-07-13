@@ -14,3 +14,11 @@ export const rendererTestProject = {
     setupFiles: ['apps/renderer/src/test/setup.ts'],
   },
 };
+
+export const skillStoreTestProject = {
+  test: {
+    name: '@agent-canvas/skill-store',
+    environment: 'node',
+    include: ['packages/skill-store/src/**/*.test.ts'],
+  },
+};

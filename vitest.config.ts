@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitest/config';
-import { domainTestProject, rendererTestProject } from './vitest.workspace';
+import { domainTestProject, rendererTestProject, skillStoreTestProject } from './vitest.workspace';
 
 export default defineConfig({
   test: {
-    projects: [domainTestProject, rendererTestProject],
+    projects: [domainTestProject, rendererTestProject, skillStoreTestProject],
   },
 });
