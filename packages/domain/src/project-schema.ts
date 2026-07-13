@@ -182,6 +182,7 @@ export const canvasProjectSchema = z.object({
 }).strict();
 
 export type ReferenceRole = z.infer<typeof referenceRoleSchema>;
+export type PlacementObject = z.infer<typeof placementObjectSchema>;
 export type PlacementBoard = z.infer<typeof placementBoardSchema>;
 export type AgentPlan = z.infer<typeof agentPlanSchema>;
 export type ModelJob = z.infer<typeof modelJobSchema>;

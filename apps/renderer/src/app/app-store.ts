@@ -23,19 +23,32 @@ export function createStarterProject(): CanvasProject {
             aspectRatio: '4:5',
             width: 1080,
             height: 1350,
-            safeAreas: [],
+            safeAreas: [{ id: 'copy-top', x: 0.08, y: 0.06, w: 0.84, h: 0.16, purpose: 'copy_safe' }],
           },
-          objects: [],
+          objects: [{
+            id: 'product-main',
+            assetId: 'starter-product',
+            role: 'product_identity',
+            x: 0.34,
+            y: 0.42,
+            w: 0.32,
+            h: 0.38,
+            rotation: 0,
+            zIndex: 20,
+            locked: false,
+            visible: true,
+            flipX: false,
+            flipY: false,
+            semanticLayer: 'hero_product',
+            name: '主产品',
+          }],
         },
       },
       {
         id: 'prompt-start',
         type: 'prompt',
         position: { x: 800, y: 160 },
-        data: {
-          prompt: '等待确认后执行模型任务',
-          requirementIds: [],
-        },
+        data: { prompt: '等待确认后执行模型任务', requirementIds: [] },
       },
     ],
     edges: [
@@ -48,7 +61,7 @@ export function createStarterProject(): CanvasProject {
 interface AppState {
   project: CanvasProject;
   agentPanelCollapsed: boolean;
-  activeTool: 'select' | 'hand' | 'upload' | 'image' | 'prompt';
+  activeTool: 'select' | 'hand' | 'upload' | 'image' | 'prompt' | 'placement';
   setActiveTool: (tool: AppState['activeTool']) => void;
   toggleAgentPanel: () => void;
   setProject: (project: CanvasProject) => void;

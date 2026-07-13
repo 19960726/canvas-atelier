@@ -1,4 +1,5 @@
 export { applyTransaction, revertTransaction } from './canvas-transaction';
+export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
 
 export type {
@@ -14,5 +15,6 @@ export type {
   CanvasProject,
   ModelJob,
   PlacementBoard,
+  PlacementObject,
   ReferenceRole,
 } from './project-schema';
