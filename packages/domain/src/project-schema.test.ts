@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import * as publicApi from './index';
 import { parseCanvasProject } from './project-schema';
 
@@ -87,6 +87,10 @@ describe('parseCanvasProject', () => {
 
 describe('public domain API', () => {
   it('exposes only the project parser at runtime', () => {
-    expect(Object.keys(publicApi)).toEqual(['parseCanvasProject']);
+    expect(Object.keys(publicApi).sort()).toEqual([
+      'applyTransaction',
+      'parseCanvasProject',
+      'revertTransaction',
+    ]);
   });
 });
