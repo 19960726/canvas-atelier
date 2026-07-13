@@ -416,3 +416,73 @@ Runtime verification still requires screenshots of the shipped app, including th
 - The plan keeps `base`, `app`, and `source` writeback roles distinct.
 - The plan resolves the only hard constraint conflict by making pointermove transient and committing persistence only at stable boundaries.
 - The plan keeps the Agent UI dedicated instead of embedding it in generic canvas chrome.
+
+---
+
+### Task 8: Novus Atelier Desktop Identity, History, Cache, and White-Screen Recovery
+
+**Files:**
+- Create: `packages/domain/src/activity-history.ts`, `packages/domain/src/activity-history.test.ts`
+- Create: `packages/desktop-bridge/src/cache-contract.ts`, `packages/desktop-bridge/src/cache-contract.test.ts`
+- Create: `apps/renderer/src/history/GenerationHistory.tsx`, `AgentConversationHistory.tsx`
+- Create: `apps/renderer/src/settings/CacheSettings.tsx`, `RecoveryFallback.tsx`
+- Modify: `apps/renderer/src/canvas/CanvasWorkspace.tsx`, `apps/renderer/src/styles/app.css`
+
+**Interfaces:** `GenerationHistoryEntry`, `AgentConversationSession`, `CacheInventory`, `clearCacheCategory`, `quarantineCorruptCache`, `RecoveryFallback`.
+
+- [ ] Write failing tests for persisted generation history, Agent conversation/reverse-prompt history, session restore, and history filtering.
+- [ ] Write failing cache tests that expose the local cache path and byte counts by category, clear thumbnails/temp previews/failed-job residue independently, and never delete project sources, approved knowledge, or generation history.
+- [ ] Add startup recovery tests for corrupt IndexedDB/cache metadata, safe-mode hydration, and a nonblank fallback screen instead of an unrecoverable white window.
+- [ ] Replace temporary `Agent Canvas` branding with `Novus Atelier` in accessible labels, window title, project metadata, and desktop package names.
+- [ ] Implement cache quotas, least-recently-used cleanup, corrupt-file quarantine, and user-selected cache location through the desktop bridge.
+- [ ] Verify with renderer/domain/desktop-bridge tests, production build, and runtime screenshots at 1440x900 and 1366x768.
+
+### Task 9: Photoshop 2019-2026+ Image Import Bridge
+
+**Files:**
+- Create: `packages/photoshop-bridge/src/import-job.ts`, `import-job.test.ts`
+- Create: `apps/photoshop-cep/` for Photoshop 2019-2020 ExtendScript/CEP support
+- Create: `apps/photoshop-uxp/` for newer Photoshop UXP support
+- Create: `packages/desktop-bridge/src/photoshop-contract.ts`, `photoshop-contract.test.ts`
+- Create: `apps/renderer/src/integrations/PhotoshopImport.tsx`
+
+**Interfaces:** `PhotoshopImportJob`, `enqueuePhotoshopImport`, `acknowledgePhotoshopImport`, `retryPhotoshopImport`, `detectPhotoshopBridge`.
+
+- [ ] Write failing tests for unique job IDs, repeated-click deduplication, per-document serialization, retry, cancellation, and acknowledgement before cleanup.
+- [ ] Use atomic temporary PNG/JPEG/PSD files as the primary handoff; clipboard copy is fallback only and never the source of truth.
+- [ ] CEP/ExtendScript imports as a new document or layer for Photoshop 2019-2020; UXP performs the same contract for supported newer versions through 2026+.
+- [ ] Keep temp files until Photoshop acknowledges receipt; stale jobs recover after either app restarts.
+- [ ] Verify with adapter contract tests and a manual matrix across Photoshop 2019, 2020, 2021, 2024, 2025, and 2026+ where available.
+
+### Task 10: Signed Dual-Channel Desktop Updates
+
+**Files:**
+- Create: `packages/desktop-bridge/src/update-contract.ts`, `update-contract.test.ts`
+- Create: `apps/desktop-win7/src/updater.ts`, `apps/desktop-modern/src/updater.ts`
+- Create: `apps/renderer/src/settings/UpdateDialog.tsx`, `UpdateDialog.test.tsx`
+
+**Interfaces:** `UpdateManifest`, `checkForUpdates`, `downloadUpdate`, `verifyUpdate`, `installOnRestart`, `rollbackUpdate`.
+
+- [ ] Write failing tests for separate Win7 and modern channels, semantic version ordering, signed manifest verification, package SHA-256 verification, resumable download state, and rollback metadata.
+- [ ] Check on startup and via a manual command using the user's network; show version, release notes, size, and publication date before installation.
+- [ ] Download in the background, then offer `立即重启安装` and `稍后安装`; never execute unsigned or wrong-channel packages.
+- [ ] Preserve the previous runnable version until the new version completes its first successful launch.
+
+### Task 11: CanvasForge-Referenced Comfly Compatibility Adapter
+
+**Files:**
+- Create: `packages/provider-comfly/src/model-registry.ts`, `client.ts`, `redact.ts`, and tests
+- Create: `tests/fixtures/comfly-contracts/`
+- Create: `docs/research/canvasforge-interface-compatibility.md`
+
+**Interfaces:** independently implemented Comfly chat, vision/reverse-prompt, image generation, image edit, async task polling, and model capability discovery.
+
+- [ ] Inventory `D:\CanvasForge` read-only for endpoint paths, request fields, response shapes, model routing, task polling, and retry behavior.
+- [ ] Never copy CanvasForge proprietary source, UI, branding, authorization values, embedded keys, or user data. Store only sanitized compatibility fixtures.
+- [ ] Keep `https://ai.comfly.org` configurable and dynamically load model capabilities rather than hardcoding one model inventory.
+- [ ] Add contract tests for reverse analysis, chat, `/v1/images/generations`, image edits, asynchronous task status, and provider error redaction.
+- [ ] Verify no API key, Authorization value, private path, or raw image Base64 enters logs, projects, histories, Skill files, or exports.
+
+## Local Desktop Delivery Rule
+
+`Novus Atelier` is a Windows desktop application, not a hosted web product. React/Vite is only the renderer inside the Electron shells. Final delivery requires local project files, local assets, desktop filesystem bridges, secure secret storage, crash recovery, installers, Photoshop integration, and signed updates. The development server is never the production runtime.
