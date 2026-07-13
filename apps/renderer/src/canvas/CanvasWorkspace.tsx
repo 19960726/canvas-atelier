@@ -1,13 +1,5 @@
 import { useMemo } from 'react';
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  MiniMap,
-  ReactFlow,
-  type Edge,
-  type Node,
-} from '@xyflow/react';
+import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
 import {
   Box,
   ChevronRight,
@@ -24,41 +16,17 @@ import {
   Undo2,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
-import { nodeTypes } from './node-types';
-
-const seedNodes: Node[] = [
-  {
-    id: 'reference-start',
-    type: 'reference',
-    position: { x: 120, y: 160 },
-    data: { title: '产品身份参考', subtitle: '上传产品图后锁定品牌细节' },
-  },
-  {
-    id: 'placement-start',
-    type: 'placement_preview',
-    position: { x: 460, y: 270 },
-    data: { title: '摆放预览', subtitle: '4:5 · 拖拽调整产品位置' },
-  },
-  {
-    id: 'prompt-start',
-    type: 'prompt',
-    position: { x: 800, y: 160 },
-    data: { title: 'Agent 生成计划', subtitle: '等待确认后执行模型任务' },
-  },
-];
-
-const seedEdges: Edge[] = [
-  { id: 'edge-reference-placement', source: 'reference-start', target: 'placement-start' },
-  { id: 'edge-placement-prompt', source: 'placement-start', target: 'prompt-start', animated: true },
-];
+import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
 
 export function CanvasWorkspace() {
+  const project = useAppStore((state) => state.project);
   const activeTool = useAppStore((state) => state.activeTool);
   const agentPanelCollapsed = useAppStore((state) => state.agentPanelCollapsed);
   const setActiveTool = useAppStore((state) => state.setActiveTool);
   const toggleAgentPanel = useAppStore((state) => state.toggleAgentPanel);
-  const projectName = useAppStore((state) => state.project.name);
 
+  const flowNodes = useMemo(() => toFlowNodes(project.nodes), [project.nodes]);
+  const flowEdges = useMemo(() => toFlowEdges(project.edges), [project.edges]);
   const tools = useMemo(() => [
     { id: 'select' as const, label: '选择工具', icon: MousePointer2 },
     { id: 'hand' as const, label: '平移工具', icon: Hand },
@@ -76,7 +44,7 @@ export function CanvasWorkspace() {
         </div>
         <span className="topbar__divider" />
         <button className="project-button" type="button" title="项目菜单">
-          <span>{projectName}</span>
+          <span>{project.name}</span>
           <ChevronRight size={14} />
         </button>
         <div className="topbar__center">
@@ -117,8 +85,8 @@ export function CanvasWorkspace() {
 
       <main className="canvas-stage" role="application" aria-label="无限画布">
         <ReactFlow
-          nodes={seedNodes}
-          edges={seedEdges}
+          nodes={flowNodes}
+          edges={flowEdges}
           nodeTypes={nodeTypes}
           fitView
           minZoom={0.08}

@@ -81,6 +81,7 @@
 .summary-row b { color: #46535d; font-weight: 600; }
 .agent-composer { margin: 10px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); }
 .agent-composer textarea { width: 100%; min-height: 72px; padding: 10px; color: var(--text); border: 0; outline: 0; resize: none; background: transparent; font-size: 11px; line-height: 1.5; }
+.agent-composer textarea:focus-visible { box-shadow: inset 0 0 0 2px rgba(15, 118, 110, 0.28); }
 .agent-composer__footer { display: flex; align-items: center; padding: 6px 7px 7px 10px; border-top: 1px solid #edf0f2; }
 .agent-composer__footer span { color: var(--muted); font-size: 9px; }
 .agent-composer__footer button { width: 27px; height: 27px; display: grid; place-items: center; margin-left: auto; color: white; background: var(--accent); border: 0; border-radius: 5px; cursor: pointer; }
