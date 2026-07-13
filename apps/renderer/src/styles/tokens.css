@@ -1,0 +1,23 @@
+:root {
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: #1d2730;
+  background: #e9edf0;
+  font-synthesis: none;
+  --surface: #ffffff;
+  --surface-muted: #f5f7f8;
+  --canvas: #edf1f3;
+  --text: #1d2730;
+  --muted: #66727c;
+  --border: #d7dde2;
+  --border-strong: #bdc7cf;
+  --accent: #0f766e;
+  --accent-soft: #dff3ef;
+  --warning: #c2410c;
+  --blue: #2563eb;
+  --shadow: 0 1px 3px rgba(25, 35, 44, 0.08);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+button, textarea { font: inherit; }
+button { color: inherit; }

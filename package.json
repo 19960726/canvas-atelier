@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "canvas-agent-mvp",
   "private": true,
   "workspaces": [
@@ -7,8 +7,8 @@
   ],
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc -p packages/domain/tsconfig.json --noEmit",
-    "build": "npm run typecheck",
+    "typecheck": "tsc -p packages/domain/tsconfig.json --noEmit && tsc -p apps/renderer/tsconfig.json --noEmit",
+    "build": "npm run typecheck && npm run build -w @agent-canvas/renderer",
     "e2e": "echo \"e2e not configured yet\""
   },
   "devDependencies": {
