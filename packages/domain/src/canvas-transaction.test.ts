@@ -69,6 +69,14 @@ describe('canvas transactions', () => {
     expect(revertTransaction(result.project, result.inverse)).toEqual(project);
   });
 
+  it('rejects unknown operation kinds from runtime input', () => {
+    expect(() => applyTransaction(emptyProject, {
+      id: 'tx-unknown',
+      label: 'unknown operation',
+      operations: [{ kind: 'unknown_operation' } as never],
+    })).toThrow(/unsupported operation kind/);
+  });
+
   it('requires connected edges to be deleted before their node', () => {
     const project = applyTransaction(emptyProject, {
       id: 'setup',

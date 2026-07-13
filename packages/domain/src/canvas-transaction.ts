@@ -105,6 +105,11 @@ export function applyTransaction(
         inverseOperations.unshift({ kind: 'create_edge', edge: previous });
         break;
       }
+
+      default: {
+        const unknownOperation = operation as { kind?: unknown };
+        throw new Error(`unsupported operation kind: ${String(unknownOperation.kind)}`);
+      }
     }
   }
 

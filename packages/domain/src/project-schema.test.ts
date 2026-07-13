@@ -86,7 +86,7 @@ describe('parseCanvasProject', () => {
 });
 
 describe('public domain API', () => {
-  it('exposes only the project parser at runtime', () => {
+  it('exposes only the approved runtime functions', () => {
     expect(Object.keys(publicApi).sort()).toEqual([
       'applyTransaction',
       'parseCanvasProject',
