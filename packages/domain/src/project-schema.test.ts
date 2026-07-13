@@ -89,10 +89,13 @@ describe('public domain API', () => {
   it('exposes only the approved runtime functions', () => {
     expect(Object.keys(publicApi).sort()).toEqual([
       'applyTransaction',
+      'cancelAgentPlan',
+      'confirmAgentPlan',
       'normalizePlacementObject',
       'parseCanvasProject',
       'placementToPromptConstraints',
       'revertTransaction',
+      'validateAgentPlan',
     ]);
   });
 });

@@ -75,6 +75,6 @@ export function toFlowEdges(edges: readonly CanvasEdge[]): Edge[] {
     source: edge.source,
     target: edge.target,
     label: edge.label === 'agent-plan' ? undefined : edge.label,
-    animated: edge.label === 'agent-plan',
+    animated: false,
   }));
 }

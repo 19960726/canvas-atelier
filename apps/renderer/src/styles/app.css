@@ -148,3 +148,23 @@
   .topbar__center { position: static; transform: none; margin-left: 10px; }
   .placement-workbench__body { grid-template-columns: minmax(300px, 1fr) 220px; }
 }
+
+.react-flow__node.agent-ghost-node { opacity: 0.62; }
+.react-flow__node.agent-ghost-node .canvas-node { border-style: dashed; border-color: var(--blue); background: rgba(239, 246, 255, 0.92); }
+.react-flow__edge.agent-ghost-edge path { stroke: var(--blue); stroke-dasharray: 7 5; }
+.plan-preview { display: grid; gap: 12px; }
+.plan-preview__heading { display: flex; align-items: center; justify-content: space-between; font-size: 10px; }
+.plan-preview__heading span { display: flex; align-items: center; gap: 6px; color: var(--accent); font-weight: 700; }
+.plan-preview__heading b { color: var(--muted); font-size: 9px; }
+.plan-operation-list { display: grid; gap: 5px; }
+.plan-operation { min-height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 8px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 5px; font-size: 10px; }
+.plan-route { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.plan-route span { display: grid; gap: 3px; padding: 8px; color: var(--muted); background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; font-size: 9px; }
+.plan-route b { color: var(--text); font-size: 10px; }
+.plan-approval-list { display: grid; gap: 6px; }
+.plan-model-confirm { min-height: 32px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border: 1px solid #a7d9d1; background: var(--accent-soft); border-radius: 5px; font-size: 10px; }
+.plan-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.plan-actions button { height: 32px; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 5px; cursor: pointer; font-size: 10px; font-weight: 600; }
+.plan-cancel { background: white; border: 1px solid var(--border-strong); }
+.plan-confirm { color: white; background: var(--accent); border: 1px solid #0b665f; }
+.icon-button:disabled, .agent-composer__footer button:disabled { opacity: 0.4; cursor: not-allowed; }

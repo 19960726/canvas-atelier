@@ -24,6 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
+import { PlanPreview } from '../agent/PlanPreview';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
@@ -50,12 +51,30 @@ export function CanvasWorkspace() {
   const setActiveTool = useAppStore((state) => state.setActiveTool);
   const toggleAgentPanel = useAppStore((state) => state.toggleAgentPanel);
   const setProject = useAppStore((state) => state.setProject);
+  const agentPlan = useAppStore((state) => state.agentPlan);
+  const undoStack = useAppStore((state) => state.undoStack);
+  const confirmedModelJobs = useAppStore((state) => state.confirmedModelJobs);
+  const draftAgentPlan = useAppStore((state) => state.draftAgentPlan);
+  const confirmAgentPlan = useAppStore((state) => state.confirmAgentPlan);
+  const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
+  const undo = useAppStore((state) => state.undo);
+  const [agentMessage, setAgentMessage] = useState('');
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const previewUrlsRef = useRef(new Map<string, string>());
   const uploadSequenceRef = useRef(0);
 
-  const flowNodes = useMemo(() => toFlowNodes(project.nodes), [project.nodes]);
-  const flowEdges = useMemo(() => toFlowEdges(project.edges), [project.edges]);
+  const flowNodes = useMemo(() => {
+    const nodes = toFlowNodes(project.nodes);
+    if (agentPlan?.state !== 'waiting_for_confirmation') return nodes;
+    const ghosts = agentPlan.transaction.operations.flatMap((operation) => operation.kind === 'create_node' ? [operation.node] : []);
+    return [...nodes, ...toFlowNodes(ghosts).map((node) => ({ ...node, className: 'agent-ghost-node' }))];
+  }, [project.nodes, agentPlan]);
+  const flowEdges = useMemo(() => {
+    const edges = toFlowEdges(project.edges);
+    if (agentPlan?.state !== 'waiting_for_confirmation') return edges;
+    const ghosts = agentPlan.transaction.operations.flatMap((operation) => operation.kind === 'create_edge' ? [operation.edge] : []);
+    return [...edges, ...toFlowEdges(ghosts).map((edge) => ({ ...edge, className: 'agent-ghost-edge', animated: true }))];
+  }, [project.edges, agentPlan]);
   const placementNode = useMemo(() => project.nodes.find(isPlacementNode), [project.nodes]);
   const referenceCounts = useMemo(() => {
     const objects = placementNode?.data.objects.filter((object) => !object.assetId.startsWith('starter-')) ?? [];
@@ -131,7 +150,7 @@ export function CanvasWorkspace() {
           <ChevronRight size={14} />
         </button>
         <div className="topbar__center">
-          <button className="icon-button" type="button" aria-label="撤销" title="撤销"><Undo2 size={16} /></button>
+          <button className="icon-button" type="button" aria-label="撤销" title="撤销" disabled={undoStack.length === 0} onClick={undo}><Undo2 size={16} /></button>
           <button className="icon-button" type="button" aria-label="重做" title="重做"><Redo2 size={16} /></button>
           <button className="icon-button" type="button" aria-label="适合画布" title="适合画布"><Maximize2 size={16} /></button>
         </div>
@@ -232,31 +251,34 @@ export function CanvasWorkspace() {
           <button className="agent-tab" type="button" role="tab" aria-selected="false">记忆</button>
         </div>
         <div className="agent-thread">
-          <div className="agent-message">
-            <span className="agent-avatar">A</span>
-            <div>
-              <strong>准备开始</strong>
-              <p>上传产品、场景和道具参考，我会先生成画布计划，确认后再调用模型。</p>
-            </div>
-          </div>
-          <section className="agent-summary" aria-label="当前参考职责">
-            <div className="summary-row"><span>产品身份</span><b>{referenceStatus(referenceCounts.product, '等待上传')}</b></div>
-            <div className="summary-row"><span>场景构图</span><b>{referenceStatus(referenceCounts.scene, '等待上传')}</b></div>
-            <div className="summary-row"><span>道具参考</span><b>{referenceStatus(referenceCounts.prop, '可选')}</b></div>
-          </section>
+          {agentPlan?.state === 'waiting_for_confirmation' ? (
+            <PlanPreview plan={agentPlan} onConfirm={confirmAgentPlan} onCancel={cancelAgentPlan} />
+          ) : (
+            <>
+              <div className="agent-message">
+                <span className="agent-avatar">A</span>
+                <div><strong>{agentPlan ? '方案已应用' : '准备开始'}</strong><p>{agentPlan ? '画布事务已确认，可使用顶部撤销一次恢复。' : '上传产品、场景和道具参考，我会先生成画布计划，确认后再调用模型。'}</p></div>
+              </div>
+              <section className="agent-summary" aria-label="当前参考职责">
+                <div className="summary-row"><span>产品身份</span><b>{referenceStatus(referenceCounts.product, '等待上传')}</b></div>
+                <div className="summary-row"><span>场景构图</span><b>{referenceStatus(referenceCounts.scene, '等待上传')}</b></div>
+                <div className="summary-row"><span>道具参考</span><b>{referenceStatus(referenceCounts.prop, '可选')}</b></div>
+              </section>
+            </>
+          )}
         </div>
         <div className="agent-composer">
-          <textarea aria-label="向 Agent 发送消息" placeholder="描述你想制作的产品场景…" rows={3} />
+          <textarea aria-label="向 Agent 发送消息" placeholder="描述你想制作的产品场景…" rows={3} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} />
           <div className="agent-composer__footer">
             <span>模型执行前需要确认</span>
-            <button type="button" aria-label="发送消息"><ChevronRight size={17} /></button>
+            <button type="button" aria-label="发送消息" disabled={agentMessage.trim().length === 0} onClick={() => { draftAgentPlan(agentMessage); setAgentMessage(''); }}><ChevronRight size={17} /></button>
           </div>
         </div>
       </aside>
 
       <footer className="job-strip" aria-label="任务队列">
         <span className="job-strip__label"><span className="status-dot is-idle" />任务队列</span>
-        <span>0 个任务运行中</span>
+        <span>{confirmedModelJobs > 0 ? `${confirmedModelJobs} 个已确认任务待排队` : '0 个任务运行中'}</span>
         <span className="job-strip__spacer" />
         <span>本地项目已保存</span>
       </footer>

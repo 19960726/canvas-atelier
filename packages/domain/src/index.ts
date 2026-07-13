@@ -1,3 +1,4 @@
+export { cancelAgentPlan, confirmAgentPlan, validateAgentPlan } from './agent-plan';
 export { applyTransaction, revertTransaction } from './canvas-transaction';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
@@ -18,3 +19,5 @@ export type {
   PlacementObject,
   ReferenceRole,
 } from './project-schema';
+
+export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation } from './agent-plan';
