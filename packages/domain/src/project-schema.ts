@@ -1,4 +1,4 @@
-﻿import { z } from 'zod';
+import { z } from 'zod';
 
 const idSchema = z.string().min(1);
 const normalizedSchema = z.number().min(0).max(1);
@@ -192,4 +192,3 @@ export type CanvasProject = z.infer<typeof canvasProjectSchema>;
 export function parseCanvasProject(input: unknown): CanvasProject {
   return canvasProjectSchema.parse(input);
 }
-
