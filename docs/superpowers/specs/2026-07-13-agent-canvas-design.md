@@ -2,7 +2,7 @@
 
 Date: 2026-07-13
 Workspace: E:\画布项目
-Status: Draft for user review
+Status: Approved by user on 2026-07-13
 
 ## 1. Goal
 
@@ -411,3 +411,4 @@ Design acceptance:
 - Model gateway is https://ai.comfly.org.
 - CanvasForge can inform API compatibility only; the new app remains original.
 - Support Windows 7 through Windows 11 with smooth performance targets.
+
