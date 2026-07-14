@@ -1,10 +1,16 @@
 import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, normalize } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { STALE_LOCK_MS } from './contracts';
-import { NodeFileSystem } from './file-system';
+import { sha256Canonical } from './canonical-json';
+import {
+  SNAPSHOT_SCHEMA_VERSION,
+  STALE_LOCK_MS,
+  type ProjectManifest,
+  type SnapshotEnvelope,
+} from './contracts';
+import { NodeFileSystem, writeAtomic, type FileHandleLike, type FileSystem } from './file-system';
 import {
   MAX_WIN7_PROJECT_ROOT_PATH_LENGTH,
   ProjectRepository,
@@ -187,6 +193,55 @@ describe('ProjectRepository', () => {
     expect(activeLock.sessionId).not.toBe('stale-session');
   });
 
+  it('allows at most one writer when two stale-lock reclaimers race around a replacement lock', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'StaleRace.novus-project');
+    const lockPath = join(projectRoot, 'recovery', 'project.lock');
+    const repository = createRepository({ processId: 5102 });
+
+    const created = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-stale-race',
+      projectName: 'StaleRace',
+    });
+    await repository.close(created);
+
+    const staleHeartbeatAt = new Date(baseNow.getTime() - (STALE_LOCK_MS + 1_000)).toISOString();
+    await writeProjectLock(projectRoot, {
+      channel: 'modern',
+      deviceId: 'device-under-test',
+      heartbeatAt: staleHeartbeatAt,
+      openedAt: staleHeartbeatAt,
+      processId: 9292,
+      projectId: created.manifest.projectId,
+      schemaVersion: 1,
+      sessionId: 'stale-race-session',
+    });
+
+    const coordinator = createReclaimRaceCoordinator();
+    const firstRepository = createRepository({
+      fileSystem: new ReclaimRaceFileSystem('first', lockPath, coordinator),
+      isLocalProcessAlive: () => false,
+      processId: 6201,
+    });
+    const secondRepository = createRepository({
+      fileSystem: new ReclaimRaceFileSystem('second', lockPath, coordinator),
+      isLocalProcessAlive: () => false,
+      processId: 6202,
+    });
+
+    const sessions = await Promise.all([
+      firstRepository.open(projectRoot, { mode: 'write' }),
+      secondRepository.open(projectRoot, { mode: 'write' }),
+    ]);
+
+    const writeSessions = sessions.filter((session) => session.mode === 'write');
+    expect(writeSessions).toHaveLength(1);
+
+    const activeLock = await readJson<TestProjectLock>(lockPath);
+    expect(activeLock.sessionId).toBe(writeSessions[0]!.lock!.sessionId);
+  });
+
   it('keeps nonlocal or unverifiable stale locks read-only', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'RemoteLock.novus-project');
@@ -280,6 +335,184 @@ describe('ProjectRepository', () => {
     expect(reopened.manifest.cleanClose).toBe(false);
   });
 
+  it('leaves a replacement writer lock intact when close races between ownership check and removal', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'CloseRace.novus-project');
+    const lockPath = join(projectRoot, 'recovery', 'project.lock');
+    const repository = createRepository({ processId: 10102 });
+
+    const session = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-close-race',
+      projectName: 'CloseRace',
+    });
+
+    const replacementOpenedAt = new Date(baseNow.getTime() + 1_000).toISOString();
+    const replacementLock: TestProjectLock = {
+      channel: 'modern',
+      deviceId: 'device-under-test',
+      heartbeatAt: replacementOpenedAt,
+      openedAt: replacementOpenedAt,
+      processId: 10103,
+      projectId: session.manifest.projectId,
+      schemaVersion: 1,
+      sessionId: 'replacement-session',
+    };
+
+    await createRepository({
+      fileSystem: new ReplaceLockDuringRemovalFileSystem(lockPath, replacementLock),
+      processId: 10102,
+    }).close(session);
+
+    const activeLock = await readJson<TestProjectLock>(lockPath);
+    expect(activeLock).toMatchObject({
+      processId: 10103,
+      sessionId: 'replacement-session',
+    });
+  });
+
+  it('rejects saveAs when the stable snapshot path escapes snapshots and leaves no destination', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const sourceRoot = join(tempRoot, 'TraversalSource.novus-project');
+    const destinationRoot = join(tempRoot, 'Traversal Copy.novus-project');
+    const repository = createRepository({ processId: 11102 });
+
+    const source = await repository.create(sourceRoot, {
+      project: starterProject,
+      projectId: 'project-traversal-source',
+      projectName: 'TraversalSource',
+    });
+    const sourceManifest = source.manifest;
+    const outsideProject = {
+      nodes: [{ id: 'outside-project-state' }],
+    };
+    await writeSnapshotEnvelope(join(tempRoot, 'outside.json'), {
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+      projectId: sourceManifest.projectId,
+      snapshotId: sourceManifest.stableSnapshotId!,
+      previousSnapshotId: null,
+      revision: sourceManifest.stableSnapshotRevision,
+      createdAt: baseNow.toISOString(),
+      project: outsideProject,
+      projectSha256: sha256Canonical(outsideProject),
+    });
+    const tamperedSource: OpenedProjectSession = {
+      ...source,
+      manifest: {
+        ...source.manifest,
+        stableSnapshotPath: '../outside.json',
+      },
+    };
+
+    await expect(repository.saveAs(tamperedSource, destinationRoot)).rejects.toThrow(
+      /stable snapshot path/i,
+    );
+    await expect(stat(destinationRoot)).rejects.toThrow();
+  });
+
+  it('rejects saveAs when the stable snapshot path is absolute and leaves no destination', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const sourceRoot = join(tempRoot, 'AbsoluteSource.novus-project');
+    const destinationRoot = join(tempRoot, 'Absolute Copy.novus-project');
+    const repository = createRepository({ processId: 11103 });
+
+    const source = await repository.create(sourceRoot, {
+      project: starterProject,
+      projectId: 'project-absolute-source',
+      projectName: 'AbsoluteSource',
+    });
+    const sourceManifest = source.manifest;
+    const outsideProject = {
+      nodes: [{ id: 'absolute-project-state' }],
+    };
+    const absoluteSnapshotPath = join(tempRoot, 'absolute.json');
+    await writeSnapshotEnvelope(absoluteSnapshotPath, {
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+      projectId: sourceManifest.projectId,
+      snapshotId: sourceManifest.stableSnapshotId!,
+      previousSnapshotId: null,
+      revision: sourceManifest.stableSnapshotRevision,
+      createdAt: baseNow.toISOString(),
+      project: outsideProject,
+      projectSha256: sha256Canonical(outsideProject),
+    });
+    const tamperedSource: OpenedProjectSession = {
+      ...source,
+      manifest: {
+        ...source.manifest,
+        stableSnapshotPath: absoluteSnapshotPath,
+      },
+    };
+
+    await expect(repository.saveAs(tamperedSource, destinationRoot)).rejects.toThrow(
+      /stable snapshot path/i,
+    );
+    await expect(stat(destinationRoot)).rejects.toThrow();
+  });
+
+  it.each([
+    [
+      'schema version',
+      (snapshot: SnapshotEnvelope): unknown => ({
+        ...snapshot,
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION + 1,
+      }),
+    ],
+    [
+      'project id',
+      (snapshot: SnapshotEnvelope): unknown => ({
+        ...snapshot,
+        projectId: 'different-project',
+      }),
+    ],
+    [
+      'snapshot id',
+      (snapshot: SnapshotEnvelope): unknown => ({
+        ...snapshot,
+        snapshotId: 'different-snapshot',
+      }),
+    ],
+    [
+      'revision',
+      (snapshot: SnapshotEnvelope): unknown => ({
+        ...snapshot,
+        revision: snapshot.revision + 1,
+      }),
+    ],
+    [
+      'checksum',
+      (snapshot: SnapshotEnvelope): unknown => ({
+        ...snapshot,
+        projectSha256: 'incorrect-checksum',
+      }),
+    ],
+    [
+      'project shape',
+      (snapshot: SnapshotEnvelope): unknown => {
+        const { project: _project, ...withoutProject } = snapshot;
+        return withoutProject;
+      },
+    ],
+  ])('rejects saveAs when the stable snapshot envelope has an invalid %s', async (_caseName, mutate) => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const sourceRoot = join(tempRoot, 'EnvelopeSource.novus-project');
+    const destinationRoot = join(tempRoot, 'Envelope Copy.novus-project');
+    const repository = createRepository({ processId: 11104 });
+
+    const source = await repository.create(sourceRoot, {
+      project: starterProject,
+      projectId: 'project-envelope-source',
+      projectName: 'EnvelopeSource',
+    });
+    const sourceManifest = await readProjectManifest(sourceRoot);
+    const snapshotPath = join(sourceRoot, ...sourceManifest.stableSnapshotPath!.split('/'));
+    const snapshot = await readJson<SnapshotEnvelope>(snapshotPath);
+    await writeFile(snapshotPath, `${JSON.stringify(mutate(snapshot))}\n`, 'utf8');
+
+    await expect(repository.saveAs(source, destinationRoot)).rejects.toThrow(/stable snapshot/i);
+    await expect(stat(destinationRoot)).rejects.toThrow();
+  });
+
   it('saveAs opens the destination as the writable owner even from a read-only source session', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const sourceRoot = join(tempRoot, 'Source.novus-project');
@@ -309,6 +542,69 @@ describe('ProjectRepository', () => {
 
     const originalStillLocked = await thirdRepository.open(sourceRoot, { mode: 'write' });
     expect(originalStillLocked.mode).toBe('read_only');
+  });
+
+  it('removes a newly-created root when project creation fails before manifest completion', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'ManifestRollback.novus-project');
+    const repository = createRepository({
+      fileSystem: new FailRenameFileSystem(join(projectRoot, 'project.novus.json')),
+      processId: 13101,
+    });
+
+    await expect(
+      repository.create(projectRoot, {
+        project: starterProject,
+        projectId: 'project-manifest-rollback',
+        projectName: 'ManifestRollback',
+      }),
+    ).rejects.toThrow(/injected rename failure/i);
+
+    await expect(stat(projectRoot)).rejects.toThrow();
+  });
+
+  it('removes a newly-created root when project creation fails before lock acquisition', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'LockRollback.novus-project');
+    const repository = createRepository({
+      fileSystem: new FailOpenFileSystem(join(projectRoot, 'recovery', 'project.lock')),
+      processId: 13102,
+    });
+
+    await expect(
+      repository.create(projectRoot, {
+        project: starterProject,
+        projectId: 'project-lock-rollback',
+        projectName: 'LockRollback',
+      }),
+    ).rejects.toThrow(/injected open failure/i);
+
+    await expect(stat(projectRoot)).rejects.toThrow();
+  });
+
+  it.each([
+    ['sync', 'atomic-sync.txt', true],
+    ['rename', 'atomic-rename.txt', false],
+  ])('cleans writeAtomic temp files after a failing %s without promoting the target', async (_caseName, fileName, failSync) => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const targetPath = join(tempRoot, fileName);
+    const fileSystem = failSync
+      ? new FailSyncFileSystem()
+      : new FailRenameFileSystem(targetPath, { preserveTarget: true });
+
+    if (!failSync) {
+      await writeFile(targetPath, 'old-value', 'utf8');
+    }
+
+    await expect(writeAtomic(fileSystem, targetPath, 'new-value')).rejects.toThrow(/injected/i);
+
+    if (failSync) {
+      await expect(access(targetPath)).rejects.toThrow();
+      expect(await readdir(tempRoot)).toEqual([]);
+    } else {
+      await expect(readFile(targetPath, 'utf8')).resolves.toBe('old-value');
+      expect(await readdir(tempRoot)).toEqual([fileName]);
+    }
   });
 });
 
@@ -357,4 +653,257 @@ async function readJson<T>(path: string): Promise<T> {
 
 async function writeProjectLock(projectRoot: string, lock: TestProjectLock) {
   await writeFile(join(projectRoot, 'recovery', 'project.lock'), `${JSON.stringify(lock)}\n`, 'utf8');
+}
+
+async function readProjectManifest(projectRoot: string): Promise<ProjectManifest> {
+  return readJson<ProjectManifest>(join(projectRoot, 'project.novus.json'));
+}
+
+async function writeSnapshotEnvelope(path: string, snapshot: SnapshotEnvelope) {
+  await writeFile(path, `${JSON.stringify(snapshot)}\n`, 'utf8');
+}
+
+interface DeferredVoid {
+  readonly promise: Promise<void>;
+  resolve(): void;
+}
+
+interface ReclaimRaceCoordinator {
+  readonly secondReadyToUnlink: DeferredVoid;
+  readonly firstReplacementLockClosed: DeferredVoid;
+}
+
+function createReclaimRaceCoordinator(): ReclaimRaceCoordinator {
+  return {
+    firstReplacementLockClosed: createDeferredVoid(),
+    secondReadyToUnlink: createDeferredVoid(),
+  };
+}
+
+function createDeferredVoid(): DeferredVoid {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+class DelegatingFileSystem implements FileSystem {
+  protected readonly delegate: FileSystem;
+
+  constructor(delegate: FileSystem = new NodeFileSystem()) {
+    this.delegate = delegate;
+  }
+
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
+    await this.delegate.mkdir(path, options);
+  }
+
+  async open(path: string, flags: string): Promise<FileHandleLike> {
+    return this.delegate.open(path, flags);
+  }
+
+  async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+    return this.delegate.readFile(path, encoding);
+  }
+
+  async readdir(path: string): Promise<string[]> {
+    return this.delegate.readdir(path);
+  }
+
+  async rename(source: string, destination: string): Promise<void> {
+    await this.delegate.rename(source, destination);
+  }
+
+  async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    await this.delegate.rm(path, options);
+  }
+
+  async stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }> {
+    return this.delegate.stat(path);
+  }
+
+  async unlink(path: string): Promise<void> {
+    await this.delegate.unlink(path);
+  }
+
+  async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
+    await this.delegate.writeFile(path, data, encoding);
+  }
+}
+
+class ReclaimRaceFileSystem extends DelegatingFileSystem {
+  private readonly role: 'first' | 'second';
+  private readonly lockPath: string;
+  private readonly coordinator: ReclaimRaceCoordinator;
+
+  constructor(role: 'first' | 'second', lockPath: string, coordinator: ReclaimRaceCoordinator) {
+    super();
+    this.role = role;
+    this.lockPath = lockPath;
+    this.coordinator = coordinator;
+  }
+
+  override async open(path: string, flags: string): Promise<FileHandleLike> {
+    const handle = await super.open(path, flags);
+    if (this.role === 'first' && flags === 'wx' && samePath(path, this.lockPath)) {
+      return new SignalOnCloseHandle(handle, () => this.coordinator.firstReplacementLockClosed.resolve());
+    }
+    return handle;
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    if (samePath(source, this.lockPath)) {
+      if (this.role === 'first') {
+        await this.coordinator.secondReadyToUnlink.promise;
+      } else {
+        this.coordinator.secondReadyToUnlink.resolve();
+        await this.coordinator.firstReplacementLockClosed.promise;
+      }
+    }
+
+    await super.rename(source, destination);
+  }
+
+  override async unlink(path: string): Promise<void> {
+    if (samePath(path, this.lockPath)) {
+      if (this.role === 'first') {
+        await this.coordinator.secondReadyToUnlink.promise;
+      } else {
+        this.coordinator.secondReadyToUnlink.resolve();
+        await this.coordinator.firstReplacementLockClosed.promise;
+      }
+    }
+
+    await super.unlink(path);
+  }
+}
+
+class ReplaceLockDuringRemovalFileSystem extends DelegatingFileSystem {
+  private readonly lockPath: string;
+  private readonly replacementLock: TestProjectLock;
+  private injected = false;
+
+  constructor(lockPath: string, replacementLock: TestProjectLock) {
+    super();
+    this.lockPath = lockPath;
+    this.replacementLock = replacementLock;
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    if (samePath(source, this.lockPath)) {
+      await super.rename(source, destination);
+      await this.injectReplacement();
+      return;
+    }
+
+    await super.rename(source, destination);
+  }
+
+  override async unlink(path: string): Promise<void> {
+    if (samePath(path, this.lockPath)) {
+      await this.injectReplacement();
+    }
+
+    await super.unlink(path);
+  }
+
+  private async injectReplacement(): Promise<void> {
+    if (this.injected) {
+      return;
+    }
+
+    this.injected = true;
+    await writeFile(this.lockPath, `${JSON.stringify(this.replacementLock)}\n`, 'utf8');
+  }
+}
+
+class FailOpenFileSystem extends DelegatingFileSystem {
+  private readonly targetPath: string;
+
+  constructor(targetPath: string) {
+    super();
+    this.targetPath = targetPath;
+  }
+
+  override async open(path: string, flags: string): Promise<FileHandleLike> {
+    if (flags === 'wx' && samePath(path, this.targetPath)) {
+      throw new Error('injected open failure');
+    }
+
+    return super.open(path, flags);
+  }
+}
+
+class FailRenameFileSystem extends DelegatingFileSystem {
+  private readonly targetPath: string;
+
+  constructor(targetPath: string, _options: { preserveTarget?: boolean } = {}) {
+    super();
+    this.targetPath = targetPath;
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    if (samePath(destination, this.targetPath)) {
+      throw new Error('injected rename failure');
+    }
+
+    await super.rename(source, destination);
+  }
+}
+
+class FailSyncFileSystem extends DelegatingFileSystem {
+  override async open(path: string, flags: string): Promise<FileHandleLike> {
+    return new FailSyncHandle(await super.open(path, flags));
+  }
+}
+
+class SignalOnCloseHandle implements FileHandleLike {
+  private readonly handle: FileHandleLike;
+  private readonly onClose: () => void;
+
+  constructor(handle: FileHandleLike, onClose: () => void) {
+    this.handle = handle;
+    this.onClose = onClose;
+  }
+
+  async close(): Promise<void> {
+    try {
+      await this.handle.close();
+    } finally {
+      this.onClose();
+    }
+  }
+
+  async sync(): Promise<void> {
+    await this.handle.sync();
+  }
+
+  async writeFile(data: string | Uint8Array): Promise<void> {
+    await this.handle.writeFile(data);
+  }
+}
+
+class FailSyncHandle implements FileHandleLike {
+  private readonly handle: FileHandleLike;
+
+  constructor(handle: FileHandleLike) {
+    this.handle = handle;
+  }
+
+  async close(): Promise<void> {
+    await this.handle.close();
+  }
+
+  async sync(): Promise<void> {
+    throw new Error('injected sync failure');
+  }
+
+  async writeFile(data: string | Uint8Array): Promise<void> {
+    await this.handle.writeFile(data);
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalize(left).toLowerCase() === normalize(right).toLowerCase();
 }

@@ -1,4 +1,4 @@
-import { basename, dirname, join, normalize, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path';
 
 import { canonicalJson, sha256Canonical } from './canonical-json.js';
 import {
@@ -58,6 +58,7 @@ interface LockDecision {
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const CLEAN_CLOSE_PATH = 'recovery/clean-close.json';
 const LOCK_PATH = 'recovery/project.lock';
+const LOCK_CLAIM_PREFIX = '.project.lock.claim-';
 const PROJECT_MANIFEST_PATH = 'project.novus.json';
 
 const PROJECT_DIRECTORIES = [
@@ -99,44 +100,58 @@ export class ProjectRepository {
     const snapshotId = this.createId();
     const snapshotPath = normalizeInternalPath(join('snapshots', `revision-0-${snapshotId}.json`));
     const createdAt = this.nowIso();
+    let createdRoot = false;
 
-    await this.fileSystem.mkdir(root, { recursive: false });
-    for (const directory of PROJECT_DIRECTORIES) {
-      await this.fileSystem.mkdir(join(root, ...directory.split('/')), { recursive: true });
+    try {
+      await this.fileSystem.mkdir(root, { recursive: false });
+      createdRoot = true;
+      for (const directory of PROJECT_DIRECTORIES) {
+        await this.fileSystem.mkdir(join(root, ...directory.split('/')), { recursive: true });
+      }
+
+      const snapshot = createSnapshot({
+        createdAt,
+        project: options.project,
+        projectId,
+        revision: 0,
+        snapshotId,
+      });
+      await writeJsonAtomic(this.fileSystem, join(root, ...snapshotPath.split('/')), snapshot);
+      await this.verifySnapshot(root, snapshotPath, projectId, 0);
+
+      await writeAtomic(this.fileSystem, join(root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), '');
+      await writeJsonAtomic(this.fileSystem, join(root, ...CLEAN_CLOSE_PATH.split('/')), {
+        clean: false,
+        closedAt: null,
+      } satisfies CleanCloseMarker);
+
+      const manifest = createManifest({
+        cleanClose: false,
+        projectId,
+        projectName,
+        snapshotId,
+        snapshotPath,
+      });
+      await writeJsonAtomic(this.fileSystem, join(root, PROJECT_MANIFEST_PATH), manifest);
+
+      const lock = await this.writeExclusiveLock(root, projectId);
+      return {
+        lock,
+        manifest,
+        mode: 'write',
+        root,
+      };
+    } catch (error) {
+      if (createdRoot) {
+        try {
+          await this.fileSystem.rm(root, { force: true, recursive: true });
+        } catch {
+          // Preserve the creation failure that triggered rollback.
+        }
+      }
+
+      throw error;
     }
-
-    const snapshot = createSnapshot({
-      createdAt,
-      project: options.project,
-      projectId,
-      revision: 0,
-      snapshotId,
-    });
-    await writeJsonAtomic(this.fileSystem, join(root, ...snapshotPath.split('/')), snapshot);
-    await this.verifySnapshot(root, snapshotPath, projectId, 0);
-
-    await writeAtomic(this.fileSystem, join(root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), '');
-    await writeJsonAtomic(this.fileSystem, join(root, ...CLEAN_CLOSE_PATH.split('/')), {
-      clean: false,
-      closedAt: null,
-    } satisfies CleanCloseMarker);
-
-    const manifest = createManifest({
-      cleanClose: false,
-      projectId,
-      projectName,
-      snapshotId,
-      snapshotPath,
-    });
-    await writeJsonAtomic(this.fileSystem, join(root, PROJECT_MANIFEST_PATH), manifest);
-
-    const lock = await this.writeExclusiveLock(root, projectId);
-    return {
-      lock,
-      manifest,
-      mode: 'write',
-      root,
-    };
   }
 
   async open(root: string, options: OpenProjectOptions): Promise<OpenedProjectSession> {
@@ -226,14 +241,21 @@ export class ProjectRepository {
       return { lock: null, mode: 'read_only' };
     }
 
-    await this.fileSystem.unlink(join(root, ...LOCK_PATH.split('/')));
-
-    const reclaimedLock = await this.tryWriteNewLock(root, projectId);
-    if (reclaimedLock === null) {
+    const claimPath = await this.claimObservedLock(root, existingLock, projectId);
+    if (claimPath === null) {
       return { lock: null, mode: 'read_only' };
     }
 
-    return { lock: reclaimedLock, mode: 'write' };
+    try {
+      const reclaimedLock = await this.tryWriteNewLock(root, projectId);
+      if (reclaimedLock === null) {
+        return { lock: null, mode: 'read_only' };
+      }
+
+      return { lock: reclaimedLock, mode: 'write' };
+    } finally {
+      await this.fileSystem.rm(claimPath, { force: true });
+    }
   }
 
   private async writeExclusiveLock(root: string, projectId: string): Promise<ProjectLock> {
@@ -282,8 +304,12 @@ export class ProjectRepository {
   }
 
   private async readExistingLock(root: string): Promise<unknown> {
+    return this.readLockFile(join(root, ...LOCK_PATH.split('/')));
+  }
+
+  private async readLockFile(path: string): Promise<unknown> {
     try {
-      return JSON.parse(await this.fileSystem.readFile(join(root, ...LOCK_PATH.split('/')), 'utf8'));
+      return JSON.parse(await this.fileSystem.readFile(path, 'utf8'));
     } catch {
       return null;
     }
@@ -300,19 +326,34 @@ export class ProjectRepository {
       return {};
     }
 
-    const snapshot = JSON.parse(
-      await this.fileSystem.readFile(join(root, ...manifest.stableSnapshotPath.split('/')), 'utf8'),
-    ) as SnapshotEnvelope;
+    const snapshotPath = validateStableSnapshotPath(manifest.stableSnapshotPath);
+    let snapshot: unknown;
+    try {
+      snapshot = JSON.parse(await this.fileSystem.readFile(join(root, ...snapshotPath.split('/')), 'utf8'));
+    } catch {
+      throw new Error('Invalid stable snapshot envelope');
+    }
+
+    if (!isValidStableSnapshotEnvelope(snapshot, manifest)) {
+      throw new Error('Invalid stable snapshot envelope');
+    }
 
     return snapshot.project;
   }
 
   private async removeOwnedLock(root: string, lock: ProjectLock): Promise<void> {
-    const lockPath = join(root, ...LOCK_PATH.split('/'));
-    const existingLock = await this.readExistingLock(root);
-    if (isValidProjectLock(existingLock, lock.projectId) && existingLock.sessionId === lock.sessionId) {
-      await this.fileSystem.unlink(lockPath);
+    const claimPath = await this.claimCurrentLock(root);
+    if (claimPath === null) {
+      return;
     }
+
+    const claimedLock = await this.readLockFile(claimPath);
+    if (isValidProjectLock(claimedLock, lock.projectId) && claimedLock.sessionId === lock.sessionId) {
+      await this.fileSystem.rm(claimPath, { force: true });
+      return;
+    }
+
+    await this.restoreClaimedLock(root, claimPath);
   }
 
   private async verifySnapshot(
@@ -346,6 +387,93 @@ export class ProjectRepository {
 
   private nowIso(): string {
     return this.now().toISOString();
+  }
+
+  private async claimObservedLock(
+    root: string,
+    observedLock: ProjectLock,
+    projectId: string,
+  ): Promise<string | null> {
+    const claimPath = await this.claimCurrentLock(root);
+    if (claimPath === null) {
+      return null;
+    }
+
+    const claimedLock = await this.readLockFile(claimPath);
+    if (
+      !isValidProjectLock(claimedLock, projectId) ||
+      !isSameProjectLock(claimedLock, observedLock)
+    ) {
+      await this.restoreClaimedLock(root, claimPath);
+      return null;
+    }
+
+    return claimPath;
+  }
+
+  private async claimCurrentLock(root: string): Promise<string | null> {
+    const lockPath = join(root, ...LOCK_PATH.split('/'));
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const claimPath = join(
+        root,
+        'recovery',
+        `${LOCK_CLAIM_PREFIX}${this.processId}-${this.createId()}`,
+      );
+
+      try {
+        await this.fileSystem.rename(lockPath, claimPath);
+        return claimPath;
+      } catch (error) {
+        if (isErrno(error, 'ENOENT')) {
+          return null;
+        }
+
+        if (isErrno(error, 'EEXIST')) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    return null;
+  }
+
+  private async restoreClaimedLock(root: string, claimPath: string): Promise<void> {
+    const lockPath = join(root, ...LOCK_PATH.split('/'));
+    let lockContents: string;
+
+    try {
+      lockContents = await this.fileSystem.readFile(claimPath, 'utf8');
+    } catch {
+      return;
+    }
+
+    let handle = null as Awaited<ReturnType<FileSystem['open']>> | null;
+    let closed = false;
+    try {
+      handle = await this.fileSystem.open(lockPath, 'wx');
+      await handle.writeFile(lockContents);
+      await handle.sync();
+      await handle.close();
+      closed = true;
+      await this.fileSystem.rm(claimPath, { force: true });
+    } catch (error) {
+      if (handle !== null && !closed) {
+        try {
+          await handle.close();
+        } catch {
+          // Preserve the restore failure.
+        }
+      }
+
+      if (isErrno(error, 'EEXIST')) {
+        return;
+      }
+
+      throw error;
+    }
   }
 }
 
@@ -393,6 +521,62 @@ function createSnapshot(options: {
   };
 }
 
+function validateStableSnapshotPath(path: string): string {
+  if (
+    path.length === 0 ||
+    path.includes('\\') ||
+    path.includes('\0') ||
+    isAbsolute(path) ||
+    posix.isAbsolute(path) ||
+    /^[A-Za-z]:/.test(path) ||
+    path.startsWith('//')
+  ) {
+    throw new Error('Invalid stable snapshot path');
+  }
+
+  const normalizedPath = posix.normalize(path);
+  if (
+    normalizedPath !== path ||
+    normalizedPath === '.' ||
+    normalizedPath === '..' ||
+    normalizedPath.startsWith('../') ||
+    !normalizedPath.startsWith('snapshots/') ||
+    normalizedPath === 'snapshots/'
+  ) {
+    throw new Error('Invalid stable snapshot path');
+  }
+
+  return normalizedPath;
+}
+
+function isValidStableSnapshotEnvelope(
+  value: unknown,
+  manifest: ProjectManifest,
+): value is SnapshotEnvelope {
+  if (manifest.stableSnapshotId === null || !isPlainRecord(value)) {
+    return false;
+  }
+
+  if (
+    value.schemaVersion !== SNAPSHOT_SCHEMA_VERSION ||
+    value.projectId !== manifest.projectId ||
+    value.snapshotId !== manifest.stableSnapshotId ||
+    value.revision !== manifest.stableSnapshotRevision ||
+    (value.previousSnapshotId !== null && typeof value.previousSnapshotId !== 'string') ||
+    typeof value.createdAt !== 'string' ||
+    !isPlainRecord(value.project) ||
+    typeof value.projectSha256 !== 'string'
+  ) {
+    return false;
+  }
+
+  try {
+    return value.projectSha256 === sha256Canonical(value.project);
+  } catch {
+    return false;
+  }
+}
+
 async function writeJsonAtomic(fileSystem: FileSystem, path: string, value: unknown): Promise<void> {
   await writeAtomic(fileSystem, path, `${canonicalJson(value)}\n`);
 }
@@ -433,6 +617,28 @@ function isValidProjectLock(value: unknown, projectId: string): value is Project
     typeof lock.sessionId === 'string' &&
     typeof lock.openedAt === 'string' &&
     typeof lock.heartbeatAt === 'string'
+  );
+}
+
+function isSameProjectLock(left: ProjectLock, right: ProjectLock): boolean {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.projectId === right.projectId &&
+    left.deviceId === right.deviceId &&
+    left.processId === right.processId &&
+    left.channel === right.channel &&
+    left.sessionId === right.sessionId &&
+    left.openedAt === right.openedAt &&
+    left.heartbeatAt === right.heartbeatAt
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
   );
 }
 
