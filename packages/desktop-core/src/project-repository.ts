@@ -12,6 +12,11 @@ import {
   type SnapshotEnvelope,
 } from './contracts.js';
 import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
+import {
+  JournalWriter,
+  createPersistenceError,
+  type JournalWriterSessionOptions,
+} from './journal-writer.js';
 
 type ProjectState = Record<string, unknown>;
 type ProcessLiveness = boolean | 'unknown';
@@ -241,6 +246,31 @@ export class ProjectRepository {
       project,
       projectId: this.createId(),
       projectName: basename(destinationRoot, '.novus-project'),
+    });
+  }
+
+  async openJournalWriter(
+    session: OpenedProjectSession,
+    options: JournalWriterSessionOptions = {},
+  ): Promise<JournalWriter> {
+    if (session.mode !== 'write' || session.lock === null) {
+      throw createPersistenceError(
+        'CONCURRENT_WRITER',
+        true,
+        'Project is not open for journal writes',
+      );
+    }
+
+    return JournalWriter.open({
+      activeJournalPath: join(
+        session.root,
+        ...validateActiveJournalSegment(session.manifest.activeJournalSegment).split('/'),
+      ),
+      baseRevision: session.manifest.stableSnapshotRevision,
+      fileSystem: options.fileSystem ?? this.fileSystem,
+      nextSequence: session.manifest.nextSequence,
+      now: options.now,
+      projectId: session.manifest.projectId,
     });
   }
 
@@ -560,6 +590,34 @@ function validateStableSnapshotPath(path: string): string {
     normalizedPath === 'snapshots/'
   ) {
     throw new Error('Invalid stable snapshot path');
+  }
+
+  return normalizedPath;
+}
+
+function validateActiveJournalSegment(path: string): string {
+  if (
+    path.length === 0 ||
+    path.includes('\\') ||
+    path.includes('\0') ||
+    isAbsolute(path) ||
+    posix.isAbsolute(path) ||
+    /^[A-Za-z]:/.test(path) ||
+    path.startsWith('//')
+  ) {
+    throw createPersistenceError('CORRUPT_JOURNAL', false, 'Invalid active journal segment');
+  }
+
+  const normalizedPath = posix.normalize(path);
+  if (
+    normalizedPath !== path ||
+    normalizedPath === '.' ||
+    normalizedPath === '..' ||
+    normalizedPath.startsWith('../') ||
+    !normalizedPath.startsWith('journal/') ||
+    normalizedPath === 'journal/'
+  ) {
+    throw createPersistenceError('CORRUPT_JOURNAL', false, 'Invalid active journal segment');
   }
 
   return normalizedPath;

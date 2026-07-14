@@ -1,3 +1,5 @@
+import type { ProjectOperation, ProjectTransaction } from '@agent-canvas/domain';
+
 export const PROJECT_FORMAT_VERSION = 1;
 export const JOURNAL_SCHEMA_VERSION = 1;
 export const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -8,11 +10,6 @@ export const SNAPSHOT_TRANSACTION_LIMIT = 200;
 export const SNAPSHOT_BYTE_LIMIT = 4 * 1024 * 1024;
 
 interface ProjectState {
-  readonly [key: string]: unknown;
-}
-
-interface ProjectOperationRecord {
-  readonly kind: string;
   readonly [key: string]: unknown;
 }
 
@@ -46,7 +43,7 @@ export interface JournalRecord {
   readonly committedAt: string;
   readonly kind: JournalTransactionKind;
   readonly label: string;
-  readonly operations: readonly ProjectOperationRecord[];
+  readonly operations: readonly ProjectOperation[];
   readonly payloadSha256: string;
 }
 
@@ -75,10 +72,8 @@ export interface ProjectLock {
 export interface CommitRequest {
   readonly projectId: string;
   readonly baseRevision: number;
-  readonly transactionId: string;
   readonly kind: JournalTransactionKind;
-  readonly label: string;
-  readonly operations: readonly ProjectOperationRecord[];
+  readonly transaction: ProjectTransaction;
 }
 
 export interface CommitAck {

@@ -25,6 +25,20 @@ export type {
 
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
+export {
+  JournalWriter,
+  createPersistenceError,
+  readValidJournal,
+  replayJournal,
+} from './journal-writer.js';
+export type {
+  JournalCommitOptions,
+  JournalReadOptions,
+  JournalReadResult,
+  JournalSyncGate,
+  JournalWriterOpenOptions,
+  JournalWriterSessionOptions,
+} from './journal-writer.js';
 export { MAX_WIN7_PROJECT_ROOT_PATH_LENGTH, ProjectRepository } from './project-repository.js';
 export type {
   CreateProjectOptions,
