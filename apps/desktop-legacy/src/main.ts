@@ -15,6 +15,7 @@ const runtimeChannel = 'legacy' as const;
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const rendererHtmlPath = resolve(currentDir, '../../renderer/dist/index.html');
 const preloadPath = join(currentDir, 'preload.js');
+const safeModePreloadPath = join(currentDir, 'safe-preload.js');
 const safeModeHtmlPath = join(currentDir, 'safe-mode.html');
 const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
 
@@ -50,7 +51,33 @@ app.on('window-all-closed', () => {
 });
 
 async function createMainWindow(): Promise<void> {
-  mainWindow = new BrowserWindow({
+  const window = createDesktopWindow(preloadPath);
+  mainWindow = window;
+
+  window.webContents.on('did-fail-load', () => {
+    void loadSafeMode('Renderer failed to load. Safe mode is available.');
+  });
+  window.webContents.on('render-process-gone', () => {
+    void loadSafeMode('Renderer process exited unexpectedly. Safe mode is available.');
+  });
+  window.on('closed', () => {
+    if (mainWindow === window) {
+      mainWindow = null;
+      safeModeLoaded = false;
+    }
+  });
+
+  try {
+    await window.loadFile(rendererHtmlPath);
+  } catch (error) {
+    await loadSafeMode(
+      `Renderer startup failed: ${redactNovusPackDiagnostics(error instanceof Error ? error.message : String(error))}`,
+    );
+  }
+}
+
+function createDesktopWindow(preload: string): BrowserWindow {
+  const window = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 1100,
@@ -60,40 +87,24 @@ async function createMainWindow(): Promise<void> {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: preloadPath,
+      preload,
       sandbox: true,
     },
   });
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+  window.once('ready-to-show', () => {
+    window.show();
   });
 
-  mainWindow.webContents.on('did-fail-load', () => {
-    void loadSafeMode('Renderer failed to load. Safe mode is available.');
-  });
-  mainWindow.webContents.on('render-process-gone', () => {
-    void loadSafeMode('Renderer process exited unexpectedly. Safe mode is available.');
-  });
-  mainWindow.webContents.on('will-navigate', (event, url) => {
+  window.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('novus-safe-mode:')) {
       return;
     }
     event.preventDefault();
     void handleSafeModeCommand(url.slice('novus-safe-mode:'.length));
   });
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-    safeModeLoaded = false;
-  });
 
-  try {
-    await mainWindow.loadFile(rendererHtmlPath);
-  } catch (error) {
-    await loadSafeMode(
-      `Renderer startup failed: ${redactNovusPackDiagnostics(error instanceof Error ? error.message : String(error))}`,
-    );
-  }
+  return window;
 }
 
 async function loadSafeMode(reason: string): Promise<void> {
@@ -101,8 +112,18 @@ async function loadSafeMode(reason: string): Promise<void> {
     return;
   }
 
+  const previousWindow = mainWindow;
   safeModeLoaded = true;
-  await mainWindow.loadFile(safeModeHtmlPath, {
+  const safeWindow = createDesktopWindow(safeModePreloadPath);
+  mainWindow = safeWindow;
+  safeWindow.on('closed', () => {
+    if (mainWindow === safeWindow) {
+      mainWindow = null;
+      safeModeLoaded = false;
+    }
+  });
+  previousWindow.destroy();
+  await safeWindow.loadFile(safeModeHtmlPath, {
     query: {
       reason: redactNovusPackDiagnostics(reason),
     },

@@ -29,6 +29,12 @@ export const BRIDGE_CHANNELS = {
   restore: 'novus-desktop:restore',
 } as const;
 
+const SAFE_MODE_BRIDGE_CHANNELS = {
+  getRecoveryPlan: 'novus-desktop:get-recovery-plan',
+  openProject: 'novus-desktop:open-project',
+  restore: 'novus-desktop:restore',
+} as const;
+
 export interface DesktopBridgeApi {
   openProject(request: OpenProjectBridgeRequest): Promise<OpenProjectBridgeResult | null>;
   commit(request: CommitBridgeRequest): Promise<CommitAck>;
@@ -37,6 +43,12 @@ export interface DesktopBridgeApi {
   exportPack(request: ExportPackBridgeRequest): Promise<ExportPackBridgeResult | null>;
   importPack(request: ImportPackBridgeRequest): Promise<ImportPackBridgeResult | null>;
   closeProject(request: CloseProjectBridgeRequest): Promise<void>;
+  getRecoveryPlan(request: RecoveryPlanBridgeRequest): Promise<RecoveryPlanBridgeResult>;
+}
+
+export interface SafeModeBridgeApi {
+  openProject(request: OpenProjectBridgeRequest): Promise<OpenProjectBridgeResult | null>;
+  restore(request: RestoreBridgeRequest): Promise<RestoreBridgeResult>;
   getRecoveryPlan(request: RecoveryPlanBridgeRequest): Promise<RecoveryPlanBridgeResult>;
 }
 
@@ -74,12 +86,26 @@ export function createPreloadApi(invoke: DesktopBridgeInvoke): DesktopBridgeApi 
   };
 }
 
+export function createSafeModePreloadApi(invoke: DesktopBridgeInvoke): SafeModeBridgeApi {
+  return {
+    openProject(request) {
+      return invoke<OpenProjectBridgeResult | null>(SAFE_MODE_BRIDGE_CHANNELS.openProject, request);
+    },
+    restore(request) {
+      return invoke<RestoreBridgeResult>(SAFE_MODE_BRIDGE_CHANNELS.restore, request);
+    },
+    getRecoveryPlan(request) {
+      return invoke<RecoveryPlanBridgeResult>(SAFE_MODE_BRIDGE_CHANNELS.getRecoveryPlan, request);
+    },
+  };
+}
+
 export function redactBridgeDiagnostics(input: string): string {
   return input
     .replace(/Authorization:\s*[^\s]+(?:\s+[^\s]+)?/gi, 'Authorization: [redacted]')
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[redacted-key]')
-    .replace(/[A-Za-z]:\\[^\s"'<>]+/g, '[redacted-path]')
-    .replace(/\\\\[^\s"'<>]+/g, '[redacted-path]')
     .replace(/file:\/\/\/?[^\s"'<>]+/gi, '[redacted-path]')
+    .replace(/[A-Za-z]:\\[^\r\n"'<>]*/g, '[redacted-path]')
+    .replace(/\\\\[^\s"'<>]+/g, '[redacted-path]')
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, '[redacted-image]');
 }

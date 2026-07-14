@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { CommitRequest } from './contracts';
 import { createDesktopBridgeHandlers } from './bridge-handlers';
-import { createPreloadApi, type DesktopBridgeInvoke } from './preload-api';
+import {
+  createPreloadApi,
+  createSafeModePreloadApi,
+  redactBridgeDiagnostics,
+  type DesktopBridgeInvoke,
+} from './preload-api';
 
 describe('desktop bridge contract', () => {
   it('does not expose arbitrary filesystem methods', () => {
@@ -18,6 +23,22 @@ describe('desktop bridge contract', () => {
       'openProject',
       'restore',
     ]);
+  });
+
+  it('restricts safe mode to recovery-only bridge methods', () => {
+    const mockInvoke = vi.fn(async () => undefined) as DesktopBridgeInvoke;
+
+    expect(Object.keys(createSafeModePreloadApi(mockInvoke)).sort()).toEqual([
+      'getRecoveryPlan',
+      'openProject',
+      'restore',
+    ]);
+  });
+
+  it('redacts Windows paths with spaces and non-user drive roots from bridge diagnostics', () => {
+    expect(redactBridgeDiagnostics('Failed at C:\\Program Files\\Novus Atelier\\foo.txt')).not.toContain('Program Files');
+    expect(redactBridgeDiagnostics('Failed at E:\\画布项目\\demo\\project.novus.json')).not.toContain('画布项目');
+    expect(redactBridgeDiagnostics('open file:///E:/画布项目/demo/project.novus.json')).not.toContain('画布项目');
   });
 
   it('rejects commits outside the active session', async () => {

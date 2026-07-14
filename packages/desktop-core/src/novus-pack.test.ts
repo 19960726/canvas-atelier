@@ -326,6 +326,9 @@ describe('NovusPack export and import', () => {
       'Authorization: Bearer sk-live-secret',
       'apiKey="abc123"',
       'C:\\Users\\Administrator\\secret\\image.png',
+      'C:\\Program Files\\Novus Atelier\\image.png',
+      'E:\\画布项目\\demo\\project.novus.json',
+      'file:///E:/画布项目/demo/project.novus.json',
       '/Users/alice/private/image.png',
       Buffer.alloc(96, 7).toString('base64'),
     ].join('\n');
@@ -335,6 +338,8 @@ describe('NovusPack export and import', () => {
     expect(redacted).not.toContain('sk-live-secret');
     expect(redacted).not.toContain('abc123');
     expect(redacted).not.toContain('Administrator');
+    expect(redacted).not.toContain('Program Files');
+    expect(redacted).not.toContain('画布项目');
     expect(redacted).not.toContain('alice');
     expect(redacted).not.toContain(Buffer.alloc(96, 7).toString('base64'));
     expect(redacted).toContain('[REDACTED_SECRET]');

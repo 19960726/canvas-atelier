@@ -89,9 +89,10 @@ export {
   BRIDGE_CHANNELS,
   DESKTOP_BRIDGE_PRELOAD_KEY,
   createPreloadApi,
+  createSafeModePreloadApi,
   redactBridgeDiagnostics,
 } from './preload-api.js';
-export type { DesktopBridgeApi, DesktopBridgeInvoke } from './preload-api.js';
+export type { DesktopBridgeApi, DesktopBridgeInvoke, SafeModeBridgeApi } from './preload-api.js';
 export { createDesktopBridgeHandlers, registerDesktopBridgeHandlers } from './bridge-handlers.js';
 export type {
   BridgeDialogAdapter,

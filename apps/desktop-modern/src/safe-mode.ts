@@ -1,8 +1,8 @@
-import type { DesktopBridgeApi } from '@agent-canvas/desktop-core';
+import type { SafeModeBridgeApi } from '@agent-canvas/desktop-core/preload-api';
 
 declare global {
   interface Window {
-    novusDesktop?: DesktopBridgeApi;
+    novusDesktop?: SafeModeBridgeApi;
   }
 }
 
@@ -73,7 +73,7 @@ function bindButton(id: string, action: () => Promise<void>) {
   });
 }
 
-function requireBridge(): DesktopBridgeApi {
+function requireBridge(): SafeModeBridgeApi {
   if (window.novusDesktop === undefined) {
     throw new Error('Desktop bridge is unavailable in safe mode.');
   }
