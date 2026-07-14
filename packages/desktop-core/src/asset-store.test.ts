@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -98,6 +98,39 @@ describe('AssetStore', () => {
     await expect(stat(join(projectRoot, 'assets'))).resolves.toMatchObject({});
     expect(await readdir(join(projectRoot, 'assets'))).toEqual([]);
   });
+
+  it('reuses an existing short-hash asset path only when the full digest matches', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const store = new AssetStore();
+    const expectedHash = sha256(pngBytes);
+    const shortHashPath = join(projectRoot, 'assets', `${expectedHash.slice(0, 16)}.png`);
+    await writeFile(shortHashPath, pngBytes);
+
+    const asset = await store.stageAndCommit(projectRoot, readableFrom(pngBytes), {
+      originalName: 'reference.png',
+    });
+
+    expect(asset.relativePath).toBe(`assets/${expectedHash.slice(0, 16)}.png`);
+    expect(await readFile(shortHashPath)).toEqual(pngBytes);
+  });
+
+  it('does not reuse or replace an existing short-hash asset path when the full digest differs', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const store = new AssetStore();
+    const expectedHash = sha256(pngBytes);
+    const shortHashPath = join(projectRoot, 'assets', `${expectedHash.slice(0, 16)}.png`);
+    const existingBytes = Buffer.from('different existing bytes');
+    await writeFile(shortHashPath, existingBytes);
+
+    const asset = await store.stageAndCommit(projectRoot, readableFrom(pngBytes), {
+      originalName: 'reference.png',
+    });
+
+    expect(asset.sha256).toBe(expectedHash);
+    expect(asset.relativePath).not.toBe(`assets/${expectedHash.slice(0, 16)}.png`);
+    expect(await readFile(shortHashPath)).toEqual(existingBytes);
+    expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(pngBytes);
+  });
 });
 
 function readableFrom(bytes: Buffer): Readable {
@@ -108,10 +141,8 @@ async function createProjectRoot(tempRoots: string[]): Promise<string> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'asset-store-test-'));
   tempRoots.push(tempRoot);
   const projectRoot = join(tempRoot, 'Project.novus-project');
-  await import('node:fs/promises').then(async ({ mkdir }) => {
-    await mkdir(join(projectRoot, 'assets'), { recursive: true });
-    await mkdir(join(projectRoot, 'recovery', 'quarantine'), { recursive: true });
-  });
+  await mkdir(join(projectRoot, 'assets'), { recursive: true });
+  await mkdir(join(projectRoot, 'recovery', 'quarantine'), { recursive: true });
   return projectRoot;
 }
 

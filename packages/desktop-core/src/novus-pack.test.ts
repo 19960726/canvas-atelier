@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import type archiver from 'archiver';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { sha256Canonical } from './canonical-json';
 import { PROJECT_FORMAT_VERSION, SNAPSHOT_SCHEMA_VERSION, type ProjectManifest, type SnapshotEnvelope } from './contracts';
@@ -123,6 +123,77 @@ describe('NovusPack export and import', () => {
     await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('rejects exact duplicate ZIP entry names with a typed sanitized validation error', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const pack = await createFixturePack(tempRoot, {
+      additionalEntries: [{ bytes: Buffer.from('original'), name: 'assets/private-duplicate.png' }],
+      duplicateEntries: [{ bytes: Buffer.from('duplicate'), name: 'assets/private-duplicate.png' }],
+    });
+
+    const error = await capturePackageFailure(
+      new NovusPackImporter().importTo(pack, join(tempRoot, 'Duplicate.novus-project')),
+    );
+
+    expect(error).toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+    expect(error.message).not.toContain('private-duplicate');
+    expect(error.message).not.toContain(tempRoot);
+  });
+
+  it.each([
+    ['case-insensitive', 'assets/CaseCollision.png', 'assets/casecollision.png'],
+    ['Unicode-normalized', 'assets/caf\u00e9.png', 'assets/cafe\u0301.png'],
+  ])('rejects %s colliding ZIP entry names before promotion', async (_label, firstName, secondName) => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const pack = await createFixturePack(tempRoot, {
+      additionalEntries: [
+        { bytes: Buffer.from('first'), name: firstName },
+        { bytes: Buffer.from('second'), name: secondName },
+      ],
+    });
+    const destination = join(tempRoot, 'Collision.novus-project');
+
+    const error = await capturePackageFailure(new NovusPackImporter().importTo(pack, destination));
+
+    expect(error).toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+    expect(error.message).not.toContain(firstName);
+    expect(error.message).not.toContain(secondName);
+    await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('fails closed and removes staging when the destination appears during promotion', async () => {
+    vi.resetModules();
+    const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const tempRoot = await createTempRoot(tempRoots);
+    const { projectRoot } = await createProjectFixture(tempRoot);
+    const packagePath = join(tempRoot, 'valid-race.novuspack');
+    await new NovusPackExporter().exportRevision(projectRoot, packagePath);
+    const destination = join(tempRoot, 'Race.novus-project');
+    const markerPath = join(destination, 'race-marker.txt');
+
+    vi.doMock('node:fs/promises', () => ({
+      ...actualFs,
+      mkdir: vi.fn(async (path: string, options?: { recursive?: boolean }) => {
+        if (path === destination && options?.recursive === false) {
+          await actualFs.mkdir(destination, { recursive: false });
+          await actualFs.writeFile(markerPath, 'existing destination');
+        }
+        return actualFs.mkdir(path, options);
+      }),
+    }));
+    try {
+      const { NovusPackImporter: MockedImporter } = await import('./novus-pack');
+
+      const error = await capturePackageFailure(new MockedImporter().importTo(packagePath, destination));
+
+      expect(error).toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+      expect(await readFile(markerPath, 'utf8')).toBe('existing destination');
+      expect(await readdir(tempRoot)).not.toContain(expect.stringMatching(/^\.novuspack-import-/));
+    } finally {
+      vi.doUnmock('node:fs/promises');
+      vi.resetModules();
+    }
+  });
+
   it('redacts secrets, private paths, and raw base64 from diagnostics', () => {
     const diagnostic = [
       'Authorization: Bearer sk-live-secret',
@@ -223,7 +294,13 @@ async function createProjectFixture(tempRoot: string): Promise<{
 
 async function createFixturePack(
   tempRoot: string,
-  options: { corruptChecksum?: boolean; omitAsset?: boolean; schemaVersion?: number },
+  options: {
+    additionalEntries?: readonly ZipEntryInput[];
+    corruptChecksum?: boolean;
+    duplicateEntries?: readonly ZipEntryInput[];
+    omitAsset?: boolean;
+    schemaVersion?: number;
+  },
 ): Promise<string> {
   const { asset, projectRoot } = await createProjectFixture(tempRoot);
   const entries = new Map<string, Buffer>();
@@ -231,6 +308,9 @@ async function createFixturePack(
   entries.set('snapshots/revision-7-snapshot.json', await readFile(join(projectRoot, 'snapshots', 'revision-7-snapshot.json')));
   if (!options.omitAsset) {
     entries.set(asset.relativePath, asset.bytes);
+  }
+  for (const entry of options.additionalEntries ?? []) {
+    entries.set(entry.name, entry.bytes);
   }
   const inventory = [...entries.entries()].map(([path, bytes]) => ({
     byteSize: bytes.length,
@@ -249,7 +329,10 @@ async function createFixturePack(
   })));
 
   const pack = join(tempRoot, `fixture-${Math.random().toString(16).slice(2)}.novuspack`);
-  await createTestZip(pack, [...entries.entries()].map(([name, bytes]) => ({ bytes, name })));
+  await createTestZip(pack, [
+    ...[...entries.entries()].map(([name, bytes]) => ({ bytes, name })),
+    ...(options.duplicateEntries ?? []),
+  ]);
   return pack;
 }
 
@@ -340,4 +423,13 @@ async function createTempRoot(tempRoots: string[]): Promise<string> {
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function capturePackageFailure(promise: Promise<unknown>): Promise<Error & { code?: string }> {
+  try {
+    await promise;
+  } catch (error) {
+    return error as Error & { code?: string };
+  }
+  throw new Error('Expected package import to fail');
 }

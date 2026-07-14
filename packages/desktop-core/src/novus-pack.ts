@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { constants, createWriteStream } from 'node:fs';
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, posix } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
@@ -152,21 +152,25 @@ export class NovusPackImporter {
     const isolationParent = this.isolationRoot ?? dirname(destinationRoot);
     await mkdir(isolationParent, { recursive: true });
     const stagingRoot = join(isolationParent, `.novuspack-import-${process.pid}-${randomBytes(8).toString('hex')}`);
+    let reservedDestination = false;
 
     try {
       await mkdir(stagingRoot, { recursive: false });
       const extracted = await extractAndValidate(packagePath, stagingRoot, this.limits);
       const packageManifest = await validateExtractedPackage(stagingRoot, extracted);
-      if (await exists(destinationRoot)) {
-        throw packageValidationError('Destination already exists; import will not overwrite it');
-      }
-      await rename(stagingRoot, destinationRoot);
+      await reserveImportDestination(destinationRoot);
+      reservedDestination = true;
+      await promoteStagedPackage(stagingRoot, destinationRoot);
+      await rm(stagingRoot, { force: true, recursive: true });
       return {
         importedRevision: packageManifest.pinnedRevision,
         projectRoot: destinationRoot,
       };
     } catch (error) {
       await rm(stagingRoot, { force: true, recursive: true }).catch(() => undefined);
+      if (reservedDestination) {
+        await rm(destinationRoot, { force: true, recursive: true }).catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -225,6 +229,7 @@ async function extractAndValidate(
 ): Promise<readonly ExtractedEntry[]> {
   const zipfile = await openZip(packagePath);
   const extracted: ExtractedEntry[] = [];
+  const entryIdentities = new Set<string>();
   let totalExpanded = 0;
   let entryCount = 0;
 
@@ -239,7 +244,13 @@ async function extractAndValidate(
         throw packageValidationError('Package has too many entries');
       }
       validateZipEntry(entry, limits);
-      if (entry.fileName.endsWith('/')) {
+      const safePath = validatePackagePath(entry.fileName);
+      const entryIdentity = normalizeZipEntryIdentity(safePath);
+      if (entryIdentities.has(entryIdentity)) {
+        throw packageValidationError('Package contains duplicate or colliding entry names');
+      }
+      entryIdentities.add(entryIdentity);
+      if (safePath.endsWith('/')) {
         continue;
       }
       totalExpanded += entry.uncompressedSize;
@@ -247,7 +258,6 @@ async function extractAndValidate(
         throw packageValidationError('Package exceeds expanded size limit');
       }
 
-      const safePath = validatePackagePath(entry.fileName);
       const targetPath = join(stagingRoot, ...safePath.split('/'));
       await mkdir(dirname(targetPath), { recursive: true });
       const stream = await openEntryStream(zipfile, entry);
@@ -272,6 +282,48 @@ async function extractAndValidate(
   }
 
   return extracted;
+}
+
+async function reserveImportDestination(destinationRoot: string): Promise<void> {
+  try {
+    await mkdir(destinationRoot, { recursive: false });
+  } catch (error) {
+    if (isAlreadyExistsError(error)) {
+      throw packageValidationError('Destination already exists; import will not overwrite it');
+    }
+    throw packageValidationError('Destination could not be reserved for import');
+  }
+}
+
+async function promoteStagedPackage(stagingRoot: string, destinationRoot: string): Promise<void> {
+  const entries = await readdir(stagingRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    const sourcePath = join(stagingRoot, entry.name);
+    const destinationPath = join(destinationRoot, entry.name);
+    if (entry.isDirectory()) {
+      try {
+        await mkdir(destinationPath, { recursive: false });
+      } catch (error) {
+        if (isAlreadyExistsError(error)) {
+          throw packageValidationError('Destination changed during import; import will not overwrite it');
+        }
+        throw packageValidationError('Package could not be promoted safely');
+      }
+      await promoteStagedPackage(sourcePath, destinationPath);
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw packageValidationError('Package contains unsupported filesystem entry');
+    }
+    try {
+      await copyFile(sourcePath, destinationPath, constants.COPYFILE_EXCL);
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        throw packageValidationError('Destination changed during import; import will not overwrite it');
+      }
+      throw packageValidationError('Package could not be promoted safely');
+    }
+  }
 }
 
 async function validateExtractedPackage(
@@ -375,6 +427,10 @@ function validatePackagePath(path: string): string {
     throw packageValidationError('Executable package payloads are not allowed');
   }
   return normalized;
+}
+
+function normalizeZipEntryIdentity(path: string): string {
+  return path.normalize('NFC').toLowerCase();
 }
 
 function parsePackageManifest(value: unknown): NovusPackageManifest {
@@ -599,6 +655,10 @@ async function exists(path: string): Promise<boolean> {
     }
     throw error;
   }
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST';
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

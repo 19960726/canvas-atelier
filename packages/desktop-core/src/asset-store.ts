@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { constants } from 'node:fs';
-import { access, mkdir, open, rename, rm, stat } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { access, link, mkdir, open, rename, rm, stat } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 
 import { createPersistenceError } from './journal-writer.js';
@@ -78,37 +78,38 @@ export class AssetStore {
 
       const header = Buffer.concat(headerChunks);
       const detected = detectImage(header, options.originalName, options.mediaType);
-      const id = sha256.slice(0, 16);
-      const relativePath = `assets/${id}.${detected.extension}`;
-      const finalPath = join(projectRoot, ...relativePath.split('/'));
+      const resolvedAsset = await resolveContentAddressedAssetPath(projectRoot, sha256, detected.extension);
       const asset: AssetMetadata = {
         byteSize,
         extension: detected.extension,
         height: detected.height,
-        id,
+        id: resolvedAsset.id,
         mediaType: detected.mediaType,
-        relativePath,
+        relativePath: resolvedAsset.relativePath,
         sha256,
         width: detected.width,
       };
 
-      const finalExists = await exists(finalPath);
-      if (!finalExists) {
-        await rename(tempPath, finalPath);
+      if (!resolvedAsset.exists) {
+        await link(tempPath, resolvedAsset.finalPath);
       } else {
-        await rm(tempPath, { force: true });
+        await access(resolvedAsset.finalPath, constants.R_OK);
       }
+      await rm(tempPath, { force: true });
 
       try {
         await options.commitReference?.(asset);
       } catch (error) {
-        if (!finalExists) {
-          await quarantineAsset(finalPath, join(quarantineRoot, `${basename(finalPath)}.${Date.now()}.quarantine`));
+        if (!resolvedAsset.exists) {
+          await quarantineAsset(
+            resolvedAsset.finalPath,
+            join(quarantineRoot, `${basename(resolvedAsset.finalPath)}.${Date.now()}.quarantine`),
+          );
         }
         throw error;
       }
 
-      await access(finalPath, constants.R_OK);
+      await access(resolvedAsset.finalPath, constants.R_OK);
       return asset;
     } catch (error) {
       if (!closed) {
@@ -118,6 +119,45 @@ export class AssetStore {
       throw error;
     }
   }
+}
+
+async function resolveContentAddressedAssetPath(
+  projectRoot: string,
+  sha256: string,
+  extension: AssetExtension,
+): Promise<{
+  readonly exists: boolean;
+  readonly finalPath: string;
+  readonly id: string;
+  readonly relativePath: string;
+}> {
+  const shortId = sha256.slice(0, 16);
+  const shortRelativePath = `assets/${shortId}.${extension}`;
+  const shortPath = join(projectRoot, ...shortRelativePath.split('/'));
+  if (!await exists(shortPath)) {
+    return { exists: false, finalPath: shortPath, id: shortId, relativePath: shortRelativePath };
+  }
+  if (await sha256File(shortPath) === sha256) {
+    return { exists: true, finalPath: shortPath, id: shortId, relativePath: shortRelativePath };
+  }
+
+  const fullRelativePath = `assets/${sha256}.${extension}`;
+  const fullPath = join(projectRoot, ...fullRelativePath.split('/'));
+  if (!await exists(fullPath)) {
+    return { exists: false, finalPath: fullPath, id: sha256, relativePath: fullRelativePath };
+  }
+  if (await sha256File(fullPath) === sha256) {
+    return { exists: true, finalPath: fullPath, id: sha256, relativePath: fullRelativePath };
+  }
+  throw packageValidationError('Asset content-addressed path collision could not be resolved');
+}
+
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+  }
+  return hash.digest('hex');
 }
 
 async function quarantineAsset(sourcePath: string, quarantinePath: string): Promise<void> {
