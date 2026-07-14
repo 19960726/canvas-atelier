@@ -1,6 +1,7 @@
 export {
   JOURNAL_SCHEMA_VERSION,
   LOCK_HEARTBEAT_MS,
+  PROJECT_LOCK_SCHEMA_VERSION,
   PROJECT_FORMAT_VERSION,
   SNAPSHOT_BYTE_LIMIT,
   SNAPSHOT_SCHEMA_VERSION,
@@ -23,3 +24,11 @@ export type {
 } from './contracts.js';
 
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
+export { NodeFileSystem, writeAtomic } from './file-system.js';
+export { MAX_WIN7_PROJECT_ROOT_PATH_LENGTH, ProjectRepository } from './project-repository.js';
+export type {
+  CreateProjectOptions,
+  OpenedProjectSession,
+  OpenProjectOptions,
+  ProjectRepositoryOptions,
+} from './project-repository.js';

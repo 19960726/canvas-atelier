@@ -1,6 +1,7 @@
 export const PROJECT_FORMAT_VERSION = 1;
 export const JOURNAL_SCHEMA_VERSION = 1;
 export const SNAPSHOT_SCHEMA_VERSION = 1;
+export const PROJECT_LOCK_SCHEMA_VERSION = 1;
 export const LOCK_HEARTBEAT_MS = 5_000;
 export const STALE_LOCK_MS = 15_000;
 export const SNAPSHOT_TRANSACTION_LIMIT = 200;
@@ -24,6 +25,7 @@ export interface ProjectManifest {
   readonly projectName: string;
   readonly formatVersion: typeof PROJECT_FORMAT_VERSION;
   readonly stableSnapshotId: string | null;
+  readonly stableSnapshotPath: string | null;
   readonly stableSnapshotRevision: number;
   readonly activeJournalSegment: string;
   readonly nextSequence: number;
@@ -60,6 +62,7 @@ export interface SnapshotEnvelope {
 }
 
 export interface ProjectLock {
+  readonly schemaVersion: typeof PROJECT_LOCK_SCHEMA_VERSION;
   readonly projectId: string;
   readonly deviceId: string;
   readonly processId: number;
