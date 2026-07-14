@@ -142,6 +142,39 @@ describe('JournalWriter', () => {
     expect((await readValidJournal(activeJournal)).records).toHaveLength(1);
   });
 
+  it('invalidates both writers that share a released registry entry', async () => {
+    const { activeJournal } = await createWriter(tempRoots);
+    const firstWriter = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+    const secondWriter = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+
+    const firstAck = await firstWriter.commit(makeRequest('tx-release-shared-1'));
+    releaseJournalState(activeJournal, 'project-journal');
+
+    await expect(firstWriter.commit(makeRequest('tx-release-shared-2', 1))).rejects.toMatchObject({
+      code: 'CONCURRENT_WRITER',
+      retryable: false,
+    });
+    await expect(secondWriter.commit(makeRequest('tx-release-shared-3', 1))).rejects.toMatchObject({
+      code: 'CONCURRENT_WRITER',
+      retryable: false,
+    });
+
+    expect(firstAck).toMatchObject({ revision: 1, sequence: 1 });
+    expect((await readValidJournal(activeJournal)).records).toHaveLength(1);
+  });
+
   it('reads a complete journal and replays it', async () => {
     const { activeJournal, writer } = await createWriter(tempRoots);
     await writer.commit(makeRequest('tx-read-1', 0, makeCreatePromptTransaction('tx-read-1', 'prompt-1')));

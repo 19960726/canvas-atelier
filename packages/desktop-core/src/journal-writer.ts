@@ -75,6 +75,9 @@ interface JournalState {
 interface JournalRegistryEntry {
   initialization: Promise<JournalState>;
   queue: Promise<void>;
+  generation: number;
+  released: PersistenceError | null;
+  state: JournalState | null;
 }
 
 const JOURNAL_RECORD_KEYS = [
@@ -100,6 +103,7 @@ export class JournalWriter {
   private readonly now: () => Date;
   private readonly projectId: string;
   private readonly registryEntry: JournalRegistryEntry;
+  private readonly registryGeneration: number;
   private readonly state: JournalState;
 
   private constructor(options: {
@@ -108,6 +112,7 @@ export class JournalWriter {
     readonly now: () => Date;
     readonly projectId: string;
     readonly registryEntry: JournalRegistryEntry;
+    readonly registryGeneration: number;
     readonly state: JournalState;
   }) {
     this.activeJournalPath = options.activeJournalPath;
@@ -115,6 +120,7 @@ export class JournalWriter {
     this.now = options.now;
     this.projectId = options.projectId;
     this.registryEntry = options.registryEntry;
+    this.registryGeneration = options.registryGeneration;
     this.state = options.state;
   }
 
@@ -122,14 +128,21 @@ export class JournalWriter {
     const fileSystem = options.fileSystem ?? new NodeFileSystem();
     const registryKey = canonicalJournalRegistryKey(options.activeJournalPath, options.projectId);
     let registryEntry = journalRegistry.get(registryKey);
-    if (registryEntry === undefined) {
-      registryEntry = {
-        initialization: initializeJournalState(options, fileSystem),
-        queue: Promise.resolve(),
-      };
+    if (registryEntry === undefined || registryEntry.released !== null) {
+      registryEntry = createJournalRegistryEntry(options, fileSystem);
       journalRegistry.set(registryKey, registryEntry);
     }
+    const registryGeneration = registryEntry.generation;
     const state = await registryEntry.initialization;
+    registryEntry.state = state;
+
+    if (registryEntry.released !== null || registryEntry.generation !== registryGeneration) {
+      throw registryEntry.released ?? createPersistenceError(
+        'CONCURRENT_WRITER',
+        false,
+        'Journal writer is no longer active',
+      );
+    }
 
     if (state.projectId !== options.projectId) {
       throw corruptJournal('Journal registry project does not match open request');
@@ -141,13 +154,22 @@ export class JournalWriter {
       now: options.now ?? (() => new Date()),
       projectId: options.projectId,
       registryEntry,
+      registryGeneration,
       state,
     });
   }
 
   commit(request: CommitRequest, options: JournalCommitOptions = {}): Promise<CommitAck> {
+    const inactiveError = this.getInactiveRegistryEntryError();
+    if (inactiveError !== null) {
+      return Promise.reject(inactiveError);
+    }
+
     const previous = this.registryEntry.queue;
-    const run = previous.then(() => this.commitInsideQueue(this.state, request, options));
+    const run = previous.then(() => {
+      this.ensureRegistryEntryActive();
+      return this.commitInsideQueue(this.state, request, options);
+    });
     this.registryEntry.queue = run.then(() => undefined, () => undefined);
     return run;
   }
@@ -157,9 +179,7 @@ export class JournalWriter {
     request: CommitRequest,
     options: JournalCommitOptions,
   ): Promise<CommitAck> {
-    if (state.poisonedError !== null) {
-      throw state.poisonedError;
-    }
+    this.ensureRegistryEntryActive();
 
     const normalizedRequest = normalizeCommitRequest(request, this.projectId);
     const transactionId = normalizedRequest.transaction.id;
@@ -200,11 +220,13 @@ export class JournalWriter {
     const line = `${canonicalJson(record)}\n`;
 
     const preAppendByteLength = await readJournalByteLength(this.fileSystem, this.activeJournalPath);
+    this.ensureRegistryEntryActive();
     let appendAttempted = false;
     let handle: Awaited<ReturnType<FileSystem['open']>> | null = null;
     let synced = false;
     try {
       handle = await this.fileSystem.open(this.activeJournalPath, 'a+');
+      this.ensureRegistryEntryActive();
       appendAttempted = true;
       await handle.writeFile(line);
       if (options.syncGate !== undefined) {
@@ -246,6 +268,32 @@ export class JournalWriter {
     state.idempotencyByTransactionId.set(transactionId, { ack, requestSha256 });
     return ack;
   }
+
+  private ensureRegistryEntryActive(): void {
+    const inactiveError = this.getInactiveRegistryEntryError();
+    if (inactiveError !== null) {
+      throw inactiveError;
+    }
+  }
+
+  private getInactiveRegistryEntryError(): PersistenceError | null {
+    if (this.state.poisonedError !== null) {
+      return this.state.poisonedError;
+    }
+
+    if (
+      this.registryEntry.released !== null ||
+      this.registryEntry.generation !== this.registryGeneration
+    ) {
+      return this.registryEntry.released ?? createPersistenceError(
+        'CONCURRENT_WRITER',
+        false,
+        'Journal writer is no longer active',
+      );
+    }
+
+    return null;
+  }
 }
 
 export function resetJournalWriterRegistryForTests(): void {
@@ -255,15 +303,49 @@ export function resetJournalWriterRegistryForTests(): void {
 export function releaseJournalState(activeJournalPath: string, projectId?: string): void {
   const canonicalPath = canonicalJournalPath(activeJournalPath);
   if (projectId !== undefined) {
-    journalRegistry.delete(canonicalJournalRegistryKey(activeJournalPath, projectId));
+    const registryKey = canonicalJournalRegistryKey(activeJournalPath, projectId);
+    releaseJournalRegistryEntry(journalRegistry.get(registryKey));
+    journalRegistry.delete(registryKey);
     return;
   }
 
   const pathPrefix = `${canonicalPath}\0`;
-  for (const key of journalRegistry.keys()) {
+  for (const [key, entry] of journalRegistry.entries()) {
     if (key.startsWith(pathPrefix)) {
+      releaseJournalRegistryEntry(entry);
       journalRegistry.delete(key);
     }
+  }
+}
+
+function createJournalRegistryEntry(
+  options: JournalWriterOpenOptions,
+  fileSystem: FileSystem,
+): JournalRegistryEntry {
+  return {
+    initialization: initializeJournalState(options, fileSystem),
+    queue: Promise.resolve(),
+    generation: 0,
+    released: null,
+    state: null,
+  };
+}
+
+function releaseJournalRegistryEntry(entry: JournalRegistryEntry | undefined): void {
+  if (entry === undefined) {
+    return;
+  }
+
+  const releaseError = entry.released ?? createPersistenceError(
+    'CONCURRENT_WRITER',
+    false,
+    'Journal writer has been released',
+  );
+  entry.released = releaseError;
+  entry.generation += 1;
+
+  if (entry.state !== null && entry.state.poisonedError === null) {
+    entry.state.poisonedError = releaseError;
   }
 }
 

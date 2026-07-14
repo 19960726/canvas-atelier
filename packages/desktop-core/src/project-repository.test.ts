@@ -375,6 +375,49 @@ describe('ProjectRepository', () => {
     expect(secondRecords).not.toContain('project-recreated-first');
   });
 
+  it('invalidates stale journal writers on close and gives reopened writers a fresh registry entry', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'ReopenJournalRegistry.novus-project');
+    const repository = createRepository({ processId: 10303 });
+    const firstProject = makeCanvasProject('project-reopen-journal-first');
+
+    const firstSession = await repository.create(projectRoot, {
+      project: firstProject,
+      projectId: firstProject.id,
+      projectName: 'ReopenJournalRegistry',
+    });
+    const writerA = await repository.openJournalWriter(firstSession, { now: () => baseNow });
+    const firstAck = await writerA.commit(
+      makeCreatePromptCommitRequest(firstSession.manifest.projectId, 'tx-reopen-journal-1', 0, 'prompt-reopen-1'),
+    );
+
+    await repository.close(firstSession);
+
+    const reopenedSession = await repository.open(projectRoot, { mode: 'write' });
+    const writerB = await repository.openJournalWriter(reopenedSession, { now: () => baseNow });
+
+    await expect(
+      writerA.commit(
+        makeCreatePromptCommitRequest(firstSession.manifest.projectId, 'tx-reopen-journal-stale', 1, 'prompt-stale'),
+      ),
+    ).rejects.toMatchObject({
+      code: 'CONCURRENT_WRITER',
+      retryable: false,
+    });
+
+    const secondAck = await writerB.commit(
+      makeCreatePromptCommitRequest(reopenedSession.manifest.projectId, 'tx-reopen-journal-2', 1, 'prompt-reopen-2'),
+    );
+    const read = await readValidJournal(join(projectRoot, 'journal', 'active.ndjson'));
+
+    expect(firstAck).toMatchObject({ revision: 1, sequence: 1 });
+    expect(secondAck).toMatchObject({ revision: 2, sequence: 2 });
+    expect(read.records.map((record) => [record.transactionId, record.sequence, record.revision])).toEqual([
+      ['tx-reopen-journal-1', 1, 1],
+      ['tx-reopen-journal-2', 2, 2],
+    ]);
+  });
+
   it('keeps the project dirty when owned lock removal fails during close', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'DirtyCloseFailure.novus-project');
