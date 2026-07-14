@@ -55,10 +55,21 @@ interface LockDecision {
   readonly lock: ProjectLock | null;
 }
 
+interface LockGuard {
+  readonly path: string;
+  readonly token: string;
+}
+
+type CanonicalLockRead =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'invalid' }
+  | { readonly kind: 'valid'; readonly lock: ProjectLock };
+
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const CLEAN_CLOSE_PATH = 'recovery/clean-close.json';
 const LOCK_PATH = 'recovery/project.lock';
-const LOCK_CLAIM_PREFIX = '.project.lock.claim-';
+const LOCK_GUARD_PATH = 'recovery/project.lock.guard';
+const LOCK_GUARD_SCHEMA_VERSION = 1;
 const PROJECT_MANIFEST_PATH = 'project.novus.json';
 
 const PROJECT_DIRECTORIES = [
@@ -191,19 +202,35 @@ export class ProjectRepository {
       return;
     }
 
+    const guard = await this.tryAcquireOperationGuard(session.root);
+    if (guard === null) {
+      return;
+    }
+
     const closedAt = this.nowIso();
     const manifest = {
       ...session.manifest,
       cleanClose: true,
     };
 
-    await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
-    await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
-      clean: true,
-      closedAt,
-    } satisfies CleanCloseMarker);
+    try {
+      const currentLock = await this.readCanonicalLock(session.root, session.lock.projectId);
+      if (
+        currentLock.kind !== 'valid' ||
+        currentLock.lock.sessionId !== session.lock.sessionId
+      ) {
+        return;
+      }
 
-    await this.removeOwnedLock(session.root, session.lock);
+      await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
+      await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
+        clean: true,
+        closedAt,
+      } satisfies CleanCloseMarker);
+      await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
+    } finally {
+      await this.releaseOperationGuard(guard);
+    }
   }
 
   async saveAs(session: OpenedProjectSession, destinationRoot: string): Promise<OpenedProjectSession> {
@@ -218,35 +245,45 @@ export class ProjectRepository {
   }
 
   private async tryAcquireWriteLock(root: string, projectId: string): Promise<LockDecision> {
-    const lock = await this.tryWriteNewLock(root, projectId);
-    if (lock !== null) {
-      return { lock, mode: 'write' };
-    }
-
-    const existingLock = await this.readExistingLock(root);
-    if (!isValidProjectLock(existingLock, projectId)) {
-      return { lock: null, mode: 'read_only' };
-    }
-
-    if (!this.isStale(existingLock)) {
-      return { lock: null, mode: 'read_only' };
-    }
-
-    if (existingLock.deviceId !== this.deviceId) {
-      return { lock: null, mode: 'read_only' };
-    }
-
-    const localLiveness = await this.isLocalProcessAlive(existingLock.processId);
-    if (localLiveness !== false) {
-      return { lock: null, mode: 'read_only' };
-    }
-
-    const claimPath = await this.claimObservedLock(root, existingLock, projectId);
-    if (claimPath === null) {
+    const guard = await this.tryAcquireOperationGuard(root);
+    if (guard === null) {
       return { lock: null, mode: 'read_only' };
     }
 
     try {
+      const existingLock = await this.readCanonicalLock(root, projectId);
+      if (existingLock.kind === 'missing') {
+        const lock = await this.tryWriteNewLock(root, projectId);
+        if (lock !== null) {
+          return { lock, mode: 'write' };
+        }
+
+        return { lock: null, mode: 'read_only' };
+      }
+
+      if (existingLock.kind !== 'valid') {
+        return { lock: null, mode: 'read_only' };
+      }
+
+      if (!this.isStale(existingLock.lock)) {
+        return { lock: null, mode: 'read_only' };
+      }
+
+      if (existingLock.lock.deviceId !== this.deviceId) {
+        return { lock: null, mode: 'read_only' };
+      }
+
+      const localLiveness = await this.isLocalProcessAlive(existingLock.lock.processId);
+      if (localLiveness !== false) {
+        return { lock: null, mode: 'read_only' };
+      }
+
+      try {
+        await this.fileSystem.unlink(join(root, ...LOCK_PATH.split('/')));
+      } catch {
+        return { lock: null, mode: 'read_only' };
+      }
+
       const reclaimedLock = await this.tryWriteNewLock(root, projectId);
       if (reclaimedLock === null) {
         return { lock: null, mode: 'read_only' };
@@ -254,16 +291,30 @@ export class ProjectRepository {
 
       return { lock: reclaimedLock, mode: 'write' };
     } finally {
-      await this.fileSystem.rm(claimPath, { force: true });
+      await this.releaseOperationGuard(guard);
     }
   }
 
   private async writeExclusiveLock(root: string, projectId: string): Promise<ProjectLock> {
-    const lock = await this.tryWriteNewLock(root, projectId);
-    if (lock === null) {
-      throw new Error('Concurrent writer lock already exists');
+    const guard = await this.tryAcquireOperationGuard(root);
+    if (guard === null) {
+      throw new Error('Concurrent writer lock operation already exists');
     }
-    return lock;
+
+    try {
+      const existingLock = await this.readCanonicalLock(root, projectId);
+      if (existingLock.kind !== 'missing') {
+        throw new Error('Concurrent writer lock already exists');
+      }
+
+      const lock = await this.tryWriteNewLock(root, projectId);
+      if (lock === null) {
+        throw new Error('Concurrent writer lock already exists');
+      }
+      return lock;
+    } finally {
+      await this.releaseOperationGuard(guard);
+    }
   }
 
   private async tryWriteNewLock(root: string, projectId: string): Promise<ProjectLock | null> {
@@ -303,15 +354,28 @@ export class ProjectRepository {
     }
   }
 
-  private async readExistingLock(root: string): Promise<unknown> {
-    return this.readLockFile(join(root, ...LOCK_PATH.split('/')));
-  }
-
-  private async readLockFile(path: string): Promise<unknown> {
+  private async readCanonicalLock(root: string, projectId: string): Promise<CanonicalLockRead> {
+    const lockPath = join(root, ...LOCK_PATH.split('/'));
+    let rawLock: string;
     try {
-      return JSON.parse(await this.fileSystem.readFile(path, 'utf8'));
+      rawLock = await this.fileSystem.readFile(lockPath, 'utf8');
+    } catch (error) {
+      if (isErrno(error, 'ENOENT')) {
+        return { kind: 'missing' };
+      }
+
+      return { kind: 'invalid' };
+    }
+
+    try {
+      const lock = JSON.parse(rawLock) as unknown;
+      if (!isValidProjectLock(lock, projectId)) {
+        return { kind: 'invalid' };
+      }
+
+      return { kind: 'valid', lock };
     } catch {
-      return null;
+      return { kind: 'invalid' };
     }
   }
 
@@ -339,21 +403,6 @@ export class ProjectRepository {
     }
 
     return snapshot.project;
-  }
-
-  private async removeOwnedLock(root: string, lock: ProjectLock): Promise<void> {
-    const claimPath = await this.claimCurrentLock(root);
-    if (claimPath === null) {
-      return;
-    }
-
-    const claimedLock = await this.readLockFile(claimPath);
-    if (isValidProjectLock(claimedLock, lock.projectId) && claimedLock.sessionId === lock.sessionId) {
-      await this.fileSystem.rm(claimPath, { force: true });
-      return;
-    }
-
-    await this.restoreClaimedLock(root, claimPath);
   }
 
   private async verifySnapshot(
@@ -389,77 +438,29 @@ export class ProjectRepository {
     return this.now().toISOString();
   }
 
-  private async claimObservedLock(
-    root: string,
-    observedLock: ProjectLock,
-    projectId: string,
-  ): Promise<string | null> {
-    const claimPath = await this.claimCurrentLock(root);
-    if (claimPath === null) {
-      return null;
-    }
-
-    const claimedLock = await this.readLockFile(claimPath);
-    if (
-      !isValidProjectLock(claimedLock, projectId) ||
-      !isSameProjectLock(claimedLock, observedLock)
-    ) {
-      await this.restoreClaimedLock(root, claimPath);
-      return null;
-    }
-
-    return claimPath;
-  }
-
-  private async claimCurrentLock(root: string): Promise<string | null> {
-    const lockPath = join(root, ...LOCK_PATH.split('/'));
-
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const claimPath = join(
-        root,
-        'recovery',
-        `${LOCK_CLAIM_PREFIX}${this.processId}-${this.createId()}`,
-      );
-
-      try {
-        await this.fileSystem.rename(lockPath, claimPath);
-        return claimPath;
-      } catch (error) {
-        if (isErrno(error, 'ENOENT')) {
-          return null;
-        }
-
-        if (isErrno(error, 'EEXIST')) {
-          continue;
-        }
-
-        throw error;
-      }
-    }
-
-    return null;
-  }
-
-  private async restoreClaimedLock(root: string, claimPath: string): Promise<void> {
-    const lockPath = join(root, ...LOCK_PATH.split('/'));
-    let lockContents: string;
-
-    try {
-      lockContents = await this.fileSystem.readFile(claimPath, 'utf8');
-    } catch {
-      return;
-    }
-
+  private async tryAcquireOperationGuard(root: string): Promise<LockGuard | null> {
+    const guardPath = join(root, ...LOCK_GUARD_PATH.split('/'));
+    const token = `${this.processId}-${this.createId()}`;
     let handle = null as Awaited<ReturnType<FileSystem['open']>> | null;
     let closed = false;
+    let created = false;
+
     try {
-      handle = await this.fileSystem.open(lockPath, 'wx');
-      await handle.writeFile(lockContents);
+      handle = await this.fileSystem.open(guardPath, 'wx');
+      created = true;
+      await handle.writeFile(
+        `${canonicalJson({
+          schemaVersion: LOCK_GUARD_SCHEMA_VERSION,
+          token,
+          processId: this.processId,
+          createdAt: this.nowIso(),
+        })}\n`,
+      );
       await handle.sync();
       await handle.close();
       closed = true;
-      await this.fileSystem.rm(claimPath, { force: true });
-    } catch (error) {
+      return { path: guardPath, token };
+    } catch {
       if (handle !== null && !closed) {
         try {
           await handle.close();
@@ -468,11 +469,26 @@ export class ProjectRepository {
         }
       }
 
-      if (isErrno(error, 'EEXIST')) {
-        return;
+      if (created) {
+        try {
+          await this.fileSystem.rm(guardPath, { force: true });
+        } catch {
+          // An abandoned guard conservatively forces later operations read-only.
+        }
       }
 
-      throw error;
+      return null;
+    }
+  }
+
+  private async releaseOperationGuard(guard: LockGuard): Promise<void> {
+    try {
+      const guardContents = JSON.parse(await this.fileSystem.readFile(guard.path, 'utf8')) as unknown;
+      if (isOwnedOperationGuard(guardContents, guard.token)) {
+        await this.fileSystem.rm(guard.path, { force: true });
+      }
+    } catch {
+      // If ownership cannot be proven, leave the guard for later recovery.
     }
   }
 }
@@ -620,25 +636,25 @@ function isValidProjectLock(value: unknown, projectId: string): value is Project
   );
 }
 
-function isSameProjectLock(left: ProjectLock, right: ProjectLock): boolean {
-  return (
-    left.schemaVersion === right.schemaVersion &&
-    left.projectId === right.projectId &&
-    left.deviceId === right.deviceId &&
-    left.processId === right.processId &&
-    left.channel === right.channel &&
-    left.sessionId === right.sessionId &&
-    left.openedAt === right.openedAt &&
-    left.heartbeatAt === right.heartbeatAt
-  );
-}
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return (
     value !== null &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
     Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function isOwnedOperationGuard(value: unknown, token: string): boolean {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+
+  return (
+    value.schemaVersion === LOCK_GUARD_SCHEMA_VERSION &&
+    value.token === token &&
+    typeof value.processId === 'number' &&
+    typeof value.createdAt === 'string'
   );
 }
 

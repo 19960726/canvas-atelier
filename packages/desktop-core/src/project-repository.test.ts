@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, normalize } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -193,16 +193,17 @@ describe('ProjectRepository', () => {
     expect(activeLock.sessionId).not.toBe('stale-session');
   });
 
-  it('allows at most one writer when two stale-lock reclaimers race around a replacement lock', async () => {
+  it('keeps a third opener read-only while stale reclaim is in progress', async () => {
     const tempRoot = await createTempRoot(tempRoots);
-    const projectRoot = join(tempRoot, 'StaleRace.novus-project');
+    const projectRoot = join(tempRoot, 'StaleThirdOpener.novus-project');
     const lockPath = join(projectRoot, 'recovery', 'project.lock');
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
     const repository = createRepository({ processId: 5102 });
 
     const created = await repository.create(projectRoot, {
       project: starterProject,
-      projectId: 'project-stale-race',
-      projectName: 'StaleRace',
+      projectId: 'project-stale-third-opener',
+      projectName: 'StaleThirdOpener',
     });
     await repository.close(created);
 
@@ -218,28 +219,29 @@ describe('ProjectRepository', () => {
       sessionId: 'stale-race-session',
     });
 
-    const coordinator = createReclaimRaceCoordinator();
+    const coordinator = createOperationWindowCoordinator();
     const firstRepository = createRepository({
-      fileSystem: new ReclaimRaceFileSystem('first', lockPath, coordinator),
+      fileSystem: new PauseDuringLockOperationFileSystem(lockPath, guardPath, coordinator),
       isLocalProcessAlive: () => false,
       processId: 6201,
     });
-    const secondRepository = createRepository({
-      fileSystem: new ReclaimRaceFileSystem('second', lockPath, coordinator),
+    const thirdRepository = createRepository({
       isLocalProcessAlive: () => false,
-      processId: 6202,
+      processId: 6203,
     });
 
-    const sessions = await Promise.all([
-      firstRepository.open(projectRoot, { mode: 'write' }),
-      secondRepository.open(projectRoot, { mode: 'write' }),
-    ]);
+    const firstOpen = firstRepository.open(projectRoot, { mode: 'write' });
+    await coordinator.operationStarted.promise;
+    const third = await thirdRepository.open(projectRoot, { mode: 'write' });
+    coordinator.concurrentAttemptDone.resolve();
+    const first = await firstOpen;
 
-    const writeSessions = sessions.filter((session) => session.mode === 'write');
-    expect(writeSessions).toHaveLength(1);
+    expect(third.mode).toBe('read_only');
+    expect(first.mode).toBe('write');
 
     const activeLock = await readJson<TestProjectLock>(lockPath);
-    expect(activeLock.sessionId).toBe(writeSessions[0]!.lock!.sessionId);
+    expect(activeLock.sessionId).toBe(first.lock!.sessionId);
+    expect(activeLock.processId).toBe(6201);
   });
 
   it('keeps nonlocal or unverifiable stale locks read-only', async () => {
@@ -335,10 +337,11 @@ describe('ProjectRepository', () => {
     expect(reopened.manifest.cleanClose).toBe(false);
   });
 
-  it('leaves a replacement writer lock intact when close races between ownership check and removal', async () => {
+  it('keeps a third opener read-only while close observes a non-owned lock', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'CloseRace.novus-project');
     const lockPath = join(projectRoot, 'recovery', 'project.lock');
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
     const repository = createRepository({ processId: 10102 });
 
     const session = await repository.create(projectRoot, {
@@ -358,17 +361,82 @@ describe('ProjectRepository', () => {
       schemaVersion: 1,
       sessionId: 'replacement-session',
     };
+    await writeProjectLock(projectRoot, replacementLock);
 
-    await createRepository({
-      fileSystem: new ReplaceLockDuringRemovalFileSystem(lockPath, replacementLock),
+    const coordinator = createOperationWindowCoordinator();
+    const closePromise = createRepository({
+      fileSystem: new PauseDuringLockOperationFileSystem(lockPath, guardPath, coordinator),
       processId: 10102,
     }).close(session);
+    await coordinator.operationStarted.promise;
+    const third = await createRepository({ processId: 10104 }).open(projectRoot, { mode: 'write' });
+    coordinator.concurrentAttemptDone.resolve();
+    await closePromise;
 
+    expect(third.mode).toBe('read_only');
     const activeLock = await readJson<TestProjectLock>(lockPath);
     expect(activeLock).toMatchObject({
       processId: 10103,
       sessionId: 'replacement-session',
     });
+  });
+
+  it('returns read-only under an existing operation guard without changing a stale canonical lock', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'ExistingGuardOpen.novus-project');
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
+    const repository = createRepository({ processId: 10202 });
+
+    const created = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-existing-guard-open',
+      projectName: 'ExistingGuardOpen',
+    });
+    await repository.close(created);
+
+    const staleHeartbeatAt = new Date(baseNow.getTime() - (STALE_LOCK_MS + 1_000)).toISOString();
+    const staleLock: TestProjectLock = {
+      channel: 'modern',
+      deviceId: 'device-under-test',
+      heartbeatAt: staleHeartbeatAt,
+      openedAt: staleHeartbeatAt,
+      processId: 10203,
+      projectId: created.manifest.projectId,
+      schemaVersion: 1,
+      sessionId: 'guarded-stale-session',
+    };
+    await writeProjectLock(projectRoot, staleLock);
+    await writeFile(guardPath, '{"token":"existing"}\n', 'utf8');
+
+    const guarded = await createRepository({
+      isLocalProcessAlive: () => false,
+      processId: 10204,
+    }).open(projectRoot, { mode: 'write' });
+
+    expect(guarded.mode).toBe('read_only');
+    expect(await readJson<TestProjectLock>(join(projectRoot, 'recovery', 'project.lock'))).toEqual(
+      staleLock,
+    );
+  });
+
+  it('leaves an owned canonical lock in place when close cannot acquire the operation guard', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'ExistingGuardClose.novus-project');
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
+    const repository = createRepository({ processId: 10205 });
+
+    const session = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-existing-guard-close',
+      projectName: 'ExistingGuardClose',
+    });
+    await writeFile(guardPath, '{"token":"existing"}\n', 'utf8');
+
+    await repository.close(session);
+
+    expect(await readJson<TestProjectLock>(join(projectRoot, 'recovery', 'project.lock'))).toEqual(
+      session.lock,
+    );
   });
 
   it('rejects saveAs when the stable snapshot path escapes snapshots and leaves no destination', async () => {
@@ -563,6 +631,25 @@ describe('ProjectRepository', () => {
     await expect(stat(projectRoot)).rejects.toThrow();
   });
 
+  it('preserves a pre-existing destination root when create fails before ownership', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'ExistingDestination.novus-project');
+    const sentinelPath = join(projectRoot, 'sentinel.txt');
+    const repository = createRepository({ processId: 13103 });
+    await mkdir(projectRoot);
+    await writeFile(sentinelPath, 'keep-me', 'utf8');
+
+    await expect(
+      repository.create(projectRoot, {
+        project: starterProject,
+        projectId: 'project-existing-destination',
+        projectName: 'ExistingDestination',
+      }),
+    ).rejects.toThrow();
+
+    await expect(readFile(sentinelPath, 'utf8')).resolves.toBe('keep-me');
+  });
+
   it('removes a newly-created root when project creation fails before lock acquisition', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'LockRollback.novus-project');
@@ -668,15 +755,15 @@ interface DeferredVoid {
   resolve(): void;
 }
 
-interface ReclaimRaceCoordinator {
-  readonly secondReadyToUnlink: DeferredVoid;
-  readonly firstReplacementLockClosed: DeferredVoid;
+interface OperationWindowCoordinator {
+  readonly operationStarted: DeferredVoid;
+  readonly concurrentAttemptDone: DeferredVoid;
 }
 
-function createReclaimRaceCoordinator(): ReclaimRaceCoordinator {
+function createOperationWindowCoordinator(): OperationWindowCoordinator {
   return {
-    firstReplacementLockClosed: createDeferredVoid(),
-    secondReadyToUnlink: createDeferredVoid(),
+    concurrentAttemptDone: createDeferredVoid(),
+    operationStarted: createDeferredVoid(),
   };
 }
 
@@ -732,89 +819,46 @@ class DelegatingFileSystem implements FileSystem {
   }
 }
 
-class ReclaimRaceFileSystem extends DelegatingFileSystem {
-  private readonly role: 'first' | 'second';
+class PauseDuringLockOperationFileSystem extends DelegatingFileSystem {
   private readonly lockPath: string;
-  private readonly coordinator: ReclaimRaceCoordinator;
+  private readonly guardPath: string;
+  private readonly coordinator: OperationWindowCoordinator;
+  private paused = false;
 
-  constructor(role: 'first' | 'second', lockPath: string, coordinator: ReclaimRaceCoordinator) {
+  constructor(
+    lockPath: string,
+    guardPath: string,
+    coordinator: OperationWindowCoordinator,
+  ) {
     super();
-    this.role = role;
     this.lockPath = lockPath;
+    this.guardPath = guardPath;
     this.coordinator = coordinator;
   }
 
   override async open(path: string, flags: string): Promise<FileHandleLike> {
     const handle = await super.open(path, flags);
-    if (this.role === 'first' && flags === 'wx' && samePath(path, this.lockPath)) {
-      return new SignalOnCloseHandle(handle, () => this.coordinator.firstReplacementLockClosed.resolve());
+    if (flags === 'wx' && samePath(path, this.guardPath)) {
+      await this.pauseOnce();
     }
     return handle;
   }
 
   override async rename(source: string, destination: string): Promise<void> {
-    if (samePath(source, this.lockPath)) {
-      if (this.role === 'first') {
-        await this.coordinator.secondReadyToUnlink.promise;
-      } else {
-        this.coordinator.secondReadyToUnlink.resolve();
-        await this.coordinator.firstReplacementLockClosed.promise;
-      }
-    }
-
     await super.rename(source, destination);
-  }
-
-  override async unlink(path: string): Promise<void> {
-    if (samePath(path, this.lockPath)) {
-      if (this.role === 'first') {
-        await this.coordinator.secondReadyToUnlink.promise;
-      } else {
-        this.coordinator.secondReadyToUnlink.resolve();
-        await this.coordinator.firstReplacementLockClosed.promise;
-      }
-    }
-
-    await super.unlink(path);
-  }
-}
-
-class ReplaceLockDuringRemovalFileSystem extends DelegatingFileSystem {
-  private readonly lockPath: string;
-  private readonly replacementLock: TestProjectLock;
-  private injected = false;
-
-  constructor(lockPath: string, replacementLock: TestProjectLock) {
-    super();
-    this.lockPath = lockPath;
-    this.replacementLock = replacementLock;
-  }
-
-  override async rename(source: string, destination: string): Promise<void> {
     if (samePath(source, this.lockPath)) {
-      await super.rename(source, destination);
-      await this.injectReplacement();
+      await this.pauseOnce();
+    }
+  }
+
+  private async pauseOnce(): Promise<void> {
+    if (this.paused) {
       return;
     }
 
-    await super.rename(source, destination);
-  }
-
-  override async unlink(path: string): Promise<void> {
-    if (samePath(path, this.lockPath)) {
-      await this.injectReplacement();
-    }
-
-    await super.unlink(path);
-  }
-
-  private async injectReplacement(): Promise<void> {
-    if (this.injected) {
-      return;
-    }
-
-    this.injected = true;
-    await writeFile(this.lockPath, `${JSON.stringify(this.replacementLock)}\n`, 'utf8');
+    this.paused = true;
+    this.coordinator.operationStarted.resolve();
+    await this.coordinator.concurrentAttemptDone.promise;
   }
 }
 
@@ -855,32 +899,6 @@ class FailRenameFileSystem extends DelegatingFileSystem {
 class FailSyncFileSystem extends DelegatingFileSystem {
   override async open(path: string, flags: string): Promise<FileHandleLike> {
     return new FailSyncHandle(await super.open(path, flags));
-  }
-}
-
-class SignalOnCloseHandle implements FileHandleLike {
-  private readonly handle: FileHandleLike;
-  private readonly onClose: () => void;
-
-  constructor(handle: FileHandleLike, onClose: () => void) {
-    this.handle = handle;
-    this.onClose = onClose;
-  }
-
-  async close(): Promise<void> {
-    try {
-      await this.handle.close();
-    } finally {
-      this.onClose();
-    }
-  }
-
-  async sync(): Promise<void> {
-    await this.handle.sync();
-  }
-
-  async writeFile(data: string | Uint8Array): Promise<void> {
-    await this.handle.writeFile(data);
   }
 }
 
