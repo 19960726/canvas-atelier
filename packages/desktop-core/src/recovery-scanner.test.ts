@@ -121,6 +121,31 @@ describe('RecoveryScanner', () => {
     ]);
   });
 
+  it('requires a recovery choice when a newer snapshot artifact is corrupt even though the manifest chain still validates', async () => {
+    const created = await createProject(tempRoots, 'project-corrupt-newer');
+    await created.writer.commit(makeCreatePromptCommitRequest(created.session.manifest.projectId, 'tx-corrupt-newer-1', 0, 'prompt-corrupt-newer-1'));
+    const scheduler = new SnapshotScheduler({
+      now: () => baseNow,
+      worker: (input) => SnapshotScheduler.defaultWorker(input),
+    });
+    await scheduler.flush(created.session, { reason: 'stable_point' });
+
+    await writeFile(
+      join(created.projectRoot, 'snapshots', 's-2-corrupt-newer.json.gz'),
+      Buffer.from('not a readable snapshot'),
+    );
+
+    const result = await new RecoveryScanner({
+      appDataRoot: created.appDataRoot,
+      createId: () => 'scan-session-corrupt-newer',
+      now: () => baseNow,
+    }).scan(created.projectRoot);
+
+    expect(result.action).toBe('choose_recovery');
+    expect(result.issues).toContain('corrupt_snapshot');
+    expect(result.candidates.map((candidate) => candidate.revision)).toEqual([1]);
+  });
+
   it('requires a recovery choice when a valid newest snapshot breaks the previousSnapshotId chain', async () => {
     const { appDataRoot, projectRoot, session } = await createProject(tempRoots, 'project-broken-chain');
     const brokenChainSnapshot = makeSnapshotEnvelope({

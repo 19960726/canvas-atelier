@@ -291,11 +291,11 @@ describe('SnapshotScheduler', () => {
     })).records.map((record) => record.transactionId)).toEqual(['tx-old']);
   });
 
-  it('runs only one worker per project while a rotation is already in flight', async () => {
+  it('shares one in-flight rotation across scheduler instances for the same project root', async () => {
     const { session } = await createProjectWithCommits(tempRoots, 'project-one-worker', 2);
     let workerCalls = 0;
     const gate = createDeferred<void>();
-    const scheduler = new SnapshotScheduler({
+    const firstScheduler = new SnapshotScheduler({
       now: () => baseNow,
       worker: async (input) => {
         workerCalls += 1;
@@ -303,9 +303,16 @@ describe('SnapshotScheduler', () => {
         return SnapshotScheduler.defaultWorker(input);
       },
     });
+    const secondScheduler = new SnapshotScheduler({
+      now: () => baseNow,
+      worker: async () => {
+        throw new Error('stale worker should not run');
+      },
+    });
 
-    const first = scheduler.flush(session, { reason: 'stable_point' });
-    const second = scheduler.flush(session, { reason: 'close' });
+    const first = firstScheduler.flush(session, { reason: 'stable_point' });
+    const second = secondScheduler.flush(session, { reason: 'close' });
+    expect(second).toBe(first);
     gate.resolve();
     const [firstSnapshot, secondSnapshot] = await Promise.all([first, second]);
 

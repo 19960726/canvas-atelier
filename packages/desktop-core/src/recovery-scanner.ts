@@ -126,6 +126,7 @@ export class RecoveryScanner {
 
     const action: RecoveryAction = issues.includes('abandoned_lock_guard') ||
       issues.includes('broken_snapshot_chain') ||
+      issues.includes('corrupt_snapshot') ||
       issues.includes('corrupt_journal_before_tail') ||
       issues.includes('journal_archive_gap') ||
       issues.includes('journal_archive_overlap') ||

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { gzip, gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
-import { join, posix } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 
 import {
   canonicalJson,
@@ -96,10 +96,10 @@ export type SnapshotWorkerFactory = (url: URL) => SnapshotWorkerLike;
 
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const MANIFEST_PATH = 'project.novus.json';
+const inFlightByProjectRoot = new Map<string, Promise<SnapshotFlushResult>>();
 
 export class SnapshotScheduler {
   private readonly fileSystem: FileSystem;
-  private readonly inFlightByProjectRoot = new Map<string, Promise<SnapshotFlushResult>>();
   private readonly now: () => Date;
   private readonly worker: (input: SnapshotWorkerInput) => Promise<SnapshotWorkerOutput>;
 
@@ -149,15 +149,17 @@ export class SnapshotScheduler {
     request: SnapshotFlushRequest,
   ): Promise<SnapshotFlushResult> {
     const projectKey = normalizeProjectKey(session.root);
-    const existing = this.inFlightByProjectRoot.get(projectKey);
+    const existing = inFlightByProjectRoot.get(projectKey);
     if (existing !== undefined) {
       return existing;
     }
 
     const running = this.flushExclusive(session, request).finally(() => {
-      this.inFlightByProjectRoot.delete(projectKey);
+      if (inFlightByProjectRoot.get(projectKey) === running) {
+        inFlightByProjectRoot.delete(projectKey);
+      }
     });
-    this.inFlightByProjectRoot.set(projectKey, running);
+    inFlightByProjectRoot.set(projectKey, running);
     return running;
   }
 
@@ -559,5 +561,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeProjectKey(root: string): string {
-  return root.toLowerCase();
+  const resolvedRoot = resolve(root);
+  return process.platform === 'win32' ? resolvedRoot.toLowerCase() : resolvedRoot;
 }
