@@ -7,6 +7,7 @@ import { sha256Canonical } from './canonical-json';
 import {
   SNAPSHOT_SCHEMA_VERSION,
   STALE_LOCK_MS,
+  type CommitRequest,
   type ProjectManifest,
   type SnapshotEnvelope,
 } from './contracts';
@@ -644,6 +645,87 @@ describe('ProjectRepository', () => {
     expect(originalStillLocked.mode).toBe('read_only');
   });
 
+  it('saveAs copies the stable snapshot replayed through committed journal records', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const sourceRoot = join(tempRoot, 'JournalSource.novus-project');
+    const destinationRoot = join(tempRoot, 'JournalSource Copy.novus-project');
+    const repository = createRepository({ processId: 11105 });
+    const sourceProject = makeCanvasProject('project-journal-save-as');
+
+    const source = await repository.create(sourceRoot, {
+      project: sourceProject,
+      projectId: sourceProject.id,
+      projectName: 'JournalSource',
+    });
+    const writer = await repository.openJournalWriter(source, { now: () => baseNow });
+    await writer.commit(
+      makeCreatePromptCommitRequest(source.manifest.projectId, 'tx-save-as-node', 0, 'prompt-save-as'),
+    );
+
+    const copied = await repository.saveAs(source, destinationRoot);
+    const copiedManifest = await readProjectManifest(destinationRoot);
+    const copiedSnapshot = await readJson<SnapshotEnvelope>(
+      join(destinationRoot, ...copiedManifest.stableSnapshotPath!.split('/')),
+    );
+
+    expect(copied.mode).toBe('write');
+    expect(readProjectNodeIds(copiedSnapshot.project)).toContain('prompt-save-as');
+  });
+
+  it('saveAs tolerates an incomplete final journal tail while copying committed records', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const sourceRoot = join(tempRoot, 'PartialTailSource.novus-project');
+    const destinationRoot = join(tempRoot, 'PartialTailSource Copy.novus-project');
+    const repository = createRepository({ processId: 11106 });
+    const sourceProject = makeCanvasProject('project-partial-tail-save-as');
+
+    const source = await repository.create(sourceRoot, {
+      project: sourceProject,
+      projectId: sourceProject.id,
+      projectName: 'PartialTailSource',
+    });
+    const writer = await repository.openJournalWriter(source, { now: () => baseNow });
+    await writer.commit(
+      makeCreatePromptCommitRequest(source.manifest.projectId, 'tx-save-as-partial', 0, 'prompt-partial'),
+    );
+    const activeJournal = join(sourceRoot, 'journal', 'active.ndjson');
+    await writeFile(activeJournal, `${await readFile(activeJournal, 'utf8')}{"schemaVersion":`, 'utf8');
+
+    await repository.saveAs(source, destinationRoot);
+    const copiedManifest = await readProjectManifest(destinationRoot);
+    const copiedSnapshot = await readJson<SnapshotEnvelope>(
+      join(destinationRoot, ...copiedManifest.stableSnapshotPath!.split('/')),
+    );
+
+    expect(readProjectNodeIds(copiedSnapshot.project)).toContain('prompt-partial');
+  });
+
+  it('rejects saveAs when the active journal contains a corrupt committed record', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const sourceRoot = join(tempRoot, 'CorruptJournalSource.novus-project');
+    const destinationRoot = join(tempRoot, 'CorruptJournalSource Copy.novus-project');
+    const repository = createRepository({ processId: 11107 });
+    const sourceProject = makeCanvasProject('project-corrupt-journal-save-as');
+
+    const source = await repository.create(sourceRoot, {
+      project: sourceProject,
+      projectId: sourceProject.id,
+      projectName: 'CorruptJournalSource',
+    });
+    const writer = await repository.openJournalWriter(source, { now: () => baseNow });
+    await writer.commit(
+      makeCreatePromptCommitRequest(source.manifest.projectId, 'tx-save-as-corrupt', 0, 'prompt-corrupt'),
+    );
+    const activeJournal = join(sourceRoot, 'journal', 'active.ndjson');
+    await writeFile(activeJournal, `${await readFile(activeJournal, 'utf8')}not-json\n`, 'utf8');
+
+    await expect(repository.saveAs(source, destinationRoot)).rejects.toMatchObject({
+      code: 'CORRUPT_JOURNAL',
+      retryable: false,
+    });
+    await expect(stat(destinationRoot)).rejects.toThrow();
+  });
+
   it('removes a newly-created root when project creation fails before manifest completion', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'ManifestRollback.novus-project');
@@ -745,6 +827,63 @@ async function createTempRoot(tempRoots: string[]) {
   const tempRoot = await mkdtemp(join(tmpdir(), 'desktop-core-project-repository-'));
   tempRoots.push(tempRoot);
   return tempRoot;
+}
+
+function makeCanvasProject(projectId: string) {
+  return {
+    version: 1,
+    id: projectId,
+    name: 'Save As Journal Project',
+    nodes: [],
+    edges: [],
+    projectMemory: [],
+    skillPromotionCandidates: [],
+  };
+}
+
+function makeCreatePromptCommitRequest(
+  projectId: string,
+  transactionId: string,
+  baseRevision: number,
+  nodeId: string,
+): CommitRequest {
+  return {
+    projectId,
+    baseRevision,
+    kind: 'canvas',
+    transaction: {
+      id: transactionId,
+      label: `create ${nodeId}`,
+      operations: [
+        { kind: 'canvas', operation: { kind: 'create_node', node: makePromptNode(nodeId) } },
+      ],
+    },
+  };
+}
+
+function makePromptNode(id: string) {
+  return {
+    id,
+    type: 'prompt' as const,
+    position: { x: 0, y: 0 },
+    data: { prompt: `Prompt ${id}`, requirementIds: [] },
+  };
+}
+
+function readProjectNodeIds(project: SnapshotEnvelope['project']): string[] {
+  const nodes = project.nodes;
+  if (!Array.isArray(nodes)) {
+    return [];
+  }
+
+  return nodes
+    .map((node) => {
+      if (node !== null && typeof node === 'object' && 'id' in node && typeof node.id === 'string') {
+        return node.id;
+      }
+      return null;
+    })
+    .filter((id): id is string => id !== null);
 }
 
 async function expectLayout(projectRoot: string) {

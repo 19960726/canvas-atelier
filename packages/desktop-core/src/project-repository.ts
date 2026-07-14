@@ -15,6 +15,8 @@ import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
 import {
   JournalWriter,
   createPersistenceError,
+  readValidJournal,
+  replayJournal,
   type JournalWriterSessionOptions,
 } from './journal-writer.js';
 
@@ -241,7 +243,7 @@ export class ProjectRepository {
   async saveAs(session: OpenedProjectSession, destinationRoot: string): Promise<OpenedProjectSession> {
     assertSafeWin7ProjectRoot(destinationRoot);
 
-    const project = await this.readStableProject(session.root, session.manifest);
+    const project = await this.readCurrentProject(session.root, session.manifest);
     return this.create(destinationRoot, {
       project,
       projectId: this.createId(),
@@ -433,6 +435,40 @@ export class ProjectRepository {
     }
 
     return snapshot.project;
+  }
+
+  private async readCurrentProject(root: string, manifest: ProjectManifest): Promise<ProjectState> {
+    const stableProject = await this.readStableProject(root, manifest);
+    const activeJournalSegment = validateActiveJournalSegment(manifest.activeJournalSegment);
+    const journal = await readValidJournal(join(root, ...activeJournalSegment.split('/')), {
+      baseRevision: manifest.stableSnapshotRevision,
+      expectedProjectId: manifest.projectId,
+      fileSystem: this.fileSystem,
+      firstSequence: manifest.nextSequence,
+    });
+
+    if (journal.records.length === 0) {
+      return stableProject;
+    }
+
+    try {
+      return replayJournal(
+        stableProject as Parameters<typeof replayJournal>[0],
+        manifest.stableSnapshotRevision,
+        journal.records,
+      ).project as ProjectState;
+    } catch (error) {
+      if (isPersistenceError(error)) {
+        throw error;
+      }
+
+      throw createPersistenceError(
+        'CORRUPT_JOURNAL',
+        false,
+        'Active journal cannot be replayed from stable snapshot',
+        error,
+      );
+    }
   }
 
   private async verifySnapshot(
@@ -713,6 +749,15 @@ function isOwnedOperationGuard(value: unknown, token: string): boolean {
     value.token === token &&
     typeof value.processId === 'number' &&
     typeof value.createdAt === 'string'
+  );
+}
+
+function isPersistenceError(error: unknown): error is Error & { code: unknown; retryable: unknown } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    'retryable' in error
   );
 }
 

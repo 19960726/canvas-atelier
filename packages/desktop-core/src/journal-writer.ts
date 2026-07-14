@@ -1,4 +1,4 @@
-import { normalize } from 'node:path';
+import { normalize, resolve } from 'node:path';
 
 import {
   applyProjectTransaction,
@@ -64,6 +64,19 @@ interface ReplayResult {
 
 type JournalRecordPayload = Omit<JournalRecord, 'payloadSha256'>;
 
+interface JournalState {
+  readonly idempotencyByTransactionId: Map<string, IdempotencyEntry>;
+  readonly projectId: string;
+  currentRevision: number;
+  nextSequence: number;
+  poisonedError: PersistenceError | null;
+}
+
+interface JournalRegistryEntry {
+  initialization: Promise<JournalState>;
+  queue: Promise<void>;
+}
+
 const JOURNAL_RECORD_KEYS = [
   'schemaVersion',
   'projectId',
@@ -79,83 +92,79 @@ const JOURNAL_RECORD_KEYS = [
 
 const JOURNAL_PAYLOAD_KEYS = JOURNAL_RECORD_KEYS.filter((key) => key !== 'payloadSha256');
 
-const queues = new Map<string, Promise<void>>();
+const journalRegistry = new Map<string, JournalRegistryEntry>();
 
 export class JournalWriter {
   private readonly activeJournalPath: string;
   private readonly fileSystem: FileSystem;
-  private readonly idempotencyByTransactionId: Map<string, IdempotencyEntry>;
   private readonly now: () => Date;
   private readonly projectId: string;
-  private currentRevision: number;
-  private nextSequence: number;
+  private readonly registryEntry: JournalRegistryEntry;
+  private readonly state: JournalState;
 
   private constructor(options: {
     readonly activeJournalPath: string;
-    readonly currentRevision: number;
     readonly fileSystem: FileSystem;
-    readonly idempotencyByTransactionId: Map<string, IdempotencyEntry>;
-    readonly nextSequence: number;
     readonly now: () => Date;
     readonly projectId: string;
+    readonly registryEntry: JournalRegistryEntry;
+    readonly state: JournalState;
   }) {
     this.activeJournalPath = options.activeJournalPath;
-    this.currentRevision = options.currentRevision;
     this.fileSystem = options.fileSystem;
-    this.idempotencyByTransactionId = options.idempotencyByTransactionId;
-    this.nextSequence = options.nextSequence;
     this.now = options.now;
     this.projectId = options.projectId;
+    this.registryEntry = options.registryEntry;
+    this.state = options.state;
   }
 
   static async open(options: JournalWriterOpenOptions): Promise<JournalWriter> {
     const fileSystem = options.fileSystem ?? new NodeFileSystem();
-    const journal = await readValidJournal(options.activeJournalPath, {
-      baseRevision: options.baseRevision,
-      expectedProjectId: options.projectId,
-      fileSystem,
-      firstSequence: options.nextSequence,
-    });
-    const idempotencyByTransactionId = new Map<string, IdempotencyEntry>();
-    let currentRevision = options.baseRevision;
-    let nextSequence = options.nextSequence;
+    const registryKey = canonicalJournalRegistryKey(options.activeJournalPath);
+    let registryEntry = journalRegistry.get(registryKey);
+    if (registryEntry === undefined) {
+      registryEntry = {
+        initialization: initializeJournalState(options, fileSystem),
+        queue: Promise.resolve(),
+      };
+      journalRegistry.set(registryKey, registryEntry);
+    }
+    const state = await registryEntry.initialization;
 
-    for (const record of journal.records) {
-      currentRevision = record.revision;
-      nextSequence = record.sequence + 1;
-      idempotencyByTransactionId.set(record.transactionId, {
-        ack: ackFromRecord(record),
-        requestSha256: requestSha256FromRecord(record),
-      });
+    if (state.projectId !== options.projectId) {
+      throw corruptJournal('Journal registry project does not match open request');
     }
 
     return new JournalWriter({
       activeJournalPath: options.activeJournalPath,
-      currentRevision,
       fileSystem,
-      idempotencyByTransactionId,
-      nextSequence,
       now: options.now ?? (() => new Date()),
       projectId: options.projectId,
+      registryEntry,
+      state,
     });
   }
 
   commit(request: CommitRequest, options: JournalCommitOptions = {}): Promise<CommitAck> {
-    const queueKey = normalize(this.activeJournalPath).toLowerCase();
-    const previous = queues.get(queueKey) ?? Promise.resolve();
-    const run = previous.then(() => this.commitInsideQueue(request, options));
-    queues.set(queueKey, run.then(() => undefined, () => undefined));
+    const previous = this.registryEntry.queue;
+    const run = previous.then(() => this.commitInsideQueue(this.state, request, options));
+    this.registryEntry.queue = run.then(() => undefined, () => undefined);
     return run;
   }
 
   private async commitInsideQueue(
+    state: JournalState,
     request: CommitRequest,
     options: JournalCommitOptions,
   ): Promise<CommitAck> {
+    if (state.poisonedError !== null) {
+      throw state.poisonedError;
+    }
+
     const normalizedRequest = normalizeCommitRequest(request, this.projectId);
     const transactionId = normalizedRequest.transaction.id;
     const requestSha256 = sha256Canonical(normalizedRequest);
-    const existing = this.idempotencyByTransactionId.get(transactionId);
+    const existing = state.idempotencyByTransactionId.get(transactionId);
 
     if (existing !== undefined) {
       if (existing.requestSha256 !== requestSha256) {
@@ -169,15 +178,15 @@ export class JournalWriter {
       return existing.ack;
     }
 
-    if (normalizedRequest.baseRevision !== this.currentRevision) {
+    if (normalizedRequest.baseRevision !== state.currentRevision) {
       throw createPersistenceError('REVISION_CONFLICT', true, 'Base revision is stale');
     }
 
     const payload: JournalRecordPayload = {
       schemaVersion: JOURNAL_SCHEMA_VERSION,
       projectId: this.projectId,
-      sequence: this.nextSequence,
-      revision: this.currentRevision + 1,
+      sequence: state.nextSequence,
+      revision: state.currentRevision + 1,
       transactionId,
       committedAt: this.now().toISOString(),
       kind: normalizedRequest.kind,
@@ -190,26 +199,180 @@ export class JournalWriter {
     };
     const line = `${canonicalJson(record)}\n`;
 
+    const preAppendByteLength = await readJournalByteLength(this.fileSystem, this.activeJournalPath);
+    let appendAttempted = false;
     let handle: Awaited<ReturnType<FileSystem['open']>> | null = null;
+    let synced = false;
     try {
-      handle = await this.fileSystem.open(this.activeJournalPath, 'a');
+      handle = await this.fileSystem.open(this.activeJournalPath, 'a+');
+      appendAttempted = true;
       await handle.writeFile(line);
       if (options.syncGate !== undefined) {
         await options.syncGate.wait();
       }
       await handle.sync();
+      synced = true;
+    } catch (error) {
+      if (handle !== null && appendAttempted && !synced) {
+        const rollbackError = await rollbackJournalAppend(
+          this.fileSystem,
+          this.activeJournalPath,
+          handle,
+          preAppendByteLength,
+        );
+        if (rollbackError !== null) {
+          state.poisonedError = corruptJournal(
+            'Journal durability is uncertain after failed rollback',
+            rollbackError,
+          );
+          throw state.poisonedError;
+        }
+      }
+
+      throw error;
     } finally {
       if (handle !== null) {
-        await handle.close();
+        try {
+          await handle.close();
+        } catch {
+          // Close is cleanup; append durability is decided by sync and rollback.
+        }
       }
     }
 
     const ack = ackFromRecord(record);
-    this.currentRevision = record.revision;
-    this.nextSequence = record.sequence + 1;
-    this.idempotencyByTransactionId.set(transactionId, { ack, requestSha256 });
+    state.currentRevision = record.revision;
+    state.nextSequence = record.sequence + 1;
+    state.idempotencyByTransactionId.set(transactionId, { ack, requestSha256 });
     return ack;
   }
+}
+
+export function resetJournalWriterRegistryForTests(): void {
+  journalRegistry.clear();
+}
+
+async function initializeJournalState(
+  options: JournalWriterOpenOptions,
+  fileSystem: FileSystem,
+): Promise<JournalState> {
+  const journal = await readValidJournal(options.activeJournalPath, {
+    baseRevision: options.baseRevision,
+    expectedProjectId: options.projectId,
+    fileSystem,
+    firstSequence: options.nextSequence,
+  });
+  const idempotencyByTransactionId = new Map<string, IdempotencyEntry>();
+  let currentRevision = options.baseRevision;
+  let nextSequence = options.nextSequence;
+
+  for (const record of journal.records) {
+    currentRevision = record.revision;
+    nextSequence = record.sequence + 1;
+    idempotencyByTransactionId.set(record.transactionId, {
+      ack: ackFromRecord(record),
+      requestSha256: requestSha256FromRecord(record),
+    });
+  }
+
+  return {
+    currentRevision,
+    idempotencyByTransactionId,
+    nextSequence,
+    poisonedError: null,
+    projectId: options.projectId,
+  };
+}
+
+function canonicalJournalRegistryKey(activeJournalPath: string): string {
+  return normalize(resolve(activeJournalPath)).toLowerCase();
+}
+
+async function readJournalByteLength(
+  fileSystem: FileSystem,
+  activeJournalPath: string,
+): Promise<number> {
+  let stats: Awaited<ReturnType<FileSystem['stat']>>;
+  try {
+    stats = await fileSystem.stat(activeJournalPath);
+  } catch (error) {
+    throw createPersistenceError(
+      'CORRUPT_JOURNAL',
+      false,
+      'Journal byte length cannot be confirmed',
+      error,
+    );
+  }
+
+  if (
+    typeof stats.size !== 'number' ||
+    !Number.isInteger(stats.size) ||
+    stats.size < 0
+  ) {
+    throw createPersistenceError(
+      'CORRUPT_JOURNAL',
+      false,
+      'Journal byte length cannot be confirmed',
+    );
+  }
+
+  return stats.size;
+}
+
+async function rollbackJournalAppend(
+  fileSystem: FileSystem,
+  activeJournalPath: string,
+  handle: Awaited<ReturnType<FileSystem['open']>>,
+  preAppendByteLength: number,
+): Promise<unknown | null> {
+  try {
+    await truncateJournalToByteLength(
+      fileSystem,
+      activeJournalPath,
+      handle,
+      preAppendByteLength,
+    );
+    await handle.sync();
+
+    const rolledBackByteLength = await readJournalByteLength(fileSystem, activeJournalPath);
+    if (rolledBackByteLength !== preAppendByteLength) {
+      throw createPersistenceError(
+        'CORRUPT_JOURNAL',
+        false,
+        'Journal rollback byte length could not be confirmed',
+      );
+    }
+
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
+
+async function truncateJournalToByteLength(
+  fileSystem: FileSystem,
+  activeJournalPath: string,
+  handle: Awaited<ReturnType<FileSystem['open']>>,
+  byteLength: number,
+): Promise<void> {
+  if (handle.truncate !== undefined) {
+    try {
+      await handle.truncate(byteLength);
+      return;
+    } catch {
+      // Some Windows append handles cannot truncate; fall back to the path API.
+    }
+  }
+
+  if (fileSystem.truncate === undefined) {
+    throw createPersistenceError(
+      'CORRUPT_JOURNAL',
+      false,
+      'Journal rollback is not supported by this filesystem',
+    );
+  }
+
+  await fileSystem.truncate(activeJournalPath, byteLength);
 }
 
 export async function readValidJournal(

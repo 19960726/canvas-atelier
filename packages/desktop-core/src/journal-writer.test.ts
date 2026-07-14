@@ -13,7 +13,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { canonicalJson } from './canonical-json';
 import { type CommitRequest, type JournalRecord } from './contracts';
 import { NodeFileSystem, type FileHandleLike, type FileSystem } from './file-system';
-import { JournalWriter, readValidJournal, replayJournal } from './journal-writer';
+import {
+  JournalWriter,
+  readValidJournal,
+  replayJournal,
+  resetJournalWriterRegistryForTests,
+} from './journal-writer';
 import { ProjectRepository } from './project-repository';
 
 const baseNow = new Date('2026-07-14T12:00:00.000Z');
@@ -22,6 +27,7 @@ describe('JournalWriter', () => {
   const tempRoots: string[] = [];
 
   afterEach(async () => {
+    resetJournalWriterRegistryForTests();
     await Promise.all(
       tempRoots.splice(0).map((tempRoot) => rm(tempRoot, { force: true, recursive: true })),
     );
@@ -234,6 +240,126 @@ describe('JournalWriter', () => {
     ]);
   });
 
+  it('rolls back a complete append when sync fails so restart does not replay it', async () => {
+    const { activeJournal } = await createJournalFile(tempRoots);
+    const writer = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      fileSystem: new FailFirstSyncFileSystem(activeJournal),
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+
+    await expect(writer.commit(makeRequest('tx-sync-fails'))).rejects.toThrow(
+      /injected sync failure/i,
+    );
+    expect(await readFile(activeJournal, 'utf8')).toBe('');
+
+    resetJournalWriterRegistryForTests();
+    const recovered = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+    const ack = await recovered.commit(makeRequest('tx-after-sync-failure'));
+
+    expect(ack).toMatchObject({ revision: 1, sequence: 1 });
+    expect((await readValidJournal(activeJournal)).records.map((record) => record.transactionId)).toEqual([
+      'tx-after-sync-failure',
+    ]);
+  });
+
+  it('poisons a journal state when rollback after sync failure cannot be confirmed', async () => {
+    const { activeJournal } = await createJournalFile(tempRoots);
+    const writer = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      fileSystem: new FailRollbackAfterSyncFailureFileSystem(activeJournal),
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+
+    await expect(writer.commit(makeRequest('tx-uncertain-sync'))).rejects.toMatchObject({
+      code: 'CORRUPT_JOURNAL',
+      retryable: false,
+    });
+    await expect(writer.commit(makeRequest('tx-after-uncertain-sync'))).rejects.toMatchObject({
+      code: 'CORRUPT_JOURNAL',
+      retryable: false,
+    });
+  });
+
+  it('treats close failure after successful sync as cleanup after a durable commit', async () => {
+    const { activeJournal } = await createJournalFile(tempRoots);
+    const writer = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      fileSystem: new FailFirstCloseFileSystem(activeJournal),
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+    const request = makeRequest('tx-close-fails');
+
+    const ack = await writer.commit(request);
+    const duplicateAck = await writer.commit(request);
+    const nextAck = await writer.commit(makeRequest('tx-after-close-failure', 1));
+
+    expect(duplicateAck).toEqual(ack);
+    expect(ack).toMatchObject({ revision: 1, sequence: 1 });
+    expect(nextAck).toMatchObject({ revision: 2, sequence: 2 });
+    expect((await readValidJournal(activeJournal)).records.map((record) => record.transactionId)).toEqual([
+      'tx-close-fails',
+      'tx-after-close-failure',
+    ]);
+  });
+
+  it('shares revision, sequence, and idempotency state across writer instances for one journal', async () => {
+    const { activeJournal } = await createJournalFile(tempRoots);
+    const firstWriter = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+    const secondWriter = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+
+    const [firstAck, secondAck] = await Promise.all([
+      firstWriter.commit(
+        makeRequest('tx-shared-writer-1', 0, makeCreatePromptTransaction('tx-shared-writer-1', 'prompt-shared-1')),
+      ),
+      secondWriter.commit(
+        makeRequest('tx-shared-writer-2', 1, makeCreatePromptTransaction('tx-shared-writer-2', 'prompt-shared-2')),
+      ),
+    ]);
+    const duplicateAck = await secondWriter.commit(
+      makeRequest('tx-shared-writer-1', 0, makeCreatePromptTransaction('tx-shared-writer-1', 'prompt-shared-1')),
+    );
+
+    expect(firstAck).toMatchObject({ revision: 1, sequence: 1 });
+    expect(secondAck).toMatchObject({ revision: 2, sequence: 2 });
+    expect(duplicateAck).toEqual(firstAck);
+    expect((await readValidJournal(activeJournal)).records.map((record) => [
+      record.transactionId,
+      record.sequence,
+      record.revision,
+    ])).toEqual([
+      ['tx-shared-writer-1', 1, 1],
+      ['tx-shared-writer-2', 2, 2],
+    ]);
+  });
+
   it('opens from a repository write session using the manifest active journal path', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'RepositoryJournal.novus-project');
@@ -399,7 +525,7 @@ class FailWriteFileSystem implements FileSystem {
 
   async open(path: string, flags: string): Promise<FileHandleLike> {
     const handle = await this.delegate.open(path, flags);
-    if (samePath(path, this.targetPath) && flags === 'a') {
+    if (samePath(path, this.targetPath) && isJournalAppendFlag(flags)) {
       return new FailWriteHandle(handle);
     }
     return handle;
@@ -423,6 +549,10 @@ class FailWriteFileSystem implements FileSystem {
 
   async stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }> {
     return this.delegate.stat(path);
+  }
+
+  async truncate(path: string, length: number): Promise<void> {
+    await this.delegate.truncate(path, length);
   }
 
   async unlink(path: string): Promise<void> {
@@ -449,11 +579,273 @@ class FailWriteHandle implements FileHandleLike {
     await this.handle.sync();
   }
 
+  async truncate(length: number): Promise<void> {
+    await (this.handle as FileHandleLike & { truncate(length: number): Promise<void> }).truncate(length);
+  }
+
   async writeFile(_data: string | Uint8Array): Promise<void> {
     throw new Error('injected write failure');
   }
 }
 
+class FailFirstSyncFileSystem implements FileSystem {
+  private readonly delegate = new NodeFileSystem();
+  private readonly targetPath: string;
+  private failed = false;
+
+  constructor(targetPath: string) {
+    this.targetPath = targetPath;
+  }
+
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
+    await this.delegate.mkdir(path, options);
+  }
+
+  async open(path: string, flags: string): Promise<FileHandleLike> {
+    const handle = await this.delegate.open(path, flags);
+    if (samePath(path, this.targetPath) && isJournalAppendFlag(flags)) {
+      return new FailFirstSyncHandle(handle, () => {
+        if (!this.failed) {
+          this.failed = true;
+          throw new Error('injected sync failure');
+        }
+      });
+    }
+    return handle;
+  }
+
+  async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+    return this.delegate.readFile(path, encoding);
+  }
+
+  async readdir(path: string): Promise<string[]> {
+    return this.delegate.readdir(path);
+  }
+
+  async rename(source: string, destination: string): Promise<void> {
+    await this.delegate.rename(source, destination);
+  }
+
+  async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    await this.delegate.rm(path, options);
+  }
+
+  async stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }> {
+    return this.delegate.stat(path);
+  }
+
+  async truncate(path: string, length: number): Promise<void> {
+    await this.delegate.truncate(path, length);
+  }
+
+  async unlink(path: string): Promise<void> {
+    await this.delegate.unlink(path);
+  }
+
+  async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
+    await this.delegate.writeFile(path, data, encoding);
+  }
+}
+
+class FailFirstSyncHandle implements FileHandleLike {
+  private readonly handle: FileHandleLike;
+  private readonly failSyncOnce: () => void;
+
+  constructor(handle: FileHandleLike, failSyncOnce: () => void) {
+    this.handle = handle;
+    this.failSyncOnce = failSyncOnce;
+  }
+
+  async close(): Promise<void> {
+    await this.handle.close();
+  }
+
+  async sync(): Promise<void> {
+    this.failSyncOnce();
+    await this.handle.sync();
+  }
+
+  async truncate(length: number): Promise<void> {
+    await (this.handle as FileHandleLike & { truncate(length: number): Promise<void> }).truncate(length);
+  }
+
+  async writeFile(data: string | Uint8Array): Promise<void> {
+    await this.handle.writeFile(data);
+  }
+}
+
+class FailRollbackAfterSyncFailureFileSystem implements FileSystem {
+  private readonly delegate = new NodeFileSystem();
+  private readonly targetPath: string;
+  private failed = false;
+
+  constructor(targetPath: string) {
+    this.targetPath = targetPath;
+  }
+
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
+    await this.delegate.mkdir(path, options);
+  }
+
+  async open(path: string, flags: string): Promise<FileHandleLike> {
+    const handle = await this.delegate.open(path, flags);
+    if (samePath(path, this.targetPath) && isJournalAppendFlag(flags)) {
+      return new FailRollbackAfterSyncFailureHandle(handle, () => {
+        if (!this.failed) {
+          this.failed = true;
+          throw new Error('injected sync failure');
+        }
+      });
+    }
+    return handle;
+  }
+
+  async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+    return this.delegate.readFile(path, encoding);
+  }
+
+  async readdir(path: string): Promise<string[]> {
+    return this.delegate.readdir(path);
+  }
+
+  async rename(source: string, destination: string): Promise<void> {
+    await this.delegate.rename(source, destination);
+  }
+
+  async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    await this.delegate.rm(path, options);
+  }
+
+  async stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }> {
+    return this.delegate.stat(path);
+  }
+
+  async truncate(_path: string, _length: number): Promise<void> {
+    throw new Error('injected rollback truncate failure');
+  }
+
+  async unlink(path: string): Promise<void> {
+    await this.delegate.unlink(path);
+  }
+
+  async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
+    await this.delegate.writeFile(path, data, encoding);
+  }
+}
+
+class FailRollbackAfterSyncFailureHandle implements FileHandleLike {
+  private readonly handle: FileHandleLike;
+  private readonly failSyncOnce: () => void;
+
+  constructor(handle: FileHandleLike, failSyncOnce: () => void) {
+    this.handle = handle;
+    this.failSyncOnce = failSyncOnce;
+  }
+
+  async close(): Promise<void> {
+    await this.handle.close();
+  }
+
+  async sync(): Promise<void> {
+    this.failSyncOnce();
+    await this.handle.sync();
+  }
+
+  async truncate(_length: number): Promise<void> {
+    throw new Error('injected rollback truncate failure');
+  }
+
+  async writeFile(data: string | Uint8Array): Promise<void> {
+    await this.handle.writeFile(data);
+  }
+}
+
+class FailFirstCloseFileSystem implements FileSystem {
+  private readonly delegate = new NodeFileSystem();
+  private readonly targetPath: string;
+  private failed = false;
+
+  constructor(targetPath: string) {
+    this.targetPath = targetPath;
+  }
+
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
+    await this.delegate.mkdir(path, options);
+  }
+
+  async open(path: string, flags: string): Promise<FileHandleLike> {
+    const handle = await this.delegate.open(path, flags);
+    if (samePath(path, this.targetPath) && isJournalAppendFlag(flags)) {
+      return new FailFirstCloseHandle(handle, () => {
+        if (!this.failed) {
+          this.failed = true;
+          throw new Error('injected close failure');
+        }
+      });
+    }
+    return handle;
+  }
+
+  async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+    return this.delegate.readFile(path, encoding);
+  }
+
+  async readdir(path: string): Promise<string[]> {
+    return this.delegate.readdir(path);
+  }
+
+  async rename(source: string, destination: string): Promise<void> {
+    await this.delegate.rename(source, destination);
+  }
+
+  async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    await this.delegate.rm(path, options);
+  }
+
+  async stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }> {
+    return this.delegate.stat(path);
+  }
+
+  async truncate(path: string, length: number): Promise<void> {
+    await this.delegate.truncate(path, length);
+  }
+
+  async unlink(path: string): Promise<void> {
+    await this.delegate.unlink(path);
+  }
+
+  async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
+    await this.delegate.writeFile(path, data, encoding);
+  }
+}
+
+class FailFirstCloseHandle implements FileHandleLike {
+  private readonly handle: FileHandleLike;
+  private readonly failCloseOnce: () => void;
+
+  constructor(handle: FileHandleLike, failCloseOnce: () => void) {
+    this.handle = handle;
+    this.failCloseOnce = failCloseOnce;
+  }
+
+  async close(): Promise<void> {
+    this.failCloseOnce();
+    await this.handle.close();
+  }
+
+  async sync(): Promise<void> {
+    await this.handle.sync();
+  }
+
+  async writeFile(data: string | Uint8Array): Promise<void> {
+    await this.handle.writeFile(data);
+  }
+}
+
 function samePath(left: string, right: string): boolean {
   return normalize(left).toLowerCase() === normalize(right).toLowerCase();
+}
+
+function isJournalAppendFlag(flags: string): boolean {
+  return flags === 'a' || flags === 'a+';
 }

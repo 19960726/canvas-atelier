@@ -1,11 +1,18 @@
 import { randomBytes } from 'node:crypto';
-import { open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { open, readFile, readdir, rename, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 export interface FileHandleLike {
   close(): Promise<void>;
   sync(): Promise<void>;
+  truncate?(length: number): Promise<void>;
   writeFile(data: string | Uint8Array): Promise<void>;
+}
+
+export interface FileStatLike {
+  readonly size?: number;
+  isDirectory(): boolean;
+  isFile(): boolean;
 }
 
 export interface FileSystem {
@@ -15,7 +22,8 @@ export interface FileSystem {
   readdir(path: string): Promise<string[]>;
   rename(source: string, destination: string): Promise<void>;
   rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void>;
-  stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }>;
+  stat(path: string): Promise<FileStatLike>;
+  truncate?(path: string, length: number): Promise<void>;
   unlink(path: string): Promise<void>;
   writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void>;
 }
@@ -47,6 +55,10 @@ export class NodeFileSystem implements FileSystem {
 
   async stat(path: string) {
     return stat(path);
+  }
+
+  async truncate(path: string, length: number) {
+    await truncate(path, length);
   }
 
   async unlink(path: string) {
