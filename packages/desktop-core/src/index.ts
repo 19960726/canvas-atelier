@@ -29,6 +29,7 @@ export {
   JournalWriter,
   createPersistenceError,
   readValidJournal,
+  releaseJournalState,
   replayJournal,
 } from './journal-writer.js';
 export type {

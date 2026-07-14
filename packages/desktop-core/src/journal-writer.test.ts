@@ -16,6 +16,7 @@ import { NodeFileSystem, type FileHandleLike, type FileSystem } from './file-sys
 import {
   JournalWriter,
   readValidJournal,
+  releaseJournalState,
   replayJournal,
   resetJournalWriterRegistryForTests,
 } from './journal-writer';
@@ -114,6 +115,7 @@ describe('JournalWriter', () => {
     const { activeJournal, writer } = await createWriter(tempRoots);
     const request = makeRequest('tx-restart-idempotent');
     const originalAck = await writer.commit(request);
+    releaseJournalState(activeJournal, 'project-journal');
 
     const reopened = await JournalWriter.open({
       activeJournalPath: activeJournal,
@@ -124,6 +126,18 @@ describe('JournalWriter', () => {
     });
     const duplicateAck = await reopened.commit(request);
 
+    expect(duplicateAck).toEqual(originalAck);
+    expect((await readValidJournal(activeJournal)).records).toHaveLength(1);
+  });
+
+  it('does not release a live journal state for a different project id', async () => {
+    const { activeJournal, writer } = await createWriter(tempRoots);
+    const request = makeRequest('tx-release-other-project');
+    const originalAck = await writer.commit(request);
+
+    releaseJournalState(activeJournal, 'other-project');
+
+    const duplicateAck = await writer.commit(request);
     expect(duplicateAck).toEqual(originalAck);
     expect((await readValidJournal(activeJournal)).records).toHaveLength(1);
   });

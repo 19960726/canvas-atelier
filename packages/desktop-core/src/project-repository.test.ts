@@ -1,6 +1,7 @@
 import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, normalize } from 'node:path';
+import type { CanvasProject } from '@agent-canvas/domain';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { sha256Canonical } from './canonical-json';
@@ -12,6 +13,7 @@ import {
   type SnapshotEnvelope,
 } from './contracts';
 import { NodeFileSystem, writeAtomic, type FileHandleLike, type FileSystem } from './file-system';
+import { readValidJournal, replayJournal } from './journal-writer';
 import {
   MAX_WIN7_PROJECT_ROOT_PATH_LENGTH,
   ProjectRepository,
@@ -338,6 +340,41 @@ describe('ProjectRepository', () => {
     expect(reopened.manifest.cleanClose).toBe(false);
   });
 
+  it('evicts active journal state on close so a recreated path initializes from disk with a changed project id', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'RecreatedPath.novus-project');
+    const repository = createRepository({ processId: 10302 });
+    const firstProject = makeCanvasProject('project-recreated-first');
+
+    const first = await repository.create(projectRoot, {
+      project: firstProject,
+      projectId: firstProject.id,
+      projectName: 'RecreatedPath',
+    });
+    const firstWriter = await repository.openJournalWriter(first, { now: () => baseNow });
+    await firstWriter.commit(
+      makeCreatePromptCommitRequest(first.manifest.projectId, 'tx-recreated-first', 0, 'prompt-first'),
+    );
+    await repository.close(first);
+    await rm(projectRoot, { force: true, recursive: true });
+
+    const secondProject = makeCanvasProject('project-recreated-second');
+    const second = await repository.create(projectRoot, {
+      project: secondProject,
+      projectId: secondProject.id,
+      projectName: 'RecreatedPath',
+    });
+    const secondWriter = await repository.openJournalWriter(second, { now: () => baseNow });
+    const secondAck = await secondWriter.commit(
+      makeCreatePromptCommitRequest(second.manifest.projectId, 'tx-recreated-second', 0, 'prompt-second'),
+    );
+
+    expect(secondAck).toMatchObject({ projectId: secondProject.id, revision: 1, sequence: 1 });
+    const secondRecords = await readFile(join(projectRoot, 'journal', 'active.ndjson'), 'utf8');
+    expect(secondRecords).toContain('"projectId":"project-recreated-second"');
+    expect(secondRecords).not.toContain('project-recreated-first');
+  });
+
   it('keeps the project dirty when owned lock removal fails during close', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'DirtyCloseFailure.novus-project');
@@ -621,10 +658,11 @@ describe('ProjectRepository', () => {
     const firstRepository = createRepository({ processId: 10101 });
     const secondRepository = createRepository({ processId: 11101 });
     const thirdRepository = createRepository({ processId: 12101 });
+    const sourceProject = makeCanvasProject('project-source');
 
     const source = await firstRepository.create(sourceRoot, {
-      project: starterProject,
-      projectId: 'project-source',
+      project: sourceProject,
+      projectId: sourceProject.id,
       projectName: 'Source',
     });
     const readOnlySource = await secondRepository.open(sourceRoot, { mode: 'write' });
@@ -670,6 +708,71 @@ describe('ProjectRepository', () => {
 
     expect(copied.mode).toBe('write');
     expect(readProjectNodeIds(copiedSnapshot.project)).toContain('prompt-save-as');
+  });
+
+  it('saveAs rewrites CanvasProject identity and remains replayable after copying journaled state', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const sourceRoot = join(tempRoot, 'IdentitySource.novus-project');
+    const destinationRoot = join(tempRoot, 'Identity Copy.novus-project');
+    const repository = createRepository({ processId: 11108 });
+    const sourceProject = makeCanvasProjectWithMemory('project-identity-source');
+
+    const source = await repository.create(sourceRoot, {
+      project: sourceProject,
+      projectId: sourceProject.id,
+      projectName: 'IdentitySource',
+    });
+    const writer = await repository.openJournalWriter(source, { now: () => baseNow });
+    await writer.commit(makeIdentityJournalCommitRequest(sourceProject.id));
+
+    const copied = await repository.saveAs(source, destinationRoot);
+    const copiedManifest = await readProjectManifest(destinationRoot);
+    const copiedSnapshot = await readJson<SnapshotEnvelope>(
+      join(destinationRoot, ...copiedManifest.stableSnapshotPath!.split('/')),
+    );
+    const copiedProject = copiedSnapshot.project as CanvasProject;
+    const sourceManifest = await readProjectManifest(sourceRoot);
+    const sourceSnapshot = await readJson<SnapshotEnvelope>(
+      join(sourceRoot, ...sourceManifest.stableSnapshotPath!.split('/')),
+    );
+
+    expect(copied.manifest.projectId).toBe(copiedProject.id);
+    expect(copiedProject.name).toBe('Identity Copy');
+    expect(copiedProject.projectMemory.map((entry) => entry.projectId)).toEqual([
+      copiedProject.id,
+      copiedProject.id,
+    ]);
+    expect(copiedProject.skillPromotionCandidates.map((candidate) => candidate.sourceProjectId)).toEqual([
+      copiedProject.id,
+    ]);
+    expect(copiedProject.projectMemory.map((entry) => entry.title)).toEqual([
+      'Initial optimization',
+      'Journaled generation',
+    ]);
+    expect(readProjectNodeIds(copiedSnapshot.project)).toEqual([
+      'reference-identity',
+      'prompt-journaled',
+    ]);
+    expect((sourceSnapshot.project as CanvasProject).id).toBe(sourceProject.id);
+    expect((sourceSnapshot.project as CanvasProject).projectMemory[0]!.projectId).toBe(sourceProject.id);
+
+    const copiedWriter = await repository.openJournalWriter(copied, { now: () => baseNow });
+    await copiedWriter.commit(
+      makeCreatePromptCommitRequest(copiedProject.id, 'tx-copy-replay', 0, 'prompt-copy-replay'),
+    );
+    const copiedJournalRecords = await readValidJournal(join(destinationRoot, 'journal', 'active.ndjson'), {
+      baseRevision: copiedManifest.stableSnapshotRevision,
+      expectedProjectId: copiedProject.id,
+      firstSequence: copiedManifest.nextSequence,
+    });
+    const copiedJournal = replayJournal(
+      copiedProject,
+      copiedManifest.stableSnapshotRevision,
+      copiedJournalRecords.records,
+    );
+
+    expect(copiedJournal.revision).toBe(1);
+    expect(readProjectNodeIds(copiedJournal.project)).toContain('prompt-copy-replay');
   });
 
   it('saveAs tolerates an incomplete final journal tail while copying committed records', async () => {
@@ -829,7 +932,7 @@ async function createTempRoot(tempRoots: string[]) {
   return tempRoot;
 }
 
-function makeCanvasProject(projectId: string) {
+function makeCanvasProject(projectId: string): CanvasProject {
   return {
     version: 1,
     id: projectId,
@@ -838,6 +941,96 @@ function makeCanvasProject(projectId: string) {
     edges: [],
     projectMemory: [],
     skillPromotionCandidates: [],
+  };
+}
+
+function makeCanvasProjectWithMemory(projectId: string): CanvasProject {
+  const memory = makeProjectMemoryEntry(projectId, 'memory-initial-optimization', 0, 'Initial optimization');
+
+  return {
+    version: 1,
+    id: projectId,
+    name: 'Identity Source',
+    nodes: [{
+      id: 'reference-identity',
+      type: 'reference',
+      position: { x: 0, y: 0 },
+      data: { assetId: 'asset-stable-1', role: 'product_identity' },
+    }],
+    edges: [],
+    projectMemory: [memory],
+    skillPromotionCandidates: [{
+      schemaVersion: 1,
+      id: 'candidate-initial-optimization',
+      sourceProjectId: projectId,
+      sourceProjectMemoryId: memory.id,
+      createdAt: baseNow.toISOString(),
+      title: memory.title,
+      rationale: memory.rationale,
+      rule: memory.nextStep,
+      evidence: memory.feedback,
+      reviewStatus: 'pending_review',
+    }],
+  };
+}
+
+function makeProjectMemoryEntry(
+  projectId: string,
+  id: string,
+  projectRevision: number,
+  title: string,
+) {
+  return {
+    schemaVersion: 1 as const,
+    id,
+    projectId,
+    projectRevision,
+    createdAt: baseNow.toISOString(),
+    kind: 'optimization' as const,
+    actor: 'agent' as const,
+    title,
+    changeSummary: `${title} summary`,
+    rationale: `${title} rationale`,
+    snapshots: {
+      beforeId: `${id}-before`,
+      afterId: `${id}-after`,
+    },
+    context: {
+      referenceAssetIds: ['asset-stable-1'],
+      resultAssetIds: ['asset-result-1'],
+    },
+    feedback: {
+      keep: ['Keep lighting'],
+      change: ['Reduce clutter'],
+      never: ['Avoid cropped product'],
+      score: 5,
+    },
+    nextStep: `${title} reusable rule`,
+  };
+}
+
+function makeIdentityJournalCommitRequest(projectId: string): CommitRequest {
+  return {
+    projectId,
+    baseRevision: 0,
+    kind: 'canvas',
+    transaction: {
+      id: 'tx-save-as-identity',
+      label: 'append memory and prompt',
+      operations: [
+        {
+          kind: 'append_project_memory',
+          entry: makeProjectMemoryEntry(projectId, 'memory-journaled-generation', 1, 'Journaled generation'),
+        },
+        {
+          kind: 'canvas',
+          operation: {
+            kind: 'create_node',
+            node: makePromptNode('prompt-journaled'),
+          },
+        },
+      ],
+    },
   };
 }
 

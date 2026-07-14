@@ -1,5 +1,7 @@
 import { basename, dirname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path';
 
+import { parseCanvasProject, type CanvasProject } from '@agent-canvas/domain';
+
 import { canonicalJson, sha256Canonical } from './canonical-json.js';
 import {
   PROJECT_FORMAT_VERSION,
@@ -16,6 +18,7 @@ import {
   JournalWriter,
   createPersistenceError,
   readValidJournal,
+  releaseJournalState,
   replayJournal,
   type JournalWriterSessionOptions,
 } from './journal-writer.js';
@@ -219,35 +222,42 @@ export class ProjectRepository {
       ...session.manifest,
       cleanClose: true,
     };
+    let didClose = false;
 
     try {
       const currentLock = await this.readCanonicalLock(session.root, session.lock.projectId);
-      if (
-        currentLock.kind !== 'valid' ||
-        currentLock.lock.sessionId !== session.lock.sessionId
-      ) {
-        return;
+      if (currentLock.kind === 'valid' && currentLock.lock.sessionId === session.lock.sessionId) {
+        await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
+        await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
+        await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
+          clean: true,
+          closedAt,
+        } satisfies CleanCloseMarker);
+        didClose = true;
       }
-
-      await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
-      await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
-      await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
-        clean: true,
-        closedAt,
-      } satisfies CleanCloseMarker);
     } finally {
       await this.releaseOperationGuard(guard);
+    }
+
+    if (didClose) {
+      releaseJournalState(this.resolveActiveJournalPath(session.root, session.manifest), session.manifest.projectId);
     }
   }
 
   async saveAs(session: OpenedProjectSession, destinationRoot: string): Promise<OpenedProjectSession> {
     assertSafeWin7ProjectRoot(destinationRoot);
 
-    const project = await this.readCurrentProject(session.root, session.manifest);
+    const projectId = this.createId();
+    const projectName = basename(destinationRoot, '.novus-project');
+    const project = cloneCanvasProjectForSaveAs(
+      await this.readCurrentCanvasProject(session.root, session.manifest, 'saveAs'),
+      projectId,
+      projectName,
+    );
     return this.create(destinationRoot, {
       project,
-      projectId: this.createId(),
-      projectName: basename(destinationRoot, '.novus-project'),
+      projectId,
+      projectName,
     });
   }
 
@@ -264,10 +274,7 @@ export class ProjectRepository {
     }
 
     return JournalWriter.open({
-      activeJournalPath: join(
-        session.root,
-        ...validateActiveJournalSegment(session.manifest.activeJournalSegment).split('/'),
-      ),
+      activeJournalPath: this.resolveActiveJournalPath(session.root, session.manifest),
       baseRevision: session.manifest.stableSnapshotRevision,
       fileSystem: options.fileSystem ?? this.fileSystem,
       nextSequence: session.manifest.nextSequence,
@@ -452,8 +459,12 @@ export class ProjectRepository {
     }
 
     try {
+      const stableCanvasProject = requireCanvasProject(
+        stableProject,
+        'Active journal replay',
+      );
       return replayJournal(
-        stableProject as Parameters<typeof replayJournal>[0],
+        stableCanvasProject,
         manifest.stableSnapshotRevision,
         journal.records,
       ).project as ProjectState;
@@ -469,6 +480,21 @@ export class ProjectRepository {
         error,
       );
     }
+  }
+
+  private async readCurrentCanvasProject(
+    root: string,
+    manifest: ProjectManifest,
+    context: string,
+  ): Promise<CanvasProject> {
+    return requireCanvasProject(await this.readCurrentProject(root, manifest), context);
+  }
+
+  private resolveActiveJournalPath(root: string, manifest: ProjectManifest): string {
+    return join(
+      root,
+      ...validateActiveJournalSegment(manifest.activeJournalSegment).split('/'),
+    );
   }
 
   private async verifySnapshot(
@@ -601,6 +627,39 @@ function createSnapshot(options: {
     project: options.project,
     projectSha256: sha256Canonical(options.project),
   };
+}
+
+function cloneCanvasProjectForSaveAs(
+  source: CanvasProject,
+  projectId: string,
+  projectName: string,
+): CanvasProject {
+  return parseCanvasProject({
+    ...source,
+    id: projectId,
+    name: projectName,
+    projectMemory: source.projectMemory.map((entry) => ({
+      ...entry,
+      projectId,
+    })),
+    skillPromotionCandidates: source.skillPromotionCandidates.map((candidate) => ({
+      ...candidate,
+      sourceProjectId: projectId,
+    })),
+  });
+}
+
+function requireCanvasProject(input: ProjectState, context: string): CanvasProject {
+  try {
+    return parseCanvasProject(input);
+  } catch (error) {
+    throw createPersistenceError(
+      'CORRUPT_JOURNAL',
+      false,
+      `${context} requires a valid CanvasProject state`,
+      error,
+    );
+  }
 }
 
 function validateStableSnapshotPath(path: string): string {

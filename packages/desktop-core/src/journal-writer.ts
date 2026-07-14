@@ -120,7 +120,7 @@ export class JournalWriter {
 
   static async open(options: JournalWriterOpenOptions): Promise<JournalWriter> {
     const fileSystem = options.fileSystem ?? new NodeFileSystem();
-    const registryKey = canonicalJournalRegistryKey(options.activeJournalPath);
+    const registryKey = canonicalJournalRegistryKey(options.activeJournalPath, options.projectId);
     let registryEntry = journalRegistry.get(registryKey);
     if (registryEntry === undefined) {
       registryEntry = {
@@ -252,6 +252,21 @@ export function resetJournalWriterRegistryForTests(): void {
   journalRegistry.clear();
 }
 
+export function releaseJournalState(activeJournalPath: string, projectId?: string): void {
+  const canonicalPath = canonicalJournalPath(activeJournalPath);
+  if (projectId !== undefined) {
+    journalRegistry.delete(canonicalJournalRegistryKey(activeJournalPath, projectId));
+    return;
+  }
+
+  const pathPrefix = `${canonicalPath}\0`;
+  for (const key of journalRegistry.keys()) {
+    if (key.startsWith(pathPrefix)) {
+      journalRegistry.delete(key);
+    }
+  }
+}
+
 async function initializeJournalState(
   options: JournalWriterOpenOptions,
   fileSystem: FileSystem,
@@ -284,7 +299,11 @@ async function initializeJournalState(
   };
 }
 
-function canonicalJournalRegistryKey(activeJournalPath: string): string {
+function canonicalJournalRegistryKey(activeJournalPath: string, projectId: string): string {
+  return `${canonicalJournalPath(activeJournalPath)}\0${projectId}`;
+}
+
+function canonicalJournalPath(activeJournalPath: string): string {
   return normalize(resolve(activeJournalPath)).toLowerCase();
 }
 
