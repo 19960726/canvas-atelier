@@ -9,6 +9,7 @@ const emptyProject: CanvasProject = {
   nodes: [],
   edges: [],
   projectMemory: [],
+  skillPromotionCandidates: [],
 };
 
 const referenceNode: CanvasNode = {

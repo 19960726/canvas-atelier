@@ -10,6 +10,7 @@ const project: CanvasProject = {
   nodes: [],
   edges: [],
   projectMemory: [],
+  skillPromotionCandidates: [],
 };
 
 function createPlan(overrides: Partial<AgentCanvasPlan> = {}): AgentCanvasPlan {

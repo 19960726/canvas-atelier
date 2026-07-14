@@ -123,6 +123,34 @@ describe('project memory', () => {
     expect(buildProjectMemoryContext([optimization, revertDecision])).toEqual([revertDecision]);
   });
 
+  it('reactivates memory when a later restore supersedes the earlier restore decision', () => {
+    const second = { ...optimization, id: 'memory-2', projectRevision: 13, createdAt: '2026-07-13T14:00:00.000Z', title: '第二次优化' };
+    const firstRestore: ProjectMemoryEntry = {
+      ...optimization,
+      id: 'restore-1',
+      projectRevision: 14,
+      createdAt: '2026-07-13T15:00:00.000Z',
+      kind: 'decision',
+      actor: 'user',
+      title: '恢复到第一次优化',
+      supersedesMemoryIds: [second.id],
+    };
+    const secondRestore: ProjectMemoryEntry = {
+      ...firstRestore,
+      id: 'restore-2',
+      projectRevision: 15,
+      createdAt: '2026-07-13T16:00:00.000Z',
+      title: '恢复到第二次优化',
+      supersedesMemoryIds: [firstRestore.id],
+    };
+
+    expect(buildProjectMemoryContext([optimization, second, firstRestore, secondRestore]).map((entry) => entry.id)).toEqual([
+      secondRestore.id,
+      second.id,
+      optimization.id,
+    ]);
+  });
+
   it('promotes project experience only as a pending Skill candidate', () => {
     expect(createSkillPromotionCandidate(optimization, {
       candidateId: 'skill-candidate-1',

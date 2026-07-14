@@ -13,6 +13,7 @@ describe('project persistence recovery', () => {
     }));
 
     expect(loadPersistedProjectBundle()).toMatchObject({
+      schemaVersion: 2,
       current: { id: 'local-project' },
       snapshots: [],
     });

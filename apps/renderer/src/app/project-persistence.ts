@@ -7,7 +7,7 @@ export interface PersistedProjectSnapshot {
 }
 
 export interface PersistedProjectBundle {
-  schemaVersion: 1;
+  schemaVersion: 2;
   current: CanvasProject;
   snapshots: PersistedProjectSnapshot[];
 }
@@ -18,7 +18,7 @@ export function loadPersistedProjectBundle(storage = getStorage()): PersistedPro
   if (!raw) return null;
   try {
     const input = JSON.parse(raw) as Partial<PersistedProjectBundle>;
-    if (input.schemaVersion !== 1 || !input.current || !Array.isArray(input.snapshots)) return null;
+    if (![1, 2].includes(input.schemaVersion as number) || !input.current || !Array.isArray(input.snapshots)) return null;
     const current = parseCanvasProject(input.current);
     const snapshots = input.snapshots.flatMap((snapshot) => {
       try {
@@ -27,7 +27,7 @@ export function loadPersistedProjectBundle(storage = getStorage()): PersistedPro
         return [];
       }
     });
-    return { schemaVersion: 1, current, snapshots };
+    return { schemaVersion: 2, current, snapshots };
   } catch {
     return null;
   }
@@ -49,7 +49,7 @@ export function persistProjectTransition(
       { id: snapshotIds.afterId, project: parseCanvasProject(after) },
     ];
     const bundle: PersistedProjectBundle = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       current: parseCanvasProject(after),
       snapshots: nextSnapshots,
     };
@@ -66,7 +66,7 @@ export function persistCurrentProject(project: CanvasProject, storage = getStora
     const current = parseCanvasProject(project);
     const existing = loadPersistedProjectBundle(storage);
     const bundle: PersistedProjectBundle = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       current,
       snapshots: existing?.current.id === current.id ? existing.snapshots : [],
     };

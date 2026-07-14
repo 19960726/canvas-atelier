@@ -1,4 +1,4 @@
-export { appendProjectMemoryEntry, buildProjectMemoryContext, createSkillPromotionCandidate, parseProjectMemoryEntry } from './project-memory';
+export { appendProjectMemoryEntry, buildProjectMemoryContext, createSkillPromotionCandidate, parseProjectMemoryEntry, selectActiveProjectMemoryEntries } from './project-memory';
 export type { ProjectMemoryEntry, SkillPromotionCandidate } from './project-memory';
 export { DEFAULT_REVERSE_PROMPT_PERSONA, REVERSE_PROMPT_PERSONAS, createReversePromptRun, parseReversePromptResult } from './reverse-prompt-agent';
 export type { ApprovedMemorySnapshot, ReversePromptPersona, ReversePromptResult, ReversePromptRun } from './reverse-prompt-agent';

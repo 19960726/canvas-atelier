@@ -13,6 +13,7 @@ describe('parseCanvasProject', () => {
     });
 
     expect(project.projectMemory).toEqual([]);
+    expect(project.skillPromotionCandidates).toEqual([]);
   });
 
   it('restores project memory stored with the project', () => {
@@ -67,6 +68,92 @@ describe('parseCanvasProject', () => {
       ...project,
       projectMemory: [memory, { ...memory, id: 'memory-2', projectRevision: 1 }],
     })).toThrow(/版本/);
+  });
+
+  it('rejects Skill candidates that are duplicated, cross-project, or reference missing memory', () => {
+    const memory = {
+      schemaVersion: 1,
+      id: 'memory-1',
+      projectId: 'p1',
+      projectRevision: 1,
+      createdAt: '2026-07-14T01:00:00.000Z',
+      kind: 'optimization',
+      actor: 'agent',
+      title: '构图优化',
+      changeSummary: '产品上移。',
+      rationale: '保留安全区。',
+      snapshots: { beforeId: 'before-1', afterId: 'after-1' },
+      context: { referenceAssetIds: [], resultAssetIds: [] },
+      feedback: { keep: [], change: [], never: [] },
+      nextStep: '继续检查。',
+    };
+    const candidate = {
+      schemaVersion: 1,
+      id: 'candidate-1',
+      sourceProjectId: 'p1',
+      sourceProjectMemoryId: 'memory-1',
+      createdAt: '2026-07-14T02:00:00.000Z',
+      title: '构图优化',
+      rationale: '保留安全区。',
+      rule: '继续检查。',
+      evidence: { keep: [], change: [], never: [] },
+      reviewStatus: 'pending_review',
+    };
+    const project = { version: 1, id: 'p1', name: 'candidate validation', nodes: [], edges: [], projectMemory: [memory] };
+
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [candidate, { ...candidate, id: 'candidate-2' }] })).toThrow(/重复提升/);
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectId: 'p2' }] })).toThrow(/当前项目/);
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectMemoryId: 'missing' }] })).toThrow(/当前项目/);
+    const secondMemory = { ...memory, id: 'memory-2', projectRevision: 2 };
+    expect(() => parseCanvasProject({
+      ...project,
+      projectMemory: [memory, secondMemory],
+      skillPromotionCandidates: [candidate, { ...candidate, sourceProjectMemoryId: secondMemory.id }],
+    })).toThrow(/候选 id/);
+  });
+
+  it('rejects Skill candidates sourced from decisions or superseded memories', () => {
+    const optimization = {
+      schemaVersion: 1,
+      id: 'memory-1',
+      projectId: 'p1',
+      projectRevision: 1,
+      createdAt: '2026-07-14T01:00:00.000Z',
+      kind: 'optimization',
+      actor: 'agent',
+      title: '构图优化',
+      changeSummary: '产品上移。',
+      rationale: '保留安全区。',
+      snapshots: { beforeId: 'before-1', afterId: 'after-1' },
+      context: { referenceAssetIds: [], resultAssetIds: [] },
+      feedback: { keep: [], change: [], never: [] },
+      nextStep: '继续检查。',
+    };
+    const decision = {
+      ...optimization,
+      id: 'memory-2',
+      projectRevision: 2,
+      kind: 'decision',
+      actor: 'user',
+      title: '撤销构图优化',
+      supersedesMemoryId: optimization.id,
+    };
+    const candidate = {
+      schemaVersion: 1,
+      id: 'candidate-1',
+      sourceProjectId: 'p1',
+      sourceProjectMemoryId: decision.id,
+      createdAt: '2026-07-14T02:00:00.000Z',
+      title: decision.title,
+      rationale: decision.rationale,
+      rule: decision.nextStep,
+      evidence: decision.feedback,
+      reviewStatus: 'pending_review',
+    };
+    const project = { version: 1, id: 'p1', name: 'candidate source validation', nodes: [], edges: [], projectMemory: [optimization, decision] };
+
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [candidate] })).toThrow(/可提升/);
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectMemoryId: optimization.id }] })).toThrow(/有效/);
   });
 
   it('rejects a reference node without a role', () => {
@@ -171,6 +258,7 @@ describe('public domain API', () => {
       'parseReversePromptResult',
       'placementToPromptConstraints',
       'revertTransaction',
+      'selectActiveProjectMemoryEntries',
       'validateAgentPlan',
     ]);
   });

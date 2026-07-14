@@ -36,6 +36,7 @@ export const projectMemoryEntrySchema = z.object({
   }).strict(),
   nextStep: z.string().min(1),
   supersedesMemoryId: idSchema.optional(),
+  supersedesMemoryIds: z.array(idSchema).optional(),
 }).strict().superRefine((entry, context) => {
   for (const text of collectStrings(entry)) {
     if (containsPrivatePath(text)) {
@@ -106,14 +107,28 @@ export function buildProjectMemoryContext(
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
     throw new Error('项目记忆上下文数量必须在 1 到 50 之间');
   }
-  const parsed = timeline.map(parseProjectMemoryEntry);
-  const supersededIds = new Set(parsed.flatMap((entry) => entry.supersedesMemoryId ? [entry.supersedesMemoryId] : []));
-  return parsed
-    .filter((entry) => !supersededIds.has(entry.id))
+  return selectActiveProjectMemoryEntries(timeline)
     .sort((left, right) => right.projectRevision - left.projectRevision || right.createdAt.localeCompare(left.createdAt))
     .slice(0, limit);
 }
 
+export function selectActiveProjectMemoryEntries(timeline: ProjectMemoryEntry[]): ProjectMemoryEntry[] {
+  const parsed = timeline.map(parseProjectMemoryEntry);
+  const inactiveIds = new Set<string>();
+  const activeNewestFirst: ProjectMemoryEntry[] = [];
+  for (let index = parsed.length - 1; index >= 0; index -= 1) {
+    const entry = parsed[index]!;
+    if (inactiveIds.has(entry.id)) continue;
+    activeNewestFirst.push(entry);
+    for (const id of [
+      ...(entry.supersedesMemoryId ? [entry.supersedesMemoryId] : []),
+      ...(entry.supersedesMemoryIds ?? []),
+    ]) {
+      inactiveIds.add(id);
+    }
+  }
+  return activeNewestFirst.reverse();
+}
 export function createSkillPromotionCandidate(
   input: ProjectMemoryEntry,
   metadata: { candidateId: string; createdAt: string },

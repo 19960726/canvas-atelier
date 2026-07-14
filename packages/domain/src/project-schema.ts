@@ -1,4 +1,4 @@
-import { projectMemoryEntrySchema } from './project-memory';
+import { projectMemoryEntrySchema, selectActiveProjectMemoryEntries, skillPromotionCandidateSchema } from './project-memory';
 import { z } from 'zod';
 
 const idSchema = z.string().min(1);
@@ -187,6 +187,7 @@ export const canvasProjectSchema = z.object({
   nodes: z.array(canvasNodeSchema),
   edges: z.array(canvasEdgeSchema),
   projectMemory: z.array(projectMemoryEntrySchema).default([]),
+  skillPromotionCandidates: z.array(skillPromotionCandidateSchema).default([]),
 }).strict().superRefine((project, context) => {
   const memoryIds = new Set<string>();
   let previousRevision = -1;
@@ -200,11 +201,40 @@ export const canvasProjectSchema = z.object({
     if (memory.projectRevision < previousRevision) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'projectRevision'], message: '项目记忆版本不能倒退' });
     }
-    if (memory.supersedesMemoryId && !memoryIds.has(memory.supersedesMemoryId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'supersedesMemoryId'], message: '撤销记忆必须引用更早的项目记忆' });
+    const supersededIds = [
+      ...(memory.supersedesMemoryId ? [memory.supersedesMemoryId] : []),
+      ...(memory.supersedesMemoryIds ?? []),
+    ];
+    if (supersededIds.some((id) => !memoryIds.has(id))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index], message: '恢复或撤销记忆必须引用更早的项目记忆' });
     }
     memoryIds.add(memory.id);
     previousRevision = memory.projectRevision;
+  }
+
+  const memoryById = new Map(project.projectMemory.map((memory) => [memory.id, memory]));
+  const activeMemoryIds = new Set(selectActiveProjectMemoryEntries(project.projectMemory).map((memory) => memory.id));
+  const promotedMemoryIds = new Set<string>();
+  const candidateIds = new Set<string>();
+  for (const [index, candidate] of project.skillPromotionCandidates.entries()) {
+    if (candidateIds.has(candidate.id)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index, 'id'], message: 'Skill 候选 id 不能重复' });
+    }
+    if (candidate.sourceProjectId !== project.id || !memoryIds.has(candidate.sourceProjectMemoryId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 候选必须引用当前项目记忆' });
+    }
+    const sourceMemory = memoryById.get(candidate.sourceProjectMemoryId);
+    if (sourceMemory && !['optimization', 'generation', 'reverse_prompt'].includes(sourceMemory.kind)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 候选必须引用可提升的项目记忆' });
+    }
+    if (sourceMemory && !activeMemoryIds.has(sourceMemory.id)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 候选必须引用仍然有效的项目记忆' });
+    }
+    if (promotedMemoryIds.has(candidate.sourceProjectMemoryId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: '同一项目记忆不能重复提升' });
+    }
+    promotedMemoryIds.add(candidate.sourceProjectMemoryId);
+    candidateIds.add(candidate.id);
   }
 });
 

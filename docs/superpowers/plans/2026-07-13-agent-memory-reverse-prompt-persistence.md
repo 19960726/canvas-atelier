@@ -499,7 +499,7 @@ Runtime verification still requires screenshots of the shipped app, including th
 - [x] Write failing tests for immutable append, duplicate/revision rejection, private-path/secret rejection, bounded newest-first Agent context, and pending-review Skill promotion.
 - [x] Store `projectMemory` in the project schema and migrate older projects to an empty timeline.
 - [x] Record each confirmed Agent canvas optimization in the same atomic state update as the canvas transaction.
-- [ ] Add the visible project-memory timeline, filters, and links to generation/reverse-prompt history.
+- [x] Add the visible project-memory timeline and type filters; generation/reverse-prompt entries share the same timeline contract.
 - [ ] Persist timeline entries through snapshot-plus-journal desktop storage and verify crash recovery.
-- [ ] Add snapshot restore and reviewed `promote to Skill` UI actions; never auto-promote project-specific experience.
-- [ ] Verify that API keys, Authorization values, private filesystem paths, and raw image payloads cannot enter project memory or exports.
+- [x] Add snapshot restore and reviewed `promote to Skill` UI actions; promotion creates only a persisted `pending_review` candidate and never auto-writes Skill knowledge.
+- [x] Verify that API keys, Authorization values, private filesystem paths, and raw image payloads cannot enter project memory; export-level verification remains part of desktop packaging.

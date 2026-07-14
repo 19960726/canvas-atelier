@@ -27,8 +27,10 @@ import {
   X,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
+import { loadPersistedProjectBundle } from '../app/project-persistence';
 import { PlanPreview } from '../agent/PlanPreview';
 import { ReversePromptAgent } from '../agent/ReversePromptAgent';
+import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
@@ -64,11 +66,19 @@ export function CanvasWorkspace() {
   const confirmAgentPlan = useAppStore((state) => state.confirmAgentPlan);
   const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
   const undo = useAppStore((state) => state.undo);
+  const promoteProjectMemory = useAppStore((state) => state.promoteProjectMemory);
+  const restoreProjectSnapshot = useAppStore((state) => state.restoreProjectSnapshot);
   const [agentMessage, setAgentMessage] = useState('');
+  const [activeAgentTab, setActiveAgentTab] = useState<'conversation' | 'plan' | 'memory'>('conversation');
+  const availableSnapshotIds = useMemo(
+    () => loadPersistedProjectBundle()?.snapshots.map((snapshot) => snapshot.id) ?? [],
+    [project, saveStatus],
+  );
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const previewUrlsRef = useRef(new Map<string, string>());
   const uploadSequenceRef = useRef(0);
+  const focusAgentTabOnChangeRef = useRef(false);
 
   const flowNodes = useMemo(() => {
     const nodes = toFlowNodes(project.nodes);
@@ -110,6 +120,30 @@ export function CanvasWorkspace() {
     { id: 'prompt' as const, label: '提示词节点', icon: MessageSquare },
     { id: 'placement' as const, label: '摆放预览', icon: LayoutTemplate },
   ], []);
+
+  const activateAgentTab = (next: 'conversation' | 'plan' | 'memory', moveFocus = false) => {
+    focusAgentTabOnChangeRef.current = moveFocus;
+    setActiveAgentTab(next);
+  };
+
+  const handleAgentTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, current: 'conversation' | 'plan' | 'memory') => {
+    const tabs = ['conversation', 'plan', 'memory'] as const;
+    const currentIndex = tabs.indexOf(current);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+    if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = tabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    activateAgentTab(tabs[nextIndex]!, true);
+  };
+
+  useEffect(() => {
+    if (!focusAgentTabOnChangeRef.current) return;
+    focusAgentTabOnChangeRef.current = false;
+    document.getElementById(`agent-tab-${activeAgentTab}`)?.focus();
+  }, [activeAgentTab]);
 
   useEffect(() => () => {
     if (typeof URL.revokeObjectURL !== 'function') return;
@@ -271,42 +305,57 @@ export function CanvasWorkspace() {
           </button>
         </div>
         <div className="agent-tabs" role="tablist" aria-label="Agent 视图">
-          <button className="agent-tab is-active" type="button" role="tab" aria-selected="true">对话</button>
-          <button className="agent-tab" type="button" role="tab" aria-selected="false">计划</button>
-          <button className="agent-tab" type="button" role="tab" aria-selected="false">记忆</button>
+          <button id="agent-tab-conversation" aria-controls="agent-panel-conversation" tabIndex={activeAgentTab === 'conversation' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'conversation' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'conversation'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'conversation')} onClick={() => activateAgentTab('conversation')}>对话</button>
+          <button id="agent-tab-plan" aria-controls="agent-panel-plan" tabIndex={activeAgentTab === 'plan' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'plan' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'plan'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'plan')} onClick={() => activateAgentTab('plan')}>计划</button>
+          <button id="agent-tab-memory" aria-controls="agent-panel-memory" tabIndex={activeAgentTab === 'memory' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'memory' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'memory'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'memory')} onClick={() => activateAgentTab('memory')}>记忆</button>
         </div>
         <div className="agent-thread">
-          {agentPlan?.state === 'waiting_for_confirmation' ? (
-            <PlanPreview plan={agentPlan} onConfirm={confirmAgentPlan} onCancel={cancelAgentPlan} />
-          ) : (
-            <>
-              <ReversePromptAgent
-                projectId={project.id}
-                referenceAssetIds={reverseReferenceAssetIds}
-                getApprovedMemorySnapshot={getApprovedMemorySnapshot}
-                getProjectMemoryIds={getProjectMemoryIds}
-                analyze={analyzeReversePromptDraft}
-                analysisMode="local_draft"
-              />
-              <div className="agent-message">
-                <span className="agent-avatar">A</span>
-                <div><strong>{agentPlan ? '方案已应用' : '准备开始'}</strong><p>{agentPlan ? '画布事务已确认，可使用顶部撤销一次恢复。' : '上传产品、场景和道具参考，我会先生成画布计划，确认后再调用模型。'}</p></div>
+          <div id="agent-panel-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden={activeAgentTab !== 'conversation'}>
+            <ReversePromptAgent
+              projectId={project.id}
+              referenceAssetIds={reverseReferenceAssetIds}
+              getApprovedMemorySnapshot={getApprovedMemorySnapshot}
+              getProjectMemoryIds={getProjectMemoryIds}
+              analyze={analyzeReversePromptDraft}
+              analysisMode="local_draft"
+            />
+            <div className="agent-message">
+              <span className="agent-avatar">A</span>
+              <div>
+                <strong>{agentPlan ? '方案已应用' : '准备开始'}</strong>
+                <p>{agentPlan ? '画布事务已确认，可使用顶部撤销恢复。' : '上传产品、场景和道具参考，我会先生成画布计划，确认后再调用模型。'}</p>
               </div>
-              <section className="agent-summary" aria-label="当前参考职责">
-                <div className="summary-row"><span>产品身份</span><b>{referenceStatus(referenceCounts.product, '等待上传')}</b></div>
-                <div className="summary-row"><span>场景构图</span><b>{referenceStatus(referenceCounts.scene, '等待上传')}</b></div>
-                <div className="summary-row"><span>道具参考</span><b>{referenceStatus(referenceCounts.prop, '可选')}</b></div>
-              </section>
-            </>
-          )}
-        </div>
-        <div className="agent-composer">
-          <textarea aria-label="向 Agent 发送消息" placeholder="描述你想制作的产品场景…" rows={3} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} />
-          <div className="agent-composer__footer">
-            <span>模型执行前需要确认</span>
-            <button type="button" aria-label="发送消息" disabled={agentMessage.trim().length === 0} onClick={() => { draftAgentPlan(agentMessage); setAgentMessage(''); }}><ChevronRight size={17} /></button>
+            </div>
+            <section className="agent-summary" aria-label="当前参考职责">
+              <div className="summary-row"><span>产品身份</span><b>{referenceStatus(referenceCounts.product, '等待上传')}</b></div>
+              <div className="summary-row"><span>场景构图</span><b>{referenceStatus(referenceCounts.scene, '等待上传')}</b></div>
+              <div className="summary-row"><span>道具参考</span><b>{referenceStatus(referenceCounts.prop, '可选')}</b></div>
+            </section>
+          </div>
+          <div id="agent-panel-plan" role="tabpanel" aria-labelledby="agent-tab-plan" hidden={activeAgentTab !== 'plan'}>
+            {agentPlan?.state === 'waiting_for_confirmation'
+              ? <PlanPreview plan={agentPlan} onConfirm={confirmAgentPlan} onCancel={cancelAgentPlan} />
+              : <section className="agent-empty-view" aria-label="Agent 计划"><strong>暂无待确认计划</strong><p>从对话页提交需求后，Agent 计划会在这里等待确认。</p></section>}
+          </div>
+          <div id="agent-panel-memory" role="tabpanel" aria-labelledby="agent-tab-memory" hidden={activeAgentTab !== 'memory'}>
+            <ProjectMemoryTimeline
+              entries={project.projectMemory}
+              promotionCandidates={project.skillPromotionCandidates}
+              availableSnapshotIds={availableSnapshotIds}
+              onRestore={restoreProjectSnapshot}
+              onPromote={promoteProjectMemory}
+            />
           </div>
         </div>
+        {activeAgentTab === 'conversation' && (
+          <div className="agent-composer">
+            <textarea aria-label="向 Agent 发送消息" placeholder="描述你想制作的产品场景…" rows={3} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} />
+            <div className="agent-composer__footer">
+              <span>模型执行前需要确认</span>
+              <button type="button" aria-label="发送消息" disabled={agentMessage.trim().length === 0} onClick={() => { draftAgentPlan(agentMessage); setAgentMessage(''); activateAgentTab('plan', true); }}><ChevronRight size={17} /></button>
+            </div>
+          </div>
+        )}
       </aside>
 
       <footer className="job-strip" aria-label="任务队列">

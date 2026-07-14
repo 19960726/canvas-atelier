@@ -1,13 +1,16 @@
 import { create } from 'zustand';
 import {
   appendProjectMemoryEntry,
+  createSkillPromotionCandidate,
   confirmAgentPlan as confirmDomainPlan,
   revertTransaction,
+  selectActiveProjectMemoryEntries,
   type AgentCanvasPlan,
   type AgentPlanApprovalSelection,
   type CanvasProject,
   type CanvasTransaction,
   type ProjectMemoryEntry,
+  type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import {
   loadPersistedProjectBundle,
@@ -37,6 +40,7 @@ export function createStarterProject(): CanvasProject {
       { id: 'prompt-start', type: 'prompt', position: { x: 800, y: 160 }, data: { prompt: '等待确认后执行模型任务', requirementIds: [] } },
     ],
     projectMemory: [],
+    skillPromotionCandidates: [],
     edges: [
       { id: 'edge-reference-placement', source: 'reference-start', target: 'placement-start' },
       { id: 'edge-placement-prompt', source: 'placement-start', target: 'prompt-start', label: 'agent-plan' },
@@ -59,6 +63,8 @@ interface AppState {
   confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => void;
   cancelAgentPlan: () => void;
   undo: () => void;
+  promoteProjectMemory: (memoryId: string) => void;
+  restoreProjectSnapshot: (snapshotId: string) => void;
 }
 
 const restoredProject = loadPersistedProjectBundle()?.current;
@@ -130,18 +136,70 @@ export const useAppStore = create<AppState>((set) => ({
     };
   }),
   cancelAgentPlan: () => set({ agentPlan: null }),
+  promoteProjectMemory: (memoryId) => set((state) => {
+    if (state.project.skillPromotionCandidates.some((candidate) => candidate.sourceProjectMemoryId === memoryId)) return state;
+    const memory = state.project.projectMemory.find((entry) => entry.id === memoryId);
+    if (!memory || !isPromotableMemory(state.project.projectMemory, memory)) return state;
+    cancelPendingProjectSave();
+    const candidate = createSkillPromotionCandidate(memory, {
+      candidateId: `skill-candidate-${Date.now()}-${planSequence++}`,
+      createdAt: new Date().toISOString(),
+    });
+    const project = {
+      ...state.project,
+      skillPromotionCandidates: [...state.project.skillPromotionCandidates, candidate],
+    };
+    const saved = persistCurrentProject(project);
+    return { project, saveStatus: saved ? 'saved' : 'error' };
+  }),
+  restoreProjectSnapshot: (snapshotId) => set((state) => {
+    const bundle = loadPersistedProjectBundle();
+    const snapshot = bundle?.snapshots.find((entry) => entry.id === snapshotId);
+    if (!snapshot || snapshot.project.id !== state.project.id) return state;
+    cancelPendingProjectSave();
+    const currentProject = sanitizeProjectSkillPromotionCandidates(state.project);
+    const snapshotMemoryIds = new Set(snapshot.project.projectMemory.map((memory) => memory.id));
+    const supersedesMemoryIds = currentProject.projectMemory
+      .filter((memory) => !snapshotMemoryIds.has(memory.id))
+      .map((memory) => memory.id);
+    const restored = {
+      ...snapshot.project,
+      projectMemory: currentProject.projectMemory,
+      skillPromotionCandidates: currentProject.skillPromotionCandidates,
+    };
+    const memoryEntry = createSnapshotRestoreMemory(restored, snapshotId, supersedesMemoryIds, new Date().toISOString());
+    const projectMemory = appendProjectMemoryEntry(restored.projectMemory, memoryEntry);
+    const project = {
+      ...restored,
+      projectMemory,
+      skillPromotionCandidates: filterValidSkillPromotionCandidates(
+        restored.id,
+        projectMemory,
+        restored.skillPromotionCandidates,
+      ),
+    };
+    const saved = persistProjectTransition(currentProject, project, memoryEntry.snapshots);
+    return { project, saveStatus: saved ? 'saved' : 'error', agentPlan: null, undoStack: [] };
+  }),
   undo: () => set((state) => {
     const undoEntry = state.undoStack[state.undoStack.length - 1];
     if (!undoEntry) return state;
     cancelPendingProjectSave();
-    const reverted = revertTransaction(state.project, undoEntry.transaction);
+    const currentProject = sanitizeProjectSkillPromotionCandidates(state.project);
+    const reverted = revertTransaction(currentProject, undoEntry.transaction);
     const now = new Date().toISOString();
     const memoryEntry = createUndoMemory(reverted, undoEntry.memoryId, undoEntry.transaction.id, now);
+    const projectMemory = appendProjectMemoryEntry(reverted.projectMemory, memoryEntry);
     const project = {
       ...reverted,
-      projectMemory: appendProjectMemoryEntry(reverted.projectMemory, memoryEntry),
+      projectMemory,
+      skillPromotionCandidates: filterValidSkillPromotionCandidates(
+        reverted.id,
+        projectMemory,
+        reverted.skillPromotionCandidates,
+      ),
     };
-    const saved = persistProjectTransition(state.project, project, memoryEntry.snapshots);
+    const saved = persistProjectTransition(currentProject, project, memoryEntry.snapshots);
     return {
       project,
       saveStatus: saved ? 'saved' : 'error',
@@ -238,6 +296,70 @@ function createUndoMemory(
   };
 }
 
+function isPromotableMemory(timeline: ProjectMemoryEntry[], memory: ProjectMemoryEntry): boolean {
+  if (!['optimization', 'generation', 'reverse_prompt'].includes(memory.kind)) return false;
+  return selectActiveProjectMemoryEntries(timeline).some((entry) => entry.id === memory.id);
+}
+
+function sanitizeProjectSkillPromotionCandidates(project: CanvasProject): CanvasProject {
+  return {
+    ...project,
+    skillPromotionCandidates: filterValidSkillPromotionCandidates(
+      project.id,
+      project.projectMemory,
+      project.skillPromotionCandidates,
+    ),
+  };
+}
+
+function filterValidSkillPromotionCandidates(
+  projectId: string,
+  timeline: ProjectMemoryEntry[],
+  candidates: SkillPromotionCandidate[],
+): SkillPromotionCandidate[] {
+  const activeMemoryById = new Map(
+    selectActiveProjectMemoryEntries(timeline).map((memory) => [memory.id, memory]),
+  );
+  return candidates.filter((candidate) => {
+    const sourceMemory = activeMemoryById.get(candidate.sourceProjectMemoryId);
+    return candidate.sourceProjectId === projectId
+      && sourceMemory !== undefined
+      && ['optimization', 'generation', 'reverse_prompt'].includes(sourceMemory.kind);
+  });
+}
+
+function createSnapshotRestoreMemory(
+  project: CanvasProject,
+  restoredSnapshotId: string,
+  supersedesMemoryIds: string[],
+  createdAt: string,
+): ProjectMemoryEntry {
+  const previousRevision = project.projectMemory[project.projectMemory.length - 1]?.projectRevision ?? 0;
+  const suffix = `${Date.now()}-${planSequence++}`;
+  return {
+    schemaVersion: 1,
+    id: `project-memory-restore-${suffix}`,
+    projectId: project.id,
+    projectRevision: previousRevision + 1,
+    createdAt,
+    kind: 'decision',
+    actor: 'user',
+    title: '恢复项目快照',
+    changeSummary: `恢复稳定点：${restoredSnapshotId}`,
+    rationale: '用户从项目记忆时间线恢复历史画布状态。',
+    snapshots: {
+      beforeId: `restore-${suffix}:before`,
+      afterId: `restore-${suffix}:after`,
+    },
+    context: {
+      referenceAssetIds: collectReferenceAssetIds(project),
+      resultAssetIds: project.nodes.flatMap((node) => node.type === 'image_result' ? [node.data.assetId] : []),
+    },
+    feedback: { keep: [], change: [], never: [] },
+    nextStep: '以恢复后的画布状态继续工作。',
+    supersedesMemoryIds,
+  };
+}
 function collectReferenceAssetIds(project: CanvasProject): string[] {
   const assetIds = project.nodes.flatMap((node) => {
     if (node.type === 'reference') return [node.data.assetId];

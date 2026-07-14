@@ -33,6 +33,7 @@ describe('CanvasWorkspace', () => {
       nodes: [{ id: 'prop-1', type: 'reference', position: { x: 80, y: 120 }, data: { assetId: 'asset-prop', role: 'prop_reference' } }],
       edges: [],
       projectMemory: [],
+      skillPromotionCandidates: [],
     });
     render(<CanvasWorkspace />);
     const canvas = within(screen.getByRole('application', { name: '无限画布' }));
@@ -145,4 +146,35 @@ describe('CanvasWorkspace', () => {
     expect(createObjectUrl).not.toHaveBeenCalled();
     const placement = useAppStore.getState().project.nodes.find((node) => node.type === 'placement_preview');
     expect(placement?.type === 'placement_preview' ? placement.data.objects : []).toHaveLength(20);
-  });});
+  });
+  it('opens the dedicated project-memory timeline from the Agent memory tab', () => {
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByRole('tab', { name: '记忆' }));
+    expect(screen.getByLabelText('项目记忆时间线')).toBeVisible();
+  });
+
+  it('keeps conversation, plan, and memory as distinct keyboard-navigable tab panels', () => {
+    render(<CanvasWorkspace />);
+    const tabs = screen.getAllByRole('tab');
+    expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(3);
+    for (const tab of tabs) {
+      const panelId = tab.getAttribute('aria-controls');
+      expect(panelId).toBeTruthy();
+      expect(document.getElementById(panelId!)).toHaveAttribute('role', 'tabpanel');
+    }
+    const conversationTab = screen.getByRole('tab', { name: '对话' });
+    fireEvent.keyDown(conversationTab, { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: '计划' })).toHaveFocus();
+    expect(screen.getByText('暂无待确认计划')).toBeVisible();
+    expect(screen.getByLabelText('反推 Agent')).not.toBeVisible();
+  });
+
+  it('moves focus to the Plan tab after submitting an Agent message', () => {
+    render(<CanvasWorkspace />);
+    fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '优化这张画布' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '发送消息' }));
+
+    expect(screen.getByRole('tab', { name: '计划' })).toHaveFocus();
+  });
+});
