@@ -58,10 +58,10 @@ export function applyProjectTransaction(
     }
 
     if (operation.kind === 'append_project_memory') {
-      draft = {
+      draft = parseCanvasProject({
         ...draft,
         projectMemory: appendProjectMemoryEntry(draft.projectMemory, operation.entry),
-      };
+      });
       continue;
     }
 

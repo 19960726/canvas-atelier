@@ -51,6 +51,18 @@ const candidate: SkillPromotionCandidate = {
   reviewStatus: 'pending_review',
 };
 
+function makeEmptyProject(): CanvasProject {
+  return {
+    version: 1,
+    id: 'project-1',
+    name: 'test project',
+    nodes: [],
+    edges: [],
+    projectMemory: [],
+    skillPromotionCandidates: [],
+  };
+}
+
 describe('project transactions', () => {
   it('applies canvas, memory, and candidate changes atomically', () => {
     const transaction: ProjectTransaction = {
@@ -73,6 +85,23 @@ describe('project transactions', () => {
     expect(result.skillPromotionCandidates).toEqual([candidate]);
   });
 
+  it('rejects a cross-project memory append on an empty timeline without changing the project', () => {
+    const original = makeEmptyProject();
+    const mismatchedEntry: ProjectMemoryEntry = {
+      ...optimizationMemory,
+      id: 'memory-cross-project',
+      projectId: 'project-2',
+    };
+
+    expect(() => applyProjectTransaction(original, {
+      id: 'tx-cross-project',
+      label: 'cross project memory',
+      operations: [{ kind: 'append_project_memory', entry: mismatchedEntry }],
+    })).toThrow(/当前项目/);
+
+    expect(original).toEqual(makeEmptyProject());
+  });
+
   it('rejects the whole transaction when one operation is invalid', () => {
     expect(() => applyProjectTransaction(project, {
       id: 'tx-invalid',
@@ -84,5 +113,76 @@ describe('project transactions', () => {
     })).toThrow(/does not exist/);
 
     expect(project.projectMemory).toEqual([]);
+  });
+
+  it('replaces canvas state while preserving project memory and skill candidates', () => {
+    const original = {
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    };
+
+    const replacementNode: CanvasNode = {
+      ...updatedPrompt,
+      id: 'prompt-2',
+      data: { ...updatedPrompt.data, prompt: 'replace canvas state' },
+    };
+    const replacementEdge = {
+      id: 'edge-1',
+      source: replacementNode.id,
+      target: replacementNode.id,
+    };
+
+    const result = applyProjectTransaction(original, {
+      id: 'tx-replace-canvas',
+      label: 'replace canvas state',
+      operations: [{
+        kind: 'replace_canvas_state',
+        nodes: [replacementNode],
+        edges: [replacementEdge],
+      }],
+    });
+
+    expect(result.nodes).toEqual([replacementNode]);
+    expect(result.edges).toEqual([replacementEdge]);
+    expect(result.projectMemory).toEqual([optimizationMemory]);
+    expect(result.skillPromotionCandidates).toEqual([candidate]);
+    expect(original).toEqual({
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    });
+  });
+
+  it('rejects an invalid canvas replacement atomically', () => {
+    const original = {
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    };
+
+    expect(() => applyProjectTransaction(original, {
+      id: 'tx-replace-invalid',
+      label: 'invalid replace canvas state',
+      operations: [{
+        kind: 'replace_canvas_state',
+        nodes: [{
+          id: 'broken-node',
+          type: 'prompt',
+          data: { prompt: 'replace canvas state', requirementIds: [] },
+        } as CanvasNode],
+        edges: [],
+      }],
+    })).toThrow();
+
+    expect(original).toEqual({
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    });
   });
 });
