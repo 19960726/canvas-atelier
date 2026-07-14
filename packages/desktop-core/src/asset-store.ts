@@ -153,31 +153,23 @@ async function resolveContentAddressedAssetPath(
     assetsById.set(parsed.name, assetEntries);
   }
 
-  for (let idLength = 16; idLength <= sha256.length; idLength += 1) {
-    const candidateId = sha256.slice(0, idLength);
-    const existingEntries = assetsById.get(candidateId) ?? [];
-    if (existingEntries.length === 0) {
-      return buildResolvedAsset(projectRoot, candidateId, extension, false);
-    }
-
-    let allEntriesMatch = true;
-    for (const existingEntry of existingEntries) {
-      if (await sha256File(existingEntry.path) !== sha256) {
-        allEntriesMatch = false;
-        break;
-      }
-    }
-    if (!allEntriesMatch) {
-      continue;
-    }
-
-    const existingPathForExtension = existingEntries.find((entry) => entry.extension === extension);
-    if (existingPathForExtension !== undefined) {
-      return buildResolvedAsset(projectRoot, candidateId, extension, true);
-    }
-    return buildResolvedAsset(projectRoot, candidateId, extension, false);
+  const shortId = sha256.slice(0, 16);
+  const existingEntries = assetsById.get(shortId) ?? [];
+  if (existingEntries.length === 0) {
+    return buildResolvedAsset(projectRoot, shortId, extension, false);
   }
-  throw packageValidationError('Asset content-addressed path collision could not be resolved');
+
+  for (const existingEntry of existingEntries) {
+    if (await sha256File(existingEntry.path) !== sha256) {
+      throw packageValidationError('Asset short hash collision could not be resolved safely');
+    }
+  }
+
+  const existingPathForExtension = existingEntries.find((entry) => entry.extension === extension);
+  if (existingPathForExtension !== undefined) {
+    return buildResolvedAsset(projectRoot, shortId, extension, true);
+  }
+  return buildResolvedAsset(projectRoot, shortId, extension, false);
 }
 
 function buildResolvedAsset(

@@ -114,7 +114,7 @@ describe('AssetStore', () => {
     expect(await readFile(shortHashPath)).toEqual(pngBytes);
   });
 
-  it('does not reuse or replace an existing short-hash asset path when the full digest differs', async () => {
+  it('rejects and preserves the existing asset when the short-hash path has different content', async () => {
     const projectRoot = await createProjectRoot(tempRoots);
     const store = new AssetStore();
     const expectedHash = sha256(pngBytes);
@@ -122,17 +122,15 @@ describe('AssetStore', () => {
     const existingBytes = Buffer.from('different existing bytes');
     await writeFile(shortHashPath, existingBytes);
 
-    const asset = await store.stageAndCommit(projectRoot, readableFrom(pngBytes), {
+    await expect(store.stageAndCommit(projectRoot, readableFrom(pngBytes), {
       originalName: 'reference.png',
-    });
+    })).rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
 
-    expect(asset.sha256).toBe(expectedHash);
-    expect(asset.relativePath).not.toBe(`assets/${expectedHash.slice(0, 16)}.png`);
     expect(await readFile(shortHashPath)).toEqual(existingBytes);
-    expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(pngBytes);
+    expect(await readdir(join(projectRoot, 'assets'))).toEqual([`${expectedHash.slice(0, 16)}.png`]);
   });
 
-  it('lengthens the logical asset id when a different extension already uses the short hash for different content', async () => {
+  it('rejects when a different extension already uses the short hash for different content', async () => {
     vi.resetModules();
     const actualCrypto = await vi.importActual<typeof import('node:crypto')>('node:crypto');
     const tempRoot = await createProjectRoot(tempRoots);
@@ -172,14 +170,12 @@ describe('AssetStore', () => {
       const { AssetStore: MockedAssetStore } = await import('./asset-store');
       const store = new MockedAssetStore();
 
-      const asset = await store.stageAndCommit(tempRoot, readableFrom(jpgBytes), {
+      await expect(store.stageAndCommit(tempRoot, readableFrom(jpgBytes), {
         originalName: 'collision.jpg',
-      });
+      })).rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
 
-      expect(asset.id).toBe(`${sharedShortId}b`);
-      expect(asset.relativePath).toBe(`assets/${sharedShortId}b.jpg`);
       expect(await readFile(shortHashPath)).toEqual(pngBytes);
-      expect(await readFile(join(tempRoot, asset.relativePath))).toEqual(jpgBytes);
+      expect(await readdir(join(tempRoot, 'assets'))).toEqual([`${sharedShortId}.png`]);
     } finally {
       vi.doUnmock('node:crypto');
       vi.resetModules();
