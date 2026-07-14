@@ -329,6 +329,8 @@ describe('NovusPack export and import', () => {
       'C:\\Program Files\\Novus Atelier\\image.png',
       'E:\\画布项目\\demo\\project.novus.json',
       'file:///E:/画布项目/demo/project.novus.json',
+      'file:///E:/canvas with spaces/demo/project.novus.json',
+      '\\\\server\\share\\Folder With Spaces\\image.png',
       '/Users/alice/private/image.png',
       Buffer.alloc(96, 7).toString('base64'),
     ].join('\n');
@@ -340,6 +342,8 @@ describe('NovusPack export and import', () => {
     expect(redacted).not.toContain('Administrator');
     expect(redacted).not.toContain('Program Files');
     expect(redacted).not.toContain('画布项目');
+    expect(redacted).not.toContain('with spaces');
+    expect(redacted).not.toContain('Folder With Spaces');
     expect(redacted).not.toContain('alice');
     expect(redacted).not.toContain(Buffer.alloc(96, 7).toString('base64'));
     expect(redacted).toContain('[REDACTED_SECRET]');

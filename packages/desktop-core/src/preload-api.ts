@@ -104,8 +104,8 @@ export function redactBridgeDiagnostics(input: string): string {
   return input
     .replace(/Authorization:\s*[^\s]+(?:\s+[^\s]+)?/gi, 'Authorization: [redacted]')
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[redacted-key]')
-    .replace(/file:\/\/\/?[^\s"'<>]+/gi, '[redacted-path]')
+    .replace(/file:\/\/\/?[^\r\n"'<>]*/gi, '[redacted-path]')
     .replace(/[A-Za-z]:\\[^\r\n"'<>]*/g, '[redacted-path]')
-    .replace(/\\\\[^\s"'<>]+/g, '[redacted-path]')
+    .replace(/\\\\[^\r\n"'<>]*/g, '[redacted-path]')
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, '[redacted-image]');
 }

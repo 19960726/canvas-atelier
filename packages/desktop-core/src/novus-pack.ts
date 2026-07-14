@@ -207,9 +207,9 @@ export function redactNovusPackDiagnostics(input: string): string {
   return input
     .replace(/(Authorization\s*:\s*)(?:Bearer\s+)?[^\s]+/gi, `$1[REDACTED_SECRET]`)
     .replace(/((?:api[_-]?key|token|secret|password)\s*=\s*["']?)[^"'\s]+/gi, `$1[REDACTED_SECRET]`)
-    .replace(/file:\/\/\/?[^\s"'<>]+/gi, '[REDACTED_PATH]')
+    .replace(/file:\/\/\/?[^\r\n"'<>]*/gi, '[REDACTED_PATH]')
     .replace(/[A-Za-z]:\\[^\r\n"'<>]*/g, '[REDACTED_PATH]')
-    .replace(/\\\\[^\s"'<>]+/g, '[REDACTED_PATH]')
+    .replace(/\\\\[^\r\n"'<>]*/g, '[REDACTED_PATH]')
     .replace(/\/Users\/[^ \n\r\t"'<>]+/g, '[REDACTED_PATH]')
     .replace(/\/home\/[^ \n\r\t"'<>]+/g, '[REDACTED_PATH]')
     .replace(/\b(?:[A-Za-z0-9+/]{80,}={0,2})\b/g, '[REDACTED_BASE64]');
