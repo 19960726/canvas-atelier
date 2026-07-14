@@ -9,18 +9,34 @@ export {
   STALE_LOCK_MS,
 } from './contracts.js';
 export type {
+  BridgeSessionSummary,
+  CloseProjectBridgeRequest,
   CommitAck,
+  CommitBridgeRequest,
   CommitRequest,
+  ExportPackBridgeRequest,
+  ExportPackBridgeResult,
   JournalRecord,
   JournalTransactionKind,
+  ImportPackBridgeRequest,
+  ImportPackBridgeResult,
+  OpenProjectBridgeRequest,
+  OpenProjectBridgeResult,
   PersistenceChannel,
   PersistenceError,
   PersistenceErrorCode,
   ProjectLock,
   ProjectManifest,
+  RecoveryCandidateBridgeSummary,
+  RecoveryPlanBridgeRequest,
+  RecoveryPlanBridgeResult,
   RecoveryAction,
   RecoveryPlan,
+  RestoreBridgeRequest,
+  RestoreBridgeResult,
   SnapshotEnvelope,
+  StablePointBridgeRequest,
+  StablePointBridgeResult,
 } from './contracts.js';
 
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
@@ -69,6 +85,20 @@ export type {
   OpenProjectOptions,
   ProjectRepositoryOptions,
 } from './project-repository.js';
+export {
+  BRIDGE_CHANNELS,
+  DESKTOP_BRIDGE_PRELOAD_KEY,
+  createPreloadApi,
+  redactBridgeDiagnostics,
+} from './preload-api.js';
+export type { DesktopBridgeApi, DesktopBridgeInvoke } from './preload-api.js';
+export { createDesktopBridgeHandlers, registerDesktopBridgeHandlers } from './bridge-handlers.js';
+export type {
+  BridgeDialogAdapter,
+  DesktopBridgeHandlerDependencies,
+  DesktopBridgeHandlers,
+  DesktopIpcMainLike,
+} from './bridge-handlers.js';
 export {
   NovusPackExporter,
   NovusPackImporter,

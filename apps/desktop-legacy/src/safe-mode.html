@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Novus Atelier Safe Mode</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #10131a;
+        color: #eef2ff;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at top, rgba(76, 120, 255, 0.22), transparent 40%),
+          linear-gradient(180deg, #111621, #0a0d14 70%);
+      }
+
+      main {
+        width: min(720px, calc(100vw - 32px));
+        padding: 28px;
+        background: rgba(16, 19, 26, 0.92);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 8px;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+      }
+
+      p {
+        margin: 0 0 14px;
+        line-height: 1.5;
+        color: #cbd5e1;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin: 20px 0;
+      }
+
+      button {
+        min-height: 48px;
+        padding: 12px 14px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        border-radius: 8px;
+        background: #171c29;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #20283a;
+      }
+
+      #status {
+        min-height: 24px;
+        color: #93c5fd;
+      }
+
+      code {
+        color: #f8fafc;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Safe Mode</h1>
+      <p id="reason">The desktop shell moved here after a renderer startup or hydration failure.</p>
+      <div class="grid">
+        <button id="open-write" type="button">Open project</button>
+        <button id="open-read-only" type="button">Open read-only</button>
+        <button id="recover-stable" type="button">Recover stable point</button>
+        <button id="clear-cache" type="button">Clear disposable cache</button>
+        <button id="export-diagnostics" type="button">Export diagnostics</button>
+        <button id="reveal-support" type="button">Reveal support folder</button>
+      </div>
+      <p id="status" aria-live="polite"></p>
+      <p>Available bridge methods stay restricted to the typed desktop contract on <code>window.novusDesktop</code>.</p>
+    </main>
+    <script type="module" src="./safe-mode.js"></script>
+  </body>
+</html>

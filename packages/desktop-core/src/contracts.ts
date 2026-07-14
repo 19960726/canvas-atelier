@@ -108,9 +108,94 @@ export type PersistenceErrorCode =
   | 'CORRUPT_SNAPSHOT'
   | 'CORRUPT_JOURNAL'
   | 'UNSUPPORTED_PROJECT_VERSION'
-  | 'PACKAGE_VALIDATION_FAILED';
+  | 'PACKAGE_VALIDATION_FAILED'
+  | 'INVALID_REQUEST'
+  | 'INVALID_SESSION';
 
 export interface PersistenceError extends Error {
   readonly code: PersistenceErrorCode;
   readonly retryable: boolean;
+}
+
+export interface BridgeSessionSummary {
+  readonly sessionId: string;
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly mode: 'write' | 'read_only';
+  readonly stableSnapshotId: string | null;
+  readonly stableSnapshotRevision: number;
+}
+
+export interface OpenProjectBridgeRequest {
+  readonly mode: 'write' | 'read_only';
+}
+
+export interface OpenProjectBridgeResult extends BridgeSessionSummary {}
+
+export interface CommitBridgeRequest extends CommitRequest {
+  readonly sessionId: string;
+}
+
+export interface StablePointBridgeRequest {
+  readonly sessionId: string;
+}
+
+export interface StablePointBridgeResult {
+  readonly path: string;
+  readonly reason: 'stable_point';
+  readonly revision: number;
+  readonly snapshotId: string;
+}
+
+export interface RecoveryCandidateBridgeSummary {
+  readonly candidateId: string;
+  readonly revision: number;
+  readonly snapshotId: string;
+  readonly tailStatus: 'complete' | 'partial_final_line';
+}
+
+export interface RecoveryPlanBridgeRequest {
+  readonly sessionId: string;
+}
+
+export interface RecoveryPlanBridgeResult extends RecoveryPlan {
+  readonly candidates: readonly RecoveryCandidateBridgeSummary[];
+  readonly recoveredRevision: number | null;
+}
+
+export interface RestoreBridgeRequest {
+  readonly sessionId: string;
+  readonly candidateId?: string;
+}
+
+export interface RestoreBridgeResult extends BridgeSessionSummary {
+  readonly restoredRevision: number;
+}
+
+export interface ExportPackBridgeRequest {
+  readonly sessionId: string;
+}
+
+export interface ExportPackBridgeInventoryEntry {
+  readonly byteSize: number;
+  readonly path: string;
+  readonly sha256: string;
+}
+
+export interface ExportPackBridgeResult {
+  readonly inventory: readonly ExportPackBridgeInventoryEntry[];
+  readonly packageName: string;
+  readonly pinnedRevision: number;
+}
+
+export interface ImportPackBridgeRequest {
+  readonly mode: 'write' | 'read_only';
+}
+
+export interface ImportPackBridgeResult extends BridgeSessionSummary {
+  readonly importedRevision: number;
+}
+
+export interface CloseProjectBridgeRequest {
+  readonly sessionId: string;
 }
