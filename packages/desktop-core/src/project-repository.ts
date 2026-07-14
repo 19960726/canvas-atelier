@@ -212,35 +212,33 @@ export class ProjectRepository {
       return;
     }
 
-    const guard = await this.tryAcquireOperationGuard(session.root);
-    if (guard === null) {
-      return;
-    }
-
-    const closedAt = this.nowIso();
-    const manifest = {
-      ...session.manifest,
-      cleanClose: true,
-    };
-    let didClose = false;
+    const activeJournalPath = this.resolveActiveJournalPath(session.root, session.manifest);
 
     try {
-      const currentLock = await this.readCanonicalLock(session.root, session.lock.projectId);
-      if (currentLock.kind === 'valid' && currentLock.lock.sessionId === session.lock.sessionId) {
-        await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
-        await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
-        await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
-          clean: true,
-          closedAt,
-        } satisfies CleanCloseMarker);
-        didClose = true;
+      const guard = await this.tryAcquireOperationGuard(session.root);
+      if (guard !== null) {
+        const closedAt = this.nowIso();
+        const manifest = {
+          ...session.manifest,
+          cleanClose: true,
+        };
+
+        try {
+          const currentLock = await this.readCanonicalLock(session.root, session.lock.projectId);
+          if (currentLock.kind === 'valid' && currentLock.lock.sessionId === session.lock.sessionId) {
+            await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
+            await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
+            await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
+              clean: true,
+              closedAt,
+            } satisfies CleanCloseMarker);
+          }
+        } finally {
+          await this.releaseOperationGuard(guard);
+        }
       }
     } finally {
-      await this.releaseOperationGuard(guard);
-    }
-
-    if (didClose) {
-      releaseJournalState(this.resolveActiveJournalPath(session.root, session.manifest), session.manifest.projectId);
+      releaseJournalState(activeJournalPath, session.manifest.projectId);
     }
   }
 

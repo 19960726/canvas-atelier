@@ -462,6 +462,10 @@ describe('ProjectRepository', () => {
       projectId: 'project-close-race',
       projectName: 'CloseRace',
     });
+    const writer = await repository.openJournalWriter(session, { now: () => baseNow });
+    await writer.commit(
+      makeCreatePromptCommitRequest(session.manifest.projectId, 'tx-close-race', 0, 'prompt-close-race'),
+    );
 
     const replacementOpenedAt = new Date(baseNow.getTime() + 1_000).toISOString();
     const replacementLock: TestProjectLock = {
@@ -486,12 +490,53 @@ describe('ProjectRepository', () => {
     coordinator.concurrentAttemptDone.resolve();
     await closePromise;
 
+    await expect(
+      writer.commit(
+        makeCreatePromptCommitRequest(session.manifest.projectId, 'tx-close-race-stale', 1, 'prompt-close-race-stale'),
+      ),
+    ).rejects.toMatchObject({
+      code: 'CONCURRENT_WRITER',
+      retryable: false,
+    });
+
     expect(third.mode).toBe('read_only');
     const activeLock = await readJson<TestProjectLock>(lockPath);
     expect(activeLock).toMatchObject({
       processId: 10103,
       sessionId: 'replacement-session',
     });
+    expect((await readValidJournal(join(projectRoot, 'journal', 'active.ndjson'))).records).toHaveLength(1);
+  });
+
+  it('invalidates journal writers when close cannot acquire its guard', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'GuardUnavailableClose.novus-project');
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
+    const repository = createRepository({ processId: 10105 });
+
+    const session = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-guard-unavailable-close',
+      projectName: 'GuardUnavailableClose',
+    });
+    const writer = await repository.openJournalWriter(session, { now: () => baseNow });
+    await writer.commit(
+      makeCreatePromptCommitRequest(session.manifest.projectId, 'tx-guard-unavailable-close', 0, 'prompt-guard-unavailable-close'),
+    );
+
+    await writeFile(guardPath, '{"token":"existing"}\n', 'utf8');
+    await repository.close(session);
+
+    await expect(
+      writer.commit(
+        makeCreatePromptCommitRequest(session.manifest.projectId, 'tx-guard-unavailable-close-stale', 1, 'prompt-guard-unavailable-close-stale'),
+      ),
+    ).rejects.toMatchObject({
+      code: 'CONCURRENT_WRITER',
+      retryable: false,
+    });
+
+    expect((await readValidJournal(join(projectRoot, 'journal', 'active.ndjson'))).records).toHaveLength(1);
   });
 
   it('returns read-only under an existing operation guard without changing a stale canonical lock', async () => {
