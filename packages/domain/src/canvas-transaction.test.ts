@@ -8,6 +8,7 @@ const emptyProject: CanvasProject = {
   name: 'test project',
   nodes: [],
   edges: [],
+  projectMemory: [],
 };
 
 const referenceNode: CanvasNode = {

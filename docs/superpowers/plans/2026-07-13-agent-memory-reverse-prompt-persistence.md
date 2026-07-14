@@ -486,3 +486,20 @@ Runtime verification still requires screenshots of the shipped app, including th
 ## Local Desktop Delivery Rule
 
 `Novus Atelier` is a Windows desktop application, not a hosted web product. React/Vite is only the renderer inside the Electron shells. Final delivery requires local project files, local assets, desktop filesystem bridges, secure secret storage, crash recovery, installers, Photoshop integration, and signed updates. The development server is never the production runtime.
+### Task 12: Project Memory Timeline and Optimization Learning
+
+**Files:**
+- Create: `packages/domain/src/project-memory.ts`, `project-memory.test.ts`
+- Create: `apps/renderer/src/history/ProjectMemoryTimeline.tsx`, `ProjectMemoryTimeline.test.tsx`
+- Modify: `packages/domain/src/project-schema.ts`, `apps/renderer/src/app/app-store.ts`
+- Extend later: canvas snapshot/journal persistence and desktop project IO
+
+**Interfaces:** `ProjectMemoryEntry`, `appendProjectMemoryEntry`, `buildProjectMemoryContext`, `createSkillPromotionCandidate`.
+
+- [x] Write failing tests for immutable append, duplicate/revision rejection, private-path/secret rejection, bounded newest-first Agent context, and pending-review Skill promotion.
+- [x] Store `projectMemory` in the project schema and migrate older projects to an empty timeline.
+- [x] Record each confirmed Agent canvas optimization in the same atomic state update as the canvas transaction.
+- [ ] Add the visible project-memory timeline, filters, and links to generation/reverse-prompt history.
+- [ ] Persist timeline entries through snapshot-plus-journal desktop storage and verify crash recovery.
+- [ ] Add snapshot restore and reviewed `promote to Skill` UI actions; never auto-promote project-specific experience.
+- [ ] Verify that API keys, Authorization values, private filesystem paths, and raw image payloads cannot enter project memory or exports.

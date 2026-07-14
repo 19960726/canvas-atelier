@@ -32,6 +32,7 @@ describe('CanvasWorkspace', () => {
       name: '道具项目',
       nodes: [{ id: 'prop-1', type: 'reference', position: { x: 80, y: 120 }, data: { assetId: 'asset-prop', role: 'prop_reference' } }],
       edges: [],
+      projectMemory: [],
     });
     render(<CanvasWorkspace />);
     const canvas = within(screen.getByRole('application', { name: '无限画布' }));

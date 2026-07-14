@@ -1,4 +1,4 @@
-﻿# Agent Canvas Design Spec
+# Agent Canvas Design Spec
 
 Date: 2026-07-13
 Workspace: E:\画布项目
@@ -411,4 +411,14 @@ Design acceptance:
 - Model gateway is https://ai.comfly.org.
 - CanvasForge can inform API compatibility only; the new app remains original.
 - Support Windows 7 through Windows 11 with smooth performance targets.
+## 19. Three-Layer Memory Architecture
 
+Novus Atelier keeps three memory layers with different ownership and approval rules:
+
+1. Project memory travels with the project manifest. Every confirmed optimization records what changed, why it changed, before/after snapshot ids, model and prompt context, reference/result asset ids, KEEP/CHANGE/NEVER feedback, score, and next step.
+2. Agent session memory stores conversation and reverse-prompt run history, including the fresh session id, nonce, role, structured output, and the knowledge snapshot used for that run.
+3. Skill growth knowledge stores only reusable cross-project rules. A project-memory entry can become a Skill candidate, but it remains `pending_review` until the user approves the writeback diff.
+
+Project memory is append-only audit context. Undoing a canvas transaction does not silently erase the historical record. Project open/recovery loads the durable project-memory timeline before Agent context is built. Memory records may reference asset ids and snapshot ids, but must reject API keys, authorization values, private filesystem paths, and raw image payloads.
+
+The persistence task must save project memory through the same snapshot-plus-journal recovery system as canvas state. The UI will expose a project-memory timeline, filters, snapshot restore entry points, and a reviewed `promote to Skill` action without mixing these records into generic chat history.

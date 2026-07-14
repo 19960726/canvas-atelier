@@ -5,8 +5,10 @@ import type {
   PlacementBoard as PlacementBoardValue,
   PlacementObject,
   ReferenceRole,
+  ReversePromptResult,
+  ReversePromptRun,
 } from '@agent-canvas/domain';
-import { MAX_GENERATION_REFERENCES } from '@agent-canvas/domain';
+import { MAX_GENERATION_REFERENCES, buildProjectMemoryContext } from '@agent-canvas/domain';
 import {
   Box,
   ChevronRight,
@@ -26,6 +28,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
 import { PlanPreview } from '../agent/PlanPreview';
+import { ReversePromptAgent } from '../agent/ReversePromptAgent';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
@@ -56,6 +59,7 @@ export function CanvasWorkspace() {
   const agentPlan = useAppStore((state) => state.agentPlan);
   const undoStack = useAppStore((state) => state.undoStack);
   const confirmedModelJobs = useAppStore((state) => state.confirmedModelJobs);
+  const saveStatus = useAppStore((state) => state.saveStatus);
   const draftAgentPlan = useAppStore((state) => state.draftAgentPlan);
   const confirmAgentPlan = useAppStore((state) => state.confirmAgentPlan);
   const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
@@ -79,6 +83,17 @@ export function CanvasWorkspace() {
     return [...edges, ...toFlowEdges(ghosts).map((edge) => ({ ...edge, className: 'agent-ghost-edge', animated: true }))];
   }, [project.edges, agentPlan]);
   const placementNode = useMemo(() => project.nodes.find(isPlacementNode), [project.nodes]);
+  const reverseReferenceAssetIds = useMemo(
+    () => placementNode?.data.objects.filter((object) => !object.assetId.startsWith('starter-')).map((object) => object.assetId) ?? [],
+    [placementNode],
+  );
+  const getApprovedMemorySnapshot = () => ({
+    version: 'local-draft-no-approved-skill',
+    approvedAt: new Date().toISOString(),
+    approvedMemoryIds: [],
+  });
+  const getProjectMemoryIds = () => buildProjectMemoryContext(project.projectMemory, 50)
+    .map((memory) => memory.id);
   const referenceCounts = useMemo(() => {
     const objects = placementNode?.data.objects.filter((object) => !object.assetId.startsWith('starter-')) ?? [];
     return {
@@ -149,9 +164,9 @@ export function CanvasWorkspace() {
   return (
     <div className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}`}>
       <header className="topbar">
-        <div className="product-mark" aria-label="Agent Canvas">
+        <div className="product-mark" aria-label="Novus Atelier">
           <span className="product-mark__icon"><Box size={17} /></span>
-          <strong>Agent Canvas</strong>
+          <strong>Novus Atelier</strong>
         </div>
         <span className="topbar__divider" />
         <button className="project-button" type="button" title="项目菜单">
@@ -248,7 +263,7 @@ export function CanvasWorkspace() {
       <aside className="agent-panel" aria-label="Agent 面板">
         <div className="agent-panel__header">
           <div>
-            <strong>场景 Agent</strong>
+            <strong>Novus Agent</strong>
             <span>已读取 2 个 Skill</span>
           </div>
           <button className="icon-button" type="button" aria-label="收起 Agent 面板" title="收起 Agent 面板" onClick={toggleAgentPanel}>
@@ -265,6 +280,14 @@ export function CanvasWorkspace() {
             <PlanPreview plan={agentPlan} onConfirm={confirmAgentPlan} onCancel={cancelAgentPlan} />
           ) : (
             <>
+              <ReversePromptAgent
+                projectId={project.id}
+                referenceAssetIds={reverseReferenceAssetIds}
+                getApprovedMemorySnapshot={getApprovedMemorySnapshot}
+                getProjectMemoryIds={getProjectMemoryIds}
+                analyze={analyzeReversePromptDraft}
+                analysisMode="local_draft"
+              />
               <div className="agent-message">
                 <span className="agent-avatar">A</span>
                 <div><strong>{agentPlan ? '方案已应用' : '准备开始'}</strong><p>{agentPlan ? '画布事务已确认，可使用顶部撤销一次恢复。' : '上传产品、场景和道具参考，我会先生成画布计划，确认后再调用模型。'}</p></div>
@@ -290,7 +313,7 @@ export function CanvasWorkspace() {
         <span className="job-strip__label"><span className="status-dot is-idle" />任务队列</span>
         <span>{confirmedModelJobs > 0 ? `${confirmedModelJobs} 个已确认任务待排队` : '0 个任务运行中'}</span>
         <span className="job-strip__spacer" />
-        <span>本地项目已保存</span>
+        <span>{saveStatusLabel(saveStatus)}</span>
       </footer>
     </div>
   );
@@ -298,4 +321,22 @@ export function CanvasWorkspace() {
 
 function referenceStatus(count: number, emptyLabel: string): string {
   return count > 0 ? `已添加 ${count} 张` : emptyLabel;
+}
+function saveStatusLabel(status: 'pending' | 'saved' | 'error'): string {
+  if (status === 'saved') return '本地稳定点已保存';
+  if (status === 'error') return '本地保存失败';
+  return '等待本地稳定点保存';
+}
+async function analyzeReversePromptDraft(run: ReversePromptRun): Promise<ReversePromptResult> {
+  const freshKeyword = `会话新词-${run.nonce.slice(0, 8)}`;
+  return {
+    sessionId: run.sessionId,
+    nonce: run.nonce,
+    knowledgeSnapshotVersion: run.approvedMemorySnapshot.version,
+    analysis: `本地草稿根据 ${run.referenceAssetIds.length} 个参考图资产 ID、${run.projectMemoryIds.length} 条有效项目记忆索引和“${run.persona.label}”角色重新组织。本次未读取记忆正文，也尚未调用 Comfly 模型。`,
+    keywords: [run.persona.label, freshKeyword, '产品身份锁定', '商业构图层次'],
+    positivePrompt: '高端商业产品主视觉，严格保持产品外形、Logo、品牌颜色与材质，依据参考图重建构图、光线、道具关系和文案安全区。',
+    negativeConstraints: ['禁止修改 Logo 与包装文字', '禁止产品变形或品牌色漂移', '禁止道具遮挡主产品'],
+    executionChecklist: ['核对产品身份参考', '核对构图与产品占比', '核对材质光线和安全区', '确认后再提交生图模型'],
+  };
 }

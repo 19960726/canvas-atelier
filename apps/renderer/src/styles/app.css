@@ -169,3 +169,45 @@
 .plan-cancel { background: white; border: 1px solid var(--border-strong); }
 .plan-confirm { color: white; background: var(--accent); border: 1px solid #0b665f; }
 .icon-button:disabled, .agent-composer__footer button:disabled { opacity: 0.4; cursor: not-allowed; }
+.reverse-agent { margin: -4px 0 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.reverse-agent__header { display: flex; align-items: end; gap: 8px; }
+.reverse-agent__skill, .reverse-agent__persona { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 600; }
+.reverse-agent__skill { flex: 1; }
+.reverse-agent select { min-width: 0; height: 30px; padding: 0 25px 0 8px; color: var(--text); background: #fbfcfd; border: 1px solid var(--border); border-radius: 4px; font-size: 10px; }
+.reverse-agent__tools { display: flex; gap: 3px; }
+.reverse-agent__tools button { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; color: #5d6871; background: transparent; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.reverse-agent__tools button:hover { color: var(--accent); background: var(--accent-soft); border-color: #a7d9d1; }
+.reverse-agent__persona { margin-top: 10px; }
+.reverse-agent__context { display: grid; grid-template-columns: 1fr 1fr; margin-top: 10px; border-top: 1px solid #edf0f2; border-bottom: 1px solid #edf0f2; }
+.reverse-agent__context span { min-width: 0; display: grid; gap: 3px; padding: 8px 6px; color: var(--muted); font-size: 9px; }
+.reverse-agent__context span + span { border-left: 1px solid #edf0f2; }
+.reverse-agent__context b { overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.reverse-agent__run { width: 100%; height: 34px; display: flex; align-items: center; justify-content: center; gap: 7px; margin-top: 10px; color: white; background: #162c2a; border: 1px solid #0d211f; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: 700; }
+.reverse-agent__run:hover:not(:disabled) { background: var(--accent); }
+.reverse-agent__run:disabled { opacity: 0.45; cursor: not-allowed; }
+.reverse-agent__error { margin: 8px 0 0; color: #9f2f25; font-size: 9px; }
+.reverse-agent__history { display: grid; gap: 12px; margin-top: 12px; }
+.reverse-result { border-top: 1px solid var(--border-strong); }
+.reverse-result > header { height: 30px; display: flex; align-items: center; justify-content: space-between; color: var(--accent); font-size: 9px; font-weight: 700; }
+.reverse-result > header code { color: var(--muted); font-size: 8px; font-weight: 500; }
+.reverse-result__section { padding: 8px 0; border-top: 1px solid #edf0f2; }
+.reverse-result__section h3 { margin: 0 0 5px; color: #2f3a42; font-size: 9px; }
+.reverse-result__section p, .reverse-result__section ul { margin: 0; color: #53606a; font-size: 9px; line-height: 1.65; }
+.reverse-result__section ul { padding-left: 16px; }
+.reverse-keywords { display: flex; flex-wrap: wrap; gap: 4px; }
+.reverse-keywords span { padding: 3px 5px; color: #315e59; background: #edf8f6; border: 1px solid #c8e2de; border-radius: 3px; font-size: 8px; }
+.reverse-result > footer { padding-top: 7px; color: var(--muted); border-top: 1px solid #edf0f2; font-size: 8px; }
+.reverse-agent__mode {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid #4b5563;
+  color: #cbd5e1;
+  background: #20242b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.reverse-agent__tools button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}

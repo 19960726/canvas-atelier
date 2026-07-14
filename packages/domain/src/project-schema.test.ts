@@ -3,6 +3,72 @@ import * as publicApi from './index';
 import { parseCanvasProject } from './project-schema';
 
 describe('parseCanvasProject', () => {
+  it('migrates an older project to an empty project-memory timeline', () => {
+    const project = parseCanvasProject({
+      version: 1,
+      id: 'p1',
+      name: 'legacy project',
+      nodes: [],
+      edges: [],
+    });
+
+    expect(project.projectMemory).toEqual([]);
+  });
+
+  it('restores project memory stored with the project', () => {
+    const project = parseCanvasProject({
+      version: 1,
+      id: 'p1',
+      name: 'remembered project',
+      nodes: [],
+      edges: [],
+      projectMemory: [{
+        schemaVersion: 1,
+        id: 'memory-1',
+        projectId: 'p1',
+        projectRevision: 2,
+        createdAt: '2026-07-13T13:00:00.000Z',
+        kind: 'optimization',
+        actor: 'agent',
+        title: '构图优化',
+        changeSummary: '产品上移。',
+        rationale: '保留文案安全区。',
+        snapshots: { beforeId: 'snapshot-1', afterId: 'snapshot-2' },
+        context: { referenceAssetIds: ['asset-1'], resultAssetIds: [] },
+        feedback: { keep: [], change: [], never: [] },
+        nextStep: '继续检查产品比例。',
+      }],
+    });
+
+    expect(project.projectMemory[0]?.title).toBe('构图优化');
+  });
+  it('rejects duplicate, cross-project, or decreasing project-memory timelines', () => {
+    const memory = {
+      schemaVersion: 1,
+      id: 'memory-1',
+      projectId: 'p1',
+      projectRevision: 2,
+      createdAt: '2026-07-13T13:00:00.000Z',
+      kind: 'optimization',
+      actor: 'agent',
+      title: '构图优化',
+      changeSummary: '产品上移。',
+      rationale: '保留文案安全区。',
+      snapshots: { beforeId: 'snapshot-1', afterId: 'snapshot-2' },
+      context: { referenceAssetIds: [], resultAssetIds: [] },
+      feedback: { keep: [], change: [], never: [] },
+      nextStep: '继续检查。',
+    };
+    const project = { version: 1, id: 'p1', name: 'memory validation', nodes: [], edges: [] };
+
+    expect(() => parseCanvasProject({ ...project, projectMemory: [memory, memory] })).toThrow(/重复/);
+    expect(() => parseCanvasProject({ ...project, projectMemory: [{ ...memory, projectId: 'p2' }] })).toThrow(/项目/);
+    expect(() => parseCanvasProject({
+      ...project,
+      projectMemory: [memory, { ...memory, id: 'memory-2', projectRevision: 1 }],
+    })).toThrow(/版本/);
+  });
+
   it('rejects a reference node without a role', () => {
     expect(() => parseCanvasProject({
       version: 1,
@@ -88,13 +154,21 @@ describe('parseCanvasProject', () => {
 describe('public domain API', () => {
   it('exposes only the approved runtime functions', () => {
     expect(Object.keys(publicApi).sort()).toEqual([
+      'DEFAULT_REVERSE_PROMPT_PERSONA',
       'MAX_GENERATION_REFERENCES',
+      'REVERSE_PROMPT_PERSONAS',
+      'appendProjectMemoryEntry',
       'applyTransaction',
+      'buildProjectMemoryContext',
       'cancelAgentPlan',
       'confirmAgentPlan',
+      'createReversePromptRun',
+      'createSkillPromotionCandidate',
       'normalizePlacementObject',
       'parseCanvasProject',
       'parseGenerationRequest',
+      'parseProjectMemoryEntry',
+      'parseReversePromptResult',
       'placementToPromptConstraints',
       'revertTransaction',
       'validateAgentPlan',

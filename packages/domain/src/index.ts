@@ -1,3 +1,7 @@
+export { appendProjectMemoryEntry, buildProjectMemoryContext, createSkillPromotionCandidate, parseProjectMemoryEntry } from './project-memory';
+export type { ProjectMemoryEntry, SkillPromotionCandidate } from './project-memory';
+export { DEFAULT_REVERSE_PROMPT_PERSONA, REVERSE_PROMPT_PERSONAS, createReversePromptRun, parseReversePromptResult } from './reverse-prompt-agent';
+export type { ApprovedMemorySnapshot, ReversePromptPersona, ReversePromptResult, ReversePromptRun } from './reverse-prompt-agent';
 export { MAX_GENERATION_REFERENCES, parseGenerationRequest } from './generation-request';
 export type { GenerationReference, GenerationRequest } from './generation-request';
 export { cancelAgentPlan, confirmAgentPlan, validateAgentPlan } from './agent-plan';

@@ -1,3 +1,4 @@
+import { projectMemoryEntrySchema } from './project-memory';
 import { z } from 'zod';
 
 const idSchema = z.string().min(1);
@@ -185,7 +186,27 @@ export const canvasProjectSchema = z.object({
   name: z.string().min(1),
   nodes: z.array(canvasNodeSchema),
   edges: z.array(canvasEdgeSchema),
-}).strict();
+  projectMemory: z.array(projectMemoryEntrySchema).default([]),
+}).strict().superRefine((project, context) => {
+  const memoryIds = new Set<string>();
+  let previousRevision = -1;
+  for (const [index, memory] of project.projectMemory.entries()) {
+    if (memoryIds.has(memory.id)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'id'], message: '项目记忆 id 重复' });
+    }
+    if (memory.projectId !== project.id) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'projectId'], message: '项目记忆必须属于当前项目' });
+    }
+    if (memory.projectRevision < previousRevision) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'projectRevision'], message: '项目记忆版本不能倒退' });
+    }
+    if (memory.supersedesMemoryId && !memoryIds.has(memory.supersedesMemoryId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'supersedesMemoryId'], message: '撤销记忆必须引用更早的项目记忆' });
+    }
+    memoryIds.add(memory.id);
+    previousRevision = memory.projectRevision;
+  }
+});
 
 export type ReferenceRole = z.infer<typeof referenceRoleSchema>;
 export type PlacementObject = z.infer<typeof placementObjectSchema>;
