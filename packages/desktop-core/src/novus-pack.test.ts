@@ -160,6 +160,27 @@ describe('NovusPack export and import', () => {
     await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it.each([
+    ['file-vs-directory', 'assets/path-node', 'assets/path-node/'],
+    ['file ancestor', 'assets/tree', 'assets/tree/leaf.txt'],
+    ['case variant file ancestor', 'assets/Mixed', 'assets/mixed/leaf.txt'],
+  ])('rejects %s ZIP path collisions with a typed sanitized validation error', async (_label, firstName, secondName) => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const pack = await createFixturePack(tempRoot, {
+      additionalEntries: [
+        { bytes: Buffer.from('first'), name: firstName },
+        { bytes: Buffer.from('second'), name: secondName },
+      ],
+    });
+    const destination = join(tempRoot, 'TrieCollision.novus-project');
+
+    const error = await capturePackageFailure(new NovusPackImporter().importTo(pack, destination));
+
+    expect(error).toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+    expect(error.message).not.toContain(secondName);
+    await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('fails closed and removes staging when the destination appears during promotion', async () => {
     vi.resetModules();
     const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
@@ -188,6 +209,79 @@ describe('NovusPack export and import', () => {
       expect(error).toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
       expect(await readFile(markerPath, 'utf8')).toBe('existing destination');
       expect(await readdir(tempRoot)).not.toContain(expect.stringMatching(/^\.novuspack-import-/));
+    } finally {
+      vi.doUnmock('node:fs/promises');
+      vi.resetModules();
+    }
+  });
+
+  it('does not recursively delete concurrent destination content after a promotion failure', async () => {
+    vi.resetModules();
+    const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const tempRoot = await createTempRoot(tempRoots);
+    const { projectRoot } = await createProjectFixture(tempRoot);
+    const packagePath = join(tempRoot, 'valid-concurrent-promotion.novuspack');
+    await new NovusPackExporter().exportRevision(projectRoot, packagePath);
+    const destination = join(tempRoot, 'ConcurrentPromotion.novus-project');
+    const concurrentPath = join(destination, 'concurrent-owner.txt');
+    const copiedPath = join(destination, 'project.novus.json');
+    let copyAttempts = 0;
+
+    vi.doMock('node:fs/promises', () => ({
+      ...actualFs,
+      copyFile: vi.fn(async (source: string, target: string, flags?: number) => {
+        copyAttempts += 1;
+        if (copyAttempts === 1) {
+          await actualFs.writeFile(concurrentPath, 'created by another process');
+          return actualFs.copyFile(source, target, flags);
+        }
+        const error = new Error(`copy failed in ${tempRoot}`) as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      }),
+    }));
+    try {
+      const { NovusPackImporter: MockedImporter } = await import('./novus-pack');
+
+      const error = await capturePackageFailure(new MockedImporter().importTo(packagePath, destination));
+
+      expect(error).toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+      await expect(readFile(concurrentPath, 'utf8')).resolves.toBe('created by another process');
+      await expect(stat(copiedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readdir(tempRoot)).not.toContain(expect.stringMatching(/^\.novuspack-import-/));
+    } finally {
+      vi.doUnmock('node:fs/promises');
+      vi.resetModules();
+    }
+  });
+
+  it('returns success and keeps a promoted destination when staging cleanup fails', async () => {
+    vi.resetModules();
+    const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const tempRoot = await createTempRoot(tempRoots);
+    const { projectRoot } = await createProjectFixture(tempRoot);
+    const packagePath = join(tempRoot, 'valid-cleanup-failure.novuspack');
+    await new NovusPackExporter().exportRevision(projectRoot, packagePath);
+    const destination = join(tempRoot, 'CleanupFailure.novus-project');
+
+    vi.doMock('node:fs/promises', () => ({
+      ...actualFs,
+      rm: vi.fn(async (path: string, options?: { force?: boolean; recursive?: boolean }) => {
+        if (path.includes('.novuspack-import-') && options?.recursive) {
+          const error = new Error(`cleanup failed in ${tempRoot}`) as NodeJS.ErrnoException;
+          error.code = 'EACCES';
+          throw error;
+        }
+        return actualFs.rm(path, options);
+      }),
+    }));
+    try {
+      const { NovusPackImporter: MockedImporter } = await import('./novus-pack');
+
+      const result = await new MockedImporter().importTo(packagePath, destination);
+
+      expect(result).toMatchObject({ projectRoot: destination });
+      await expect(readFile(join(destination, 'project.novus.json'), 'utf8')).resolves.toContain('project-pack');
     } finally {
       vi.doUnmock('node:fs/promises');
       vi.resetModules();

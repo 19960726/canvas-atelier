@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, createWriteStream } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, posix } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
@@ -61,6 +61,24 @@ interface ExtractedEntry {
   readonly byteSize: number;
   readonly path: string;
   readonly sha256: string;
+}
+
+interface PromotionOwnership {
+  readonly dirs: string[];
+  readonly files: string[];
+  readonly markerPath: string;
+  readonly token: string;
+}
+
+interface ZipEntryToExtract {
+  readonly entry: yauzl.Entry;
+  readonly path: string;
+}
+
+interface ZipPathTrieNode {
+  readonly children: Map<string, ZipPathTrieNode>;
+  terminalDirectory: boolean;
+  terminalFile: boolean;
 }
 
 const PACKAGE_MANIFEST_PATH = 'novus-package.json';
@@ -145,33 +163,45 @@ export class NovusPackImporter {
   }
 
   async importTo(packagePath: string, destinationRoot: string): Promise<NovusPackImportResult> {
-    if (await exists(destinationRoot)) {
-      throw packageValidationError('Destination already exists; import will not overwrite it');
-    }
-
     const isolationParent = this.isolationRoot ?? dirname(destinationRoot);
-    await mkdir(isolationParent, { recursive: true });
     const stagingRoot = join(isolationParent, `.novuspack-import-${process.pid}-${randomBytes(8).toString('hex')}`);
-    let reservedDestination = false;
+    let ownership: PromotionOwnership | null = null;
+    let promotionCompleted = false;
 
     try {
+      if (await exists(destinationRoot)) {
+        throw packageValidationError('Destination already exists; import will not overwrite it');
+      }
+
+      await mkdir(isolationParent, { recursive: true });
       await mkdir(stagingRoot, { recursive: false });
       const extracted = await extractAndValidate(packagePath, stagingRoot, this.limits);
       const packageManifest = await validateExtractedPackage(stagingRoot, extracted);
       await reserveImportDestination(destinationRoot);
-      reservedDestination = true;
-      await promoteStagedPackage(stagingRoot, destinationRoot);
-      await rm(stagingRoot, { force: true, recursive: true });
+      ownership = await createPromotionOwnership(destinationRoot);
+      await promoteStagedPackage(stagingRoot, destinationRoot, ownership);
+      promotionCompleted = true;
+
+      const destinationCleanupError = await cleanupDestinationOwnershipMarker(ownership);
+      await cleanupStagingRoot(stagingRoot);
+      if (destinationCleanupError !== null) {
+        throw packageValidationError('Package import cleanup failed after promotion');
+      }
+
       return {
         importedRevision: packageManifest.pinnedRevision,
         projectRoot: destinationRoot,
       };
     } catch (error) {
-      await rm(stagingRoot, { force: true, recursive: true }).catch(() => undefined);
-      if (reservedDestination) {
-        await rm(destinationRoot, { force: true, recursive: true }).catch(() => undefined);
+      if (ownership !== null && !promotionCompleted) {
+        const promotionCleanupError = await cleanupPromotedOwnership(ownership);
+        if (promotionCleanupError !== null) {
+          await cleanupStagingRoot(stagingRoot);
+          throw packageValidationError('Package import cleanup failed after promotion failure');
+        }
       }
-      throw error;
+      await cleanupStagingRoot(stagingRoot);
+      throw normalizePackageFailure(error, 'Package import failed');
     }
   }
 }
@@ -229,7 +259,8 @@ async function extractAndValidate(
 ): Promise<readonly ExtractedEntry[]> {
   const zipfile = await openZip(packagePath);
   const extracted: ExtractedEntry[] = [];
-  const entryIdentities = new Set<string>();
+  const pathTrie = createZipPathTrieNode();
+  const entriesToExtract: ZipEntryToExtract[] = [];
   let totalExpanded = 0;
   let entryCount = 0;
 
@@ -245,11 +276,7 @@ async function extractAndValidate(
       }
       validateZipEntry(entry, limits);
       const safePath = validatePackagePath(entry.fileName);
-      const entryIdentity = normalizeZipEntryIdentity(safePath);
-      if (entryIdentities.has(entryIdentity)) {
-        throw packageValidationError('Package contains duplicate or colliding entry names');
-      }
-      entryIdentities.add(entryIdentity);
+      validateZipPathCollision(pathTrie, safePath);
       if (safePath.endsWith('/')) {
         continue;
       }
@@ -257,8 +284,11 @@ async function extractAndValidate(
       if (totalExpanded > limits.maxExpandedBytes) {
         throw packageValidationError('Package exceeds expanded size limit');
       }
+      entriesToExtract.push({ entry, path: safePath });
+    }
 
-      const targetPath = join(stagingRoot, ...safePath.split('/'));
+    for (const { entry, path } of entriesToExtract) {
+      const targetPath = join(stagingRoot, ...path.split('/'));
       await mkdir(dirname(targetPath), { recursive: true });
       const stream = await openEntryStream(zipfile, entry);
       const hash = createHash('sha256');
@@ -273,7 +303,7 @@ async function extractAndValidate(
       }
       extracted.push({
         byteSize,
-        path: safePath,
+        path,
         sha256: hash.digest('hex'),
       });
     }
@@ -295,7 +325,30 @@ async function reserveImportDestination(destinationRoot: string): Promise<void> 
   }
 }
 
-async function promoteStagedPackage(stagingRoot: string, destinationRoot: string): Promise<void> {
+async function createPromotionOwnership(destinationRoot: string): Promise<PromotionOwnership> {
+  const token = randomBytes(16).toString('hex');
+  const markerPath = join(destinationRoot, `.novuspack-import-owner-${token}`);
+  const ownership: PromotionOwnership = {
+    dirs: [destinationRoot],
+    files: [markerPath],
+    markerPath,
+    token,
+  };
+
+  try {
+    await writeFile(markerPath, `${token}\n`, { flag: 'wx' });
+    return ownership;
+  } catch (error) {
+    await cleanupPromotedOwnership(ownership);
+    throw error;
+  }
+}
+
+async function promoteStagedPackage(
+  stagingRoot: string,
+  destinationRoot: string,
+  ownership: PromotionOwnership,
+): Promise<void> {
   const entries = await readdir(stagingRoot, { withFileTypes: true });
   for (const entry of entries) {
     const sourcePath = join(stagingRoot, entry.name);
@@ -309,7 +362,8 @@ async function promoteStagedPackage(stagingRoot: string, destinationRoot: string
         }
         throw packageValidationError('Package could not be promoted safely');
       }
-      await promoteStagedPackage(sourcePath, destinationPath);
+      ownership.dirs.push(destinationPath);
+      await promoteStagedPackage(sourcePath, destinationPath, ownership);
       continue;
     }
     if (!entry.isFile()) {
@@ -317,12 +371,64 @@ async function promoteStagedPackage(stagingRoot: string, destinationRoot: string
     }
     try {
       await copyFile(sourcePath, destinationPath, constants.COPYFILE_EXCL);
+      ownership.files.push(destinationPath);
     } catch (error) {
       if (isAlreadyExistsError(error)) {
         throw packageValidationError('Destination changed during import; import will not overwrite it');
       }
       throw packageValidationError('Package could not be promoted safely');
     }
+  }
+}
+
+async function cleanupDestinationOwnershipMarker(ownership: PromotionOwnership): Promise<unknown | null> {
+  try {
+    await rm(ownership.markerPath, { force: false });
+    const markerIndex = ownership.files.indexOf(ownership.markerPath);
+    if (markerIndex !== -1) {
+      ownership.files.splice(markerIndex, 1);
+    }
+    return null;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    return error;
+  }
+}
+
+async function cleanupPromotedOwnership(ownership: PromotionOwnership): Promise<unknown | null> {
+  let cleanupError: unknown | null = null;
+
+  for (const file of [...ownership.files].reverse()) {
+    try {
+      await rm(file, { force: false });
+    } catch (error) {
+      if (!isNotFoundError(error) && cleanupError === null) {
+        cleanupError = error;
+      }
+    }
+  }
+
+  for (const dir of [...ownership.dirs].reverse()) {
+    try {
+      await rmdir(dir);
+    } catch (error) {
+      if (!isNotFoundError(error) && !isDirectoryNotEmptyError(error) && cleanupError === null) {
+        cleanupError = error;
+      }
+    }
+  }
+
+  return cleanupError;
+}
+
+async function cleanupStagingRoot(stagingRoot: string): Promise<unknown | null> {
+  try {
+    await rm(stagingRoot, { force: true, recursive: true });
+    return null;
+  } catch (error) {
+    return error;
   }
 }
 
@@ -429,8 +535,52 @@ function validatePackagePath(path: string): string {
   return normalized;
 }
 
-function normalizeZipEntryIdentity(path: string): string {
-  return path.normalize('NFC').toLowerCase();
+function createZipPathTrieNode(): ZipPathTrieNode {
+  return {
+    children: new Map(),
+    terminalDirectory: false,
+    terminalFile: false,
+  };
+}
+
+function validateZipPathCollision(root: ZipPathTrieNode, path: string): void {
+  const isDirectory = path.endsWith('/');
+  const segments = path.replace(/\/$/, '').split('/').map(normalizeZipPathSegment);
+  let node = root;
+
+  for (const [index, segment] of segments.entries()) {
+    if (node.terminalFile) {
+      throw packageValidationError('Package contains duplicate or colliding entry names');
+    }
+
+    let child = node.children.get(segment);
+    if (child === undefined) {
+      child = createZipPathTrieNode();
+      node.children.set(segment, child);
+    }
+    node = child;
+
+    if (index < segments.length - 1 && node.terminalFile) {
+      throw packageValidationError('Package contains duplicate or colliding entry names');
+    }
+  }
+
+  if (isDirectory) {
+    if (node.terminalFile || node.terminalDirectory) {
+      throw packageValidationError('Package contains duplicate or colliding entry names');
+    }
+    node.terminalDirectory = true;
+    return;
+  }
+
+  if (node.terminalFile || node.terminalDirectory || node.children.size > 0) {
+    throw packageValidationError('Package contains duplicate or colliding entry names');
+  }
+  node.terminalFile = true;
+}
+
+function normalizeZipPathSegment(segment: string): string {
+  return segment.normalize('NFC').toLowerCase();
 }
 
 function parsePackageManifest(value: unknown): NovusPackageManifest {
@@ -597,7 +747,7 @@ async function readJson(path: string): Promise<unknown> {
 
 async function openZip(path: string): Promise<yauzl.ZipFile> {
   return new Promise((resolve, reject) => {
-    yauzl.open(path, { lazyEntries: true, validateEntrySizes: true }, (error, zipfile) => {
+    yauzl.open(path, { autoClose: false, lazyEntries: true, validateEntrySizes: true }, (error, zipfile) => {
       if (error !== null || zipfile === undefined) {
         reject(error ?? packageValidationError('Unable to open package'));
         return;
@@ -661,6 +811,24 @@ function isAlreadyExistsError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST';
 }
 
+function isDirectoryNotEmptyError(error: unknown): boolean {
+  return typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'ENOTEMPTY' || error.code === 'EEXIST');
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+function isPackageValidationFailure(error: unknown): boolean {
+  return typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'PACKAGE_VALIDATION_FAILED';
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return (
     value !== null &&
@@ -672,4 +840,11 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function packageValidationError(message: string): Error {
   return createPersistenceError('PACKAGE_VALIDATION_FAILED', false, redactNovusPackDiagnostics(message));
+}
+
+function normalizePackageFailure(error: unknown, fallbackMessage: string): Error {
+  if (isPackageValidationFailure(error)) {
+    return error as Error;
+  }
+  return packageValidationError(fallbackMessage);
 }
