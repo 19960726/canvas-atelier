@@ -10,7 +10,9 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@agent-canvas/domain": "file:../domain"
+    "@agent-canvas/domain": "file:../domain",
+    "archiver": "7.0.1",
+    "yauzl": "3.2.0"
   },
   "exports": {
     ".": {
@@ -20,5 +22,9 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "devDependencies": {
+    "@types/archiver": "6.0.3",
+    "@types/yauzl": "2.10.3"
+  }
 }

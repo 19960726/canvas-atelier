@@ -24,6 +24,8 @@ export type {
 } from './contracts.js';
 
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
+export { AssetStore } from './asset-store.js';
+export type { AssetMetadata, StageAssetOptions } from './asset-store.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
 export {
   JournalWriter,
@@ -67,3 +69,15 @@ export type {
   OpenProjectOptions,
   ProjectRepositoryOptions,
 } from './project-repository.js';
+export {
+  NovusPackExporter,
+  NovusPackImporter,
+  redactNovusPackDiagnostics,
+} from './novus-pack.js';
+export type {
+  NovusPackExportResult,
+  NovusPackImportResult,
+  NovusPackImporterOptions,
+  NovusPackInventoryEntry,
+  NovusPackLimits,
+} from './novus-pack.js';
