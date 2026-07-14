@@ -1,5 +1,5 @@
-import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { join, resolve, sep } from 'node:path';
 
 import { parseCanvasProject, type CanvasProject } from '@agent-canvas/domain';
 
@@ -45,10 +45,13 @@ interface SnapshotCandidate {
 }
 
 interface JournalSegment {
-  readonly path: string;
-  readonly firstSequence: number | null;
   readonly final: boolean;
+  readonly firstSequence: number | null;
+  readonly lastSequence: number | null;
+  readonly path: string;
 }
+
+class RecoveryMirrorWriteFailure extends Error {}
 
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const LOCK_GUARD_SEGMENT = 'recovery/project.lock.guard';
@@ -82,19 +85,31 @@ export class RecoveryScanner {
     }
 
     const snapshots = await this.readSnapshots(projectRoot, manifest, issues);
-    const journals = await this.listJournalSegments(projectRoot);
+    const journals = await this.listJournalSegments(projectRoot, issues);
     const candidates: RecoveryCandidate[] = [];
     const sessionId = this.createId();
 
     for (const snapshot of snapshots) {
-      const candidate = await this.tryBuildCandidate(
-        projectRoot,
-        manifest,
-        snapshot,
-        journals,
-        issues,
-        sessionId,
-      );
+      let candidate: RecoveryCandidate | null;
+      try {
+        candidate = await this.tryBuildCandidate(
+          projectRoot,
+          manifest,
+          snapshot,
+          journals,
+          issues,
+          sessionId,
+        );
+      } catch (error) {
+        if (error instanceof RecoveryMirrorWriteFailure) {
+          return this.emptyResult('read_only', manifest, [
+            ...issues,
+            'recovery_mirror_write_failed',
+          ]);
+        }
+
+        throw error;
+      }
       if (candidate !== null) {
         pushCandidate(candidates, candidate);
       }
@@ -110,7 +125,12 @@ export class RecoveryScanner {
     }
 
     const action: RecoveryAction = issues.includes('abandoned_lock_guard') ||
+      issues.includes('broken_snapshot_chain') ||
       issues.includes('corrupt_journal_before_tail') ||
+      issues.includes('journal_archive_gap') ||
+      issues.includes('journal_archive_overlap') ||
+      issues.includes('manifest_snapshot_unavailable') ||
+      issues.includes('stray_snapshot') ||
       bestCandidates.length !== 1
       ? 'choose_recovery'
       : 'auto_recover';
@@ -146,8 +166,25 @@ export class RecoveryScanner {
     let tailStatus: 'complete' | 'partial_final_line' = 'complete';
 
     for (const journal of journals) {
-      if (journal.firstSequence !== null && journal.firstSequence <= revision) {
+      if (
+        journal.firstSequence !== null &&
+        journal.lastSequence !== null &&
+        journal.firstSequence <= revision &&
+        journal.lastSequence > revision
+      ) {
+        pushUnique(issues, 'journal_archive_overlap');
+        return null;
+      }
+
+      if (journal.lastSequence !== null && journal.lastSequence <= revision) {
         continue;
+      }
+
+      if (journal.firstSequence !== null && journal.firstSequence !== revision + 1) {
+        pushUnique(issues, journal.firstSequence > revision + 1
+          ? 'journal_archive_gap'
+          : 'journal_archive_overlap');
+        return null;
       }
 
       try {
@@ -175,13 +212,20 @@ export class RecoveryScanner {
       }
     }
 
-    const mirrorPath = await this.writeCandidateMirror(
-      manifest.projectId,
-      sessionId,
-      revision,
-      project,
-      snapshot.envelope.snapshotId,
-    );
+    let mirrorPath: string;
+    try {
+      mirrorPath = await this.writeCandidateMirror(
+        manifest.projectId,
+        sessionId,
+        revision,
+        project,
+        snapshot.envelope.snapshotId,
+      );
+    } catch (error) {
+      throw new RecoveryMirrorWriteFailure(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     return {
       path: mirrorPath,
       project,
@@ -198,9 +242,20 @@ export class RecoveryScanner {
     project: CanvasProject,
     snapshotId: string,
   ): Promise<string> {
-    const recoveryRoot = join(this.appDataRoot, 'recovery', projectId, sessionId);
-    await mkdir(recoveryRoot, { recursive: true });
-    const candidatePath = join(recoveryRoot, `candidate-${revision}.json`);
+    const recoveryBase = resolve(this.appDataRoot, 'recovery');
+    const recoveryRoot = confinedJoin(
+      recoveryBase,
+      safePathComponent('project', projectId),
+      safePathComponent('session', sessionId),
+    );
+    await this.fileSystem.mkdir(recoveryRoot, { recursive: true });
+    const candidatePath = confinedJoin(
+      recoveryRoot,
+      `${safePathComponent(
+        'candidate',
+        `${revision}-${snapshotId}-${sha256Canonical(project)}`,
+      )}.json`,
+    );
     await writeAtomic(this.fileSystem, candidatePath, `${canonicalJson({
       createdAt: this.now().toISOString(),
       project,
@@ -237,11 +292,72 @@ export class RecoveryScanner {
       }
     }
 
+    this.validateSnapshotGraph(snapshots, manifest, issues);
     snapshots.sort((left, right) => right.envelope.revision - left.envelope.revision);
     return snapshots;
   }
 
-  private async listJournalSegments(projectRoot: string): Promise<JournalSegment[]> {
+  private validateSnapshotGraph(
+    snapshots: readonly SnapshotCandidate[],
+    manifest: ProjectManifest,
+    issues: string[],
+  ): void {
+    const byId = new Map<string, SnapshotCandidate>();
+    for (const snapshot of snapshots) {
+      if (byId.has(snapshot.envelope.snapshotId)) {
+        pushUnique(issues, 'multiple_recovery_candidates');
+      }
+      byId.set(snapshot.envelope.snapshotId, snapshot);
+    }
+
+    for (const snapshot of snapshots) {
+      const previousSnapshotId = snapshot.envelope.previousSnapshotId;
+      if (previousSnapshotId !== null && !byId.has(previousSnapshotId)) {
+        pushUnique(issues, 'broken_snapshot_chain');
+      }
+    }
+
+    if (manifest.stableSnapshotId === null) {
+      pushUnique(issues, 'manifest_snapshot_unavailable');
+      return;
+    }
+
+    const manifestSnapshot = byId.get(manifest.stableSnapshotId);
+    if (
+      manifestSnapshot === undefined ||
+      manifestSnapshot.envelope.revision !== manifest.stableSnapshotRevision
+    ) {
+      pushUnique(issues, 'manifest_snapshot_unavailable');
+    }
+
+    const manifestChainIds = new Set<string>();
+    let current = manifestSnapshot;
+    while (current !== undefined) {
+      const snapshotId = current.envelope.snapshotId;
+      if (manifestChainIds.has(snapshotId)) {
+        pushUnique(issues, 'broken_snapshot_chain');
+        break;
+      }
+
+      manifestChainIds.add(snapshotId);
+      const previousSnapshotId = current.envelope.previousSnapshotId;
+      if (previousSnapshotId === null) {
+        break;
+      }
+      current = byId.get(previousSnapshotId);
+      if (current === undefined) {
+        pushUnique(issues, 'broken_snapshot_chain');
+      }
+    }
+
+    for (const snapshot of snapshots) {
+      if (!manifestChainIds.has(snapshot.envelope.snapshotId)) {
+        pushUnique(issues, 'stray_snapshot');
+      }
+    }
+  }
+
+  private async listJournalSegments(projectRoot: string, issues: string[]): Promise<JournalSegment[]> {
     const archiveRoot = join(projectRoot, 'journal', 'archive');
     let archiveNames: string[] = [];
     try {
@@ -253,18 +369,22 @@ export class RecoveryScanner {
     const archiveSegments = archiveNames
       .filter((name) => name.endsWith('.ndjson'))
       .map((name): JournalSegment => ({
-        path: join(archiveRoot, name),
-        firstSequence: firstSequenceFromArchiveName(name),
         final: false,
+        firstSequence: archiveRangeFromName(name)?.firstSequence ?? null,
+        lastSequence: archiveRangeFromName(name)?.lastSequence ?? null,
+        path: join(archiveRoot, name),
       }))
       .sort((left, right) => (left.firstSequence ?? Number.MAX_SAFE_INTEGER) - (right.firstSequence ?? Number.MAX_SAFE_INTEGER));
+
+    validateArchiveContinuity(archiveSegments, issues);
 
     return [
       ...archiveSegments,
       {
+        final: true,
         path: join(projectRoot, ...ACTIVE_JOURNAL_SEGMENT.split('/')),
         firstSequence: null,
-        final: true,
+        lastSequence: null,
       },
     ];
   }
@@ -299,12 +419,65 @@ export class RecoveryScanner {
   }
 }
 
-function firstSequenceFromArchiveName(name: string): number | null {
-  const match = /^j-(\d+)-\d+-/.exec(name);
+function archiveRangeFromName(name: string): { firstSequence: number; lastSequence: number } | null {
+  const match = /^j-(\d+)-(\d+)-/.exec(name);
   if (match === null) {
     return null;
   }
-  return Number.parseInt(match[1]!, 10);
+  const firstSequence = Number.parseInt(match[1]!, 10);
+  const lastSequence = Number.parseInt(match[2]!, 10);
+  if (
+    !Number.isSafeInteger(firstSequence) ||
+    !Number.isSafeInteger(lastSequence) ||
+    firstSequence <= 0 ||
+    lastSequence < firstSequence
+  ) {
+    return null;
+  }
+  return { firstSequence, lastSequence };
+}
+
+function validateArchiveContinuity(
+  archiveSegments: readonly JournalSegment[],
+  issues: string[],
+): void {
+  let previousLastSequence: number | null = null;
+
+  for (const segment of archiveSegments) {
+    if (segment.firstSequence === null || segment.lastSequence === null) {
+      pushUnique(issues, 'journal_archive_gap');
+      continue;
+    }
+
+    if (previousLastSequence !== null) {
+      if (segment.firstSequence <= previousLastSequence) {
+        pushUnique(issues, 'journal_archive_overlap');
+      } else if (segment.firstSequence !== previousLastSequence + 1) {
+        pushUnique(issues, 'journal_archive_gap');
+      }
+    }
+
+    previousLastSequence = Math.max(previousLastSequence ?? 0, segment.lastSequence);
+  }
+}
+
+function confinedJoin(base: string, ...segments: string[]): string {
+  const resolvedBase = resolve(base);
+  const target = resolve(resolvedBase, ...segments);
+  if (target !== resolvedBase && !target.startsWith(`${resolvedBase}${sep}`)) {
+    throw new Error('Recovery path escaped its base directory');
+  }
+  return target;
+}
+
+function safePathComponent(label: string, value: string): string {
+  const hash = createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 12);
+  const sanitized = value
+    .replace(/[^0-9A-Za-z_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 32);
+  return `${label}-${sanitized.length > 0 ? sanitized : 'value'}-${hash}`;
 }
 
 function pushUnique(values: string[], value: string): void {

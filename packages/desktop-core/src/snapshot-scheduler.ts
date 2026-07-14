@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { readFile as readBinaryFile } from 'node:fs/promises';
+import { Worker } from 'node:worker_threads';
 import { gzip, gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { join, posix } from 'node:path';
@@ -21,7 +21,7 @@ import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
 import {
   createPersistenceError,
   readValidJournal,
-  releaseJournalState,
+  runJournalMaintenance,
 } from './journal-writer.js';
 import type { OpenedProjectSession } from './project-repository.js';
 import {
@@ -66,6 +66,7 @@ export interface SnapshotSchedulerOptions {
   readonly fileSystem?: FileSystem;
   readonly now?: () => Date;
   readonly worker?: (input: SnapshotWorkerInput) => Promise<SnapshotWorkerOutput>;
+  readonly workerFactory?: SnapshotWorkerFactory;
 }
 
 type SnapshotScheduleDecision = { readonly reason: SnapshotReason };
@@ -74,6 +75,24 @@ interface LoadedSnapshot {
   readonly envelope: SnapshotEnvelope;
   readonly path: string;
 }
+
+interface RotatedJournal {
+  readonly archivePath: string;
+  readonly journalRecords: Awaited<ReturnType<typeof readValidJournal>>['records'];
+  readonly manifest: ProjectManifest;
+  readonly targetRevision: number;
+  readonly targetSequence: number;
+}
+
+interface SnapshotWorkerLike {
+  once(event: 'message', listener: (message: unknown) => void): this;
+  once(event: 'error', listener: (error: Error) => void): this;
+  once(event: 'exit', listener: (code: number) => void): this;
+  postMessage(input: SnapshotWorkerInput): void;
+  terminate(): Promise<number> | number;
+}
+
+export type SnapshotWorkerFactory = (url: URL) => SnapshotWorkerLike;
 
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const MANIFEST_PATH = 'project.novus.json';
@@ -87,7 +106,7 @@ export class SnapshotScheduler {
   constructor(options: SnapshotSchedulerOptions = {}) {
     this.fileSystem = options.fileSystem ?? new NodeFileSystem();
     this.now = options.now ?? (() => new Date());
-    this.worker = options.worker ?? SnapshotScheduler.defaultWorker;
+    this.worker = options.worker ?? createNodeSnapshotWorkerRunner(options.workerFactory);
   }
 
   static defaultWorker(input: SnapshotWorkerInput): Promise<SnapshotWorkerOutput> {
@@ -155,20 +174,9 @@ export class SnapshotScheduler {
     }
 
     const manifest = await this.readManifest(session.root);
-    const activeJournalPath = join(session.root, ...manifest.activeJournalSegment.split('/'));
-    const journal = await readValidJournal(activeJournalPath, {
-      baseRevision: manifest.stableSnapshotRevision,
-      expectedProjectId: manifest.projectId,
-      fileSystem: this.fileSystem,
-      firstSequence: manifest.nextSequence,
-    });
-    const lastRecord = journal.records.length > 0
-      ? journal.records[journal.records.length - 1]
-      : undefined;
-    const targetRevision = lastRecord?.revision ?? manifest.stableSnapshotRevision;
-    const targetSequence = lastRecord?.sequence ?? manifest.nextSequence - 1;
+    const rotated = await this.rotateActiveJournal(session.root, manifest);
 
-    if (targetRevision === manifest.stableSnapshotRevision) {
+    if (rotated === null) {
       return {
         path: manifest.stableSnapshotPath ?? '',
         reason: request.reason,
@@ -177,16 +185,69 @@ export class SnapshotScheduler {
       };
     }
 
-    const archiveSegment = this.archiveSegment(manifest.nextSequence, targetRevision);
-    const archivePath = join(session.root, ...archiveSegment.split('/'));
-    await this.fileSystem.rename(activeJournalPath, archivePath);
-    await writeAtomic(this.fileSystem, activeJournalPath, '');
-    releaseJournalState(activeJournalPath, manifest.projectId);
+    try {
+      return await this.writeSnapshotFromRotation(session.root, rotated, request.reason);
+    } catch (error) {
+      await this.rollbackRotation(session.root, rotated, error);
+      throw error;
+    }
+  }
 
-    const stableSnapshot = await this.loadSnapshot(session.root, manifest);
+  private async rotateActiveJournal(
+    root: string,
+    manifest: ProjectManifest,
+  ): Promise<RotatedJournal | null> {
+    const activeJournalPath = join(root, ...manifest.activeJournalSegment.split('/'));
+
+    return runJournalMaintenance({
+      activeJournalPath,
+      baseRevision: manifest.stableSnapshotRevision,
+      fileSystem: this.fileSystem,
+      nextSequence: manifest.nextSequence,
+      projectId: manifest.projectId,
+    }, async (maintenance) => {
+      const journal = await readValidJournal(activeJournalPath, {
+        baseRevision: manifest.stableSnapshotRevision,
+        expectedProjectId: manifest.projectId,
+        fileSystem: this.fileSystem,
+        firstSequence: manifest.nextSequence,
+      });
+      const lastRecord = journal.records.length > 0
+        ? journal.records[journal.records.length - 1]
+        : undefined;
+      const targetRevision = lastRecord?.revision ?? manifest.stableSnapshotRevision;
+      const targetSequence = lastRecord?.sequence ?? manifest.nextSequence - 1;
+
+      if (targetRevision === manifest.stableSnapshotRevision) {
+        return null;
+      }
+
+      const archiveSegment = this.archiveSegment(manifest.nextSequence, targetRevision);
+      const archivePath = join(root, ...archiveSegment.split('/'));
+      await this.fileSystem.rename(activeJournalPath, archivePath);
+      await writeAtomic(this.fileSystem, activeJournalPath, '');
+      maintenance.advanceTo(targetRevision, targetSequence + 1);
+
+      return {
+        archivePath,
+        journalRecords: journal.records,
+        manifest,
+        targetRevision,
+        targetSequence,
+      };
+    });
+  }
+
+  private async writeSnapshotFromRotation(
+    root: string,
+    rotated: RotatedJournal,
+    reason: SnapshotReason,
+  ): Promise<SnapshotFlushResult> {
+    const { manifest, targetRevision, targetSequence } = rotated;
+    const stableSnapshot = await this.loadSnapshot(root, manifest);
     const workerOutput = await this.worker({
       snapshot: stableSnapshot.envelope,
-      records: journal.records,
+      records: rotated.journalRecords,
       targetRevision,
     });
     const project = JSON.parse(workerOutput.projectJson) as Record<string, unknown>;
@@ -215,7 +276,7 @@ export class SnapshotScheduler {
       projectSha256: workerOutput.projectSha256,
     };
     const snapshotBytes = await gzipAsync(`${canonicalJson(envelope)}\n`);
-    const snapshotPath = join(session.root, ...snapshotSegment.split('/'));
+    const snapshotPath = join(root, ...snapshotSegment.split('/'));
     await writeAtomic(this.fileSystem, snapshotPath, snapshotBytes);
     await this.verifyGzipSnapshot(snapshotPath, envelope);
 
@@ -231,16 +292,72 @@ export class SnapshotScheduler {
     };
     await writeAtomic(
       this.fileSystem,
-      join(session.root, MANIFEST_PATH),
+      join(root, MANIFEST_PATH),
       `${canonicalJson(nextManifest)}\n`,
     );
 
     return {
       path: snapshotSegment,
-      reason: request.reason,
+      reason,
       revision: targetRevision,
       snapshotId,
     };
+  }
+
+  private async rollbackRotation(
+    root: string,
+    rotated: RotatedJournal,
+    cause: unknown,
+  ): Promise<void> {
+    const activeJournalPath = join(root, ...ACTIVE_JOURNAL_SEGMENT.split('/'));
+
+    await runJournalMaintenance({
+      activeJournalPath,
+      baseRevision: rotated.targetRevision,
+      fileSystem: this.fileSystem,
+      nextSequence: rotated.targetSequence + 1,
+      projectId: rotated.manifest.projectId,
+    }, async (maintenance) => {
+      try {
+        const archiveText = await this.fileSystem.readFile(rotated.archivePath, 'utf8');
+        const activeText = await this.fileSystem.readFile(activeJournalPath, 'utf8');
+        const activeJournal = await readValidJournal(activeJournalPath, {
+          baseRevision: rotated.targetRevision,
+          expectedProjectId: rotated.manifest.projectId,
+          fileSystem: this.fileSystem,
+          firstSequence: rotated.targetSequence + 1,
+        });
+        const mergedText = `${archiveText}${activeText}`;
+        await writeAtomic(this.fileSystem, activeJournalPath, mergedText);
+        const mergedJournal = await readValidJournal(activeJournalPath, {
+          baseRevision: rotated.manifest.stableSnapshotRevision,
+          expectedProjectId: rotated.manifest.projectId,
+          fileSystem: this.fileSystem,
+          firstSequence: rotated.manifest.nextSequence,
+        });
+        const lastRecord = mergedJournal.records[mergedJournal.records.length - 1];
+        maintenance.advanceTo(
+          lastRecord?.revision ?? rotated.manifest.stableSnapshotRevision,
+          (lastRecord?.sequence ?? rotated.manifest.nextSequence - 1) + 1,
+        );
+        await this.fileSystem.rm(rotated.archivePath, { force: true });
+
+        if (activeJournal.tailStatus !== 'complete') {
+          throw createPersistenceError(
+            'CORRUPT_JOURNAL',
+            false,
+            'Rollback encountered an incomplete active journal tail',
+          );
+        }
+      } catch (rollbackError) {
+        throw maintenance.poison(createPersistenceError(
+          'CORRUPT_JOURNAL',
+          false,
+          'Journal rollback is uncertain after snapshot rotation failure',
+          rollbackError ?? cause,
+        ));
+      }
+    });
   }
 
   private archiveSegment(firstSequence: number, targetRevision: number): string {
@@ -269,7 +386,7 @@ export class SnapshotScheduler {
   }
 
   private async verifyGzipSnapshot(path: string, expected: SnapshotEnvelope): Promise<void> {
-    const raw = await readBinaryFile(path);
+    const raw = await readFileBytes(this.fileSystem, path);
     const unzipped = (await gunzipAsync(raw)).toString('utf8');
     const parsed = JSON.parse(unzipped) as unknown;
     if (
@@ -289,7 +406,7 @@ export async function readSnapshotEnvelope(
   fileSystem: FileSystem = new NodeFileSystem(),
 ): Promise<SnapshotEnvelope> {
   const text = path.endsWith('.gz')
-    ? (await gunzipAsync(await readBinaryFile(path))).toString('utf8')
+    ? (await gunzipAsync(await readFileBytes(fileSystem, path))).toString('utf8')
     : await fileSystem.readFile(path, 'utf8');
   const parsed = JSON.parse(text) as unknown;
   if (!isSnapshotEnvelope(parsed)) {
@@ -341,6 +458,78 @@ function validateSnapshotSegment(path: string): string {
   }
 
   return normalized;
+}
+
+function createNodeSnapshotWorkerRunner(
+  workerFactory: SnapshotWorkerFactory = (url) => new Worker(url) as SnapshotWorkerLike,
+): (input: SnapshotWorkerInput) => Promise<SnapshotWorkerOutput> {
+  return (input) => new Promise<SnapshotWorkerOutput>((resolve, reject) => {
+    const worker = workerFactory(new URL('./snapshot-worker-entry.js', import.meta.url));
+    let settled = false;
+
+    const settle = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      callback();
+      void Promise.resolve(worker.terminate()).catch(() => undefined);
+    };
+
+    worker.once('message', (message) => {
+      settle(() => {
+        if (isWorkerSuccessMessage(message)) {
+          resolve(message.output);
+          return;
+        }
+
+        if (isWorkerFailureMessage(message)) {
+          reject(createPersistenceError(
+            'CORRUPT_SNAPSHOT',
+            false,
+            `Snapshot worker failed: ${message.error}`,
+          ));
+          return;
+        }
+
+        reject(createPersistenceError(
+          'CORRUPT_SNAPSHOT',
+          false,
+          'Snapshot worker returned an invalid response',
+        ));
+      });
+    });
+    worker.once('error', (error) => {
+      settle(() => reject(error));
+    });
+    worker.once('exit', (code) => {
+      if (code !== 0) {
+        settle(() => reject(createPersistenceError(
+          'CORRUPT_SNAPSHOT',
+          false,
+          `Snapshot worker exited with code ${code}`,
+        )));
+      }
+    });
+    worker.postMessage(input);
+  });
+}
+
+async function readFileBytes(fileSystem: FileSystem, path: string): Promise<Uint8Array> {
+  if (fileSystem.readFileBuffer !== undefined) {
+    return fileSystem.readFileBuffer(path);
+  }
+
+  return Buffer.from(await fileSystem.readFile(path, 'latin1'), 'latin1');
+}
+
+function isWorkerSuccessMessage(message: unknown): message is { readonly ok: true; readonly output: SnapshotWorkerOutput } {
+  return isPlainRecord(message) && message.ok === true && isPlainRecord(message.output);
+}
+
+function isWorkerFailureMessage(message: unknown): message is { readonly ok: false; readonly error: string } {
+  return isPlainRecord(message) && message.ok === false && typeof message.error === 'string';
 }
 
 function isSnapshotEnvelope(value: unknown): value is SnapshotEnvelope {

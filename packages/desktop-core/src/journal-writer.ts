@@ -41,6 +41,18 @@ export interface JournalCommitOptions {
   readonly syncGate?: JournalSyncGate;
 }
 
+export interface JournalMaintenanceOptions extends JournalWriterOpenOptions {}
+
+export interface JournalMaintenanceContext {
+  readonly activeJournalPath: string;
+  readonly currentRevision: number;
+  readonly fileSystem: FileSystem;
+  readonly nextSequence: number;
+  readonly projectId: string;
+  advanceTo(revision: number, nextSequence: number): void;
+  poison(error: PersistenceError): PersistenceError;
+}
+
 export interface JournalWriterOpenOptions {
   readonly activeJournalPath: string;
   readonly baseRevision: number;
@@ -318,6 +330,49 @@ export function releaseJournalState(activeJournalPath: string, projectId?: strin
   }
 }
 
+export async function runJournalMaintenance<T>(
+  options: JournalMaintenanceOptions,
+  operation: (context: JournalMaintenanceContext) => Promise<T>,
+): Promise<T> {
+  const fileSystem = options.fileSystem ?? new NodeFileSystem();
+  const registryKey = canonicalJournalRegistryKey(options.activeJournalPath, options.projectId);
+  let registryEntry = journalRegistry.get(registryKey);
+  if (registryEntry === undefined || registryEntry.released !== null) {
+    registryEntry = createJournalRegistryEntry(options, fileSystem);
+    journalRegistry.set(registryKey, registryEntry);
+  }
+
+  const registryGeneration = registryEntry.generation;
+  const state = await registryEntry.initialization;
+  registryEntry.state = state;
+  const previous = registryEntry.queue;
+  const run = previous.then(async () => {
+    ensureJournalRegistryEntryActive(registryEntry!, registryGeneration, state);
+    const context: JournalMaintenanceContext = {
+      activeJournalPath: options.activeJournalPath,
+      get currentRevision() {
+        return state.currentRevision;
+      },
+      fileSystem,
+      get nextSequence() {
+        return state.nextSequence;
+      },
+      projectId: options.projectId,
+      advanceTo(revision: number, nextSequence: number) {
+        state.currentRevision = revision;
+        state.nextSequence = nextSequence;
+      },
+      poison(error: PersistenceError) {
+        state.poisonedError = error;
+        return error;
+      },
+    };
+    return operation(context);
+  });
+  registryEntry.queue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 function createJournalRegistryEntry(
   options: JournalWriterOpenOptions,
   fileSystem: FileSystem,
@@ -346,6 +401,24 @@ function releaseJournalRegistryEntry(entry: JournalRegistryEntry | undefined): v
 
   if (entry.state !== null && entry.state.poisonedError === null) {
     entry.state.poisonedError = releaseError;
+  }
+}
+
+function ensureJournalRegistryEntryActive(
+  entry: JournalRegistryEntry,
+  generation: number,
+  state: JournalState,
+): void {
+  if (state.poisonedError !== null) {
+    throw state.poisonedError;
+  }
+
+  if (entry.released !== null || entry.generation !== generation) {
+    throw entry.released ?? createPersistenceError(
+      'CONCURRENT_WRITER',
+      false,
+      'Journal writer is no longer active',
+    );
   }
 }
 

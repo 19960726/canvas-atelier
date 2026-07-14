@@ -19,6 +19,7 @@ export interface FileSystem {
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   open(path: string, flags: string): Promise<FileHandleLike>;
   readFile(path: string, encoding: BufferEncoding): Promise<string>;
+  readFileBuffer?(path: string): Promise<Uint8Array>;
   readdir(path: string): Promise<string[]>;
   rename(source: string, destination: string): Promise<void>;
   rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void>;
@@ -39,6 +40,10 @@ export class NodeFileSystem implements FileSystem {
 
   async readFile(path: string, encoding: BufferEncoding) {
     return readFile(path, encoding);
+  }
+
+  async readFileBuffer(path: string) {
+    return readFile(path);
   }
 
   async readdir(path: string) {
