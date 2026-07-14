@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AssetStore } from './asset-store';
 
@@ -130,6 +130,60 @@ describe('AssetStore', () => {
     expect(asset.relativePath).not.toBe(`assets/${expectedHash.slice(0, 16)}.png`);
     expect(await readFile(shortHashPath)).toEqual(existingBytes);
     expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(pngBytes);
+  });
+
+  it('lengthens the logical asset id when a different extension already uses the short hash for different content', async () => {
+    vi.resetModules();
+    const actualCrypto = await vi.importActual<typeof import('node:crypto')>('node:crypto');
+    const tempRoot = await createProjectRoot(tempRoots);
+    const sharedShortId = '0123456789abcdef';
+    const pngHash = `${sharedShortId}a${'0'.repeat(47)}`;
+    const jpgHash = `${sharedShortId}b${'1'.repeat(47)}`;
+    const jpgBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const shortHashPath = join(tempRoot, 'assets', `${sharedShortId}.png`);
+    await writeFile(shortHashPath, pngBytes);
+
+    vi.doMock('node:crypto', () => ({
+      ...actualCrypto,
+      createHash: vi.fn((algorithm: string) => {
+        if (algorithm !== 'sha256') {
+          return actualCrypto.createHash(algorithm);
+        }
+        const chunks: Buffer[] = [];
+        return {
+          update(chunk: Buffer | Uint8Array | string) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            return this;
+          },
+          digest(encoding?: 'hex') {
+            const bytes = Buffer.concat(chunks);
+            const mappedHash = bytes.equals(pngBytes)
+              ? pngHash
+              : bytes.equals(jpgBytes)
+                ? jpgHash
+                : actualCrypto.createHash('sha256').update(bytes).digest('hex');
+            return encoding === 'hex' ? mappedHash : Buffer.from(mappedHash, 'hex');
+          },
+        };
+      }),
+    }));
+
+    try {
+      const { AssetStore: MockedAssetStore } = await import('./asset-store');
+      const store = new MockedAssetStore();
+
+      const asset = await store.stageAndCommit(tempRoot, readableFrom(jpgBytes), {
+        originalName: 'collision.jpg',
+      });
+
+      expect(asset.id).toBe(`${sharedShortId}b`);
+      expect(asset.relativePath).toBe(`assets/${sharedShortId}b.jpg`);
+      expect(await readFile(shortHashPath)).toEqual(pngBytes);
+      expect(await readFile(join(tempRoot, asset.relativePath))).toEqual(jpgBytes);
+    } finally {
+      vi.doUnmock('node:crypto');
+      vi.resetModules();
+    }
   });
 });
 

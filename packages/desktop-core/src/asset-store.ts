@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
-import { access, link, mkdir, open, rename, rm, stat } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
+import { access, link, mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises';
+import { basename, extname, join, parse } from 'node:path';
 
 import { createPersistenceError } from './journal-writer.js';
 
@@ -28,6 +28,7 @@ type AssetExtension = 'gif' | 'jpg' | 'png' | 'webp';
 type AssetMediaType = 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp';
 
 const DEFAULT_MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024;
+const ASSET_EXTENSIONS: readonly AssetExtension[] = ['gif', 'jpg', 'png', 'webp'];
 const MEDIA_BY_EXTENSION: Record<AssetExtension, AssetMediaType> = {
   gif: 'image/gif',
   jpg: 'image/jpeg',
@@ -131,25 +132,72 @@ async function resolveContentAddressedAssetPath(
   readonly id: string;
   readonly relativePath: string;
 }> {
-  const shortId = sha256.slice(0, 16);
-  const shortRelativePath = `assets/${shortId}.${extension}`;
-  const shortPath = join(projectRoot, ...shortRelativePath.split('/'));
-  if (!await exists(shortPath)) {
-    return { exists: false, finalPath: shortPath, id: shortId, relativePath: shortRelativePath };
-  }
-  if (await sha256File(shortPath) === sha256) {
-    return { exists: true, finalPath: shortPath, id: shortId, relativePath: shortRelativePath };
+  const assetsRoot = join(projectRoot, 'assets');
+  const assetDirectoryEntries = await readdir(assetsRoot, { withFileTypes: true });
+  const assetsById = new Map<string, Array<{ readonly extension: AssetExtension; readonly path: string }>>();
+
+  for (const entry of assetDirectoryEntries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const parsed = parse(entry.name);
+    const parsedExtension = parsed.ext.slice(1);
+    if (!isAssetExtension(parsedExtension)) {
+      continue;
+    }
+    const assetEntries = assetsById.get(parsed.name) ?? [];
+    assetEntries.push({
+      extension: parsedExtension,
+      path: join(assetsRoot, entry.name),
+    });
+    assetsById.set(parsed.name, assetEntries);
   }
 
-  const fullRelativePath = `assets/${sha256}.${extension}`;
-  const fullPath = join(projectRoot, ...fullRelativePath.split('/'));
-  if (!await exists(fullPath)) {
-    return { exists: false, finalPath: fullPath, id: sha256, relativePath: fullRelativePath };
-  }
-  if (await sha256File(fullPath) === sha256) {
-    return { exists: true, finalPath: fullPath, id: sha256, relativePath: fullRelativePath };
+  for (let idLength = 16; idLength <= sha256.length; idLength += 1) {
+    const candidateId = sha256.slice(0, idLength);
+    const existingEntries = assetsById.get(candidateId) ?? [];
+    if (existingEntries.length === 0) {
+      return buildResolvedAsset(projectRoot, candidateId, extension, false);
+    }
+
+    let allEntriesMatch = true;
+    for (const existingEntry of existingEntries) {
+      if (await sha256File(existingEntry.path) !== sha256) {
+        allEntriesMatch = false;
+        break;
+      }
+    }
+    if (!allEntriesMatch) {
+      continue;
+    }
+
+    const existingPathForExtension = existingEntries.find((entry) => entry.extension === extension);
+    if (existingPathForExtension !== undefined) {
+      return buildResolvedAsset(projectRoot, candidateId, extension, true);
+    }
+    return buildResolvedAsset(projectRoot, candidateId, extension, false);
   }
   throw packageValidationError('Asset content-addressed path collision could not be resolved');
+}
+
+function buildResolvedAsset(
+  projectRoot: string,
+  id: string,
+  extension: AssetExtension,
+  exists: boolean,
+): {
+  readonly exists: boolean;
+  readonly finalPath: string;
+  readonly id: string;
+  readonly relativePath: string;
+} {
+  const relativePath = `assets/${id}.${extension}`;
+  return {
+    exists,
+    finalPath: join(projectRoot, ...relativePath.split('/')),
+    id,
+    relativePath,
+  };
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -229,10 +277,14 @@ function normalizeExtension(originalName: string | undefined): AssetExtension | 
   if (raw === 'jpeg') {
     return 'jpg';
   }
-  if (raw === 'gif' || raw === 'jpg' || raw === 'png' || raw === 'webp') {
+  if (isAssetExtension(raw)) {
     return raw;
   }
   return null;
+}
+
+function isAssetExtension(value: string): value is AssetExtension {
+  return ASSET_EXTENSIONS.includes(value as AssetExtension);
 }
 
 async function exists(path: string): Promise<boolean> {

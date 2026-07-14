@@ -182,11 +182,8 @@ export class NovusPackImporter {
       await promoteStagedPackage(stagingRoot, destinationRoot, ownership);
       promotionCompleted = true;
 
-      const destinationCleanupError = await cleanupDestinationOwnershipMarker(ownership);
+      await cleanupDestinationOwnershipMarker(ownership);
       await cleanupStagingRoot(stagingRoot);
-      if (destinationCleanupError !== null) {
-        throw packageValidationError('Package import cleanup failed after promotion');
-      }
 
       return {
         importedRevision: packageManifest.pinnedRevision,

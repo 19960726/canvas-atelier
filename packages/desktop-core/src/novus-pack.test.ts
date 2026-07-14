@@ -288,6 +288,39 @@ describe('NovusPack export and import', () => {
     }
   });
 
+  it('returns success and keeps a promoted destination when ownership marker cleanup fails after promotion', async () => {
+    vi.resetModules();
+    const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const tempRoot = await createTempRoot(tempRoots);
+    const { projectRoot } = await createProjectFixture(tempRoot);
+    const packagePath = join(tempRoot, 'valid-marker-cleanup-failure.novuspack');
+    await new NovusPackExporter().exportRevision(projectRoot, packagePath);
+    const destination = join(tempRoot, 'MarkerCleanupFailure.novus-project');
+
+    vi.doMock('node:fs/promises', () => ({
+      ...actualFs,
+      rm: vi.fn(async (path: string, options?: { force?: boolean; recursive?: boolean }) => {
+        if (path.includes('.novuspack-import-owner-') && !options?.recursive) {
+          const error = new Error(`marker cleanup failed in ${tempRoot}`) as NodeJS.ErrnoException;
+          error.code = 'EACCES';
+          throw error;
+        }
+        return actualFs.rm(path, options);
+      }),
+    }));
+    try {
+      const { NovusPackImporter: MockedImporter } = await import('./novus-pack');
+
+      const result = await new MockedImporter().importTo(packagePath, destination);
+
+      expect(result).toMatchObject({ projectRoot: destination, importedRevision: 7 });
+      await expect(readFile(join(destination, 'project.novus.json'), 'utf8')).resolves.toContain('project-pack');
+    } finally {
+      vi.doUnmock('node:fs/promises');
+      vi.resetModules();
+    }
+  });
+
   it('redacts secrets, private paths, and raw base64 from diagnostics', () => {
     const diagnostic = [
       'Authorization: Bearer sk-live-secret',
