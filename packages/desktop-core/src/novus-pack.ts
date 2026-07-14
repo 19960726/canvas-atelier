@@ -23,6 +23,10 @@ export interface NovusPackExportResult {
   readonly pinnedRevision: number;
 }
 
+export interface NovusPackExporterOptions {
+  readonly faultHook?: (point: 'during_export') => Promise<void> | void;
+}
+
 export interface NovusPackImportResult {
   readonly importedRevision: number;
   readonly projectRoot: string;
@@ -103,6 +107,12 @@ const EXECUTABLE_EXTENSIONS = new Set([
 ]);
 
 export class NovusPackExporter {
+  private readonly faultHook: (point: 'during_export') => Promise<void> | void;
+
+  constructor(options: NovusPackExporterOptions = {}) {
+    this.faultHook = options.faultHook ?? (() => undefined);
+  }
+
   async exportRevision(projectRoot: string, destinationPath: string): Promise<NovusPackExportResult> {
     const manifest = parseProjectManifest(await readJson(join(projectRoot, 'project.novus.json')));
     if (manifest.stableSnapshotPath === null || manifest.stableSnapshotId === null) {
@@ -139,6 +149,7 @@ export class NovusPackExporter {
     try {
       await mkdir(dirname(destinationPath), { recursive: true });
       await writeArchive(projectRoot, tempPath, allEntries);
+      await this.faultHook('during_export');
       await validatePackageArchive(tempPath, DEFAULT_LIMITS);
       await rename(tempPath, destinationPath);
       return {

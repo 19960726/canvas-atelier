@@ -107,6 +107,7 @@ export {
 } from './novus-pack.js';
 export type {
   NovusPackExportResult,
+  NovusPackExporterOptions,
   NovusPackImportResult,
   NovusPackImporterOptions,
   NovusPackInventoryEntry,

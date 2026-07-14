@@ -510,3 +510,13 @@ Runtime verification still requires screenshots of the shipped app, including th
 - [ ] Persist timeline entries through snapshot-plus-journal desktop storage and verify crash recovery.
 - [x] Add snapshot restore and reviewed `promote to Skill` UI actions; promotion creates only a persisted `pending_review` candidate and never auto-writes Skill knowledge.
 - [x] Verify that API keys, Authorization values, private filesystem paths, and raw image payloads cannot enter project memory; export-level verification remains part of desktop packaging.
+
+### Desktop Persistence Verification (Task 9, 2026-07-15)
+
+- [x] Add child-process crash injection for `before_append`, `during_append`, `after_append_before_sync`, `after_snapshot_temp`, `before_manifest_replace`, `after_manifest_replace`, `during_compaction`, and `during_export`.
+- [x] Verify recovery never advances beyond the last durable acknowledgement and never applies a partial transaction.
+- [x] Keep the 10,000-transaction replay benchmark outside ordinary tests under `npm run perf:persistence`.
+- [x] Record the automated and manual Windows evidence in `docs/testing/desktop-persistence-matrix.md` without converting unavailable rows into passes.
+- [ ] Complete Windows 7, Windows 10, Windows 11 legacy/modern GUI runtime checks, safe-mode checks, and 1366x768/1440x900 screenshots on available physical machines or approved VMs.
+
+Snapshot-plus-journal persistence is automated-test complete. The release/runtime completion gate remains pending until the manual matrix rows above are actually run.
