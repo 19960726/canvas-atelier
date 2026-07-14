@@ -337,6 +337,38 @@ describe('ProjectRepository', () => {
     expect(reopened.manifest.cleanClose).toBe(false);
   });
 
+  it('keeps the project dirty when owned lock removal fails during close', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'DirtyCloseFailure.novus-project');
+    const lockPath = join(projectRoot, 'recovery', 'project.lock');
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
+    const repository = createRepository({
+      fileSystem: new FailRmFileSystem(lockPath),
+    });
+
+    const session = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-dirty-close-failure',
+      projectName: 'DirtyCloseFailure',
+    });
+
+    await expect(repository.close(session)).rejects.toThrow(/injected rm failure/i);
+
+    await expect(access(lockPath)).resolves.toBeUndefined();
+    await expect(access(guardPath)).rejects.toThrow();
+
+    const manifest = await readProjectManifest(projectRoot);
+    expect(manifest.cleanClose).toBe(false);
+
+    const cleanClose = await readJson<TestCleanCloseMarker>(
+      join(projectRoot, 'recovery', 'clean-close.json'),
+    );
+    expect(cleanClose).toMatchObject({
+      clean: false,
+      closedAt: null,
+    });
+  });
+
   it('keeps a third opener read-only while close observes a non-owned lock', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'CloseRace.novus-project');
@@ -876,6 +908,23 @@ class FailOpenFileSystem extends DelegatingFileSystem {
     }
 
     return super.open(path, flags);
+  }
+}
+
+class FailRmFileSystem extends DelegatingFileSystem {
+  private readonly targetPath: string;
+
+  constructor(targetPath: string) {
+    super();
+    this.targetPath = targetPath;
+  }
+
+  override async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    if (samePath(path, this.targetPath)) {
+      throw new Error('injected rm failure');
+    }
+
+    await super.rm(path, options);
   }
 }
 

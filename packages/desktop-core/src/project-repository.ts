@@ -222,12 +222,12 @@ export class ProjectRepository {
         return;
       }
 
+      await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
       await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
       await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
         clean: true,
         closedAt,
       } satisfies CleanCloseMarker);
-      await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
     } finally {
       await this.releaseOperationGuard(guard);
     }
