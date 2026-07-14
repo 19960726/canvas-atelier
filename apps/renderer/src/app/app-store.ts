@@ -1,29 +1,72 @@
 import { create } from 'zustand';
 import {
   appendProjectMemoryEntry,
+  applyProjectTransaction,
   createSkillPromotionCandidate,
   confirmAgentPlan as confirmDomainPlan,
   revertTransaction,
   selectActiveProjectMemoryEntries,
   type AgentCanvasPlan,
   type AgentPlanApprovalSelection,
+  type CanvasOperation,
   type CanvasProject,
   type CanvasTransaction,
+  type ProjectOperation,
   type ProjectMemoryEntry,
+  type ProjectTransaction,
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import {
-  loadPersistedProjectBundle,
-  persistCurrentProject,
-  persistProjectTransition,
-} from './project-persistence';
+  createProjectPersistenceClient,
+  type ProjectCommitRequest,
+  type ProjectCommitResult,
+  type ProjectPersistenceClient,
+  type ProjectSaveStatus,
+} from './desktop-persistence';
+import { loadPersistedProjectBundle } from './project-persistence';
 
 let planSequence = 0;
 let pendingSave: ReturnType<typeof setTimeout> | undefined;
+let projectPersistenceClient = createProjectPersistenceClient();
 
 interface UndoEntry {
   transaction: CanvasTransaction;
   memoryId: string;
+}
+
+interface SetProjectOptions {
+  schedulePersist?: boolean;
+}
+
+interface CommitProjectTransactionOptions {
+  kind?: ProjectCommitRequest['kind'];
+  nextProject?: CanvasProject;
+}
+
+interface AppState {
+  project: CanvasProject;
+  persistenceMode: 'browser' | 'desktop';
+  desktopRevision: number;
+  availableSnapshotIds: string[];
+  saveStatus: ProjectSaveStatus;
+  saveErrorCode: string | null;
+  agentPanelCollapsed: boolean;
+  activeTool: 'select' | 'hand' | 'upload' | 'image' | 'prompt' | 'placement';
+  agentPlan: AgentCanvasPlan | null;
+  undoStack: UndoEntry[];
+  confirmedModelJobs: number;
+  closePersistence: () => Promise<void>;
+  commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
+  hydratePersistence: () => Promise<void>;
+  setActiveTool: (tool: AppState['activeTool']) => void;
+  toggleAgentPanel: () => void;
+  setProject: (project: CanvasProject, options?: SetProjectOptions) => void;
+  draftAgentPlan: (message: string) => void;
+  confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => Promise<void>;
+  cancelAgentPlan: () => void;
+  undo: () => Promise<void>;
+  promoteProjectMemory: (memoryId: string) => Promise<void>;
+  restoreProjectSnapshot: (snapshotId: string) => Promise<void>;
 }
 
 export function createStarterProject(): CanvasProject {
@@ -48,40 +91,72 @@ export function createStarterProject(): CanvasProject {
   };
 }
 
-interface AppState {
-  project: CanvasProject;
-  saveStatus: 'pending' | 'saved' | 'error';
-  agentPanelCollapsed: boolean;
-  activeTool: 'select' | 'hand' | 'upload' | 'image' | 'prompt' | 'placement';
-  agentPlan: AgentCanvasPlan | null;
-  undoStack: UndoEntry[];
-  confirmedModelJobs: number;
-  setActiveTool: (tool: AppState['activeTool']) => void;
-  toggleAgentPanel: () => void;
-  setProject: (project: CanvasProject) => void;
-  draftAgentPlan: (message: string) => void;
-  confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => void;
-  cancelAgentPlan: () => void;
-  undo: () => void;
-  promoteProjectMemory: (memoryId: string) => void;
-  restoreProjectSnapshot: (snapshotId: string) => void;
-}
+const initialState = createInitialState();
 
-const restoredProject = loadPersistedProjectBundle()?.current;
+export const useAppStore = create<AppState>((set, get) => ({
+  ...initialState,
+  closePersistence: async () => {
+    cancelPendingProjectSave();
+    await projectPersistenceClient.close();
+  },
+  commitProjectTransaction: async (transaction, options = {}) => {
+    cancelPendingProjectSave();
+    const before = get().project;
+    const nextProject = options.nextProject ?? applyProjectTransaction(before, transaction);
+    const kind = options.kind ?? 'canvas';
+    if (get().saveStatus === 'read_only') {
+      set({ project: before, saveErrorCode: 'CONCURRENT_WRITER', saveStatus: 'read_only' });
+      return false;
+    }
 
-export const useAppStore = create<AppState>((set) => ({
-  project: restoredProject ?? createStarterProject(),
-  saveStatus: restoredProject ? 'saved' : 'pending',
-  agentPanelCollapsed: false,
-  activeTool: 'select',
-  agentPlan: null,
-  undoStack: [],
-  confirmedModelJobs: 0,
+    set({ project: nextProject, saveErrorCode: null, saveStatus: 'saving' });
+    const result = await projectPersistenceClient.commit({
+      baseRevision: get().desktopRevision,
+      kind,
+      nextProject,
+      previousProject: before,
+      projectId: before.id,
+      transaction,
+    });
+
+    if (!result.ok && result.code === 'REVISION_CONFLICT') {
+      const hydrated = await projectPersistenceClient.hydrate();
+      set({
+        availableSnapshotIds: hydrated.availableSnapshotIds,
+        desktopRevision: hydrated.revision,
+        persistenceMode: hydrated.mode,
+        project: hydrated.project,
+        saveErrorCode: result.code,
+        saveStatus: 'error',
+      });
+      return false;
+    }
+
+    return applyCommitResult(set, get, result);
+  },
+  hydratePersistence: async () => {
+    cancelPendingProjectSave();
+    const hydrated = await projectPersistenceClient.hydrate();
+    set({
+      availableSnapshotIds: hydrated.availableSnapshotIds,
+      desktopRevision: hydrated.revision,
+      persistenceMode: hydrated.mode,
+      project: hydrated.project,
+      saveErrorCode: null,
+      saveStatus: hydrated.saveStatus,
+    });
+  },
   setActiveTool: (activeTool) => set({ activeTool }),
   toggleAgentPanel: () => set((state) => ({ agentPanelCollapsed: !state.agentPanelCollapsed })),
-  setProject: (project) => {
-    set({ project, saveStatus: 'pending' });
-    scheduleProjectSave(project);
+  setProject: (project, options = {}) => {
+    set((state) => ({
+      project,
+      saveErrorCode: null,
+      saveStatus: state.saveStatus === 'read_only' ? 'read_only' : 'pending',
+    }));
+    if (options.schedulePersist !== false) {
+      scheduleProjectSave(get);
+    }
   },
   draftAgentPlan: (message) => set((state) => {
     const promptNode = state.project.nodes.find((node) => node.type === 'prompt');
@@ -107,9 +182,10 @@ export const useAppStore = create<AppState>((set) => ({
       jobCount: 1,
     } };
   }),
-  confirmAgentPlan: (approvals) => set((state) => {
-    if (!state.agentPlan) return state;
-    cancelPendingProjectSave();
+  confirmAgentPlan: async (approvals) => {
+    const state = get();
+    if (!state.agentPlan) return;
+
     const now = new Date().toISOString();
     const result = confirmDomainPlan(state.project, {
       ...state.agentPlan,
@@ -126,37 +202,60 @@ export const useAppStore = create<AppState>((set) => ({
       ...result.project,
       projectMemory: appendProjectMemoryEntry(result.project.projectMemory, memoryEntry),
     };
-    const saved = persistProjectTransition(state.project, project, memoryEntry.snapshots);
-    return {
-      project,
-      saveStatus: saved ? 'saved' : 'error',
+    const transaction = buildProjectTransaction({
+      canvasTransaction: state.agentPlan.transaction,
+      label: state.agentPlan.transaction.label,
+      memoryEntry,
+      transactionId: state.agentPlan.transaction.id,
+    });
+    const saved = await get().commitProjectTransaction(transaction, { kind: 'agent', nextProject: project });
+    if (!saved) return;
+
+    set((current) => ({
       agentPlan: result.plan,
-      undoStack: [...state.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }],
-      confirmedModelJobs: state.confirmedModelJobs + (result.executeModels ? state.agentPlan.jobCount : 0),
-    };
-  }),
+      confirmedModelJobs: current.confirmedModelJobs + (result.executeModels ? state.agentPlan!.jobCount : 0),
+      undoStack: [...current.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }],
+    }));
+  },
   cancelAgentPlan: () => set({ agentPlan: null }),
-  promoteProjectMemory: (memoryId) => set((state) => {
-    if (state.project.skillPromotionCandidates.some((candidate) => candidate.sourceProjectMemoryId === memoryId)) return state;
+  promoteProjectMemory: async (memoryId) => {
+    const state = get();
+    if (state.project.skillPromotionCandidates.some((candidate) => candidate.sourceProjectMemoryId === memoryId)) return;
     const memory = state.project.projectMemory.find((entry) => entry.id === memoryId);
-    if (!memory || !isPromotableMemory(state.project.projectMemory, memory)) return state;
-    cancelPendingProjectSave();
+    if (!memory || !isPromotableMemory(state.project.projectMemory, memory)) return;
+
     const candidate = createSkillPromotionCandidate(memory, {
       candidateId: `skill-candidate-${Date.now()}-${planSequence++}`,
       createdAt: new Date().toISOString(),
     });
-    const project = {
-      ...state.project,
-      skillPromotionCandidates: [...state.project.skillPromotionCandidates, candidate],
+    const candidates = [...state.project.skillPromotionCandidates, candidate];
+    const project = { ...state.project, skillPromotionCandidates: candidates };
+    const transaction: ProjectTransaction = {
+      id: `skill-promotion-${candidate.id}`,
+      label: 'Promote project memory candidate',
+      operations: [{ kind: 'set_skill_candidates', candidates }],
     };
-    const saved = persistCurrentProject(project);
-    return { project, saveStatus: saved ? 'saved' : 'error' };
-  }),
-  restoreProjectSnapshot: (snapshotId) => set((state) => {
+    await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
+  },
+  restoreProjectSnapshot: async (snapshotId) => {
+    const state = get();
+    if (state.persistenceMode === 'desktop') {
+      cancelPendingProjectSave();
+      const restored = await projectPersistenceClient.restore(snapshotId);
+      set({
+        availableSnapshotIds: restored.availableSnapshotIds,
+        desktopRevision: restored.revision,
+        project: restored.project,
+        saveErrorCode: null,
+        saveStatus: restored.saveStatus,
+      });
+      return;
+    }
+
     const bundle = loadPersistedProjectBundle();
     const snapshot = bundle?.snapshots.find((entry) => entry.id === snapshotId);
-    if (!snapshot || snapshot.project.id !== state.project.id) return state;
-    cancelPendingProjectSave();
+    if (!snapshot || snapshot.project.id !== state.project.id) return;
+
     const currentProject = sanitizeProjectSkillPromotionCandidates(state.project);
     const snapshotMemoryIds = new Set(snapshot.project.projectMemory.map((memory) => memory.id));
     const supersedesMemoryIds = currentProject.projectMemory
@@ -178,13 +277,24 @@ export const useAppStore = create<AppState>((set) => ({
         restored.skillPromotionCandidates,
       ),
     };
-    const saved = persistProjectTransition(currentProject, project, memoryEntry.snapshots);
-    return { project, saveStatus: saved ? 'saved' : 'error', agentPlan: null, undoStack: [] };
-  }),
-  undo: () => set((state) => {
+    const transaction: ProjectTransaction = {
+      id: `restore-${snapshotId}`,
+      label: 'Restore project snapshot',
+      operations: [
+        { kind: 'replace_canvas_state', nodes: project.nodes, edges: project.edges },
+        { kind: 'append_project_memory', entry: memoryEntry },
+        { kind: 'set_skill_candidates', candidates: project.skillPromotionCandidates },
+      ],
+    };
+    const saved = await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
+    if (!saved) return;
+    set({ agentPlan: null, undoStack: [] });
+  },
+  undo: async () => {
+    const state = get();
     const undoEntry = state.undoStack[state.undoStack.length - 1];
-    if (!undoEntry) return state;
-    cancelPendingProjectSave();
+    if (!undoEntry) return;
+
     const currentProject = sanitizeProjectSkillPromotionCandidates(state.project);
     const reverted = revertTransaction(currentProject, undoEntry.transaction);
     const now = new Date().toISOString();
@@ -199,28 +309,121 @@ export const useAppStore = create<AppState>((set) => ({
         reverted.skillPromotionCandidates,
       ),
     };
-    const saved = persistProjectTransition(currentProject, project, memoryEntry.snapshots);
-    return {
-      project,
-      saveStatus: saved ? 'saved' : 'error',
-      undoStack: state.undoStack.slice(0, -1),
+    const transaction = buildProjectTransaction({
+      canvasTransaction: undoEntry.transaction,
+      candidates: project.skillPromotionCandidates,
+      label: undoEntry.transaction.label,
+      memoryEntry,
+      transactionId: undoEntry.transaction.id,
+    });
+    const saved = await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
+    if (!saved) return;
+    set((current) => ({
       agentPlan: null,
-    };
-  }),
+      undoStack: current.undoStack.slice(0, -1),
+    }));
+  },
 }));
+
+export function replaceProjectPersistenceClientForTests(client: ProjectPersistenceClient): void {
+  projectPersistenceClient = client;
+}
+
+export function resetAppStoreForTests(): void {
+  cancelPendingProjectSave();
+  useAppStore.setState(createInitialState());
+}
+
+function applyCommitResult(
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+  result: ProjectCommitResult,
+): boolean {
+  const availableSnapshotIds = get().persistenceMode === 'browser'
+    ? readAvailableSnapshotIds()
+    : get().availableSnapshotIds;
+  if (result.ok) {
+    set({
+      availableSnapshotIds,
+      desktopRevision: result.revision,
+      project: result.project,
+      saveErrorCode: null,
+      saveStatus: 'saved',
+    });
+    return true;
+  }
+
+  set({
+    availableSnapshotIds,
+    desktopRevision: result.revision,
+    project: result.project,
+    saveErrorCode: result.code,
+    saveStatus: result.code === 'CONCURRENT_WRITER' ? 'read_only' : 'error',
+  });
+  return false;
+}
+
+function buildProjectTransaction(options: {
+  canvasTransaction?: CanvasTransaction;
+  candidates?: SkillPromotionCandidate[];
+  label: string;
+  memoryEntry?: ProjectMemoryEntry;
+  transactionId: string;
+}): ProjectTransaction {
+  const operations: ProjectOperation[] = [];
+  if (options.canvasTransaction) {
+    operations.push(...options.canvasTransaction.operations.map((operation) => ({ kind: 'canvas' as const, operation })));
+  }
+  if (options.memoryEntry) {
+    operations.push({ kind: 'append_project_memory', entry: options.memoryEntry });
+  }
+  if (options.candidates) {
+    operations.push({ kind: 'set_skill_candidates', candidates: options.candidates });
+  }
+  return {
+    id: options.transactionId,
+    label: options.label,
+    operations,
+  };
+}
 
 function cancelPendingProjectSave(): void {
   if (!pendingSave) return;
   clearTimeout(pendingSave);
   pendingSave = undefined;
 }
-function scheduleProjectSave(project: CanvasProject): void {
-  if (pendingSave) clearTimeout(pendingSave);
-  pendingSave = setTimeout(() => {
-    const saved = persistCurrentProject(project);
-    useAppStore.setState({ saveStatus: saved ? 'saved' : 'error' });
-    pendingSave = undefined;
-  }, 500);
+
+function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
+  return {
+    id: `idle-sync-${Date.now()}-${planSequence++}`,
+    label: 'Persist current project draft',
+    operations: [
+      { kind: 'replace_canvas_state', nodes: project.nodes, edges: project.edges },
+      { kind: 'set_skill_candidates', candidates: project.skillPromotionCandidates },
+    ],
+  };
+}
+
+function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs'> {
+  const desktopMode = isDesktopBridgeAvailable();
+  const restoredProject = desktopMode ? null : loadPersistedProjectBundle()?.current;
+  return {
+    activeTool: 'select',
+    agentPanelCollapsed: false,
+    agentPlan: null,
+    availableSnapshotIds: desktopMode ? [] : readAvailableSnapshotIds(),
+    confirmedModelJobs: 0,
+    desktopRevision: 0,
+    persistenceMode: desktopMode ? 'desktop' : 'browser',
+    project: restoredProject ?? createStarterProject(),
+    saveErrorCode: null,
+    saveStatus: restoredProject ? 'saved' : 'pending',
+    undoStack: [],
+  };
+}
+
+function isDesktopBridgeAvailable(): boolean {
+  return globalThis.window?.novusDesktop !== undefined;
 }
 
 function createOptimizationMemory(
@@ -296,38 +499,6 @@ function createUndoMemory(
   };
 }
 
-function isPromotableMemory(timeline: ProjectMemoryEntry[], memory: ProjectMemoryEntry): boolean {
-  if (!['optimization', 'generation', 'reverse_prompt'].includes(memory.kind)) return false;
-  return selectActiveProjectMemoryEntries(timeline).some((entry) => entry.id === memory.id);
-}
-
-function sanitizeProjectSkillPromotionCandidates(project: CanvasProject): CanvasProject {
-  return {
-    ...project,
-    skillPromotionCandidates: filterValidSkillPromotionCandidates(
-      project.id,
-      project.projectMemory,
-      project.skillPromotionCandidates,
-    ),
-  };
-}
-
-function filterValidSkillPromotionCandidates(
-  projectId: string,
-  timeline: ProjectMemoryEntry[],
-  candidates: SkillPromotionCandidate[],
-): SkillPromotionCandidate[] {
-  const activeMemoryById = new Map(
-    selectActiveProjectMemoryEntries(timeline).map((memory) => [memory.id, memory]),
-  );
-  return candidates.filter((candidate) => {
-    const sourceMemory = activeMemoryById.get(candidate.sourceProjectMemoryId);
-    return candidate.sourceProjectId === projectId
-      && sourceMemory !== undefined
-      && ['optimization', 'generation', 'reverse_prompt'].includes(sourceMemory.kind);
-  });
-}
-
 function createSnapshotRestoreMemory(
   project: CanvasProject,
   restoredSnapshotId: string,
@@ -360,6 +531,7 @@ function createSnapshotRestoreMemory(
     supersedesMemoryIds,
   };
 }
+
 function collectReferenceAssetIds(project: CanvasProject): string[] {
   const assetIds = project.nodes.flatMap((node) => {
     if (node.type === 'reference') return [node.data.assetId];
@@ -367,4 +539,50 @@ function collectReferenceAssetIds(project: CanvasProject): string[] {
     return [];
   });
   return [...new Set(assetIds)];
+}
+
+function filterValidSkillPromotionCandidates(
+  projectId: string,
+  timeline: ProjectMemoryEntry[],
+  candidates: SkillPromotionCandidate[],
+): SkillPromotionCandidate[] {
+  const activeMemoryById = new Map(
+    selectActiveProjectMemoryEntries(timeline).map((memory) => [memory.id, memory]),
+  );
+  return candidates.filter((candidate) => {
+    const sourceMemory = activeMemoryById.get(candidate.sourceProjectMemoryId);
+    return candidate.sourceProjectId === projectId
+      && sourceMemory !== undefined
+      && ['optimization', 'generation', 'reverse_prompt'].includes(sourceMemory.kind);
+  });
+}
+
+function isPromotableMemory(timeline: ProjectMemoryEntry[], memory: ProjectMemoryEntry): boolean {
+  if (!['optimization', 'generation', 'reverse_prompt'].includes(memory.kind)) return false;
+  return selectActiveProjectMemoryEntries(timeline).some((entry) => entry.id === memory.id);
+}
+
+function readAvailableSnapshotIds(): string[] {
+  return loadPersistedProjectBundle()?.snapshots.map((snapshot) => snapshot.id) ?? [];
+}
+
+function sanitizeProjectSkillPromotionCandidates(project: CanvasProject): CanvasProject {
+  return {
+    ...project,
+    skillPromotionCandidates: filterValidSkillPromotionCandidates(
+      project.id,
+      project.projectMemory,
+      project.skillPromotionCandidates,
+    ),
+  };
+}
+
+function scheduleProjectSave(get: () => AppState): void {
+  cancelPendingProjectSave();
+  pendingSave = setTimeout(() => {
+    pendingSave = undefined;
+    const state = get();
+    if (state.saveStatus === 'read_only') return;
+    void state.commitProjectTransaction(createIdleSyncTransaction(state.project), { kind: 'system', nextProject: state.project });
+  }, 500);
 }

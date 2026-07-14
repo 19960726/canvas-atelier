@@ -4,6 +4,7 @@ import type {
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
   PlacementObject,
+  ProjectTransaction,
   ReferenceRole,
   ReversePromptResult,
   ReversePromptRun,
@@ -27,7 +28,6 @@ import {
   X,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
-import { loadPersistedProjectBundle } from '../app/project-persistence';
 import { PlanPreview } from '../agent/PlanPreview';
 import { ReversePromptAgent } from '../agent/ReversePromptAgent';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
@@ -62,18 +62,17 @@ export function CanvasWorkspace() {
   const undoStack = useAppStore((state) => state.undoStack);
   const confirmedModelJobs = useAppStore((state) => state.confirmedModelJobs);
   const saveStatus = useAppStore((state) => state.saveStatus);
+  const saveErrorCode = useAppStore((state) => state.saveErrorCode);
+  const availableSnapshotIds = useAppStore((state) => state.availableSnapshotIds);
   const draftAgentPlan = useAppStore((state) => state.draftAgentPlan);
   const confirmAgentPlan = useAppStore((state) => state.confirmAgentPlan);
   const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
   const undo = useAppStore((state) => state.undo);
   const promoteProjectMemory = useAppStore((state) => state.promoteProjectMemory);
   const restoreProjectSnapshot = useAppStore((state) => state.restoreProjectSnapshot);
+  const commitProjectTransaction = useAppStore((state) => state.commitProjectTransaction);
   const [agentMessage, setAgentMessage] = useState('');
   const [activeAgentTab, setActiveAgentTab] = useState<'conversation' | 'plan' | 'memory'>('conversation');
-  const availableSnapshotIds = useMemo(
-    () => loadPersistedProjectBundle()?.snapshots.map((snapshot) => snapshot.id) ?? [],
-    [project, saveStatus],
-  );
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const previewUrlsRef = useRef(new Map<string, string>());
@@ -83,13 +82,19 @@ export function CanvasWorkspace() {
   const flowNodes = useMemo(() => {
     const nodes = toFlowNodes(project.nodes);
     if (agentPlan?.state !== 'waiting_for_confirmation') return nodes;
-    const ghosts = agentPlan.transaction.operations.flatMap((operation) => operation.kind === 'create_node' ? [operation.node] : []);
+    const existingNodeIds = new Set(project.nodes.map((node) => node.id));
+    const ghosts = agentPlan.transaction.operations.flatMap((operation) => (
+      operation.kind === 'create_node' && !existingNodeIds.has(operation.node.id) ? [operation.node] : []
+    ));
     return [...nodes, ...toFlowNodes(ghosts).map((node) => ({ ...node, className: 'agent-ghost-node' }))];
   }, [project.nodes, agentPlan]);
   const flowEdges = useMemo(() => {
     const edges = toFlowEdges(project.edges);
     if (agentPlan?.state !== 'waiting_for_confirmation') return edges;
-    const ghosts = agentPlan.transaction.operations.flatMap((operation) => operation.kind === 'create_edge' ? [operation.edge] : []);
+    const existingEdgeIds = new Set(project.edges.map((edge) => edge.id));
+    const ghosts = agentPlan.transaction.operations.flatMap((operation) => (
+      operation.kind === 'create_edge' && !existingEdgeIds.has(operation.edge.id) ? [operation.edge] : []
+    ));
     return [...edges, ...toFlowEdges(ghosts).map((edge) => ({ ...edge, className: 'agent-ghost-edge', animated: true }))];
   }, [project.edges, agentPlan]);
   const placementNode = useMemo(() => project.nodes.find(isPlacementNode), [project.nodes]);
@@ -153,14 +158,31 @@ export function CanvasWorkspace() {
     previewUrlsRef.current.clear();
   }, []);
 
-  const updatePlacement = (nextPlacement: PlacementBoardValue) => {
+  const updatePlacement = (nextPlacement: PlacementBoardValue, options: { schedulePersist?: boolean } = {}) => {
     if (!placementNode) return;
     setProject({
       ...project,
       nodes: project.nodes.map((node) => node.id === placementNode.id && isPlacementNode(node)
         ? { ...node, data: nextPlacement }
         : node),
-    });
+    }, { schedulePersist: options.schedulePersist });
+  };
+
+  const commitPlacement = (nextPlacement: PlacementBoardValue) => {
+    const latestProject = useAppStore.getState().project;
+    const latestPlacementNode = latestProject.nodes.find(isPlacementNode);
+    if (!latestPlacementNode) return;
+    const nextNode = { ...latestPlacementNode, data: nextPlacement };
+    const nextProject = {
+      ...latestProject,
+      nodes: latestProject.nodes.map((node) => node.id === latestPlacementNode.id ? nextNode : node),
+    };
+    const transaction: ProjectTransaction = {
+      id: `placement-stable-${Date.now()}-${nextPlacement.objects.map((object) => object.id).join('-')}`,
+      label: 'Commit placement preview edit',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    void commitProjectTransaction(transaction, { kind: 'canvas', nextProject });
   };
 
   const uploadReference = (role: ReferenceRole, file: File) => {
@@ -278,7 +300,8 @@ export function CanvasWorkspace() {
                 <PlacementBoard
                   value={placementNode.data}
                   selectedObjectId={selectedPlacementObjectId}
-                  onChange={updatePlacement}
+                  onChange={(nextPlacement) => updatePlacement(nextPlacement, { schedulePersist: false })}
+                  onCommit={commitPlacement}
                   onSelect={setSelectedPlacementObjectId}
                   resolveAssetUrl={(assetId) => previewUrlsRef.current.get(assetId) ?? assetId}
                 />
@@ -362,7 +385,7 @@ export function CanvasWorkspace() {
         <span className="job-strip__label"><span className="status-dot is-idle" />任务队列</span>
         <span>{confirmedModelJobs > 0 ? `${confirmedModelJobs} 个已确认任务待排队` : '0 个任务运行中'}</span>
         <span className="job-strip__spacer" />
-        <span>{saveStatusLabel(saveStatus)}</span>
+        <span>{saveStatusLabel(saveStatus, saveErrorCode)}</span>
       </footer>
     </div>
   );
@@ -371,8 +394,10 @@ export function CanvasWorkspace() {
 function referenceStatus(count: number, emptyLabel: string): string {
   return count > 0 ? `已添加 ${count} 张` : emptyLabel;
 }
-function saveStatusLabel(status: 'pending' | 'saved' | 'error'): string {
+function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'read_only', errorCode: string | null): string {
   if (status === 'saved') return '本地稳定点已保存';
+  if (errorCode === 'REVISION_CONFLICT') return '桌面项目已更新，已重新载入最新版本';
+  if (status === 'read_only') return '只读模式，等待当前写入者释放';
   if (status === 'error') return '本地保存失败';
   return '等待本地稳定点保存';
 }

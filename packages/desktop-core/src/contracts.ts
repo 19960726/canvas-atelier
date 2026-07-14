@@ -1,4 +1,4 @@
-import type { ProjectOperation, ProjectTransaction } from '@agent-canvas/domain';
+import type { CanvasProject, ProjectOperation, ProjectTransaction } from '@agent-canvas/domain';
 
 export const PROJECT_FORMAT_VERSION = 1;
 export const JOURNAL_SCHEMA_VERSION = 1;
@@ -124,6 +124,7 @@ export interface BridgeSessionSummary {
   readonly mode: 'write' | 'read_only';
   readonly stableSnapshotId: string | null;
   readonly stableSnapshotRevision: number;
+  readonly project: CanvasProject;
 }
 
 export interface OpenProjectBridgeRequest {

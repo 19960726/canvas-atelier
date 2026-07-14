@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 
-import { parseCanvasProject, projectTransactionSchema } from '@agent-canvas/domain';
+import { parseCanvasProject, projectTransactionSchema, type CanvasProject } from '@agent-canvas/domain';
 
 import { canonicalJson, sha256Canonical } from './canonical-json.js';
 import {
@@ -58,6 +58,7 @@ interface ProjectRepositoryLike {
   close(session: OpenedProjectSession): Promise<void>;
   open(root: string, options: { mode: 'write' | 'read_only' }): Promise<OpenedProjectSession>;
   openJournalWriter(session: OpenedProjectSession): Promise<BridgeWriter>;
+  readCurrentProject(session: OpenedProjectSession): Promise<CanvasProject>;
 }
 
 interface SnapshotSchedulerLike {
@@ -173,7 +174,7 @@ export function createDesktopBridgeHandlers(
       writer,
     });
 
-    return summarizeSession(sessionId, opened);
+    return summarizeSession(repository, sessionId, opened);
   }
 
   async function commit(_event: unknown, request: unknown): Promise<CommitAck> {
@@ -243,7 +244,7 @@ export function createDesktopBridgeHandlers(
     }
 
     return {
-      ...summarizeSession(session.sessionId, session.session),
+      ...await summarizeSession(repository, session.sessionId, session.session),
       restoredRevision: restoredManifest.stableSnapshotRevision,
     };
   }
@@ -259,7 +260,7 @@ export function createDesktopBridgeHandlers(
     }
 
     const destinationPath = await dialogs.choosePackExportPath(
-      summarizeSession(session.sessionId, session.session),
+      await summarizeSession(repository, session.sessionId, session.session),
     );
     if (destinationPath === null) {
       return null;
@@ -301,7 +302,7 @@ export function createDesktopBridgeHandlers(
     });
 
     return {
-      ...summarizeSession(sessionId, opened),
+      ...await summarizeSession(repository, sessionId, opened),
       importedRevision: result.importedRevision,
     };
   }
@@ -364,12 +365,18 @@ function withRepositoryDefaults(
     close: repository?.close ?? ((session) => fallback.close(session)),
     open: repository?.open ?? ((root, openOptions) => fallback.open(root, openOptions)),
     openJournalWriter: repository?.openJournalWriter ?? ((session) => fallback.openJournalWriter(session)),
+    readCurrentProject: repository?.readCurrentProject ?? ((session) => fallback.readCurrentProject(session)),
   };
 }
 
-function summarizeSession(sessionId: string, session: OpenedProjectSession): BridgeSessionSummary {
+async function summarizeSession(
+  repository: ProjectRepositoryLike,
+  sessionId: string,
+  session: OpenedProjectSession,
+): Promise<BridgeSessionSummary> {
   return {
     mode: session.mode,
+    project: await repository.readCurrentProject(session),
     projectId: session.manifest.projectId,
     projectName: session.manifest.projectName,
     sessionId,

@@ -77,6 +77,11 @@ export function persistCurrentProject(project: CanvasProject, storage = getStora
   }
 }
 
+export function clearPersistedProjectBundle(storage = getStorage()): void {
+  if (!storage) return;
+  storage.removeItem(PROJECT_STORAGE_KEY);
+}
+
 function getStorage(): Storage | null {
   try {
     return globalThis.localStorage ?? null;

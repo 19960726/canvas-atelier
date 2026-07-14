@@ -10,6 +10,7 @@ interface PlacementBoardProps {
   value: PlacementBoardValue;
   selectedObjectId?: string;
   onChange: (value: PlacementBoardValue) => void;
+  onCommit?: (value: PlacementBoardValue) => void;
   onSelect: (objectId: string) => void;
   resolveAssetUrl?: (assetId: string) => string;
 }
@@ -22,9 +23,10 @@ type Interaction =
 
 const resizeDirections: ResizeDirection[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 
-export function PlacementBoard({ value, selectedObjectId, onChange, onSelect, resolveAssetUrl }: PlacementBoardProps) {
+export function PlacementBoard({ value, selectedObjectId, onChange, onCommit, onSelect, resolveAssetUrl }: PlacementBoardProps) {
   const boardRef = useRef<HTMLDivElement>(null);
   const interactionRef = useRef<Interaction | null>(null);
+  const pendingValueRef = useRef<PlacementBoardValue | null>(null);
   const aspectRatio = `${value.board.width} / ${value.board.height}`;
 
   const beginMove = (event: ReactPointerEvent, object: PlacementObject) => {
@@ -68,10 +70,20 @@ export function PlacementBoard({ value, selectedObjectId, onChange, onSelect, re
         : resizeObject(interaction.object, dx, dy, interaction.direction);
     }
 
-    onChange({
+    const nextValue = {
       ...value,
       objects: value.objects.map((object) => object.id === nextObject.id ? nextObject : object),
-    });
+    };
+    pendingValueRef.current = nextValue;
+    onChange(nextValue);
+  };
+
+  const finishInteraction = () => {
+    if (!interactionRef.current) return;
+    interactionRef.current = null;
+    const committedValue = pendingValueRef.current;
+    pendingValueRef.current = null;
+    if (committedValue) onCommit?.(committedValue);
   };
 
   return (
@@ -81,8 +93,8 @@ export function PlacementBoard({ value, selectedObjectId, onChange, onSelect, re
       data-testid="placement-board"
       style={{ aspectRatio }}
       onPointerMove={handlePointerMove}
-      onPointerUp={() => { interactionRef.current = null; }}
-      onPointerCancel={() => { interactionRef.current = null; }}
+      onPointerUp={finishInteraction}
+      onPointerCancel={finishInteraction}
     >
       <div className="placement-guide is-third-x-1" />
       <div className="placement-guide is-third-x-2" />

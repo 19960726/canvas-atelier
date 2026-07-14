@@ -18,6 +18,13 @@
 - The canvas must recover from crashes through snapshots plus an incremental journal, not full serialization on pointermove.
 - Win7 compatibility keeps a 30 FPS floor, even under degradation.
 - Full verification is required before completion.
+- Project memory is a product requirement: every user feedback item, canvas optimization request, preference, prohibition, revision rationale, repeated-error avoidance rule, and accepted reverse-prompt/generation outcome must become durable project memory that future Agent runs can use.
+- All Agent modes must have growth memory, not just a generic chatbot. Reverse-prompt, generation, Skill conversation, line-art interpretation, video/script/camera analysis, and the ecommerce-detail-page knowledge Agent all learn from project memory and approved knowledge snapshots.
+- Reference images must support drag reordering everywhere the same reference list appears, including reverse-prompt, generation, and Skill/Agent chat. Agent messages must support `@image` references to specific project images.
+- Reverse-prompt analysis must include material and VFX language for liquids, particles, transparency, refraction, glow, smoke, splashes, and other effects when present; it must not answer as a shallow standalone caption.
+- Video reverse analysis must cover script intent, shot structure, camera movement, transitions, effects, and per-frame or per-shot construction details when video input is available.
+- Line-art analysis must learn scene structure and recommend materials, textures, floor treatment, wall/background colors, lighting, and surface finishes while preserving the user sketch structure in generated output.
+- Canvas responsiveness is mandatory: no persistence work on `pointermove`, lazy/heavy analysis runs in the background, and project memory/snapshot/import tasks must not block smooth editing.
 
 ## File Map
 

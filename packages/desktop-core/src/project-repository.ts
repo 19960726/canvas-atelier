@@ -282,6 +282,10 @@ export class ProjectRepository {
     });
   }
 
+  async readCurrentProject(session: OpenedProjectSession): Promise<CanvasProject> {
+    return this.readCurrentCanvasProject(session.root, session.manifest, 'Desktop bridge hydration');
+  }
+
   private async tryAcquireWriteLock(root: string, projectId: string): Promise<LockDecision> {
     const guard = await this.tryAcquireOperationGuard(root);
     if (guard === null) {
@@ -443,7 +447,7 @@ export class ProjectRepository {
     return snapshot.project;
   }
 
-  private async readCurrentProject(root: string, manifest: ProjectManifest): Promise<ProjectState> {
+  private async readCurrentProjectState(root: string, manifest: ProjectManifest): Promise<ProjectState> {
     const stableProject = await this.readStableProject(root, manifest);
     const activeJournalSegment = validateActiveJournalSegment(manifest.activeJournalSegment);
     const journal = await readValidJournal(join(root, ...activeJournalSegment.split('/')), {
@@ -486,7 +490,7 @@ export class ProjectRepository {
     manifest: ProjectManifest,
     context: string,
   ): Promise<CanvasProject> {
-    return requireCanvasProject(await this.readCurrentProject(root, manifest), context);
+    return requireCanvasProject(await this.readCurrentProjectState(root, manifest), context);
   }
 
   private resolveActiveJournalPath(root: string, manifest: ProjectManifest): string {
