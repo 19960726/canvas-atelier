@@ -173,7 +173,7 @@ describe('project transactions', () => {
           id: 'broken-node',
           type: 'prompt',
           data: { prompt: 'replace canvas state', requirementIds: [] },
-        } as CanvasNode],
+        } as unknown as CanvasNode],
         edges: [],
       }],
     })).toThrow();
@@ -249,14 +249,16 @@ describe('project transactions', () => {
   });
 
   it('rejects a canvas replacement with duplicate edge ids atomically', () => {
+    const secondPrompt: CanvasNode = {
+      id: 'prompt-2',
+      type: 'prompt',
+      position: { x: 640, y: 0 },
+      data: { prompt: 'replace canvas state', requirementIds: [] },
+    };
+
     const original = {
       ...makeEmptyProject(),
-      nodes: [updatedPrompt, {
-        id: 'prompt-2',
-        type: 'prompt',
-        position: { x: 640, y: 0 },
-        data: { prompt: 'replace canvas state', requirementIds: [] },
-      }],
+      nodes: [updatedPrompt, secondPrompt],
       projectMemory: [optimizationMemory],
       skillPromotionCandidates: [candidate],
     };
@@ -284,12 +286,7 @@ describe('project transactions', () => {
 
     expect(original).toEqual({
       ...makeEmptyProject(),
-      nodes: [updatedPrompt, {
-        id: 'prompt-2',
-        type: 'prompt',
-        position: { x: 640, y: 0 },
-        data: { prompt: 'replace canvas state', requirementIds: [] },
-      }],
+      nodes: [updatedPrompt, secondPrompt],
       projectMemory: [optimizationMemory],
       skillPromotionCandidates: [candidate],
     });

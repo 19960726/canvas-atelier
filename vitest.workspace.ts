@@ -22,3 +22,11 @@ export const skillStoreTestProject = {
     include: ['packages/skill-store/src/**/*.test.ts'],
   },
 };
+
+export const desktopCoreTestProject = {
+  test: {
+    name: '@agent-canvas/desktop-core',
+    environment: 'node',
+    include: ['packages/desktop-core/src/**/*.test.ts'],
+  },
+};
