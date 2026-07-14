@@ -185,4 +185,113 @@ describe('project transactions', () => {
       skillPromotionCandidates: [candidate],
     });
   });
+
+  it('rejects a canvas replacement with a dangling edge atomically', () => {
+    const original = {
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    };
+
+    expect(() => applyProjectTransaction(original, {
+      id: 'tx-replace-dangling-edge',
+      label: 'dangling edge replacement',
+      operations: [{
+        kind: 'replace_canvas_state',
+        nodes: [updatedPrompt],
+        edges: [{
+          id: 'edge-dangling',
+          source: updatedPrompt.id,
+          target: 'missing-node',
+        }],
+      }],
+    })).toThrow(/edge target does not exist/);
+
+    expect(original).toEqual({
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    });
+  });
+
+  it('rejects a canvas replacement with duplicate node ids atomically', () => {
+    const original = {
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    };
+
+    expect(() => applyProjectTransaction(original, {
+      id: 'tx-replace-duplicate-node',
+      label: 'duplicate node replacement',
+      operations: [{
+        kind: 'replace_canvas_state',
+        nodes: [
+          updatedPrompt,
+          {
+            ...updatedPrompt,
+            position: { x: 640, y: 0 },
+          },
+        ],
+        edges: [],
+      }],
+    })).toThrow(/duplicate node id/);
+
+    expect(original).toEqual({
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    });
+  });
+
+  it('rejects a canvas replacement with duplicate edge ids atomically', () => {
+    const original = {
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt, {
+        id: 'prompt-2',
+        type: 'prompt',
+        position: { x: 640, y: 0 },
+        data: { prompt: 'replace canvas state', requirementIds: [] },
+      }],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    };
+
+    expect(() => applyProjectTransaction(original, {
+      id: 'tx-replace-duplicate-edge',
+      label: 'duplicate edge replacement',
+      operations: [{
+        kind: 'replace_canvas_state',
+        nodes: original.nodes,
+        edges: [
+          {
+            id: 'edge-duplicate',
+            source: updatedPrompt.id,
+            target: 'prompt-2',
+          },
+          {
+            id: 'edge-duplicate',
+            source: 'prompt-2',
+            target: updatedPrompt.id,
+          },
+        ],
+      }],
+    })).toThrow(/duplicate edge id/);
+
+    expect(original).toEqual({
+      ...makeEmptyProject(),
+      nodes: [updatedPrompt, {
+        id: 'prompt-2',
+        type: 'prompt',
+        position: { x: 640, y: 0 },
+        data: { prompt: 'replace canvas state', requirementIds: [] },
+      }],
+      projectMemory: [optimizationMemory],
+      skillPromotionCandidates: [candidate],
+    });
+  });
 });

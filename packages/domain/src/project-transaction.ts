@@ -40,6 +40,35 @@ export const projectTransactionSchema = z.object({
 export type ProjectOperation = z.infer<typeof projectOperationSchema>;
 export type ProjectTransaction = z.infer<typeof projectTransactionSchema>;
 
+type ReplaceCanvasStateOperation = Extract<ProjectOperation, { kind: 'replace_canvas_state' }>;
+
+function validateReplacementCanvasState(
+  nodes: ReplaceCanvasStateOperation['nodes'],
+  edges: ReplaceCanvasStateOperation['edges'],
+): void {
+  const nodeIds = new Set<string>();
+  for (const node of nodes) {
+    if (nodeIds.has(node.id)) {
+      throw new Error(`duplicate node id in replacement canvas state: ${node.id}`);
+    }
+    nodeIds.add(node.id);
+  }
+
+  const edgeIds = new Set<string>();
+  for (const edge of edges) {
+    if (edgeIds.has(edge.id)) {
+      throw new Error(`duplicate edge id in replacement canvas state: ${edge.id}`);
+    }
+    edgeIds.add(edge.id);
+    if (!nodeIds.has(edge.source)) {
+      throw new Error(`edge source does not exist in replacement canvas state: ${edge.source}`);
+    }
+    if (!nodeIds.has(edge.target)) {
+      throw new Error(`edge target does not exist in replacement canvas state: ${edge.target}`);
+    }
+  }
+}
+
 export function applyProjectTransaction(
   project: CanvasProject,
   input: ProjectTransaction,
@@ -70,6 +99,7 @@ export function applyProjectTransaction(
       continue;
     }
 
+    validateReplacementCanvasState(operation.nodes, operation.edges);
     draft = parseCanvasProject({ ...draft, nodes: operation.nodes, edges: operation.edges });
   }
 
