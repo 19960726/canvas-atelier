@@ -40,6 +40,26 @@ export type {
   JournalWriterOpenOptions,
   JournalWriterSessionOptions,
 } from './journal-writer.js';
+export {
+  SnapshotScheduler,
+  isValidSnapshotEnvelope,
+  readSnapshotEnvelope,
+} from './snapshot-scheduler.js';
+export type {
+  SnapshotConsiderEvent,
+  SnapshotFlushRequest,
+  SnapshotFlushResult,
+  SnapshotReason,
+  SnapshotSchedulerOptions,
+} from './snapshot-scheduler.js';
+export { buildSnapshotProject } from './snapshot-worker.js';
+export type { SnapshotWorkerInput, SnapshotWorkerOutput } from './snapshot-worker.js';
+export { RecoveryScanner } from './recovery-scanner.js';
+export type {
+  RecoveryCandidate,
+  RecoveryScanResult,
+  RecoveryScannerOptions,
+} from './recovery-scanner.js';
 export { MAX_WIN7_PROJECT_ROOT_PATH_LENGTH, ProjectRepository } from './project-repository.js';
 export type {
   CreateProjectOptions,

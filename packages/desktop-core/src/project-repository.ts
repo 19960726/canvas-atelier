@@ -22,6 +22,7 @@ import {
   replayJournal,
   type JournalWriterSessionOptions,
 } from './journal-writer.js';
+import { readSnapshotEnvelope } from './snapshot-scheduler.js';
 
 type ProjectState = Record<string, unknown>;
 type ProcessLiveness = boolean | 'unknown';
@@ -428,9 +429,9 @@ export class ProjectRepository {
     }
 
     const snapshotPath = validateStableSnapshotPath(manifest.stableSnapshotPath);
-    let snapshot: unknown;
+    let snapshot: SnapshotEnvelope;
     try {
-      snapshot = JSON.parse(await this.fileSystem.readFile(join(root, ...snapshotPath.split('/')), 'utf8'));
+      snapshot = await readSnapshotEnvelope(join(root, ...snapshotPath.split('/')), this.fileSystem);
     } catch {
       throw new Error('Invalid stable snapshot envelope');
     }
