@@ -2,17 +2,25 @@ import {
   canvasEdgeSchema,
   canvasNodeSchema,
   parseCanvasProject,
-  type CanvasEdge,
-  type CanvasNode,
   type CanvasProject,
 } from './project-schema';
+import { z } from 'zod';
 
-export type CanvasOperation =
-  | { kind: 'create_node'; node: CanvasNode }
-  | { kind: 'update_node'; node: CanvasNode }
-  | { kind: 'delete_node'; nodeId: string }
-  | { kind: 'create_edge'; edge: CanvasEdge }
-  | { kind: 'delete_edge'; edgeId: string };
+const createNodeOperationSchema = z.object({ kind: z.literal('create_node'), node: canvasNodeSchema }).strict();
+const updateNodeOperationSchema = z.object({ kind: z.literal('update_node'), node: canvasNodeSchema }).strict();
+const deleteNodeOperationSchema = z.object({ kind: z.literal('delete_node'), nodeId: z.string().min(1) }).strict();
+const createEdgeOperationSchema = z.object({ kind: z.literal('create_edge'), edge: canvasEdgeSchema }).strict();
+const deleteEdgeOperationSchema = z.object({ kind: z.literal('delete_edge'), edgeId: z.string().min(1) }).strict();
+
+export const canvasOperationSchema = z.discriminatedUnion('kind', [
+  createNodeOperationSchema,
+  updateNodeOperationSchema,
+  deleteNodeOperationSchema,
+  createEdgeOperationSchema,
+  deleteEdgeOperationSchema,
+]);
+
+export type CanvasOperation = z.infer<typeof canvasOperationSchema>;
 
 export interface CanvasTransaction {
   id: string;

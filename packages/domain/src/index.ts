@@ -5,7 +5,8 @@ export type { ApprovedMemorySnapshot, ReversePromptPersona, ReversePromptResult,
 export { MAX_GENERATION_REFERENCES, parseGenerationRequest } from './generation-request';
 export type { GenerationReference, GenerationRequest } from './generation-request';
 export { cancelAgentPlan, confirmAgentPlan, validateAgentPlan } from './agent-plan';
-export { applyTransaction, revertTransaction } from './canvas-transaction';
+export { applyTransaction, canvasOperationSchema, revertTransaction } from './canvas-transaction';
+export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
 
@@ -14,6 +15,11 @@ export type {
   CanvasOperation,
   CanvasTransaction,
 } from './canvas-transaction';
+
+export type {
+  ProjectOperation,
+  ProjectTransaction,
+} from './project-transaction';
 
 export type {
   AgentPlan,

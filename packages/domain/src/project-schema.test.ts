@@ -245,9 +245,11 @@ describe('public domain API', () => {
       'MAX_GENERATION_REFERENCES',
       'REVERSE_PROMPT_PERSONAS',
       'appendProjectMemoryEntry',
+      'applyProjectTransaction',
       'applyTransaction',
       'buildProjectMemoryContext',
       'cancelAgentPlan',
+      'canvasOperationSchema',
       'confirmAgentPlan',
       'createReversePromptRun',
       'createSkillPromotionCandidate',
@@ -256,11 +258,13 @@ describe('public domain API', () => {
       'parseGenerationRequest',
       'parseProjectMemoryEntry',
       'parseReversePromptResult',
+      'projectOperationSchema',
+      'projectTransactionSchema',
       'placementToPromptConstraints',
       'revertTransaction',
       'selectActiveProjectMemoryEntries',
       'validateAgentPlan',
-    ]);
+    ].sort());
   });
 });
 
