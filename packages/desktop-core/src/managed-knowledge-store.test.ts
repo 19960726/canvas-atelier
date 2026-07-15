@@ -225,6 +225,44 @@ describe('ManagedKnowledgeStore', () => {
     })]);
   });
 
+  it('serializes configure initialization with first publish so active metadata is not reset', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const sourceRoot = join(tempRoot, 'workspace', 'scene-skill');
+    const initialStore = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await initialStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: sourceRoot,
+    });
+
+    const paths = managedKnowledgePaths(appDataRoot, configured.knowledgeRootId);
+    await rm(paths.currentPath, { force: true });
+    const gate = createPauseGate();
+    const slowConfigure = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new PauseOnCurrentMetadataFileSystem(configured.knowledgeRootId, gate),
+    });
+    const publisher = new ManagedKnowledgeStore({ appDataRoot });
+
+    const configure = slowConfigure.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: sourceRoot,
+    });
+    await gate.entered.promise;
+    const publish = publisher.publish(createSnapshot('# version 1', 1));
+    gate.release.resolve();
+    await configure;
+    await publish;
+
+    await expect(initialStore.listStates()).resolves.toEqual([expect.objectContaining({
+      activeVersion: 1,
+      status: 'active',
+      versionCount: 1,
+    })]);
+  });
+
   it('rejects publish when snapshots directory resolves outside the managed root', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');
@@ -560,6 +598,41 @@ describe('ManagedKnowledgeStore', () => {
     const tampered = {
       ...first,
       knowledgeBaseId: 'other-skill',
+    };
+    await writeFile(
+      snapshotPath(appDataRoot, configured.knowledgeRootId, first),
+      `${JSON.stringify(tampered)}\n`,
+      'utf8',
+    );
+
+    await expect(store.rollback('scene-skill', 1)).rejects.toThrow(/snapshot/i);
+    await expect(readJson<KnowledgeBaseStateSummary>(
+      managedKnowledgePaths(appDataRoot, configured.knowledgeRootId).currentPath,
+    )).resolves.toMatchObject({
+      activeVersion: 2,
+      status: 'active',
+    });
+  });
+
+  it('rejects rollback when target snapshot publication metadata was tampered', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    const second = createSnapshot('# version 2', 2);
+    await store.publish(first);
+    await store.publish(second);
+
+    const tampered = {
+      ...first,
+      publishedAt: '2026-07-15T09:01:00.000Z',
+      sourceDeviceId: 'device-b',
+      displayName: 'Tampered Skill',
     };
     await writeFile(
       snapshotPath(appDataRoot, configured.knowledgeRootId, first),

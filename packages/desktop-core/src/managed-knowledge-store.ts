@@ -70,10 +70,12 @@ export class ManagedKnowledgeStore {
 
     await this.writeConfigurationFile(configurations);
 
-    const summary = await this.readSummaryFile(configured.knowledgeRootId);
-    if (summary === null) {
-      await this.writeSummaryFile(configured.knowledgeRootId, createEmptySummary(configured));
-    }
+    await this.withKnowledgeWriteLock(configured.knowledgeRootId, async () => {
+      const summary = await this.readSummaryFile(configured.knowledgeRootId);
+      if (summary === null) {
+        await this.writeSummaryFile(configured.knowledgeRootId, createEmptySummary(configured));
+      }
+    });
 
     return toConfiguredKnowledgeBase(configured);
   }
@@ -129,6 +131,9 @@ export class ManagedKnowledgeStore {
         knowledgeBaseId: summary.knowledgeBaseId,
         version: metadata.version,
         contentHash: metadata.contentHash,
+        displayName: metadata.displayName,
+        publishedAt: metadata.publishedAt,
+        sourceDeviceId: metadata.sourceDeviceId,
       });
     } catch (error) {
       if (isMissingSnapshotFileError(error)) {
@@ -164,6 +169,9 @@ export class ManagedKnowledgeStore {
         knowledgeBaseId: current.knowledgeBaseId,
         version: target.version,
         contentHash: target.contentHash,
+        displayName: target.displayName,
+        publishedAt: target.publishedAt,
+        sourceDeviceId: target.sourceDeviceId,
       });
 
       const next: KnowledgeBaseStateSummary = {
@@ -258,6 +266,9 @@ export class ManagedKnowledgeStore {
       readonly knowledgeBaseId: string;
       readonly version: number;
       readonly contentHash: string;
+      readonly displayName: string;
+      readonly publishedAt: string;
+      readonly sourceDeviceId: string;
     },
   ): Promise<KnowledgeSnapshot> {
     await this.assertManagedDirectory(this.knowledgeBaseDirectory(knowledgeRootId));
@@ -279,7 +290,10 @@ export class ManagedKnowledgeStore {
     if (
       snapshot.knowledgeBaseId !== metadata.knowledgeBaseId ||
       snapshot.version !== metadata.version ||
-      snapshot.contentHash !== metadata.contentHash
+      snapshot.contentHash !== metadata.contentHash ||
+      snapshot.displayName !== metadata.displayName ||
+      snapshot.publishedAt !== metadata.publishedAt ||
+      snapshot.sourceDeviceId !== metadata.sourceDeviceId
     ) {
       throw new Error('Managed knowledge snapshot metadata mismatch');
     }
