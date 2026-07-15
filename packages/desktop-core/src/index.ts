@@ -43,6 +43,13 @@ export { canonicalJson, sha256Canonical } from './canonical-json.js';
 export { AssetStore } from './asset-store.js';
 export type { AssetMetadata, StageAssetOptions } from './asset-store.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
+export { ManagedKnowledgeStore } from './managed-knowledge-store.js';
+export type {
+  ConfigureKnowledgeRoot,
+  ConfiguredKnowledgeBase,
+  InternalKnowledgeConfiguration,
+  ManagedKnowledgeStoreOptions,
+} from './managed-knowledge-store.js';
 export {
   JournalWriter,
   createPersistenceError,
