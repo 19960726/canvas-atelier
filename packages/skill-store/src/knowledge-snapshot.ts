@@ -58,7 +58,7 @@ export function createKnowledgeSnapshotCandidate(input: CandidateInput): Knowled
       relativePath: normalizeManagedRelativePath(document.relativePath),
       content: document.content,
     }))
-    .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+    .sort((left, right) => compareStringsOrdinal(left.relativePath, right.relativePath));
 
   const seenPaths = new Set<string>();
   for (const document of documents) {
@@ -124,7 +124,7 @@ function isManagedTextDocument(relativePath: string): boolean {
 }
 
 function containsProtectedContent(value: string): boolean {
-  return containsCredential(value) || containsInlineImage(value) || containsPrivatePath(value);
+  return containsCredential(value) || containsDataUrl(value) || containsRawBinaryBase64(value) || containsPrivatePath(value);
 }
 
 function containsCredential(value: string): boolean {
@@ -136,8 +136,8 @@ function containsCredential(value: string): boolean {
     || /\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/i.test(value);
 }
 
-function containsInlineImage(value: string): boolean {
-  return /data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s-]+/i.test(value);
+function containsDataUrl(value: string): boolean {
+  return /data:[^,\s;]+(?:;[^,\s;=]+(?:=[^,\s;]+)?)*;base64,[a-z0-9+/=\s-]+/i.test(value);
 }
 
 function containsPrivatePath(value: string): boolean {
@@ -145,6 +145,33 @@ function containsPrivatePath(value: string): boolean {
     || /\\\\[^\\\s]+\\/.test(value)
     || /(?:^|\s)\/(?:Users|home|var|etc)\//.test(value)
     || /%(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|HOMEDRIVE|HOMEPATH)%[\\/]/i.test(value);
+}
+
+function containsRawBinaryBase64(value: string): boolean {
+  const matches = value.match(/(?:^|[^A-Za-z0-9+/=])([A-Za-z0-9+/]{64,}={0,2})(?=$|[^A-Za-z0-9+/=])/g) ?? [];
+  for (const match of matches) {
+    const token = match.trim();
+    if (token.length < 64 || token.length % 4 !== 0) continue;
+    let decoded: Buffer;
+    try {
+      decoded = Buffer.from(token, 'base64');
+    } catch {
+      continue;
+    }
+    if (decoded.length < 32) continue;
+    const normalized = decoded.toString('base64').replace(/=+$/u, '');
+    if (normalized !== token.replace(/=+$/u, '')) continue;
+    if (isLikelyBinaryPayload(decoded)) return true;
+  }
+  return false;
+}
+
+function isLikelyBinaryPayload(buffer: Buffer): boolean {
+  let printable = 0;
+  for (const byte of buffer.values()) {
+    if (byte === 0x09 || byte === 0x0a || byte === 0x0d || (byte >= 0x20 && byte <= 0x7e)) printable += 1;
+  }
+  return printable / buffer.length < 0.85;
 }
 
 function canonicalizeDocuments(documents: KnowledgeDocument[]): string {
@@ -157,4 +184,8 @@ function canonicalizeDocuments(documents: KnowledgeDocument[]): string {
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function compareStringsOrdinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

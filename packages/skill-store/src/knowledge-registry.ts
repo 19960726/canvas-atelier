@@ -11,7 +11,7 @@ export interface KnowledgeBaseState {
   schemaVersion: 1;
   knowledgeBaseId: string;
   displayName: string | null;
-  status: 'empty' | 'active' | 'fallback';
+  status: 'empty' | 'active' | 'fallback' | 'rolled_back';
   active: KnowledgeSnapshot | null;
   versions: KnowledgeSnapshot[];
   lastFailure: {
@@ -25,7 +25,7 @@ export interface KnowledgeBaseStateSummary {
   schemaVersion: 1;
   knowledgeBaseId: string;
   displayName: string | null;
-  status: 'empty' | 'active' | 'fallback';
+  status: 'empty' | 'active' | 'fallback' | 'rolled_back';
   activeVersion: number | null;
   activeContentHash: string | null;
   versionCount: number;
@@ -67,7 +67,7 @@ const stateSchema = z.object({
   schemaVersion: z.literal(1),
   knowledgeBaseId: z.string().min(1),
   displayName: z.string().min(1).nullable(),
-  status: z.enum(['empty', 'active', 'fallback']),
+  status: z.enum(['empty', 'active', 'fallback', 'rolled_back']),
   active: snapshotSchema.nullable(),
   versions: z.array(snapshotSchema),
   lastFailure: z.object({
@@ -116,7 +116,7 @@ export class KnowledgeSnapshotRegistry {
 
     const versions = existing
       ? current.versions.map((snapshot) => cloneSnapshot(snapshot))
-      : [...current.versions.map((snapshot) => cloneSnapshot(snapshot)), cloneSnapshot(active)].sort((left, right) => left.version - right.version);
+      : [...current.versions.map((snapshot) => cloneSnapshot(snapshot)), cloneSnapshot(active)].sort(compareSnapshotsByVersion);
 
     const nextState: KnowledgeBaseState = {
       schemaVersion: 1,
@@ -160,7 +160,7 @@ export class KnowledgeSnapshotRegistry {
           sourceDeviceId: snapshot.sourceDeviceId,
           displayName: snapshot.displayName,
         }))
-        .sort((left, right) => left.version - right.version),
+        .sort(compareVersionSummaries),
       lastFailure: state.lastFailure ? { ...state.lastFailure } : null,
       lastRollbackAt: state.lastRollbackAt,
     };
@@ -175,7 +175,7 @@ export class KnowledgeSnapshotRegistry {
     const current = this.states.get(knowledgeBaseId) ?? createEmptyState(knowledgeBaseId);
     const nextState: KnowledgeBaseState = {
       ...cloneState(current),
-      status: 'fallback',
+      status: current.active ? 'fallback' : 'empty',
       lastFailure: {
         reason: sanitizeFailureReason(reason),
         failedAt: z.string().datetime().parse(failedAt),
@@ -194,7 +194,7 @@ export class KnowledgeSnapshotRegistry {
       schemaVersion: 1,
       knowledgeBaseId,
       displayName: snapshot.displayName,
-      status: 'active',
+      status: 'rolled_back',
       active: cloneSnapshot(snapshot),
       versions: current.versions.map(cloneSnapshot),
       lastFailure: current.lastFailure ? { ...current.lastFailure } : null,
@@ -209,7 +209,7 @@ function normalizeState(input: KnowledgeBaseState): KnowledgeBaseState {
   const state = stateSchema.parse(input);
   const versions = state.versions
     .map((snapshot) => normalizeSnapshot(snapshot))
-    .sort((left, right) => left.version - right.version);
+    .sort(compareSnapshotsByVersion);
   const seenVersions = new Set<number>();
 
   for (const snapshot of versions) {
@@ -218,15 +218,28 @@ function normalizeState(input: KnowledgeBaseState): KnowledgeBaseState {
     seenVersions.add(snapshot.version);
   }
 
-  if (state.active) {
-    const active = normalizeSnapshot(state.active);
-    if (!versions.some((snapshot) => snapshot.version === active.version)) {
-      throw new Error('Knowledge base active snapshot must exist in versions');
-    }
+  if (state.active && state.active.knowledgeBaseId !== state.knowledgeBaseId) {
+    throw new Error('Knowledge base active snapshot must stay within one knowledge base');
   }
 
-  if (state.status === 'empty' && (versions.length > 0 || state.active !== null)) {
-    throw new Error('Empty knowledge bases cannot contain versions');
+  if (state.status === 'empty') {
+    if (versions.length > 0 || state.active !== null) {
+      throw new Error('Empty knowledge bases cannot contain versions');
+    }
+  } else if (state.active === null) {
+    throw new Error('Non-empty knowledge bases require an active snapshot');
+  }
+
+  let active: KnowledgeSnapshot | null = null;
+  if (state.active) {
+    active = normalizeSnapshot(state.active);
+    const matchingVersion = versions.find((snapshot) => snapshot.version === active?.version);
+    if (!matchingVersion) {
+      throw new Error('Knowledge base active snapshot must exist in versions');
+    }
+    if (!snapshotsExactlyEqual(active, matchingVersion)) {
+      throw new Error('Knowledge base active snapshot must exactly equal its stored version entry');
+    }
   }
 
   return {
@@ -234,7 +247,7 @@ function normalizeState(input: KnowledgeBaseState): KnowledgeBaseState {
     knowledgeBaseId: state.knowledgeBaseId,
     displayName: state.displayName,
     status: state.status,
-    active: state.active ? normalizeSnapshot(state.active) : null,
+    active,
     versions,
     lastFailure: state.lastFailure ? {
       reason: sanitizeFailureReason(state.lastFailure.reason),
@@ -315,9 +328,25 @@ function sanitizeFailureReason(reason: string): string {
   return reason
     .replace(/:\s*(?:basic|bearer|token)\s+\S+/gi, ': [REDACTED_AUTH]')
     .replace(/\bbearer\s+[a-z0-9._~+/=\-]{8,}/gi, '[REDACTED_AUTH]')
-    .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s-]+/gi, '[REDACTED_IMAGE]')
+    .replace(/data:[^,\s;]+(?:;[^,\s;=]+(?:=[^,\s;]+)?)*;base64,[a-z0-9+/=\s-]+/gi, '[REDACTED_DATA_URL]')
     .replace(/[A-Za-z]:\\(?:[^\\\s"]+\\)*[^\\\s"]+/g, '[REDACTED_PATH]')
     .replace(/\\\\[^\\\s]+\\(?:[^\\\s"]+\\)*[^\\\s"]+/g, '[REDACTED_PATH]')
     .replace(/(?:^|\s)\/(?:Users|home|var|etc)\/[^\s"]+/g, ' [REDACTED_PATH]')
+    .replace(/(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{64,}={0,2}(?![A-Za-z0-9+/=])/g, '[REDACTED_BASE64]')
     .trim();
+}
+
+function compareSnapshotsByVersion(left: KnowledgeSnapshot, right: KnowledgeSnapshot): number {
+  return left.version - right.version;
+}
+
+function compareVersionSummaries(
+  left: KnowledgeBaseStateSummary['versions'][number],
+  right: KnowledgeBaseStateSummary['versions'][number],
+): number {
+  return left.version - right.version;
+}
+
+function snapshotsExactlyEqual(left: KnowledgeSnapshot, right: KnowledgeSnapshot): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }

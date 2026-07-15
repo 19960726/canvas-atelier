@@ -27,9 +27,29 @@ describe('createKnowledgeSnapshotCandidate', () => {
     expect(first.contentHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it('uses locale-independent code-unit ordering for canonical hashing', () => {
+    const candidate = createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [
+        { relativePath: 'memory/ä.md', content: '# a-umlaut' },
+        { relativePath: 'memory/z.md', content: '# zed' },
+        { relativePath: 'memory/a.md', content: '# alpha' },
+      ],
+    });
+
+    expect(candidate.documents.map((document) => document.relativePath)).toEqual([
+      'memory/a.md',
+      'memory/z.md',
+      'memory/ä.md',
+    ]);
+  });
+
   it.each([
     buildAuthorizationHeader(),
     buildInlineImage(),
+    buildGenericDataUrl(),
+    buildRawBase64Payload(),
     buildAbsolutePath(),
   ])('rejects protected content', (content) => {
     expect(() => createKnowledgeSnapshotCandidate({
@@ -57,6 +77,19 @@ describe('createKnowledgeSnapshotCandidate', () => {
       ],
     })).toThrow(/unique/);
   });
+
+  it('accepts ordinary prose that happens to contain short base64-like words', () => {
+    const candidate = createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{
+        relativePath: 'memory/main.md',
+        content: 'Use words like canvas, alpha, token, and base64 in ordinary prose.',
+      }],
+    });
+
+    expect(candidate.documents[0]?.content).toContain('ordinary prose');
+  });
 });
 
 function buildAuthorizationHeader(): string {
@@ -71,6 +104,19 @@ function buildInlineImage(): string {
     ',',
     Buffer.from('image-bytes', 'utf8').toString('base64'),
   ].join('');
+}
+
+function buildGenericDataUrl(): string {
+  return [
+    'data:application/octet-stream;',
+    ['base', '64'].join(''),
+    ',',
+    Buffer.from('binary-payload', 'utf8').toString('base64'),
+  ].join('');
+}
+
+function buildRawBase64Payload(): string {
+  return Buffer.from(Array.from({ length: 64 }, (_, index) => index)).toString('base64');
 }
 
 function buildAbsolutePath(): string {

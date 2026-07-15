@@ -33,7 +33,7 @@ describe('KnowledgeSnapshotRegistry', () => {
     });
 
     expect(registry.rollback('scene-skill', 1, rolledBackAt)).toMatchObject({
-      status: 'active',
+      status: 'rolled_back',
       active: { version: 1 },
       lastRollbackAt: rolledBackAt,
     });
@@ -81,6 +81,64 @@ describe('KnowledgeSnapshotRegistry', () => {
         { ...state.versions[0]! },
       ],
     }])).toThrow(/version/i);
+  });
+
+  it('rejects seeded states whose status does not agree with active snapshot presence', () => {
+    const state = seededRegistry().getState('scene-skill');
+
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      status: 'empty',
+    }])).toThrow(/empty/i);
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      status: 'active',
+      active: null,
+    }])).toThrow(/active snapshot/i);
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      status: 'fallback',
+      active: null,
+    }])).toThrow(/active snapshot/i);
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      status: 'rolled_back',
+      active: null,
+    }])).toThrow(/active snapshot/i);
+  });
+
+  it('rejects seeded states whose active snapshot is not the exact stored version entry', () => {
+    const state = seededRegistry().getState('scene-skill');
+
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      active: {
+        ...state.versions[0]!,
+        sourceDeviceId: 'device-b',
+      },
+    }])).toThrow(/exactly equal/i);
+  });
+
+  it('rejects seeded states whose snapshot knowledge-base ids do not match the state id', () => {
+    const state = seededRegistry().getState('scene-skill');
+
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      active: {
+        ...state.active!,
+        knowledgeBaseId: 'other-skill',
+      },
+    }])).toThrow(/knowledge base/i);
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      versions: [
+        {
+          ...state.versions[0]!,
+          knowledgeBaseId: 'other-skill',
+        },
+        state.versions[1]!,
+      ],
+    }])).toThrow(/knowledge base/i);
   });
 });
 
