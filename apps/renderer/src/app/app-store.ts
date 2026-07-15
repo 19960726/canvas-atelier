@@ -3,14 +3,19 @@ import {
   appendProjectMemoryEntry,
   applyProjectTransaction,
   createSkillPromotionCandidate,
+  createUserFeedbackMemory,
   confirmAgentPlan as confirmDomainPlan,
   revertTransaction,
   selectActiveProjectMemoryEntries,
   type AgentCanvasPlan,
+  type AgentKnowledgeLease,
   type AgentPlanApprovalSelection,
   type CanvasOperation,
   type CanvasProject,
   type CanvasTransaction,
+  type FeedbackObservations,
+  type ImageCitation,
+  type OrderedReference,
   type ProjectOperation,
   type ProjectMemoryEntry,
   type ProjectTransaction,
@@ -49,6 +54,21 @@ interface CommitProjectTransactionOptions {
   nextProject?: CanvasProject;
 }
 
+interface RecordUserFeedbackInput {
+  title: string;
+  userRequest: string;
+  correction: string;
+  knowledgeLease: AgentKnowledgeLease;
+  references: OrderedReference[];
+  citations: ImageCitation[];
+  observations?: FeedbackObservations;
+  feedback: {
+    keep: string[];
+    change: string[];
+    never: string[];
+    score?: number;
+  };
+}
 interface AppState {
   project: CanvasProject;
   persistenceMode: 'browser' | 'desktop';
@@ -64,6 +84,7 @@ interface AppState {
   confirmedModelJobs: number;
   closePersistence: () => Promise<void>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
+  commitReferenceOrder: (assetIds: string[]) => Promise<boolean>;
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
   getKnowledgeLease: KnowledgeClient['getLease'];
   hydratePersistence: () => Promise<void>;
@@ -77,6 +98,7 @@ interface AppState {
   cancelAgentPlan: () => void;
   undo: () => Promise<void>;
   promoteProjectMemory: (memoryId: string) => Promise<void>;
+  recordUserFeedback: (input: RecordUserFeedbackInput) => Promise<boolean>;
   restoreProjectSnapshot: (snapshotId: string) => Promise<void>;
 }
 
@@ -146,6 +168,36 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     return applyCommitResult(set, get, result);
   },
+  commitReferenceOrder: async (assetIds) => {
+    const state = get();
+    const placementNode = state.project.nodes.find((node) => node.type === 'placement_preview');
+    if (!placementNode || placementNode.type !== 'placement_preview') return false;
+
+    const byAssetId = new Map(placementNode.data.objects.map((object) => [object.assetId, object]));
+    const orderedObjects = [...new Set(assetIds)]
+      .filter((assetId) => !assetId.startsWith('starter-'))
+      .map((assetId) => byAssetId.get(assetId))
+      .filter((object): object is NonNullable<typeof object> => object !== undefined);
+    if (orderedObjects.length === 0) return false;
+
+    const targetAssetIds = new Set(orderedObjects.map((object) => object.assetId));
+    const queue = [...orderedObjects];
+    const objects = placementNode.data.objects.map((object) => (
+      targetAssetIds.has(object.assetId) ? queue.shift() ?? object : object
+    ));
+    const nextNode = { ...placementNode, data: { ...placementNode.data, objects } };
+    const nextProject = {
+      ...state.project,
+      nodes: state.project.nodes.map((node) => node.id === nextNode.id ? nextNode : node),
+    };
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const transaction: ProjectTransaction = {
+      id: `reference-order-${suffix}`,
+      label: 'Reorder Agent references',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    return get().commitProjectTransaction(transaction, { kind: 'canvas', nextProject });
+  },
   configureKnowledgeBase: async (knowledgeBaseId, displayName) => {
     await knowledgeClient.configure(knowledgeBaseId, displayName);
   },
@@ -197,7 +249,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   draftAgentPlan: (message) => set((state) => {
     const promptNode = state.project.nodes.find((node) => node.type === 'prompt');
-    if (!promptNode || promptNode.type !== 'prompt' || message.trim().length === 0) return state;
+    if (!promptNode || promptNode.type !== 'prompt' || message.trim().length === 0 || containsProtectedRendererPayload(message)) return state;
     const suffix = `${Date.now()}-${planSequence++}`;
     const reviewId = `agent-review-${suffix}`;
     return { agentPlan: {
@@ -273,6 +325,47 @@ export const useAppStore = create<AppState>((set, get) => ({
       operations: [{ kind: 'set_skill_candidates', candidates }],
     };
     await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
+  },
+  recordUserFeedback: async (input) => {
+    if (containsProtectedRendererPayload(input)) return false;
+    const state = get();
+    const previousRevision = state.project.projectMemory[state.project.projectMemory.length - 1]?.projectRevision ?? 0;
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const memoryEntry = createUserFeedbackMemory({
+      projectId: state.project.id,
+      projectRevision: previousRevision + 1,
+      title: input.title,
+      userRequest: input.userRequest,
+      correction: input.correction,
+      knowledgeLease: input.knowledgeLease,
+      references: input.references,
+      citations: input.citations,
+      observations: input.observations,
+      feedback: input.feedback,
+    }, {
+      memoryId: `project-memory-feedback-${suffix}`,
+      createdAt: new Date().toISOString(),
+      snapshots: {
+        beforeId: `feedback-${suffix}:before`,
+        afterId: `feedback-${suffix}:after`,
+      },
+    });
+    const candidate = createSkillPromotionCandidate(memoryEntry, {
+      candidateId: `skill-candidate-feedback-${suffix}`,
+      createdAt: memoryEntry.createdAt,
+    });
+    const projectMemory = appendProjectMemoryEntry(state.project.projectMemory, memoryEntry);
+    const skillPromotionCandidates = [...state.project.skillPromotionCandidates, candidate];
+    const project = { ...state.project, projectMemory, skillPromotionCandidates };
+    const transaction: ProjectTransaction = {
+      id: `user-feedback-${suffix}`,
+      label: 'Record user feedback',
+      operations: [
+        { kind: 'append_project_memory', entry: memoryEntry },
+        { kind: 'set_skill_candidates', candidates: skillPromotionCandidates },
+      ],
+    };
+    return get().commitProjectTransaction(transaction, { kind: 'agent', nextProject: project });
   },
   restoreProjectSnapshot: async (snapshotId) => {
     const state = get();
@@ -597,13 +690,35 @@ function filterValidSkillPromotionCandidates(
     const sourceMemory = activeMemoryById.get(candidate.sourceProjectMemoryId);
     return candidate.sourceProjectId === projectId
       && sourceMemory !== undefined
-      && ['optimization', 'generation', 'reverse_prompt'].includes(sourceMemory.kind);
+      && ['optimization', 'generation', 'reverse_prompt', 'user_feedback'].includes(sourceMemory.kind);
   });
 }
 
 function isPromotableMemory(timeline: ProjectMemoryEntry[], memory: ProjectMemoryEntry): boolean {
-  if (!['optimization', 'generation', 'reverse_prompt'].includes(memory.kind)) return false;
+  if (!['optimization', 'generation', 'reverse_prompt', 'user_feedback'].includes(memory.kind)) return false;
   return selectActiveProjectMemoryEntries(timeline).some((entry) => entry.id === memory.id);
+}
+
+function containsProtectedRendererPayload(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return /data:image\/[^;]+;base64,/i.test(value)
+      || /base64,[a-z0-9+/=]{16,}/i.test(value)
+      || /authorization\s*:\s*(?:basic|bearer|token)\s+\S+/i.test(value)
+      || /(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S{8,}/i.test(value)
+      || /\bsk-[a-z0-9_-]{8,}\b/i.test(value)
+      || /[a-zA-Z]:[\\/]/.test(value)
+      || /\\\\[^\\\s]+\\/.test(value)
+      || /file:\/\//i.test(value)
+      || /(?:^|\s)\/(?:Users|home)\//.test(value)
+      || /%(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|HOMEDRIVE|HOMEPATH)%[\\/]/i.test(value)
+      || /\bAIza[0-9a-z_-]{20,}\b/i.test(value)
+      || /\bAKIA[0-9A-Z]{16}\b/.test(value)
+      || /\bgh[pousr]_[a-z0-9]{20,}\b/i.test(value)
+      || /\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/i.test(value);
+  }
+  if (Array.isArray(value)) return value.some(containsProtectedRendererPayload);
+  if (value && typeof value === 'object') return Object.values(value).some(containsProtectedRendererPayload);
+  return false;
 }
 
 function readAvailableSnapshotIds(): string[] {

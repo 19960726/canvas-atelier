@@ -210,6 +210,68 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByText(/Pinned scene-skill@7/)).toBeInTheDocument();
   });
 
+  it('shares persisted reference order and structured citations with reverse prompt', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    const getLease = vi.fn((runId, capability, references, citations) => createAgentKnowledgeLease({
+      runId,
+      capability,
+      snapshots: [],
+      references,
+      citations,
+    }, {
+      leaseId: 'lease-shared-context',
+      createdAt: '2026-07-15T08:00:00.000Z',
+    }));
+    replaceKnowledgeClientForTests(createKnowledgeClient({ getLease }));
+    resetAppStoreForTests();
+    const project = createStarterProject();
+    useAppStore.setState({
+      project: {
+        ...project,
+        nodes: project.nodes.map((node) => node.type === 'placement_preview'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                objects: [
+                  { ...node.data.objects[0]!, id: 'product', assetId: 'product', name: 'Product' },
+                  { ...node.data.objects[0]!, id: 'scene', assetId: 'scene', name: 'Scene', role: 'scene_composition' },
+                ],
+              },
+            }
+          : node),
+      },
+    });
+
+    render(<CanvasWorkspace />);
+    fireEvent.dragStart(screen.getByText('Scene'));
+    fireEvent.dragOver(screen.getByText('Product'));
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.drop(screen.getByText('Product'));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mention image' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Scene' }));
+    fireEvent.click(screen.getByRole('button', { name: '发送消息' }));
+    expect(useAppStore.getState().agentPlan?.transaction.operations[0]).toMatchObject({
+      kind: 'update_node',
+      node: { data: { prompt: '@Scene' } },
+    });
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    const run = document.querySelector<HTMLButtonElement>('.reverse-agent__run');
+    if (!run) throw new Error('Missing reverse prompt button');
+    fireEvent.click(run);
+
+    await waitFor(() => expect(getLease).toHaveBeenCalledTimes(1));
+    expect(getLease.mock.calls[0]![2].map((reference: { assetId: string }) => reference.assetId)).toEqual(['scene', 'product']);
+    expect(getLease.mock.calls[0]![2].map((reference: { role: string }) => reference.role)).toEqual(['scene_composition', 'product_identity']);
+    expect(getLease.mock.calls[0]![3]).toEqual([{ assetId: 'scene', label: 'Scene' }]);
+  });
   it('shows a specific notice after desktop revision conflicts', () => {
     resetAppStoreForTests();
     useAppStore.setState({

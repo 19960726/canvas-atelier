@@ -7,6 +7,7 @@ import {
   createReversePromptRun,
   parseReversePromptResult,
   type ApprovedMemorySnapshot,
+  type ImageCitation,
   type OrderedReference,
   type ReversePromptPersona,
   type ReversePromptResult,
@@ -18,7 +19,8 @@ import { KnowledgeStatus } from './KnowledgeStatus';
 
 interface ReversePromptAgentProps {
   projectId: string;
-  referenceAssetIds: string[];
+  references: OrderedReference[];
+  citations: ImageCitation[];
   getApprovedMemorySnapshot: () => ApprovedMemorySnapshot;
   getProjectMemoryIds?: () => string[];
   getKnowledgeLease?: KnowledgeClient['getLease'];
@@ -37,7 +39,8 @@ interface RunHistoryEntry {
 
 export function ReversePromptAgent({
   projectId,
-  referenceAssetIds,
+  references,
+  citations,
   getApprovedMemorySnapshot,
   getProjectMemoryIds = () => [],
   getKnowledgeLease = createFallbackKnowledgeLease,
@@ -59,15 +62,14 @@ export function ReversePromptAgent({
   );
 
   const startAnalysis = async () => {
-    if (runningRef.current || referenceAssetIds.length === 0) return;
+    if (runningRef.current || references.length === 0) return;
     runningRef.current = true;
     setStatus('running');
     setError(null);
     try {
       const approvedMemorySnapshot = getApprovedMemorySnapshot();
       const runId = createClientUniqueValue();
-      const references = buildFallbackReferences(referenceAssetIds);
-      const knowledgeLease = getKnowledgeLease(runId, 'reverse_prompt', references, []);
+      const knowledgeLease = getKnowledgeLease(runId, 'reverse_prompt', references, citations);
       const run = createReversePromptRun({
         projectId,
         skill: { id: 'scene-skill', version: 'managed-latest' },
@@ -107,7 +109,7 @@ export function ReversePromptAgent({
       </label>
 
       <div className="reverse-agent__context">
-        <span>参考图 <b>{referenceAssetIds.length} / 20</b></span>
+        <span>参考图 <b>{references.length} / 20</b></span>
         <span>知识快照 <b>运行时读取</b></span>
       </div>
       <KnowledgeStatus
@@ -117,7 +119,7 @@ export function ReversePromptAgent({
       />
       {analysisMode === 'local_draft' && <p className="reverse-agent__mode">本地草稿，未调用模型</p>}
 
-      <button className="reverse-agent__run" type="button" disabled={status === 'running' || referenceAssetIds.length === 0} onClick={startAnalysis}>
+      <button className="reverse-agent__run" type="button" disabled={status === 'running' || references.length === 0} onClick={startAnalysis}>
         <Sparkles size={15} />{status === 'running' ? '正在反推…' : '开始反推'}
       </button>
       {error && <p className="reverse-agent__error" role="alert">{error}</p>}
@@ -145,26 +147,18 @@ function ResultSection({ title, children }: { title: string; children: ReactNode
   return <section className="reverse-result__section"><h3>{title}</h3>{children}</section>;
 }
 
-function buildFallbackReferences(referenceAssetIds: string[]): OrderedReference[] {
-  return referenceAssetIds.map((assetId, index) => ({
-    assetId,
-    label: assetId,
-    role: 'product_identity',
-    position: index,
-  }));
-}
-
 function createFallbackKnowledgeLease(
   runId: string,
   capability: 'reverse_prompt',
   references: OrderedReference[],
+  citations: ImageCitation[],
 ) {
   return createAgentKnowledgeLease({
     runId,
     capability,
     snapshots: [],
     references,
-    citations: [],
+    citations,
   }, {
     leaseId: createClientUniqueValue(),
     createdAt: new Date().toISOString(),

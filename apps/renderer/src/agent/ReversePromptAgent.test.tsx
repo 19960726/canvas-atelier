@@ -6,6 +6,7 @@ import {
   createAgentKnowledgeLease,
   type AgentKnowledgeLease,
   type ApprovedMemorySnapshot,
+  type ImageCitation,
   type OrderedReference,
   type ReversePromptRun,
   type ReversePromptResult,
@@ -20,6 +21,10 @@ const approvedMemorySnapshot: ApprovedMemorySnapshot = {
   approvedAt: '2026-07-13T12:00:00.000Z',
   approvedMemoryIds: ['memory-1'],
 };
+
+const orderedReferences: OrderedReference[] = [
+  { assetId: 'asset-1', label: 'Product', role: 'product_identity', position: 0 },
+];
 
 function resultFor(run: ReversePromptRun): ReversePromptResult {
   return {
@@ -37,7 +42,8 @@ function resultFor(run: ReversePromptRun): ReversePromptResult {
 function renderAgent(overrides: Partial<React.ComponentProps<typeof ReversePromptAgent>> = {}) {
   return render(<ReversePromptAgent
     projectId="project-1"
-    referenceAssetIds={['asset-1']}
+    references={orderedReferences}
+    citations={[]}
     getApprovedMemorySnapshot={() => approvedMemorySnapshot}
     analyze={async (run) => resultFor(run)}
     {...overrides}
@@ -127,7 +133,8 @@ describe('ReversePromptAgent', () => {
     }));
     const props: React.ComponentProps<typeof ReversePromptAgent> = {
       projectId: 'project-1',
-      referenceAssetIds: ['asset-1'],
+      references: orderedReferences,
+      citations: [],
       getApprovedMemorySnapshot: () => approvedMemorySnapshot,
       analyze,
       getKnowledgeLease,
@@ -157,6 +164,38 @@ describe('ReversePromptAgent', () => {
     await waitFor(() => expect(getKnowledgeLease).toHaveBeenCalledTimes(2));
     const secondRun = analyze.mock.calls[1]![0];
     expect(secondRun.knowledgeLease.versionKey).toBe(`scene-skill@2:${'a'.repeat(12)}`);
+  });
+
+  it('passes the provided ordered references and citations into the run lease unchanged', async () => {
+    const references: OrderedReference[] = [
+      { assetId: 'scene', label: 'Hero', role: 'scene_composition', position: 0 },
+      { assetId: 'product', label: 'Hero', role: 'product_identity', position: 1 },
+    ];
+    const citations: ImageCitation[] = [{ assetId: 'scene', label: 'Hero' }];
+    const getKnowledgeLease = vi.fn((
+      runId: string,
+      capability: 'reverse_prompt',
+      leaseReferences: OrderedReference[],
+      leaseCitations: ImageCitation[],
+    ) => createAgentKnowledgeLease({
+      runId,
+      capability,
+      snapshots: [],
+      references: leaseReferences,
+      citations: leaseCitations,
+    }, {
+      leaseId: `lease-${runId}`,
+      createdAt: '2026-07-15T08:00:00.000Z',
+    }));
+    const analyze = vi.fn(async (run: ReversePromptRun) => resultFor(run));
+    renderAgent({ references, citations, getKnowledgeLease, analyze });
+
+    fireEvent.click(runButton());
+    await waitFor(() => expect(analyze).toHaveBeenCalledTimes(1));
+
+    expect(getKnowledgeLease).toHaveBeenCalledWith(expect.any(String), 'reverse_prompt', references, citations);
+    expect(analyze.mock.calls[0]![0].references).toEqual(references);
+    expect(analyze.mock.calls[0]![0].knowledgeLease.citations).toEqual(citations);
   });
 });
 

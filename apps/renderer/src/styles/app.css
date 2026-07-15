@@ -402,3 +402,24 @@
   font-size: 11px;
   line-height: 1.55;
 }
+
+.reference-order { margin: -4px 0 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.reference-order > header { height: 24px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 9px; font-weight: 650; }
+.reference-order > header b { min-width: 18px; text-align: right; color: var(--text); font-size: 9px; }
+.reference-order ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.reference-order li { min-height: 31px; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 3px 4px 3px 6px; color: #56616a; background: #fbfcfd; border: 1px solid var(--border); border-radius: 4px; cursor: grab; }
+.reference-order li:active { cursor: grabbing; }
+.reference-order__label { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; color: var(--text); font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.reference-order__label small { color: var(--muted); font-size: 8px; font-weight: 500; }
+.reference-order__actions { display: flex; gap: 2px; }
+.reference-order__actions button, .image-mention-composer__control > button { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; color: #5d6871; background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+.reference-order__actions button:hover:not(:disabled), .image-mention-composer__control > button:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); border-color: #a7d9d1; }
+.reference-order__actions button:disabled, .image-mention-composer__control > button:disabled { opacity: 0.35; cursor: not-allowed; }
+.image-mention-composer { position: relative; }
+.image-mention-composer__control { position: absolute; right: 7px; bottom: 5px; }
+.image-mention-menu { position: absolute; right: 0; bottom: 29px; z-index: 30; width: 210px; max-height: 180px; padding: 4px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 5px; box-shadow: 0 8px 24px rgba(25, 35, 44, 0.18); }
+.image-mention-menu button { width: 100%; min-height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 7px; color: var(--text); background: transparent; border: 0; border-radius: 3px; cursor: pointer; font-size: 9px; text-align: left; }
+.image-mention-menu button:hover { background: var(--surface-muted); }
+.image-mention-menu button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.image-mention-menu button small { color: var(--muted); font-size: 8px; }
+.image-mention-composer textarea { padding-right: 38px; }

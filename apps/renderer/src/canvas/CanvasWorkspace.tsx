@@ -4,6 +4,7 @@ import type {
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
   PlacementObject,
+  OrderedReference,
   ProjectTransaction,
   ReferenceRole,
   ReversePromptResult,
@@ -28,11 +29,13 @@ import {
   X,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
+import { ImageMentionComposer, type ImageMentionValue } from '../agent/ImageMentionComposer';
 import { PlanPreview } from '../agent/PlanPreview';
 import { ReversePromptAgent } from '../agent/ReversePromptAgent';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
+import { ReferenceOrderList } from '../references/ReferenceOrderList';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
 
 type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
@@ -73,7 +76,9 @@ export function CanvasWorkspace() {
   const promoteProjectMemory = useAppStore((state) => state.promoteProjectMemory);
   const restoreProjectSnapshot = useAppStore((state) => state.restoreProjectSnapshot);
   const commitProjectTransaction = useAppStore((state) => state.commitProjectTransaction);
-  const [agentMessage, setAgentMessage] = useState('');
+  const commitReferenceOrder = useAppStore((state) => state.commitReferenceOrder);
+  const [agentMessage, setAgentMessage] = useState<ImageMentionValue>({ text: '', citations: [] });
+  const [referenceOrderPreview, setReferenceOrderPreview] = useState<string[] | null>(null);
   const [activeAgentTab, setActiveAgentTab] = useState<'conversation' | 'plan' | 'memory'>('conversation');
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
@@ -100,10 +105,29 @@ export function CanvasWorkspace() {
     return [...edges, ...toFlowEdges(ghosts).map((edge) => ({ ...edge, className: 'agent-ghost-edge', animated: true }))];
   }, [project.edges, agentPlan]);
   const placementNode = useMemo(() => project.nodes.find(isPlacementNode), [project.nodes]);
-  const reverseReferenceAssetIds = useMemo(
-    () => placementNode?.data.objects.filter((object) => !object.assetId.startsWith('starter-')).map((object) => object.assetId) ?? [],
+  const persistedOrderedReferences = useMemo<OrderedReference[]>(
+    () => placementNode?.data.objects
+      .filter((object) => !object.assetId.startsWith('starter-'))
+      .map((object, position) => ({
+        assetId: object.assetId,
+        label: object.name?.trim() || object.assetId,
+        role: object.role,
+        position,
+      })) ?? [],
     [placementNode],
   );
+  const orderedReferences = useMemo(() => {
+    if (!referenceOrderPreview) return persistedOrderedReferences;
+    const byAssetId = new Map(persistedOrderedReferences.map((reference) => [reference.assetId, reference]));
+    return referenceOrderPreview
+      .map((assetId) => byAssetId.get(assetId))
+      .filter((reference): reference is OrderedReference => reference !== undefined)
+      .map((reference, position) => ({ ...reference, position }));
+  }, [persistedOrderedReferences, referenceOrderPreview]);
+  const activeCitations = useMemo(() => {
+    const knownAssetIds = new Set(orderedReferences.map((reference) => reference.assetId));
+    return agentMessage.citations.filter((citation) => knownAssetIds.has(citation.assetId));
+  }, [agentMessage.citations, orderedReferences]);
   const getApprovedMemorySnapshot = () => ({
     version: 'local-draft-no-approved-skill',
     approvedAt: new Date().toISOString(),
@@ -223,6 +247,11 @@ export function CanvasWorkspace() {
     setSelectedPlacementObjectId(objectId);
   };
 
+  const commitAgentReferenceOrder = (assetIds: string[]) => {
+    setReferenceOrderPreview(assetIds);
+    void commitReferenceOrder(assetIds).finally(() => setReferenceOrderPreview(null));
+  };
+
   return (
     <div className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}`}>
       <header className="topbar">
@@ -340,9 +369,15 @@ export function CanvasWorkspace() {
         </div>
         <div className="agent-thread">
           <div id="agent-panel-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden={activeAgentTab !== 'conversation'}>
+            <ReferenceOrderList
+              references={orderedReferences}
+              onPreviewOrder={setReferenceOrderPreview}
+              onCommitOrder={commitAgentReferenceOrder}
+            />
             <ReversePromptAgent
               projectId={project.id}
-              referenceAssetIds={reverseReferenceAssetIds}
+              references={orderedReferences}
+              citations={activeCitations}
               getApprovedMemorySnapshot={getApprovedMemorySnapshot}
               getProjectMemoryIds={getProjectMemoryIds}
               getKnowledgeLease={getKnowledgeLease}
@@ -381,10 +416,17 @@ export function CanvasWorkspace() {
         </div>
         {activeAgentTab === 'conversation' && (
           <div className="agent-composer">
-            <textarea aria-label="向 Agent 发送消息" placeholder="描述你想制作的产品场景…" rows={3} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} />
+            <ImageMentionComposer
+              references={orderedReferences}
+              value={agentMessage}
+              onChange={setAgentMessage}
+              textareaLabel="向 Agent 发送消息"
+              placeholder="描述你想制作的产品场景…"
+              rows={3}
+            />
             <div className="agent-composer__footer">
               <span>模型执行前需要确认</span>
-              <button type="button" aria-label="发送消息" disabled={agentMessage.trim().length === 0} onClick={() => { draftAgentPlan(agentMessage); setAgentMessage(''); activateAgentTab('plan', true); }}><ChevronRight size={17} /></button>
+              <button type="button" aria-label="发送消息" disabled={agentMessage.text.trim().length === 0} onClick={() => { draftAgentPlan(agentMessage.text); activateAgentTab('plan', true); }}><ChevronRight size={17} /></button>
             </div>
           </div>
         )}

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommitAck } from '@agent-canvas/desktop-core';
-import { buildProjectMemoryContext } from '@agent-canvas/domain';
-import type { ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
+import { buildProjectMemoryContext, createAgentKnowledgeLease } from '@agent-canvas/domain';
+import type { OrderedReference, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   createStarterProject,
@@ -335,6 +335,153 @@ describe('project optimization memory', () => {
     }]);
     expect(useAppStore.getState().desktopRevision).toBe(11);
     expect(JSON.stringify(useAppStore.getState().knowledgeBases)).not.toContain('E:\\');
+  });
+
+  it('commits one placement update while preserving fields and untouched object slots', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+    const project = createStarterProject();
+    const placement = project.nodes.find((node) => node.type === 'placement_preview');
+    if (!placement || placement.type !== 'placement_preview') throw new Error('Missing placement');
+    const objects = [
+      { ...placement.data.objects[0]!, id: 'starter-a', assetId: 'starter-a', name: 'Starter A' },
+      { ...placement.data.objects[0]!, id: 'product', assetId: 'product', name: 'Product', locked: true, x: 0.2 },
+      { ...placement.data.objects[0]!, id: 'starter-b', assetId: 'starter-b', name: 'Starter B' },
+      { ...placement.data.objects[0]!, id: 'scene', assetId: 'scene', name: 'Scene', role: 'scene_composition' as const, y: 0.3 },
+      { ...placement.data.objects[0]!, id: 'omitted', assetId: 'omitted', name: 'Omitted', role: 'prop_reference' as const },
+    ];
+    useAppStore.setState({
+      project: {
+        ...project,
+        nodes: project.nodes.map((node) => node.id === placement.id
+          ? { ...placement, data: { ...placement.data, objects } }
+          : node),
+      },
+    });
+
+    await useAppStore.getState().commitReferenceOrder(['scene', 'product']);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    const request = commit.mock.calls[0]![0];
+    expect(request.transaction.operations).toHaveLength(1);
+    expect(request.transaction.operations[0]).toMatchObject({
+      kind: 'canvas',
+      operation: { kind: 'update_node', node: { id: placement.id } },
+    });
+    const savedPlacement = request.nextProject.nodes.find((node) => node.id === placement.id);
+    expect(savedPlacement?.type === 'placement_preview'
+      ? savedPlacement.data.objects.map((object) => object.assetId)
+      : []).toEqual(['starter-a', 'scene', 'starter-b', 'product', 'omitted']);
+    expect(savedPlacement?.type === 'placement_preview'
+      ? savedPlacement.data.objects.find((object) => object.assetId === 'product')
+      : undefined).toMatchObject({ locked: true, x: 0.2, name: 'Product' });
+  });
+
+  it('hydrates a persisted reference order for reopening', async () => {
+    const project = createStarterProject();
+    const placement = project.nodes.find((node) => node.type === 'placement_preview');
+    if (!placement || placement.type !== 'placement_preview') throw new Error('Missing placement');
+    const durableProject = {
+      ...project,
+      nodes: project.nodes.map((node) => node.id === placement.id
+        ? {
+            ...placement,
+            data: {
+              ...placement.data,
+              objects: [
+                { ...placement.data.objects[0]!, id: 'scene', assetId: 'scene', role: 'scene_composition' as const },
+                { ...placement.data.objects[0]!, id: 'product', assetId: 'product' },
+              ],
+            },
+          }
+        : node),
+    };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        mode: 'desktop',
+        project: durableProject,
+        revision: 5,
+        saveStatus: 'saved',
+      }),
+    }));
+    resetAppStoreForTests();
+
+    await useAppStore.getState().hydratePersistence();
+
+    const reopened = useAppStore.getState().project.nodes.find((node) => node.id === placement.id);
+    expect(reopened?.type === 'placement_preview'
+      ? reopened.data.objects.map((object) => object.assetId)
+      : []).toEqual(['scene', 'product']);
+  });
+
+  it('records durable feedback with its lease and creates only a pending-review candidate', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 2,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+    const references: OrderedReference[] = [
+      { assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 },
+    ];
+    const citations = [{ assetId: 'scene', label: 'Scene' }];
+    const lease = createAgentKnowledgeLease({
+      runId: 'run-feedback',
+      capability: 'reverse_prompt',
+      snapshots: [],
+      references,
+      citations,
+    }, {
+      leaseId: 'lease-feedback',
+      createdAt: '2026-07-15T08:00:00.000Z',
+    });
+
+    const saved = await useAppStore.getState().recordUserFeedback({
+      title: 'Use a quieter scene',
+      userRequest: 'Keep @Scene but simplify it',
+      correction: 'Remove the extra props',
+      knowledgeLease: lease,
+      references,
+      citations,
+      feedback: { keep: ['product'], change: ['scene'], never: ['extra props'] },
+    });
+
+    expect(saved).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.projectMemory[useAppStore.getState().project.projectMemory.length - 1]).toMatchObject({
+      kind: 'user_feedback',
+      context: { knowledgeLease: { leaseId: 'lease-feedback' }, references, citations },
+    });
+    expect(useAppStore.getState().project.skillPromotionCandidates[useAppStore.getState().project.skillPromotionCandidates.length - 1]).toMatchObject({
+      reviewStatus: 'pending_review',
+      sourceProjectMemoryId: useAppStore.getState().project.projectMemory[useAppStore.getState().project.projectMemory.length - 1]?.id,
+    });
+    expect(useAppStore.getState().project.skillPromotionCandidates.some((candidate) => candidate.reviewStatus === 'approved')).toBe(false);
+
+    const rejected = await useAppStore.getState().recordUserFeedback({
+      title: 'Unsafe feedback',
+      userRequest: 'Authorization: Bearer secret-token-value',
+      correction: 'data:image/png;base64,AAAAAAAAAAAAAAAA',
+      knowledgeLease: lease,
+      references,
+      citations,
+      feedback: { keep: [], change: ['scene'], never: [] },
+    });
+    useAppStore.getState().cancelAgentPlan();
+    useAppStore.getState().draftAgentPlan('Use C:\\Users\\private\\image.png');
+
+    expect(rejected).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().agentPlan).toBeNull();
+    expect(JSON.stringify(useAppStore.getState().project)).not.toMatch(/data:image|Bearer secret|C:\\\\Users/i);
   });
 });
 
