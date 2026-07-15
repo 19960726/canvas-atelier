@@ -37,6 +37,7 @@ import { loadPersistedProjectBundle } from './project-persistence';
 
 let planSequence = 0;
 let pendingSave: ReturnType<typeof setTimeout> | undefined;
+let referenceOrderCommitTail: Promise<void> | null = null;
 let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
 
@@ -168,35 +169,38 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     return applyCommitResult(set, get, result);
   },
-  commitReferenceOrder: async (assetIds) => {
-    const state = get();
-    const placementNode = state.project.nodes.find((node) => node.type === 'placement_preview');
-    if (!placementNode || placementNode.type !== 'placement_preview') return false;
+  commitReferenceOrder: (assetIds) => {
+    const requestedAssetIds = [...assetIds];
+    return enqueueReferenceOrderCommit(async () => {
+      const state = get();
+      const placementNode = state.project.nodes.find((node) => node.type === 'placement_preview');
+      if (!placementNode || placementNode.type !== 'placement_preview') return false;
 
-    const byAssetId = new Map(placementNode.data.objects.map((object) => [object.assetId, object]));
-    const orderedObjects = [...new Set(assetIds)]
-      .filter((assetId) => !assetId.startsWith('starter-'))
-      .map((assetId) => byAssetId.get(assetId))
-      .filter((object): object is NonNullable<typeof object> => object !== undefined);
-    if (orderedObjects.length === 0) return false;
+      const byAssetId = new Map(placementNode.data.objects.map((object) => [object.assetId, object]));
+      const orderedObjects = [...new Set(requestedAssetIds)]
+        .filter((assetId) => !assetId.startsWith('starter-'))
+        .map((assetId) => byAssetId.get(assetId))
+        .filter((object): object is NonNullable<typeof object> => object !== undefined);
+      if (orderedObjects.length === 0) return false;
 
-    const targetAssetIds = new Set(orderedObjects.map((object) => object.assetId));
-    const queue = [...orderedObjects];
-    const objects = placementNode.data.objects.map((object) => (
-      targetAssetIds.has(object.assetId) ? queue.shift() ?? object : object
-    ));
-    const nextNode = { ...placementNode, data: { ...placementNode.data, objects } };
-    const nextProject = {
-      ...state.project,
-      nodes: state.project.nodes.map((node) => node.id === nextNode.id ? nextNode : node),
-    };
-    const suffix = `${Date.now()}-${planSequence++}`;
-    const transaction: ProjectTransaction = {
-      id: `reference-order-${suffix}`,
-      label: 'Reorder Agent references',
-      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
-    };
-    return get().commitProjectTransaction(transaction, { kind: 'canvas', nextProject });
+      const targetAssetIds = new Set(orderedObjects.map((object) => object.assetId));
+      const queue = [...orderedObjects];
+      const objects = placementNode.data.objects.map((object) => (
+        targetAssetIds.has(object.assetId) ? queue.shift() ?? object : object
+      ));
+      const nextNode = { ...placementNode, data: { ...placementNode.data, objects } };
+      const nextProject = {
+        ...state.project,
+        nodes: state.project.nodes.map((node) => node.id === nextNode.id ? nextNode : node),
+      };
+      const suffix = `${Date.now()}-${planSequence++}`;
+      const transaction: ProjectTransaction = {
+        id: `reference-order-${suffix}`,
+        label: 'Reorder Agent references',
+        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+      };
+      return get().commitProjectTransaction(transaction, { kind: 'canvas', nextProject });
+    });
   },
   configureKnowledgeBase: async (knowledgeBaseId, displayName) => {
     await knowledgeClient.configure(knowledgeBaseId, displayName);
@@ -464,8 +468,21 @@ export function replaceKnowledgeClientForTests(client: KnowledgeClient): void {
   knowledgeClient = client;
 }
 
+function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise<boolean> {
+  const result = referenceOrderCommitTail === null
+    ? operation()
+    : referenceOrderCommitTail.then(operation);
+  const tail = result.then(() => undefined, () => undefined);
+  referenceOrderCommitTail = tail;
+  void tail.finally(() => {
+    if (referenceOrderCommitTail === tail) referenceOrderCommitTail = null;
+  });
+  return result;
+}
+
 export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
+  referenceOrderCommitTail = null;
   knowledgeClient.stop();
   useAppStore.setState(createInitialState());
 }

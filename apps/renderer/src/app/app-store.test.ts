@@ -382,12 +382,30 @@ describe('project optimization memory', () => {
       : undefined).toMatchObject({ locked: true, x: 0.2, name: 'Product' });
   });
 
-  it('keeps the last order from rapid sequential reference reorder commands', async () => {
-    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => {
-      await Promise.resolve();
-      return { ok: true, project: nextProject, revision: commit.mock.calls.length };
+  it('serializes rapid reference reorder commits against acknowledged desktop revisions', async () => {
+    const releases = [deferred<void>(), deferred<void>()];
+    let durableProject = createStarterProject();
+    let revision = 0;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      const callIndex = commit.mock.calls.length - 1;
+      const release = releases[callIndex];
+      if (!release) throw new Error('Unexpected reference-order commit');
+      await release.promise;
+      if (request.baseRevision !== revision) {
+        return { code: 'REVISION_CONFLICT', ok: false, project: durableProject, revision };
+      }
+      revision += 1;
+      durableProject = request.nextProject;
+      return { ok: true, project: durableProject, revision };
     });
-    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const hydrate = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      mode: 'desktop' as const,
+      project: durableProject,
+      revision,
+      saveStatus: 'saved' as const,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, hydrate }));
     resetAppStoreForTests();
     const project = createStarterProject();
     const placement = project.nodes.find((node) => node.type === 'placement_preview');
@@ -397,7 +415,60 @@ describe('project optimization memory', () => {
       { ...placement.data.objects[0]!, id: 'scene', assetId: 'scene', name: 'Scene', role: 'scene_composition' as const },
       { ...placement.data.objects[0]!, id: 'prop', assetId: 'prop', name: 'Prop', role: 'prop_reference' as const },
     ];
+    durableProject = {
+      ...project,
+      nodes: project.nodes.map((node) => node.id === placement.id
+        ? { ...placement, data: { ...placement.data, objects } }
+        : node),
+    };
+    useAppStore.setState({ desktopRevision: 0, persistenceMode: 'desktop', project: durableProject });
+
+    const first = useAppStore.getState().commitReferenceOrder(['scene', 'product', 'prop']);
+    const second = useAppStore.getState().commitReferenceOrder(['prop', 'scene', 'product']);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0]![0].baseRevision).toBe(0);
+
+    releases[0]!.resolve();
+    await expect(first).resolves.toBe(true);
+    await Promise.resolve();
+
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]![0].baseRevision).toBe(1);
+
+    releases[1]!.resolve();
+    await expect(second).resolves.toBe(true);
+
+    expect(hydrate).not.toHaveBeenCalled();
+    expect(useAppStore.getState().desktopRevision).toBe(2);
+    const savedPlacement = useAppStore.getState().project.nodes.find((node) => node.id === placement.id);
+    expect(savedPlacement?.type === 'placement_preview'
+      ? savedPlacement.data.objects.map((object) => object.assetId)
+      : []).toEqual(['prop', 'scene', 'product']);
+  });
+
+  it('resolves queued reference reorder callers when persistence becomes read only', async () => {
+    const release = deferred<void>();
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      await release.promise;
+      return {
+        code: 'CONCURRENT_WRITER',
+        ok: false,
+        project: request.previousProject,
+        revision: request.baseRevision,
+      };
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+    const project = createStarterProject();
+    const placement = project.nodes.find((node) => node.type === 'placement_preview');
+    if (!placement || placement.type !== 'placement_preview') throw new Error('Missing placement');
+    const objects = [
+      { ...placement.data.objects[0]!, id: 'product', assetId: 'product', name: 'Product' },
+      { ...placement.data.objects[0]!, id: 'scene', assetId: 'scene', name: 'Scene', role: 'scene_composition' as const },
+    ];
     useAppStore.setState({
+      persistenceMode: 'desktop',
       project: {
         ...project,
         nodes: project.nodes.map((node) => node.id === placement.id
@@ -406,16 +477,17 @@ describe('project optimization memory', () => {
       },
     });
 
-    const first = useAppStore.getState().commitReferenceOrder(['scene', 'product', 'prop']);
-    const second = useAppStore.getState().commitReferenceOrder(['prop', 'scene', 'product']);
-    await Promise.all([first, second]);
+    const first = useAppStore.getState().commitReferenceOrder(['scene', 'product']);
+    const second = useAppStore.getState().commitReferenceOrder(['product', 'scene']);
 
-    expect(commit).toHaveBeenCalledTimes(2);
-    const savedPlacement = useAppStore.getState().project.nodes.find((node) => node.id === placement.id);
-    expect(savedPlacement?.type === 'placement_preview'
-      ? savedPlacement.data.objects.map((object) => object.assetId)
-      : []).toEqual(['prop', 'scene', 'product']);
+    expect(commit).toHaveBeenCalledTimes(1);
+    release.resolve();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([false, false]);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().saveStatus).toBe('read_only');
   });
+
   it('hydrates a persisted reference order for reopening', async () => {
     const project = createStarterProject();
     const placement = project.nodes.find((node) => node.type === 'placement_preview');
