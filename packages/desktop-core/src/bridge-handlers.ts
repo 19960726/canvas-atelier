@@ -28,7 +28,7 @@ import {
   type StablePointBridgeResult,
 } from './contracts.js';
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
-import { createPersistenceError, releaseJournalState } from './journal-writer.js';
+import { createPersistenceError, releaseJournalState, writeInitialJournalCommitBoundary } from './journal-writer.js';
 import {
   NovusPackExporter,
   NovusPackImporter,
@@ -47,6 +47,7 @@ import {
 import {
   SnapshotScheduler,
   type SnapshotFlushResult,
+  type SnapshotReason,
 } from './snapshot-scheduler.js';
 import { BRIDGE_CHANNELS } from './preload-api.js';
 
@@ -59,12 +60,25 @@ interface ProjectRepositoryLike {
   open(root: string, options: { mode: 'write' | 'read_only' }): Promise<OpenedProjectSession>;
   openJournalWriter(session: OpenedProjectSession): Promise<BridgeWriter>;
   readCurrentProject(session: OpenedProjectSession): Promise<CanvasProject>;
+  readCurrentRevision?(session: OpenedProjectSession): Promise<number>;
 }
 
 interface SnapshotSchedulerLike {
+  consider?(
+    session: Pick<OpenedProjectSession, 'root'>,
+    event: {
+      readonly activeJournalBytes: number;
+      readonly closing?: boolean;
+      readonly idleMs?: number;
+      readonly lastTransactionKind?: 'canvas' | 'agent' | 'system';
+      readonly pendingChanges: boolean;
+      readonly stablePoint?: boolean;
+      readonly transactionCount: number;
+    },
+  ): { readonly reason: SnapshotReason } | null;
   flush(
     session: OpenedProjectSession,
-    request: { reason: 'stable_point' },
+    request: { reason: SnapshotReason },
   ): Promise<SnapshotFlushResult>;
 }
 
@@ -102,6 +116,7 @@ export interface DesktopBridgeHandlerDependencies {
 }
 
 export interface DesktopBridgeHandlers {
+  closeAllProjects(): Promise<void>;
   closeProject(event: unknown, request: unknown): Promise<void>;
   commit(event: unknown, request: unknown): Promise<CommitAck>;
   createStablePoint(event: unknown, request: unknown): Promise<StablePointBridgeResult>;
@@ -188,12 +203,14 @@ export function createDesktopBridgeHandlers(
       );
     }
 
-    return session.writer.commit({
+    const ack = await session.writer.commit({
       baseRevision: validated.baseRevision,
       kind: validated.kind,
       projectId: validated.projectId,
       transaction: validated.transaction,
     });
+    await flushScheduledSnapshotAfterCommit(session, ack, validated.kind);
+    return ack;
   }
 
   async function createStablePoint(
@@ -311,10 +328,19 @@ export function createDesktopBridgeHandlers(
     const validated = validateSessionRequest(request);
     const session = requireSession(sessions, validated.sessionId);
     sessions.delete(validated.sessionId);
-    await requireMethod(repository, 'close')(session.session);
+    await closeBridgeSession(session);
+  }
+
+  async function closeAllProjects(): Promise<void> {
+    const activeSessions = [...sessions.values()];
+    sessions.clear();
+    for (const session of activeSessions) {
+      await closeBridgeSession(session);
+    }
   }
 
   return {
+    closeAllProjects,
     closeProject,
     commit,
     createStablePoint,
@@ -324,6 +350,63 @@ export function createDesktopBridgeHandlers(
     openProject,
     restore,
   };
+
+  async function closeBridgeSession(session: BridgeSessionContext): Promise<void> {
+    if (session.session.mode === 'write') {
+      await flushScheduledSnapshot(session, {
+        closing: true,
+        lastTransactionKind: undefined,
+        stablePoint: false,
+      });
+    }
+    await requireMethod(repository, 'close')(session.session);
+  }
+
+  async function flushScheduledSnapshotAfterCommit(
+    session: BridgeSessionContext,
+    ack: CommitAck,
+    kind: 'canvas' | 'agent' | 'system',
+  ): Promise<void> {
+    await flushScheduledSnapshot(session, {
+      closing: false,
+      lastTransactionKind: kind,
+      stablePoint: false,
+      revision: ack.revision,
+    });
+  }
+
+  async function flushScheduledSnapshot(
+    session: BridgeSessionContext,
+    options: {
+      readonly closing: boolean;
+      readonly lastTransactionKind?: 'canvas' | 'agent' | 'system';
+      readonly revision?: number;
+      readonly stablePoint: boolean;
+    },
+  ): Promise<void> {
+    if (session.session.mode !== 'write') {
+      return;
+    }
+    const currentRevision = options.revision ?? await readCurrentRevision(repository, session.session);
+    const transactionCount = Math.max(0, currentRevision - session.session.manifest.stableSnapshotRevision);
+    const activeJournalBytes = await readActiveJournalBytes(fileSystem, session.session);
+    const pendingChanges = transactionCount > 0 || activeJournalBytes > 0;
+    const decision = snapshotScheduler.consider?.(session.session, {
+      activeJournalBytes,
+      closing: options.closing,
+      lastTransactionKind: options.lastTransactionKind,
+      pendingChanges,
+      stablePoint: options.stablePoint,
+      transactionCount,
+    }) ?? null;
+
+    if (decision === null || (!pendingChanges && decision.reason !== 'close')) {
+      return;
+    }
+
+    await snapshotScheduler.flush(session.session, { reason: decision.reason });
+    session.session = await refreshSessionManifest(fileSystem, session.session);
+  }
 }
 
 export function registerDesktopBridgeHandlers(
@@ -366,6 +449,7 @@ function withRepositoryDefaults(
     open: repository?.open ?? ((root, openOptions) => fallback.open(root, openOptions)),
     openJournalWriter: repository?.openJournalWriter ?? ((session) => fallback.openJournalWriter(session)),
     readCurrentProject: repository?.readCurrentProject ?? ((session) => fallback.readCurrentProject(session)),
+    readCurrentRevision: repository?.readCurrentRevision ?? ((session) => fallback.readCurrentRevision(session)),
   };
 }
 
@@ -374,15 +458,39 @@ async function summarizeSession(
   sessionId: string,
   session: OpenedProjectSession,
 ): Promise<BridgeSessionSummary> {
+  const project = await repository.readCurrentProject(session);
+  const currentRevision = await readCurrentRevision(repository, session);
   return {
+    currentRevision,
     mode: session.mode,
-    project: await repository.readCurrentProject(session),
+    project,
     projectId: session.manifest.projectId,
     projectName: session.manifest.projectName,
     sessionId,
     stableSnapshotId: session.manifest.stableSnapshotId,
     stableSnapshotRevision: session.manifest.stableSnapshotRevision,
   };
+}
+
+async function readCurrentRevision(
+  repository: ProjectRepositoryLike,
+  session: OpenedProjectSession,
+): Promise<number> {
+  return repository.readCurrentRevision === undefined
+    ? session.manifest.stableSnapshotRevision
+    : repository.readCurrentRevision(session);
+}
+
+async function readActiveJournalBytes(
+  fileSystem: FileSystem,
+  session: OpenedProjectSession,
+): Promise<number> {
+  try {
+    const stats = await fileSystem.stat(join(session.root, ...session.manifest.activeJournalSegment.split('/')));
+    return typeof stats.size === 'number' && Number.isFinite(stats.size) ? stats.size : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function requireSession(
@@ -492,6 +600,12 @@ async function restoreRecoveryCandidate(
     `${canonicalJson(envelope)}\n`,
   );
   await writeAtomic(fileSystem, join(session.session.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), '');
+  await writeInitialJournalCommitBoundary(fileSystem, join(session.session.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), {
+    baseRevision: candidate.revision,
+    nextSequence: candidate.revision + 1,
+    projectId: manifest.projectId,
+    updatedAt: envelope.createdAt,
+  });
   const nextManifest: ProjectManifest = {
     ...manifest,
     cleanClose: false,

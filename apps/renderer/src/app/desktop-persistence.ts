@@ -295,7 +295,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     projectId = session.projectId;
     mode = session.mode;
     currentProject = session.project;
-    revision = session.stableSnapshotRevision;
+    revision = session.currentRevision ?? session.stableSnapshotRevision;
     availableSnapshotIds = await readDesktopRecoverySnapshotIds();
   }
 

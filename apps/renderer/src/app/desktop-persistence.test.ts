@@ -68,6 +68,7 @@ describe('desktop persistence', () => {
       getRecoveryPlan: vi.fn(),
       importPack: vi.fn(),
       openProject: vi.fn(async () => ({
+        currentRevision: 3,
         mode: 'write' as const,
         project: durableProject,
         projectId: durableProject.id,
@@ -107,6 +108,66 @@ describe('desktop persistence', () => {
     });
   });
 
+  it('uses the bridge current revision instead of the stable snapshot revision after hydrate', async () => {
+    const durableProject = createStarterProject();
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(async () => ({
+        committedAt: '2026-07-14T00:00:00.000Z',
+        projectId: durableProject.id,
+        revision: 5,
+        sequence: 5,
+        transactionId: 'tx-after-hydrate-head',
+      })),
+      createStablePoint: vi.fn(),
+      exportPack: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({
+        action: 'auto_recover' as const,
+        candidates: [],
+        issues: [],
+        projectId: durableProject.id,
+        recoveredRevision: null,
+        stableSnapshotId: 'stable-3',
+        targetRevision: null,
+      })),
+      importPack: vi.fn(),
+      openProject: vi.fn(async () => ({
+        currentRevision: 4,
+        mode: 'write' as const,
+        project: durableProject,
+        projectId: durableProject.id,
+        projectName: durableProject.name,
+        sessionId: 'desktop-session',
+        stableSnapshotId: 'stable-3',
+        stableSnapshotRevision: 3,
+      })),
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge);
+
+    const hydrated = await client.hydrate();
+    const result = await client.commit({
+      baseRevision: hydrated.revision,
+      kind: 'canvas',
+      nextProject: { ...durableProject, name: 'After current head' },
+      previousProject: durableProject,
+      projectId: durableProject.id,
+      transaction: {
+        id: 'tx-after-hydrate-head',
+        label: 'After current head',
+        operations: [{
+          kind: 'replace_canvas_state',
+          nodes: durableProject.nodes,
+          edges: durableProject.edges,
+        }],
+      },
+    });
+
+    expect(hydrated.revision).toBe(4);
+    expect(bridge.commit).toHaveBeenCalledWith(expect.objectContaining({ baseRevision: 4 }));
+    expect(result).toMatchObject({ ok: true, revision: 5 });
+  });
+
   it('maps desktop snapshot ids to opaque recovery candidate ids before restore', async () => {
     const durableProject = createStarterProject();
     const restoredProject = { ...durableProject, name: 'Restored from bridge' };
@@ -136,6 +197,7 @@ describe('desktop persistence', () => {
       })),
       importPack: vi.fn(),
       openProject: vi.fn(async () => ({
+        currentRevision: 3,
         mode: 'write' as const,
         project: durableProject,
         projectId: durableProject.id,
@@ -145,6 +207,7 @@ describe('desktop persistence', () => {
         stableSnapshotRevision: 3,
       })),
       restore: vi.fn(async () => ({
+        currentRevision: 4,
         mode: 'write' as const,
         project: restoredProject,
         projectId: durableProject.id,
@@ -188,6 +251,7 @@ describe('desktop persistence', () => {
       })),
       importPack: vi.fn(),
       openProject: vi.fn(async () => ({
+        currentRevision: 7,
         mode: 'read_only' as const,
         project: bridgeProject,
         projectId: bridgeProject.id,

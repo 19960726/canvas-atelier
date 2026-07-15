@@ -16,6 +16,7 @@ import {
   type SnapshotEnvelope,
 } from './contracts.js';
 import { createPersistenceError } from './journal-writer.js';
+import { readSnapshotEnvelope } from './snapshot-scheduler.js';
 
 export interface NovusPackExportResult {
   readonly inventory: readonly NovusPackInventoryEntry[];
@@ -118,8 +119,8 @@ export class NovusPackExporter {
     if (manifest.stableSnapshotPath === null || manifest.stableSnapshotId === null) {
       throw packageValidationError('Project has no stable snapshot to export');
     }
-    const snapshot = parseSnapshotEnvelope(
-      await readJson(join(projectRoot, ...manifest.stableSnapshotPath.split('/'))),
+    const snapshot = await readPackageSnapshotEnvelope(
+      join(projectRoot, ...manifest.stableSnapshotPath.split('/')),
       manifest,
     );
     const referencedAssetIds = collectAssetIds(snapshot.project);
@@ -478,8 +479,8 @@ async function validateExtractedPackage(
   ) {
     throw packageValidationError('Package project manifest does not match package manifest');
   }
-  const snapshot = parseSnapshotEnvelope(
-    await readJson(join(stagingRoot, ...packageManifest.snapshotPath.split('/'))),
+  const snapshot = await readPackageSnapshotEnvelope(
+    join(stagingRoot, ...packageManifest.snapshotPath.split('/')),
     projectManifest,
   );
   const referencedAssetIds = collectAssetIds(snapshot.project);
@@ -672,7 +673,14 @@ function parseProjectManifest(value: unknown): ProjectManifest {
   return value as unknown as ProjectManifest;
 }
 
-function parseSnapshotEnvelope(value: unknown, manifest: ProjectManifest): SnapshotEnvelope {
+async function readPackageSnapshotEnvelope(path: string, manifest: ProjectManifest): Promise<SnapshotEnvelope> {
+  let value: SnapshotEnvelope;
+  try {
+    value = await readSnapshotEnvelope(path);
+  } catch (error) {
+    throw packageValidationError('Snapshot schema is invalid');
+  }
+
   if (!isPlainRecord(value)) {
     throw packageValidationError('Snapshot must be an object');
   }

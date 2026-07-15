@@ -46,6 +46,39 @@ describe('AssetStore', () => {
     expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(pngBytes);
   });
 
+  it('promotes staged bytes with atomic rename instead of hard links', async () => {
+    vi.resetModules();
+    const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const link = vi.fn(async () => {
+      throw new Error('hard links are forbidden for asset promotion');
+    });
+    const rename = vi.fn(async (source: string, destination: string) => actualFs.rename(source, destination));
+    const projectRoot = await createProjectRoot(tempRoots);
+
+    vi.doMock('node:fs/promises', () => ({
+      ...actualFs,
+      link,
+      rename,
+    }));
+
+    try {
+      const { AssetStore: MockedAssetStore } = await import('./asset-store');
+      const asset = await new MockedAssetStore().stageAndCommit(projectRoot, readableFrom(pngBytes), {
+        originalName: 'reference.png',
+      });
+
+      expect(link).not.toHaveBeenCalled();
+      expect(rename).toHaveBeenCalledWith(
+        expect.stringContaining('.staging-'),
+        join(projectRoot, asset.relativePath),
+      );
+      expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(pngBytes);
+    } finally {
+      vi.doUnmock('node:fs/promises');
+      vi.resetModules();
+    }
+  });
+
   it('rejects unsupported extensions and removes staged bytes', async () => {
     const projectRoot = await createProjectRoot(tempRoots);
     const store = new AssetStore();

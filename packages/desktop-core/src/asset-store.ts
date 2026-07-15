@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
-import { access, link, mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises';
+import { access, mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, extname, join, parse } from 'node:path';
 
 import { createPersistenceError } from './journal-writer.js';
@@ -92,11 +92,12 @@ export class AssetStore {
       };
 
       if (!resolvedAsset.exists) {
-        await link(tempPath, resolvedAsset.finalPath);
+        await rename(tempPath, resolvedAsset.finalPath);
+        closed = true;
       } else {
         await access(resolvedAsset.finalPath, constants.R_OK);
+        await rm(tempPath, { force: true });
       }
-      await rm(tempPath, { force: true });
 
       try {
         await options.commitReference?.(asset);

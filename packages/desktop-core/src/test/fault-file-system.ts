@@ -140,7 +140,6 @@ export class FaultFileSystem implements FileSystem {
 }
 
 class FaultAppendHandle implements FileHandleLike {
-  private buffered: string | Uint8Array | null = null;
   private readonly delegate: FileHandleLike;
   private readonly faults: FaultFileSystem;
 
@@ -154,11 +153,6 @@ class FaultAppendHandle implements FileHandleLike {
   }
 
   async sync(): Promise<void> {
-    if (this.buffered !== null) {
-      await this.faults.checkpoint('after_append_before_sync');
-      await this.delegate.writeFile(this.buffered);
-      this.buffered = null;
-    }
     await this.delegate.sync();
   }
 
@@ -179,7 +173,8 @@ class FaultAppendHandle implements FileHandleLike {
     }
 
     if (this.faults.isArmedAt('after_append_before_sync')) {
-      this.buffered = data;
+      await this.delegate.writeFile(data);
+      await this.faults.checkpoint('after_append_before_sync');
       return;
     }
 

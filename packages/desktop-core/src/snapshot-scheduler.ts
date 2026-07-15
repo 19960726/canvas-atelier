@@ -22,6 +22,8 @@ import {
   createPersistenceError,
   readValidJournal,
   runJournalMaintenance,
+  writeJournalCommitBoundary,
+  writeInitialJournalCommitBoundary,
 } from './journal-writer.js';
 import type { OpenedProjectSession } from './project-repository.js';
 import {
@@ -210,6 +212,7 @@ export class SnapshotScheduler {
     }, async (maintenance) => {
       const journal = await readValidJournal(activeJournalPath, {
         baseRevision: manifest.stableSnapshotRevision,
+        committedOnly: true,
         expectedProjectId: manifest.projectId,
         fileSystem: this.fileSystem,
         firstSequence: manifest.nextSequence,
@@ -228,6 +231,12 @@ export class SnapshotScheduler {
       const archivePath = join(root, ...archiveSegment.split('/'));
       await this.fileSystem.rename(activeJournalPath, archivePath);
       await writeAtomic(this.fileSystem, activeJournalPath, '');
+      await writeInitialJournalCommitBoundary(this.fileSystem, activeJournalPath, {
+        baseRevision: targetRevision,
+        nextSequence: targetSequence + 1,
+        projectId: manifest.projectId,
+        updatedAt: this.now().toISOString(),
+      });
       maintenance.advanceTo(targetRevision, targetSequence + 1);
 
       return {
@@ -322,13 +331,17 @@ export class SnapshotScheduler {
     }, async (maintenance) => {
       try {
         const archiveText = await this.fileSystem.readFile(rotated.archivePath, 'utf8');
-        const activeText = await this.fileSystem.readFile(activeJournalPath, 'utf8');
+        const rawActiveText = await this.fileSystem.readFile(activeJournalPath, 'utf8');
         const activeJournal = await readValidJournal(activeJournalPath, {
           baseRevision: rotated.targetRevision,
+          committedOnly: true,
           expectedProjectId: rotated.manifest.projectId,
           fileSystem: this.fileSystem,
           firstSequence: rotated.targetSequence + 1,
         });
+        const activeText = Buffer.from(rawActiveText, 'utf8')
+          .subarray(0, activeJournal.validBytes)
+          .toString('utf8');
         const mergedText = `${archiveText}${activeText}`;
         await writeAtomic(this.fileSystem, activeJournalPath, mergedText);
         const mergedJournal = await readValidJournal(activeJournalPath, {
@@ -338,6 +351,15 @@ export class SnapshotScheduler {
           firstSequence: rotated.manifest.nextSequence,
         });
         const lastRecord = mergedJournal.records[mergedJournal.records.length - 1];
+        await writeJournalCommitBoundary(this.fileSystem, activeJournalPath, {
+          baseRevision: rotated.manifest.stableSnapshotRevision,
+          committedBytes: Buffer.byteLength(mergedText, 'utf8'),
+          firstSequence: rotated.manifest.nextSequence,
+          lastRevision: lastRecord?.revision ?? rotated.manifest.stableSnapshotRevision,
+          nextSequence: (lastRecord?.sequence ?? rotated.manifest.nextSequence - 1) + 1,
+          projectId: rotated.manifest.projectId,
+          updatedAt: this.now().toISOString(),
+        });
         maintenance.advanceTo(
           lastRecord?.revision ?? rotated.manifest.stableSnapshotRevision,
           (lastRecord?.sequence ?? rotated.manifest.nextSequence - 1) + 1,

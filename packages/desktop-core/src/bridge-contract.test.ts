@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { CanvasProject } from '@agent-canvas/domain';
 
 import type { CommitRequest } from './contracts';
-import type { OpenedProjectSession } from './project-repository';
+import { releaseJournalState } from './journal-writer';
+import { NodeFileSystem } from './file-system';
+import { ProjectRepository, type OpenedProjectSession } from './project-repository';
 import { createDesktopBridgeHandlers } from './bridge-handlers';
+import { SnapshotScheduler } from './snapshot-scheduler';
 import {
   createPreloadApi,
   createSafeModePreloadApi,
@@ -118,6 +121,198 @@ describe('desktop bridge contract', () => {
     });
   });
 
+  it('returns the active journal head revision when reopening newer-than-stable projects', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-head-'));
+    const projectRoot = join(tempRoot, 'HeadRevision.novus-project');
+    const repository = new ProjectRepository({
+      createId: createSequentialId('head'),
+      now: () => new Date('2026-07-14T00:00:00.000Z'),
+      processId: 5521,
+    });
+    const created = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: starterProject.id,
+      projectName: starterProject.name,
+    });
+    const writer = await repository.openJournalWriter(created);
+    await writer.commit(makeCreatePromptRequest(starterProject.id, 'tx-active-head', 0, 'prompt-active-head'));
+    releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), starterProject.id);
+    await rm(join(projectRoot, 'recovery', 'project.lock'), { force: true });
+
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => projectRoot),
+      },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+
+      expect(opened).toMatchObject({
+        currentRevision: 1,
+        stableSnapshotRevision: 0,
+      });
+      await expect(handlers.commit({}, {
+        ...makeCreatePromptRequest(starterProject.id, 'tx-after-reopen', opened!.currentRevision, 'prompt-after-reopen'),
+        sessionId: opened!.sessionId,
+      })).resolves.toMatchObject({ revision: 2, sequence: 2 });
+    } finally {
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('runs snapshot scheduling after agent commits', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-schedule-'));
+    const projectRoot = join(tempRoot, 'Scheduled.novus-project');
+    await mkdir(join(projectRoot, 'journal'), { recursive: true });
+    const session = createOpenedSession(projectRoot);
+    await writeFile(join(projectRoot, 'journal', 'active.ndjson'), '', 'utf8');
+    await writeFile(join(projectRoot, 'project.novus.json'), `${JSON.stringify(session.manifest)}\n`, 'utf8');
+    const commit = vi.fn(async () => ({
+      committedAt: '2026-07-14T00:00:00.000Z',
+      projectId: starterProject.id,
+      revision: 3,
+      sequence: 3,
+      transactionId: 'tx-agent-scheduled',
+    }));
+    const consider = vi.fn(() => ({ reason: 'agent_transaction' as const }));
+    const flush = vi.fn(async () => ({
+      path: 'snapshots/s-3-agent.json.gz',
+      reason: 'agent_transaction' as const,
+      revision: 3,
+      snapshotId: 's-3-agent',
+    }));
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => projectRoot),
+      },
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => session),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => starterProject),
+      },
+      snapshotScheduler: { consider, flush } as unknown as SnapshotScheduler,
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      await handlers.commit({}, {
+        ...makeCreatePromptRequest(starterProject.id, 'tx-agent-scheduled', 2, 'prompt-agent-scheduled'),
+        kind: 'agent',
+        sessionId: opened!.sessionId,
+      });
+
+      expect(consider).toHaveBeenCalledWith(
+        expect.objectContaining({ root: session.root }),
+        expect.objectContaining({
+          lastTransactionKind: 'agent',
+          pendingChanges: true,
+          transactionCount: 1,
+        }),
+      );
+      expect(flush).toHaveBeenCalledWith(expect.objectContaining({ root: session.root }), { reason: 'agent_transaction' });
+    } finally {
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('flushes a dirty write session on close before marking clean and removing the lock', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-close-'));
+    const projectRoot = join(tempRoot, 'CloseFlush.novus-project');
+    const fileSystem = new NodeFileSystem();
+    const repository = new ProjectRepository({
+      createId: createSequentialId('close'),
+      fileSystem,
+      now: () => new Date('2026-07-14T00:00:00.000Z'),
+      processId: 6521,
+    });
+    const initial = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: starterProject.id,
+      projectName: starterProject.name,
+    });
+    await repository.close(initial);
+
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => projectRoot),
+      },
+      fileSystem,
+      repository: {
+        close: (session) => repository.close(session),
+        open: (root, options) => repository.open(root, options),
+        openJournalWriter: (session) => repository.openJournalWriter(session),
+        readCurrentProject: (session) => repository.readCurrentProject(session),
+      },
+      snapshotScheduler: new SnapshotScheduler({
+        fileSystem,
+        worker: (input) => SnapshotScheduler.defaultWorker(input),
+      }),
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      await handlers.commit({}, {
+        ...makeCreatePromptRequest(starterProject.id, 'tx-close-flush', opened!.currentRevision, 'prompt-close-flush'),
+        sessionId: opened!.sessionId,
+      });
+      await handlers.closeProject({}, { sessionId: opened!.sessionId });
+
+      const manifest = JSON.parse(await readFile(join(projectRoot, 'project.novus.json'), 'utf8')) as {
+        cleanClose: boolean;
+        stableSnapshotPath: string;
+        stableSnapshotRevision: number;
+      };
+      const cleanClose = JSON.parse(await readFile(join(projectRoot, 'recovery', 'clean-close.json'), 'utf8')) as {
+        clean: boolean;
+      };
+
+      expect(manifest).toMatchObject({
+        cleanClose: true,
+        stableSnapshotRevision: 1,
+      });
+      expect(manifest.stableSnapshotPath).toMatch(/^snapshots\/s-1-[a-f0-9]{8}\.json\.gz$/);
+      expect(cleanClose.clean).toBe(true);
+      expect(await readFile(join(projectRoot, 'journal', 'active.ndjson'), 'utf8')).toBe('');
+      await expect(access(join(projectRoot, 'recovery', 'project.lock'))).rejects.toThrow();
+    } finally {
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('closes all active bridge sessions for main-process shutdown', async () => {
+    const close = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn()
+          .mockResolvedValueOnce('C:\\redacted\\One.novus-project')
+          .mockResolvedValueOnce('C:\\redacted\\Two.novus-project'),
+      },
+      repository: {
+        close,
+        open: vi.fn()
+          .mockResolvedValueOnce(createOpenedSession('C:\\redacted\\One.novus-project'))
+          .mockResolvedValueOnce(createOpenedSession('C:\\redacted\\Two.novus-project')),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => starterProject),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(),
+      } as unknown as SnapshotScheduler,
+    });
+
+    const first = await handlers.openProject({}, { mode: 'write' });
+    const second = await handlers.openProject({}, { mode: 'write' });
+    await handlers.closeAllProjects();
+
+    expect(close).toHaveBeenCalledTimes(2);
+    await expect(handlers.closeProject({}, { sessionId: first!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+    await expect(handlers.closeProject({}, { sessionId: second!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+  });
+
   it('returns the restored desktop-owned project after recovery restore', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-'));
     const projectRoot = join(tempRoot, 'Demo.novus-project');
@@ -208,5 +403,39 @@ function createOpenedSession(root = 'C:\\redacted\\Demo.novus-project'): OpenedP
     },
     mode: 'write',
     root,
+  };
+}
+
+function createSequentialId(prefix: string): () => string {
+  let next = 0;
+  return () => `${prefix}-${++next}`;
+}
+
+function makeCreatePromptRequest(
+  projectId: string,
+  transactionId: string,
+  baseRevision: number,
+  nodeId: string,
+): CommitRequest {
+  return {
+    baseRevision,
+    kind: 'canvas',
+    projectId,
+    transaction: {
+      id: transactionId,
+      label: `create ${nodeId}`,
+      operations: [{
+        kind: 'canvas',
+        operation: {
+          kind: 'create_node',
+          node: {
+            id: nodeId,
+            type: 'prompt',
+            position: { x: 0, y: 0 },
+            data: { prompt: `Prompt ${nodeId}`, requirementIds: [] },
+          },
+        },
+      }],
+    },
   };
 }

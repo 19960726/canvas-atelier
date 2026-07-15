@@ -122,6 +122,7 @@ export interface BridgeSessionSummary {
   readonly projectId: string;
   readonly projectName: string;
   readonly mode: 'write' | 'read_only';
+  readonly currentRevision: number;
   readonly stableSnapshotId: string | null;
   readonly stableSnapshotRevision: number;
   readonly project: CanvasProject;

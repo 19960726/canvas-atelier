@@ -4,17 +4,21 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 
 import type archiver from 'archiver';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { sha256Canonical } from './canonical-json';
+import { canonicalJson, sha256Canonical } from './canonical-json';
 import { PROJECT_FORMAT_VERSION, SNAPSHOT_SCHEMA_VERSION, type ProjectManifest, type SnapshotEnvelope } from './contracts';
 import {
   NovusPackExporter,
   NovusPackImporter,
   redactNovusPackDiagnostics,
 } from './novus-pack';
+
+const gzipAsync = promisify(gzip);
 
 describe('NovusPack export and import', () => {
   const tempRoots: string[] = [];
@@ -75,6 +79,28 @@ describe('NovusPack export and import', () => {
     });
     await expect(new NovusPackImporter().importTo(packagePath, destination))
       .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+  });
+
+  it('exports and imports scheduler-created gzip stable snapshots', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const { asset, projectRoot, snapshotPath } = await createProjectFixture(tempRoot, { gzipSnapshot: true });
+    const packagePath = join(tempRoot, 'gzip-stable.novuspack');
+    const destination = join(tempRoot, 'ImportedGzip.novus-project');
+
+    const exported = await new NovusPackExporter().exportRevision(projectRoot, packagePath);
+    const entries = await readZipEntries(packagePath);
+    const imported = await new NovusPackImporter().importTo(packagePath, destination);
+    const importedManifest = JSON.parse(await readFile(join(destination, 'project.novus.json'), 'utf8')) as ProjectManifest;
+
+    expect(exported).toMatchObject({ pinnedRevision: 7 });
+    expect(entries.has(snapshotPath)).toBe(true);
+    expect(entries.has(asset.relativePath)).toBe(true);
+    expect(imported).toMatchObject({ importedRevision: 7, projectRoot: destination });
+    expect(importedManifest).toMatchObject({
+      stableSnapshotPath: snapshotPath,
+      stableSnapshotRevision: 7,
+    });
+    expect(await readFile(join(destination, ...snapshotPath.split('/')))).toEqual(entries.get(snapshotPath));
   });
 
   it.each(['../escape.txt', 'C:/escape.txt', '/escape.txt', '//server/share/escape.txt', 'safe\\escape.txt'])(
@@ -358,9 +384,10 @@ type ZipEntryInput = {
   readonly name: string;
 };
 
-async function createProjectFixture(tempRoot: string): Promise<{
+async function createProjectFixture(tempRoot: string, options: { gzipSnapshot?: boolean } = {}): Promise<{
   asset: { bytes: Buffer; id: string; relativePath: string };
   projectRoot: string;
+  snapshotPath: string;
 }> {
   const projectRoot = join(tempRoot, 'Source.novus-project');
   const assetBytes = Buffer.from('asset-bytes');
@@ -393,6 +420,9 @@ async function createProjectFixture(tempRoot: string): Promise<{
     schemaVersion: SNAPSHOT_SCHEMA_VERSION,
     snapshotId: 'snapshot',
   };
+  const snapshotPath = options.gzipSnapshot
+    ? 'snapshots/s-7-gzstable.json.gz'
+    : 'snapshots/revision-7-snapshot.json';
   const manifest: ProjectManifest = {
     activeJournalSegment: 'journal/active.ndjson',
     assetInventory: {
@@ -406,7 +436,7 @@ async function createProjectFixture(tempRoot: string): Promise<{
     projectId: 'project-pack',
     projectName: 'Packable',
     stableSnapshotId: 'snapshot',
-    stableSnapshotPath: 'snapshots/revision-7-snapshot.json',
+    stableSnapshotPath: snapshotPath,
     stableSnapshotRevision: 7,
   };
 
@@ -416,7 +446,12 @@ async function createProjectFixture(tempRoot: string): Promise<{
   await writeFile(join(projectRoot, assetRelativePath), assetBytes);
   await writeFile(join(projectRoot, 'journal', 'active.ndjson'), '');
   await writeFile(join(projectRoot, 'project.novus.json'), `${JSON.stringify(manifest)}\n`);
-  await writeFile(join(projectRoot, 'snapshots', 'revision-7-snapshot.json'), `${JSON.stringify(snapshot)}\n`);
+  await writeFile(
+    join(projectRoot, ...snapshotPath.split('/')),
+    options.gzipSnapshot
+      ? await gzipAsync(`${canonicalJson(snapshot)}\n`)
+      : `${JSON.stringify(snapshot)}\n`,
+  );
 
   return {
     asset: {
@@ -425,6 +460,7 @@ async function createProjectFixture(tempRoot: string): Promise<{
       relativePath: assetRelativePath,
     },
     projectRoot,
+    snapshotPath,
   };
 }
 

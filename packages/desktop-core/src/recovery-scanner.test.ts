@@ -65,7 +65,7 @@ describe('RecoveryScanner', () => {
     const { appDataRoot, projectRoot, session, writer } = await createProject(tempRoots, 'project-corrupt-middle');
     await writer.commit(makeCreatePromptCommitRequest(session.manifest.projectId, 'tx-corrupt-1', 0, 'prompt-corrupt-1'));
     const activeJournal = join(projectRoot, 'journal', 'active.ndjson');
-    const damagedActive = `${await readFile(activeJournal, 'utf8')}not-json\n`;
+    const damagedActive = (await readFile(activeJournal, 'utf8')).replace('tx-corrupt-1', 'tx-corrupt-x');
     await writeFile(activeJournal, damagedActive, 'utf8');
 
     const result = await new RecoveryScanner({

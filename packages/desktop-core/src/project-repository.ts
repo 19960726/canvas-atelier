@@ -20,12 +20,18 @@ import {
   readValidJournal,
   releaseJournalState,
   replayJournal,
+  writeInitialJournalCommitBoundary,
   type JournalWriterSessionOptions,
 } from './journal-writer.js';
 import { readSnapshotEnvelope } from './snapshot-scheduler.js';
 
 type ProjectState = Record<string, unknown>;
 type ProcessLiveness = boolean | 'unknown';
+
+interface CurrentProjectState {
+  readonly project: ProjectState;
+  readonly revision: number;
+}
 
 export const MAX_WIN7_PROJECT_ROOT_PATH_LENGTH = 180;
 
@@ -142,6 +148,12 @@ export class ProjectRepository {
       await this.verifySnapshot(root, snapshotPath, projectId, 0);
 
       await writeAtomic(this.fileSystem, join(root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), '');
+      await writeInitialJournalCommitBoundary(this.fileSystem, join(root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), {
+        baseRevision: 0,
+        nextSequence: 1,
+        projectId,
+        updatedAt: createdAt,
+      });
       await writeJsonAtomic(this.fileSystem, join(root, ...CLEAN_CLOSE_PATH.split('/')), {
         clean: false,
         closedAt: null,
@@ -284,6 +296,10 @@ export class ProjectRepository {
 
   async readCurrentProject(session: OpenedProjectSession): Promise<CanvasProject> {
     return this.readCurrentCanvasProject(session.root, session.manifest, 'Desktop bridge hydration');
+  }
+
+  async readCurrentRevision(session: OpenedProjectSession): Promise<number> {
+    return (await this.readCurrentProjectStateWithRevision(session.root, session.manifest)).revision;
   }
 
   private async tryAcquireWriteLock(root: string, projectId: string): Promise<LockDecision> {
@@ -448,17 +464,25 @@ export class ProjectRepository {
   }
 
   private async readCurrentProjectState(root: string, manifest: ProjectManifest): Promise<ProjectState> {
+    return (await this.readCurrentProjectStateWithRevision(root, manifest)).project;
+  }
+
+  private async readCurrentProjectStateWithRevision(root: string, manifest: ProjectManifest): Promise<CurrentProjectState> {
     const stableProject = await this.readStableProject(root, manifest);
     const activeJournalSegment = validateActiveJournalSegment(manifest.activeJournalSegment);
     const journal = await readValidJournal(join(root, ...activeJournalSegment.split('/')), {
       baseRevision: manifest.stableSnapshotRevision,
+      committedOnly: true,
       expectedProjectId: manifest.projectId,
       fileSystem: this.fileSystem,
       firstSequence: manifest.nextSequence,
     });
 
     if (journal.records.length === 0) {
-      return stableProject;
+      return {
+        project: stableProject,
+        revision: manifest.stableSnapshotRevision,
+      };
     }
 
     try {
@@ -466,11 +490,15 @@ export class ProjectRepository {
         stableProject,
         'Active journal replay',
       );
-      return replayJournal(
+      const replayed = replayJournal(
         stableCanvasProject,
         manifest.stableSnapshotRevision,
         journal.records,
-      ).project as ProjectState;
+      );
+      return {
+        project: replayed.project as ProjectState,
+        revision: replayed.revision,
+      };
     } catch (error) {
       if (isPersistenceError(error)) {
         throw error;

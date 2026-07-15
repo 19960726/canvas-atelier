@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { normalize, resolve } from 'node:path';
 
 import {
@@ -18,7 +19,7 @@ import {
   type PersistenceError,
   type PersistenceErrorCode,
 } from './contracts.js';
-import { NodeFileSystem, type FileSystem } from './file-system.js';
+import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
 
 export interface JournalReadResult {
   readonly records: JournalRecord[];
@@ -28,6 +29,7 @@ export interface JournalReadResult {
 
 export interface JournalReadOptions {
   readonly baseRevision?: number;
+  readonly committedOnly?: boolean;
   readonly expectedProjectId?: string;
   readonly fileSystem?: FileSystem;
   readonly firstSequence?: number;
@@ -76,7 +78,21 @@ interface ReplayResult {
 
 type JournalRecordPayload = Omit<JournalRecord, 'payloadSha256'>;
 
+interface JournalCommitBoundary {
+  readonly schemaVersion: 1;
+  readonly baseRevision: number;
+  readonly committedBytes: number;
+  readonly firstSequence: number;
+  readonly journalSha256: string;
+  readonly lastRevision: number;
+  readonly nextSequence: number;
+  readonly projectId: string;
+  readonly updatedAt: string;
+}
+
 interface JournalState {
+  baseRevision: number;
+  firstSequence: number;
   readonly idempotencyByTransactionId: Map<string, IdempotencyEntry>;
   readonly projectId: string;
   currentRevision: number;
@@ -234,8 +250,8 @@ export class JournalWriter {
     const preAppendByteLength = await readJournalByteLength(this.fileSystem, this.activeJournalPath);
     this.ensureRegistryEntryActive();
     let appendAttempted = false;
+    let boundaryUpdated = false;
     let handle: Awaited<ReturnType<FileSystem['open']>> | null = null;
-    let synced = false;
     try {
       handle = await this.fileSystem.open(this.activeJournalPath, 'a+');
       this.ensureRegistryEntryActive();
@@ -245,9 +261,18 @@ export class JournalWriter {
         await options.syncGate.wait();
       }
       await handle.sync();
-      synced = true;
+      await writeJournalCommitBoundary(this.fileSystem, this.activeJournalPath, {
+        baseRevision: state.baseRevision,
+        committedBytes: preAppendByteLength + Buffer.byteLength(line, 'utf8'),
+        firstSequence: state.firstSequence,
+        lastRevision: record.revision,
+        nextSequence: record.sequence + 1,
+        projectId: this.projectId,
+        updatedAt: record.committedAt,
+      });
+      boundaryUpdated = true;
     } catch (error) {
-      if (handle !== null && appendAttempted && !synced) {
+      if (handle !== null && appendAttempted && !boundaryUpdated) {
         const rollbackError = await rollbackJournalAppend(
           this.fileSystem,
           this.activeJournalPath,
@@ -359,7 +384,9 @@ export async function runJournalMaintenance<T>(
       },
       projectId: options.projectId,
       advanceTo(revision: number, nextSequence: number) {
+        state.baseRevision = revision;
         state.currentRevision = revision;
+        state.firstSequence = nextSequence;
         state.nextSequence = nextSequence;
       },
       poison(error: PersistenceError) {
@@ -428,10 +455,12 @@ async function initializeJournalState(
 ): Promise<JournalState> {
   const journal = await readValidJournal(options.activeJournalPath, {
     baseRevision: options.baseRevision,
+    committedOnly: true,
     expectedProjectId: options.projectId,
     fileSystem,
     firstSequence: options.nextSequence,
   });
+  await truncateUncommittedJournalTail(fileSystem, options.activeJournalPath, journal.validBytes);
   const idempotencyByTransactionId = new Map<string, IdempotencyEntry>();
   let currentRevision = options.baseRevision;
   let nextSequence = options.nextSequence;
@@ -446,7 +475,9 @@ async function initializeJournalState(
   }
 
   return {
+    baseRevision: options.baseRevision,
     currentRevision,
+    firstSequence: options.nextSequence,
     idempotencyByTransactionId,
     nextSequence,
     poisonedError: null,
@@ -491,6 +522,25 @@ async function readJournalByteLength(
   }
 
   return stats.size;
+}
+
+async function truncateUncommittedJournalTail(
+  fileSystem: FileSystem,
+  activeJournalPath: string,
+  committedBytes: number,
+): Promise<void> {
+  const byteLength = await readJournalByteLength(fileSystem, activeJournalPath);
+  if (byteLength === committedBytes) {
+    return;
+  }
+  if (byteLength < committedBytes) {
+    throw corruptJournal('Journal is shorter than its durable commit boundary');
+  }
+
+  if (fileSystem.truncate === undefined) {
+    throw corruptJournal('Journal has an uncommitted tail that cannot be truncated');
+  }
+  await fileSystem.truncate(activeJournalPath, committedBytes);
 }
 
 async function rollbackJournalAppend(
@@ -555,11 +605,21 @@ export async function readValidJournal(
 ): Promise<JournalReadResult> {
   const fileSystem = options.fileSystem ?? new NodeFileSystem();
   const raw = await fileSystem.readFile(activeJournalPath, 'utf8');
-  const complete = raw.length === 0 || raw.endsWith('\n');
+  const boundary = options.committedOnly === true
+    ? await readJournalCommitBoundary(fileSystem, activeJournalPath)
+    : null;
+  const rawBytes = Buffer.byteLength(raw, 'utf8');
+  const rawToParse = boundary === null
+    ? raw
+    : journalTextInsideBoundary(raw, rawBytes, boundary, options);
+  const complete = rawToParse.length === 0 || rawToParse.endsWith('\n');
   const tailStatus = complete ? 'complete' : 'partial_final_line';
-  const lastCompleteLineEnd = complete ? raw.length : raw.lastIndexOf('\n') + 1;
-  const validText = raw.slice(0, lastCompleteLineEnd);
-  const validBytes = Buffer.byteLength(validText, 'utf8');
+  const lastCompleteLineEnd = complete ? rawToParse.length : rawToParse.lastIndexOf('\n') + 1;
+  const validText = rawToParse.slice(0, lastCompleteLineEnd);
+  const boundaryTailStatus = boundary !== null && rawBytes > boundary.committedBytes
+    ? 'partial_final_line'
+    : tailStatus;
+  const validBytes = boundary?.committedBytes ?? Buffer.byteLength(validText, 'utf8');
   const lines = validText.length === 0 ? [] : validText.slice(0, -1).split('\n');
   const records: JournalRecord[] = [];
   const expectedFirstSequence = options.firstSequence ?? 1;
@@ -583,7 +643,28 @@ export async function readValidJournal(
     records.push(record);
   }
 
-  return { records, tailStatus, validBytes };
+  return { records, tailStatus: boundaryTailStatus, validBytes };
+}
+
+export async function writeInitialJournalCommitBoundary(
+  fileSystem: FileSystem,
+  activeJournalPath: string,
+  options: {
+    readonly baseRevision: number;
+    readonly nextSequence: number;
+    readonly projectId: string;
+    readonly updatedAt: string;
+  },
+): Promise<void> {
+  await writeJournalCommitBoundary(fileSystem, activeJournalPath, {
+    baseRevision: options.baseRevision,
+    committedBytes: 0,
+    firstSequence: options.nextSequence,
+    lastRevision: options.baseRevision,
+    nextSequence: options.nextSequence,
+    projectId: options.projectId,
+    updatedAt: options.updatedAt,
+  });
 }
 
 export function replayJournal(
@@ -662,6 +743,126 @@ function parseJournalLine(line: string): JournalRecord {
   }
 
   return parseJournalPayload(payload, payloadSha256);
+}
+
+async function readJournalCommitBoundary(
+  fileSystem: FileSystem,
+  activeJournalPath: string,
+): Promise<JournalCommitBoundary | null> {
+  let raw: string;
+  try {
+    raw = await fileSystem.readFile(journalCommitBoundaryPath(activeJournalPath), 'utf8');
+  } catch {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isJournalCommitBoundary(parsed)) {
+      throw new Error('schema');
+    }
+    return parsed;
+  } catch (error) {
+    throw corruptJournal('Journal commit boundary is invalid', error);
+  }
+}
+
+export async function writeJournalCommitBoundary(
+  fileSystem: FileSystem,
+  activeJournalPath: string,
+  boundary: Omit<JournalCommitBoundary, 'journalSha256' | 'schemaVersion'>,
+): Promise<void> {
+  const bytes = await readFileBytes(fileSystem, activeJournalPath);
+  if (boundary.committedBytes > bytes.length) {
+    throw corruptJournal('Journal commit boundary exceeds journal length');
+  }
+
+  const durableBoundary: JournalCommitBoundary = {
+    ...boundary,
+    schemaVersion: 1,
+    journalSha256: sha256Bytes(bytes.subarray(0, boundary.committedBytes)),
+  };
+  await writeAtomic(
+    fileSystem,
+    journalCommitBoundaryPath(activeJournalPath),
+    `${canonicalJson(durableBoundary)}\n`,
+  );
+}
+
+function journalTextInsideBoundary(
+  raw: string,
+  rawBytes: number,
+  boundary: JournalCommitBoundary,
+  options: JournalReadOptions,
+): string {
+  const expectedProjectId = options.expectedProjectId ?? boundary.projectId;
+  const expectedBaseRevision = options.baseRevision ?? boundary.baseRevision;
+  const expectedFirstSequence = options.firstSequence ?? boundary.firstSequence;
+
+  if (
+    boundary.projectId !== expectedProjectId ||
+    boundary.baseRevision !== expectedBaseRevision ||
+    boundary.firstSequence !== expectedFirstSequence ||
+    boundary.committedBytes > rawBytes ||
+    boundary.lastRevision < boundary.baseRevision ||
+    boundary.nextSequence < boundary.firstSequence
+  ) {
+    throw corruptJournal('Journal commit boundary does not match expected chain');
+  }
+
+  const bytes = Buffer.from(raw, 'utf8');
+  const committedBytes = bytes.subarray(0, boundary.committedBytes);
+  if (sha256Bytes(committedBytes) !== boundary.journalSha256) {
+    throw corruptJournal('Journal commit boundary checksum is invalid');
+  }
+
+  const text = committedBytes.toString('utf8');
+  if (boundary.committedBytes > 0 && !text.endsWith('\n')) {
+    throw corruptJournal('Journal commit boundary does not end on a complete record');
+  }
+  return text;
+}
+
+async function readFileBytes(fileSystem: FileSystem, path: string): Promise<Buffer> {
+  if (fileSystem.readFileBuffer !== undefined) {
+    return Buffer.from(await fileSystem.readFileBuffer(path));
+  }
+  return Buffer.from(await fileSystem.readFile(path, 'latin1'), 'latin1');
+}
+
+function sha256Bytes(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function journalCommitBoundaryPath(activeJournalPath: string): string {
+  return `${activeJournalPath}.commit.json`;
+}
+
+function isJournalCommitBoundary(value: unknown): value is JournalCommitBoundary {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+  return (
+    value.schemaVersion === 1 &&
+    typeof value.projectId === 'string' &&
+    isNonNegativeInteger(value.baseRevision) &&
+    value.baseRevision >= 0 &&
+    isNonNegativeInteger(value.firstSequence) &&
+    value.firstSequence > 0 &&
+    isNonNegativeInteger(value.committedBytes) &&
+    value.committedBytes >= 0 &&
+    isNonNegativeInteger(value.lastRevision) &&
+    value.lastRevision >= 0 &&
+    isNonNegativeInteger(value.nextSequence) &&
+    value.nextSequence > 0 &&
+    typeof value.journalSha256 === 'string' &&
+    /^[a-f0-9]{64}$/.test(value.journalSha256) &&
+    typeof value.updatedAt === 'string'
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 function parseJournalPayload(

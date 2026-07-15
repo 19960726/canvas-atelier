@@ -191,6 +191,7 @@ export class RecoveryScanner {
       try {
         const read = await readValidJournal(journal.path, {
           baseRevision: revision,
+          committedOnly: journal.final,
           expectedProjectId: manifest.projectId,
           fileSystem: this.fileSystem,
           firstSequence: revision + 1,

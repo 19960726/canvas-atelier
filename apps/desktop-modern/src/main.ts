@@ -9,6 +9,7 @@ import {
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
   type BridgeDialogAdapter,
+  type DesktopBridgeHandlers,
 } from '@agent-canvas/desktop-core';
 
 const runtimeChannel = 'modern' as const;
@@ -21,16 +22,16 @@ const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
 
 let mainWindow: BrowserWindow | null = null;
 let safeModeLoaded = false;
+let desktopHandlers: DesktopBridgeHandlers | null = null;
+let closeAllStarted = false;
 
 app.whenReady().then(async () => {
-  registerDesktopBridgeHandlers(
-    ipcMain,
-    createDesktopBridgeHandlers({
-      appDataRoot: app.getPath('userData'),
-      channel: runtimeChannel,
-      dialogs: createDialogAdapter(),
-    }),
-  );
+  desktopHandlers = createDesktopBridgeHandlers({
+    appDataRoot: app.getPath('userData'),
+    channel: runtimeChannel,
+    dialogs: createDialogAdapter(),
+  });
+  registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
   ipcMain.on(diagnosticsChannel, (_event, message) => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
   });
@@ -48,6 +49,16 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', (event) => {
+  if (desktopHandlers === null || closeAllStarted) {
+    return;
+  }
+
+  event.preventDefault();
+  closeAllStarted = true;
+  void desktopHandlers.closeAllProjects().finally(() => app.quit());
 });
 
 async function createMainWindow(): Promise<void> {

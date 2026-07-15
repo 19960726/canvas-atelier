@@ -908,7 +908,11 @@ describe('ProjectRepository', () => {
       makeCreatePromptCommitRequest(source.manifest.projectId, 'tx-save-as-corrupt', 0, 'prompt-corrupt'),
     );
     const activeJournal = join(sourceRoot, 'journal', 'active.ndjson');
-    await writeFile(activeJournal, `${await readFile(activeJournal, 'utf8')}not-json\n`, 'utf8');
+    await writeFile(
+      activeJournal,
+      (await readFile(activeJournal, 'utf8')).replace('tx-save-as-corrupt', 'tx-save-as-tampered'),
+      'utf8',
+    );
 
     await expect(repository.saveAs(source, destinationRoot)).rejects.toMatchObject({
       code: 'CORRUPT_JOURNAL',

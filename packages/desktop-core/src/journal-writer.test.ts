@@ -189,6 +189,53 @@ describe('JournalWriter', () => {
     expect(replayed.project.nodes.map((node) => node.id)).toEqual(['prompt-1', 'prompt-2']);
   });
 
+  it('does not replay a complete valid record beyond the durable commit boundary', async () => {
+    const { activeJournal, writer } = await createWriter(tempRoots);
+    await writer.commit(makeRequest('tx-durable-ack', 0, makeCreatePromptTransaction('tx-durable-ack', 'prompt-acked')));
+    const committedText = await readFile(activeJournal, 'utf8');
+    const unacknowledgedRecord = signRecord({
+      schemaVersion: 1,
+      projectId: 'project-journal',
+      sequence: 2,
+      revision: 2,
+      transactionId: 'tx-complete-unacknowledged',
+      committedAt: baseNow.toISOString(),
+      kind: 'canvas',
+      label: 'create prompt-unacknowledged',
+      operations: makeCreatePromptTransaction('tx-complete-unacknowledged', 'prompt-unacknowledged').operations,
+    });
+    await writeFile(activeJournal, `${committedText}${canonicalJson(unacknowledgedRecord)}\n`, 'utf8');
+
+    resetJournalWriterRegistryForTests();
+    const read = await readValidJournal(activeJournal, {
+      baseRevision: 0,
+      committedOnly: true,
+      expectedProjectId: 'project-journal',
+      firstSequence: 1,
+    });
+    const replayed = replayJournal(makeProject(), 0, read.records);
+    const recovered = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+    const nextAck = await recovered.commit(
+      makeRequest('tx-after-unacknowledged', 1, makeCreatePromptTransaction('tx-after-unacknowledged', 'prompt-after')),
+    );
+
+    expect(read.records.map((record) => record.transactionId)).toEqual(['tx-durable-ack']);
+    expect(read.validBytes).toBe(Buffer.byteLength(committedText, 'utf8'));
+    expect(replayed).toMatchObject({ revision: 1 });
+    expect(replayed.project.nodes.map((node) => node.id)).toEqual(['prompt-acked']);
+    expect(nextAck).toMatchObject({ revision: 2, sequence: 2 });
+    expect((await readValidJournal(activeJournal)).records.map((record) => record.transactionId)).toEqual([
+      'tx-durable-ack',
+      'tx-after-unacknowledged',
+    ]);
+  });
+
   it('tolerates only an incomplete final line and reports validBytes', async () => {
     const { activeJournal, writer } = await createWriter(tempRoots);
     await writer.commit(makeRequest('tx-partial', 0));
