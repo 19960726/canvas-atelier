@@ -831,6 +831,34 @@ describe('ManagedKnowledgeStore', () => {
 
     await expect(store.listStates()).rejects.toThrow(/protected/i);
   });
+
+  it('rejects tampered public failure reasons on read', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+
+    const currentPath = managedKnowledgePaths(appDataRoot, configured.knowledgeRootId).currentPath;
+    const summary = await readJson<KnowledgeBaseStateSummary>(currentPath);
+    await writeFile(
+      currentPath,
+      `${JSON.stringify({
+        ...summary,
+        status: 'fallback',
+        lastFailure: {
+          failedAt: '2026-07-15T08:05:00.000Z',
+          reason: 'Authorization: Bearer secret',
+        },
+      })}\n`,
+      'utf8',
+    );
+
+    await expect(store.listStates()).rejects.toThrow(/protected/i);
+  });
 });
 
 function createSnapshot(content: string, version: number): KnowledgeSnapshot {

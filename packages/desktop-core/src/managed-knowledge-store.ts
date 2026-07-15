@@ -786,7 +786,7 @@ function normalizeLastFailure(
   }
 
   return {
-    reason: requireNonEmptyString(input.reason, 'reason'),
+    reason: sanitizePublicMetadata(input.reason, 'reason'),
     failedAt: requireDateString(input.failedAt, 'failedAt'),
   };
 }
