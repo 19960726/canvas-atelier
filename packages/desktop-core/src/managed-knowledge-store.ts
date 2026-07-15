@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { join, normalize, resolve, sep } from 'node:path';
+import { dirname, join, normalize, resolve, sep } from 'node:path';
 
 import {
   createKnowledgeSnapshotCandidate,
@@ -41,13 +41,15 @@ interface ConfigurationFile {
 export class ManagedKnowledgeStore {
   private static readonly writeLocks = new Map<string, Promise<void>>();
 
+  private readonly appDataRoot: string;
   private readonly fileSystem: FileSystem;
   private readonly knowledgeRoot: string;
   private readonly now: () => Date;
 
   constructor(options: ManagedKnowledgeStoreOptions) {
+    this.appDataRoot = resolve(options.appDataRoot);
     this.fileSystem = options.fileSystem ?? new NodeFileSystem();
-    this.knowledgeRoot = confinedJoin(resolve(options.appDataRoot), 'knowledge');
+    this.knowledgeRoot = confinedJoin(this.appDataRoot, 'knowledge');
     this.now = options.now ?? (() => new Date());
   }
 
@@ -89,6 +91,7 @@ export class ManagedKnowledgeStore {
       const snapshotPath = this.snapshotPath(configuration.knowledgeRootId, normalizedSnapshot.version, normalizedSnapshot.contentHash);
 
       await this.ensureKnowledgeDirectories(configuration.knowledgeRootId);
+      await this.assertManagedFileForWrite(snapshotPath);
       await writeAtomic(
         this.fileSystem,
         snapshotPath,
@@ -186,6 +189,7 @@ export class ManagedKnowledgeStore {
   private async readConfigurationFile(): Promise<ConfigurationFile> {
     const path = this.configurationFilePath();
     try {
+      await this.assertManagedFile(path);
       const raw = await this.fileSystem.readFile(path, 'utf8');
       return normalizeConfigurationFile(JSON.parse(raw) as ConfigurationFile);
     } catch (error) {
@@ -197,7 +201,8 @@ export class ManagedKnowledgeStore {
   }
 
   private async writeConfigurationFile(configurations: readonly InternalKnowledgeConfiguration[]): Promise<void> {
-    await this.fileSystem.mkdir(this.knowledgeRoot, { recursive: true });
+    await this.ensureManagedDirectory(this.knowledgeRoot);
+    await this.assertManagedFileForWrite(this.configurationFilePath());
     await writeAtomic(
       this.fileSystem,
       this.configurationFilePath(),
@@ -211,6 +216,7 @@ export class ManagedKnowledgeStore {
   private async readSummaryFile(knowledgeRootId: string): Promise<KnowledgeBaseStateSummary | null> {
     const path = this.currentMetadataPath(knowledgeRootId);
     try {
+      await this.assertManagedFile(path);
       const raw = await this.fileSystem.readFile(path, 'utf8');
       return normalizeSummary(JSON.parse(raw) as KnowledgeBaseStateSummary);
     } catch (error) {
@@ -226,6 +232,7 @@ export class ManagedKnowledgeStore {
     summary: KnowledgeBaseStateSummary,
   ): Promise<void> {
     await this.ensureKnowledgeDirectories(knowledgeRootId);
+    await this.assertManagedFileForWrite(this.currentMetadataPath(knowledgeRootId));
     await writeAtomic(
       this.fileSystem,
       this.currentMetadataPath(knowledgeRootId),
@@ -234,12 +241,9 @@ export class ManagedKnowledgeStore {
   }
 
   private async ensureKnowledgeDirectories(knowledgeRootId: string): Promise<void> {
-    await this.fileSystem.mkdir(this.knowledgeRoot, { recursive: true });
-    await this.fileSystem.mkdir(this.knowledgeBaseDirectory(knowledgeRootId), { recursive: true });
-    await this.fileSystem.mkdir(this.snapshotDirectory(knowledgeRootId), { recursive: true });
-    await this.assertManagedDirectory(this.knowledgeRoot);
-    await this.assertManagedDirectory(this.knowledgeBaseDirectory(knowledgeRootId));
-    await this.assertManagedDirectory(this.snapshotDirectory(knowledgeRootId));
+    await this.ensureManagedDirectory(this.knowledgeRoot);
+    await this.ensureManagedDirectory(this.knowledgeBaseDirectory(knowledgeRootId));
+    await this.ensureManagedDirectory(this.snapshotDirectory(knowledgeRootId));
   }
 
   private async readSnapshotFile(
@@ -256,6 +260,7 @@ export class ManagedKnowledgeStore {
     const snapshotPath = this.snapshotPath(knowledgeRootId, metadata.version, metadata.contentHash);
     let raw: string;
     try {
+      await this.assertManagedFile(snapshotPath);
       raw = await this.fileSystem.readFile(snapshotPath, 'utf8');
     } catch (error) {
       if (isMissingFileError(error)) {
@@ -276,6 +281,20 @@ export class ManagedKnowledgeStore {
     return snapshot;
   }
 
+  private async ensureManagedDirectory(path: string): Promise<void> {
+    try {
+      await this.assertManagedDirectory(path);
+      return;
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
+    }
+
+    await this.fileSystem.mkdir(path, { recursive: true });
+    await this.assertManagedDirectory(path);
+  }
+
   private async assertManagedDirectory(path: string): Promise<void> {
     const lstat = await this.requireFileSystemMethod('lstat', this.fileSystem.lstat).call(this.fileSystem, path);
     if (
@@ -286,10 +305,39 @@ export class ManagedKnowledgeStore {
       throw new Error('Managed knowledge directory escaped its managed root');
     }
 
+    await this.assertRealManagedPath(path);
+  }
+
+  private async assertManagedFile(path: string): Promise<void> {
+    const lstat = await this.requireFileSystemMethod('lstat', this.fileSystem.lstat).call(this.fileSystem, path);
+    if (
+      typeof lstat.isFile !== 'function' ||
+      !lstat.isFile() ||
+      lstat.isSymbolicLink?.()
+    ) {
+      throw new Error('Managed knowledge directory escaped its managed root');
+    }
+    await this.assertRealManagedPath(path);
+  }
+
+  private async assertManagedFileForWrite(path: string): Promise<void> {
+    await this.assertManagedDirectory(dirname(path));
+    try {
+      await this.assertManagedFile(path);
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async assertRealManagedPath(path: string): Promise<void> {
     const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
-    const realRoot = normalize(await realpath.call(this.fileSystem, this.knowledgeRoot));
+    const realAppDataRoot = normalize(await realpath.call(this.fileSystem, this.appDataRoot));
+    const realKnowledgeRoot = normalize(resolve(realAppDataRoot, 'knowledge'));
     const realTarget = normalize(await realpath.call(this.fileSystem, path));
-    if (!isWithinDirectory(realRoot, realTarget)) {
+    if (!isWithinDirectory(realKnowledgeRoot, realTarget)) {
       throw new Error('Managed knowledge directory escaped its managed root');
     }
   }

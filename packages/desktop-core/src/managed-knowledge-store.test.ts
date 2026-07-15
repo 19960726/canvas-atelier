@@ -264,6 +264,122 @@ describe('ManagedKnowledgeStore', () => {
     });
   });
 
+  it('rejects configuration writes when the knowledge root resolves outside app data', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const outsideRoot = join(tempRoot, 'outside');
+    const paths = managedKnowledgePaths(appDataRoot, 'unused');
+    await mkdir(outsideRoot, { recursive: true });
+    const redirectedStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new RedirectedManagedPathFileSystem({
+        redirects: [{
+          actualPath: outsideRoot,
+          lexicalPath: paths.knowledgeRoot,
+        }],
+      }),
+    });
+
+    await expect(redirectedStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    })).rejects.toThrow(/managed knowledge/i);
+    expect(await readdir(outsideRoot)).toEqual([]);
+  });
+
+  it('rejects publish before creating children inside a redirected knowledge-base directory', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const outsideRoot = join(tempRoot, 'outside');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+
+    const paths = managedKnowledgePaths(appDataRoot, configured.knowledgeRootId);
+    await mkdir(outsideRoot, { recursive: true });
+    const redirectedStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new RedirectedManagedPathFileSystem({
+        redirects: [{
+          actualPath: outsideRoot,
+          lexicalPath: paths.baseDir,
+        }],
+      }),
+    });
+
+    await expect(redirectedStore.publish(createSnapshot('# version 1', 1))).rejects.toThrow(/managed knowledge/i);
+    expect(await readdir(outsideRoot)).toEqual([]);
+  });
+
+  it('rejects current metadata file redirects outside the managed root', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const outsideRoot = join(tempRoot, 'outside');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    await store.publish(createSnapshot('# version 1', 1));
+
+    const paths = managedKnowledgePaths(appDataRoot, configured.knowledgeRootId);
+    await mkdir(outsideRoot, { recursive: true });
+    await writeFile(
+      join(outsideRoot, 'current.json'),
+      await readFile(paths.currentPath, 'utf8'),
+      'utf8',
+    );
+    const redirectedStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new RedirectedManagedPathFileSystem({
+        redirects: [{
+          actualPath: join(outsideRoot, 'current.json'),
+          lexicalPath: paths.currentPath,
+        }],
+      }),
+    });
+
+    await expect(redirectedStore.listStates()).rejects.toThrow(/managed knowledge/i);
+  });
+
+  it('rejects snapshot file redirects outside the managed root', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const outsideRoot = join(tempRoot, 'outside');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const snapshot = createSnapshot('# version 1', 1);
+    await store.publish(snapshot);
+
+    const redirectedSnapshot = snapshotPath(appDataRoot, configured.knowledgeRootId, snapshot);
+    await mkdir(outsideRoot, { recursive: true });
+    await writeFile(
+      join(outsideRoot, 'snapshot.json'),
+      await readFile(redirectedSnapshot, 'utf8'),
+      'utf8',
+    );
+    const redirectedStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new RedirectedManagedPathFileSystem({
+        redirects: [{
+          actualPath: join(outsideRoot, 'snapshot.json'),
+          lexicalPath: redirectedSnapshot,
+        }],
+      }),
+    });
+
+    await expect(redirectedStore.readActive('scene-skill')).rejects.toThrow(/managed knowledge/i);
+  });
+
   it('rejects rollback when the target snapshot file is missing and keeps current known-good', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');
