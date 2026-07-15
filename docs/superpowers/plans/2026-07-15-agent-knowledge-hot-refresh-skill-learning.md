@@ -142,7 +142,7 @@ git commit -m "feat: add agent knowledge leases"
 - Modify: `packages/domain/src/index.ts`
 
 **Interfaces:**
-- Produces `FeedbackObservations`, `SkillCandidateReviewStatus`, `createUserFeedbackMemory`, `reviewSkillPromotionCandidate`, and `rollbackSkillPromotionCandidate`.
+- Produces `FeedbackObservations`, `SkillCandidateReviewStatus`, exported `skillPromotionCandidateSchema`, `createUserFeedbackMemory`, `reviewSkillPromotionCandidate`, and `rollbackSkillPromotionCandidate`.
 
 - [ ] **Step 1: Write failing feedback and lifecycle tests**
 
@@ -312,7 +312,7 @@ git commit -m "feat: add managed knowledge snapshots"
 - Modify: `package-lock.json`
 
 **Interfaces:**
-- Produces `buildSkillPromotionCandidate`, `KnowledgeSnapshotSyncEnvelope`, `MemorySyncClient.uploadApprovedSnapshot`, and `MemorySyncClient.pullApprovedSnapshot`.
+- Produces `buildSkillPromotionCandidate`, `KnowledgeSnapshotSyncEnvelope`, `SkillKnowledgePromotionService`, `MemorySyncClient.uploadApprovedSnapshot`, and `MemorySyncClient.pullApprovedSnapshot`.
 
 - [ ] **Step 1: Write failing aggregation and sync tests**
 
@@ -369,6 +369,16 @@ export function buildSkillPromotionCandidate(
 ```
 
 Add approved snapshot endpoints at `/v1/knowledge-bases/:id/approved-snapshot`. Authorization exists only in request headers. Outbox transfer serialization includes snapshot id/hash metadata only, never document content or tokens.
+```ts
+export class SkillKnowledgePromotionService {
+  prepare(candidate: SkillPromotionCandidate, current: KnowledgeSnapshot): PreparedSkillPromotion;
+  approve(preparedId: string, approvalToken: string): Promise<ApprovedSkillPromotion>;
+  reject(preparedId: string, reviewedAt: string): SkillPromotionCandidate;
+  rollback(knowledgeBaseId: string, version: number, reviewedAt: string): Promise<KnowledgeBaseStateSummary>;
+}
+```
+
+`prepare` registers the exact diff hash with `SkillWritebackService`; `approve` revalidates the current snapshot, consumes the one-use token, publishes the managed snapshot, and only then marks the candidate approved.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -549,7 +559,7 @@ it('exposes knowledge methods without filesystem primitives', () => {
 
 it('rejects review for a missing active-project candidate', async () => {
   await expect(handlers.reviewSkillCandidate({}, {
-    sessionId: 'session-1', candidateId: 'missing', decision: 'approved',
+    projectId: 'project-1', candidateId: 'missing', decision: 'approved',
   })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
 });
 ```
@@ -571,7 +581,7 @@ export interface DesktopBridgeApi {
 }
 ```
 
-Configuration opens a native directory picker in main. Review resolves the candidate from the active session, issues and consumes scoped one-use approval internally, publishes the approved snapshot, and returns updated candidate plus state. Legacy and Modern start/stop one refresh service and forward state with `webContents.send`.
+Configuration opens a native directory picker in main. Review resolves exactly one active writable session by `projectId`, delegates to `SkillKnowledgePromotionService`, and returns the updated candidate plus public state. Renderer never receives or supplies the desktop session id for knowledge operations. Legacy and Modern start/stop one refresh service and forward state with `webContents.send`.
 
 - [ ] **Step 4: Verify GREEN and builds**
 
