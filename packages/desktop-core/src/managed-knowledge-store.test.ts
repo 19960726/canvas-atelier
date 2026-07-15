@@ -173,6 +173,31 @@ describe('ManagedKnowledgeStore', () => {
     });
   });
 
+  it('rejects protected metadata before it can enter public summaries', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+
+    await expect(store.publish({
+      ...createSnapshot('# version 1', 1),
+      sourceDeviceId: 'Authorization: Bearer secret',
+    })).rejects.toThrow(/protected/i);
+    await expect(store.publish({
+      ...createSnapshot('# version 2', 2),
+      displayName: 'C:\\Users\\Private\\skill',
+    })).rejects.toThrow(/protected/i);
+    await expect(store.listStates()).resolves.toEqual([expect.objectContaining({
+      activeVersion: null,
+      versionCount: 0,
+    })]);
+  });
+
   it('serializes concurrent publishes per knowledge base so versions are not lost', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');

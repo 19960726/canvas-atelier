@@ -680,6 +680,7 @@ function normalizeSnapshot(input: KnowledgeSnapshot): KnowledgeSnapshot {
   const version = requirePositiveInteger(input.version, 'version');
   const publishedAt = requireDateString(input.publishedAt, 'publishedAt');
   const sourceDeviceId = requireNonEmptyString(input.sourceDeviceId, 'sourceDeviceId');
+  scanProtectedMetadata([knowledgeBaseId, displayName, publishedAt, sourceDeviceId]);
   const documents = normalizeSnapshotDocuments(input.documents);
   const candidate = createKnowledgeSnapshotCandidate({
     knowledgeBaseId,
@@ -728,6 +729,24 @@ function normalizeSnapshotDocuments(input: unknown): KnowledgeSnapshot['document
       sha256: requireHash(document.sha256, 'sha256'),
     };
   }).sort((left, right) => compareStrings(left.relativePath, right.relativePath));
+}
+
+function scanProtectedMetadata(values: readonly string[]): void {
+  const protectedPattern = new RegExp([
+    String.raw`authorization\s*:`,
+    String.raw`bearer\s+[a-z0-9._-]+`,
+    String.raw`sk-[a-z0-9_-]{8,}`,
+    String.raw`ghp_[a-z0-9_]{8,}`,
+    String.raw`xox[baprs]-[a-z0-9-]{8,}`,
+    String.raw`data:image\/[a-z0-9.+-]+;base64,`,
+    String.raw`[a-z]:\\(?:users|documents and settings)\\`,
+    String.raw`\\\\[^\\\/]+\\[^\\\/]+`,
+    String.raw`\/(?:users|home|var|etc)\/`,
+  ].join('|'), 'iu');
+
+  if (values.some((value) => protectedPattern.test(value))) {
+    throw new Error('Managed knowledge metadata contains protected content');
+  }
 }
 
 function normalizeVersionSummary(
