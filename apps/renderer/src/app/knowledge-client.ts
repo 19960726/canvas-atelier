@@ -46,6 +46,8 @@ export function createKnowledgeClient(): KnowledgeClient {
   let states: KnowledgeBaseStateSummary[] = [];
   let syncStatuses: KnowledgeSyncStatusSummary[] = [];
   let stopped = true;
+  let runSequence = 0;
+  let activeRun = 0;
 
   const publish = (nextStates: KnowledgeBaseStateSummary[]) => {
     states = sortStates(nextStates.map(cloneSummary));
@@ -70,6 +72,8 @@ export function createKnowledgeClient(): KnowledgeClient {
   return {
     async start(nextListener, nextSyncListener) {
       this.stop();
+      const run = ++runSequence;
+      activeRun = run;
       stopped = false;
       listener = nextListener;
       syncListener = nextSyncListener;
@@ -82,24 +86,43 @@ export function createKnowledgeClient(): KnowledgeClient {
         return;
       }
 
+      const bufferedStates: KnowledgeBaseStateSummary[] = [];
+      let hydrationPending = true;
       try {
-        unsubscribeSync = bridge.subscribeKnowledgeSyncStatus((status) => publishSync(status));
+        unsubscribeState = bridge.subscribeKnowledgeState((summary) => {
+          if (stopped || activeRun !== run || summary === null) return;
+          if (hydrationPending) {
+            bufferedStates.push(cloneSummary(summary));
+            return;
+          }
+          upsert(summary);
+        });
+        unsubscribeSync = bridge.subscribeKnowledgeSyncStatus((status) => {
+          if (activeRun === run) publishSync(status);
+        });
         const hydrated = await bridge.getKnowledgeState();
-        if (stopped) return;
+        if (stopped || activeRun !== run) return;
         publish([...hydrated.states]);
         for (const status of hydrated.syncStatuses ?? []) {
           publishSync(status);
         }
-        unsubscribeState = bridge.subscribeKnowledgeState((summary) => upsert(summary));
-      } catch {
-        if (!stopped) {
-          publish([]);
-          publishSync(createOfflineSyncStatus('desktop-bridge', 'Desktop knowledge bridge unavailable'));
+        hydrationPending = false;
+        for (const summary of bufferedStates) {
+          upsert(summary);
         }
+      } catch {
+        if (stopped || activeRun !== run) return;
+        unsubscribeState?.();
+        unsubscribeSync?.();
+        unsubscribeState = undefined;
+        unsubscribeSync = undefined;
+        publish([]);
+        publishSync(createOfflineSyncStatus('desktop-bridge', 'Desktop knowledge bridge unavailable'));
       }
     },
     stop() {
       stopped = true;
+      activeRun = 0;
       unsubscribeState?.();
       unsubscribeSync?.();
       unsubscribeState = undefined;

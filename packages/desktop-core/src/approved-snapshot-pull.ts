@@ -61,6 +61,7 @@ export class ApprovedSnapshotPullCoordinator {
   private readonly setTimer: (listener: () => void, intervalMs: number) => unknown;
   private readonly store: ApprovedSnapshotPullStore;
   private readonly syncRoot: string;
+  private configurationUpdates: Promise<void> = Promise.resolve();
   private inFlight: Promise<void> | null = null;
   private knowledgeBaseIds: string[] = [];
   private stopped = true;
@@ -103,7 +104,7 @@ export class ApprovedSnapshotPullCoordinator {
 
   async start(knowledgeBaseIds: string[]): Promise<void> {
     await this.stop();
-    this.knowledgeBaseIds = [...new Set(knowledgeBaseIds)].sort(compareStrings);
+    this.knowledgeBaseIds = normalizeKnowledgeBaseIds(knowledgeBaseIds);
     const configuredIds = new Set(this.knowledgeBaseIds);
     for (const knowledgeBaseId of this.latestSyncStatuses.keys()) {
       if (!configuredIds.has(knowledgeBaseId)) this.latestSyncStatuses.delete(knowledgeBaseId);
@@ -117,24 +118,26 @@ export class ApprovedSnapshotPullCoordinator {
     await this.pullNow('startup');
   }
 
+  async updateConfiguredKnowledgeBases(knowledgeBaseIds: string[]): Promise<void> {
+    const nextIds = normalizeKnowledgeBaseIds(knowledgeBaseIds);
+    const update = this.configurationUpdates.then(async () => {
+      const nextIdSet = new Set(nextIds);
+      this.knowledgeBaseIds = nextIds;
+      for (const knowledgeBaseId of this.latestSyncStatuses.keys()) {
+        if (!nextIdSet.has(knowledgeBaseId)) this.latestSyncStatuses.delete(knowledgeBaseId);
+      }
+      if (this.stopped || nextIds.length === 0) return;
+      await this.pullKnowledgeBaseIdsAfterCurrent(nextIds);
+    });
+    this.configurationUpdates = update.catch(() => undefined);
+    return update;
+  }
   async pullNow(trigger: 'startup' | 'poll' = 'poll'): Promise<void> {
     if (this.stopped) return;
-    if (this.client === null) {
-      this.emitOfflineForConfigured('Approved snapshot sync is unavailable');
-      return;
-    }
-    if (!this.isOnline()) {
-      this.emitOfflineForConfigured('Network unavailable');
-      return;
-    }
     if (this.inFlight !== null) {
       return this.inFlight;
     }
-    this.inFlight = this.pullConfiguredKnowledgeBases(trigger)
-      .finally(() => {
-        this.inFlight = null;
-      });
-    return this.inFlight;
+    return this.startPull(this.knowledgeBaseIds, trigger);
   }
 
   async stop(): Promise<void> {
@@ -143,22 +146,56 @@ export class ApprovedSnapshotPullCoordinator {
       this.clearTimer(this.timer);
       this.timer = null;
     }
-    await this.inFlight;
+    await Promise.all([this.inFlight, this.configurationUpdates]);
   }
 
-  private async pullConfiguredKnowledgeBases(_trigger: 'startup' | 'poll'): Promise<void> {
-    for (const knowledgeBaseId of this.knowledgeBaseIds) {
+  private async pullKnowledgeBaseIdsAfterCurrent(knowledgeBaseIds: string[]): Promise<void> {
+    await this.inFlight;
+    if (this.stopped) return;
+    const configuredIds = knowledgeBaseIds.filter((knowledgeBaseId) => this.isConfigured(knowledgeBaseId));
+    if (configuredIds.length === 0) return;
+    await this.startPull(configuredIds, 'configuration');
+  }
+
+  private startPull(
+    knowledgeBaseIds: readonly string[],
+    trigger: 'startup' | 'poll' | 'configuration',
+  ): Promise<void> {
+    const operation = this.pullKnowledgeBaseIds([...knowledgeBaseIds], trigger)
+      .finally(() => {
+        if (this.inFlight === operation) this.inFlight = null;
+      });
+    this.inFlight = operation;
+    return operation;
+  }
+
+  private async pullKnowledgeBaseIds(
+    knowledgeBaseIds: readonly string[],
+    _trigger: 'startup' | 'poll' | 'configuration',
+  ): Promise<void> {
+    if (this.client === null) {
+      this.emitOfflineForKnowledgeBases(knowledgeBaseIds, 'Approved snapshot sync is unavailable');
+      return;
+    }
+    if (!this.isOnline()) {
+      this.emitOfflineForKnowledgeBases(knowledgeBaseIds, 'Network unavailable');
+      return;
+    }
+    for (const knowledgeBaseId of knowledgeBaseIds) {
+      if (!this.isConfigured(knowledgeBaseId)) continue;
       if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
         continue;
       }
       this.emitSyncStatus(knowledgeBaseId, 'syncing');
       try {
         const outcome = await this.withLock<PullApplyOutcome>(this.pullLockPath(knowledgeBaseId), async () => {
-          if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
+          if (!this.isConfigured(knowledgeBaseId)
+            || await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
             return 'deferred';
           }
           const cursor = await this.readCursor(knowledgeBaseId);
           const result = await this.client!.pullApprovedSnapshot(knowledgeBaseId, cursor);
+          if (!this.isConfigured(knowledgeBaseId)) return 'deferred';
           const snapshot = result.snapshot === null
             ? null
             : knowledgeSnapshotSyncSchema.parse(result.snapshot);
@@ -172,13 +209,16 @@ export class ApprovedSnapshotPullCoordinator {
           }
           return 'updated';
         });
+        if (!this.isConfigured(knowledgeBaseId)) continue;
         if (outcome === 'conflict') {
           this.emitSyncStatus(knowledgeBaseId, 'conflict', 'Approved snapshot version conflict');
         } else if (outcome === 'updated') {
           this.emitSyncStatus(knowledgeBaseId, 'updated');
         }
       } catch {
-        this.emitSyncStatus(knowledgeBaseId, 'offline', 'Approved snapshot pull failed');
+        if (this.isConfigured(knowledgeBaseId)) {
+          this.emitSyncStatus(knowledgeBaseId, 'offline', 'Approved snapshot pull failed');
+        }
       }
     }
   }
@@ -187,6 +227,7 @@ export class ApprovedSnapshotPullCoordinator {
     knowledgeBaseId: string,
     snapshot: KnowledgeSnapshot,
   ): Promise<PullApplyOutcome> {
+    if (!this.isConfigured(knowledgeBaseId)) return 'deferred';
     if (snapshot.knowledgeBaseId !== knowledgeBaseId) {
       return 'conflict';
     }
@@ -210,9 +251,10 @@ export class ApprovedSnapshotPullCoordinator {
     if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
       return 'deferred';
     }
+    if (!this.isConfigured(knowledgeBaseId)) return 'deferred';
     await this.store.publish(snapshot);
     const next = (await this.store.listStates()).find((state) => state.knowledgeBaseId === knowledgeBaseId);
-    if (next !== undefined) {
+    if (next !== undefined && this.isConfigured(knowledgeBaseId)) {
       this.emit(next);
     }
     return 'updated';
@@ -225,10 +267,16 @@ export class ApprovedSnapshotPullCoordinator {
     }
   }
 
-  private emitOfflineForConfigured(reason: string): void {
-    for (const knowledgeBaseId of this.knowledgeBaseIds) {
-      this.emitSyncStatus(knowledgeBaseId, 'offline', reason);
+  private emitOfflineForKnowledgeBases(knowledgeBaseIds: readonly string[], reason: string): void {
+    for (const knowledgeBaseId of knowledgeBaseIds) {
+      if (this.isConfigured(knowledgeBaseId)) {
+        this.emitSyncStatus(knowledgeBaseId, 'offline', reason);
+      }
     }
+  }
+
+  private isConfigured(knowledgeBaseId: string): boolean {
+    return this.knowledgeBaseIds.includes(knowledgeBaseId);
   }
 
   private emitSyncStatus(
@@ -403,6 +451,9 @@ function normalizeCursorState(value: unknown): CursorState {
   return { schemaVersion: 1, cursors };
 }
 
+function normalizeKnowledgeBaseIds(values: readonly string[]): string[] {
+  return [...new Set(values.map(normalizeKnowledgeBaseId))].sort(compareStrings);
+}
 function normalizeKnowledgeBaseId(value: unknown): string {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > 160 || containsProtectedValue(value)) {
     throw new Error('Approved snapshot pull cursor state is invalid');

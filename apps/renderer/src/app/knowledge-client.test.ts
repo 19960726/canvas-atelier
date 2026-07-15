@@ -46,6 +46,56 @@ describe('KnowledgeClient', () => {
     expect(first.versionKey).toBe(`scene-skill@1:${'a'.repeat(12)}`);
   });
 
+  it('buffers knowledge-state events during hydration so the next lease pins the newest activation', async () => {
+    let stateListener: ((state: KnowledgeBaseStateSummary) => void) | undefined;
+    let resolveHydration!: (value: KnowledgeStateBridgeResult) => void;
+    const hydration = new Promise<KnowledgeStateBridgeResult>((resolve) => { resolveHydration = resolve; });
+    window.novusDesktop = createBridge({
+      getKnowledgeState: vi.fn(() => hydration),
+      subscribeKnowledgeState: vi.fn((next) => {
+        stateListener = next;
+        return () => undefined;
+      }),
+    });
+    const client = createKnowledgeClient();
+
+    const start = client.start(() => undefined);
+    expect(stateListener).toBeDefined();
+    stateListener?.(knowledgeState({ version: 2, hashPrefix: 'b' }));
+    resolveHydration({ states: [knowledgeState({ version: 1, hashPrefix: 'a' })] });
+    await start;
+
+    expect(client.getLease('run-after-race', 'reverse_prompt', references, []).versionKey)
+      .toBe(`scene-skill@2:${'b'.repeat(12)}`);
+  });
+
+  it('ignores buffered events and hydration from a stopped start after restart', async () => {
+    let resolveFirstHydration!: (value: KnowledgeStateBridgeResult) => void;
+    const firstHydration = new Promise<KnowledgeStateBridgeResult>((resolve) => { resolveFirstHydration = resolve; });
+    const stateListeners: Array<(state: KnowledgeBaseStateSummary) => void> = [];
+    const unsubscribes = [vi.fn(), vi.fn()];
+    window.novusDesktop = createBridge({
+      getKnowledgeState: vi.fn()
+        .mockReturnValueOnce(firstHydration)
+        .mockResolvedValueOnce({ states: [knowledgeState({ version: 3, hashPrefix: 'c' })] }),
+      subscribeKnowledgeState: vi.fn((next) => {
+        stateListeners.push(next);
+        return unsubscribes[stateListeners.length - 1]!;
+      }),
+    });
+    const client = createKnowledgeClient();
+
+    const firstStart = client.start(() => undefined);
+    stateListeners[0]?.(knowledgeState({ version: 2, hashPrefix: 'b' }));
+    const secondStart = client.start(() => undefined);
+    await secondStart;
+    resolveFirstHydration({ states: [knowledgeState({ version: 1, hashPrefix: 'a' })] });
+    await firstStart;
+
+    expect(unsubscribes[0]).toHaveBeenCalledOnce();
+    expect(client.getLease('run-after-restart', 'reverse_prompt', references, []).versionKey)
+      .toBe(`scene-skill@3:${'c'.repeat(12)}`);
+  });
   it('hydrates initial state, applies subscription events, and unsubscribes on stop', async () => {
     let listener: ((state: KnowledgeBaseStateSummary) => void) | undefined;
     const unsubscribe = vi.fn();

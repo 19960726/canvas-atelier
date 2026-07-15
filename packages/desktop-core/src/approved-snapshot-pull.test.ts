@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { createKnowledgeSnapshotCandidate, type KnowledgeSnapshot } from '@agent-canvas/skill-store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -250,6 +250,90 @@ describe('ApprovedSnapshotPullCoordinator', () => {
     ]);
     await coordinator.stop();
   });
+  it('emits immediate offline status when a base is configured without a sync client', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const coordinator = new ApprovedSnapshotPullCoordinator({
+      appDataRoot: fixture.appDataRoot,
+      client: null,
+      clearInterval: vi.fn(),
+      setInterval: () => 101,
+      store: fixture.store,
+    });
+
+    await coordinator.start([]);
+    await coordinator.updateConfiguredKnowledgeBases(['scene-skill']);
+
+    expect(coordinator.listSyncStatuses()).toEqual([expect.objectContaining({
+      knowledgeBaseId: 'scene-skill',
+      status: 'offline',
+    })]);
+    await coordinator.stop();
+  });
+  it('pulls a newly configured knowledge base immediately without restarting', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const remote = createSnapshot('# remote version 2', 2);
+    const pullApprovedSnapshot = vi.fn(async () => ({ snapshot: remote, cursor: 'cursor-configured' }));
+    const coordinator = createCoordinator(fixture, { pullApprovedSnapshot });
+    const statuses: string[] = [];
+    coordinator.subscribeSyncStatus((status) => statuses.push(`${status.knowledgeBaseId}:${status.status}`));
+
+    await coordinator.start([]);
+    await coordinator.updateConfiguredKnowledgeBases(['scene-skill']);
+
+    expect(pullApprovedSnapshot).toHaveBeenCalledWith('scene-skill', undefined);
+    await expect(fixture.store.readActive('scene-skill')).resolves.toEqual(remote);
+    expect(statuses).toEqual(['scene-skill:syncing', 'scene-skill:updated']);
+    await coordinator.stop();
+  });
+
+  it('queues a newly configured base behind an in-flight pull without losing it', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const brandRoot = join(dirname(fixture.appDataRoot), 'source', 'brand-rules');
+    await mkdir(brandRoot, { recursive: true });
+    await fixture.store.configure({ knowledgeBaseId: 'brand-rules', displayName: 'Brand Rules', rootPath: brandRoot });
+    await fixture.store.publish(createSnapshotFor('brand-rules', 'Brand Rules', '# local brand version 1', 1));
+    const sceneStarted = deferred<void>();
+    const releaseScene = deferred<void>();
+    const pullApprovedSnapshot = vi.fn(async (knowledgeBaseId: string) => {
+      if (knowledgeBaseId === 'scene-skill') {
+        sceneStarted.resolve();
+        await releaseScene.promise;
+        return { snapshot: null, cursor: 'cursor-scene' };
+      }
+      return {
+        snapshot: createSnapshotFor('brand-rules', 'Brand Rules', '# remote brand version 2', 2),
+        cursor: 'cursor-brand',
+      };
+    });
+    const coordinator = createCoordinator(fixture, { pullApprovedSnapshot });
+
+    const startup = coordinator.start(['scene-skill']);
+    await sceneStarted.promise;
+    const configured = coordinator.updateConfiguredKnowledgeBases(['scene-skill', 'brand-rules']);
+    expect(pullApprovedSnapshot).not.toHaveBeenCalledWith('brand-rules', undefined);
+    releaseScene.resolve();
+    await Promise.all([startup, configured]);
+
+    expect(pullApprovedSnapshot).toHaveBeenCalledWith('brand-rules', undefined);
+    await expect(fixture.store.readActive('brand-rules')).resolves.toMatchObject({ version: 2 });
+    await coordinator.stop();
+  });
+
+  it('removes stale status while preserving the durable cursor for safe reconfiguration', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const pullApprovedSnapshot = vi.fn()
+      .mockResolvedValueOnce({ snapshot: null, cursor: 'cursor-preserved' })
+      .mockResolvedValueOnce({ snapshot: null, cursor: 'cursor-next' });
+    const coordinator = createCoordinator(fixture, { pullApprovedSnapshot });
+
+    await coordinator.start(['scene-skill']);
+    await coordinator.updateConfiguredKnowledgeBases([]);
+    expect(coordinator.listSyncStatuses()).toEqual([]);
+    await coordinator.updateConfiguredKnowledgeBases(['scene-skill']);
+
+    expect(pullApprovedSnapshot).toHaveBeenLastCalledWith('scene-skill', 'cursor-preserved');
+    await coordinator.stop();
+  });
   it('awaits an in-flight pull and publish during stop', async () => {
     const fixture = await createPullFixture(tempRoots);
     const started = deferred<void>();
@@ -306,6 +390,23 @@ function createCoordinator(
   });
 }
 
+function createSnapshotFor(
+  knowledgeBaseId: string,
+  displayName: string,
+  content: string,
+  version: number,
+): KnowledgeSnapshot {
+  return {
+    ...createKnowledgeSnapshotCandidate({
+      knowledgeBaseId,
+      displayName,
+      documents: [{ relativePath: 'memory/main.md', content }],
+    }),
+    version,
+    publishedAt: `2026-07-16T00:0${version}:00.000Z`,
+    sourceDeviceId: 'remote-device',
+  };
+}
 function createSnapshot(content: string, version: number): KnowledgeSnapshot {
   return {
     ...createKnowledgeSnapshotCandidate({

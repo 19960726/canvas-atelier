@@ -16,7 +16,10 @@ import {
 } from '@agent-canvas/skill-store';
 
 import type { CommitRequest } from './contracts';
+import { ApprovedSnapshotPullCoordinator } from './approved-snapshot-pull';
 import { releaseJournalState } from './journal-writer';
+import { KnowledgeRefreshService } from './knowledge-refresh-service';
+import { ManagedKnowledgeStore } from './managed-knowledge-store';
 import { NodeFileSystem } from './file-system';
 import { ProjectRepository, type OpenedProjectSession } from './project-repository';
 import { createDesktopBridgeHandlers, registerDesktopBridgeHandlers } from './bridge-handlers';
@@ -246,6 +249,87 @@ describe('desktop bridge contract', () => {
     expect(configure).not.toHaveBeenCalled();
   });
 
+  it('updates remote pull configuration after local configure and refresh succeed', async () => {
+    const state = createKnowledgeStateSummary();
+    const updateConfiguredKnowledgeBases = vi.fn(async () => undefined);
+    const start = vi.fn(async () => undefined);
+    const refreshNow = vi.fn(async () => state);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseKnowledgeRoot: vi.fn(async () => String.raw`C:\redacted\knowledge`) },
+      knowledgeConfigurationSync: { updateConfiguredKnowledgeBases },
+      knowledgeRefreshService: {
+        refreshNow,
+        start,
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure: vi.fn(async () => ({ schemaVersion: 1 as const, knowledgeBaseId: 'scene-skill', displayName: 'Scene Skill', knowledgeRootId: 'root-scene-skill' })),
+        listStates: vi.fn(async () => [state]),
+        readActive: vi.fn(async () => null),
+      },
+      repository: { close: vi.fn(async () => undefined) },
+    });
+
+    await expect(handlers.configureKnowledgeBase({}, {
+      displayName: 'Scene Skill',
+      knowledgeBaseId: 'scene-skill',
+    })).resolves.toEqual(state);
+
+    expect(start).toHaveBeenCalledWith(['scene-skill']);
+    expect(refreshNow).toHaveBeenCalledWith('scene-skill');
+    expect(updateConfiguredKnowledgeBases).toHaveBeenCalledWith(['scene-skill']);
+    expect(refreshNow.mock.invocationCallOrder[0]).toBeLessThan(updateConfiguredKnowledgeBases.mock.invocationCallOrder[0]!);
+  });
+  it('configures through the real bridge and immediately pulls remote state without restart', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-configure-sync-'));
+    const appDataRoot = join(tempRoot, 'app-data');
+    const sourceRoot = join(tempRoot, 'knowledge', 'scene-skill');
+    await mkdir(join(sourceRoot, 'memory'), { recursive: true });
+    await writeFile(join(sourceRoot, 'memory', 'main.md'), '# local scene skill', 'utf8');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const refresh = new KnowledgeRefreshService({
+      stabilityWait: async () => undefined,
+      store,
+      watchAdapter: { watch: () => ({ close: () => undefined }) },
+    });
+    const remote = createKnowledgeSnapshot('# remote scene skill', 2);
+    const pullApprovedSnapshot = vi.fn(async () => ({ snapshot: remote, cursor: 'cursor-configured-live' }));
+    const coordinator = new ApprovedSnapshotPullCoordinator({
+      appDataRoot,
+      client: { pullApprovedSnapshot },
+      clearInterval: vi.fn(),
+      setInterval: () => 101,
+      store,
+    });
+    const statuses: string[] = [];
+    coordinator.subscribeSyncStatus((status) => statuses.push(status.status));
+    await coordinator.start([]);
+    const handlers = createDesktopBridgeHandlers({
+      appDataRoot,
+      dialogs: { chooseKnowledgeRoot: vi.fn(async () => sourceRoot) },
+      knowledgeConfigurationSync: coordinator,
+      knowledgeRefreshService: refresh,
+      knowledgeStore: store,
+      knowledgeSyncStatusProvider: coordinator,
+      repository: { close: vi.fn(async () => undefined) },
+    });
+
+    try {
+      await expect(handlers.configureKnowledgeBase({}, {
+        displayName: 'Scene Skill',
+        knowledgeBaseId: 'scene-skill',
+      })).resolves.toMatchObject({ activeVersion: 2, status: 'active' });
+
+      expect(pullApprovedSnapshot).toHaveBeenCalledWith('scene-skill', undefined);
+      expect(statuses).toEqual(['syncing', 'updated']);
+      await expect(store.readActive('scene-skill')).resolves.toEqual(remote);
+    } finally {
+      await refresh.stop();
+      await coordinator.stop();
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
   it('returns public knowledge summaries without private store fields', async () => {
     const state = createKnowledgeStateSummary();
     const syncStatus = {

@@ -78,6 +78,7 @@ app.whenReady().then(async () => {
     channel: runtimeChannel,
     dialogs: createDialogAdapter(),
     approvedSnapshotOutbox,
+    knowledgeConfigurationSync: approvedSnapshotPullCoordinator,
     knowledgeRefreshService,
     knowledgeStore,
     knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator,

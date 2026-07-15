@@ -1,3 +1,5 @@
+import { basename, dirname, join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type { FileHandleLike, FileStatLike, FileSystem } from './file-system';
@@ -36,6 +38,21 @@ describe('confined file lock', () => {
     expect(fileSystem.events).toEqual(expect.arrayContaining([expect.stringMatching(/^sync:/), expect.stringMatching(/^link:/)]));
   });
 
+  it.each(['ENOSYS', 'EPERM'] as const)(
+    'returns a sanitized actionable error when atomic hard-link publication fails with %s',
+    async (code) => {
+      const fileSystem = new MemoryLockFileSystem();
+      fileSystem.failLinkWith = Object.assign(
+        new Error('link denied for PRIVATE_SENTINEL'),
+        { code },
+      );
+
+      await expect(acquireConfinedFileLock(LOCK_PATH, options(fileSystem)))
+        .rejects.toThrow(/atomic hard-link support/i);
+      await expect(acquireConfinedFileLock(LOCK_PATH, options(fileSystem)))
+        .rejects.not.toThrow(/Private|state\.lock/i);
+    },
+  );
   it.each(['', '{"schemaVersion":2,"token":"partial'])(
     'recovers a stale incomplete canonical lock without treating it as a live owner',
     async (contents) => {
@@ -143,6 +160,44 @@ describe('confined file lock', () => {
     },
   );
 
+  it('cleans only stale confined owner temps and leaves fresh or foreign files untouched', async () => {
+    const fileSystem = new MemoryLockFileSystem();
+    const stale = ownerTempPath('a'.repeat(64));
+    const fresh = ownerTempPath('b'.repeat(64));
+    const foreign = join(dirname(LOCK_PATH), '.other.lock.owner-' + 'c'.repeat(64) + '.tmp');
+    fileSystem.seed(stale, 'stale-owner-temp', Date.parse('2026-07-16T00:00:00.000Z'));
+    fileSystem.seed(fresh, 'fresh-owner-temp', Date.parse('2026-07-16T00:00:25.000Z'));
+    fileSystem.seed(foreign, 'foreign-owner-temp', Date.parse('2026-07-16T00:00:00.000Z'));
+
+    const lock = await acquireConfinedFileLock(LOCK_PATH, options(fileSystem, {
+      now: () => Date.parse('2026-07-16T00:00:30.000Z'),
+      staleAgeMs: 10_000,
+    }));
+
+    expect(fileSystem.has(stale)).toBe(false);
+    expect(fileSystem.has(fresh)).toBe(true);
+    expect(fileSystem.has(foreign)).toBe(true);
+    await releaseConfinedFileLock(lock);
+  });
+
+  it('bounds stale owner temp cleanup work per acquisition', async () => {
+    const fileSystem = new MemoryLockFileSystem();
+    const staleTemps = Array.from({ length: 24 }, (_, index) => ownerTempPath(index.toString(16).padStart(64, '0')));
+    for (const path of staleTemps) {
+      fileSystem.seed(path, `stale-${path}`, Date.parse('2026-07-16T00:00:00.000Z'));
+    }
+
+    const lock = await acquireConfinedFileLock(LOCK_PATH, options(fileSystem, {
+      now: () => Date.parse('2026-07-16T00:00:30.000Z'),
+      staleAgeMs: 10_000,
+    }));
+    const removed = staleTemps.filter((path) => !fileSystem.has(path));
+
+    expect(removed.length).toBeGreaterThan(0);
+    expect(removed.length).toBeLessThanOrEqual(16);
+    expect(staleTemps.some((path) => fileSystem.has(path))).toBe(true);
+    await releaseConfinedFileLock(lock);
+  });
   it('uses monotonic elapsed time for lock acquisition timeout', async () => {
     const fileSystem = ownerFileSystem({ token: 'live-token', processId: 91 });
     const monotonicNow = vi.fn()
@@ -159,6 +214,9 @@ describe('confined file lock', () => {
   });
 });
 
+function ownerTempPath(token: string): string {
+  return join(dirname(LOCK_PATH), `.${basename(LOCK_PATH)}.owner-${token}.tmp`);
+}
 function ownerFileSystem(overrides: Partial<Record<string, unknown>>): MemoryLockFileSystem {
   const fileSystem = new MemoryLockFileSystem();
   fileSystem.seed(LOCK_PATH, `${JSON.stringify({
@@ -257,7 +315,11 @@ class MemoryLockFileSystem implements FileSystem {
     }
     return file.contents;
   }
-  async readdir(): Promise<string[]> { return []; }
+  async readdir(path: string): Promise<string[]> {
+    return [...this.files.keys()]
+      .filter((filePath) => dirname(filePath) === path)
+      .map((filePath) => basename(filePath));
+  }
   async rename(source: string, destination: string): Promise<void> {
     const file = this.files.get(source);
     if (file === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });

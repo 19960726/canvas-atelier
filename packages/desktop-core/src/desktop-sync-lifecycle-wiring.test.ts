@@ -8,6 +8,7 @@ describe.each(['desktop-legacy', 'desktop-modern'])('%s sync lifecycle wiring', 
     expect(source).toContain('subscribeSyncStatus');
     expect(source).toContain('BRIDGE_CHANNELS.knowledgeSyncStatusChanged');
     expect(source).toContain('knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator');
+    expect(source).toContain('knowledgeConfigurationSync: approvedSnapshotPullCoordinator');
     expect(source.indexOf('await approvedSnapshotPullCoordinator.start'))
       .toBeLessThan(source.indexOf('await createMainWindow'));
   });

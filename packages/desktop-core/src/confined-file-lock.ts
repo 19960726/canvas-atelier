@@ -51,6 +51,8 @@ type PersistedLockRead =
 const DEFAULT_RETRY_MS = 10;
 const DEFAULT_STALE_AGE_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_STALE_OWNER_TEMP_CLEANUP = 16;
+const ATOMIC_LINK_ERROR_MESSAGE = 'Confined file lock requires atomic hard-link support on the app-data volume';
 const PROCESS_SESSION_FINGERPRINT = createHash('sha256')
   .update(`${process.pid}:${Date.now()}:${randomBytes(16).toString('hex')}`, 'utf8')
   .digest('hex');
@@ -74,8 +76,13 @@ export async function acquireConfinedFileLock(
     .update(`${processId}:${processSessionFingerprint}:${Date.now()}:${Math.random()}`, 'utf8')
     .digest('hex');
 
+  let ownerTempsCleaned = false;
   for (;;) {
     await assertWritablePath(path, options);
+    if (!ownerTempsCleaned) {
+      await cleanupStaleOwnerTemps(path, options, now(), staleAgeMs);
+      ownerTempsCleaned = true;
+    }
     const published = await tryPublishOwner(path, options, {
       schemaVersion: 2,
       token,
@@ -136,7 +143,7 @@ async function tryPublishOwner(
   },
 ): Promise<boolean> {
   const link = options.fileSystem.link;
-  if (link === undefined) throw new Error('Confined file lock requires atomic link support');
+  if (link === undefined) throw new Error(ATOMIC_LINK_ERROR_MESSAGE);
   const tempPath = join(dirname(path), `.${basename(path)}.owner-${owner.token}.tmp`);
   await options.assertPathForWrite(tempPath);
   let handle: Awaited<ReturnType<FileSystem['open']>> | null = null;
@@ -156,6 +163,7 @@ async function tryPublishOwner(
       await link.call(options.fileSystem, tempPath, path);
     } catch (error) {
       if (isErrno(error, 'EEXIST')) return false;
+      if (isAtomicLinkCapabilityError(error)) throw new Error(ATOMIC_LINK_ERROR_MESSAGE);
       throw error;
     }
     return true;
@@ -175,6 +183,49 @@ async function tryPublishOwner(
   }
 }
 
+async function cleanupStaleOwnerTemps(
+  path: string,
+  options: ConfinedFileLockOptions,
+  now: number,
+  staleAgeMs: number,
+): Promise<void> {
+  const parent = dirname(path);
+  const prefix = `.${basename(path)}.owner-`;
+  let entries: string[];
+  try {
+    entries = await options.fileSystem.readdir(parent);
+  } catch {
+    return;
+  }
+  const candidates = entries
+    .filter((entry) => entry.startsWith(prefix)
+      && entry.endsWith('.tmp')
+      && /^[a-f0-9]{64}$/u.test(entry.slice(prefix.length, -4)))
+    .sort()
+    .slice(0, MAX_STALE_OWNER_TEMP_CLEANUP);
+  for (const entry of candidates) {
+    const candidatePath = join(parent, entry);
+    try {
+      await options.assertPathForRead(candidatePath);
+      const firstStat = await requireLstat(options.fileSystem, candidatePath);
+      if (!firstStat.isFile() || firstStat.isSymbolicLink?.()) continue;
+      if (typeof firstStat.mtimeMs !== 'number' || !Number.isFinite(firstStat.mtimeMs)) continue;
+      if (now - firstStat.mtimeMs < staleAgeMs) continue;
+      const firstRaw = await options.fileSystem.readFile(candidatePath, 'utf8');
+      const firstFingerprint = incompleteFingerprint(firstRaw, firstStat);
+      await options.assertPathForWrite(candidatePath);
+      const secondStat = await requireLstat(options.fileSystem, candidatePath);
+      if (!secondStat.isFile() || secondStat.isSymbolicLink?.()) continue;
+      const secondRaw = await options.fileSystem.readFile(candidatePath, 'utf8');
+      const secondFingerprint = incompleteFingerprint(secondRaw, secondStat);
+      if (sameIncompleteLock(firstFingerprint, secondFingerprint)) {
+        await unlinkGuarded(candidatePath, options.fileSystem);
+      }
+    } catch {
+      // Cleanup is bounded and best-effort; acquisition still uses the canonical lock.
+    }
+  }
+}
 async function reclaimStaleLock(
   path: string,
   options: ConfinedFileLockOptions,
@@ -348,6 +399,10 @@ function sameIncompleteLock(left: IncompleteLockFingerprint, right: IncompleteLo
     && left.size === right.size;
 }
 
+function isAtomicLinkCapabilityError(error: unknown): boolean {
+  return ['EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EXDEV']
+    .some((code) => isErrno(error, code));
+}
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }

@@ -165,6 +165,10 @@ interface KnowledgeSyncStatusProviderLike {
   listSyncStatuses(): readonly KnowledgeSyncStatusSummary[];
 }
 
+interface KnowledgeConfigurationSyncLike {
+  updateConfiguredKnowledgeBases(knowledgeBaseIds: string[]): Promise<void>;
+}
+
 export interface BridgeDialogAdapter {
   chooseImportDestination(): Promise<string | null>;
   chooseImportPackSource(): Promise<string | null>;
@@ -181,6 +185,7 @@ export interface DesktopBridgeHandlerDependencies {
   readonly fileSystem?: FileSystem;
   readonly importerIsolationRoot?: string;
   readonly approvedSnapshotOutbox?: ApprovedSnapshotOutboxLike;
+  readonly knowledgeConfigurationSync?: KnowledgeConfigurationSyncLike;
   readonly knowledgeRefreshService?: KnowledgeRefreshServiceLike;
   readonly knowledgeStore?: KnowledgeStoreLike;
   readonly knowledgeSyncStatusProvider?: KnowledgeSyncStatusProviderLike;
@@ -263,6 +268,7 @@ export function createDesktopBridgeHandlers(
     fileSystem,
   });
   const approvedSnapshotOutbox = dependencies.approvedSnapshotOutbox ?? null;
+  const knowledgeConfigurationSync = dependencies.knowledgeConfigurationSync ?? null;
   const knowledgeSyncStatusProvider = dependencies.knowledgeSyncStatusProvider ?? null;
   const knowledgeRefreshService = dependencies.knowledgeRefreshService ?? new KnowledgeRefreshService({
     fileSystem,
@@ -441,8 +447,13 @@ export function createDesktopBridgeHandlers(
       rootPath,
     });
     const states = await knowledgeStore.listStates();
-    await knowledgeRefreshService.start(states.map((state) => state.knowledgeBaseId));
-    return sanitizeKnowledgeSummary(await knowledgeRefreshService.refreshNow(validated.knowledgeBaseId));
+    const knowledgeBaseIds = states.map((state) => state.knowledgeBaseId);
+    await knowledgeRefreshService.start(knowledgeBaseIds);
+    const refreshed = await knowledgeRefreshService.refreshNow(validated.knowledgeBaseId);
+    await knowledgeConfigurationSync?.updateConfiguredKnowledgeBases(knowledgeBaseIds);
+    const authoritative = (await knowledgeStore.listStates())
+      .find((state) => state.knowledgeBaseId === validated.knowledgeBaseId) ?? refreshed;
+    return sanitizeKnowledgeSummary(authoritative);
   }
 
   async function getKnowledgeState(
