@@ -166,6 +166,42 @@ describe('ReversePromptAgent', () => {
     expect(secondRun.knowledgeLease.versionKey).toBe(`scene-skill@2:${'a'.repeat(12)}`);
   });
 
+  it('keeps the started run context immutable when later props change', async () => {
+    let finish: ((value: ReversePromptResult) => void) | undefined;
+    const initialReferences: OrderedReference[] = [
+      { assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 },
+    ];
+    const initialCitations: ImageCitation[] = [{ assetId: 'scene', label: 'Scene' }];
+    const nextReferences: OrderedReference[] = [
+      { assetId: 'product', label: 'Product', role: 'product_identity', position: 0 },
+    ];
+    const analyze = vi.fn((run: ReversePromptRun) => new Promise<ReversePromptResult>((resolve) => {
+      finish = resolve;
+    }));
+    const props: React.ComponentProps<typeof ReversePromptAgent> = {
+      projectId: 'project-1',
+      references: initialReferences,
+      citations: initialCitations,
+      getApprovedMemorySnapshot: () => approvedMemorySnapshot,
+      analyze,
+    };
+    const view = render(<ReversePromptAgent {...props} />);
+
+    fireEvent.click(runButton());
+    await waitFor(() => expect(analyze).toHaveBeenCalledTimes(1));
+    const startedRun = analyze.mock.calls[0]![0];
+    view.rerender(<ReversePromptAgent
+      {...props}
+      references={nextReferences}
+      citations={[{ assetId: 'product', label: 'Product' }]}
+    />);
+
+    expect(startedRun.references).toEqual(initialReferences);
+    expect(startedRun.knowledgeLease.citations).toEqual(initialCitations);
+
+    finish?.(resultFor(startedRun));
+    await waitFor(() => expect(document.querySelector('.reverse-result')).not.toBeNull());
+  });
   it('passes the provided ordered references and citations into the run lease unchanged', async () => {
     const references: OrderedReference[] = [
       { assetId: 'scene', label: 'Hero', role: 'scene_composition', position: 0 },

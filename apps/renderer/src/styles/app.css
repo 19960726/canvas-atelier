@@ -409,6 +409,8 @@
 .reference-order ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .reference-order li { min-height: 31px; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 3px 4px 3px 6px; color: #56616a; background: #fbfcfd; border: 1px solid var(--border); border-radius: 4px; cursor: grab; }
 .reference-order li:active { cursor: grabbing; }
+.reference-order__end-drop { height: 8px; margin-top: 2px; border-top: 1px dashed transparent; }
+.reference-order__end-drop:hover { border-top-color: var(--accent); }
 .reference-order__label { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; color: var(--text); font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .reference-order__label small { color: var(--muted); font-size: 8px; font-weight: 500; }
 .reference-order__actions { display: flex; gap: 2px; }

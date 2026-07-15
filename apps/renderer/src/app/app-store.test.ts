@@ -465,6 +465,14 @@ describe('project optimization memory', () => {
     });
     expect(useAppStore.getState().project.skillPromotionCandidates.some((candidate) => candidate.reviewStatus === 'approved')).toBe(false);
 
+    references[0]!.label = 'Edited later';
+    citations[0]!.label = 'Edited later';
+    const recordedMemory = useAppStore.getState().project.projectMemory[0];
+    expect(recordedMemory?.context.references).toEqual([
+      { assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 },
+    ]);
+    expect(recordedMemory?.context.citations).toEqual([{ assetId: 'scene', label: 'Scene' }]);
+
     const rejected = await useAppStore.getState().recordUserFeedback({
       title: 'Unsafe feedback',
       userRequest: 'Authorization: Bearer secret-token-value',
@@ -482,6 +490,46 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
     expect(useAppStore.getState().agentPlan).toBeNull();
     expect(JSON.stringify(useAppStore.getState().project)).not.toMatch(/data:image|Bearer secret|C:\\\\Users/i);
+  });
+
+  it('rejects broader POSIX absolute paths from conversation and feedback payloads', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+    const references: OrderedReference[] = [
+      { assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 },
+    ];
+    const citations = [{ assetId: 'scene', label: 'Scene' }];
+    const lease = createAgentKnowledgeLease({
+      runId: 'run-posix-path',
+      capability: 'reverse_prompt',
+      snapshots: [],
+      references,
+      citations,
+    }, {
+      leaseId: 'lease-posix-path',
+      createdAt: '2026-07-15T08:00:00.000Z',
+    });
+
+    const saved = await useAppStore.getState().recordUserFeedback({
+      title: 'Unsafe POSIX feedback',
+      userRequest: 'Use the local render',
+      correction: 'Read /var/lib/novus/private/render.png',
+      knowledgeLease: lease,
+      references,
+      citations,
+      feedback: { keep: [], change: ['scene'], never: [] },
+    });
+    useAppStore.getState().draftAgentPlan('Use /opt/novus/private/asset.png');
+
+    expect(saved).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.projectMemory).toEqual([]);
+    expect(useAppStore.getState().agentPlan).toBeNull();
   });
 });
 

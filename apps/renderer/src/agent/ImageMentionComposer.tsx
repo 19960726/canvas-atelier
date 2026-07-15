@@ -30,23 +30,20 @@ export function ImageMentionComposer({
     for (const reference of references) counts.set(reference.label, (counts.get(reference.label) ?? 0) + 1);
     return counts;
   }, [references]);
-  const knownAssetIds = useMemo(() => new Set(references.map((reference) => reference.assetId)), [references]);
-
   const updateText = (text: string) => {
-    const citations = value.citations.filter((citation) => (
-      knownAssetIds.has(citation.assetId) && text.includes(`@${citation.label}`)
-    ));
+    const citations = reconcileCitations(text, value.citations, references);
     onChange({ text, citations });
   };
 
   const mention = (reference: OrderedReference) => {
     setMentionOpen(false);
-    if (value.citations.some((citation) => citation.assetId === reference.assetId)) return;
+    const currentCitations = reconcileCitations(value.text, value.citations, references);
+    if (currentCitations.some((citation) => citation.assetId === reference.assetId)) return;
     const token = `@${reference.label}`;
     const text = value.text.trimEnd().length > 0 ? `${value.text.trimEnd()} ${token}` : token;
     onChange({
       text,
-      citations: [...value.citations.filter((citation) => knownAssetIds.has(citation.assetId)), {
+      citations: [...currentCitations, {
         assetId: reference.assetId,
         label: reference.label,
       }],
@@ -78,6 +75,47 @@ export function ImageMentionComposer({
   );
 }
 
+function reconcileCitations(
+  text: string,
+  citations: ImageCitation[],
+  references: OrderedReference[],
+): ImageCitation[] {
+  const referencesByAssetId = new Map(references.map((reference) => [reference.assetId, reference]));
+  const remainingOccurrences = new Map<string, number>();
+  const reconciled: ImageCitation[] = [];
+
+  for (const citation of citations) {
+    const reference = referencesByAssetId.get(citation.assetId);
+    if (!reference || reference.label !== citation.label) continue;
+    const remaining = remainingOccurrences.has(citation.label)
+      ? remainingOccurrences.get(citation.label)!
+      : countMentionTokens(text, citation.label);
+    if (remaining < 1) continue;
+    remainingOccurrences.set(citation.label, remaining - 1);
+    reconciled.push(citation);
+  }
+  return reconciled;
+}
+
+function countMentionTokens(text: string, label: string): number {
+  const token = `@${label}`;
+  let count = 0;
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const index = text.indexOf(token, searchFrom);
+    if (index < 0) break;
+    const before = index === 0 ? '' : text[index - 1]!;
+    const afterIndex = index + token.length;
+    const after = afterIndex >= text.length ? '' : text[afterIndex]!;
+    if ((before === '' || isMentionBoundary(before)) && (after === '' || isMentionBoundary(after))) count += 1;
+    searchFrom = index + token.length;
+  }
+  return count;
+}
+
+function isMentionBoundary(character: string): boolean {
+  return /[\s.,!?;:，。！？；：()[\]{}<>"']/u.test(character);
+}
 function roleLabel(role: OrderedReference['role']): string {
   if (role === 'product_identity') return 'product';
   if (role === 'scene_composition') return 'scene';

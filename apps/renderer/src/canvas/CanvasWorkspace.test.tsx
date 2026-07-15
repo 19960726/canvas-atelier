@@ -263,6 +263,14 @@ describe('CanvasWorkspace', () => {
       node: { data: { prompt: '@Scene' } },
     });
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    expect(screen.getByLabelText('向 Agent 发送消息')).toHaveValue('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move Product up' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Mention image' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Product' }));
+    expect(screen.getByLabelText('向 Agent 发送消息')).toHaveValue('@Product');
+
     const run = document.querySelector<HTMLButtonElement>('.reverse-agent__run');
     if (!run) throw new Error('Missing reverse prompt button');
     fireEvent.click(run);

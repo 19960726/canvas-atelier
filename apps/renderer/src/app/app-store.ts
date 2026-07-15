@@ -710,6 +710,7 @@ function containsProtectedRendererPayload(value: unknown): boolean {
       || /\\\\[^\\\s]+\\/.test(value)
       || /file:\/\//i.test(value)
       || /(?:^|\s)\/(?:Users|home)\//.test(value)
+      || /(?:^|[\s"'(])\/(?!\/)(?:[^/\s]+\/)+[^/\s]*/.test(value)
       || /%(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|HOMEDRIVE|HOMEPATH)%[\\/]/i.test(value)
       || /\bAIza[0-9a-z_-]{20,}\b/i.test(value)
       || /\bAKIA[0-9A-Z]{16}\b/.test(value)

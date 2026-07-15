@@ -30,6 +30,22 @@ describe('ReferenceOrderList', () => {
     expect(onCommitOrder).toHaveBeenCalledWith(['scene', 'product', 'prop']);
   });
 
+  it('moves the first reference to the end without persisting before drop', () => {
+    const onPreviewOrder = vi.fn();
+    const onCommitOrder = vi.fn();
+    render(<ReferenceOrderList references={references} onPreviewOrder={onPreviewOrder} onCommitOrder={onCommitOrder} />);
+
+    fireEvent.dragStart(screen.getByText('Product'));
+    fireEvent.dragOver(screen.getByLabelText('Drop reference at end'));
+
+    expect(onPreviewOrder).toHaveBeenLastCalledWith(['scene', 'prop', 'product']);
+    expect(onCommitOrder).not.toHaveBeenCalled();
+
+    fireEvent.drop(screen.getByLabelText('Drop reference at end'));
+
+    expect(onCommitOrder).toHaveBeenCalledTimes(1);
+    expect(onCommitOrder).toHaveBeenCalledWith(['scene', 'prop', 'product']);
+  });
   it('previews and commits exactly once for a keyboard reorder command', () => {
     const onPreviewOrder = vi.fn();
     const onCommitOrder = vi.fn();

@@ -70,6 +70,17 @@ export function ReferenceOrderList({ references, onPreviewOrder, onCommitOrder }
           </li>
         ))}
       </ol>
+      <div
+        className="reference-order__end-drop"
+        aria-label="Drop reference at end"
+        onDragOver={(event) => { event.preventDefault(); previewBefore(); }}
+        onDrop={(event) => {
+          event.preventDefault();
+          const next = previewBefore();
+          draggingAssetIdRef.current = null;
+          onCommitOrder(next.map((item) => item.assetId));
+        }}
+      />
     </section>
   );
 }

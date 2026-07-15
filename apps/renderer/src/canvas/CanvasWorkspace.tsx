@@ -40,6 +40,10 @@ import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
 
 type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
 
+interface SubmittedAgentContext extends ImageMentionValue {
+  references: OrderedReference[];
+}
+
 function isPlacementNode(node: CanvasNode): node is PlacementNode {
   return node.type === 'placement_preview';
 }
@@ -78,6 +82,7 @@ export function CanvasWorkspace() {
   const commitProjectTransaction = useAppStore((state) => state.commitProjectTransaction);
   const commitReferenceOrder = useAppStore((state) => state.commitReferenceOrder);
   const [agentMessage, setAgentMessage] = useState<ImageMentionValue>({ text: '', citations: [] });
+  const [submittedAgentContext, setSubmittedAgentContext] = useState<SubmittedAgentContext | null>(null);
   const [referenceOrderPreview, setReferenceOrderPreview] = useState<string[] | null>(null);
   const [activeAgentTab, setActiveAgentTab] = useState<'conversation' | 'plan' | 'memory'>('conversation');
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
@@ -252,6 +257,19 @@ export function CanvasWorkspace() {
     void commitReferenceOrder(assetIds).finally(() => setReferenceOrderPreview(null));
   };
 
+  const submitAgentMessage = () => {
+    const text = agentMessage.text.trim();
+    if (text.length === 0) return;
+    draftAgentPlan(text);
+    setSubmittedAgentContext({
+      text,
+      references: orderedReferences.map((reference) => ({ ...reference })),
+      citations: activeCitations.map((citation) => ({ ...citation })),
+    });
+    setAgentMessage({ text: '', citations: [] });
+    activateAgentTab('plan', true);
+  };
+
   return (
     <div className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}`}>
       <header className="topbar">
@@ -376,8 +394,8 @@ export function CanvasWorkspace() {
             />
             <ReversePromptAgent
               projectId={project.id}
-              references={orderedReferences}
-              citations={activeCitations}
+              references={submittedAgentContext?.references ?? orderedReferences}
+              citations={submittedAgentContext?.citations ?? activeCitations}
               getApprovedMemorySnapshot={getApprovedMemorySnapshot}
               getProjectMemoryIds={getProjectMemoryIds}
               getKnowledgeLease={getKnowledgeLease}
@@ -426,7 +444,7 @@ export function CanvasWorkspace() {
             />
             <div className="agent-composer__footer">
               <span>模型执行前需要确认</span>
-              <button type="button" aria-label="发送消息" disabled={agentMessage.text.trim().length === 0} onClick={() => { draftAgentPlan(agentMessage.text); activateAgentTab('plan', true); }}><ChevronRight size={17} /></button>
+              <button type="button" aria-label="发送消息" disabled={agentMessage.text.trim().length === 0} onClick={submitAgentMessage}><ChevronRight size={17} /></button>
             </div>
           </div>
         )}

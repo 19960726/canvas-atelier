@@ -49,4 +49,39 @@ describe('ImageMentionComposer', () => {
 
     expect(onChange).toHaveBeenLastCalledWith({ text: 'Use a clean layout', citations: [] });
   });
+
+  it('removes a citation when a mention is edited into a longer partial token', () => {
+    const onChange = vi.fn();
+    render(<ImageMentionComposer
+      references={duplicateLabels}
+      value={{ text: '@Hero image', citations: [{ assetId: 'scene', label: 'Hero image' }] }}
+      onChange={onChange}
+    />);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: '@Hero image2' } });
+
+    expect(onChange).toHaveBeenCalledWith({ text: '@Hero image2', citations: [] });
+  });
+
+  it('keeps only as many duplicate-label citations as explicit token occurrences', () => {
+    const onChange = vi.fn();
+    render(<ImageMentionComposer
+      references={duplicateLabels}
+      value={{
+        text: '@Hero image @Hero image',
+        citations: [
+          { assetId: 'product', label: 'Hero image' },
+          { assetId: 'scene', label: 'Hero image' },
+        ],
+      }}
+      onChange={onChange}
+    />);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: '@Hero image' } });
+
+    expect(onChange).toHaveBeenCalledWith({
+      text: '@Hero image',
+      citations: [{ assetId: 'product', label: 'Hero image' }],
+    });
+  });
 });
