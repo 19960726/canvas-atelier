@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { dirname, join, normalize, resolve, sep } from 'node:path';
+import { basename, dirname, join, normalize, resolve, sep } from 'node:path';
 
 import {
   createKnowledgeSnapshotCandidate,
@@ -331,7 +331,31 @@ export class ManagedKnowledgeStore {
     try {
       await this.assertManagedFile(path);
     } catch (error) {
-      if (isMissingFileError(error)) {
+      if (isMissingOrVanishedFileError(error)) {
+        await this.assertRealManagedWriteTarget(path);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async assertRealManagedWriteTarget(path: string): Promise<void> {
+    const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
+    const realAppDataRoot = normalize(await realpath.call(this.fileSystem, this.appDataRoot));
+    const realKnowledgeRoot = normalize(resolve(realAppDataRoot, 'knowledge'));
+    const realParent = normalize(await realpath.call(this.fileSystem, dirname(path)));
+    const realTargetFromParent = normalize(resolve(realParent, basename(path)));
+    if (!isWithinDirectory(realKnowledgeRoot, realTargetFromParent)) {
+      throw new Error('Managed knowledge directory escaped its managed root');
+    }
+
+    try {
+      const realTarget = normalize(await realpath.call(this.fileSystem, path));
+      if (!isWithinDirectory(realKnowledgeRoot, realTarget)) {
+        throw new Error('Managed knowledge directory escaped its managed root');
+      }
+    } catch (error) {
+      if (isMissingOrVanishedFileError(error)) {
         return;
       }
       throw error;
@@ -798,6 +822,13 @@ function isWithinDirectory(base: string, target: string): boolean {
 
 function isMissingFileError(error: unknown): boolean {
   return isRecord(error) && typeof error.code === 'string' && error.code === 'ENOENT';
+}
+
+function isMissingOrVanishedFileError(error: unknown): boolean {
+  return (
+    isMissingFileError(error) ||
+    (isRecord(error) && error.code === 'UNKNOWN')
+  );
 }
 
 function isErrno(error: unknown, code: string): boolean {
