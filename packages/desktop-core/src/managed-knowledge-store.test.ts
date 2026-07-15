@@ -235,6 +235,22 @@ describe('ManagedKnowledgeStore', () => {
       ...createSnapshot('# version 4', 4),
       displayName: '/opt/private',
     })).rejects.toThrow(/protected/i);
+    await expect(store.publish({
+      ...createSnapshot('# version 5', 5),
+      sourceDeviceId: 'api_key=secret-value',
+    })).rejects.toThrow(/protected/i);
+    await expect(store.publish({
+      ...createSnapshot('# version 6', 6),
+      sourceDeviceId: 'gho_secretvalue',
+    })).rejects.toThrow(/protected/i);
+    await expect(store.publish({
+      ...createSnapshot('# version 7', 7),
+      sourceDeviceId: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signature',
+    })).rejects.toThrow(/protected/i);
+    await expect(store.publish({
+      ...createSnapshot('# version 8', 8),
+      sourceDeviceId: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR42mP8z8AARAAA',
+    })).rejects.toThrow(/protected/i);
     await expect(store.listStates()).resolves.toEqual([expect.objectContaining({
       activeVersion: null,
       versionCount: 0,
@@ -766,6 +782,39 @@ describe('ManagedKnowledgeStore', () => {
     );
 
     await expect(store.rollback('scene-skill', 1)).rejects.toThrow(/snapshot/i);
+    await expect(readJson<KnowledgeBaseStateSummary>(
+      managedKnowledgePaths(appDataRoot, configured.knowledgeRootId).currentPath,
+    )).resolves.toMatchObject({
+      activeVersion: 2,
+      status: 'active',
+    });
+  });
+
+  it('rejects rollback when target snapshot schema metadata was tampered', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    const second = createSnapshot('# version 2', 2);
+    await store.publish(first);
+    await store.publish(second);
+
+    const tampered = {
+      ...first,
+      schemaVersion: 99,
+    };
+    await writeFile(
+      snapshotPath(appDataRoot, configured.knowledgeRootId, first),
+      `${JSON.stringify(tampered)}\n`,
+      'utf8',
+    );
+
+    await expect(store.rollback('scene-skill', 1)).rejects.toThrow(/schema/i);
     await expect(readJson<KnowledgeBaseStateSummary>(
       managedKnowledgePaths(appDataRoot, configured.knowledgeRootId).currentPath,
     )).resolves.toMatchObject({

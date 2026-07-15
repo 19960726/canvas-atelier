@@ -677,6 +677,9 @@ function normalizeSnapshot(input: KnowledgeSnapshot): KnowledgeSnapshot {
   if (!isRecord(input)) {
     throw new Error('Knowledge snapshot is invalid');
   }
+  if (input.schemaVersion !== 1) {
+    throw new Error('Knowledge snapshot schema version is invalid');
+  }
 
   const knowledgeBaseId = requireNonEmptyString(input.knowledgeBaseId, 'knowledgeBaseId');
   const displayName = requireNonEmptyString(input.displayName, 'displayName');
@@ -745,10 +748,13 @@ function scanProtectedMetadata(values: readonly string[]): void {
     String.raw`authorization\s*:`,
     String.raw`bearer\s+[a-z0-9._-]+`,
     String.raw`sk-[a-z0-9_-]{8,}`,
-    String.raw`ghp_[a-z0-9_]{8,}`,
+    String.raw`gh[oprs]_[a-z0-9_]{8,}`,
     String.raw`github_pat_[a-z0-9_]+`,
     String.raw`xox[baprs]-[a-z0-9-]{8,}`,
+    String.raw`(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+`,
+    String.raw`eyJ[a-z0-9_-]*\.[a-z0-9_-]+\.[a-z0-9_-]+`,
     String.raw`data:image\/[a-z0-9.+-]+;base64,`,
+    String.raw`(?:iVBORw0KGgo|\/9j\/|R0lGODlh|R0lGODdh)[a-z0-9+/=]{16,}`,
     String.raw`[a-z]:\\`,
     String.raw`\\\\[^\\\/]+\\[^\\\/]+`,
     String.raw`\/[a-z0-9._-]+(?:\/|$)`,
