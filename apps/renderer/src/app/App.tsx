@@ -6,12 +6,14 @@ let hydrationStarted = false;
 
 export function App() {
   const hydratePersistence = useAppStore((state) => state.hydratePersistence);
+  const initializeKnowledge = useAppStore((state) => state.initializeKnowledge);
 
   useEffect(() => {
     if (hydrationStarted) return;
     hydrationStarted = true;
     void hydratePersistence();
-  }, [hydratePersistence]);
+    void initializeKnowledge();
+  }, [hydratePersistence, initializeKnowledge]);
 
   return <CanvasWorkspace />;
 }

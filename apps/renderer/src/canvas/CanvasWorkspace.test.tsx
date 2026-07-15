@@ -1,13 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PlacementObject, ProjectMemoryEntry } from '@agent-canvas/domain';
+import { createAgentKnowledgeLease, type PlacementObject, type ProjectMemoryEntry } from '@agent-canvas/domain';
 import {
   createStarterProject,
+  replaceKnowledgeClientForTests,
   replaceProjectPersistenceClientForTests,
   resetAppStoreForTests,
   useAppStore,
 } from '../app/app-store';
+import type { KnowledgeClient } from '../app/knowledge-client';
 import type {
   ProjectCommitRequest,
   ProjectCommitResult,
@@ -162,6 +164,52 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(restore).toHaveBeenCalledWith('desktop-after'));
   });
 
+  it('passes store knowledge state and lease pinning into the production reverse agent', async () => {
+    const getLease = vi.fn((runId, capability, references, citations) => createAgentKnowledgeLease({
+      runId,
+      capability,
+      snapshots: [{
+        knowledgeBaseId: 'scene-skill',
+        version: 7,
+        contentHash: 'a'.repeat(64),
+      }],
+      references,
+      citations,
+    }, {
+      leaseId: 'lease-production',
+      createdAt: '2026-07-15T08:00:00.000Z',
+    }));
+    replaceKnowledgeClientForTests(createKnowledgeClient({ getLease }));
+    resetAppStoreForTests();
+    const project = createStarterProject();
+    useAppStore.setState({
+      knowledgeBases: [knowledgeState()],
+      project: {
+        ...project,
+        nodes: project.nodes.map((node) => node.type === 'placement_preview'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                objects: [{
+                  ...node.data.objects[0]!,
+                  assetId: 'uploaded-product',
+                  id: 'uploaded-product',
+                }],
+              },
+            }
+          : node),
+      },
+    });
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: '开始反推' }));
+
+    await waitFor(() => expect(getLease).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('scene-skill@7 updated 2026-07-15T08:00:00.000Z')).toBeInTheDocument();
+    expect(screen.getByText(/Pinned scene-skill@7/)).toBeInTheDocument();
+  });
+
   it('shows a specific notice after desktop revision conflicts', () => {
     resetAppStoreForTests();
     useAppStore.setState({
@@ -277,6 +325,48 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByRole('tab', { name: '计划' })).toHaveFocus();
   });
 });
+
+function createKnowledgeClient(overrides: Partial<KnowledgeClient> = {}): KnowledgeClient {
+  return {
+    configure: overrides.configure ?? (async () => {}),
+    getLease: overrides.getLease ?? (() => createAgentKnowledgeLease({
+      runId: 'fallback-run',
+      capability: 'reverse_prompt',
+      snapshots: [],
+      references: [],
+      citations: [],
+    }, {
+      leaseId: 'fallback-lease',
+      createdAt: '2026-07-15T08:00:00.000Z',
+    })),
+    review: overrides.review ?? (async () => {
+      throw new Error('review not expected');
+    }),
+    start: overrides.start ?? (async () => {}),
+    stop: overrides.stop ?? (() => {}),
+  };
+}
+
+function knowledgeState() {
+  return {
+    schemaVersion: 1 as const,
+    knowledgeBaseId: 'scene-skill',
+    displayName: 'Scene Skill',
+    status: 'active' as const,
+    activeVersion: 7,
+    activeContentHash: 'a'.repeat(64),
+    versionCount: 1,
+    versions: [{
+      version: 7,
+      contentHash: 'a'.repeat(64),
+      publishedAt: '2026-07-15T08:00:00.000Z',
+      sourceDeviceId: 'device-a',
+      displayName: 'Scene Skill',
+    }],
+    lastFailure: null,
+    lastRollbackAt: null,
+  };
+}
 
 function createImmediateBrowserClient(
   overrides: Partial<ProjectPersistenceClient> = {},

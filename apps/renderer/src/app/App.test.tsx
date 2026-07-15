@@ -3,10 +3,12 @@ import '@testing-library/jest-dom/vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createStarterProject,
+  replaceKnowledgeClientForTests,
   replaceProjectPersistenceClientForTests,
   resetAppStoreForTests,
   useAppStore,
 } from './app-store';
+import type { KnowledgeClient } from './knowledge-client';
 import type { ProjectPersistenceClient } from './desktop-persistence';
 import { App, resetAppHydrationForTests } from './App';
 
@@ -42,7 +44,30 @@ describe('App persistence hydration', () => {
     });
     expect(screen.getByText('Desktop Hydrated Project')).toBeInTheDocument();
   });
+
+  it('initializes renderer knowledge on startup', async () => {
+    const start = vi.fn(async () => {});
+    replaceKnowledgeClientForTests(createKnowledgeClient({ start }));
+
+    render(<App />);
+
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  });
 });
+
+function createKnowledgeClient(overrides: Partial<KnowledgeClient> = {}): KnowledgeClient {
+  return {
+    configure: overrides.configure ?? (async () => {}),
+    getLease: overrides.getLease ?? (() => {
+      throw new Error('getLease not expected');
+    }),
+    review: overrides.review ?? (async () => {
+      throw new Error('review not expected');
+    }),
+    start: overrides.start ?? (async () => {}),
+    stop: overrides.stop ?? (() => {}),
+  };
+}
 
 function createHydrationClient(overrides: Partial<ProjectPersistenceClient> = {}): ProjectPersistenceClient {
   return {

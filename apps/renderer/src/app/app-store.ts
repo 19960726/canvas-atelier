@@ -65,6 +65,7 @@ interface AppState {
   closePersistence: () => Promise<void>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
+  getKnowledgeLease: KnowledgeClient['getLease'];
   hydratePersistence: () => Promise<void>;
   initializeKnowledge: () => Promise<void>;
   reviewSkillCandidate: KnowledgeClient['review'];
@@ -148,6 +149,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   configureKnowledgeBase: async (knowledgeBaseId, displayName) => {
     await knowledgeClient.configure(knowledgeBaseId, displayName);
   },
+  getKnowledgeLease: (runId, capability, references, citations) => (
+    knowledgeClient.getLease(runId, capability, references, citations)
+  ),
   hydratePersistence: async () => {
     cancelPendingProjectSave();
     const hydrated = await projectPersistenceClient.hydrate();

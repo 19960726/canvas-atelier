@@ -64,6 +64,8 @@ export function CanvasWorkspace() {
   const saveStatus = useAppStore((state) => state.saveStatus);
   const saveErrorCode = useAppStore((state) => state.saveErrorCode);
   const availableSnapshotIds = useAppStore((state) => state.availableSnapshotIds);
+  const knowledgeBases = useAppStore((state) => state.knowledgeBases);
+  const getKnowledgeLease = useAppStore((state) => state.getKnowledgeLease);
   const draftAgentPlan = useAppStore((state) => state.draftAgentPlan);
   const confirmAgentPlan = useAppStore((state) => state.confirmAgentPlan);
   const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
@@ -109,6 +111,10 @@ export function CanvasWorkspace() {
   });
   const getProjectMemoryIds = () => buildProjectMemoryContext(project.projectMemory, 50)
     .map((memory) => memory.id);
+  const pendingKnowledgeReviewCount = useMemo(
+    () => project.skillPromotionCandidates.filter((candidate) => candidate.reviewStatus === 'pending_review').length,
+    [project.skillPromotionCandidates],
+  );
   const referenceCounts = useMemo(() => {
     const objects = placementNode?.data.objects.filter((object) => !object.assetId.startsWith('starter-')) ?? [];
     return {
@@ -339,6 +345,9 @@ export function CanvasWorkspace() {
               referenceAssetIds={reverseReferenceAssetIds}
               getApprovedMemorySnapshot={getApprovedMemorySnapshot}
               getProjectMemoryIds={getProjectMemoryIds}
+              getKnowledgeLease={getKnowledgeLease}
+              knowledgeBases={knowledgeBases}
+              pendingKnowledgeReviewCount={pendingKnowledgeReviewCount}
               analyze={analyzeReversePromptDraft}
               analysisMode="local_draft"
             />
