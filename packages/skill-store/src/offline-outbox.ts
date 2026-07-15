@@ -194,5 +194,7 @@ function sanitizeError(value: string | undefined): string | undefined {
   return value
     .replace(/Bearer\s+\S+/gi, '[REDACTED_AUTH]')
     .replace(/[A-Za-z]:\\(?:[^\\\s\"]+\\)*[^\\\s\"]+/g, '[REDACTED_PATH]')
+    .replace(/\\\\[^\\\s"]+\\(?:[^\\\s"]+\\)*[^\\\s"]+/g, '[REDACTED_PATH]')
+    .replace(/(?:^|\s)\/(?:Users|home|var|etc)\/[^\s"]+/g, (match) => `${match.startsWith(' ') ? ' ' : ''}[REDACTED_PATH]`)
     .replace(/(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/])/g, '[REDACTED_BASE64]');
 }

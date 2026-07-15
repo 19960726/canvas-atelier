@@ -347,12 +347,18 @@ export class SkillKnowledgePromotionService {
   }
 
   async rollback(knowledgeBaseId: string, version: number, reviewedAt: string): Promise<KnowledgeBaseStateSummary> {
+    const active = this.registry.getActive(knowledgeBaseId);
+    if (!active || version >= active.version) {
+      throw new Error('Rollback target must be older than the current active snapshot');
+    }
     this.registry.rollback(knowledgeBaseId, version, reviewedAt);
     for (const candidate of this.candidates.values()) {
       if (
         candidate.reviewStatus === 'approved'
         && candidate.targetKnowledgeBaseId === knowledgeBaseId
-        && candidate.publishedKnowledgeVersion !== version
+        && candidate.publishedKnowledgeVersion !== undefined
+        && candidate.publishedKnowledgeVersion > version
+        && candidate.publishedKnowledgeVersion <= active.version
       ) {
         this.candidates.set(candidate.id, rollbackSkillPromotionCandidate(candidate, reviewedAt));
       }

@@ -40,13 +40,36 @@ describe('buildSkillPromotionCandidate', () => {
 
   it('rejects invalid or unsafe aggregation inputs through domain parsing', () => {
     const supportA = feedback('feedback-a', { change: ['add heavy liquid'] });
-    const superseded = feedback('feedback-b', { supersedesMemoryId: supportA.id, change: ['replace older evidence'] });
 
     expect(() => buildSkillPromotionCandidate([], metadata())).toThrow(/requires feedback/i);
     expect(() => buildSkillPromotionCandidate([supportA, { ...supportA }], metadata())).toThrow(/duplicate/i);
     expect(() => buildSkillPromotionCandidate([supportA, { ...supportA, id: 'other', projectId: 'project-2' }], metadata())).toThrow(/project/i);
-    expect(() => buildSkillPromotionCandidate([supportA, superseded], metadata())).toThrow(/inactive|superseded/i);
     expect(() => buildSkillPromotionCandidate([{ ...supportA, nextStep: 'Read C:\\private\\notes.md' }], metadata())).toThrow(/private path/i);
+  });
+
+  it('selects active timeline evidence before deterministic output sorting', () => {
+    const oldFeedback = feedback('feedback-old', {
+      projectRevision: 3,
+      createdAt: '2026-07-15T09:10:00.000Z',
+      change: ['old thin splash rule'],
+    });
+    const replacement = feedback('feedback-replacement', {
+      projectRevision: 4,
+      createdAt: '2026-07-15T09:00:00.000Z',
+      change: ['new heavy liquid rule'],
+      supersedesMemoryId: oldFeedback.id,
+    });
+    const stable = feedback('feedback-stable', {
+      projectRevision: 5,
+      createdAt: '2026-07-15T09:05:00.000Z',
+      change: ['keep camera locked'],
+    });
+
+    const candidate = buildSkillPromotionCandidate([oldFeedback, replacement, stable], metadata());
+
+    expect(candidate.sourceProjectMemoryIds).toEqual(['feedback-replacement', 'feedback-stable']);
+    expect(candidate.evidence.change).toEqual(['new heavy liquid rule', 'keep camera locked']);
+    expect(candidate.supportingEvidenceCount).toBe(2);
   });
 });
 

@@ -473,9 +473,75 @@ describe('SkillKnowledgePromotionService', () => {
     });
     expect(service.getCandidate(approved.candidate.id)).toMatchObject({ reviewStatus: 'rolled_back', rolledBackAt: '2026-07-15T10:03:00.000Z' });
   });
+
+  it('rolls back only approvals published after the target through the current active version', async () => {
+    const registry = new KnowledgeSnapshotRegistry();
+    const initial = registry.publish(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# Scene Skill' }],
+    }), { publishedAt: '2026-07-15T10:00:00.000Z', sourceDeviceId: 'device-a' });
+    const writeback = new SkillWritebackService({ now: () => issuedAtMs + 30 });
+    const service = new SkillKnowledgePromotionService({
+      registry,
+      writebackService: writeback,
+      sourceDeviceId: 'device-a',
+      now: () => issuedAtMs + 30,
+    });
+
+    const approvedV2 = await approvePrepared(service, writeback, createCandidate('candidate-v2', 'Use v2 heavy liquid.'), initial, 0.12);
+    const approvedV3 = await approvePrepared(service, writeback, createCandidate('candidate-v3', 'Use v3 heavy liquid.'), approvedV2.snapshot, 0.13);
+    const approvedV4 = await approvePrepared(service, writeback, createCandidate('candidate-v4', 'Use v4 heavy liquid.'), approvedV3.snapshot, 0.14);
+
+    expect(registry.getSummary('scene-skill')).toMatchObject({ status: 'active', activeVersion: 4 });
+
+    const summary = await service.rollback('scene-skill', 3, '2026-07-15T10:04:00.000Z');
+
+    expect(summary).toMatchObject({ status: 'rolled_back', activeVersion: 3 });
+    expect(service.getCandidate(approvedV2.candidate.id)).toMatchObject({ reviewStatus: 'approved', publishedKnowledgeVersion: 2 });
+    expect(service.getCandidate(approvedV3.candidate.id)).toMatchObject({ reviewStatus: 'approved', publishedKnowledgeVersion: 3 });
+    expect(service.getCandidate(approvedV4.candidate.id)).toMatchObject({ reviewStatus: 'rolled_back', publishedKnowledgeVersion: 4 });
+  });
+
+  it('rejects rollback targets that are not older than the current active snapshot', async () => {
+    const registry = new KnowledgeSnapshotRegistry();
+    const current = registry.publish(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# Scene Skill' }],
+    }), { publishedAt: '2026-07-15T10:00:00.000Z', sourceDeviceId: 'device-a' });
+    const service = new SkillKnowledgePromotionService({
+      registry,
+      sourceDeviceId: 'device-a',
+      now: () => issuedAtMs + 40,
+    });
+
+    await expect(service.rollback('scene-skill', current.version, '2026-07-15T10:05:00.000Z')).rejects.toThrow(/older/i);
+    await expect(service.rollback('scene-skill', current.version + 1, '2026-07-15T10:06:00.000Z')).rejects.toThrow(/older/i);
+    expect(registry.getSummary('scene-skill')).toMatchObject({
+      status: 'active',
+      activeVersion: current.version,
+      lastRollbackAt: null,
+    });
+  });
 });
 
-function createCandidate(id = 'candidate-1'): SkillPromotionCandidate {
+async function approvePrepared(
+  service: SkillKnowledgePromotionService,
+  writeback: SkillWritebackService,
+  candidate: SkillPromotionCandidate,
+  current: ReturnType<KnowledgeSnapshotRegistry['getActive']>,
+  random: number,
+) {
+  if (!current) throw new Error('expected current snapshot');
+  const prepared = service.prepare(candidate, current);
+  const token = writeback.issueApproval(prepared.diffHash, { ttlMs: 30_000, now: () => issuedAtMs, random: () => random });
+  const approved = await service.approve(prepared.preparedId, token.approvalToken);
+  if (!approved.ok) throw new Error(`expected approval: ${approved.reason}`);
+  return approved;
+}
+
+function createCandidate(id = 'candidate-1', rule = 'Use slower, heavier liquid arcs around the product.'): SkillPromotionCandidate {
   return {
     schemaVersion: 1,
     id,
@@ -485,7 +551,7 @@ function createCandidate(id = 'candidate-1'): SkillPromotionCandidate {
     createdAt: '2026-07-15T09:59:00.000Z',
     title: 'Heavy liquid rule',
     rationale: 'Repeated feedback asks for heavier liquid.',
-    rule: 'Use slower, heavier liquid arcs around the product.',
+    rule,
     targetKnowledgeBaseId: 'scene-skill',
     targetKnowledgeSection: 'reverse-prompt/liquid',
     counts: { supportingMemoryCount: 1 },

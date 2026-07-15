@@ -159,6 +159,50 @@ describe('offline writeback outbox', () => {
     expect(secondFailure.state.jobs[0]?.nextRetryAt).toBe('2026-07-13T12:00:04.000Z');
   });
 
+  it('sanitizes private UNC and POSIX absolute paths when transferring retry metadata', async () => {
+    const plan = createPlan();
+    const queued = enqueueWritebackJob(createEmptyState(), {
+      target: 'source',
+      plan,
+      historyPath: 'memory/writeback-history.log',
+    }, { now: () => issuedAtMs, random: () => 0.8 });
+    const job = queued.jobs[0]!;
+    const token = createWritebackToken(
+      { target: 'source', diffHash: plan.diffHash, ttlMs: 30_000 },
+      { now: () => issuedAtMs, random: () => 0.81 },
+    );
+    const privateError = [
+      'failed at',
+      ['\\\\', 'server', '\\', 'share', '\\', 'secret.txt'].join(''),
+      ['/Users', 'agent', 'secret.txt'].join('/'),
+      ['/home', 'agent', 'secret.txt'].join('/'),
+      ['/var', 'tmp', 'secret.txt'].join('/'),
+      ['/etc', 'secret.conf'].join('/'),
+    ].join(' ');
+
+    const retrying = await drainWritebackOutbox(queued, {
+      now: () => issuedAtMs + 20,
+      authorizationByJobId: {
+        [job.id]: {
+          approvalToken: token.approvalToken,
+          tokenRecord: token.record,
+        },
+      },
+      performWriteback: async () => ({
+        ok: false,
+        retryable: true,
+        reason: 'provider offline',
+        tokenRecord: token.record,
+        error: privateError,
+      }),
+    });
+
+    const transferred = serializeWritebackOutboxForTransfer(retrying.state);
+
+    expect(transferred.jobs[0]?.lastError).toBe('failed at [REDACTED_PATH] [REDACTED_PATH] [REDACTED_PATH] [REDACTED_PATH] [REDACTED_PATH]');
+    expect(JSON.stringify(transferred)).not.toMatch(/server|share|Users|home|var|etc|secret/);
+  });
+
   it('keeps authorization failures queued with no writes until the user supplies a fresh token', async () => {
     const plan = createPlan();
     const queued = enqueueWritebackJob(createEmptyState(), {

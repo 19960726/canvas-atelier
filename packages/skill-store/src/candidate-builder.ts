@@ -28,23 +28,18 @@ export function buildSkillPromotionCandidate(
 ): AggregatedSkillPromotionCandidate {
   if (entries.length === 0) throw new Error('Skill promotion candidate requires feedback evidence');
   const parsed = entries.map(parseProjectMemoryEntry);
-  const ordered = [...parsed].sort(compareEvidenceOrder);
   const seen = new Set<string>();
-  for (const entry of ordered) {
+  for (const entry of parsed) {
     if (seen.has(entry.id)) throw new Error('Skill promotion candidate cannot contain duplicate source ids');
     seen.add(entry.id);
   }
 
-  const sourceProjectId = ordered[0]!.projectId;
-  if (ordered.some((entry) => entry.projectId !== sourceProjectId)) {
+  const sourceProjectId = parsed[0]!.projectId;
+  if (parsed.some((entry) => entry.projectId !== sourceProjectId)) {
     throw new Error('Skill promotion candidate cannot mix projects');
   }
 
-  const activeIds = new Set(selectActiveProjectMemoryEntries(ordered).map((entry) => entry.id));
-  if (ordered.some((entry) => !activeIds.has(entry.id))) {
-    throw new Error('Skill promotion candidate cannot include inactive or superseded evidence');
-  }
-
+  const ordered = selectActiveProjectMemoryEntries(parsed).sort(compareEvidenceOrder);
   const supportingEvidenceCount = ordered.filter((entry) => entry.feedback.change.length > 0).length;
   const supportingChanges = new Set(ordered.flatMap((entry) => entry.feedback.change));
   const contradictingEvidenceCount = ordered.filter((entry) => entry.feedback.never.some((item) => supportingChanges.has(item))).length;
