@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { open, readFile, readdir, rename, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises';
+import { lstat, open, readFile, readdir, realpath, rename, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 export interface FileHandleLike {
@@ -13,14 +13,17 @@ export interface FileStatLike {
   readonly size?: number;
   isDirectory(): boolean;
   isFile(): boolean;
+  isSymbolicLink?(): boolean;
 }
 
 export interface FileSystem {
+  lstat?(path: string): Promise<FileStatLike>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   open(path: string, flags: string): Promise<FileHandleLike>;
   readFile(path: string, encoding: BufferEncoding): Promise<string>;
   readFileBuffer?(path: string): Promise<Uint8Array>;
   readdir(path: string): Promise<string[]>;
+  realpath?(path: string): Promise<string>;
   rename(source: string, destination: string): Promise<void>;
   rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void>;
   stat(path: string): Promise<FileStatLike>;
@@ -30,6 +33,10 @@ export interface FileSystem {
 }
 
 export class NodeFileSystem implements FileSystem {
+  async lstat(path: string) {
+    return lstat(path);
+  }
+
   async mkdir(path: string, options?: { recursive?: boolean }) {
     await import('node:fs/promises').then((fs) => fs.mkdir(path, options));
   }
@@ -48,6 +55,10 @@ export class NodeFileSystem implements FileSystem {
 
   async readdir(path: string) {
     return readdir(path);
+  }
+
+  async realpath(path: string) {
+    return realpath(path);
   }
 
   async rename(source: string, destination: string) {

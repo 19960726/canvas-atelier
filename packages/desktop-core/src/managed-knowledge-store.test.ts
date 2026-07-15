@@ -1,8 +1,12 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize } from 'node:path';
 
-import { createKnowledgeSnapshotCandidate, type KnowledgeSnapshot } from '@agent-canvas/skill-store';
+import {
+  createKnowledgeSnapshotCandidate,
+  type KnowledgeBaseStateSummary,
+  type KnowledgeSnapshot,
+} from '@agent-canvas/skill-store';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { type FileHandleLike, type FileSystem, NodeFileSystem } from './file-system';
@@ -111,6 +115,212 @@ describe('ManagedKnowledgeStore', () => {
     });
     await expect(store.readActive('scene-skill')).resolves.toEqual(first);
   });
+
+  it('serializes concurrent publishes per knowledge base so versions are not lost', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const sourceRoot = join(tempRoot, 'workspace', 'scene-skill');
+    const initialStore = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await initialStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: sourceRoot,
+    });
+    await initialStore.publish(createSnapshot('# version 1', 1));
+
+    const gate = createPauseGate();
+    const slowStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new PauseOnCurrentMetadataFileSystem(configured.knowledgeRootId, gate),
+    });
+    const fastStore = new ManagedKnowledgeStore({ appDataRoot });
+
+    const publishTwo = slowStore.publish(createSnapshot('# version 2', 2));
+    await gate.entered.promise;
+    const publishThree = fastStore.publish(createSnapshot('# version 3', 3));
+    gate.release.resolve();
+    await publishTwo;
+    await publishThree;
+
+    await expect(initialStore.listStates()).resolves.toEqual([expect.objectContaining({
+      knowledgeBaseId: 'scene-skill',
+      activeVersion: 3,
+      versionCount: 3,
+      versions: [
+        expect.objectContaining({ version: 1 }),
+        expect.objectContaining({ version: 2 }),
+        expect.objectContaining({ version: 3 }),
+      ],
+    })]);
+  });
+
+  it('serializes publish and rollback so the later rollback wins current metadata', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const sourceRoot = join(tempRoot, 'workspace', 'scene-skill');
+    const initialStore = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await initialStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: sourceRoot,
+    });
+    await initialStore.publish(createSnapshot('# version 1', 1));
+
+    const gate = createPauseGate();
+    const slowStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new PauseOnCurrentMetadataFileSystem(configured.knowledgeRootId, gate),
+    });
+    const rollbackStore = new ManagedKnowledgeStore({ appDataRoot });
+
+    const publishTwo = slowStore.publish(createSnapshot('# version 2', 2));
+    await gate.entered.promise;
+    const rollback = rollbackStore.rollback('scene-skill', 1);
+    gate.release.resolve();
+    await publishTwo;
+
+    await expect(rollback).resolves.toMatchObject({
+      knowledgeBaseId: 'scene-skill',
+      status: 'rolled_back',
+      activeVersion: 1,
+    });
+    await expect(initialStore.listStates()).resolves.toEqual([expect.objectContaining({
+      knowledgeBaseId: 'scene-skill',
+      status: 'rolled_back',
+      activeVersion: 1,
+      versionCount: 2,
+    })]);
+  });
+
+  it('rejects publish when snapshots directory resolves outside the managed root', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const outsideRoot = join(tempRoot, 'outside');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+
+    const paths = managedKnowledgePaths(appDataRoot, configured.knowledgeRootId);
+    await mkdir(join(outsideRoot, 'snapshots'), { recursive: true });
+    const redirectedStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new RedirectedManagedPathFileSystem({
+        redirects: [{
+          actualPath: join(outsideRoot, 'snapshots'),
+          lexicalPath: paths.snapshotsDir,
+        }],
+      }),
+    });
+
+    await expect(redirectedStore.publish(createSnapshot('# version 1', 1))).rejects.toThrow(/managed knowledge/i);
+    expect(await readdir(join(outsideRoot, 'snapshots'))).toEqual([]);
+  });
+
+  it('rejects rollback when the knowledge-base directory resolves outside the managed root', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const outsideRoot = join(tempRoot, 'outside');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    await store.publish(createSnapshot('# version 1', 1));
+    await store.publish(createSnapshot('# version 2', 2));
+
+    const paths = managedKnowledgePaths(appDataRoot, configured.knowledgeRootId);
+    await mkdir(join(outsideRoot, 'snapshots'), { recursive: true });
+    await writeFile(
+      join(outsideRoot, 'current.json'),
+      await readFile(paths.currentPath, 'utf8'),
+      'utf8',
+    );
+    for (const snapshotName of await readdir(paths.snapshotsDir)) {
+      await writeFile(
+        join(outsideRoot, 'snapshots', snapshotName),
+        await readFile(join(paths.snapshotsDir, snapshotName)),
+        'utf8',
+      );
+    }
+
+    const redirectedStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new RedirectedManagedPathFileSystem({
+        redirects: [{
+          actualPath: outsideRoot,
+          lexicalPath: paths.baseDir,
+        }],
+      }),
+    });
+
+    await expect(redirectedStore.rollback('scene-skill', 1)).rejects.toThrow(/managed knowledge/i);
+    await expect(readJson<KnowledgeBaseStateSummary>(paths.currentPath)).resolves.toMatchObject({
+      activeVersion: 2,
+      status: 'active',
+    });
+  });
+
+  it('rejects rollback when the target snapshot file is missing and keeps current known-good', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    const second = createSnapshot('# version 2', 2);
+    await store.publish(first);
+    await store.publish(second);
+
+    await rm(snapshotPath(appDataRoot, configured.knowledgeRootId, first), { force: true });
+
+    await expect(store.rollback('scene-skill', 1)).rejects.toThrow(/snapshot/i);
+    await expect(readJson<KnowledgeBaseStateSummary>(
+      managedKnowledgePaths(appDataRoot, configured.knowledgeRootId).currentPath,
+    )).resolves.toMatchObject({
+      activeVersion: 2,
+      status: 'active',
+    });
+  });
+
+  it('rejects rollback when the target snapshot bytes do not match the requested version and knowledge base', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    const second = createSnapshot('# version 2', 2);
+    await store.publish(first);
+    await store.publish(second);
+
+    const tampered = {
+      ...first,
+      knowledgeBaseId: 'other-skill',
+    };
+    await writeFile(
+      snapshotPath(appDataRoot, configured.knowledgeRootId, first),
+      `${JSON.stringify(tampered)}\n`,
+      'utf8',
+    );
+
+    await expect(store.rollback('scene-skill', 1)).rejects.toThrow(/snapshot/i);
+    await expect(readJson<KnowledgeBaseStateSummary>(
+      managedKnowledgePaths(appDataRoot, configured.knowledgeRootId).currentPath,
+    )).resolves.toMatchObject({
+      activeVersion: 2,
+      status: 'active',
+    });
+  });
 });
 
 function createSnapshot(content: string, version: number): KnowledgeSnapshot {
@@ -136,6 +346,28 @@ async function createTempRoot(tempRoots: string[]): Promise<string> {
 
 async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf8')) as T;
+}
+
+function managedKnowledgePaths(appDataRoot: string, knowledgeRootId: string) {
+  const knowledgeRoot = join(appDataRoot, 'knowledge');
+  const baseDir = join(knowledgeRoot, knowledgeRootId);
+  return {
+    baseDir,
+    currentPath: join(baseDir, 'current.json'),
+    knowledgeRoot,
+    snapshotsDir: join(baseDir, 'snapshots'),
+  };
+}
+
+function snapshotPath(
+  appDataRoot: string,
+  knowledgeRootId: string,
+  snapshot: KnowledgeSnapshot,
+): string {
+  return join(
+    managedKnowledgePaths(appDataRoot, knowledgeRootId).snapshotsDir,
+    `v-${snapshot.version}-${snapshot.contentHash.slice(0, 12)}.json`,
+  );
 }
 
 class DelegatingFileSystem implements FileSystem {
@@ -180,6 +412,20 @@ class DelegatingFileSystem implements FileSystem {
     return this.delegate.stat(path);
   }
 
+  async lstat(path: string) {
+    if (!this.delegate.lstat) {
+      throw new Error('lstat unavailable');
+    }
+    return this.delegate.lstat(path);
+  }
+
+  async realpath(path: string): Promise<string> {
+    if (!this.delegate.realpath) {
+      throw new Error('realpath unavailable');
+    }
+    return this.delegate.realpath(path);
+  }
+
   async truncate(path: string, length: number): Promise<void> {
     if (!this.delegate.truncate) {
       throw new Error('truncate unavailable');
@@ -214,4 +460,166 @@ class FailCurrentMetadataFileSystem extends DelegatingFileSystem {
 
 function samePath(path: string, suffix: string): boolean {
   return normalize(path).toLowerCase().endsWith(normalize(suffix).toLowerCase());
+}
+
+interface DeferredVoid {
+  readonly promise: Promise<void>;
+  resolve(): void;
+}
+
+interface PauseGate {
+  readonly entered: DeferredVoid;
+  readonly release: DeferredVoid;
+}
+
+function createPauseGate(): PauseGate {
+  return {
+    entered: createDeferredVoid(),
+    release: createDeferredVoid(),
+  };
+}
+
+function createDeferredVoid(): DeferredVoid {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+class PauseOnCurrentMetadataFileSystem extends DelegatingFileSystem {
+  private pauseCount = 0;
+  private readonly gate: PauseGate;
+  private readonly knowledgeRootId: string;
+
+  constructor(knowledgeRootId: string, gate: PauseGate) {
+    super();
+    this.gate = gate;
+    this.knowledgeRootId = knowledgeRootId;
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    if (
+      this.pauseCount === 0 &&
+      samePath(destination, join('knowledge', this.knowledgeRootId, 'current.json'))
+    ) {
+      this.pauseCount += 1;
+      this.gate.entered.resolve();
+      await this.gate.release.promise;
+    }
+    await super.rename(source, destination);
+  }
+}
+
+interface RedirectedManagedPath {
+  readonly actualPath: string;
+  readonly lexicalPath: string;
+}
+
+class RedirectedManagedPathFileSystem extends DelegatingFileSystem {
+  private readonly redirects: readonly RedirectedManagedPath[];
+
+  constructor(options: {
+    readonly redirects: readonly RedirectedManagedPath[];
+  }) {
+    super();
+    this.redirects = options.redirects
+      .map((redirect) => ({
+        actualPath: normalize(redirect.actualPath),
+        lexicalPath: normalize(redirect.lexicalPath),
+      }))
+      .sort((left, right) => right.lexicalPath.length - left.lexicalPath.length);
+  }
+
+  override async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
+    await super.mkdir(this.mapPath(path), options);
+  }
+
+  override async open(path: string, flags: string): Promise<FileHandleLike> {
+    return super.open(this.mapPath(path), flags);
+  }
+
+  override async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+    return super.readFile(this.mapPath(path), encoding);
+  }
+
+  override async readFileBuffer(path: string): Promise<Uint8Array> {
+    return super.readFileBuffer(this.mapPath(path));
+  }
+
+  override async readdir(path: string): Promise<string[]> {
+    return super.readdir(this.mapPath(path));
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    await super.rename(this.mapPath(source), this.mapPath(destination));
+  }
+
+  override async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    await super.rm(this.mapPath(path), options);
+  }
+
+  override async stat(path: string) {
+    return super.stat(this.mapPath(path));
+  }
+
+  override async lstat(path: string) {
+    const redirect = this.findRedirect(path);
+    if (redirect && sameExactPath(path, redirect.lexicalPath)) {
+      const stat = await super.stat(redirect.actualPath);
+      return {
+        ...stat,
+        isSymbolicLink: () => true,
+      };
+    }
+    return super.lstat(this.mapPath(path));
+  }
+
+  override async realpath(path: string): Promise<string> {
+    const redirect = this.findRedirect(path);
+    if (redirect) {
+      const suffix = normalize(path).slice(redirect.lexicalPath.length);
+      return `${redirect.actualPath}${suffix}`;
+    }
+    return super.realpath(path);
+  }
+
+  override async truncate(path: string, length: number): Promise<void> {
+    await super.truncate(this.mapPath(path), length);
+  }
+
+  override async unlink(path: string): Promise<void> {
+    await super.unlink(this.mapPath(path));
+  }
+
+  override async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
+    await super.writeFile(this.mapPath(path), data, encoding);
+  }
+
+  private mapPath(path: string): string {
+    const redirect = this.findRedirect(path);
+    if (!redirect) {
+      return path;
+    }
+    const normalizedPath = normalize(path);
+    return `${redirect.actualPath}${normalizedPath.slice(redirect.lexicalPath.length)}`;
+  }
+
+  private findRedirect(path: string): RedirectedManagedPath | null {
+    const normalizedPath = normalize(path);
+    for (const redirect of this.redirects) {
+      if (
+        sameExactPath(normalizedPath, redirect.lexicalPath) ||
+        normalizedPath.startsWith(`${redirect.lexicalPath}\\`) ||
+        normalizedPath.startsWith(`${redirect.lexicalPath}/`)
+      ) {
+        return redirect;
+      }
+    }
+    return null;
+  }
+}
+
+function sameExactPath(left: string, right: string): boolean {
+  return normalize(left).toLowerCase() === normalize(right).toLowerCase();
 }

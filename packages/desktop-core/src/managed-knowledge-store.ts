@@ -39,6 +39,8 @@ interface ConfigurationFile {
 }
 
 export class ManagedKnowledgeStore {
+  private static readonly writeLocks = new Map<string, Promise<void>>();
+
   private readonly fileSystem: FileSystem;
   private readonly knowledgeRoot: string;
   private readonly now: () => Date;
@@ -79,18 +81,21 @@ export class ManagedKnowledgeStore {
   async publish(snapshot: KnowledgeSnapshot): Promise<void> {
     const normalizedSnapshot = normalizeSnapshot(snapshot);
     const configuration = await this.requireConfiguration(normalizedSnapshot.knowledgeBaseId);
-    const current = await this.readSummaryFile(configuration.knowledgeRootId)
-      ?? createEmptySummary(configuration);
-    const next = applyPublishedSnapshot(current, normalizedSnapshot);
-    const snapshotPath = this.snapshotPath(configuration.knowledgeRootId, normalizedSnapshot.version, normalizedSnapshot.contentHash);
 
-    await this.ensureKnowledgeDirectories(configuration.knowledgeRootId);
-    await writeAtomic(
-      this.fileSystem,
-      snapshotPath,
-      `${canonicalJson(normalizedSnapshot)}\n`,
-    );
-    await this.writeSummaryFile(configuration.knowledgeRootId, next);
+    await this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      const current = await this.readSummaryFile(configuration.knowledgeRootId)
+        ?? createEmptySummary(configuration);
+      const next = applyPublishedSnapshot(current, normalizedSnapshot);
+      const snapshotPath = this.snapshotPath(configuration.knowledgeRootId, normalizedSnapshot.version, normalizedSnapshot.contentHash);
+
+      await this.ensureKnowledgeDirectories(configuration.knowledgeRootId);
+      await writeAtomic(
+        this.fileSystem,
+        snapshotPath,
+        `${canonicalJson(normalizedSnapshot)}\n`,
+      );
+      await this.writeSummaryFile(configuration.knowledgeRootId, next);
+    });
   }
 
   async readActive(knowledgeBaseId: string): Promise<KnowledgeSnapshot | null> {
@@ -110,27 +115,18 @@ export class ManagedKnowledgeStore {
       return null;
     }
 
-    const snapshotPath = this.snapshotPath(configuration.knowledgeRootId, metadata.version, metadata.contentHash);
-    let raw: string;
     try {
-      raw = await this.fileSystem.readFile(snapshotPath, 'utf8');
+      return await this.readSnapshotFile(configuration.knowledgeRootId, {
+        knowledgeBaseId: summary.knowledgeBaseId,
+        version: metadata.version,
+        contentHash: metadata.contentHash,
+      });
     } catch (error) {
-      if (isMissingFileError(error)) {
+      if (isMissingSnapshotFileError(error)) {
         return null;
       }
       throw error;
     }
-
-    const snapshot = normalizeSnapshot(JSON.parse(raw) as KnowledgeSnapshot);
-    if (
-      snapshot.knowledgeBaseId !== summary.knowledgeBaseId ||
-      snapshot.version !== metadata.version ||
-      snapshot.contentHash !== metadata.contentHash
-    ) {
-      throw new Error('Managed knowledge snapshot metadata mismatch');
-    }
-
-    return snapshot;
   }
 
   async listStates(): Promise<KnowledgeBaseStateSummary[]> {
@@ -144,31 +140,39 @@ export class ManagedKnowledgeStore {
 
   async rollback(knowledgeBaseId: string, version: number): Promise<KnowledgeBaseStateSummary> {
     const configuration = await this.requireConfiguration(knowledgeBaseId);
-    const current = await this.readSummaryFile(configuration.knowledgeRootId);
-    if (current === null) {
-      throw new Error('Unknown knowledge base');
-    }
+    return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      const current = await this.readSummaryFile(configuration.knowledgeRootId);
+      if (current === null) {
+        throw new Error('Unknown knowledge base');
+      }
 
-    const target = current.versions.find((candidate) => candidate.version === version);
-    if (target === undefined) {
-      throw new Error('Unknown knowledge snapshot version');
-    }
+      const target = current.versions.find((candidate) => candidate.version === version);
+      if (target === undefined) {
+        throw new Error('Unknown knowledge snapshot version');
+      }
 
-    const next: KnowledgeBaseStateSummary = {
-      schemaVersion: 1,
-      knowledgeBaseId: current.knowledgeBaseId,
-      displayName: target.displayName,
-      status: 'rolled_back',
-      activeVersion: target.version,
-      activeContentHash: target.contentHash,
-      versionCount: current.versions.length,
-      versions: current.versions.map(cloneVersionSummary).sort(compareVersionSummaries),
-      lastFailure: current.lastFailure ? { ...current.lastFailure } : null,
-      lastRollbackAt: this.now().toISOString(),
-    };
+      await this.readSnapshotFile(configuration.knowledgeRootId, {
+        knowledgeBaseId: current.knowledgeBaseId,
+        version: target.version,
+        contentHash: target.contentHash,
+      });
 
-    await this.writeSummaryFile(configuration.knowledgeRootId, next);
-    return cloneSummary(next);
+      const next: KnowledgeBaseStateSummary = {
+        schemaVersion: 1,
+        knowledgeBaseId: current.knowledgeBaseId,
+        displayName: target.displayName,
+        status: 'rolled_back',
+        activeVersion: target.version,
+        activeContentHash: target.contentHash,
+        versionCount: current.versions.length,
+        versions: current.versions.map(cloneVersionSummary).sort(compareVersionSummaries),
+        lastFailure: current.lastFailure ? { ...current.lastFailure } : null,
+        lastRollbackAt: this.now().toISOString(),
+      };
+
+      await this.writeSummaryFile(configuration.knowledgeRootId, next);
+      return cloneSummary(next);
+    });
   }
 
   private async requireConfiguration(id: string): Promise<InternalKnowledgeConfiguration> {
@@ -233,6 +237,94 @@ export class ManagedKnowledgeStore {
     await this.fileSystem.mkdir(this.knowledgeRoot, { recursive: true });
     await this.fileSystem.mkdir(this.knowledgeBaseDirectory(knowledgeRootId), { recursive: true });
     await this.fileSystem.mkdir(this.snapshotDirectory(knowledgeRootId), { recursive: true });
+    await this.assertManagedDirectory(this.knowledgeRoot);
+    await this.assertManagedDirectory(this.knowledgeBaseDirectory(knowledgeRootId));
+    await this.assertManagedDirectory(this.snapshotDirectory(knowledgeRootId));
+  }
+
+  private async readSnapshotFile(
+    knowledgeRootId: string,
+    metadata: {
+      readonly knowledgeBaseId: string;
+      readonly version: number;
+      readonly contentHash: string;
+    },
+  ): Promise<KnowledgeSnapshot> {
+    await this.assertManagedDirectory(this.knowledgeBaseDirectory(knowledgeRootId));
+    await this.assertManagedDirectory(this.snapshotDirectory(knowledgeRootId));
+
+    const snapshotPath = this.snapshotPath(knowledgeRootId, metadata.version, metadata.contentHash);
+    let raw: string;
+    try {
+      raw = await this.fileSystem.readFile(snapshotPath, 'utf8');
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        throw new Error('Managed knowledge snapshot file is missing');
+      }
+      throw error;
+    }
+
+    const snapshot = normalizeSnapshot(JSON.parse(raw) as KnowledgeSnapshot);
+    if (
+      snapshot.knowledgeBaseId !== metadata.knowledgeBaseId ||
+      snapshot.version !== metadata.version ||
+      snapshot.contentHash !== metadata.contentHash
+    ) {
+      throw new Error('Managed knowledge snapshot metadata mismatch');
+    }
+
+    return snapshot;
+  }
+
+  private async assertManagedDirectory(path: string): Promise<void> {
+    const lstat = await this.requireFileSystemMethod('lstat', this.fileSystem.lstat).call(this.fileSystem, path);
+    if (
+      typeof lstat.isDirectory !== 'function' ||
+      !lstat.isDirectory() ||
+      lstat.isSymbolicLink?.()
+    ) {
+      throw new Error('Managed knowledge directory escaped its managed root');
+    }
+
+    const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
+    const realRoot = normalize(await realpath.call(this.fileSystem, this.knowledgeRoot));
+    const realTarget = normalize(await realpath.call(this.fileSystem, path));
+    if (!isWithinDirectory(realRoot, realTarget)) {
+      throw new Error('Managed knowledge directory escaped its managed root');
+    }
+  }
+
+  private requireFileSystemMethod<Name extends 'lstat' | 'realpath'>(
+    name: Name,
+    method: FileSystem[Name],
+  ): NonNullable<FileSystem[Name]> {
+    if (method === undefined) {
+      throw new Error(`Managed knowledge storage requires file system ${name}`);
+    }
+    return method;
+  }
+
+  private async withKnowledgeWriteLock<T>(
+    knowledgeRootId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const lockKey = normalize(this.currentMetadataPath(knowledgeRootId)).toLowerCase();
+    const previous = ManagedKnowledgeStore.writeLocks.get(lockKey) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const current = previous.then(() => new Promise<void>((resolveRelease) => {
+      release = resolveRelease;
+    }));
+    ManagedKnowledgeStore.writeLocks.set(lockKey, current);
+
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (ManagedKnowledgeStore.writeLocks.get(lockKey) === current) {
+        ManagedKnowledgeStore.writeLocks.delete(lockKey);
+      }
+    }
   }
 
   private configurationFilePath(): string {
@@ -587,14 +679,22 @@ function createKnowledgeRootId(knowledgeBaseId: string): string {
 function confinedJoin(base: string, ...segments: string[]): string {
   const resolvedBase = resolve(base);
   const target = resolve(resolvedBase, ...segments);
-  if (target !== resolvedBase && !target.startsWith(`${resolvedBase}${sep}`)) {
+  if (!isWithinDirectory(resolvedBase, target)) {
     throw new Error('Managed knowledge path escaped its base directory');
   }
   return target;
 }
 
+function isWithinDirectory(base: string, target: string): boolean {
+  return target === base || target.startsWith(`${base}${sep}`);
+}
+
 function isMissingFileError(error: unknown): boolean {
   return isRecord(error) && typeof error.code === 'string' && error.code === 'ENOENT';
+}
+
+function isMissingSnapshotFileError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'Managed knowledge snapshot file is missing';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
