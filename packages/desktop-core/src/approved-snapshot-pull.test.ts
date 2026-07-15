@@ -334,6 +334,61 @@ describe('ApprovedSnapshotPullCoordinator', () => {
     expect(pullApprovedSnapshot).toHaveBeenLastCalledWith('scene-skill', 'cursor-preserved');
     await coordinator.stop();
   });
+
+  it('does not let a removed and re-added base publish or advance cursors from an older blocked pull generation', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const brandRoot = join(dirname(fixture.appDataRoot), 'source', 'brand-rules');
+    await mkdir(brandRoot, { recursive: true });
+    await fixture.store.configure({ knowledgeBaseId: 'brand-rules', displayName: 'Brand Rules', rootPath: brandRoot });
+    await fixture.store.publish(createSnapshotFor('brand-rules', 'Brand Rules', '# local brand version 1', 1));
+    const firstPullStarted = deferred<void>();
+    const releaseFirstPull = deferred<void>();
+    const emittedVersions: number[] = [];
+    const pullApprovedSnapshot = vi.fn(async (knowledgeBaseId: string, cursor?: string) => {
+      if (knowledgeBaseId !== 'brand-rules') {
+        return { snapshot: null, cursor };
+      }
+      if (pullApprovedSnapshot.mock.calls.filter(([id]) => id === 'brand-rules').length === 1) {
+        firstPullStarted.resolve();
+        await releaseFirstPull.promise;
+        return {
+          snapshot: createSnapshotFor('brand-rules', 'Brand Rules', '# remote brand version 2', 2),
+          cursor: 'cursor-brand-first',
+        };
+      }
+      return {
+        snapshot: createSnapshotFor('brand-rules', 'Brand Rules', '# remote brand version 3', 3),
+        cursor: 'cursor-brand-second',
+      };
+    });
+    const coordinator = createCoordinator(fixture, { pullApprovedSnapshot });
+    coordinator.subscribe((state) => {
+      if (state.knowledgeBaseId === 'brand-rules') {
+        emittedVersions.push(state.activeVersion ?? -1);
+      }
+    });
+
+    await coordinator.start([]);
+    const firstConfigure = coordinator.updateConfiguredKnowledgeBases(['brand-rules']);
+    await firstPullStarted.promise;
+    const removed = coordinator.updateConfiguredKnowledgeBases([]);
+    const readded = coordinator.updateConfiguredKnowledgeBases(['brand-rules']);
+    releaseFirstPull.resolve();
+    await Promise.all([firstConfigure, removed, readded]);
+
+    expect(pullApprovedSnapshot.mock.calls.filter(([id]) => id === 'brand-rules')).toEqual([
+      ['brand-rules', undefined],
+      ['brand-rules', undefined],
+    ]);
+    expect(emittedVersions).toEqual([3]);
+    await expect(fixture.store.readActive('brand-rules')).resolves.toMatchObject({ version: 3 });
+    const cursorState = JSON.parse(await readFile(
+      join(fixture.appDataRoot, 'sync', 'approved-snapshot-pull-cursors.json'),
+      'utf8',
+    ));
+    expect(cursorState).toEqual({ schemaVersion: 1, cursors: { 'brand-rules': 'cursor-brand-second' } });
+    await coordinator.stop();
+  });
   it('awaits an in-flight pull and publish during stop', async () => {
     const fixture = await createPullFixture(tempRoots);
     const started = deferred<void>();

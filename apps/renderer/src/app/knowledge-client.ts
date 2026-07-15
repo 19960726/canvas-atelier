@@ -53,6 +53,13 @@ export function createKnowledgeClient(): KnowledgeClient {
     states = sortStates(nextStates.map(cloneSummary));
     listener?.(states.map(cloneSummary));
   };
+  const mergeSummary = (
+    current: KnowledgeBaseStateSummary | undefined,
+    incoming: KnowledgeBaseStateSummary,
+  ): KnowledgeBaseStateSummary => {
+    if (current === undefined) return cloneSummary(incoming);
+    return isNewerSummary(current, incoming) ? cloneSummary(incoming) : cloneSummary(current);
+  };
   const publishSync = (status: KnowledgeSyncStatusSummary) => {
     if (stopped) return;
     const existing = syncStatuses.find((item) => item.knowledgeBaseId === status.knowledgeBaseId);
@@ -65,8 +72,9 @@ export function createKnowledgeClient(): KnowledgeClient {
   };
   const upsert = (summary: KnowledgeBaseStateSummary | null) => {
     if (!summary || stopped) return;
-    const next = states.filter((state) => state.knowledgeBaseId !== summary.knowledgeBaseId);
-    publish([...next, summary]);
+    const byId = new Map(states.map((state) => [state.knowledgeBaseId, cloneSummary(state)]));
+    byId.set(summary.knowledgeBaseId, mergeSummary(byId.get(summary.knowledgeBaseId), summary));
+    publish([...byId.values()]);
   };
 
   return {
@@ -86,13 +94,13 @@ export function createKnowledgeClient(): KnowledgeClient {
         return;
       }
 
-      const bufferedStates: KnowledgeBaseStateSummary[] = [];
+      const bufferedStates = new Map<string, KnowledgeBaseStateSummary>();
       let hydrationPending = true;
       try {
         unsubscribeState = bridge.subscribeKnowledgeState((summary) => {
           if (stopped || activeRun !== run || summary === null) return;
           if (hydrationPending) {
-            bufferedStates.push(cloneSummary(summary));
+            bufferedStates.set(summary.knowledgeBaseId, mergeSummary(bufferedStates.get(summary.knowledgeBaseId), summary));
             return;
           }
           upsert(summary);
@@ -102,21 +110,22 @@ export function createKnowledgeClient(): KnowledgeClient {
         });
         const hydrated = await bridge.getKnowledgeState();
         if (stopped || activeRun !== run) return;
-        publish([...hydrated.states]);
+        for (const summary of hydrated.states) {
+          upsert(summary);
+        }
         for (const status of hydrated.syncStatuses ?? []) {
           publishSync(status);
         }
         hydrationPending = false;
-        for (const summary of bufferedStates) {
+        for (const summary of bufferedStates.values()) {
           upsert(summary);
         }
       } catch {
         if (stopped || activeRun !== run) return;
-        unsubscribeState?.();
-        unsubscribeSync?.();
-        unsubscribeState = undefined;
-        unsubscribeSync = undefined;
-        publish([]);
+        hydrationPending = false;
+        for (const summary of bufferedStates.values()) {
+          upsert(summary);
+        }
         publishSync(createOfflineSyncStatus('desktop-bridge', 'Desktop knowledge bridge unavailable'));
       }
     },
@@ -189,6 +198,20 @@ function cloneSyncStatus(status: KnowledgeSyncStatusSummary): KnowledgeSyncStatu
 
 function sortStates(input: KnowledgeBaseStateSummary[]): KnowledgeBaseStateSummary[] {
   return [...input].sort((left, right) => left.knowledgeBaseId.localeCompare(right.knowledgeBaseId));
+}
+
+function isNewerSummary(
+  current: KnowledgeBaseStateSummary,
+  incoming: KnowledgeBaseStateSummary,
+): boolean {
+  const currentRevision = current.stateRevision;
+  const incomingRevision = incoming.stateRevision;
+  if (typeof currentRevision === 'number' || typeof incomingRevision === 'number') {
+    if (typeof incomingRevision !== 'number') return false;
+    if (typeof currentRevision !== 'number') return true;
+    return incomingRevision > currentRevision;
+  }
+  return false;
 }
 
 function createOfflineSyncStatus(knowledgeBaseId: string, reason: string): KnowledgeSyncStatusSummary {

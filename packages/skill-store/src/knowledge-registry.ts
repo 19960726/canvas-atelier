@@ -28,6 +28,7 @@ export interface KnowledgeBaseStateSummary {
   status: 'empty' | 'active' | 'fallback' | 'rolled_back';
   activeVersion: number | null;
   activeContentHash: string | null;
+  stateRevision?: number;
   versionCount: number;
   versions: Array<{
     version: number;

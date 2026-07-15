@@ -199,6 +199,7 @@ export class ManagedKnowledgeStore {
         status: current.activeVersion === null ? 'empty' : 'fallback',
         activeVersion: current.activeVersion,
         activeContentHash: current.activeContentHash,
+        stateRevision: nextStateRevision(current),
         versionCount: current.versionCount,
         versions: current.versions.map(cloneVersionSummary).sort(compareVersionSummaries),
         lastFailure: {
@@ -537,6 +538,7 @@ export class ManagedKnowledgeStore {
         status: 'rolled_back',
         activeVersion: target.version,
         activeContentHash: target.contentHash,
+        stateRevision: nextStateRevision(current),
         versionCount: current.versions.length,
         versions: current.versions.map(cloneVersionSummary).sort(compareVersionSummaries),
         lastFailure: current.lastFailure ? { ...current.lastFailure } : null,
@@ -1004,6 +1006,7 @@ export class ManagedKnowledgeStore {
       status: 'rolled_back',
       activeVersion: target.version,
       activeContentHash: target.contentHash,
+      stateRevision: nextStateRevision(current),
       versionCount: current.versions.length,
       versions: current.versions.map(cloneVersionSummary).sort(compareVersionSummaries),
       lastFailure: current.lastFailure ? { ...current.lastFailure } : null,
@@ -1046,7 +1049,7 @@ function applyPublishedSnapshot(
       displayName: snapshot.displayName,
     }].sort(compareVersionSummaries);
 
-  return {
+  const next: KnowledgeBaseStateSummary = {
     schemaVersion: 1,
     knowledgeBaseId: snapshot.knowledgeBaseId,
     displayName: snapshot.displayName,
@@ -1058,6 +1061,10 @@ function applyPublishedSnapshot(
     lastFailure: null,
     lastRollbackAt: null,
   };
+  next.stateRevision = hasSummaryChanged(current, next)
+    ? nextStateRevision(current)
+    : current.stateRevision ?? inferLegacyStateRevision(current);
+  return next;
 }
 
 function normalizeStageMetadata(input: {
@@ -1195,6 +1202,69 @@ function allocateNextRetainedVersion(current: KnowledgeBaseStateSummary): number
   return current.versions.reduce((max, version) => Math.max(max, version.version), current.activeVersion ?? 0) + 1;
 }
 
+function normalizeStateRevision(value: unknown, summary: KnowledgeBaseStateSummary): number {
+  if (value === undefined) {
+    return inferLegacyStateRevision(summary);
+  }
+  return requireNonNegativeInteger(value, 'stateRevision');
+}
+
+function nextStateRevision(current: KnowledgeBaseStateSummary): number {
+  return (current.stateRevision ?? inferLegacyStateRevision(current)) + 1;
+}
+
+function inferLegacyStateRevision(summary: KnowledgeBaseStateSummary): number {
+  const versionFloor = Math.max(
+    summary.versionCount,
+    summary.activeVersion ?? 0,
+    ...summary.versions.map((version) => version.version),
+  );
+  const statusOffset = summary.status === 'empty'
+    ? 0
+    : summary.status === 'active'
+      ? 1
+      : summary.status === 'fallback'
+        ? 2
+        : 3;
+  return (versionFloor * 4) + statusOffset;
+}
+
+function hasSummaryChanged(current: KnowledgeBaseStateSummary, next: KnowledgeBaseStateSummary): boolean {
+  return current.knowledgeBaseId !== next.knowledgeBaseId
+    || current.displayName !== next.displayName
+    || current.status !== next.status
+    || current.activeVersion !== next.activeVersion
+    || current.activeContentHash !== next.activeContentHash
+    || current.versionCount !== next.versionCount
+    || current.lastRollbackAt !== next.lastRollbackAt
+    || !sameLastFailure(current.lastFailure, next.lastFailure)
+    || !sameVersionSummaries(current.versions, next.versions);
+}
+
+function sameLastFailure(
+  left: KnowledgeBaseStateSummary['lastFailure'],
+  right: KnowledgeBaseStateSummary['lastFailure'],
+): boolean {
+  if (left === right) return true;
+  if (left === null || right === null) return false;
+  return left.reason === right.reason && left.failedAt === right.failedAt;
+}
+
+function sameVersionSummaries(
+  left: readonly KnowledgeBaseStateSummary['versions'][number][],
+  right: readonly KnowledgeBaseStateSummary['versions'][number][],
+): boolean {
+  return left.length === right.length && left.every((version, index) => {
+    const candidate = right[index];
+    return candidate !== undefined
+      && candidate.version === version.version
+      && candidate.contentHash === version.contentHash
+      && candidate.publishedAt === version.publishedAt
+      && candidate.sourceDeviceId === version.sourceDeviceId
+      && candidate.displayName === version.displayName;
+  });
+}
+
 function cloneSnapshot(snapshot: KnowledgeSnapshot): KnowledgeSnapshot {
   return {
     schemaVersion: 1,
@@ -1307,7 +1377,7 @@ function normalizeSummary(input: KnowledgeBaseStateSummary): KnowledgeBaseStateS
     throw new Error('Managed knowledge state summary active content hash mismatch');
   }
 
-  return {
+  const summary: KnowledgeBaseStateSummary = {
     schemaVersion: 1,
     knowledgeBaseId,
     displayName,
@@ -1319,6 +1389,8 @@ function normalizeSummary(input: KnowledgeBaseStateSummary): KnowledgeBaseStateS
     lastFailure: normalizeLastFailure(input.lastFailure),
     lastRollbackAt: normalizeNullableDateString(input.lastRollbackAt, 'lastRollbackAt'),
   };
+  summary.stateRevision = normalizeStateRevision(input.stateRevision, summary);
+  return summary;
 }
 
 function normalizeSnapshot(input: KnowledgeSnapshot): KnowledgeSnapshot {
@@ -1485,6 +1557,7 @@ function createEmptySummary(configuration: InternalKnowledgeConfiguration): Know
     status: 'empty',
     activeVersion: null,
     activeContentHash: null,
+    stateRevision: 0,
     versionCount: 0,
     versions: [],
     lastFailure: null,
@@ -1521,6 +1594,7 @@ function cloneSummary(summary: KnowledgeBaseStateSummary): KnowledgeBaseStateSum
     status: summary.status,
     activeVersion: summary.activeVersion,
     activeContentHash: summary.activeContentHash,
+    stateRevision: summary.stateRevision,
     versionCount: summary.versionCount,
     versions: summary.versions.map(cloneVersionSummary),
     lastFailure: summary.lastFailure ? { ...summary.lastFailure } : null,

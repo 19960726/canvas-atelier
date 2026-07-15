@@ -53,6 +53,7 @@ const DEFAULT_STALE_AGE_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_STALE_OWNER_TEMP_CLEANUP = 16;
 const ATOMIC_LINK_ERROR_MESSAGE = 'Confined file lock requires atomic hard-link support on the app-data volume';
+const OWNER_PUBLICATION_ERROR_MESSAGE = 'Confined file lock owner publication failed';
 const PROCESS_SESSION_FINGERPRINT = createHash('sha256')
   .update(`${process.pid}:${Date.now()}:${randomBytes(16).toString('hex')}`, 'utf8')
   .digest('hex');
@@ -164,7 +165,7 @@ async function tryPublishOwner(
     } catch (error) {
       if (isErrno(error, 'EEXIST')) return false;
       if (isAtomicLinkCapabilityError(error)) throw new Error(ATOMIC_LINK_ERROR_MESSAGE);
-      throw error;
+      throw new Error(sanitizeOwnerPublicationError(error));
     }
     return true;
   } finally {
@@ -403,6 +404,20 @@ function isAtomicLinkCapabilityError(error: unknown): boolean {
   return ['EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EXDEV']
     .some((code) => isErrno(error, code));
 }
+
+function sanitizeOwnerPublicationError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const sanitized = raw
+    .replace(/[A-Za-z]:\\(?:[^\\\s"]+\\)*[^\\\s"]+/g, '[REDACTED_PATH]')
+    .replace(/\\\\[^\\\s]+\\(?:[^\\\s"]+\\)*[^\\\s"]+/g, '[REDACTED_PATH]')
+    .replace(/(?:^|\s)\/(?:Users|home|var|etc|opt|tmp)\/[^\s"]+/g, ' [REDACTED_PATH]')
+    .trim();
+  if (!sanitized || sanitized.includes('[REDACTED_PATH]')) {
+    return OWNER_PUBLICATION_ERROR_MESSAGE;
+  }
+  return `${OWNER_PUBLICATION_ERROR_MESSAGE}: ${sanitized.slice(0, 160)}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }

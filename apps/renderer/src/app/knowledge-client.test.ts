@@ -61,12 +61,68 @@ describe('KnowledgeClient', () => {
 
     const start = client.start(() => undefined);
     expect(stateListener).toBeDefined();
-    stateListener?.(knowledgeState({ version: 2, hashPrefix: 'b' }));
-    resolveHydration({ states: [knowledgeState({ version: 1, hashPrefix: 'a' })] });
+    stateListener?.(knowledgeState({ version: 2, hashPrefix: 'b', stateRevision: 2 }));
+    resolveHydration({ states: [knowledgeState({ version: 1, hashPrefix: 'a', stateRevision: 1 })] });
     await start;
 
     expect(client.getLease('run-after-race', 'reverse_prompt', references, []).versionKey)
       .toBe(`scene-skill@2:${'b'.repeat(12)}`);
+  });
+
+  it('prefers a newer buffered rollback over an older hydrated active snapshot', async () => {
+    let stateListener: ((state: KnowledgeBaseStateSummary) => void) | undefined;
+    let resolveHydration!: (value: KnowledgeStateBridgeResult) => void;
+    const hydration = new Promise<KnowledgeStateBridgeResult>((resolve) => { resolveHydration = resolve; });
+    window.novusDesktop = createBridge({
+      getKnowledgeState: vi.fn(() => hydration),
+      subscribeKnowledgeState: vi.fn((next) => {
+        stateListener = next;
+        return () => undefined;
+      }),
+    });
+    const client = createKnowledgeClient();
+    const states: KnowledgeBaseStateSummary[][] = [];
+
+    const start = client.start((next) => states.push(next));
+    stateListener?.(knowledgeState({ version: 2, hashPrefix: 'b', stateRevision: 8, status: 'rolled_back' }));
+    resolveHydration({ states: [knowledgeState({ version: 3, hashPrefix: 'c', stateRevision: 7 })] });
+    await start;
+
+    expect(states[states.length - 1]?.[0]).toMatchObject({
+      activeVersion: 2,
+      stateRevision: 8,
+      status: 'rolled_back',
+    });
+    expect(client.getLease('run-buffered-rollback', 'reverse_prompt', references, []).versionKey)
+      .toBe(`scene-skill@2:${'b'.repeat(12)}`);
+  });
+
+  it('keeps newer hydrated fallback state over a stale buffered higher version', async () => {
+    let stateListener: ((state: KnowledgeBaseStateSummary) => void) | undefined;
+    let resolveHydration!: (value: KnowledgeStateBridgeResult) => void;
+    const hydration = new Promise<KnowledgeStateBridgeResult>((resolve) => { resolveHydration = resolve; });
+    window.novusDesktop = createBridge({
+      getKnowledgeState: vi.fn(() => hydration),
+      subscribeKnowledgeState: vi.fn((next) => {
+        stateListener = next;
+        return () => undefined;
+      }),
+    });
+    const client = createKnowledgeClient();
+    const states: KnowledgeBaseStateSummary[][] = [];
+
+    const start = client.start((next) => states.push(next));
+    stateListener?.(knowledgeState({ version: 4, hashPrefix: 'd', stateRevision: 8 }));
+    resolveHydration({ states: [knowledgeState({ version: 3, hashPrefix: 'c', stateRevision: 9, status: 'fallback' })] });
+    await start;
+
+    expect(states[states.length - 1]?.[0]).toMatchObject({
+      activeVersion: 3,
+      stateRevision: 9,
+      status: 'fallback',
+    });
+    expect(client.getLease('run-hydrated-fallback', 'reverse_prompt', references, []).versionKey)
+      .toBe(`scene-skill@3:${'c'.repeat(12)}`);
   });
 
   it('ignores buffered events and hydration from a stopped start after restart', async () => {
@@ -94,6 +150,51 @@ describe('KnowledgeClient', () => {
 
     expect(unsubscribes[0]).toHaveBeenCalledOnce();
     expect(client.getLease('run-after-restart', 'reverse_prompt', references, []).versionKey)
+      .toBe(`scene-skill@3:${'c'.repeat(12)}`);
+  });
+
+  it('keeps live knowledge state after hydration failure and reports a sanitized offline sync state', async () => {
+    let stateListener: ((state: KnowledgeBaseStateSummary) => void) | undefined;
+    let rejectHydration!: (reason?: unknown) => void;
+    const hydration = new Promise<KnowledgeStateBridgeResult>((_resolve, reject) => { rejectHydration = reject; });
+    const unsubscribeState = vi.fn();
+    const unsubscribeSync = vi.fn();
+    window.novusDesktop = createBridge({
+      getKnowledgeState: vi.fn(() => hydration),
+      subscribeKnowledgeState: vi.fn((next) => {
+        stateListener = next;
+        return unsubscribeState;
+      }),
+      subscribeKnowledgeSyncStatus: vi.fn(() => unsubscribeSync),
+    });
+    const client = createKnowledgeClient();
+    const states: KnowledgeBaseStateSummary[][] = [];
+    const syncStatuses: Array<{ status: string; reason: string | null }> = [];
+
+    const start = client.start(
+      (next) => states.push(next),
+      (status) => syncStatuses.push({
+        status: status.status,
+        reason: status.lastFailure?.reason ?? null,
+      }),
+    );
+    stateListener?.(knowledgeState({ version: 2, hashPrefix: 'b', stateRevision: 2 }));
+    rejectHydration(new Error(String.raw`Authorization: Bearer secret at C:\Users\Private\sync.json`));
+    await start;
+
+    expect(unsubscribeState).not.toHaveBeenCalled();
+    expect(unsubscribeSync).not.toHaveBeenCalled();
+    expect(states[states.length - 1]?.[0]).toMatchObject({
+      activeVersion: 2,
+      stateRevision: 2,
+    });
+    expect(syncStatuses[syncStatuses.length - 1]).toEqual({
+      status: 'offline',
+      reason: 'Desktop knowledge bridge unavailable',
+    });
+
+    stateListener?.(knowledgeState({ version: 3, hashPrefix: 'c', stateRevision: 3 }));
+    expect(client.getLease('run-after-hydration-failure', 'reverse_prompt', references, []).versionKey)
       .toBe(`scene-skill@3:${'c'.repeat(12)}`);
   });
   it('hydrates initial state, applies subscription events, and unsubscribes on stop', async () => {
@@ -297,6 +398,7 @@ function createBridge(overrides: Partial<typeof window.novusDesktop>): typeof wi
 function knowledgeState(options: {
   hashPrefix: string;
   knowledgeBaseId?: string;
+  stateRevision?: number;
   status?: KnowledgeBaseStateSummary['status'];
   version: number;
 }): KnowledgeBaseStateSummary {
@@ -308,6 +410,7 @@ function knowledgeState(options: {
     status: options.status ?? 'active',
     activeVersion: options.version,
     activeContentHash: options.hashPrefix.repeat(64),
+    stateRevision: options.stateRevision ?? options.version,
     versionCount: options.version,
     versions: [{
       version: options.version,
@@ -316,7 +419,11 @@ function knowledgeState(options: {
       sourceDeviceId: 'device-1',
       displayName: `${knowledgeBaseId} display`,
     }],
-    lastFailure: null,
-    lastRollbackAt: null,
+    lastFailure: options.status === 'fallback'
+      ? { reason: 'refresh failed', failedAt: '2026-07-16T04:00:00.000Z' }
+      : null,
+    lastRollbackAt: options.status === 'rolled_back'
+      ? '2026-07-16T04:00:00.000Z'
+      : null,
   };
 }

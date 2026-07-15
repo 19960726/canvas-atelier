@@ -38,6 +38,21 @@ describe('confined file lock', () => {
     expect(fileSystem.events).toEqual(expect.arrayContaining([expect.stringMatching(/^sync:/), expect.stringMatching(/^link:/)]));
   });
 
+  it('sanitizes unexpected hard-link publication failures without leaking temp or lock paths', async () => {
+    const fileSystem = new MemoryLockFileSystem();
+    fileSystem.failLinkWith = Object.assign(
+      new Error(`publish failed for ${ownerTempPath('d'.repeat(64))} -> ${LOCK_PATH}`),
+      { code: 'PROCESS_CRASH' },
+    );
+
+    const error = await acquireConfinedFileLock(LOCK_PATH, options(fileSystem))
+      .then(() => null, (caught) => caught as Error);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toMatch(/owner publication failed/i);
+    expect(error?.message).not.toMatch(/state\.lock|owner-|C:\\app-data/u);
+  });
+
   it.each(['ENOSYS', 'EPERM'] as const)(
     'returns a sanitized actionable error when atomic hard-link publication fails with %s',
     async (code) => {

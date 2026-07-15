@@ -1453,6 +1453,9 @@ function sanitizeKnowledgeSummary(state: KnowledgeBaseStateSummary): KnowledgeBa
     activeContentHash: state.activeContentHash === null
       ? null
       : parseHash(state.activeContentHash, 'activeContentHash'),
+    ...(state.stateRevision === undefined
+      ? {}
+      : { stateRevision: parseNonNegativeInteger(state.stateRevision, 'stateRevision') }),
     versionCount: parseNonNegativeInteger(state.versionCount, 'versionCount'),
     versions: Array.isArray(state.versions)
       ? state.versions.map((version) => ({

@@ -61,6 +61,7 @@ export class ApprovedSnapshotPullCoordinator {
   private readonly setTimer: (listener: () => void, intervalMs: number) => unknown;
   private readonly store: ApprovedSnapshotPullStore;
   private readonly syncRoot: string;
+  private configurationGeneration = 0;
   private configurationUpdates: Promise<void> = Promise.resolve();
   private inFlight: Promise<void> | null = null;
   private knowledgeBaseIds: string[] = [];
@@ -104,11 +105,7 @@ export class ApprovedSnapshotPullCoordinator {
 
   async start(knowledgeBaseIds: string[]): Promise<void> {
     await this.stop();
-    this.knowledgeBaseIds = normalizeKnowledgeBaseIds(knowledgeBaseIds);
-    const configuredIds = new Set(this.knowledgeBaseIds);
-    for (const knowledgeBaseId of this.latestSyncStatuses.keys()) {
-      if (!configuredIds.has(knowledgeBaseId)) this.latestSyncStatuses.delete(knowledgeBaseId);
-    }
+    this.setConfiguredKnowledgeBases(knowledgeBaseIds);
     this.stopped = false;
     if (this.client !== null) {
       this.timer = this.setTimer(() => {
@@ -120,14 +117,10 @@ export class ApprovedSnapshotPullCoordinator {
 
   async updateConfiguredKnowledgeBases(knowledgeBaseIds: string[]): Promise<void> {
     const nextIds = normalizeKnowledgeBaseIds(knowledgeBaseIds);
+    const generation = this.setConfiguredKnowledgeBases(nextIds);
+    if (this.stopped || nextIds.length === 0) return;
     const update = this.configurationUpdates.then(async () => {
-      const nextIdSet = new Set(nextIds);
-      this.knowledgeBaseIds = nextIds;
-      for (const knowledgeBaseId of this.latestSyncStatuses.keys()) {
-        if (!nextIdSet.has(knowledgeBaseId)) this.latestSyncStatuses.delete(knowledgeBaseId);
-      }
-      if (this.stopped || nextIds.length === 0) return;
-      await this.pullKnowledgeBaseIdsAfterCurrent(nextIds);
+      await this.pullKnowledgeBaseIdsAfterCurrent(nextIds, generation);
     });
     this.configurationUpdates = update.catch(() => undefined);
     return update;
@@ -137,7 +130,7 @@ export class ApprovedSnapshotPullCoordinator {
     if (this.inFlight !== null) {
       return this.inFlight;
     }
-    return this.startPull(this.knowledgeBaseIds, trigger);
+    return this.startPull(this.knowledgeBaseIds, trigger, this.configurationGeneration);
   }
 
   async stop(): Promise<void> {
@@ -149,19 +142,34 @@ export class ApprovedSnapshotPullCoordinator {
     await Promise.all([this.inFlight, this.configurationUpdates]);
   }
 
-  private async pullKnowledgeBaseIdsAfterCurrent(knowledgeBaseIds: string[]): Promise<void> {
+  private setConfiguredKnowledgeBases(knowledgeBaseIds: readonly string[]): number {
+    const nextIds = normalizeKnowledgeBaseIds(knowledgeBaseIds);
+    this.configurationGeneration += 1;
+    this.knowledgeBaseIds = nextIds;
+    const configuredIds = new Set(nextIds);
+    for (const knowledgeBaseId of this.latestSyncStatuses.keys()) {
+      if (!configuredIds.has(knowledgeBaseId)) this.latestSyncStatuses.delete(knowledgeBaseId);
+    }
+    return this.configurationGeneration;
+  }
+
+  private async pullKnowledgeBaseIdsAfterCurrent(
+    knowledgeBaseIds: readonly string[],
+    generation: number,
+  ): Promise<void> {
     await this.inFlight;
     if (this.stopped) return;
-    const configuredIds = knowledgeBaseIds.filter((knowledgeBaseId) => this.isConfigured(knowledgeBaseId));
+    const configuredIds = knowledgeBaseIds.filter((knowledgeBaseId) => this.isPullAuthorized(knowledgeBaseId, generation));
     if (configuredIds.length === 0) return;
-    await this.startPull(configuredIds, 'configuration');
+    await this.startPull(configuredIds, 'configuration', generation);
   }
 
   private startPull(
     knowledgeBaseIds: readonly string[],
     trigger: 'startup' | 'poll' | 'configuration',
+    generation: number,
   ): Promise<void> {
-    const operation = this.pullKnowledgeBaseIds([...knowledgeBaseIds], trigger)
+    const operation = this.pullKnowledgeBaseIds([...knowledgeBaseIds], trigger, generation)
       .finally(() => {
         if (this.inFlight === operation) this.inFlight = null;
       });
@@ -172,51 +180,52 @@ export class ApprovedSnapshotPullCoordinator {
   private async pullKnowledgeBaseIds(
     knowledgeBaseIds: readonly string[],
     _trigger: 'startup' | 'poll' | 'configuration',
+    generation: number,
   ): Promise<void> {
     if (this.client === null) {
-      this.emitOfflineForKnowledgeBases(knowledgeBaseIds, 'Approved snapshot sync is unavailable');
+      this.emitOfflineForKnowledgeBases(knowledgeBaseIds, generation, 'Approved snapshot sync is unavailable');
       return;
     }
     if (!this.isOnline()) {
-      this.emitOfflineForKnowledgeBases(knowledgeBaseIds, 'Network unavailable');
+      this.emitOfflineForKnowledgeBases(knowledgeBaseIds, generation, 'Network unavailable');
       return;
     }
     for (const knowledgeBaseId of knowledgeBaseIds) {
-      if (!this.isConfigured(knowledgeBaseId)) continue;
+      if (!this.isPullAuthorized(knowledgeBaseId, generation)) continue;
       if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
         continue;
       }
       this.emitSyncStatus(knowledgeBaseId, 'syncing');
       try {
         const outcome = await this.withLock<PullApplyOutcome>(this.pullLockPath(knowledgeBaseId), async () => {
-          if (!this.isConfigured(knowledgeBaseId)
+          if (!this.isPullAuthorized(knowledgeBaseId, generation)
             || await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
             return 'deferred';
           }
           const cursor = await this.readCursor(knowledgeBaseId);
           const result = await this.client!.pullApprovedSnapshot(knowledgeBaseId, cursor);
-          if (!this.isConfigured(knowledgeBaseId)) return 'deferred';
+          if (!this.isPullAuthorized(knowledgeBaseId, generation)) return 'deferred';
           const snapshot = result.snapshot === null
             ? null
             : knowledgeSnapshotSyncSchema.parse(result.snapshot);
           const nextCursor = result.cursor === undefined ? undefined : normalizeCursor(result.cursor);
           if (snapshot !== null) {
-            const applied = await this.applyRemoteSnapshot(knowledgeBaseId, snapshot);
+            const applied = await this.applyRemoteSnapshot(knowledgeBaseId, snapshot, generation);
             if (applied !== 'updated') return applied;
           }
-          if (nextCursor !== undefined) {
+          if (nextCursor !== undefined && this.isPullAuthorized(knowledgeBaseId, generation)) {
             await this.writeCursor(knowledgeBaseId, nextCursor);
           }
           return 'updated';
         });
-        if (!this.isConfigured(knowledgeBaseId)) continue;
+        if (!this.isPullAuthorized(knowledgeBaseId, generation)) continue;
         if (outcome === 'conflict') {
           this.emitSyncStatus(knowledgeBaseId, 'conflict', 'Approved snapshot version conflict');
         } else if (outcome === 'updated') {
           this.emitSyncStatus(knowledgeBaseId, 'updated');
         }
       } catch {
-        if (this.isConfigured(knowledgeBaseId)) {
+        if (this.isPullAuthorized(knowledgeBaseId, generation)) {
           this.emitSyncStatus(knowledgeBaseId, 'offline', 'Approved snapshot pull failed');
         }
       }
@@ -226,8 +235,9 @@ export class ApprovedSnapshotPullCoordinator {
   private async applyRemoteSnapshot(
     knowledgeBaseId: string,
     snapshot: KnowledgeSnapshot,
+    generation: number,
   ): Promise<PullApplyOutcome> {
-    if (!this.isConfigured(knowledgeBaseId)) return 'deferred';
+    if (!this.isPullAuthorized(knowledgeBaseId, generation)) return 'deferred';
     if (snapshot.knowledgeBaseId !== knowledgeBaseId) {
       return 'conflict';
     }
@@ -251,10 +261,10 @@ export class ApprovedSnapshotPullCoordinator {
     if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
       return 'deferred';
     }
-    if (!this.isConfigured(knowledgeBaseId)) return 'deferred';
+    if (!this.isPullAuthorized(knowledgeBaseId, generation)) return 'deferred';
     await this.store.publish(snapshot);
     const next = (await this.store.listStates()).find((state) => state.knowledgeBaseId === knowledgeBaseId);
-    if (next !== undefined && this.isConfigured(knowledgeBaseId)) {
+    if (next !== undefined && this.isPullAuthorized(knowledgeBaseId, generation)) {
       this.emit(next);
     }
     return 'updated';
@@ -267,9 +277,13 @@ export class ApprovedSnapshotPullCoordinator {
     }
   }
 
-  private emitOfflineForKnowledgeBases(knowledgeBaseIds: readonly string[], reason: string): void {
+  private emitOfflineForKnowledgeBases(
+    knowledgeBaseIds: readonly string[],
+    generation: number,
+    reason: string,
+  ): void {
     for (const knowledgeBaseId of knowledgeBaseIds) {
-      if (this.isConfigured(knowledgeBaseId)) {
+      if (this.isPullAuthorized(knowledgeBaseId, generation)) {
         this.emitSyncStatus(knowledgeBaseId, 'offline', reason);
       }
     }
@@ -277,6 +291,11 @@ export class ApprovedSnapshotPullCoordinator {
 
   private isConfigured(knowledgeBaseId: string): boolean {
     return this.knowledgeBaseIds.includes(knowledgeBaseId);
+  }
+
+  private isPullAuthorized(knowledgeBaseId: string, generation: number): boolean {
+    return generation === this.configurationGeneration
+      && this.isConfigured(knowledgeBaseId);
   }
 
   private emitSyncStatus(
