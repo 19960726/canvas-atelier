@@ -26,3 +26,9 @@ export type { ApplyWritebackResult, PlannedWriteFile, WritebackPlan } from './wr
 
 export { drainWritebackOutbox, enqueueWritebackJob, retryWritebackJob, serializeWritebackOutboxForTransfer } from './offline-outbox';
 export type { WritebackOutboxJob, WritebackOutboxJobStatus, WritebackOutboxState } from './offline-outbox';
+
+export { createKnowledgeSnapshotCandidate } from './knowledge-snapshot';
+export type { KnowledgeDocument, KnowledgeSnapshotCandidate } from './knowledge-snapshot';
+
+export { KnowledgeSnapshotRegistry } from './knowledge-registry';
+export type { KnowledgeBaseState, KnowledgeBaseStateSummary, KnowledgeSnapshot } from './knowledge-registry';
