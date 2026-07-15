@@ -23,11 +23,17 @@ import {
   type ProjectPersistenceClient,
   type ProjectSaveStatus,
 } from './desktop-persistence';
+import {
+  createKnowledgeClient,
+  type KnowledgeBaseStateSummary,
+  type KnowledgeClient,
+} from './knowledge-client';
 import { loadPersistedProjectBundle } from './project-persistence';
 
 let planSequence = 0;
 let pendingSave: ReturnType<typeof setTimeout> | undefined;
 let projectPersistenceClient = createProjectPersistenceClient();
+let knowledgeClient = createKnowledgeClient();
 
 interface UndoEntry {
   transaction: CanvasTransaction;
@@ -48,6 +54,7 @@ interface AppState {
   persistenceMode: 'browser' | 'desktop';
   desktopRevision: number;
   availableSnapshotIds: string[];
+  knowledgeBases: KnowledgeBaseStateSummary[];
   saveStatus: ProjectSaveStatus;
   saveErrorCode: string | null;
   agentPanelCollapsed: boolean;
@@ -57,7 +64,10 @@ interface AppState {
   confirmedModelJobs: number;
   closePersistence: () => Promise<void>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
+  configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
   hydratePersistence: () => Promise<void>;
+  initializeKnowledge: () => Promise<void>;
+  reviewSkillCandidate: KnowledgeClient['review'];
   setActiveTool: (tool: AppState['activeTool']) => void;
   toggleAgentPanel: () => void;
   setProject: (project: CanvasProject, options?: SetProjectOptions) => void;
@@ -97,6 +107,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   ...initialState,
   closePersistence: async () => {
     cancelPendingProjectSave();
+    knowledgeClient.stop();
     await projectPersistenceClient.close();
   },
   commitProjectTransaction: async (transaction, options = {}) => {
@@ -134,6 +145,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     return applyCommitResult(set, get, result);
   },
+  configureKnowledgeBase: async (knowledgeBaseId, displayName) => {
+    await knowledgeClient.configure(knowledgeBaseId, displayName);
+  },
   hydratePersistence: async () => {
     cancelPendingProjectSave();
     const hydrated = await projectPersistenceClient.hydrate();
@@ -145,6 +159,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveErrorCode: null,
       saveStatus: hydrated.saveStatus,
     });
+  },
+  initializeKnowledge: async () => {
+    await knowledgeClient.start((knowledgeBases) => set({ knowledgeBases }));
+  },
+  reviewSkillCandidate: async (request) => {
+    const result = await knowledgeClient.review(request);
+    set((state) => ({
+      desktopRevision: result.currentRevision,
+      knowledgeBases: result.knowledgeState
+        ? upsertKnowledgeSummary(state.knowledgeBases, result.knowledgeState)
+        : state.knowledgeBases,
+      project: {
+        ...state.project,
+        skillPromotionCandidates: state.project.skillPromotionCandidates.map((candidate) => (
+          candidate.id === result.candidate.id ? result.candidate : candidate
+        )),
+      },
+    }));
+    return result;
   },
   setActiveTool: (activeTool) => set({ activeTool }),
   toggleAgentPanel: () => set((state) => ({ agentPanelCollapsed: !state.agentPanelCollapsed })),
@@ -329,8 +362,14 @@ export function replaceProjectPersistenceClientForTests(client: ProjectPersisten
   projectPersistenceClient = client;
 }
 
+export function replaceKnowledgeClientForTests(client: KnowledgeClient): void {
+  knowledgeClient.stop();
+  knowledgeClient = client;
+}
+
 export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
+  knowledgeClient.stop();
   useAppStore.setState(createInitialState());
 }
 
@@ -404,7 +443,7 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   const restoredProject = desktopMode ? null : loadPersistedProjectBundle()?.current;
   return {
@@ -414,6 +453,7 @@ function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'd
     availableSnapshotIds: desktopMode ? [] : readAvailableSnapshotIds(),
     confirmedModelJobs: 0,
     desktopRevision: 0,
+    knowledgeBases: [],
     persistenceMode: desktopMode ? 'desktop' : 'browser',
     project: restoredProject ?? createStarterProject(),
     saveErrorCode: null,
@@ -564,6 +604,16 @@ function isPromotableMemory(timeline: ProjectMemoryEntry[], memory: ProjectMemor
 
 function readAvailableSnapshotIds(): string[] {
   return loadPersistedProjectBundle()?.snapshots.map((snapshot) => snapshot.id) ?? [];
+}
+
+function upsertKnowledgeSummary(
+  states: KnowledgeBaseStateSummary[],
+  nextState: KnowledgeBaseStateSummary,
+): KnowledgeBaseStateSummary[] {
+  return [
+    ...states.filter((state) => state.knowledgeBaseId !== nextState.knowledgeBaseId),
+    nextState,
+  ].sort((left, right) => left.knowledgeBaseId.localeCompare(right.knowledgeBaseId));
 }
 
 function sanitizeProjectSkillPromotionCandidates(project: CanvasProject): CanvasProject {

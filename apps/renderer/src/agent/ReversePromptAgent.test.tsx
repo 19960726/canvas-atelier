@@ -3,10 +3,14 @@ import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   UNCONFIGURED_KNOWLEDGE_VERSION_KEY,
+  createAgentKnowledgeLease,
+  type AgentKnowledgeLease,
   type ApprovedMemorySnapshot,
+  type OrderedReference,
   type ReversePromptRun,
   type ReversePromptResult,
 } from '@agent-canvas/domain';
+import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import { ReversePromptAgent } from './ReversePromptAgent';
 
 afterEach(() => cleanup());
@@ -22,11 +26,11 @@ function resultFor(run: ReversePromptRun): ReversePromptResult {
     sessionId: run.sessionId,
     nonce: run.nonce,
     knowledgeSnapshotVersion: run.knowledgeLease.versionKey,
-    analysis: `本次分析 ${run.nonce}`,
-    keywords: [`新关键词-${run.nonce}`],
-    positivePrompt: '高端产品主视觉，严格保持产品身份。',
-    negativeConstraints: ['禁止修改 Logo'],
-    executionChecklist: ['核对产品身份'],
+    analysis: `analysis ${run.nonce}`,
+    keywords: [`keyword-${run.nonce}`],
+    positivePrompt: 'premium product visual',
+    negativeConstraints: ['do not alter logo'],
+    executionChecklist: ['verify product identity'],
   };
 }
 
@@ -41,15 +45,16 @@ function renderAgent(overrides: Partial<React.ComponentProps<typeof ReversePromp
 }
 
 describe('ReversePromptAgent', () => {
-  it('renders honest dedicated Skill and persona controls', () => {
+  it('renders dedicated skill, persona controls, and local draft mode', () => {
     renderAgent({ analysisMode: 'local_draft' });
-    expect(screen.getByLabelText('反推 Agent')).toBeVisible();
-    expect(screen.getByText('场景 Skill')).toBeVisible();
-    expect(screen.getByLabelText('反推角色')).toHaveDisplayValue('高级商业视觉设计师 + 产品摄影指导 + 提示词工程师');
-    expect(screen.getByLabelText('编辑 Skill')).toBeDisabled();
-    expect(screen.getByLabelText('更多操作')).toBeDisabled();
-    expect(screen.getByText('本地草稿，未调用模型')).toBeVisible();
-    expect(screen.getByRole('button', { name: '开始反推' })).toBeEnabled();
+
+    expect(document.querySelector('.reverse-agent')).not.toBeNull();
+    expect(document.querySelector('.reverse-agent__skill strong')).toBeVisible();
+    expect(document.querySelector('select')).toHaveValue('commercial_visual_director');
+    expect(document.querySelectorAll('.reverse-agent__tools button')[0]).toBeDisabled();
+    expect(document.querySelectorAll('.reverse-agent__tools button')[1]).toBeDisabled();
+    expect(document.querySelector('.reverse-agent__mode')).toBeVisible();
+    expect(runButton()).toBeEnabled();
     expect(screen.getByText('1 / 20')).toBeVisible();
   });
 
@@ -62,9 +67,9 @@ describe('ReversePromptAgent', () => {
     const analyze = vi.fn(async (run: ReversePromptRun) => resultFor(run));
     renderAgent({ getApprovedMemorySnapshot, analyze });
 
-    fireEvent.click(screen.getByRole('button', { name: '开始反推' }));
+    fireEvent.click(runButton());
     await waitFor(() => expect(analyze).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole('button', { name: '开始反推' }));
+    fireEvent.click(runButton());
     await waitFor(() => expect(analyze).toHaveBeenCalledTimes(2));
 
     const first = analyze.mock.calls[0]![0];
@@ -77,8 +82,8 @@ describe('ReversePromptAgent', () => {
     expect(second.sessionId).toBe(second.knowledgeLease.runId);
     expect(first.knowledgeLease.versionKey).toBe(UNCONFIGURED_KNOWLEDGE_VERSION_KEY);
     expect(second.nonce).not.toBe(first.nonce);
-    expect(screen.getAllByText('本次新生成')).toHaveLength(2);
-    expect(screen.getByText(`新关键词-${second.nonce}`)).toBeVisible();
+    expect(document.querySelectorAll('.reverse-result')).toHaveLength(2);
+    expect(screen.getByText(`keyword-${second.nonce}`)).toBeVisible();
   });
 
   it('blocks concurrent starts before the running state rerenders', async () => {
@@ -87,25 +92,122 @@ describe('ReversePromptAgent', () => {
       finish = (value) => resolve(value);
     }));
     renderAgent({ analyze });
-    const start = screen.getByRole('button', { name: '开始反推' });
 
-    start.click();
-    start.click();
+    runButton().click();
+    runButton().click();
     expect(analyze).toHaveBeenCalledTimes(1);
 
     const run = analyze.mock.calls[0]![0];
     finish?.(resultFor(run));
-    await waitFor(() => expect(screen.getByText('分析')).toBeVisible());
+    await waitFor(() => expect(document.querySelector('.reverse-result')).not.toBeNull());
   });
 
   it('shows every structured reverse-prompt section', async () => {
     renderAgent();
-    fireEvent.click(screen.getByRole('button', { name: '开始反推' }));
-    await waitFor(() => expect(screen.getByText('分析')).toBeVisible());
-    expect(screen.getByText('新关键词')).toBeVisible();
-    expect(screen.getByText('反推正向提示词')).toBeVisible();
-    expect(screen.getByText('负面约束')).toBeVisible();
-    expect(screen.getByText('执行检查清单')).toBeVisible();
+    fireEvent.click(runButton());
+    await waitFor(() => expect(document.querySelector('.reverse-result')).not.toBeNull());
+
+    expect(screen.getByText(/^analysis /)).toBeVisible();
+    expect(screen.getByText('premium product visual')).toBeVisible();
+    expect(screen.getByText('do not alter logo')).toBeVisible();
+    expect(screen.getByText('verify product identity')).toBeVisible();
     expect(screen.getByText(UNCONFIGURED_KNOWLEDGE_VERSION_KEY)).toBeVisible();
   });
+
+  it('gets a knowledge lease exactly once per run and keeps history visible after fallback refresh', async () => {
+    let finish: ((value: ReversePromptResult) => void) | undefined;
+    let activeVersion = 1;
+    const getKnowledgeLease = vi.fn((
+      runId: string,
+      capability: 'reverse_prompt',
+      references: OrderedReference[],
+    ) => leaseFor(runId, capability, references, activeVersion));
+    const analyze = vi.fn((run: ReversePromptRun) => new Promise<ReversePromptResult>((resolve) => {
+      finish = (value) => resolve(value);
+    }));
+    const props: React.ComponentProps<typeof ReversePromptAgent> = {
+      projectId: 'project-1',
+      referenceAssetIds: ['asset-1'],
+      getApprovedMemorySnapshot: () => approvedMemorySnapshot,
+      analyze,
+      getKnowledgeLease,
+      knowledgeBases: [knowledgeState({ status: 'active', version: 1 })],
+    };
+    const view = render(<ReversePromptAgent {...props} />);
+
+    fireEvent.click(runButton());
+    await waitFor(() => expect(analyze).toHaveBeenCalledTimes(1));
+    const firstRun = analyze.mock.calls[0]![0];
+    activeVersion = 2;
+    view.rerender(<ReversePromptAgent
+      {...props}
+      knowledgeBases={[knowledgeState({ status: 'fallback', version: 2 })]}
+    />);
+
+    expect(getKnowledgeLease).toHaveBeenCalledTimes(1);
+    expect(firstRun.knowledgeLease.versionKey).toBe(`scene-skill@1:${'a'.repeat(12)}`);
+
+    finish?.(resultFor(firstRun));
+    await waitFor(() => expect(document.querySelector('.reverse-result')).not.toBeNull());
+
+    expect(screen.getByRole('status')).toHaveTextContent(/fallback/i);
+    expect(screen.getByText(`scene-skill@1:${'a'.repeat(12)}`)).toBeVisible();
+
+    fireEvent.click(runButton());
+    await waitFor(() => expect(getKnowledgeLease).toHaveBeenCalledTimes(2));
+    const secondRun = analyze.mock.calls[1]![0];
+    expect(secondRun.knowledgeLease.versionKey).toBe(`scene-skill@2:${'a'.repeat(12)}`);
+  });
 });
+
+function runButton(): HTMLButtonElement {
+  const button = document.querySelector<HTMLButtonElement>('.reverse-agent__run');
+  if (!button) throw new Error('Reverse prompt run button was not rendered');
+  return button;
+}
+
+function leaseFor(
+  runId: string,
+  capability: 'reverse_prompt',
+  references: OrderedReference[],
+  version: number,
+): AgentKnowledgeLease {
+  return createAgentKnowledgeLease({
+    runId,
+    capability,
+    snapshots: [{
+      knowledgeBaseId: 'scene-skill',
+      version,
+      contentHash: 'a'.repeat(64),
+    }],
+    references,
+    citations: [],
+  }, {
+    leaseId: `lease-${runId}`,
+    createdAt: '2026-07-15T08:00:00.000Z',
+  });
+}
+
+function knowledgeState(options: {
+  status: KnowledgeBaseStateSummary['status'];
+  version: number;
+}): KnowledgeBaseStateSummary {
+  return {
+    schemaVersion: 1,
+    knowledgeBaseId: 'scene-skill',
+    displayName: 'Scene Skill',
+    status: options.status,
+    activeVersion: options.version,
+    activeContentHash: 'a'.repeat(64),
+    versionCount: options.version,
+    versions: [{
+      version: options.version,
+      contentHash: 'a'.repeat(64),
+      publishedAt: '2026-07-15T08:00:00.000Z',
+      sourceDeviceId: 'device-1',
+      displayName: 'Scene Skill',
+    }],
+    lastFailure: null,
+    lastRollbackAt: null,
+  };
+}

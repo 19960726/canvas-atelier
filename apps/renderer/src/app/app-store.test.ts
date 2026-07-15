@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommitAck } from '@agent-canvas/desktop-core';
 import { buildProjectMemoryContext } from '@agent-canvas/domain';
-import type { ProjectTransaction } from '@agent-canvas/domain';
+import type { ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
+import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   createStarterProject,
+  replaceKnowledgeClientForTests,
   replaceProjectPersistenceClientForTests,
   resetAppStoreForTests,
   useAppStore,
 } from './app-store';
+import type { KnowledgeClient } from './knowledge-client';
 import { createBrowserPersistenceClient } from './desktop-persistence';
 import type {
   ProjectCommitRequest,
@@ -287,6 +290,52 @@ describe('project optimization memory', () => {
 
     expect(useAppStore.getState().project.skillPromotionCandidates).toEqual([]);
   });
+
+  it('initializes, configures, and reviews knowledge through the renderer client without root paths', async () => {
+    const pendingCandidate = createSkillCandidate('candidate-1', 'pending_review');
+    const approvedCandidate = createSkillCandidate('candidate-1', 'approved');
+    const client = createMockKnowledgeClient({
+      initialStates: [knowledgeState({ version: 1, hashPrefix: 'a' })],
+      reviewResult: {
+        projectId: 'local-project',
+        currentRevision: 11,
+        candidate: approvedCandidate,
+        knowledgeState: knowledgeState({ version: 2, hashPrefix: 'b' }),
+      },
+    });
+    replaceKnowledgeClientForTests(client);
+    resetAppStoreForTests();
+    useAppStore.setState((state) => ({
+      project: {
+        ...state.project,
+        skillPromotionCandidates: [pendingCandidate],
+      },
+    }));
+
+    await useAppStore.getState().initializeKnowledge();
+    await useAppStore.getState().configureKnowledgeBase('scene-skill', 'Scene Skill');
+    await useAppStore.getState().reviewSkillCandidate({
+      projectId: 'local-project',
+      candidateId: 'candidate-1',
+      decision: 'approved',
+    });
+
+    expect(client.start).toHaveBeenCalledTimes(1);
+    expect(client.configure).toHaveBeenCalledWith('scene-skill', 'Scene Skill');
+    expect(JSON.stringify(client.configure.mock.calls)).not.toContain('root');
+    expect(client.review).toHaveBeenCalledWith({
+      projectId: 'local-project',
+      candidateId: 'candidate-1',
+      decision: 'approved',
+    });
+    expect(useAppStore.getState().knowledgeBases.map((state) => state.activeVersion)).toEqual([2]);
+    expect(useAppStore.getState().project.skillPromotionCandidates).toMatchObject([{
+      id: 'candidate-1',
+      reviewStatus: 'approved',
+    }]);
+    expect(useAppStore.getState().desktopRevision).toBe(11);
+    expect(JSON.stringify(useAppStore.getState().knowledgeBases)).not.toContain('E:\\');
+  });
 });
 
 function deferred<T>() {
@@ -352,5 +401,76 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient>): Project
         revision: result.revision,
       };
     }),
+  };
+}
+
+function createMockKnowledgeClient(options: {
+  initialStates: KnowledgeBaseStateSummary[];
+  reviewResult: Awaited<ReturnType<KnowledgeClient['review']>>;
+}): KnowledgeClient & {
+  configure: ReturnType<typeof vi.fn<KnowledgeClient['configure']>>;
+  review: ReturnType<typeof vi.fn<KnowledgeClient['review']>>;
+  start: ReturnType<typeof vi.fn<KnowledgeClient['start']>>;
+} {
+  let listener: ((states: KnowledgeBaseStateSummary[]) => void) | undefined;
+  const client = {
+    start: vi.fn(async (next: (states: KnowledgeBaseStateSummary[]) => void) => {
+      listener = next;
+      listener(options.initialStates);
+    }),
+    stop: vi.fn(),
+    configure: vi.fn(async (_knowledgeBaseId: string, _displayName: string) => {
+      listener?.(options.initialStates);
+    }),
+    review: vi.fn(async (_request) => {
+      if (options.reviewResult.knowledgeState) {
+        listener?.([options.reviewResult.knowledgeState]);
+      }
+      return options.reviewResult;
+    }),
+    getLease: vi.fn(),
+  };
+  return client;
+}
+
+function createSkillCandidate(
+  id: string,
+  reviewStatus: SkillPromotionCandidate['reviewStatus'],
+): SkillPromotionCandidate {
+  return {
+    schemaVersion: 1,
+    id,
+    sourceProjectId: 'local-project',
+    sourceProjectMemoryId: 'memory-1',
+    createdAt: '2026-07-15T08:00:00.000Z',
+    title: 'Reusable visual rule',
+    rationale: 'Observed in a successful run',
+    rule: 'Preserve product identity',
+    evidence: { keep: [], change: [], never: [] },
+    reviewStatus,
+  };
+}
+
+function knowledgeState(options: {
+  hashPrefix: string;
+  version: number;
+}): KnowledgeBaseStateSummary {
+  return {
+    schemaVersion: 1,
+    knowledgeBaseId: 'scene-skill',
+    displayName: 'Scene Skill',
+    status: 'active',
+    activeVersion: options.version,
+    activeContentHash: options.hashPrefix.repeat(64),
+    versionCount: options.version,
+    versions: [{
+      version: options.version,
+      contentHash: options.hashPrefix.repeat(64),
+      publishedAt: '2026-07-15T08:00:00.000Z',
+      sourceDeviceId: 'device-1',
+      displayName: 'Scene Skill',
+    }],
+    lastFailure: null,
+    lastRollbackAt: null,
   };
 }

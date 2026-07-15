@@ -12,12 +12,18 @@ import {
   type ReversePromptResult,
   type ReversePromptRun,
 } from '@agent-canvas/domain';
+import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
+import type { KnowledgeClient } from '../app/knowledge-client';
+import { KnowledgeStatus } from './KnowledgeStatus';
 
 interface ReversePromptAgentProps {
   projectId: string;
   referenceAssetIds: string[];
   getApprovedMemorySnapshot: () => ApprovedMemorySnapshot;
   getProjectMemoryIds?: () => string[];
+  getKnowledgeLease?: KnowledgeClient['getLease'];
+  knowledgeBases?: KnowledgeBaseStateSummary[];
+  pendingKnowledgeReviewCount?: number;
   analyze: (run: ReversePromptRun) => Promise<ReversePromptResult>;
   analysisMode?: 'provider' | 'local_draft';
   onEditSkill?: () => void;
@@ -34,6 +40,9 @@ export function ReversePromptAgent({
   referenceAssetIds,
   getApprovedMemorySnapshot,
   getProjectMemoryIds = () => [],
+  getKnowledgeLease = createFallbackKnowledgeLease,
+  knowledgeBases = [],
+  pendingKnowledgeReviewCount = 0,
   analyze,
   analysisMode = 'provider',
   onEditSkill,
@@ -56,23 +65,14 @@ export function ReversePromptAgent({
     setError(null);
     try {
       const approvedMemorySnapshot = getApprovedMemorySnapshot();
-      const createdAt = new Date().toISOString();
       const runId = createClientUniqueValue();
       const references = buildFallbackReferences(referenceAssetIds);
+      const knowledgeLease = getKnowledgeLease(runId, 'reverse_prompt', references, []);
       const run = createReversePromptRun({
         projectId,
         skill: { id: 'scene-skill', version: 'managed-latest' },
         persona,
-        knowledgeLease: createAgentKnowledgeLease({
-          runId,
-          capability: 'reverse_prompt',
-          snapshots: [],
-          references,
-          citations: [],
-        }, {
-          leaseId: createClientUniqueValue(),
-          createdAt,
-        }),
+        knowledgeLease,
         approvedMemorySnapshot,
         projectMemoryIds: getProjectMemoryIds(),
         references,
@@ -110,6 +110,11 @@ export function ReversePromptAgent({
         <span>参考图 <b>{referenceAssetIds.length} / 20</b></span>
         <span>知识快照 <b>运行时读取</b></span>
       </div>
+      <KnowledgeStatus
+        knowledgeBases={knowledgeBases}
+        pendingReviewCount={pendingKnowledgeReviewCount}
+        pinnedLease={history[0]?.run.knowledgeLease ?? null}
+      />
       {analysisMode === 'local_draft' && <p className="reverse-agent__mode">本地草稿，未调用模型</p>}
 
       <button className="reverse-agent__run" type="button" disabled={status === 'running' || referenceAssetIds.length === 0} onClick={startAnalysis}>
@@ -147,6 +152,23 @@ function buildFallbackReferences(referenceAssetIds: string[]): OrderedReference[
     role: 'product_identity',
     position: index,
   }));
+}
+
+function createFallbackKnowledgeLease(
+  runId: string,
+  capability: 'reverse_prompt',
+  references: OrderedReference[],
+) {
+  return createAgentKnowledgeLease({
+    runId,
+    capability,
+    snapshots: [],
+    references,
+    citations: [],
+  }, {
+    leaseId: createClientUniqueValue(),
+    createdAt: new Date().toISOString(),
+  });
 }
 
 function createClientUniqueValue(): string {
