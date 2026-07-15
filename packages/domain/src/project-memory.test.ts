@@ -2,10 +2,36 @@ import { describe, expect, it } from 'vitest';
 import {
   appendProjectMemoryEntry,
   buildProjectMemoryContext,
+  createUserFeedbackMemory,
   createSkillPromotionCandidate,
   parseProjectMemoryEntry,
+  reviewSkillPromotionCandidate,
+  rollbackSkillPromotionCandidate,
   type ProjectMemoryEntry,
 } from './project-memory';
+import { createAgentKnowledgeLease, type OrderedReference } from './knowledge-context';
+
+const feedbackReferences: OrderedReference[] = [{
+  assetId: 'scene',
+  label: 'Scene',
+  role: 'scene_composition',
+  position: 0,
+}];
+
+const feedbackLease = createAgentKnowledgeLease({
+  runId: 'run-1',
+  capability: 'image_generation',
+  snapshots: [{
+    knowledgeBaseId: 'kb-style',
+    version: 4,
+    contentHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  }],
+  references: feedbackReferences,
+  citations: [{ assetId: 'scene', label: 'Scene' }],
+}, {
+  leaseId: 'lease-1',
+  createdAt: '2026-07-15T10:00:00.000Z',
+});
 
 const optimization: ProjectMemoryEntry = {
   schemaVersion: 1,
@@ -15,23 +41,23 @@ const optimization: ProjectMemoryEntry = {
   createdAt: '2026-07-13T13:00:00.000Z',
   kind: 'optimization',
   actor: 'agent',
-  title: '调整产品主视觉构图',
-  changeSummary: '产品放大并上移，压低背景道具对比度。',
-  rationale: '提高首屏产品识别度并保留顶部文案安全区。',
+  title: 'Adjust product composition',
+  changeSummary: 'Scale the product up and reduce background contrast.',
+  rationale: 'Keep the hero product legible without crowding the copy-safe area.',
   snapshots: { beforeId: 'snapshot-11', afterId: 'snapshot-12' },
   context: {
     modelId: 'vision-model',
-    prompt: '高级商业产品主视觉',
+    prompt: 'premium ecommerce hero shot',
     referenceAssetIds: ['product-ref', 'scene-ref'],
     resultAssetIds: ['result-12'],
   },
   feedback: {
-    keep: ['产品包装比例'],
-    change: ['背景亮度'],
-    never: ['修改 Logo'],
+    keep: ['package proportions'],
+    change: ['background brightness'],
+    never: ['change the logo'],
     score: 4,
   },
-  nextStep: '降低背景高光后再次生成。',
+  nextStep: 'Lower the highlight intensity and generate again.',
 };
 
 describe('project memory', () => {
@@ -44,12 +70,12 @@ describe('project memory', () => {
   });
 
   it('rejects duplicate ids and a revision that moves backwards', () => {
-    expect(() => appendProjectMemoryEntry([optimization], optimization)).toThrow(/重复/);
+    expect(() => appendProjectMemoryEntry([optimization], optimization)).toThrow(/unique/i);
     expect(() => appendProjectMemoryEntry([optimization], {
       ...optimization,
       id: 'memory-optimization-2',
       projectRevision: 11,
-    })).toThrow(/版本/);
+    })).toThrow(/backwards/i);
   });
 
   it('rejects secrets, private paths, and raw images from project memory', () => {
@@ -57,39 +83,39 @@ describe('project memory', () => {
     expect(() => parseProjectMemoryEntry({
       ...optimization,
       context: { ...optimization.context, prompt: 'D:\\private\\asset.png' },
-    })).toThrow(/私有路径/);
+    })).toThrow(/private path/i);
     expect(() => parseProjectMemoryEntry({
       ...optimization,
       context: { ...optimization.context, rawImageBase64: 'AAAA' },
     })).toThrow();
     expect(() => parseProjectMemoryEntry({
       ...optimization,
-      context: { ...optimization.context, prompt: '素材位于D:\\private\\asset.png' },
-    })).toThrow(/私有路径/);
+      context: { ...optimization.context, prompt: 'asset lives at D:\\private\\asset.png' },
+    })).toThrow(/private path/i);
     expect(() => parseProjectMemoryEntry({
       ...optimization,
       context: { ...optimization.context, prompt: 'Authorization: Bearer secret-token-value' },
-    })).toThrow(/敏感凭据/);
+    })).toThrow(/sensitive credential/i);
     expect(() => parseProjectMemoryEntry({
       ...optimization,
       context: { ...optimization.context, prompt: 'provider key sk-project-secret1234' },
-    })).toThrow(/敏感凭据/);
+    })).toThrow(/sensitive credential/i);
     expect(() => parseProjectMemoryEntry({
       ...optimization,
-      context: { ...optimization.context, prompt: '素材位于C:/Users/name/key.txt' },
-    })).toThrow(/私有路径/);
+      context: { ...optimization.context, prompt: 'asset lives at C:/Users/name/key.txt' },
+    })).toThrow(/private path/i);
     expect(() => parseProjectMemoryEntry({
       ...optimization,
       context: { ...optimization.context, prompt: '%USERPROFILE%\\private\\key.txt' },
-    })).toThrow(/私有路径/);
+    })).toThrow(/private path/i);
     expect(() => parseProjectMemoryEntry({
       ...optimization,
       context: { ...optimization.context, prompt: 'Authorization: Basic Zm9vOmJhcg==' },
-    })).toThrow(/敏感凭据/);
+    })).toThrow(/sensitive credential/i);
     expect(() => parseProjectMemoryEntry({
       ...optimization,
       context: { ...optimization.context, prompt: 'token=ghp_1234567890abcdefghijklmnop' },
-    })).toThrow(/敏感凭据/);
+    })).toThrow(/sensitive credential/i);
   });
 
   it('builds a bounded newest-first context for the Agent', () => {
@@ -98,7 +124,7 @@ describe('project memory', () => {
       id: 'memory-optimization-2',
       projectRevision: 13,
       createdAt: '2026-07-13T14:00:00.000Z',
-      title: '第二次优化',
+      title: 'Second optimization',
     };
 
     expect(buildProjectMemoryContext([optimization, second], 1)).toEqual([second]);
@@ -112,19 +138,19 @@ describe('project memory', () => {
       createdAt: '2026-07-13T14:00:00.000Z',
       kind: 'decision',
       actor: 'user',
-      title: '撤销画布优化',
-      changeSummary: '撤销已确认的 Agent 画布事务。',
-      rationale: '用户执行撤销。',
+      title: 'Undo optimization',
+      changeSummary: 'Undo the previously approved canvas change.',
+      rationale: 'The user explicitly rolled the change back.',
       snapshots: { beforeId: 'snapshot-12', afterId: 'snapshot-13' },
       supersedesMemoryId: optimization.id,
-      nextStep: '以撤销后的画布状态继续。',
+      nextStep: 'Continue from the reverted canvas state.',
     };
 
     expect(buildProjectMemoryContext([optimization, revertDecision])).toEqual([revertDecision]);
   });
 
   it('reactivates memory when a later restore supersedes the earlier restore decision', () => {
-    const second = { ...optimization, id: 'memory-2', projectRevision: 13, createdAt: '2026-07-13T14:00:00.000Z', title: '第二次优化' };
+    const second = { ...optimization, id: 'memory-2', projectRevision: 13, createdAt: '2026-07-13T14:00:00.000Z', title: 'Second optimization' };
     const firstRestore: ProjectMemoryEntry = {
       ...optimization,
       id: 'restore-1',
@@ -132,7 +158,7 @@ describe('project memory', () => {
       createdAt: '2026-07-13T15:00:00.000Z',
       kind: 'decision',
       actor: 'user',
-      title: '恢复到第一次优化',
+      title: 'Restore the first optimization',
       supersedesMemoryIds: [second.id],
     };
     const secondRestore: ProjectMemoryEntry = {
@@ -140,7 +166,7 @@ describe('project memory', () => {
       id: 'restore-2',
       projectRevision: 15,
       createdAt: '2026-07-13T16:00:00.000Z',
-      title: '恢复到第二次优化',
+      title: 'Restore the second optimization',
       supersedesMemoryIds: [firstRestore.id],
     };
 
@@ -161,5 +187,91 @@ describe('project memory', () => {
       reviewStatus: 'pending_review',
       rule: optimization.nextStep,
     });
+  });
+
+  it('records feedback with lease and visual observations', () => {
+    const memory = createUserFeedbackMemory({
+      projectId: 'project-1',
+      projectRevision: 4,
+      title: 'Make liquid heavier',
+      userRequest: 'Use thicker transparent liquid',
+      correction: 'Reduce droplets',
+      knowledgeLease: feedbackLease,
+      references: feedbackReferences,
+      citations: [{ assetId: 'scene', label: 'Scene' }],
+      observations: {
+        liquid: ['high viscosity'],
+        vfx: ['small rim particles'],
+      },
+      feedback: {
+        keep: ['camera'],
+        change: ['liquid'],
+        never: ['fast splash'],
+      },
+    }, {
+      memoryId: 'feedback-1',
+      createdAt: '2026-07-15T10:01:00.000Z',
+    });
+
+    expect(memory.kind).toBe('user_feedback');
+    expect(memory.context.knowledgeLease?.leaseId).toBe('lease-1');
+    expect(memory.context.references).toEqual(feedbackReferences);
+    expect(memory.context.citations).toEqual([{ assetId: 'scene', label: 'Scene' }]);
+    expect(memory.context.referenceAssetIds).toEqual(['scene']);
+    expect(memory.observations).toEqual({
+      liquid: ['high viscosity'],
+      vfx: ['small rim particles'],
+    });
+  });
+
+  it('sanitizes feedback observations through project-memory validation', () => {
+    expect(() => createUserFeedbackMemory({
+      projectId: 'project-1',
+      projectRevision: 4,
+      title: 'Unsafe feedback',
+      userRequest: 'Keep the scene',
+      correction: 'Remove secrets',
+      knowledgeLease: feedbackLease,
+      references: feedbackReferences,
+      citations: [{ assetId: 'scene', label: 'Scene' }],
+      observations: {
+        liquid: ['C:\\private\\asset.png'],
+      },
+      feedback: {
+        keep: ['camera'],
+        change: ['liquid'],
+        never: ['fast splash'],
+      },
+    }, {
+      memoryId: 'feedback-secret',
+      createdAt: '2026-07-15T10:02:00.000Z',
+    })).toThrow(/private path/i);
+  });
+
+  it('approves and rolls back without losing provenance', () => {
+    const candidate = createSkillPromotionCandidate(optimization, {
+      candidateId: 'skill-candidate-2',
+      createdAt: '2026-07-15T10:03:00.000Z',
+    });
+    const reviewedAt = '2026-07-15T10:04:00.000Z';
+    const rolledBackAt = '2026-07-15T10:05:00.000Z';
+
+    const approved = reviewSkillPromotionCandidate(candidate, {
+      decision: 'approved',
+      reviewedAt,
+      publishedKnowledgeVersion: 5,
+    });
+
+    expect(approved.reviewStatus).toBe('approved');
+    expect(approved.reviewedAt).toBe(reviewedAt);
+    expect(approved.publishedKnowledgeVersion).toBe(5);
+
+    const rolledBack = rollbackSkillPromotionCandidate(approved, rolledBackAt);
+
+    expect(rolledBack.reviewStatus).toBe('rolled_back');
+    expect(rolledBack.reviewedAt).toBe(reviewedAt);
+    expect(rolledBack.publishedKnowledgeVersion).toBe(5);
+    expect(rolledBack.rolledBackAt).toBe(rolledBackAt);
+    expect(() => rollbackSkillPromotionCandidate(candidate, rolledBackAt)).toThrow(/approved/i);
   });
 });

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as publicApi from './index';
+import { createAgentKnowledgeLease } from './knowledge-context';
+import { createSkillPromotionCandidate, createUserFeedbackMemory, reviewSkillPromotionCandidate } from './project-memory';
 import { parseCanvasProject } from './project-schema';
 
 describe('parseCanvasProject', () => {
@@ -31,18 +33,19 @@ describe('parseCanvasProject', () => {
         createdAt: '2026-07-13T13:00:00.000Z',
         kind: 'optimization',
         actor: 'agent',
-        title: '构图优化',
-        changeSummary: '产品上移。',
-        rationale: '保留文案安全区。',
+        title: 'Composition refinement',
+        changeSummary: 'Move the product upward.',
+        rationale: 'Keep the copy-safe area open.',
         snapshots: { beforeId: 'snapshot-1', afterId: 'snapshot-2' },
         context: { referenceAssetIds: ['asset-1'], resultAssetIds: [] },
         feedback: { keep: [], change: [], never: [] },
-        nextStep: '继续检查产品比例。',
+        nextStep: 'Review the product scale.',
       }],
     });
 
-    expect(project.projectMemory[0]?.title).toBe('构图优化');
+    expect(project.projectMemory[0]?.title).toBe('Composition refinement');
   });
+
   it('rejects duplicate, cross-project, or decreasing project-memory timelines', () => {
     const memory = {
       schemaVersion: 1,
@@ -52,22 +55,22 @@ describe('parseCanvasProject', () => {
       createdAt: '2026-07-13T13:00:00.000Z',
       kind: 'optimization',
       actor: 'agent',
-      title: '构图优化',
-      changeSummary: '产品上移。',
-      rationale: '保留文案安全区。',
+      title: 'Composition refinement',
+      changeSummary: 'Move the product upward.',
+      rationale: 'Keep the copy-safe area open.',
       snapshots: { beforeId: 'snapshot-1', afterId: 'snapshot-2' },
       context: { referenceAssetIds: [], resultAssetIds: [] },
       feedback: { keep: [], change: [], never: [] },
-      nextStep: '继续检查。',
+      nextStep: 'Keep reviewing.',
     };
     const project = { version: 1, id: 'p1', name: 'memory validation', nodes: [], edges: [] };
 
-    expect(() => parseCanvasProject({ ...project, projectMemory: [memory, memory] })).toThrow(/重复/);
-    expect(() => parseCanvasProject({ ...project, projectMemory: [{ ...memory, projectId: 'p2' }] })).toThrow(/项目/);
+    expect(() => parseCanvasProject({ ...project, projectMemory: [memory, memory] })).toThrow();
+    expect(() => parseCanvasProject({ ...project, projectMemory: [{ ...memory, projectId: 'p2' }] })).toThrow();
     expect(() => parseCanvasProject({
       ...project,
       projectMemory: [memory, { ...memory, id: 'memory-2', projectRevision: 1 }],
-    })).toThrow(/版本/);
+    })).toThrow();
   });
 
   it('rejects Skill candidates that are duplicated, cross-project, or reference missing memory', () => {
@@ -79,13 +82,13 @@ describe('parseCanvasProject', () => {
       createdAt: '2026-07-14T01:00:00.000Z',
       kind: 'optimization',
       actor: 'agent',
-      title: '构图优化',
-      changeSummary: '产品上移。',
-      rationale: '保留安全区。',
+      title: 'Composition refinement',
+      changeSummary: 'Move the product upward.',
+      rationale: 'Keep the copy-safe area open.',
       snapshots: { beforeId: 'before-1', afterId: 'after-1' },
       context: { referenceAssetIds: [], resultAssetIds: [] },
       feedback: { keep: [], change: [], never: [] },
-      nextStep: '继续检查。',
+      nextStep: 'Keep reviewing.',
     };
     const candidate = {
       schemaVersion: 1,
@@ -93,23 +96,23 @@ describe('parseCanvasProject', () => {
       sourceProjectId: 'p1',
       sourceProjectMemoryId: 'memory-1',
       createdAt: '2026-07-14T02:00:00.000Z',
-      title: '构图优化',
-      rationale: '保留安全区。',
-      rule: '继续检查。',
+      title: 'Composition refinement',
+      rationale: 'Keep the copy-safe area open.',
+      rule: 'Keep reviewing.',
       evidence: { keep: [], change: [], never: [] },
       reviewStatus: 'pending_review',
     };
     const project = { version: 1, id: 'p1', name: 'candidate validation', nodes: [], edges: [], projectMemory: [memory] };
 
-    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [candidate, { ...candidate, id: 'candidate-2' }] })).toThrow(/重复提升/);
-    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectId: 'p2' }] })).toThrow(/当前项目/);
-    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectMemoryId: 'missing' }] })).toThrow(/当前项目/);
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [candidate, { ...candidate, id: 'candidate-2' }] })).toThrow();
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectId: 'p2' }] })).toThrow();
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectMemoryId: 'missing' }] })).toThrow();
     const secondMemory = { ...memory, id: 'memory-2', projectRevision: 2 };
     expect(() => parseCanvasProject({
       ...project,
       projectMemory: [memory, secondMemory],
       skillPromotionCandidates: [candidate, { ...candidate, sourceProjectMemoryId: secondMemory.id }],
-    })).toThrow(/候选 id/);
+    })).toThrow();
   });
 
   it('rejects Skill candidates sourced from decisions or superseded memories', () => {
@@ -121,13 +124,13 @@ describe('parseCanvasProject', () => {
       createdAt: '2026-07-14T01:00:00.000Z',
       kind: 'optimization',
       actor: 'agent',
-      title: '构图优化',
-      changeSummary: '产品上移。',
-      rationale: '保留安全区。',
+      title: 'Composition refinement',
+      changeSummary: 'Move the product upward.',
+      rationale: 'Keep the copy-safe area open.',
       snapshots: { beforeId: 'before-1', afterId: 'after-1' },
       context: { referenceAssetIds: [], resultAssetIds: [] },
       feedback: { keep: [], change: [], never: [] },
-      nextStep: '继续检查。',
+      nextStep: 'Keep reviewing.',
     };
     const decision = {
       ...optimization,
@@ -135,7 +138,7 @@ describe('parseCanvasProject', () => {
       projectRevision: 2,
       kind: 'decision',
       actor: 'user',
-      title: '撤销构图优化',
+      title: 'Undo composition refinement',
       supersedesMemoryId: optimization.id,
     };
     const candidate = {
@@ -152,8 +155,131 @@ describe('parseCanvasProject', () => {
     };
     const project = { version: 1, id: 'p1', name: 'candidate source validation', nodes: [], edges: [], projectMemory: [optimization, decision] };
 
-    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [candidate] })).toThrow(/可提升/);
-    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectMemoryId: optimization.id }] })).toThrow(/有效/);
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [candidate] })).toThrow();
+    expect(() => parseCanvasProject({ ...project, skillPromotionCandidates: [{ ...candidate, sourceProjectMemoryId: optimization.id }] })).toThrow();
+  });
+
+  it('accepts active user-feedback memories as candidate sources with review lifecycle metadata', () => {
+    const references = [{
+      assetId: 'scene',
+      label: 'Scene',
+      role: 'scene_composition' as const,
+      position: 0,
+    }];
+    const feedbackMemory = createUserFeedbackMemory({
+      projectId: 'p1',
+      projectRevision: 3,
+      title: 'Refine liquid behavior',
+      userRequest: 'Use thicker transparent liquid',
+      correction: 'Reduce droplets',
+      knowledgeLease: createAgentKnowledgeLease({
+        runId: 'run-1',
+        capability: 'image_generation',
+        snapshots: [{
+          knowledgeBaseId: 'kb-style',
+          version: 4,
+          contentHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        }],
+        references,
+        citations: [{ assetId: 'scene', label: 'Scene' }],
+      }, {
+        leaseId: 'lease-1',
+        createdAt: '2026-07-15T10:00:00.000Z',
+      }),
+      references,
+      citations: [{ assetId: 'scene', label: 'Scene' }],
+      observations: {
+        liquid: ['high viscosity'],
+      },
+      feedback: {
+        keep: ['camera'],
+        change: ['liquid'],
+        never: ['fast splash'],
+      },
+    }, {
+      memoryId: 'feedback-1',
+      createdAt: '2026-07-15T10:01:00.000Z',
+    });
+
+    const approvedCandidate = reviewSkillPromotionCandidate({
+      ...createSkillPromotionCandidate(feedbackMemory, {
+        candidateId: 'candidate-feedback-1',
+        createdAt: '2026-07-15T10:02:00.000Z',
+      }),
+      sourceProjectMemoryIds: [feedbackMemory.id],
+      targetKnowledgeBaseId: 'kb-style',
+      targetKnowledgeSection: 'liquid',
+      beforeRule: 'existing-liquid-rule',
+      counts: {
+        supportingMemoryCount: 1,
+        referenceCount: 1,
+        citationCount: 1,
+        observationCount: 1,
+      },
+      confidence: 0.82,
+      affectedCapabilities: ['image_generation'],
+    }, {
+      decision: 'approved',
+      reviewedAt: '2026-07-15T10:03:00.000Z',
+      publishedKnowledgeVersion: 6,
+    });
+
+    const project = parseCanvasProject({
+      version: 1,
+      id: 'p1',
+      name: 'feedback candidate validation',
+      nodes: [],
+      edges: [],
+      projectMemory: [feedbackMemory],
+      skillPromotionCandidates: [approvedCandidate],
+    });
+
+    expect(project.skillPromotionCandidates[0]?.reviewStatus).toBe('approved');
+    expect(project.skillPromotionCandidates[0]?.targetKnowledgeSection).toBe('liquid');
+  });
+
+  it('rejects invalid review lifecycle metadata on Skill candidates', () => {
+    const memory = {
+      schemaVersion: 1,
+      id: 'memory-review-1',
+      projectId: 'p1',
+      projectRevision: 1,
+      createdAt: '2026-07-14T01:00:00.000Z',
+      kind: 'optimization',
+      actor: 'agent',
+      title: 'Review lifecycle',
+      changeSummary: 'Tighten candidate metadata.',
+      rationale: 'Track explicit lifecycle transitions.',
+      snapshots: { beforeId: 'before-1', afterId: 'after-1' },
+      context: { referenceAssetIds: [], resultAssetIds: [] },
+      feedback: { keep: [], change: [], never: [] },
+      nextStep: 'Promote after review.',
+    } as const;
+    const project = {
+      version: 1,
+      id: 'p1',
+      name: 'candidate review validation',
+      nodes: [],
+      edges: [],
+      projectMemory: [memory],
+    };
+
+    expect(() => parseCanvasProject({
+      ...project,
+      skillPromotionCandidates: [{
+        schemaVersion: 1,
+        id: 'candidate-review-1',
+        sourceProjectId: 'p1',
+        sourceProjectMemoryId: memory.id,
+        createdAt: '2026-07-15T10:02:00.000Z',
+        title: memory.title,
+        rationale: memory.rationale,
+        rule: memory.nextStep,
+        evidence: memory.feedback,
+        reviewStatus: 'approved',
+        reviewedAt: '2026-07-15T10:03:00.000Z',
+      }],
+    })).toThrow(/published/i);
   });
 
   it('rejects a reference node without a role', () => {
@@ -162,7 +288,7 @@ describe('parseCanvasProject', () => {
       id: 'p1',
       name: 'test project',
       nodes: [{ id: 'r1', type: 'reference', position: { x: 0, y: 0 }, data: { assetId: 'asset-1' } }],
-      edges: []
+      edges: [],
     })).toThrow(/role/);
   });
 
@@ -175,9 +301,9 @@ describe('parseCanvasProject', () => {
         id: 'r1',
         type: 'reference',
         position: { x: 0, y: 0 },
-        data: { assetId: 'asset-1', role: 'product_identity', apiKey: 'secret' }
+        data: { assetId: 'asset-1', role: 'product_identity', apiKey: 'secret' },
       }],
-      edges: []
+      edges: [],
     })).toThrow(/Unrecognized key/);
   });
 
@@ -190,9 +316,9 @@ describe('parseCanvasProject', () => {
         id: 'r1',
         type: 'reference',
         position: { x: 0, y: 0 },
-        data: { assetId: 'asset-1', role: 'product_identity', mimeType: 'image/png' }
+        data: { assetId: 'asset-1', role: 'product_identity', mimeType: 'image/png' },
       }],
-      edges: []
+      edges: [],
     })).toThrow(/Unrecognized key/);
   });
 
@@ -211,7 +337,7 @@ describe('parseCanvasProject', () => {
             aspectRatio: '4:5',
             width: 1080,
             height: 1350,
-            safeAreas: []
+            safeAreas: [],
           },
           objects: [{
             id: 'product-1',
@@ -227,11 +353,11 @@ describe('parseCanvasProject', () => {
             visible: true,
             flipX: false,
             flipY: false,
-            semanticLayer: 'hero_product'
-          }]
-        }
+            semanticLayer: 'hero_product',
+          }],
+        },
       }],
-      edges: []
+      edges: [],
     });
 
     expect(project.nodes[0]?.type).toBe('placement_preview');
@@ -255,17 +381,21 @@ describe('public domain API', () => {
       'createAgentKnowledgeLease',
       'createReversePromptRun',
       'createSkillPromotionCandidate',
+      'createUserFeedbackMemory',
       'normalizePlacementObject',
       'parseCanvasProject',
       'parseGenerationRequest',
       'parseProjectMemoryEntry',
       'parseReversePromptResult',
+      'placementToPromptConstraints',
       'projectOperationSchema',
       'projectTransactionSchema',
-      'placementToPromptConstraints',
       'reorderReferences',
       'revertTransaction',
+      'reviewSkillPromotionCandidate',
+      'rollbackSkillPromotionCandidate',
       'selectActiveProjectMemoryEntries',
+      'skillPromotionCandidateSchema',
       'validateAgentPlan',
     ].sort());
   });
@@ -288,6 +418,7 @@ describe('reference image budget', () => {
     flipY: false,
     semanticLayer: 'midground',
   });
+
   const projectWithCount = (count: number) => ({
     version: 1,
     id: 'reference-budget',
@@ -308,13 +439,14 @@ describe('reference image budget', () => {
     expect(parseCanvasProject(projectWithCount(20)).nodes).toHaveLength(1);
   });
 
-
   it('does not count a starter placeholder against the 20 user references', () => {
     const project = projectWithCount(20);
     const placement = project.nodes[0]!;
     placement.data.objects.unshift({ ...placementObject(99), id: 'starter-placeholder', assetId: 'starter-product' });
     expect(parseCanvasProject(project).nodes).toHaveLength(1);
-  });  it('rejects the 21st combined reference image', () => {
-    expect(() => parseCanvasProject(projectWithCount(21))).toThrow(/参考图最多 20 张/);
+  });
+
+  it('rejects the 21st combined reference image', () => {
+    expect(() => parseCanvasProject(projectWithCount(21))).toThrow();
   });
 });

@@ -1,5 +1,15 @@
-export { appendProjectMemoryEntry, buildProjectMemoryContext, createSkillPromotionCandidate, parseProjectMemoryEntry, selectActiveProjectMemoryEntries } from './project-memory';
-export type { ProjectMemoryEntry, SkillPromotionCandidate } from './project-memory';
+export {
+  appendProjectMemoryEntry,
+  buildProjectMemoryContext,
+  createSkillPromotionCandidate,
+  createUserFeedbackMemory,
+  parseProjectMemoryEntry,
+  reviewSkillPromotionCandidate,
+  rollbackSkillPromotionCandidate,
+  selectActiveProjectMemoryEntries,
+  skillPromotionCandidateSchema,
+} from './project-memory';
+export type { FeedbackObservations, ProjectMemoryEntry, SkillCandidateReviewStatus, SkillPromotionCandidate } from './project-memory';
 export {
   UNCONFIGURED_KNOWLEDGE_VERSION_KEY,
   createAgentKnowledgeLease,

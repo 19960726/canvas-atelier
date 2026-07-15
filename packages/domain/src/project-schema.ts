@@ -59,7 +59,7 @@ export const placementBoardSchema = z.object({
   objects: z.array(placementObjectSchema).default([]).superRefine((objects, context) => {
     const userReferenceCount = objects.filter((object) => !object.assetId.startsWith('starter-')).length;
     if (userReferenceCount > MAX_GENERATION_REFERENCES) {
-      context.addIssue({ code: z.ZodIssueCode.too_big, type: 'array', maximum: MAX_GENERATION_REFERENCES, inclusive: true, message: '参考图最多 20 张' });
+      context.addIssue({ code: z.ZodIssueCode.too_big, type: 'array', maximum: MAX_GENERATION_REFERENCES, inclusive: true, message: '鍙傝€冨浘鏈€澶?20 寮?' });
     }
   }),
 }).strict();
@@ -193,20 +193,20 @@ export const canvasProjectSchema = z.object({
   let previousRevision = -1;
   for (const [index, memory] of project.projectMemory.entries()) {
     if (memoryIds.has(memory.id)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'id'], message: '项目记忆 id 重复' });
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'id'], message: '椤圭洰璁板繂 id 閲嶅' });
     }
     if (memory.projectId !== project.id) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'projectId'], message: '项目记忆必须属于当前项目' });
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'projectId'], message: '椤圭洰璁板繂蹇呴』灞炰簬褰撳墠椤圭洰' });
     }
     if (memory.projectRevision < previousRevision) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'projectRevision'], message: '项目记忆版本不能倒退' });
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index, 'projectRevision'], message: '椤圭洰璁板繂鐗堟湰涓嶈兘鍊掗€€' });
     }
     const supersededIds = [
       ...(memory.supersedesMemoryId ? [memory.supersedesMemoryId] : []),
       ...(memory.supersedesMemoryIds ?? []),
     ];
     if (supersededIds.some((id) => !memoryIds.has(id))) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index], message: '恢复或撤销记忆必须引用更早的项目记忆' });
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['projectMemory', index], message: '鎭㈠鎴栨挙閿€璁板繂蹇呴』寮曠敤鏇存棭鐨勯」鐩蹇?' });
     }
     memoryIds.add(memory.id);
     previousRevision = memory.projectRevision;
@@ -218,20 +218,31 @@ export const canvasProjectSchema = z.object({
   const candidateIds = new Set<string>();
   for (const [index, candidate] of project.skillPromotionCandidates.entries()) {
     if (candidateIds.has(candidate.id)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index, 'id'], message: 'Skill 候选 id 不能重复' });
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index, 'id'], message: 'Skill 鍊欓€?id 涓嶈兘閲嶅' });
     }
     if (candidate.sourceProjectId !== project.id || !memoryIds.has(candidate.sourceProjectMemoryId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 候选必须引用当前项目记忆' });
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 鍊欓€夊繀椤诲紩鐢ㄥ綋鍓嶉」鐩蹇?' });
     }
-    const sourceMemory = memoryById.get(candidate.sourceProjectMemoryId);
-    if (sourceMemory && !['optimization', 'generation', 'reverse_prompt'].includes(sourceMemory.kind)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 候选必须引用可提升的项目记忆' });
+
+    const sourceMemoryIds = [
+      candidate.sourceProjectMemoryId,
+      ...(candidate.sourceProjectMemoryIds ?? []),
+    ];
+    const sourceMemories = sourceMemoryIds
+      .map((memoryId) => memoryById.get(memoryId))
+      .filter((memory): memory is NonNullable<typeof memory> => memory !== undefined);
+
+    if (sourceMemories.length !== sourceMemoryIds.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 鍊欓€夊繀椤诲紩鐢ㄥ綋鍓嶉」鐩蹇?' });
     }
-    if (sourceMemory && !activeMemoryIds.has(sourceMemory.id)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 候选必须引用仍然有效的项目记忆' });
+    if (sourceMemories.some((memory) => !['optimization', 'generation', 'reverse_prompt', 'user_feedback'].includes(memory.kind))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 鍊欓€夊繀椤诲紩鐢ㄥ彲鎻愬崌鐨勯」鐩蹇?' });
+    }
+    if (sourceMemories.some((memory) => !activeMemoryIds.has(memory.id))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 鍊欓€夊繀椤诲紩鐢ㄤ粛鐒舵湁鏁堢殑椤圭洰璁板繂' });
     }
     if (promotedMemoryIds.has(candidate.sourceProjectMemoryId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: '同一项目记忆不能重复提升' });
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: '鍚屼竴椤圭洰璁板繂涓嶈兘閲嶅鎻愬崌' });
     }
     promotedMemoryIds.add(candidate.sourceProjectMemoryId);
     candidateIds.add(candidate.id);

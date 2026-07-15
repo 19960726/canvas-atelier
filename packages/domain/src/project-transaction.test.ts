@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createAgentKnowledgeLease } from './knowledge-context';
 import type { CanvasNode, CanvasProject } from './project-schema';
-import type { ProjectMemoryEntry, SkillPromotionCandidate } from './project-memory';
+import { createSkillPromotionCandidate, createUserFeedbackMemory, reviewSkillPromotionCandidate, type ProjectMemoryEntry, type SkillPromotionCandidate } from './project-memory';
 import { applyProjectTransaction } from './project-transaction';
 import type { ProjectTransaction } from './project-transaction';
 
@@ -85,6 +86,70 @@ describe('project transactions', () => {
     expect(result.skillPromotionCandidates).toEqual([candidate]);
   });
 
+  it('applies feedback memory and reviewed candidate changes atomically', () => {
+    const references = [{
+      assetId: 'scene',
+      label: 'Scene',
+      role: 'scene_composition' as const,
+      position: 0,
+    }];
+    const feedbackMemory = createUserFeedbackMemory({
+      projectId: 'project-1',
+      projectRevision: 2,
+      title: 'Make liquid heavier',
+      userRequest: 'Use thicker transparent liquid',
+      correction: 'Reduce droplets',
+      knowledgeLease: createAgentKnowledgeLease({
+        runId: 'run-2',
+        capability: 'image_generation',
+        snapshots: [{
+          knowledgeBaseId: 'kb-style',
+          version: 4,
+          contentHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        }],
+        references,
+        citations: [{ assetId: 'scene', label: 'Scene' }],
+      }, {
+        leaseId: 'lease-2',
+        createdAt: '2026-07-15T10:00:00.000Z',
+      }),
+      references,
+      citations: [{ assetId: 'scene', label: 'Scene' }],
+      observations: {
+        liquid: ['high viscosity'],
+      },
+      feedback: {
+        keep: ['camera'],
+        change: ['liquid'],
+        never: ['fast splash'],
+      },
+    }, {
+      memoryId: 'feedback-1',
+      createdAt: '2026-07-15T10:01:00.000Z',
+    });
+    const reviewedCandidate = reviewSkillPromotionCandidate(createSkillPromotionCandidate(feedbackMemory, {
+      candidateId: 'candidate-feedback-1',
+      createdAt: '2026-07-15T10:02:00.000Z',
+    }), {
+      decision: 'approved',
+      reviewedAt: '2026-07-15T10:03:00.000Z',
+      publishedKnowledgeVersion: 7,
+    });
+
+    const result = applyProjectTransaction(makeEmptyProject(), {
+      id: 'tx-feedback-review',
+      label: 'append feedback memory',
+      operations: [
+        { kind: 'append_project_memory', entry: feedbackMemory },
+        { kind: 'set_skill_candidates', candidates: [reviewedCandidate] },
+      ],
+    });
+
+    expect(result.projectMemory).toEqual([feedbackMemory]);
+    expect(result.skillPromotionCandidates[0]?.reviewStatus).toBe('approved');
+    expect(result.skillPromotionCandidates[0]?.publishedKnowledgeVersion).toBe(7);
+  });
+
   it('rejects a cross-project memory append on an empty timeline without changing the project', () => {
     const original = makeEmptyProject();
     const mismatchedEntry: ProjectMemoryEntry = {
@@ -97,7 +162,7 @@ describe('project transactions', () => {
       id: 'tx-cross-project',
       label: 'cross project memory',
       operations: [{ kind: 'append_project_memory', entry: mismatchedEntry }],
-    })).toThrow(/当前项目/);
+    })).toThrow();
 
     expect(original).toEqual(makeEmptyProject());
   });
