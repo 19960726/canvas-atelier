@@ -1,10 +1,11 @@
 /// <reference types="node" />
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  ApprovedSnapshotOutbox,
   KnowledgeRefreshService,
   ManagedKnowledgeStore,
   ProjectRepository,
@@ -116,8 +117,13 @@ describe('feedback approval integration', () => {
     });
     await repository.close(created);
 
+    const approvedSnapshotOutbox = new ApprovedSnapshotOutbox({
+      appDataRoot,
+      store: knowledgeStore,
+    });
     handlers = createDesktopBridgeHandlers({
       appDataRoot,
+      approvedSnapshotOutbox,
       createId: sequentialId('feedback-bridge'),
       dialogs: { chooseProjectRoot: async () => projectRoot },
       knowledgeRefreshService: refresh,
@@ -155,6 +161,25 @@ describe('feedback approval integration', () => {
       },
     });
     await expect(knowledgeStore.readActive('scene-skill')).resolves.toMatchObject({ version: 2 });
+    await expect(approvedSnapshotOutbox.readPublicState()).resolves.toEqual({
+      schemaVersion: 1,
+      jobs: [expect.objectContaining({
+        approvedSnapshot: expect.objectContaining({
+          knowledgeBaseId: 'scene-skill',
+          version: 2,
+        }),
+        memoryRelativePaths: [],
+        originalImagesIncluded: false,
+      })],
+    });
+    const persistedOutbox = await readFile(
+      join(appDataRoot, 'sync', 'approved-snapshot-outbox.json'),
+      'utf8',
+    );
+    expect(persistedOutbox).not.toContain('Keep product identity stable.');
+    expect(persistedOutbox).not.toContain('memory/main.md');
+    expect(persistedOutbox).not.toContain(sourceRoot);
+    expect(persistedOutbox).not.toMatch(/Authorization|Bearer|data:image|[A-Za-z]:\\/u);
   });
 });
 
