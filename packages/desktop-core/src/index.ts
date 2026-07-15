@@ -50,6 +50,14 @@ export type {
   InternalKnowledgeConfiguration,
   ManagedKnowledgeStoreOptions,
 } from './managed-knowledge-store.js';
+export { KnowledgeRefreshService } from './knowledge-refresh-service.js';
+export type {
+  KnowledgeRefreshClock,
+  KnowledgeRefreshServiceOptions,
+  KnowledgeWatchAdapter,
+  KnowledgeWatchEvent,
+  KnowledgeWatchHandle,
+} from './knowledge-refresh-service.js';
 export {
   JournalWriter,
   createPersistenceError,
