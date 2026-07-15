@@ -154,6 +154,39 @@ describe('ManagedKnowledgeStore', () => {
     })]);
   });
 
+  it('holds a managed write lock file while a publish is in progress', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const sourceRoot = join(tempRoot, 'workspace', 'scene-skill');
+    const initialStore = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await initialStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: sourceRoot,
+    });
+    await initialStore.publish(createSnapshot('# version 1', 1));
+
+    const gate = createPauseGate();
+    const slowStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new PauseOnCurrentMetadataFileSystem(configured.knowledgeRootId, gate),
+    });
+
+    const publishTwo = slowStore.publish(createSnapshot('# version 2', 2));
+    await gate.entered.promise;
+
+    const paths = managedKnowledgePaths(appDataRoot, configured.knowledgeRootId);
+    await expect(readFile(join(paths.baseDir, 'write.lock'), 'utf8')).resolves.toContain('"token"');
+    await expect(initialStore.listStates()).resolves.toEqual([expect.objectContaining({
+      activeVersion: 1,
+      versionCount: 1,
+    })]);
+
+    gate.release.resolve();
+    await publishTwo;
+    await expect(readFile(join(paths.baseDir, 'write.lock'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('serializes publish and rollback so the later rollback wins current metadata', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');

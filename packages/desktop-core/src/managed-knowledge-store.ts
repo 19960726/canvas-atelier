@@ -10,6 +10,9 @@ import {
 import { canonicalJson } from './canonical-json.js';
 import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
 
+const WRITE_LOCK_RETRY_MS = 10;
+const WRITE_LOCK_TIMEOUT_MS = 5_000;
+
 export interface ConfigureKnowledgeRoot {
   readonly knowledgeBaseId: string;
   readonly displayName: string;
@@ -38,9 +41,12 @@ interface ConfigurationFile {
   readonly configurations: InternalKnowledgeConfiguration[];
 }
 
-export class ManagedKnowledgeStore {
-  private static readonly writeLocks = new Map<string, Promise<void>>();
+interface WriteLock {
+  readonly path: string;
+  readonly token: string;
+}
 
+export class ManagedKnowledgeStore {
   private readonly appDataRoot: string;
   private readonly fileSystem: FileSystem;
   private readonly knowledgeRoot: string;
@@ -356,22 +362,71 @@ export class ManagedKnowledgeStore {
     knowledgeRootId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    const lockKey = normalize(this.currentMetadataPath(knowledgeRootId)).toLowerCase();
-    const previous = ManagedKnowledgeStore.writeLocks.get(lockKey) ?? Promise.resolve();
-    let release: () => void = () => undefined;
-    const current = previous.then(() => new Promise<void>((resolveRelease) => {
-      release = resolveRelease;
-    }));
-    ManagedKnowledgeStore.writeLocks.set(lockKey, current);
-
-    await previous;
+    await this.ensureManagedDirectory(this.knowledgeRoot);
+    await this.ensureManagedDirectory(this.knowledgeBaseDirectory(knowledgeRootId));
+    const lock = await this.acquireWriteLock(knowledgeRootId);
     try {
       return await operation();
     } finally {
-      release();
-      if (ManagedKnowledgeStore.writeLocks.get(lockKey) === current) {
-        ManagedKnowledgeStore.writeLocks.delete(lockKey);
+      await this.releaseWriteLock(lock);
+    }
+  }
+
+  private async acquireWriteLock(knowledgeRootId: string): Promise<WriteLock> {
+    const lockPath = this.writeLockPath(knowledgeRootId);
+    const token = createHash('sha256')
+      .update(`${process.pid}:${Date.now()}:${Math.random()}`, 'utf8')
+      .digest('hex');
+    const startedAt = Date.now();
+
+    for (;;) {
+      await this.assertManagedFileForWrite(lockPath);
+      let handle = null as Awaited<ReturnType<FileSystem['open']>> | null;
+      let closed = false;
+      try {
+        handle = await this.fileSystem.open(lockPath, 'wx');
+        await handle.writeFile(`${canonicalJson({
+          schemaVersion: 1,
+          token,
+          processId: process.pid,
+          createdAt: this.now().toISOString(),
+        })}\n`);
+        await handle.sync();
+        await handle.close();
+        closed = true;
+        return { path: lockPath, token };
+      } catch (error) {
+        if (handle !== null && !closed) {
+          try {
+            await handle.close();
+          } catch {
+            // Preserve the lock acquisition failure.
+          }
+        }
+
+        if (!isErrno(error, 'EEXIST')) {
+          throw error;
+        }
+
+        if (Date.now() - startedAt >= WRITE_LOCK_TIMEOUT_MS) {
+          throw new Error('Timed out waiting for managed knowledge write lock');
+        }
+        await delay(WRITE_LOCK_RETRY_MS);
       }
+    }
+  }
+
+  private async releaseWriteLock(lock: WriteLock): Promise<void> {
+    try {
+      await this.assertManagedFile(lock.path);
+      const raw = await this.fileSystem.readFile(lock.path, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (isOwnedWriteLock(parsed, lock.token)) {
+        await this.fileSystem.unlink(lock.path);
+      }
+    } catch {
+      // A stale lock conservatively blocks future writers instead of deleting
+      // a file that may have been replaced by another process.
     }
   }
 
@@ -389,6 +444,10 @@ export class ManagedKnowledgeStore {
 
   private currentMetadataPath(knowledgeRootId: string): string {
     return confinedJoin(this.knowledgeBaseDirectory(knowledgeRootId), 'current.json');
+  }
+
+  private writeLockPath(knowledgeRootId: string): string {
+    return confinedJoin(this.knowledgeBaseDirectory(knowledgeRootId), 'write.lock');
   }
 
   private snapshotPath(knowledgeRootId: string, version: number, contentHash: string): string {
@@ -741,12 +800,30 @@ function isMissingFileError(error: unknown): boolean {
   return isRecord(error) && typeof error.code === 'string' && error.code === 'ENOENT';
 }
 
+function isErrno(error: unknown, code: string): boolean {
+  return isRecord(error) && error.code === code;
+}
+
 function isMissingSnapshotFileError(error: unknown): boolean {
   return error instanceof Error && error.message === 'Managed knowledge snapshot file is missing';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isOwnedWriteLock(value: unknown, token: string): boolean {
+  return (
+    isRecord(value) &&
+    value.schemaVersion === 1 &&
+    value.token === token
+  );
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
 }
 
 function requireString(value: unknown, label: string): string {
