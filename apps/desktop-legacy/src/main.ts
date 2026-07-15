@@ -7,6 +7,7 @@ import { app, BrowserWindow, dialog, ipcMain, net, shell } from 'electron';
 import {
   BRIDGE_CHANNELS,
   ApprovedSnapshotOutbox,
+  ApprovedSnapshotPullCoordinator,
   KnowledgeRefreshService,
   ManagedKnowledgeStore,
   createDesktopBridgeHandlers,
@@ -32,6 +33,8 @@ let mainWindow: BrowserWindow | null = null;
 let safeModeLoaded = false;
 let desktopHandlers: DesktopBridgeHandlers | null = null;
 let approvedSnapshotDrainHandle: ApprovedSnapshotOutboxDrainHandle | null = null;
+let approvedSnapshotPullCoordinator: ApprovedSnapshotPullCoordinator | null = null;
+let knowledgeRefreshServiceHandle: KnowledgeRefreshService | null = null;
 let unsubscribeKnowledgeState: (() => void) | null = null;
 let closeAllStarted = false;
 
@@ -42,15 +45,29 @@ app.whenReady().then(async () => {
   const knowledgeRefreshService = new KnowledgeRefreshService({
     store: knowledgeStore,
   });
+  knowledgeRefreshServiceHandle = knowledgeRefreshService;
   const approvedSnapshotSyncClient = createApprovedSnapshotSyncClientFromEnv(process.env);
   const approvedSnapshotOutbox = new ApprovedSnapshotOutbox({
     appDataRoot: app.getPath('userData'),
     client: approvedSnapshotSyncClient ?? undefined,
     store: knowledgeStore,
   });
-  unsubscribeKnowledgeState = knowledgeRefreshService.subscribe((state) => {
+  approvedSnapshotPullCoordinator = new ApprovedSnapshotPullCoordinator({
+    appDataRoot: app.getPath('userData'),
+    client: approvedSnapshotSyncClient,
+    isOnline: () => net.isOnline(),
+    store: knowledgeStore,
+  });
+  const unsubscribeRefreshState = knowledgeRefreshService.subscribe((state) => {
     mainWindow?.webContents.send(BRIDGE_CHANNELS.knowledgeStateChanged, state);
   });
+  const unsubscribePullState = approvedSnapshotPullCoordinator.subscribe((state) => {
+    mainWindow?.webContents.send(BRIDGE_CHANNELS.knowledgeStateChanged, state);
+  });
+  unsubscribeKnowledgeState = () => {
+    unsubscribeRefreshState();
+    unsubscribePullState();
+  };
   desktopHandlers = createDesktopBridgeHandlers({
     appDataRoot: app.getPath('userData'),
     channel: runtimeChannel,
@@ -64,7 +81,8 @@ app.whenReady().then(async () => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
   });
 
-  await startConfiguredKnowledgeRefresh(knowledgeStore, knowledgeRefreshService);
+  const knowledgeBaseIds = await startConfiguredKnowledgeRefresh(knowledgeStore, knowledgeRefreshService);
+  await approvedSnapshotPullCoordinator.start(knowledgeBaseIds);
   approvedSnapshotDrainHandle = startApprovedSnapshotOutboxDrain({
     client: approvedSnapshotSyncClient,
     isOnline: () => net.isOnline(),
@@ -93,13 +111,24 @@ app.on('before-quit', (event) => {
 
   event.preventDefault();
   closeAllStarted = true;
-  void desktopHandlers.closeAllProjects().finally(() => {
-    approvedSnapshotDrainHandle?.stop();
-    approvedSnapshotDrainHandle = null;
-    unsubscribeKnowledgeState?.();
-    unsubscribeKnowledgeState = null;
-    app.quit();
-  });
+  const handlers = desktopHandlers;
+  void (async () => {
+    try {
+      await handlers.closeAllProjects();
+    } finally {
+      await Promise.all([
+        approvedSnapshotDrainHandle?.stop(),
+        approvedSnapshotPullCoordinator?.stop(),
+        knowledgeRefreshServiceHandle?.stop(),
+      ]);
+      approvedSnapshotDrainHandle = null;
+      approvedSnapshotPullCoordinator = null;
+      knowledgeRefreshServiceHandle = null;
+      unsubscribeKnowledgeState?.();
+      unsubscribeKnowledgeState = null;
+      app.quit();
+    }
+  })();
 });
 
 async function createMainWindow(): Promise<void> {

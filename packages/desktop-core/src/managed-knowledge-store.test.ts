@@ -214,6 +214,24 @@ describe('ManagedKnowledgeStore', () => {
     expect(JSON.stringify(states)).not.toContain(appDataRoot);
   });
 
+  it('rejects publishing an older snapshot over a newer active version', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    const second = createSnapshot('# version 2', 2);
+    await store.publish(first);
+    await store.publish(second);
+
+    await expect(store.publish(first)).rejects.toThrow(/older|regress/i);
+    await expect(store.readActive('scene-skill')).resolves.toEqual(second);
+  });
+
   it('rolls back to an earlier published version', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');
@@ -295,7 +313,15 @@ describe('ManagedKnowledgeStore', () => {
       listStagedKnowledgeTransitions(): Promise<Array<{ stageId: string; projectId: string; candidateId: string }>>;
     }).listStagedKnowledgeTransitions();
     expect(stagedAfterRestart).toEqual([
-      { stageId: 'stage-approve-1', projectId: 'project-1', candidateId: 'candidate-1' },
+      expect.objectContaining({
+        stageId: 'stage-approve-1',
+        projectId: 'project-1',
+        candidateId: 'candidate-1',
+        transactionId: 'review-skill-candidate-1',
+        kind: 'approved_snapshot',
+        phase: 'staged',
+        publicationVersion: 2,
+      }),
     ]);
 
     const activated = await (restarted as unknown as {
@@ -312,9 +338,12 @@ describe('ManagedKnowledgeStore', () => {
       version: 2,
       contentHash: candidate.contentHash,
     });
-    await expect((restarted as unknown as {
-      listStagedKnowledgeTransitions(): Promise<unknown[]>;
-    }).listStagedKnowledgeTransitions()).resolves.toEqual([]);
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([
+      expect.objectContaining({ stageId: 'stage-approve-1', phase: 'activated' }),
+    ]);
+    await restarted.recordStagedTransitionOutboxIntent('stage-approve-1');
+    await restarted.finalizeStagedTransition('stage-approve-1');
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([]);
   });
 
   it('stages rollback durably and leaves active knowledge unchanged until activation', async () => {
@@ -371,8 +400,196 @@ describe('ManagedKnowledgeStore', () => {
       versionCount: 2,
     });
     await expect(restarted.readActive('scene-skill')).resolves.toEqual(first);
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([
+      expect.objectContaining({ stageId: 'stage-rollback-1', phase: 'activated' }),
+    ]);
+    await restarted.finalizeStagedTransition('stage-rollback-1');
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([]);
   });
 
+  it('keeps one durable knowledge reservation through activation until explicit finalization', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    await store.publish(first);
+    const candidate = createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# reserved version 2' }],
+    });
+    const staged = await store.stageApprovedSnapshot(candidate, {
+      stageId: 'stage-reservation-1',
+      projectId: 'project-1',
+      candidateId: 'candidate-1',
+      transactionId: 'review-transaction-1',
+      expectedActiveVersion: first.version,
+      expectedActiveContentHash: first.contentHash,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-15T10:00:00.000Z',
+    });
+    const restarted = new ManagedKnowledgeStore({ appDataRoot });
+
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([
+      expect.objectContaining({
+        stageId: staged.stageId,
+        projectId: 'project-1',
+        candidateId: 'candidate-1',
+        transactionId: 'review-transaction-1',
+        knowledgeBaseId: 'scene-skill',
+        kind: 'approved_snapshot',
+        phase: 'staged',
+        expectedActiveVersion: 1,
+        expectedActiveContentHash: first.contentHash,
+        publicationVersion: 2,
+        publicationContentHash: candidate.contentHash,
+      }),
+    ]);
+    await expect(restarted.publish(createSnapshot('# competing direct version 2', 2))).rejects.toThrow(/reserved/i);
+    await expect(restarted.rollback('scene-skill', 1)).rejects.toThrow(/reserved/i);
+
+    await expect(restarted.activateStagedTransition(staged.stageId)).resolves.toMatchObject({ activeVersion: 2 });
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([
+      expect.objectContaining({ stageId: staged.stageId, phase: 'activated' }),
+    ]);
+    await expect(restarted.publish(createSnapshot('# competing version 3', 3))).rejects.toThrow(/reserved/i);
+
+    await restarted.recordStagedTransitionOutboxIntent(staged.stageId);
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([
+      expect.objectContaining({ stageId: staged.stageId, phase: 'outbox_recorded' }),
+    ]);
+    await restarted.finalizeStagedTransition(staged.stageId);
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([]);
+    await expect(restarted.publish(createSnapshot('# version 3', 3))).resolves.toBeUndefined();
+  });
+
+  it('recovers and quarantines a durable reservation when staging crashes before the global stage file', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    await store.publish(first);
+    const failing = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new FailStagedTransitionFileSystem(),
+    });
+
+    await expect(failing.stageApprovedSnapshot(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# staged version 2' }],
+    }), {
+      stageId: 'stage-crash-before-global',
+      projectId: 'project-1',
+      candidateId: 'candidate-1',
+      transactionId: 'transaction-1',
+      expectedActiveVersion: first.version,
+      expectedActiveContentHash: first.contentHash,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-16T01:00:00.000Z',
+    })).rejects.toThrow(/injected staged transition failure/i);
+
+    const restarted = new ManagedKnowledgeStore({ appDataRoot });
+    await expect(restarted.hasUnresolvedKnowledgeTransition('scene-skill')).resolves.toBe(true);
+    await expect(restarted.listStagedKnowledgeTransitions()).resolves.toEqual([
+      expect.objectContaining({
+        stageId: 'stage-crash-before-global',
+        transactionId: 'transaction-1',
+        phase: 'staged',
+      }),
+    ]);
+    await restarted.discardStagedTransition(
+      'stage-crash-before-global',
+      'unacknowledged_project_transaction',
+    );
+    await expect(restarted.hasUnresolvedKnowledgeTransition('scene-skill')).resolves.toBe(false);
+  });
+
+  it('allows only one unresolved stage per knowledge base across processes', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const firstStore = new ManagedKnowledgeStore({ appDataRoot });
+    await firstStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    await firstStore.publish(first);
+    const secondStore = new ManagedKnowledgeStore({ appDataRoot });
+    const makeCandidate = (content: string) => createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content }],
+    });
+    const metadata = (suffix: string) => ({
+      stageId: `stage-concurrent-${suffix}`,
+      projectId: 'project-1',
+      candidateId: `candidate-${suffix}`,
+      transactionId: `review-transaction-${suffix}`,
+      expectedActiveVersion: first.version,
+      expectedActiveContentHash: first.contentHash,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-15T10:00:00.000Z',
+    });
+
+    const results = await Promise.allSettled([
+      firstStore.stageApprovedSnapshot(makeCandidate('# candidate A'), metadata('a')),
+      secondStore.stageApprovedSnapshot(makeCandidate('# candidate B'), metadata('b')),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    await expect(firstStore.listStagedKnowledgeTransitions()).resolves.toEqual([
+      expect.objectContaining({ publicationVersion: 2, phase: 'staged' }),
+    ]);
+  });
+
+  it('quarantines an unacknowledged stage and releases its durable reservation', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    await store.publish(first);
+    const staged = await store.stageApprovedSnapshot(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# abandoned version 2' }],
+    }), {
+      stageId: 'stage-abandoned',
+      projectId: 'project-1',
+      candidateId: 'candidate-1',
+      transactionId: 'review-transaction-old',
+      expectedActiveVersion: first.version,
+      expectedActiveContentHash: first.contentHash,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-15T10:00:00.000Z',
+    });
+
+    await store.discardStagedTransition(staged.stageId, 'unacknowledged_project_transaction');
+
+    await expect(store.listStagedKnowledgeTransitions()).resolves.toEqual([]);
+    await expect(store.publish(createSnapshot('# version 2', 2))).resolves.toBeUndefined();
+    const quarantine = await readdir(join(appDataRoot, 'knowledge', configured.knowledgeRootId, 'quarantine'));
+    expect(quarantine).toHaveLength(1);
+    expect(JSON.stringify(await readJson(join(appDataRoot, 'knowledge', configured.knowledgeRootId, 'quarantine', quarantine[0]!))))
+      .not.toMatch(/Authorization|Bearer|data:image|[A-Za-z]:\\\\/u);
+  });
   it('durably records sanitized refresh failure while preserving known-good state and clears it on publish', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');
@@ -1318,6 +1535,15 @@ class DelegatingFileSystem implements FileSystem {
 
   async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
     await this.delegate.writeFile(path, data, encoding);
+  }
+}
+
+class FailStagedTransitionFileSystem extends DelegatingFileSystem {
+  override async rename(source: string, destination: string): Promise<void> {
+    if (normalize(destination).toLowerCase().includes(normalize(join('knowledge', 'staged')).toLowerCase())) {
+      throw new Error('Injected staged transition failure');
+    }
+    await super.rename(source, destination);
   }
 }
 

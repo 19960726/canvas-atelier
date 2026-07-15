@@ -268,18 +268,23 @@ describe('project memory', () => {
       decision: 'approved',
       reviewedAt,
       publishedKnowledgeVersion: 5,
+      transactionId: 'review-transaction-1',
     });
 
     expect(approved.reviewStatus).toBe('approved');
     expect(approved.reviewedAt).toBe(reviewedAt);
     expect(approved.publishedKnowledgeVersion).toBe(5);
+    expect(approved.reviewTransactionId).toBe('review-transaction-1');
 
-    const rolledBack = rollbackSkillPromotionCandidate(approved, rolledBackAt);
+    const rolledBack = rollbackSkillPromotionCandidate(approved, rolledBackAt, {
+      transactionId: 'rollback-transaction-1',
+    });
 
     expect(rolledBack.reviewStatus).toBe('rolled_back');
     expect(rolledBack.reviewedAt).toBe(reviewedAt);
     expect(rolledBack.publishedKnowledgeVersion).toBe(5);
     expect(rolledBack.rolledBackAt).toBe(rolledBackAt);
+    expect(rolledBack.reviewTransactionId).toBe('rollback-transaction-1');
     expect(() => rollbackSkillPromotionCandidate(candidate, rolledBackAt)).toThrow(/approved/i);
   });
 });

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -151,4 +151,147 @@ describe('ApprovedSnapshotOutbox', () => {
     handle.stop();
     expect(clearInterval).toHaveBeenCalledWith(101);
   });
-});
+
+  it('serializes concurrent approved snapshot enqueues without losing either job', async () => {
+    const fixture = await createApprovedOutboxFixture(tempRoots);
+    const first = new ApprovedSnapshotOutbox({
+      appDataRoot: fixture.appDataRoot,
+      now: () => Date.parse('2026-07-15T10:03:00.000Z'),
+      random: () => 0.1,
+      store: fixture.store,
+    });
+    const second = new ApprovedSnapshotOutbox({
+      appDataRoot: fixture.appDataRoot,
+      now: () => Date.parse('2026-07-15T10:03:01.000Z'),
+      random: () => 0.2,
+      store: fixture.store,
+    });
+
+    await Promise.all([
+      first.enqueueApprovedSnapshot(fixture.firstSnapshot),
+      second.enqueueApprovedSnapshot(fixture.secondSnapshot),
+    ]);
+
+    const publicState = await first.readPublicState();
+    expect(publicState.jobs.map((job) => job.approvedSnapshot?.version).sort()).toEqual([1, 2]);
+  });
+
+  it('does not lose an enqueue that races an in-flight drain state write', async () => {
+    const fixture = await createApprovedOutboxFixture(tempRoots);
+    const queued = new ApprovedSnapshotOutbox({
+      appDataRoot: fixture.appDataRoot,
+      now: () => Date.parse('2026-07-15T10:04:00.000Z'),
+      random: () => 0.3,
+      store: fixture.store,
+    });
+    await queued.enqueueApprovedSnapshot(fixture.firstSnapshot);
+    const uploadStarted = deferred<void>();
+    const releaseUpload = deferred<void>();
+    const draining = new ApprovedSnapshotOutbox({
+      appDataRoot: fixture.appDataRoot,
+      client: {
+        uploadApprovedSnapshot: async () => {
+          uploadStarted.resolve();
+          await releaseUpload.promise;
+          return { accepted: true };
+        },
+      },
+      now: () => Date.parse('2026-07-15T10:04:01.000Z'),
+      random: () => 0.4,
+      store: fixture.store,
+    });
+
+    const drainPromise = draining.drainApprovedSnapshots();
+    await uploadStarted.promise;
+    await queued.enqueueApprovedSnapshot(fixture.secondSnapshot);
+    releaseUpload.resolve();
+    await drainPromise;
+
+    const publicState = await queued.readPublicState();
+    expect(publicState.jobs.map((job) => job.approvedSnapshot?.version)).toEqual([2]);
+  });
+
+  it('rejects corrupt nested persisted outbox jobs before public serialization or drain', async () => {
+    const fixture = await createApprovedOutboxFixture(tempRoots);
+    const syncRoot = join(fixture.appDataRoot, 'sync');
+    await mkdir(syncRoot, { recursive: true });
+    await writeFile(join(syncRoot, 'approved-snapshot-outbox.json'), JSON.stringify({
+      schemaVersion: 1,
+      jobs: [{ id: 'corrupt-job', approvedSnapshot: { knowledgeBaseId: 'scene-skill', version: 1 } }],
+    }), 'utf8');
+    const restarted = new ApprovedSnapshotOutbox({
+      appDataRoot: fixture.appDataRoot,
+      store: fixture.store,
+    });
+
+    await expect(restarted.readPublicState()).rejects.toThrow(/outbox state is invalid/i);
+    await expect(restarted.drainApprovedSnapshots({ uploadApprovedSnapshot: vi.fn() })).rejects.toThrow(/outbox state is invalid/i);
+  });
+
+  it('awaits the active drain upload and state write during async stop', async () => {
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const drainApprovedSnapshots = vi.fn(async () => {
+      started.resolve();
+      await release.promise;
+      return { processedJobIds: [], state: { schemaVersion: 1 as const, jobs: [] } };
+    });
+    const handle = startApprovedSnapshotOutboxDrain({
+      client: { uploadApprovedSnapshot: vi.fn() },
+      clearInterval: vi.fn(),
+      intervalMs: 10,
+      isOnline: () => true,
+      outbox: { drainApprovedSnapshots },
+      setInterval: () => 101,
+    });
+    await started.promise;
+    let stopped = false;
+
+    const stopPromise = handle.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    release.resolve();
+    await stopPromise;
+    expect(stopped).toBe(true);
+    expect(drainApprovedSnapshots).toHaveBeenCalledTimes(1);
+  });});
+
+async function createApprovedOutboxFixture(tempRoots: string[]) {
+  const tempRoot = await mkdtemp(join(tmpdir(), 'approved-outbox-concurrency-'));
+  tempRoots.push(tempRoot);
+  const appDataRoot = join(tempRoot, 'app-data');
+  const store = new ManagedKnowledgeStore({ appDataRoot });
+  await store.configure({
+    knowledgeBaseId: 'scene-skill',
+    displayName: 'Scene Skill',
+    rootPath: join(tempRoot, 'source', 'scene-skill'),
+  });
+  const createSnapshot = (content: string, version: number) => ({
+    ...createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content }],
+    }),
+    version,
+    publishedAt: `2026-07-15T10:0${version}:00.000Z`,
+    sourceDeviceId: 'device-a',
+  });
+  const firstSnapshot = createSnapshot('# version 1', 1);
+  const secondSnapshot = createSnapshot('# version 2', 2);
+  await store.publish(firstSnapshot);
+  await store.publish(secondSnapshot);
+  return { appDataRoot, firstSnapshot, secondSnapshot, store };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}

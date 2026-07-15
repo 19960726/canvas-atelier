@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, normalize, resolve, sep } from 'node:path';
 import { URL } from 'node:url';
 
 import {
@@ -11,19 +11,23 @@ import {
   serializeWritebackOutboxForTransfer,
   type KnowledgeSnapshot,
   type MemorySyncFetch,
+  type WritebackOutboxJob,
   type WritebackOutboxState,
   type WritebackPlan,
 } from '@agent-canvas/skill-store';
 
 import { canonicalJson } from './canonical-json.js';
-import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
+import type { ApprovedSnapshotPullClient } from './approved-snapshot-pull.js';
+import { type FileHandleLike, type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
 
-export interface ApprovedSnapshotSyncClient {
+export interface ApprovedSnapshotUploadClient {
   uploadApprovedSnapshot(
     snapshot: KnowledgeSnapshot,
     options: { readonly idempotencyKey: string },
   ): Promise<unknown>;
 }
+
+export interface ApprovedSnapshotSyncClient extends ApprovedSnapshotUploadClient, ApprovedSnapshotPullClient {}
 
 export interface ApprovedSnapshotReadableStore {
   readVersion(knowledgeBaseId: string, version: number): Promise<KnowledgeSnapshot | null>;
@@ -31,7 +35,7 @@ export interface ApprovedSnapshotReadableStore {
 
 export interface ApprovedSnapshotOutboxOptions {
   readonly appDataRoot: string;
-  readonly client?: ApprovedSnapshotSyncClient;
+  readonly client?: ApprovedSnapshotUploadClient;
   readonly fileSystem?: FileSystem;
   readonly now?: () => number;
   readonly random?: () => number;
@@ -47,11 +51,11 @@ export interface ApprovedSnapshotSyncEnvironment {
 
 export interface ApprovedSnapshotOutboxDrainHandle {
   drainNow(): Promise<void>;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 export interface ApprovedSnapshotOutboxDrainOptions {
-  readonly client: ApprovedSnapshotSyncClient | null;
+  readonly client: ApprovedSnapshotUploadClient | null;
   readonly clearInterval?: (handle: unknown) => void;
   readonly intervalMs?: number;
   readonly isOnline?: () => boolean;
@@ -59,16 +63,25 @@ export interface ApprovedSnapshotOutboxDrainOptions {
   readonly setInterval?: (listener: () => void, intervalMs: number) => unknown;
 }
 
+interface OutboxLock {
+  readonly handle: FileHandleLike;
+  readonly path: string;
+  readonly token: string;
+}
+
 const DEFAULT_APPROVED_SNAPSHOT_DRAIN_INTERVAL_MS = 30_000;
 const MAX_SYNC_RESPONSE_BYTES = 4 * 1024 * 1024;
+const OUTBOX_LOCK_RETRY_MS = 10;
+const OUTBOX_LOCK_TIMEOUT_MS = 5_000;
 
 export class ApprovedSnapshotOutbox {
   private readonly appDataRoot: string;
-  private readonly client: ApprovedSnapshotSyncClient | null;
+  private readonly client: ApprovedSnapshotUploadClient | null;
   private readonly fileSystem: FileSystem;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly store: ApprovedSnapshotReadableStore;
+  private readonly syncRoot: string;
 
   constructor(options: ApprovedSnapshotOutboxOptions) {
     this.appDataRoot = resolve(options.appDataRoot);
@@ -77,91 +90,104 @@ export class ApprovedSnapshotOutbox {
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.store = options.store;
+    this.syncRoot = confinedJoin(this.appDataRoot, 'sync');
   }
 
   async enqueueApprovedSnapshot(snapshot: KnowledgeSnapshot): Promise<void> {
-    const state = await this.readState();
-    const approvedSnapshot = {
-      knowledgeBaseId: snapshot.knowledgeBaseId,
-      version: snapshot.version,
-      contentHash: snapshot.contentHash,
-    };
-    const alreadyQueued = state.jobs.some((job) => (
-      job.approvedSnapshot?.knowledgeBaseId === approvedSnapshot.knowledgeBaseId &&
-      job.approvedSnapshot.version === approvedSnapshot.version &&
-      job.approvedSnapshot.contentHash === approvedSnapshot.contentHash
-    ));
-    if (alreadyQueued) {
-      return;
-    }
+    await this.withStateLock(async () => {
+      const state = await this.readStateUnlocked();
+      const approvedSnapshot = {
+        knowledgeBaseId: snapshot.knowledgeBaseId,
+        version: snapshot.version,
+        contentHash: snapshot.contentHash,
+      };
+      const alreadyQueued = state.jobs.some((job) => (
+        job.approvedSnapshot?.knowledgeBaseId === approvedSnapshot.knowledgeBaseId &&
+        job.approvedSnapshot.version === approvedSnapshot.version &&
+        job.approvedSnapshot.contentHash === approvedSnapshot.contentHash
+      ));
+      if (alreadyQueued) {
+        return;
+      }
 
-    await this.writeState(enqueueWritebackJob(state, {
-      approvedSnapshot,
-      historyPath: 'approved-snapshot-sync',
-      plan: createApprovedSnapshotPlan(approvedSnapshot),
-      target: 'source',
-    }, {
-      now: this.now,
-      random: this.random,
-    }));
+      await this.writeStateUnlocked(enqueueWritebackJob(state, {
+        approvedSnapshot,
+        historyPath: 'approved-snapshot-sync',
+        plan: createApprovedSnapshotPlan(approvedSnapshot),
+        target: 'source',
+      }, {
+        now: this.now,
+        random: this.random,
+      }));
+    });
   }
 
-  async drainApprovedSnapshots(client: ApprovedSnapshotSyncClient | null = this.client): Promise<{
+  async drainApprovedSnapshots(client: ApprovedSnapshotUploadClient | null = this.client): Promise<{
     readonly processedJobIds: string[];
     readonly state: WritebackOutboxState;
   }> {
-    const state = await this.readState();
-    if (client === null) {
-      return {
-        processedJobIds: [],
-        state,
-      };
-    }
+    return this.withLock(this.drainLockPath(), async () => {
+      const state = await this.withStateLock(() => this.readStateUnlocked());
+      if (client === null) {
+        return {
+          processedJobIds: [],
+          state,
+        };
+      }
 
-    const authorizationByJobId = Object.fromEntries(state.jobs.map((job) => [
-      job.id,
-      { approvalToken: 'approved-snapshot-sync' },
-    ]));
-    const drained = await drainWritebackOutbox(state, {
-      authorizationByJobId,
-      now: this.now,
-      random: this.random,
-      performWriteback: async ({ job }) => {
-        const approved = job.approvedSnapshot;
-        if (approved === undefined) {
-          return { ok: true };
-        }
-        const snapshot = await this.store.readVersion(approved.knowledgeBaseId, approved.version);
-        if (snapshot === null || snapshot.contentHash !== approved.contentHash) {
-          return {
-            ok: false,
-            reason: 'missing_approved_snapshot',
-            retryable: true,
-          };
-        }
-        try {
-          await client.uploadApprovedSnapshot(snapshot, { idempotencyKey: job.id });
-          return { ok: true };
-        } catch (error) {
-          return {
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-            reason: 'approved_snapshot_upload_failed',
-            retryable: true,
-          };
-        }
-      },
+      const authorizationByJobId = Object.fromEntries(state.jobs.map((job) => [
+        job.id,
+        { approvalToken: 'approved-snapshot-sync' },
+      ]));
+      const drained = await drainWritebackOutbox(state, {
+        authorizationByJobId,
+        now: this.now,
+        random: this.random,
+        performWriteback: async ({ job }) => {
+          const approved = job.approvedSnapshot;
+          if (approved === undefined) {
+            return { ok: true };
+          }
+          const snapshot = await this.store.readVersion(approved.knowledgeBaseId, approved.version);
+          if (snapshot === null || snapshot.contentHash !== approved.contentHash) {
+            return {
+              ok: false,
+              reason: 'missing_approved_snapshot',
+              retryable: true,
+            };
+          }
+          try {
+            await client.uploadApprovedSnapshot(snapshot, { idempotencyKey: job.id });
+            return { ok: true };
+          } catch (error) {
+            return {
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+              reason: 'approved_snapshot_upload_failed',
+              retryable: true,
+            };
+          }
+        },
+      });
+
+      const committedState = await this.withStateLock(async () => {
+        const latest = await this.readStateUnlocked();
+        const merged = mergeDrainedState(state, drained.state, latest);
+        await this.writeStateUnlocked(merged);
+        return merged;
+      });
+      return { processedJobIds: drained.processedJobIds, state: committedState };
     });
-    await this.writeState(drained.state);
-    return drained;
   }
 
   async readPublicState(): Promise<ReturnType<typeof serializeWritebackOutboxForTransfer>> {
-    return serializeWritebackOutboxForTransfer(await this.readState());
+    const state = await this.withStateLock(() => this.readStateUnlocked());
+    return serializeWritebackOutboxForTransfer(state);
   }
 
-  private async readState(): Promise<WritebackOutboxState> {
+  private async readStateUnlocked(): Promise<WritebackOutboxState> {
     try {
+      await this.assertManagedFile(this.statePath());
       const raw = await this.fileSystem.readFile(this.statePath(), 'utf8');
       return normalizeOutboxState(JSON.parse(raw) as unknown);
     } catch (error) {
@@ -172,8 +198,9 @@ export class ApprovedSnapshotOutbox {
     }
   }
 
-  private async writeState(state: WritebackOutboxState): Promise<void> {
-    await this.fileSystem.mkdir(dirname(this.statePath()), { recursive: true });
+  private async writeStateUnlocked(state: WritebackOutboxState): Promise<void> {
+    await this.ensureSyncDirectory();
+    await this.assertManagedFileForWrite(this.statePath());
     await writeAtomic(
       this.fileSystem,
       this.statePath(),
@@ -181,8 +208,154 @@ export class ApprovedSnapshotOutbox {
     );
   }
 
+  private async withStateLock<T>(operation: () => Promise<T>): Promise<T> {
+    return this.withLock(this.stateLockPath(), operation);
+  }
+
+  private async withLock<T>(lockPath: string, operation: () => Promise<T>): Promise<T> {
+    await this.ensureSyncDirectory();
+    const lock = await this.acquireLock(lockPath);
+    try {
+      return await operation();
+    } finally {
+      await this.releaseLock(lock);
+    }
+  }
+
+  private async acquireLock(lockPath: string): Promise<OutboxLock> {
+    const token = createHash('sha256')
+      .update(`${process.pid}:${Date.now()}:${Math.random()}`, 'utf8')
+      .digest('hex');
+    const startedAt = Date.now();
+
+    for (;;) {
+      await this.assertManagedFileForWrite(lockPath);
+      let handle: FileHandleLike | null = null;
+      let closed = false;
+      try {
+        handle = await this.fileSystem.open(lockPath, 'wx');
+        await handle.writeFile(`${canonicalJson({
+          schemaVersion: 1,
+          token,
+          processId: process.pid,
+          createdAt: new Date(this.now()).toISOString(),
+        })}\n`);
+        await handle.sync();
+        return { handle, path: lockPath, token };
+      } catch (error) {
+        if (handle !== null && !closed) {
+          try {
+            await handle.close();
+            closed = true;
+          } catch {
+            // Preserve the lock acquisition failure.
+          }
+        }
+        if (!isErrno(error, 'EEXIST')) {
+          throw error;
+        }
+        if (Date.now() - startedAt >= OUTBOX_LOCK_TIMEOUT_MS) {
+          throw new Error('Timed out waiting for approved snapshot outbox lock');
+        }
+        await delay(OUTBOX_LOCK_RETRY_MS);
+      }
+    }
+  }
+
+  private async releaseLock(lock: OutboxLock): Promise<void> {
+    let closed = false;
+    try {
+      await this.assertManagedFile(lock.path);
+      const parsed = JSON.parse(await this.fileSystem.readFile(lock.path, 'utf8')) as unknown;
+      if (isOwnedLock(parsed, lock.token)) {
+        await lock.handle.close();
+        closed = true;
+        await this.fileSystem.unlink(lock.path);
+      }
+    } catch {
+      // Do not remove a lock that may have been replaced by another process.
+    } finally {
+      if (!closed) {
+        try {
+          await lock.handle.close();
+        } catch {
+          // Preserve the operation outcome.
+        }
+      }
+    }
+  }
+
+  private async ensureSyncDirectory(): Promise<void> {
+    await this.fileSystem.mkdir(this.appDataRoot, { recursive: true });
+    await this.fileSystem.mkdir(this.syncRoot, { recursive: true });
+    await this.assertManagedDirectory(this.syncRoot);
+  }
+
+  private async assertManagedDirectory(path: string): Promise<void> {
+    const lstat = this.requireFileSystemMethod('lstat', this.fileSystem.lstat);
+    const metadata = await lstat.call(this.fileSystem, path);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink?.()) {
+      throw new Error('Approved snapshot outbox path escaped app data');
+    }
+    await this.assertRealManagedPath(path);
+  }
+
+  private async assertManagedFile(path: string): Promise<void> {
+    const lstat = this.requireFileSystemMethod('lstat', this.fileSystem.lstat);
+    const metadata = await lstat.call(this.fileSystem, path);
+    if (!metadata.isFile() || metadata.isSymbolicLink?.()) {
+      throw new Error('Approved snapshot outbox path escaped app data');
+    }
+    await this.assertRealManagedPath(path);
+  }
+
+  private async assertManagedFileForWrite(path: string): Promise<void> {
+    await this.assertManagedDirectory(dirname(path));
+    try {
+      await this.assertManagedFile(path);
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
+      const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
+      const realSyncRoot = normalize(await realpath.call(this.fileSystem, this.syncRoot));
+      const realParent = normalize(await realpath.call(this.fileSystem, dirname(path)));
+      const target = normalize(resolve(realParent, basename(path)));
+      if (!isWithinDirectory(realSyncRoot, target)) {
+        throw new Error('Approved snapshot outbox path escaped app data');
+      }
+    }
+  }
+
+  private async assertRealManagedPath(path: string): Promise<void> {
+    const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
+    const realSyncRoot = normalize(await realpath.call(this.fileSystem, this.syncRoot));
+    const realTarget = normalize(await realpath.call(this.fileSystem, path));
+    if (!isWithinDirectory(realSyncRoot, realTarget)) {
+      throw new Error('Approved snapshot outbox path escaped app data');
+    }
+  }
+
+  private requireFileSystemMethod<Name extends 'lstat' | 'realpath'>(
+    name: Name,
+    method: FileSystem[Name],
+  ): NonNullable<FileSystem[Name]> {
+    if (method === undefined) {
+      throw new Error(`Approved snapshot outbox requires file system ${name}`);
+    }
+    return method;
+  }
+
   private statePath(): string {
-    return join(this.appDataRoot, 'sync', 'approved-snapshot-outbox.json');
+    return confinedJoin(this.syncRoot, 'approved-snapshot-outbox.json');
+  }
+
+  private stateLockPath(): string {
+    return confinedJoin(this.syncRoot, 'approved-snapshot-outbox.lock');
+  }
+
+  private drainLockPath(): string {
+    return confinedJoin(this.syncRoot, 'approved-snapshot-drain.lock');
   }
 }
 
@@ -239,11 +412,12 @@ export function startApprovedSnapshotOutboxDrain(
 
   return {
     drainNow,
-    stop() {
+    async stop() {
       stopped = true;
       if (timer !== null) {
         clearTimer(timer);
       }
+      await inFlight;
     },
   };
 }
@@ -321,10 +495,159 @@ function createApprovedSnapshotPlan(snapshot: {
 }
 
 function normalizeOutboxState(value: unknown): WritebackOutboxState {
-  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.jobs)) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['schemaVersion', 'jobs']) || value.schemaVersion !== 1 || !Array.isArray(value.jobs)) {
     throw new Error('Approved snapshot outbox state is invalid');
   }
-  return value as unknown as WritebackOutboxState;
+  const jobs = value.jobs.map(normalizeOutboxJob);
+  if (new Set(jobs.map((job) => job.id)).size !== jobs.length) {
+    throw new Error('Approved snapshot outbox state is invalid');
+  }
+  return { schemaVersion: 1, jobs };
+}
+
+function normalizeOutboxJob(value: unknown): WritebackOutboxJob {
+  const allowedKeys = [
+    'id',
+    'target',
+    'plan',
+    'historyPath',
+    'approvedSnapshot',
+    'status',
+    'attemptCount',
+    'createdAt',
+    'updatedAt',
+    'nextRetryAt',
+    'lastError',
+    'requiresReauthorization',
+  ];
+  if (!isRecord(value) || !hasOnlyKeys(value, allowedKeys)) {
+    throw new Error('Approved snapshot outbox state is invalid');
+  }
+  const approvedSnapshot = normalizeApprovedSnapshotReference(value.approvedSnapshot);
+  const plan = createApprovedSnapshotPlan(approvedSnapshot);
+  if (canonicalJson(value.plan) !== canonicalJson(plan)) {
+    throw new Error('Approved snapshot outbox state is invalid');
+  }
+  const status = value.status;
+  if (status !== 'queued' && status !== 'uploading' && status !== 'retry_wait') {
+    throw new Error('Approved snapshot outbox state is invalid');
+  }
+  const nextRetryAt = value.nextRetryAt === undefined ? undefined : requireDateString(value.nextRetryAt);
+  const lastError = value.lastError === undefined ? undefined : requireSafePublicString(value.lastError);
+  if (
+    typeof value.id !== 'string' || !/^[a-f0-9]{16}$/u.test(value.id) ||
+    value.target !== 'source' ||
+    value.historyPath !== 'approved-snapshot-sync' ||
+    !Number.isInteger(value.attemptCount) || (value.attemptCount as number) < 0 ||
+    value.requiresReauthorization !== true
+  ) {
+    throw new Error('Approved snapshot outbox state is invalid');
+  }
+  return {
+    id: value.id,
+    target: 'source',
+    plan,
+    historyPath: 'approved-snapshot-sync',
+    approvedSnapshot,
+    status,
+    attemptCount: value.attemptCount as number,
+    createdAt: requireDateString(value.createdAt),
+    updatedAt: requireDateString(value.updatedAt),
+    ...(nextRetryAt === undefined ? {} : { nextRetryAt }),
+    ...(lastError === undefined ? {} : { lastError }),
+    requiresReauthorization: true,
+  };
+}
+
+function normalizeApprovedSnapshotReference(value: unknown): {
+  knowledgeBaseId: string;
+  version: number;
+  contentHash: string;
+} {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['knowledgeBaseId', 'version', 'contentHash']) ||
+    typeof value.knowledgeBaseId !== 'string' ||
+    value.knowledgeBaseId.trim().length === 0 ||
+    containsProtectedValue(value.knowledgeBaseId) ||
+    !Number.isInteger(value.version) ||
+    (value.version as number) <= 0 ||
+    typeof value.contentHash !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(value.contentHash)
+  ) {
+    throw new Error('Approved snapshot outbox state is invalid');
+  }
+  return {
+    knowledgeBaseId: value.knowledgeBaseId,
+    version: value.version as number,
+    contentHash: value.contentHash,
+  };
+}
+
+function mergeDrainedState(
+  drainedInput: WritebackOutboxState,
+  drainedOutput: WritebackOutboxState,
+  latest: WritebackOutboxState,
+): WritebackOutboxState {
+  const inputIds = new Set(drainedInput.jobs.map((job) => job.id));
+  const outputById = new Map(drainedOutput.jobs.map((job) => [job.id, job]));
+  return normalizeOutboxState({
+    schemaVersion: 1,
+    jobs: latest.jobs.flatMap((job) => {
+      if (!inputIds.has(job.id)) {
+        return [job];
+      }
+      const updated = outputById.get(job.id);
+      return updated === undefined ? [] : [updated];
+    }),
+  });
+}
+
+function requireDateString(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || Number.isNaN(Date.parse(value))) {
+    throw new Error('Approved snapshot outbox state is invalid');
+  }
+  return value;
+}
+
+function requireSafePublicString(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 240 || containsProtectedValue(value)) {
+    throw new Error('Approved snapshot outbox state is invalid');
+  }
+  return value;
+}
+
+function containsProtectedValue(value: string): boolean {
+  return /authorization\s*:/iu.test(value)
+    || /\bbearer\s+\S+/iu.test(value)
+    || /\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/iu.test(value)
+    || /data:[^,\s;]+(?:;[^,\s;]+)*;base64,/iu.test(value)
+    || /[A-Za-z]:\\/u.test(value)
+    || /\\\\[^\\\s]+\\/u.test(value)
+    || /(?:^|\s)\/(?:Users|home|var|etc|opt|tmp)\//u.test(value)
+    || /(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{64,}={0,2}(?![A-Za-z0-9+/=])/u.test(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function confinedJoin(base: string, ...segments: string[]): string {
+  const resolvedBase = resolve(base);
+  const target = resolve(resolvedBase, ...segments);
+  if (!isWithinDirectory(resolvedBase, target)) {
+    throw new Error('Approved snapshot outbox path escaped app data');
+  }
+  return target;
+}
+
+function isWithinDirectory(base: string, target: string): boolean {
+  return target === base || target.startsWith(`${base}${sep}`);
+}
+
+function isOwnedLock(value: unknown, token: string): boolean {
+  return isRecord(value) && value.schemaVersion === 1 && value.token === token;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -333,4 +656,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isMissingFileError(error: unknown): boolean {
   return isRecord(error) && error.code === 'ENOENT';
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return isRecord(error) && error.code === code;
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
 }

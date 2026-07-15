@@ -58,7 +58,14 @@ export type {
   ApprovedSnapshotReadableStore,
   ApprovedSnapshotSyncEnvironment,
   ApprovedSnapshotSyncClient,
+  ApprovedSnapshotUploadClient,
 } from './approved-snapshot-outbox.js';
+export { ApprovedSnapshotPullCoordinator } from './approved-snapshot-pull.js';
+export type {
+  ApprovedSnapshotPullClient,
+  ApprovedSnapshotPullCoordinatorOptions,
+  ApprovedSnapshotPullStore,
+} from './approved-snapshot-pull.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
 export { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 export type {
@@ -68,6 +75,8 @@ export type {
   ManagedKnowledgeStoreOptions,
   StageApprovedSnapshotMetadata,
   StageRollbackMetadata,
+  StagedKnowledgeTransitionKind,
+  StagedKnowledgeTransitionPhase,
   StagedKnowledgeTransitionSummary,
 } from './managed-knowledge-store.js';
 export { KnowledgeRefreshService } from './knowledge-refresh-service.js';

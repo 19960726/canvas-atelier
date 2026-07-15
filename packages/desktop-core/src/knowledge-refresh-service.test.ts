@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 
+import { createKnowledgeSnapshotCandidate } from '@agent-canvas/skill-store';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { NodeFileSystem } from './file-system';
@@ -237,6 +238,166 @@ describe('KnowledgeRefreshService', () => {
     expect(states).toEqual([fallback]);
     await expect(new ManagedKnowledgeStore({ appDataRoot: fixture.appDataRoot }).listStates()).resolves.toEqual([fallback]);
   });
+  it('re-stats across a stability window and retries a partial save before publishing', async () => {
+    const fixture = await createConfiguredFixture(tempRoots);
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# partial');
+    const watcher = new ManualWatchAdapter();
+    const clock = new ManualClock();
+    let stabilityPass = 0;
+    const service = new KnowledgeRefreshService({
+      clock,
+      sourceDeviceId: 'test-device',
+      stabilityWait: async () => {
+        stabilityPass += 1;
+        if (stabilityPass === 1) {
+          await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# complete saved content');
+        }
+      },
+      store: fixture.store,
+      watchAdapter: watcher,
+    });
+
+    await service.start(['scene-skill']);
+    watcher.emit(fixture.sourceRoot, { eventType: 'change', filename: 'memory/main.md' });
+    await clock.advanceBy(250);
+
+    expect(fixture.store.publishCount).toBe(0);
+    await expect(fixture.store.listStates()).resolves.toEqual([
+      expect.objectContaining({ activeVersion: null, lastFailure: null }),
+    ]);
+
+    await clock.advanceBy(250);
+
+    expect(fixture.store.publishCount).toBe(1);
+    await expect(fixture.store.readActive('scene-skill')).resolves.toMatchObject({
+      documents: [expect.objectContaining({ content: '# complete saved content' })],
+    });
+  });
+
+  it('serializes overlapping refreshes per knowledge base and publishes the latest rapid save', async () => {
+    const fixture = await createConfiguredFixture(tempRoots);
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# first save');
+    const watcher = new ManualWatchAdapter();
+    const clock = new ManualClock();
+    const blockingStore = new BlockingManagedKnowledgeStore({ appDataRoot: fixture.appDataRoot });
+    const service = new KnowledgeRefreshService({
+      clock,
+      sourceDeviceId: 'test-device',
+      stabilityWait: async () => undefined,
+      store: blockingStore,
+      watchAdapter: watcher,
+    });
+
+    await service.start(['scene-skill']);
+    watcher.emit(fixture.sourceRoot, { eventType: 'change', filename: 'memory/main.md' });
+    const firstAdvance = clock.advanceBy(250);
+    await blockingStore.firstPublishStarted.promise;
+
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# latest save');
+    watcher.emit(fixture.sourceRoot, { eventType: 'change', filename: 'memory/main.md' });
+    const secondAdvance = clock.advanceBy(250);
+    blockingStore.releaseFirstPublish.resolve();
+    await Promise.all([firstAdvance, secondAdvance]);
+
+    expect(blockingStore.maxConcurrentPublishes).toBe(1);
+    expect(blockingStore.publishCount).toBe(2);
+    await expect(blockingStore.readActive('scene-skill')).resolves.toMatchObject({
+      version: 2,
+      documents: [expect.objectContaining({ content: '# latest save' })],
+    });
+  });
+
+  it('queues a watcher retry while a review transition reserves the knowledge base', async () => {
+    const fixture = await createConfiguredFixture(tempRoots);
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# initial');
+    const initialService = new KnowledgeRefreshService({
+      sourceDeviceId: 'test-device',
+      stabilityWait: async () => undefined,
+      store: fixture.store,
+      watchAdapter: new ManualWatchAdapter(),
+    });
+    const initial = await initialService.refreshNow('scene-skill');
+    await fixture.store.stageApprovedSnapshot(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# staged review' }],
+    }), {
+      stageId: 'stage-refresh-reservation',
+      projectId: 'project-1',
+      candidateId: 'candidate-1',
+      transactionId: 'transaction-1',
+      expectedActiveVersion: initial.activeVersion!,
+      expectedActiveContentHash: initial.activeContentHash!,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-16T01:00:00.000Z',
+    });
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# watcher update after review');
+    const watcher = new ManualWatchAdapter();
+    const clock = new ManualClock();
+    const states: unknown[] = [];
+    const service = new KnowledgeRefreshService({
+      clock,
+      sourceDeviceId: 'test-device',
+      stabilityWait: async () => undefined,
+      store: fixture.store,
+      watchAdapter: watcher,
+    });
+    service.subscribe((state) => states.push(state));
+
+    await service.start(['scene-skill']);
+    watcher.emit(fixture.sourceRoot, { eventType: 'change', filename: 'memory/main.md' });
+    await clock.advanceBy(250);
+
+    expect(fixture.store.publishCount).toBe(1);
+    expect(states).toEqual([]);
+    await fixture.store.discardStagedTransition('stage-refresh-reservation', 'unacknowledged_project_transaction');
+    await clock.advanceBy(250);
+
+    expect(fixture.store.publishCount).toBe(2);
+    await expect(fixture.store.readActive('scene-skill')).resolves.toMatchObject({
+      version: 2,
+      documents: [expect.objectContaining({ content: '# watcher update after review' })],
+    });
+  });
+
+  it('awaits refresh work during stop and prevents post-stop publish or emit', async () => {
+    const fixture = await createConfiguredFixture(tempRoots);
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# stop in flight');
+    const watcher = new ManualWatchAdapter();
+    const clock = new ManualClock();
+    const stabilityStarted = deferred<void>();
+    const releaseStability = deferred<void>();
+    const states: unknown[] = [];
+    const service = new KnowledgeRefreshService({
+      clock,
+      sourceDeviceId: 'test-device',
+      stabilityWait: async () => {
+        stabilityStarted.resolve();
+        await releaseStability.promise;
+      },
+      store: fixture.store,
+      watchAdapter: watcher,
+    });
+    service.subscribe((state) => states.push(state));
+
+    await service.start(['scene-skill']);
+    watcher.emit(fixture.sourceRoot, { eventType: 'change', filename: 'memory/main.md' });
+    const advancePromise = clock.advanceBy(250);
+    await stabilityStarted.promise;
+    let stopped = false;
+    const stopPromise = service.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseStability.resolve();
+    await Promise.all([advancePromise, stopPromise]);
+
+    expect(stopped).toBe(true);
+    expect(fixture.store.publishCount).toBe(0);
+    expect(states).toEqual([]);
+  });
 });
 
 async function createConfiguredFixture(tempRoots: string[]) {
@@ -267,6 +428,29 @@ class CountingManagedKnowledgeStore extends ManagedKnowledgeStore {
   override async publish(snapshot: Parameters<ManagedKnowledgeStore['publish']>[0]): Promise<void> {
     await super.publish(snapshot);
     this.publishCount += 1;
+  }
+}
+
+class BlockingManagedKnowledgeStore extends ManagedKnowledgeStore {
+  readonly firstPublishStarted = deferred<void>();
+  readonly releaseFirstPublish = deferred<void>();
+  publishCount = 0;
+  maxConcurrentPublishes = 0;
+  private concurrentPublishes = 0;
+
+  override async publish(snapshot: Parameters<ManagedKnowledgeStore['publish']>[0]): Promise<void> {
+    this.concurrentPublishes += 1;
+    this.maxConcurrentPublishes = Math.max(this.maxConcurrentPublishes, this.concurrentPublishes);
+    try {
+      if (this.publishCount === 0) {
+        this.firstPublishStarted.resolve();
+        await this.releaseFirstPublish.promise;
+      }
+      await super.publish(snapshot);
+      this.publishCount += 1;
+    } finally {
+      this.concurrentPublishes -= 1;
+    }
   }
 }
 
@@ -361,4 +545,14 @@ interface ManualTimer {
   callback(): void | Promise<void>;
   dueAt: number;
   id: number;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }

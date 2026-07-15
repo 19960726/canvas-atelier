@@ -127,6 +127,12 @@ interface NovusPackImporterLike {
 interface KnowledgeStoreLike {
   configure(input: ConfigureKnowledgeRoot): Promise<ConfiguredKnowledgeBase>;
   activateStagedTransition?(stageId: string): Promise<KnowledgeBaseStateSummary>;
+  discardStagedTransition?(
+    stageId: string,
+    reason: 'unacknowledged_project_transaction' | 'superseded_project_transaction',
+  ): Promise<void>;
+  finalizeStagedTransition?(stageId: string): Promise<void>;
+  recordStagedTransitionOutboxIntent?(stageId: string): Promise<void>;
   listStates(): Promise<KnowledgeBaseStateSummary[]>;
   listStagedKnowledgeTransitions?(): Promise<StagedKnowledgeTransitionSummary[]>;
   publish?(snapshot: KnowledgeSnapshot): Promise<void>;
@@ -210,6 +216,7 @@ interface PreparedBridgeSkillReview {
   readonly candidates: SkillPromotionCandidate[];
   activateAfterAck(): Promise<{
     readonly approvedSnapshot?: KnowledgeSnapshot;
+    readonly stagedTransitionId?: string;
     readonly knowledgeState: KnowledgeBaseStateSummary | null;
   }>;
 }
@@ -477,7 +484,16 @@ export function createDesktopBridgeHandlers(
 
     const activated = await preparedReview.activateAfterAck();
     if (activated.approvedSnapshot !== undefined) {
-      await approvedSnapshotOutbox?.enqueueApprovedSnapshot(activated.approvedSnapshot);
+      if (approvedSnapshotOutbox === null) {
+        throw invalidRequest('Approved snapshot outbox is unavailable');
+      }
+      await approvedSnapshotOutbox.enqueueApprovedSnapshot(activated.approvedSnapshot);
+      if (activated.stagedTransitionId !== undefined) {
+        await requireMethod(knowledgeStore, 'recordStagedTransitionOutboxIntent').call(knowledgeStore, activated.stagedTransitionId);
+        await requireMethod(knowledgeStore, 'finalizeStagedTransition').call(knowledgeStore, activated.stagedTransitionId);
+      }
+    } else if (activated.stagedTransitionId !== undefined) {
+      await requireMethod(knowledgeStore, 'finalizeStagedTransition').call(knowledgeStore, activated.stagedTransitionId);
     }
     const knowledgeState = activated.knowledgeState ?? (
       reviewed.targetKnowledgeBaseId === undefined
@@ -597,6 +613,7 @@ export function createDesktopBridgeHandlers(
       const reviewed = reviewSkillPromotionCandidate(candidate, {
         decision: request.decision,
         reviewedAt: new Date().toISOString(),
+        transactionId,
       });
       return {
         candidate: reviewed,
@@ -639,6 +656,7 @@ export function createDesktopBridgeHandlers(
         decision: 'approved',
         reviewedAt: snapshot.publishedAt,
         publishedKnowledgeVersion: snapshot.version,
+        transactionId,
       });
       return {
         candidate: reviewed,
@@ -649,6 +667,7 @@ export function createDesktopBridgeHandlers(
             : await activateStagedKnowledgeAfterAck(staged.stageId);
           return {
             approvedSnapshot: snapshot,
+            ...(staged === null ? {} : { stagedTransitionId: staged.stageId }),
             knowledgeState,
           };
         },
@@ -803,7 +822,7 @@ export function createDesktopBridgeHandlers(
       item.publishedKnowledgeVersion !== undefined &&
       item.publishedKnowledgeVersion > targetVersion &&
       item.publishedKnowledgeVersion <= previousActiveVersion
-        ? rollbackSkillPromotionCandidate(item, rolledBackAt)
+        ? rollbackSkillPromotionCandidate(item, rolledBackAt, { transactionId })
         : item
     ));
     const reviewed = nextCandidates.find((item) => item.id === candidate.id);
@@ -823,6 +842,7 @@ export function createDesktopBridgeHandlers(
         }
         return {
           knowledgeState: rolledBackState,
+          ...(staged === null ? {} : { stagedTransitionId: staged.stageId }),
         };
       },
     };
@@ -846,14 +866,53 @@ export function createDesktopBridgeHandlers(
       if (staged.projectId !== project.id) {
         continue;
       }
-      const candidate = candidatesById.get(staged.candidateId);
-      if (candidate?.reviewStatus !== 'approved' && candidate?.reviewStatus !== 'rolled_back') {
-        continue;
-      }
       try {
+        if (staged.phase === 'completed') {
+          await requireMethod(knowledgeStore, 'finalizeStagedTransition').call(knowledgeStore, staged.stageId);
+          continue;
+        }
+
+        const candidate = candidatesById.get(staged.candidateId);
+        const exactTransaction = candidate?.reviewTransactionId === staged.transactionId;
+        const exactLifecycle = staged.kind === 'approved_snapshot'
+          ? candidate?.reviewStatus === 'approved' &&
+            candidate.publishedKnowledgeVersion === staged.publicationVersion
+          : candidate?.reviewStatus === 'rolled_back';
+        if (!exactTransaction || !exactLifecycle) {
+          if (staged.phase === 'staged' && knowledgeStore.discardStagedTransition !== undefined) {
+            const reason = candidate?.reviewTransactionId !== undefined &&
+              candidate.reviewTransactionId !== staged.transactionId
+              ? 'superseded_project_transaction'
+              : 'unacknowledged_project_transaction';
+            await knowledgeStore.discardStagedTransition(staged.stageId, reason);
+          }
+          continue;
+        }
+
         await activate.call(knowledgeStore, staged.stageId);
+        if (staged.kind === 'approved_snapshot') {
+          if (
+            approvedSnapshotOutbox === null ||
+            staged.publicationVersion === undefined ||
+            staged.publicationContentHash === undefined
+          ) {
+            throw invalidRequest('Approved snapshot recovery is unavailable');
+          }
+          const readVersion = requireMethod(knowledgeStore, 'readVersion');
+          const snapshot = await readVersion.call(
+            knowledgeStore,
+            staged.knowledgeBaseId,
+            staged.publicationVersion,
+          );
+          if (snapshot === null || snapshot.contentHash !== staged.publicationContentHash) {
+            throw invalidRequest('Approved snapshot recovery content is unavailable');
+          }
+          await approvedSnapshotOutbox.enqueueApprovedSnapshot(snapshot);
+          await requireMethod(knowledgeStore, 'recordStagedTransitionOutboxIntent').call(knowledgeStore, staged.stageId);
+        }
+        await requireMethod(knowledgeStore, 'finalizeStagedTransition').call(knowledgeStore, staged.stageId);
       } catch {
-        // Leave the staged transition in place for the next recovery attempt.
+        // Preserve the exact staged transition and reservation for retry.
       }
     }
   }
@@ -1339,6 +1398,7 @@ function sanitizeSkillPromotionCandidate(candidate: SkillPromotionCandidate): Sk
     ...(parsed.confidence === undefined ? {} : { confidence: parsed.confidence }),
     ...(parsed.affectedCapabilities === undefined ? {} : { affectedCapabilities: parsed.affectedCapabilities }),
     ...(parsed.reviewedAt === undefined ? {} : { reviewedAt: parsed.reviewedAt }),
+    ...(parsed.reviewTransactionId === undefined ? {} : { reviewTransactionId: parsed.reviewTransactionId }),
     ...(parsed.publishedKnowledgeVersion === undefined ? {} : { publishedKnowledgeVersion: parsed.publishedKnowledgeVersion }),
     ...(parsed.rolledBackAt === undefined ? {} : { rolledBackAt: parsed.rolledBackAt }),
   });

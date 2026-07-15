@@ -59,10 +59,22 @@ export interface StageRollbackMetadata {
   readonly stagedAt: string;
 }
 
+export type StagedKnowledgeTransitionKind = 'approved_snapshot' | 'rollback';
+export type StagedKnowledgeTransitionPhase = 'staged' | 'activated' | 'outbox_recorded' | 'completed';
+
 export interface StagedKnowledgeTransitionSummary {
   readonly stageId: string;
   readonly projectId: string;
   readonly candidateId: string;
+  readonly transactionId: string;
+  readonly knowledgeBaseId: string;
+  readonly kind: StagedKnowledgeTransitionKind;
+  readonly phase: StagedKnowledgeTransitionPhase;
+  readonly expectedActiveVersion: number;
+  readonly expectedActiveContentHash: string;
+  readonly targetVersion?: number;
+  readonly publicationVersion?: number;
+  readonly publicationContentHash?: string;
 }
 
 interface ConfigurationFile {
@@ -74,6 +86,7 @@ type StagedKnowledgeTransition =
   | {
     readonly schemaVersion: 1;
     readonly kind: 'approved_snapshot';
+    readonly phase: StagedKnowledgeTransitionPhase;
     readonly stageId: string;
     readonly knowledgeBaseId: string;
     readonly projectId: string;
@@ -87,6 +100,7 @@ type StagedKnowledgeTransition =
   | {
     readonly schemaVersion: 1;
     readonly kind: 'rollback';
+    readonly phase: StagedKnowledgeTransitionPhase;
     readonly stageId: string;
     readonly knowledgeBaseId: string;
     readonly projectId: string;
@@ -153,6 +167,7 @@ export class ManagedKnowledgeStore {
     const configuration = await this.requireConfiguration(normalizedSnapshot.knowledgeBaseId);
 
     await this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      await this.assertNoKnowledgeReservation(configuration.knowledgeRootId);
       const current = await this.readSummaryFile(configuration.knowledgeRootId)
         ?? createEmptySummary(configuration);
       const next = applyPublishedSnapshot(current, normalizedSnapshot);
@@ -220,6 +235,7 @@ export class ManagedKnowledgeStore {
     const stagedAt = requireDateString(metadata.stagedAt, 'stagedAt');
 
     return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      await this.assertNoKnowledgeReservation(configuration.knowledgeRootId);
       const current = await this.readSummaryFile(configuration.knowledgeRootId)
         ?? createEmptySummary(configuration);
       assertExpectedActiveSummary(current, normalizedMetadata);
@@ -232,6 +248,7 @@ export class ManagedKnowledgeStore {
       const transition: StagedKnowledgeTransition = {
         schemaVersion: 1,
         kind: 'approved_snapshot',
+        phase: 'staged',
         stageId: normalizedMetadata.stageId,
         knowledgeBaseId: canonical.knowledgeBaseId,
         projectId: normalizedMetadata.projectId,
@@ -242,6 +259,7 @@ export class ManagedKnowledgeStore {
         stagedAt,
         snapshot,
       };
+      await this.writeKnowledgeReservation(configuration.knowledgeRootId, transition);
       await this.writeStagedTransition(transition);
       return {
         stageId: transition.stageId,
@@ -261,6 +279,7 @@ export class ManagedKnowledgeStore {
     const stagedAt = requireDateString(metadata.stagedAt, 'stagedAt');
 
     return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      await this.assertNoKnowledgeReservation(configuration.knowledgeRootId);
       const current = await this.readSummaryFile(configuration.knowledgeRootId);
       if (current === null) {
         throw new Error('Unknown knowledge base');
@@ -276,6 +295,7 @@ export class ManagedKnowledgeStore {
       const transition: StagedKnowledgeTransition = {
         schemaVersion: 1,
         kind: 'rollback',
+        phase: 'staged',
         stageId: normalizedMetadata.stageId,
         knowledgeBaseId,
         projectId: normalizedMetadata.projectId,
@@ -286,6 +306,7 @@ export class ManagedKnowledgeStore {
         stagedAt,
         targetVersion,
       };
+      await this.writeKnowledgeReservation(configuration.knowledgeRootId, transition);
       await this.writeStagedTransition(transition);
       return {
         stageId: transition.stageId,
@@ -295,27 +316,33 @@ export class ManagedKnowledgeStore {
   }
 
   async listStagedKnowledgeTransitions(): Promise<StagedKnowledgeTransitionSummary[]> {
+    const transitionsByStageId = new Map<string, StagedKnowledgeTransition>();
     const directory = this.stagedDirectory();
-    let entries: string[];
     try {
       await this.assertManagedDirectory(directory);
-      entries = await this.fileSystem.readdir(directory);
-    } catch (error) {
-      if (isMissingFileError(error)) {
-        return [];
+      const entries = await this.fileSystem.readdir(directory);
+      const transitions = await Promise.all(entries
+        .filter((entry) => entry.endsWith('.json'))
+        .map(async (entry) => this.readStagedTransitionFile(confinedJoin(directory, entry))));
+      for (const transition of transitions) {
+        transitionsByStageId.set(transition.stageId, transition);
       }
-      throw error;
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
     }
 
-    const transitions = await Promise.all(entries
-      .filter((entry) => entry.endsWith('.json'))
-      .map(async (entry) => this.readStagedTransitionFile(confinedJoin(directory, entry))));
-    return transitions
-      .map((transition) => ({
-        stageId: transition.stageId,
-        projectId: transition.projectId,
-        candidateId: transition.candidateId,
-      }))
+    const configurationFile = await this.readConfigurationFile();
+    for (const configuration of configurationFile.configurations) {
+      const reservation = await this.readKnowledgeReservation(configuration.knowledgeRootId);
+      if (reservation !== null && !transitionsByStageId.has(reservation.stageId)) {
+        transitionsByStageId.set(reservation.stageId, reservation);
+      }
+    }
+
+    return [...transitionsByStageId.values()]
+      .map(summarizeStagedTransition)
       .sort(compareStagedTransitionSummaries);
   }
 
@@ -323,14 +350,98 @@ export class ManagedKnowledgeStore {
     const transition = await this.readStagedTransition(stageId);
     const configuration = await this.requireConfiguration(transition.knowledgeBaseId);
     return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      await this.requireMatchingKnowledgeReservation(configuration.knowledgeRootId, transition);
       const current = await this.readSummaryFile(configuration.knowledgeRootId)
         ?? createEmptySummary(configuration);
       const next = transition.kind === 'approved_snapshot'
         ? await this.activateStagedApprovedSnapshot(configuration.knowledgeRootId, current, transition)
         : await this.activateStagedRollback(configuration.knowledgeRootId, current, transition);
-      await this.removeStagedTransition(transition.stageId);
+      const activated = transition.phase === 'outbox_recorded'
+        ? transition
+        : { ...transition, phase: 'activated' as const };
+      await this.writeStagedTransition(activated);
+      await this.writeKnowledgeReservation(configuration.knowledgeRootId, activated);
       return cloneSummary(next);
     });
+  }
+
+  async recordStagedTransitionOutboxIntent(stageId: string): Promise<void> {
+    const transition = await this.readStagedTransition(stageId);
+    if (transition.kind !== 'approved_snapshot') {
+      throw new Error('Only approved snapshot transitions have outbox intent');
+    }
+    const configuration = await this.requireConfiguration(transition.knowledgeBaseId);
+    await this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      await this.requireMatchingKnowledgeReservation(configuration.knowledgeRootId, transition);
+      if (transition.phase !== 'activated' && transition.phase !== 'outbox_recorded') {
+        throw new Error('Approved snapshot transition must be activated before recording outbox intent');
+      }
+      const recorded = { ...transition, phase: 'outbox_recorded' as const };
+      await this.writeStagedTransition(recorded);
+      await this.writeKnowledgeReservation(configuration.knowledgeRootId, recorded);
+    });
+  }
+
+  async finalizeStagedTransition(stageId: string): Promise<void> {
+    const transition = await this.readStagedTransition(stageId);
+    const configuration = await this.requireConfiguration(transition.knowledgeBaseId);
+    await this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      await this.requireMatchingKnowledgeReservation(configuration.knowledgeRootId, transition);
+      const canFinalize = transition.kind === 'approved_snapshot'
+        ? transition.phase === 'outbox_recorded' || transition.phase === 'completed'
+        : transition.phase === 'activated' || transition.phase === 'completed';
+      if (!canFinalize) {
+        throw new Error('Knowledge transition is not ready for finalization');
+      }
+      const completed = { ...transition, phase: 'completed' as const };
+      await this.writeStagedTransition(completed);
+      await this.writeKnowledgeReservation(configuration.knowledgeRootId, completed);
+      await this.removeKnowledgeReservation(configuration.knowledgeRootId);
+      await this.removeStagedTransition(transition.stageId);
+    });
+  }
+
+  async discardStagedTransition(
+    stageId: string,
+    reason: 'unacknowledged_project_transaction' | 'superseded_project_transaction',
+  ): Promise<void> {
+    const transition = await this.readStagedTransition(stageId);
+    const configuration = await this.requireConfiguration(transition.knowledgeBaseId);
+    await this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      const reservation = await this.readKnowledgeReservation(configuration.knowledgeRootId);
+      if (reservation !== null && reservation.stageId !== transition.stageId) {
+        throw new Error('Knowledge transition reservation belongs to another stage');
+      }
+      if (transition.phase !== 'staged') {
+        throw new Error('Activated knowledge transition cannot be discarded');
+      }
+      const current = await this.readSummaryFile(configuration.knowledgeRootId)
+        ?? createEmptySummary(configuration);
+      assertExpectedActiveSummary(current, transition);
+      const completed = { ...transition, phase: 'completed' as const };
+      await this.writeStagedTransition(completed);
+      if (reservation !== null) {
+        await this.writeKnowledgeReservation(configuration.knowledgeRootId, completed);
+      }
+      await this.ensureManagedDirectory(this.quarantineDirectory(configuration.knowledgeRootId));
+      await writeAtomic(
+        this.fileSystem,
+        this.quarantinePath(configuration.knowledgeRootId, transition.stageId),
+        `${canonicalJson({
+          schemaVersion: 1,
+          reason,
+          discardedAt: this.now().toISOString(),
+          transition: completed,
+        })}\n`,
+      );
+      await this.removeKnowledgeReservation(configuration.knowledgeRootId);
+      await this.removeStagedTransition(transition.stageId);
+    });
+  }
+
+  async hasUnresolvedKnowledgeTransition(knowledgeBaseId: string): Promise<boolean> {
+    const configuration = await this.requireConfiguration(knowledgeBaseId);
+    return (await this.readKnowledgeReservation(configuration.knowledgeRootId)) !== null;
   }
 
   async readActive(knowledgeBaseId: string): Promise<KnowledgeSnapshot | null> {
@@ -403,6 +514,7 @@ export class ManagedKnowledgeStore {
   async rollback(knowledgeBaseId: string, version: number): Promise<KnowledgeBaseStateSummary> {
     const configuration = await this.requireConfiguration(knowledgeBaseId);
     return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      await this.assertNoKnowledgeReservation(configuration.knowledgeRootId);
       const current = await this.readSummaryFile(configuration.knowledgeRootId);
       if (current === null) {
         throw new Error('Unknown knowledge base');
@@ -790,6 +902,76 @@ export class ManagedKnowledgeStore {
     );
   }
 
+  private knowledgeReservationPath(knowledgeRootId: string): string {
+    return confinedJoin(this.knowledgeBaseDirectory(knowledgeRootId), 'transition-reservation.json');
+  }
+
+  private quarantineDirectory(knowledgeRootId: string): string {
+    return confinedJoin(this.knowledgeBaseDirectory(knowledgeRootId), 'quarantine');
+  }
+
+  private quarantinePath(knowledgeRootId: string, stageId: string): string {
+    return confinedJoin(
+      this.quarantineDirectory(knowledgeRootId),
+      `stage-${createHash('sha256').update(stageId, 'utf8').digest('hex').slice(0, 24)}.json`,
+    );
+  }
+
+  private async readKnowledgeReservation(knowledgeRootId: string): Promise<StagedKnowledgeTransition | null> {
+    const path = this.knowledgeReservationPath(knowledgeRootId);
+    try {
+      await this.assertManagedFile(path);
+      return normalizeStagedTransition(JSON.parse(await this.fileSystem.readFile(path, 'utf8')) as unknown);
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private async writeKnowledgeReservation(
+    knowledgeRootId: string,
+    transition: StagedKnowledgeTransition,
+  ): Promise<void> {
+    const path = this.knowledgeReservationPath(knowledgeRootId);
+    await this.assertManagedFileForWrite(path);
+    await writeAtomic(this.fileSystem, path, `${canonicalJson(transition)}\n`);
+  }
+
+  private async removeKnowledgeReservation(knowledgeRootId: string): Promise<void> {
+    await this.fileSystem.rm(this.knowledgeReservationPath(knowledgeRootId), { force: true });
+  }
+
+  private async assertNoKnowledgeReservation(knowledgeRootId: string): Promise<void> {
+    const reservation = await this.readKnowledgeReservation(knowledgeRootId);
+    if (reservation === null) {
+      return;
+    }
+    if (reservation.phase === 'completed') {
+      await this.removeKnowledgeReservation(knowledgeRootId);
+      return;
+    }
+    throw new Error('Knowledge base is reserved by an unresolved review transition');
+  }
+
+  private async requireMatchingKnowledgeReservation(
+    knowledgeRootId: string,
+    transition: StagedKnowledgeTransition,
+  ): Promise<void> {
+    const reservation = await this.readKnowledgeReservation(knowledgeRootId);
+    if (reservation === null) {
+      await this.writeKnowledgeReservation(knowledgeRootId, transition);
+      return;
+    }
+    if (
+      reservation.stageId !== transition.stageId ||
+      reservation.transactionId !== transition.transactionId ||
+      reservation.kind !== transition.kind
+    ) {
+      throw new Error('Knowledge transition reservation does not match the staged transition');
+    }
+  }
   private stagedDirectory(): string {
     return confinedJoin(this.knowledgeRoot, 'staged');
   }
@@ -810,7 +992,22 @@ export class ManagedKnowledgeStore {
   }
 
   private async readStagedTransition(stageId: string): Promise<StagedKnowledgeTransition> {
-    return this.readStagedTransitionFile(this.stagedTransitionPath(stageId));
+    try {
+      return await this.readStagedTransitionFile(this.stagedTransitionPath(stageId));
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
+    }
+
+    const configurationFile = await this.readConfigurationFile();
+    for (const configuration of configurationFile.configurations) {
+      const reservation = await this.readKnowledgeReservation(configuration.knowledgeRootId);
+      if (reservation?.stageId === stageId) {
+        return reservation;
+      }
+    }
+    throw new Error('Unknown staged knowledge transition');
   }
 
   private async readStagedTransitionFile(path: string): Promise<StagedKnowledgeTransition> {
@@ -899,6 +1096,9 @@ function applyPublishedSnapshot(
   current: KnowledgeBaseStateSummary,
   snapshot: KnowledgeSnapshot,
 ): KnowledgeBaseStateSummary {
+  if (current.activeVersion !== null && snapshot.version < current.activeVersion) {
+    throw new Error('Knowledge snapshot publication cannot regress the active version');
+  }
   const existing = current.versions.find((candidate) => candidate.version === snapshot.version);
   if (existing && existing.contentHash !== snapshot.contentHash) {
     throw new Error('Knowledge snapshot version already exists with different content');
@@ -985,6 +1185,7 @@ function normalizeStagedTransition(input: unknown): StagedKnowledgeTransition {
   } as StageRollbackMetadata);
   const knowledgeBaseId = requireNonEmptyString(input.knowledgeBaseId, 'knowledgeBaseId');
   const stagedAt = requireDateString(input.stagedAt, 'stagedAt');
+  const phase = normalizeStagedKnowledgeTransitionPhase(input.phase);
   scanProtectedMetadata([knowledgeBaseId, stagedAt]);
 
   if (input.kind === 'approved_snapshot') {
@@ -995,6 +1196,7 @@ function normalizeStagedTransition(input: unknown): StagedKnowledgeTransition {
     return {
       schemaVersion: 1,
       kind: 'approved_snapshot',
+      phase,
       stageId: metadata.stageId,
       knowledgeBaseId,
       projectId: metadata.projectId,
@@ -1011,6 +1213,7 @@ function normalizeStagedTransition(input: unknown): StagedKnowledgeTransition {
     return {
       schemaVersion: 1,
       kind: 'rollback',
+      phase,
       stageId: metadata.stageId,
       knowledgeBaseId,
       projectId: metadata.projectId,
@@ -1026,6 +1229,31 @@ function normalizeStagedTransition(input: unknown): StagedKnowledgeTransition {
   throw new Error('Staged knowledge transition kind is invalid');
 }
 
+function normalizeStagedKnowledgeTransitionPhase(value: unknown): StagedKnowledgeTransitionPhase {
+  if (value === undefined || value === 'staged') return 'staged';
+  if (value === 'activated' || value === 'outbox_recorded' || value === 'completed') return value;
+  throw new Error('Staged knowledge transition phase is invalid');
+}
+
+function summarizeStagedTransition(transition: StagedKnowledgeTransition): StagedKnowledgeTransitionSummary {
+  return {
+    stageId: transition.stageId,
+    projectId: transition.projectId,
+    candidateId: transition.candidateId,
+    transactionId: transition.transactionId,
+    knowledgeBaseId: transition.knowledgeBaseId,
+    kind: transition.kind,
+    phase: transition.phase,
+    expectedActiveVersion: transition.expectedActiveVersion,
+    expectedActiveContentHash: transition.expectedActiveContentHash,
+    ...(transition.kind === 'approved_snapshot'
+      ? {
+          publicationVersion: transition.snapshot.version,
+          publicationContentHash: transition.snapshot.contentHash,
+        }
+      : { targetVersion: transition.targetVersion }),
+  };
+}
 function assertExpectedActiveSummary(
   current: KnowledgeBaseStateSummary,
   expected: {

@@ -678,6 +678,173 @@ describe('desktop bridge contract', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it('discards an unacknowledged staged transition instead of authorizing by candidate id', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    const activateStagedTransition = vi.fn();
+    const discardStagedTransition = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition,
+        configure: vi.fn(),
+        discardStagedTransition,
+        listStagedKnowledgeTransitions: vi.fn(async () => [{
+          stageId: 'stage-unacknowledged',
+          projectId: starterProject.id,
+          candidateId: pendingCandidate.id,
+          transactionId: 'review-transaction-old',
+          knowledgeBaseId: 'scene-skill',
+          kind: 'approved_snapshot',
+          phase: 'staged',
+          expectedActiveVersion: 1,
+          expectedActiveContentHash: 'a'.repeat(64),
+          publicationVersion: 2,
+          publicationContentHash: 'b'.repeat(64),
+        }]),
+        listStates: vi.fn(async () => []),
+        readActive: vi.fn(async () => null),
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => ({
+          ...starterProject,
+          skillPromotionCandidates: [pendingCandidate],
+        })),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+
+    expect(activateStagedTransition).not.toHaveBeenCalled();
+    expect(discardStagedTransition).toHaveBeenCalledWith(
+      'stage-unacknowledged',
+      'unacknowledged_project_transaction',
+    );
+  });
+
+  it('does not let a later review transaction with the same candidate id authorize an older stage', async () => {
+    const candidate = {
+      ...createApprovedSkillCandidate(),
+      reviewTransactionId: 'review-transaction-new',
+    } as SkillPromotionCandidate;
+    const activateStagedTransition = vi.fn();
+    const discardStagedTransition = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition,
+        configure: vi.fn(),
+        discardStagedTransition,
+        listStagedKnowledgeTransitions: vi.fn(async () => [{
+          stageId: 'stage-old-review',
+          projectId: starterProject.id,
+          candidateId: candidate.id,
+          transactionId: 'review-transaction-old',
+          knowledgeBaseId: 'scene-skill',
+          kind: 'approved_snapshot',
+          phase: 'staged',
+          expectedActiveVersion: 2,
+          expectedActiveContentHash: 'b'.repeat(64),
+          publicationVersion: 3,
+          publicationContentHash: 'c'.repeat(64),
+        }]),
+        listStates: vi.fn(async () => []),
+        readActive: vi.fn(async () => null),
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => ({
+          ...starterProject,
+          skillPromotionCandidates: [candidate],
+        })),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+
+    expect(activateStagedTransition).not.toHaveBeenCalled();
+    expect(discardStagedTransition).toHaveBeenCalledWith(
+      'stage-old-review',
+      'superseded_project_transaction',
+    );
+  });
+
+  it('recovers an exact acknowledged approval after activation crashes before outbox enqueue', async () => {
+    const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
+    const candidate = {
+      ...createApprovedSkillCandidate(),
+      publishedKnowledgeVersion: 2,
+      reviewTransactionId: 'review-transaction-exact',
+    } as SkillPromotionCandidate;
+    const activateStagedTransition = vi.fn(async () => knowledgeStateAtVersion(2, 2));
+    const enqueueApprovedSnapshot = vi.fn()
+      .mockRejectedValueOnce(new Error('injected crash after activation before outbox enqueue'))
+      .mockResolvedValueOnce(undefined);
+    const finalizeStagedTransition = vi.fn(async () => undefined);
+    const recordStagedTransitionOutboxIntent = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      approvedSnapshotOutbox: { enqueueApprovedSnapshot },
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition,
+        configure: vi.fn(),
+        discardStagedTransition: vi.fn(),
+        finalizeStagedTransition,
+        listStagedKnowledgeTransitions: vi.fn(async () => [{
+          stageId: 'stage-exact-review',
+          projectId: starterProject.id,
+          candidateId: candidate.id,
+          transactionId: 'review-transaction-exact',
+          knowledgeBaseId: 'scene-skill',
+          kind: 'approved_snapshot',
+          phase: 'activated',
+          expectedActiveVersion: 1,
+          expectedActiveContentHash: 'a'.repeat(64),
+          publicationVersion: 2,
+          publicationContentHash: snapshot.contentHash,
+        }]),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(2, 2)]),
+        readActive: vi.fn(async () => snapshot),
+        readVersion: vi.fn(async () => snapshot),
+        recordStagedTransitionOutboxIntent,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => ({
+          ...starterProject,
+          skillPromotionCandidates: [candidate],
+        })),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+
+    expect(activateStagedTransition).toHaveBeenCalledTimes(1);
+    expect(enqueueApprovedSnapshot).toHaveBeenCalledTimes(1);
+    expect(recordStagedTransitionOutboxIntent).not.toHaveBeenCalled();
+    expect(finalizeStagedTransition).not.toHaveBeenCalled();
+
+    await handlers.openProject({}, { mode: 'write' });
+
+    expect(activateStagedTransition).toHaveBeenCalledTimes(2);
+    expect(enqueueApprovedSnapshot).toHaveBeenCalledTimes(2);
+    expect(enqueueApprovedSnapshot).toHaveBeenLastCalledWith(snapshot);
+    expect(recordStagedTransitionOutboxIntent).toHaveBeenCalledWith('stage-exact-review');
+    expect(finalizeStagedTransition).toHaveBeenCalledWith('stage-exact-review');
+    expect(enqueueApprovedSnapshot.mock.invocationCallOrder[1]).toBeLessThan(finalizeStagedTransition.mock.invocationCallOrder[0]!);
+  });
   it('registers managed knowledge invoke channels', () => {
     const channels: string[] = [];
     const ipcMain = {
@@ -1068,6 +1235,14 @@ function rolledBackKnowledgeState(): KnowledgeBaseStateSummary {
   };
 }
 
+function createKnowledgeRefreshServiceStub() {
+  return {
+    refreshNow: vi.fn(),
+    start: vi.fn(),
+    stop: vi.fn(),
+    subscribe: vi.fn(),
+  };
+}
 function createApprovedSkillCandidate() {
   return {
     schemaVersion: 1 as const,

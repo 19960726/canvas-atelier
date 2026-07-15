@@ -187,6 +187,7 @@ export const skillPromotionCandidateSchema = z.object({
   evidence: feedbackSchema,
   reviewStatus: skillCandidateReviewStatusSchema,
   reviewedAt: z.string().datetime().optional(),
+  reviewTransactionId: idSchema.optional(),
   publishedKnowledgeVersion: z.number().int().positive().optional(),
   rolledBackAt: z.string().datetime().optional(),
 }).strict().superRefine((candidate, context) => {
@@ -206,7 +207,7 @@ export const skillPromotionCandidateSchema = z.object({
   }
 
   if (candidate.reviewStatus === 'pending_review') {
-    if (candidate.reviewedAt || candidate.publishedKnowledgeVersion || candidate.rolledBackAt) {
+    if (candidate.reviewedAt || candidate.reviewTransactionId || candidate.publishedKnowledgeVersion || candidate.rolledBackAt) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['reviewStatus'],
@@ -300,6 +301,7 @@ interface ReviewSkillPromotionCandidateInput {
   decision: Extract<SkillCandidateReviewStatus, 'approved' | 'rejected' | 'superseded'>;
   reviewedAt: string;
   publishedKnowledgeVersion?: number;
+  transactionId?: string;
 }
 
 export function parseProjectMemoryEntry(input: unknown): ProjectMemoryEntry {
@@ -425,6 +427,7 @@ export function reviewSkillPromotionCandidate(
     ...current,
     reviewStatus: input.decision,
     reviewedAt: input.reviewedAt,
+    reviewTransactionId: input.transactionId,
     publishedKnowledgeVersion: input.decision === 'approved' ? input.publishedKnowledgeVersion : undefined,
     rolledBackAt: undefined,
   });
@@ -433,6 +436,7 @@ export function reviewSkillPromotionCandidate(
 export function rollbackSkillPromotionCandidate(
   candidate: SkillPromotionCandidate,
   rolledBackAt: string,
+  metadata: { transactionId?: string } = {},
 ): SkillPromotionCandidate {
   const current = skillPromotionCandidateSchema.parse(candidate);
   if (current.reviewStatus !== 'approved') {
@@ -442,6 +446,7 @@ export function rollbackSkillPromotionCandidate(
   return skillPromotionCandidateSchema.parse({
     ...current,
     reviewStatus: 'rolled_back',
+    reviewTransactionId: metadata.transactionId ?? current.reviewTransactionId,
     rolledBackAt,
   });
 }

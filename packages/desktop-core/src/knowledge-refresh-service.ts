@@ -11,6 +11,7 @@ import { type FileSystem, NodeFileSystem } from './file-system.js';
 import { type InternalKnowledgeConfiguration, ManagedKnowledgeStore } from './managed-knowledge-store.js';
 
 const DEFAULT_DEBOUNCE_MS = 250;
+const DEFAULT_STABILITY_WINDOW_MS = 50;
 const DEFAULT_SOURCE_DEVICE_ID = 'desktop-core';
 const FALLBACK_REASON = 'Knowledge refresh failed';
 
@@ -38,6 +39,8 @@ export interface KnowledgeRefreshServiceOptions<Timer = ReturnType<typeof setTim
   readonly debounceMs?: number;
   readonly fileSystem?: FileSystem;
   readonly sourceDeviceId?: string;
+  readonly stabilityWait?: (delayMs: number) => Promise<void>;
+  readonly stabilityWindowMs?: number;
   readonly store: ManagedKnowledgeStore;
   readonly watchAdapter?: KnowledgeWatchAdapter;
 }
@@ -55,16 +58,36 @@ interface SourceDocument {
   readonly content: string;
 }
 
+interface SourceFileManifestEntry {
+  readonly absolutePath: string;
+  readonly relativePath: string;
+  readonly size: number | null;
+  readonly mtimeMs: number | null;
+}
+
+interface RefreshQueue {
+  requested: boolean;
+  requestedEpoch: number | null;
+  promise: Promise<KnowledgeBaseStateSummary>;
+}
+
+class RefreshCancelledError extends Error {}
+class SourceUnstableError extends Error {}
+
 export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
   private readonly clock: KnowledgeRefreshClock<Timer>;
   private readonly debounceMs: number;
   private readonly fileSystem: FileSystem;
   private readonly listeners = new Set<(state: KnowledgeBaseStateSummary) => void>();
+  private readonly queues = new Map<string, RefreshQueue>();
   private readonly sourceDeviceId: string;
+  private readonly stabilityWait: (delayMs: number) => Promise<void>;
+  private readonly stabilityWindowMs: number;
   private readonly store: ManagedKnowledgeStore;
   private readonly timers = new Map<string, PendingTimer<Timer>>();
   private readonly watchAdapter: KnowledgeWatchAdapter;
   private readonly watches = new Map<string, ActiveWatch>();
+  private lifecycleEpoch = 0;
   private started = false;
 
   constructor(options: KnowledgeRefreshServiceOptions<Timer>) {
@@ -72,12 +95,15 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.fileSystem = options.fileSystem ?? new NodeFileSystem();
     this.sourceDeviceId = options.sourceDeviceId ?? DEFAULT_SOURCE_DEVICE_ID;
+    this.stabilityWait = options.stabilityWait ?? delay;
+    this.stabilityWindowMs = options.stabilityWindowMs ?? DEFAULT_STABILITY_WINDOW_MS;
     this.store = options.store;
     this.watchAdapter = options.watchAdapter ?? new NodeKnowledgeWatchAdapter();
   }
 
   async start(knowledgeBaseIds: string[]): Promise<void> {
     await this.stop();
+    this.lifecycleEpoch += 1;
     this.started = true;
 
     for (const knowledgeBaseId of knowledgeBaseIds) {
@@ -95,6 +121,7 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
 
   async stop(): Promise<void> {
     this.started = false;
+    this.lifecycleEpoch += 1;
     for (const pending of this.timers.values()) {
       this.clock.clearTimeout(pending.timer);
     }
@@ -105,44 +132,11 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
     await Promise.all(handles.map(async (handle) => {
       await handle.close();
     }));
+    await Promise.all([...this.queues.values()].map((queue) => queue.promise));
   }
 
   async refreshNow(knowledgeBaseId: string): Promise<KnowledgeBaseStateSummary> {
-    const configuration = await this.store.readConfiguration(knowledgeBaseId);
-    if (configuration === null) {
-      throw new Error('Unknown knowledge base');
-    }
-
-    try {
-      const candidate = createKnowledgeSnapshotCandidate({
-        knowledgeBaseId: configuration.knowledgeBaseId,
-        displayName: configuration.displayName,
-        documents: await this.readSourceDocuments(configuration.rootPath),
-      });
-      const current = await this.readCurrentSummary(configuration);
-      if (current.activeContentHash === candidate.contentHash) {
-        return cloneSummary(current);
-      }
-
-      const snapshot: KnowledgeSnapshot = {
-        ...candidate,
-        version: nextVersion(current),
-        publishedAt: this.clock.now().toISOString(),
-        sourceDeviceId: this.sourceDeviceId,
-      };
-      await this.store.publish(snapshot);
-      const next = await this.readCurrentSummary(configuration);
-      this.emit(next);
-      return cloneSummary(next);
-    } catch (error) {
-      const fallback = await this.store.recordRefreshFailure(
-        configuration.knowledgeBaseId,
-        sanitizeFailureReason(error, configuration.rootPath),
-        this.clock.now().toISOString(),
-      );
-      this.emit(fallback);
-      return cloneSummary(fallback);
-    }
+    return this.enqueueRefresh(knowledgeBaseId, this.started ? this.lifecycleEpoch : null);
   }
 
   subscribe(listener: (state: KnowledgeBaseStateSummary) => void): () => void {
@@ -152,11 +146,113 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
     };
   }
 
+  private enqueueRefresh(knowledgeBaseId: string, epoch: number | null): Promise<KnowledgeBaseStateSummary> {
+    const existing = this.queues.get(knowledgeBaseId);
+    if (existing !== undefined) {
+      existing.requested = true;
+      existing.requestedEpoch = epoch;
+      return existing.promise;
+    }
+
+    const queue: RefreshQueue = {
+      requested: true,
+      requestedEpoch: epoch,
+      promise: Promise.resolve(null as unknown as KnowledgeBaseStateSummary),
+    };
+    queue.promise = (async () => {
+      let result: KnowledgeBaseStateSummary | null = null;
+      while (queue.requested) {
+        queue.requested = false;
+        const requestedEpoch = queue.requestedEpoch;
+        queue.requestedEpoch = null;
+        result = await this.performRefresh(knowledgeBaseId, requestedEpoch);
+      }
+      if (result !== null) {
+        return result;
+      }
+      const configuration = await this.requireConfiguration(knowledgeBaseId);
+      return this.readCurrentSummary(configuration);
+    })().finally(() => {
+      if (this.queues.get(knowledgeBaseId) === queue) {
+        this.queues.delete(knowledgeBaseId);
+      }
+    });
+    this.queues.set(knowledgeBaseId, queue);
+    return queue.promise;
+  }
+
+  private async performRefresh(
+    knowledgeBaseId: string,
+    epoch: number | null,
+  ): Promise<KnowledgeBaseStateSummary> {
+    const configuration = await this.requireConfiguration(knowledgeBaseId);
+    const currentBefore = await this.readCurrentSummary(configuration);
+    if (!this.isRefreshActive(epoch)) {
+      return cloneSummary(currentBefore);
+    }
+    if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
+      this.scheduleRetry(knowledgeBaseId, epoch);
+      return cloneSummary(currentBefore);
+    }
+
+    try {
+      const documents = await this.readStableSourceDocuments(configuration.rootPath, epoch);
+      this.assertRefreshActive(epoch);
+      const candidate = createKnowledgeSnapshotCandidate({
+        knowledgeBaseId: configuration.knowledgeBaseId,
+        displayName: configuration.displayName,
+        documents,
+      });
+      const current = await this.readCurrentSummary(configuration);
+      if (current.activeContentHash === candidate.contentHash) {
+        return cloneSummary(current);
+      }
+      if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
+        this.scheduleRetry(knowledgeBaseId, epoch);
+        return cloneSummary(current);
+      }
+      this.assertRefreshActive(epoch);
+
+      const snapshot: KnowledgeSnapshot = {
+        ...candidate,
+        version: nextVersion(current),
+        publishedAt: this.clock.now().toISOString(),
+        sourceDeviceId: this.sourceDeviceId,
+      };
+      await this.store.publish(snapshot);
+      const next = await this.readCurrentSummary(configuration);
+      if (this.isRefreshActive(epoch)) {
+        this.emit(next);
+      }
+      return cloneSummary(next);
+    } catch (error) {
+      if (error instanceof SourceUnstableError || isReservationError(error)) {
+        this.scheduleRetry(knowledgeBaseId, epoch);
+        return cloneSummary(await this.readCurrentSummary(configuration));
+      }
+      if (error instanceof RefreshCancelledError || !this.isRefreshActive(epoch)) {
+        return cloneSummary(await this.readCurrentSummary(configuration));
+      }
+      const fallback = await this.store.recordRefreshFailure(
+        configuration.knowledgeBaseId,
+        sanitizeFailureReason(error, configuration.rootPath),
+        this.clock.now().toISOString(),
+      );
+      if (this.isRefreshActive(epoch)) {
+        this.emit(fallback);
+      }
+      return cloneSummary(fallback);
+    }
+  }
+
   private onWatchEvent(knowledgeBaseId: string, event: KnowledgeWatchEvent): void {
     if (!this.started || isIgnoredTemporaryPath(event.filename)) {
       return;
     }
+    this.scheduleRefresh(knowledgeBaseId, this.lifecycleEpoch);
+  }
 
+  private scheduleRefresh(knowledgeBaseId: string, epoch: number): void {
     const pending = this.timers.get(knowledgeBaseId);
     if (pending) {
       this.clock.clearTimeout(pending.timer);
@@ -164,21 +260,55 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
 
     const timer = this.clock.setTimeout(async () => {
       this.timers.delete(knowledgeBaseId);
-      if (this.started) {
-        await this.refreshNow(knowledgeBaseId);
+      if (this.isRefreshActive(epoch)) {
+        await this.enqueueRefresh(knowledgeBaseId, epoch);
       }
     }, this.debounceMs);
     this.timers.set(knowledgeBaseId, { timer });
   }
 
-  private async readSourceDocuments(rootPath: string): Promise<SourceDocument[]> {
-    const root = normalize(resolve(rootPath));
-    const documents: SourceDocument[] = [];
-    await this.readDirectory(root, root, documents);
-    return documents.sort((left, right) => compareStrings(left.relativePath, right.relativePath));
+  private scheduleRetry(knowledgeBaseId: string, epoch: number | null): void {
+    if (epoch !== null && this.isRefreshActive(epoch)) {
+      this.scheduleRefresh(knowledgeBaseId, epoch);
+    }
   }
 
-  private async readDirectory(root: string, directory: string, documents: SourceDocument[]): Promise<void> {
+  private async readStableSourceDocuments(
+    rootPath: string,
+    epoch: number | null,
+  ): Promise<SourceDocument[]> {
+    const root = normalize(resolve(rootPath));
+    const before = await this.readSourceManifest(root);
+    this.assertRefreshActive(epoch);
+    await this.stabilityWait(this.stabilityWindowMs);
+    this.assertRefreshActive(epoch);
+    const after = await this.readSourceManifest(root);
+    if (!manifestsEqual(before, after)) {
+      throw new SourceUnstableError('Knowledge source changed during the stability window');
+    }
+
+    const documents: SourceDocument[] = [];
+    for (const entry of after) {
+      this.assertRefreshActive(epoch);
+      documents.push({
+        relativePath: entry.relativePath,
+        content: await this.fileSystem.readFile(entry.absolutePath, 'utf8'),
+      });
+    }
+    return documents;
+  }
+
+  private async readSourceManifest(root: string): Promise<SourceFileManifestEntry[]> {
+    const entries: SourceFileManifestEntry[] = [];
+    await this.readManifestDirectory(root, root, entries);
+    return entries.sort((left, right) => compareStrings(left.relativePath, right.relativePath));
+  }
+
+  private async readManifestDirectory(
+    root: string,
+    directory: string,
+    manifest: SourceFileManifestEntry[],
+  ): Promise<void> {
     const entries = (await this.fileSystem.readdir(directory)).sort(compareStrings);
     for (const entry of entries) {
       if (isIgnoredTemporaryName(entry)) {
@@ -194,14 +324,24 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
       }
 
       if (stat.isDirectory()) {
-        await this.readDirectory(root, path, documents);
+        await this.readManifestDirectory(root, path, manifest);
       } else if (stat.isFile()) {
-        documents.push({
+        manifest.push({
+          absolutePath: path,
           relativePath: toManagedRelativePath(root, path),
-          content: await this.fileSystem.readFile(path, 'utf8'),
+          size: typeof stat.size === 'number' ? stat.size : null,
+          mtimeMs: typeof stat.mtimeMs === 'number' ? stat.mtimeMs : null,
         });
       }
     }
+  }
+
+  private async requireConfiguration(knowledgeBaseId: string): Promise<InternalKnowledgeConfiguration> {
+    const configuration = await this.store.readConfiguration(knowledgeBaseId);
+    if (configuration === null) {
+      throw new Error('Unknown knowledge base');
+    }
+    return configuration;
   }
 
   private async readCurrentSummary(
@@ -212,6 +352,15 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
     )) ?? createEmptySummary(configuration);
   }
 
+  private isRefreshActive(epoch: number | null): boolean {
+    return epoch === null || (this.started && epoch === this.lifecycleEpoch);
+  }
+
+  private assertRefreshActive(epoch: number | null): void {
+    if (!this.isRefreshActive(epoch)) {
+      throw new RefreshCancelledError('Knowledge refresh stopped');
+    }
+  }
 
   private emit(state: KnowledgeBaseStateSummary): void {
     for (const listener of this.listeners) {
@@ -284,6 +433,19 @@ function nextVersion(summary: KnowledgeBaseStateSummary): number {
   return summary.versions.reduce((max, version) => Math.max(max, version.version), 0) + 1;
 }
 
+function manifestsEqual(
+  left: readonly SourceFileManifestEntry[],
+  right: readonly SourceFileManifestEntry[],
+): boolean {
+  return left.length === right.length && left.every((entry, index) => {
+    const candidate = right[index];
+    return candidate !== undefined &&
+      candidate.relativePath === entry.relativePath &&
+      candidate.size === entry.size &&
+      candidate.mtimeMs === entry.mtimeMs;
+  });
+}
+
 function confinedResolve(root: string, directory: string, entry: string): string {
   const target = normalize(resolve(directory, entry));
   if (!isWithinDirectory(root, target)) {
@@ -320,6 +482,10 @@ function isIgnoredTemporaryName(name: string): boolean {
     || baseName.endsWith('.swp')
     || baseName.endsWith('.swx')
     || baseName.endsWith('~');
+}
+
+function isReservationError(error: unknown): boolean {
+  return error instanceof Error && /reserved by an unresolved review transition/iu.test(error.message);
 }
 
 function sanitizeFailureReason(error: unknown, rootPath: string): string {
@@ -368,4 +534,10 @@ function replaceAllLiteral(value: string, needle: string, replacement: string): 
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
 }

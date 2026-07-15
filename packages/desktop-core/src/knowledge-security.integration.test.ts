@@ -12,6 +12,7 @@ import {
   type CanvasProject,
 } from '@agent-canvas/domain';
 import { createApprovedSnapshotSyncEnvelope } from '@agent-canvas/skill-store';
+import { ApprovedSnapshotOutbox } from './approved-snapshot-outbox';
 import { createDesktopBridgeHandlers } from './bridge-handlers';
 import { KnowledgeRefreshService } from './knowledge-refresh-service';
 import { ManagedKnowledgeStore } from './managed-knowledge-store';
@@ -79,8 +80,13 @@ describe('knowledge security integration', () => {
       });
       await repository.close(created);
 
+      const approvedSnapshotOutbox = new ApprovedSnapshotOutbox({
+        appDataRoot,
+        store,
+      });
       handlers = createDesktopBridgeHandlers({
         appDataRoot,
+        approvedSnapshotOutbox,
         createId: createSequentialId('bridge-artifact'),
         dialogs: {
           chooseKnowledgeRoot: async () => {

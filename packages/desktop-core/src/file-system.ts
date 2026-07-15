@@ -11,6 +11,7 @@ export interface FileHandleLike {
 
 export interface FileStatLike {
   readonly size?: number;
+  readonly mtimeMs?: number;
   isDirectory(): boolean;
   isFile(): boolean;
   isSymbolicLink?(): boolean;
