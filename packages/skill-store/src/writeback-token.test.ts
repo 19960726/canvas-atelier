@@ -3,8 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as publicApi from './index';
-import { applyWritebackPlan, planWritebackTargets, SkillWritebackService } from './writeback-flow';
+import { applyWritebackPlan, planWritebackTargets, SkillKnowledgePromotionService, SkillWritebackService } from './writeback-flow';
 import { consumeWritebackToken, createWritebackApprovalRegistry, createWritebackToken } from './writeback-token';
+import type { SkillPromotionCandidate } from '@agent-canvas/domain';
+import { createKnowledgeSnapshotCandidate } from './knowledge-snapshot';
+import { KnowledgeSnapshotRegistry } from './knowledge-registry';
 
 const issuedAt = '2026-07-13T12:00:00.000Z';
 const issuedAtMs = Date.parse(issuedAt);
@@ -393,8 +396,102 @@ describe('writeback final safety gates', () => {
   it('exposes only the atomic approval service as the package writeback surface', () => {
     expect(publicApi).toHaveProperty('approveSkillWriteback');
     expect(publicApi).toHaveProperty('SkillWritebackService');
+    expect(publicApi).toHaveProperty('SkillKnowledgePromotionService');
     expect(publicApi).not.toHaveProperty('applyWritebackPlan');
     expect(publicApi).not.toHaveProperty('consumeWritebackToken');
     expect(publicApi).not.toHaveProperty('createWritebackToken');
   });
 });
+
+describe('SkillKnowledgePromotionService', () => {
+  it('prepares an exact diff, consumes one approval once, and marks approved only after publication', async () => {
+    const registry = new KnowledgeSnapshotRegistry();
+    const current = registry.publish(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# Scene Skill' }],
+    }), { publishedAt: '2026-07-15T10:00:00.000Z', sourceDeviceId: 'device-a' });
+    const writeback = new SkillWritebackService({ now: () => issuedAtMs + 10 });
+    const service = new SkillKnowledgePromotionService({
+      registry,
+      writebackService: writeback,
+      sourceDeviceId: 'device-a',
+      now: () => issuedAtMs + 10,
+    });
+    const candidate = createCandidate();
+
+    const prepared = service.prepare(candidate, current);
+    expect(prepared.candidate.reviewStatus).toBe('pending_review');
+    expect(prepared.targetSnapshot.contentHash).not.toBe(current.contentHash);
+
+    const token = writeback.issueApproval(prepared.diffHash, { ttlMs: 30_000, now: () => issuedAtMs, random: () => 0.66 });
+    const approved = await service.approve(prepared.preparedId, token.approvalToken);
+
+    expect(approved.candidate).toMatchObject({
+      reviewStatus: 'approved',
+      reviewedAt: '2026-07-13T12:00:00.010Z',
+      publishedKnowledgeVersion: 2,
+    });
+    expect(registry.getActive('scene-skill')).toMatchObject({ version: 2, contentHash: prepared.targetSnapshot.contentHash });
+    await expect(service.approve(prepared.preparedId, token.approvalToken)).resolves.toMatchObject({ ok: false, reason: 'already_used' });
+  });
+
+  it('blocks stale approvals, supports rejection, and rolls back approved candidates', async () => {
+    const registry = new KnowledgeSnapshotRegistry();
+    const current = registry.publish(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# Scene Skill' }],
+    }), { publishedAt: '2026-07-15T10:00:00.000Z', sourceDeviceId: 'device-a' });
+    const writeback = new SkillWritebackService({ now: () => issuedAtMs + 20 });
+    const service = new SkillKnowledgePromotionService({
+      registry,
+      writebackService: writeback,
+      sourceDeviceId: 'device-a',
+      now: () => issuedAtMs + 20,
+    });
+    const prepared = service.prepare(createCandidate(), current);
+    registry.publish(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# External Update' }],
+    }), { publishedAt: '2026-07-15T10:01:00.000Z', sourceDeviceId: 'device-b' });
+    const token = writeback.issueApproval(prepared.diffHash, { ttlMs: 30_000, now: () => issuedAtMs, random: () => 0.77 });
+
+    await expect(service.approve(prepared.preparedId, token.approvalToken)).resolves.toMatchObject({ ok: false, reason: 'stale_snapshot' });
+    expect(service.reject(prepared.preparedId, '2026-07-15T10:02:00.000Z')).toMatchObject({ reviewStatus: 'rejected' });
+
+    const second = service.prepare(createCandidate('candidate-2'), registry.getActive('scene-skill')!);
+    const secondToken = writeback.issueApproval(second.diffHash, { ttlMs: 30_000, now: () => issuedAtMs + 1_000, random: () => 0.88 });
+    const approved = await service.approve(second.preparedId, secondToken.approvalToken);
+    if (!approved.ok) throw new Error(`expected approval: ${approved.reason}`);
+
+    const summary = await service.rollback('scene-skill', 1, '2026-07-15T10:03:00.000Z');
+    expect(summary).toMatchObject({
+      status: 'rolled_back',
+      activeVersion: 1,
+    });
+    expect(service.getCandidate(approved.candidate.id)).toMatchObject({ reviewStatus: 'rolled_back', rolledBackAt: '2026-07-15T10:03:00.000Z' });
+  });
+});
+
+function createCandidate(id = 'candidate-1'): SkillPromotionCandidate {
+  return {
+    schemaVersion: 1,
+    id,
+    sourceProjectId: 'project-1',
+    sourceProjectMemoryId: 'feedback-1',
+    sourceProjectMemoryIds: ['feedback-1'],
+    createdAt: '2026-07-15T09:59:00.000Z',
+    title: 'Heavy liquid rule',
+    rationale: 'Repeated feedback asks for heavier liquid.',
+    rule: 'Use slower, heavier liquid arcs around the product.',
+    targetKnowledgeBaseId: 'scene-skill',
+    targetKnowledgeSection: 'reverse-prompt/liquid',
+    counts: { supportingMemoryCount: 1 },
+    confidence: 1,
+    affectedCapabilities: ['reverse_prompt'],
+    evidence: { keep: ['product identity'], change: ['heavier liquid'], never: [] },
+    reviewStatus: 'pending_review',
+  };
+}

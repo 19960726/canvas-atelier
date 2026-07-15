@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { GenerationMemoryEvent } from './generation-memory';
 import { createMemorySyncBatch } from './memory-sync';
 import { MemorySyncClient } from './memory-sync-client';
+import { createKnowledgeSnapshotCandidate } from './knowledge-snapshot';
+import { KnowledgeSnapshotRegistry } from './knowledge-registry';
 
 const event: GenerationMemoryEvent = {
   schemaVersion: 1, id: 'm1', knowledgeBaseId: 'scene-skill', projectId: 'p1', sourceDeviceId: 'device-b', createdAt: '2026-07-13T12:00:00.000Z',
@@ -30,4 +32,42 @@ describe('MemorySyncClient', () => {
 
     await expect(client.pullPending('scene-skill')).rejects.not.toThrow(/secret-token/);
   });
+
+  it('uploads an approved snapshot with request-time authorization and idempotency', async () => {
+    const snapshot = createSnapshot();
+    const fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ accepted: true, duplicate: false, snapshotId: 'scene-skill@1' }) }));
+    const client = new MemorySyncClient({ baseUrl: 'https://knowledge.example.com/', tokenSupplier: async () => 'token', fetch });
+
+    await expect(client.uploadApprovedSnapshot(snapshot, { idempotencyKey: 'idem-1' })).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+      snapshotId: 'scene-skill@1',
+    });
+    expect(fetch).toHaveBeenCalledWith('https://knowledge.example.com/v1/knowledge-bases/scene-skill/approved-snapshot', expect.objectContaining({
+      method: 'PUT',
+      headers: expect.objectContaining({ authorization: 'Bearer token', 'content-type': 'application/json', 'idempotency-key': 'idem-1' }),
+      body: expect.stringContaining('"version":1'),
+    }));
+  });
+
+  it('pulls an approved snapshot by cursor', async () => {
+    const snapshot = createSnapshot();
+    const fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ snapshot, cursor: 'cursor-2' }) }));
+    const client = new MemorySyncClient({ baseUrl: 'https://knowledge.example.com', tokenSupplier: async () => 'token', fetch });
+
+    await expect(client.pullApprovedSnapshot('scene-skill', 'cursor-1')).resolves.toEqual({ snapshot, cursor: 'cursor-2' });
+    expect(fetch).toHaveBeenCalledWith('https://knowledge.example.com/v1/knowledge-bases/scene-skill/approved-snapshot?cursor=cursor-1', expect.anything());
+  });
 });
+
+function createSnapshot() {
+  const registry = new KnowledgeSnapshotRegistry();
+  return registry.publish(createKnowledgeSnapshotCandidate({
+    knowledgeBaseId: 'scene-skill',
+    displayName: 'Scene Skill',
+    documents: [{ relativePath: 'memory/main.md', content: '# Scene Skill' }],
+  }), {
+    publishedAt: '2026-07-15T10:01:00.000Z',
+    sourceDeviceId: 'device-a',
+  });
+}

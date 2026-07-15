@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
+import {
+  reviewSkillPromotionCandidate,
+  rollbackSkillPromotionCandidate,
+  skillPromotionCandidateSchema,
+  type SkillPromotionCandidate,
+} from '@agent-canvas/domain';
 import { appendFile, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve, sep } from 'node:path';
+import { createKnowledgeSnapshotCandidate, type KnowledgeSnapshotCandidate } from './knowledge-snapshot';
+import { KnowledgeSnapshotRegistry, type KnowledgeBaseStateSummary, type KnowledgeSnapshot } from './knowledge-registry';
 import { computeMemoryDiff, type MemoryDiffEntry } from './memory-diff';
 import { resolveManagedPath } from './import-skill';
 import {
@@ -210,10 +218,152 @@ export class SkillWritebackService {
       clock: { now: this.now },
     });
   }
+
+  claimApproval(diffId: string, approvalToken: string): { ok: true; tokenRecord: WritebackTokenRecord } | { ok: false; reason: WritebackTokenFailureReason | 'unknown_diff'; tokenRecord?: WritebackTokenRecord } {
+    const pending = this.pending.get(diffId);
+    if (!pending) return { ok: false, reason: 'unknown_diff' };
+    const approvalId = approvalToken.split('.', 1)[0] ?? '';
+    const claimed = this.registry.claim({
+      id: approvalId,
+      approvalToken,
+      target: pending.target,
+      diffHash: pending.plan.diffHash,
+      now: this.now,
+    });
+    return claimed.ok
+      ? { ok: true, tokenRecord: claimed.record }
+      : { ok: false, reason: claimed.reason, tokenRecord: claimed.record };
+  }
 }
 
 export function approveSkillWriteback(service: SkillWritebackService, diffId: string, approvalToken: string) {
   return service.approveSkillWriteback(diffId, approvalToken);
+}
+
+export interface PreparedSkillPromotion {
+  preparedId: string;
+  diffHash: string;
+  candidate: SkillPromotionCandidate;
+  currentSnapshot: KnowledgeSnapshot;
+  targetSnapshot: KnowledgeSnapshotCandidate;
+}
+
+export type ApprovedSkillPromotion =
+  | { ok: true; candidate: SkillPromotionCandidate; snapshot: KnowledgeSnapshot; diffHash: string }
+  | { ok: false; reason: WritebackTokenFailureReason | 'unknown_prepared' | 'unknown_diff' | 'stale_snapshot'; candidate?: SkillPromotionCandidate; diffHash?: string };
+
+export class SkillKnowledgePromotionService {
+  private readonly registry: KnowledgeSnapshotRegistry;
+  private readonly writebackService: SkillWritebackService;
+  private readonly sourceDeviceId: string;
+  private readonly now: () => number;
+  private readonly prepared = new Map<string, PreparedSkillPromotion>();
+  private readonly candidates = new Map<string, SkillPromotionCandidate>();
+
+  constructor(options: {
+    registry: KnowledgeSnapshotRegistry;
+    writebackService?: SkillWritebackService;
+    sourceDeviceId: string;
+    now?: () => number;
+  }) {
+    this.registry = options.registry;
+    this.writebackService = options.writebackService ?? new SkillWritebackService({ now: options.now });
+    this.sourceDeviceId = options.sourceDeviceId;
+    this.now = options.now ?? Date.now;
+  }
+
+  prepare(candidate: SkillPromotionCandidate, current: KnowledgeSnapshot): PreparedSkillPromotion {
+    const parsedCandidate = skillPromotionCandidateSchema.parse(candidate);
+    if (parsedCandidate.reviewStatus !== 'pending_review') throw new Error('Only pending_review candidates can be prepared');
+    if (!parsedCandidate.targetKnowledgeBaseId || parsedCandidate.targetKnowledgeBaseId !== current.knowledgeBaseId) {
+      throw new Error('Promotion candidate target knowledge base mismatch');
+    }
+    if (!parsedCandidate.targetKnowledgeSection) throw new Error('Promotion candidate requires target knowledge section');
+
+    const targetSnapshot = createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: current.knowledgeBaseId,
+      displayName: current.displayName,
+      documents: upsertPromotionDocument(current, parsedCandidate),
+    });
+    const diffHash = hashPromotionDiff({
+      candidate: parsedCandidate,
+      currentSnapshot: current,
+      targetSnapshot,
+    });
+    const prepared: PreparedSkillPromotion = {
+      preparedId: diffHash,
+      diffHash,
+      candidate: parsedCandidate,
+      currentSnapshot: cloneSnapshot(current),
+      targetSnapshot,
+    };
+    this.prepared.set(prepared.preparedId, prepared);
+    this.candidates.set(parsedCandidate.id, parsedCandidate);
+    this.writebackService.registerPendingWriteback(diffHash, {
+      plan: createSnapshotWritebackPlan(diffHash),
+      target: 'source',
+      historyPath: 'approved-snapshot-sync',
+    });
+    return clonePrepared(prepared);
+  }
+
+  async approve(preparedId: string, approvalToken: string): Promise<ApprovedSkillPromotion> {
+    const prepared = this.prepared.get(preparedId);
+    if (!prepared) return { ok: false, reason: 'unknown_prepared' };
+    const latestCandidate = this.candidates.get(prepared.candidate.id);
+    if (latestCandidate && latestCandidate.reviewStatus !== 'pending_review') {
+      const replay = this.writebackService.claimApproval(prepared.diffHash, approvalToken);
+      return replay.ok
+        ? { ok: false, reason: 'stale_snapshot', candidate: latestCandidate, diffHash: prepared.diffHash }
+        : { ok: false, reason: replay.reason, candidate: latestCandidate, diffHash: prepared.diffHash };
+    }
+    const active = this.registry.getActive(prepared.currentSnapshot.knowledgeBaseId);
+    if (!active || active.version !== prepared.currentSnapshot.version || active.contentHash !== prepared.currentSnapshot.contentHash) {
+      return { ok: false, reason: 'stale_snapshot', candidate: prepared.candidate, diffHash: prepared.diffHash };
+    }
+    const approval = this.writebackService.claimApproval(prepared.diffHash, approvalToken);
+    if (!approval.ok) return { ok: false, reason: approval.reason, candidate: prepared.candidate, diffHash: prepared.diffHash };
+
+    const snapshot = this.registry.publish(prepared.targetSnapshot, {
+      publishedAt: new Date(this.now()).toISOString(),
+      sourceDeviceId: this.sourceDeviceId,
+    });
+    const approved = reviewSkillPromotionCandidate(prepared.candidate, {
+      decision: 'approved',
+      reviewedAt: snapshot.publishedAt,
+      publishedKnowledgeVersion: snapshot.version,
+    });
+    this.candidates.set(approved.id, approved);
+    return { ok: true, candidate: approved, snapshot, diffHash: prepared.diffHash };
+  }
+
+  reject(preparedId: string, reviewedAt: string): SkillPromotionCandidate {
+    const prepared = this.prepared.get(preparedId);
+    if (!prepared) throw new Error('Unknown prepared promotion');
+    const rejected = reviewSkillPromotionCandidate(prepared.candidate, { decision: 'rejected', reviewedAt });
+    this.candidates.set(rejected.id, rejected);
+    this.prepared.delete(preparedId);
+    return rejected;
+  }
+
+  async rollback(knowledgeBaseId: string, version: number, reviewedAt: string): Promise<KnowledgeBaseStateSummary> {
+    this.registry.rollback(knowledgeBaseId, version, reviewedAt);
+    for (const candidate of this.candidates.values()) {
+      if (
+        candidate.reviewStatus === 'approved'
+        && candidate.targetKnowledgeBaseId === knowledgeBaseId
+        && candidate.publishedKnowledgeVersion !== version
+      ) {
+        this.candidates.set(candidate.id, rollbackSkillPromotionCandidate(candidate, reviewedAt));
+      }
+    }
+    return this.registry.getSummary(knowledgeBaseId);
+  }
+
+  getCandidate(candidateId: string): SkillPromotionCandidate | undefined {
+    const candidate = this.candidates.get(candidateId);
+    return candidate ? skillPromotionCandidateSchema.parse(candidate) : undefined;
+  }
 }
 
 interface PreparedWrite {
@@ -319,6 +469,90 @@ function relativeToRoot(root: string, target: string) {
   const resolvedTarget = resolve(target);
   if (resolvedTarget !== base && !resolvedTarget.startsWith(`${base}${sep}`)) throw new Error('history path is outside app root');
   return resolvedTarget.slice(base.length + 1);
+}
+function upsertPromotionDocument(current: KnowledgeSnapshot, candidate: SkillPromotionCandidate): Array<{ relativePath: string; content: string }> {
+  const relativePath = promotionDocumentPath(candidate.targetKnowledgeSection!);
+  const content = renderPromotionDocument(candidate);
+  const documents = current.documents
+    .filter((document) => document.relativePath !== relativePath)
+    .map((document) => ({ relativePath: document.relativePath, content: document.content }));
+  return [...documents, { relativePath, content }];
+}
+function promotionDocumentPath(section: string): string {
+  const normalized = section.replace(/\\/g, '/').split('/')
+    .map((part) => part.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''))
+    .filter(Boolean)
+    .join('/');
+  if (!normalized) throw new Error('Promotion candidate requires target knowledge section');
+  return `memory/promotions/${normalized}.md`;
+}
+function renderPromotionDocument(candidate: SkillPromotionCandidate): string {
+  return [
+    `# ${candidate.title}`,
+    '',
+    candidate.rule,
+    '',
+    '## Rationale',
+    candidate.rationale,
+    '',
+    '## Evidence',
+    ...candidate.evidence.keep.map((item) => `- keep: ${item}`),
+    ...candidate.evidence.change.map((item) => `- change: ${item}`),
+    ...candidate.evidence.never.map((item) => `- never: ${item}`),
+  ].join('\n');
+}
+function hashPromotionDiff(input: {
+  candidate: SkillPromotionCandidate;
+  currentSnapshot: KnowledgeSnapshot;
+  targetSnapshot: KnowledgeSnapshotCandidate;
+}): string {
+  return createHash('sha256').update(JSON.stringify({
+    candidateId: input.candidate.id,
+    sourceProjectMemoryIds: input.candidate.sourceProjectMemoryIds ?? [input.candidate.sourceProjectMemoryId],
+    targetKnowledgeBaseId: input.candidate.targetKnowledgeBaseId,
+    targetKnowledgeSection: input.candidate.targetKnowledgeSection,
+    current: {
+      version: input.currentSnapshot.version,
+      contentHash: input.currentSnapshot.contentHash,
+    },
+    target: {
+      contentHash: input.targetSnapshot.contentHash,
+      documents: input.targetSnapshot.documents.map((document) => ({
+        relativePath: document.relativePath,
+        sha256: document.sha256,
+      })),
+    },
+  })).digest('hex');
+}
+function createSnapshotWritebackPlan(diffHash: string): WritebackPlan {
+  return {
+    diffHash,
+    diff: [],
+    targets: {
+      source: { writeFiles: [], preservedFiles: [], blockedFiles: [] },
+      app: { writeFiles: [], preservedFiles: [], blockedFiles: [] },
+    },
+    payload: { memory: [], originalImages: [] },
+    roots: { baseRoot: '.', appRoot: '.', sourceRoot: '.' },
+  };
+}
+function clonePrepared(prepared: PreparedSkillPromotion): PreparedSkillPromotion {
+  return {
+    preparedId: prepared.preparedId,
+    diffHash: prepared.diffHash,
+    candidate: skillPromotionCandidateSchema.parse(prepared.candidate),
+    currentSnapshot: cloneSnapshot(prepared.currentSnapshot),
+    targetSnapshot: {
+      ...prepared.targetSnapshot,
+      documents: prepared.targetSnapshot.documents.map((document) => ({ ...document })),
+    },
+  };
+}
+function cloneSnapshot(snapshot: KnowledgeSnapshot): KnowledgeSnapshot {
+  return {
+    ...snapshot,
+    documents: snapshot.documents.map((document) => ({ ...document })),
+  };
 }
 function invalidApprovalRecord(id: string, target: WritebackTarget, diffHash: string) {
   const record: WritebackTokenRecord = { id, target, diffHash, tokenHash: '', issuedAt: new Date(0).toISOString(), expiresAt: new Date(0).toISOString() };

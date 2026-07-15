@@ -9,6 +9,7 @@ export interface WritebackOutboxJob {
   target: WritebackTarget;
   plan: WritebackPlan;
   historyPath: string;
+  approvedSnapshot?: { knowledgeBaseId: string; version: number; contentHash: string };
   status: WritebackOutboxJobStatus;
   attemptCount: number;
   createdAt: string;
@@ -29,7 +30,7 @@ type PerformWritebackResult =
 
 export function enqueueWritebackJob(
   state: WritebackOutboxState,
-  input: { target: WritebackTarget; plan: WritebackPlan; historyPath: string },
+  input: { target: WritebackTarget; plan: WritebackPlan; historyPath: string; approvedSnapshot?: { knowledgeBaseId: string; version: number; contentHash: string } },
   deps: TimeDeps & RandomDeps = {},
 ): WritebackOutboxState {
   const now = deps.now ?? Date.now;
@@ -43,6 +44,7 @@ export function enqueueWritebackJob(
       target: input.target,
       plan: clonePlan(input.plan),
       historyPath: input.historyPath,
+      approvedSnapshot: input.approvedSnapshot ? { ...input.approvedSnapshot } : undefined,
       status: 'queued',
       attemptCount: 0,
       createdAt,
@@ -150,6 +152,7 @@ export function serializeWritebackOutboxForTransfer(state: WritebackOutboxState)
       lastError: sanitizeError(job.lastError),
       requiresReauthorization: true,
       memoryRelativePaths: job.plan.payload.memory.map((file) => file.relativePath),
+      approvedSnapshot: job.approvedSnapshot ? { ...job.approvedSnapshot } : undefined,
       originalImagesIncluded: job.plan.payload.originalImages.length > 0,
     })),
   };

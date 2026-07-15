@@ -28,6 +28,12 @@ describe('offline writeback outbox', () => {
     expect(JSON.stringify(transferred)).not.toContain('C:\\private\\agent');
     expect(JSON.stringify(transferred)).not.toContain('C:\\managed');
     expect(JSON.stringify(transferred)).not.toMatch(/Bearer|QWxhZGRpb/);
+    expect(JSON.stringify(transferred)).not.toContain('app main');
+    expect(transferred.jobs[0]).toMatchObject({
+      approvedSnapshot: undefined,
+      diffHash: 'diff-1',
+      memoryRelativePaths: ['memory/main-memory.md'],
+    });
 
     const restarted = JSON.parse(JSON.stringify(queued)) as WritebackOutboxState;
     const drained = await drainWritebackOutbox(restarted, {

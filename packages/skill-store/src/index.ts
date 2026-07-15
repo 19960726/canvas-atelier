@@ -6,8 +6,18 @@ export {
 } from './generation-memory';
 export type { GenerationMemoryEvent } from './generation-memory';
 
-export { createMemorySyncBatch, ingestMemorySyncBatch, memorySyncBatchSchema } from './memory-sync';
-export type { MemorySyncBatch } from './memory-sync';
+export {
+  approvedSnapshotSyncEnvelopeSchema,
+  createApprovedSnapshotSyncEnvelope,
+  createMemorySyncBatch,
+  ingestMemorySyncBatch,
+  knowledgeSnapshotSyncSchema,
+  memorySyncBatchSchema,
+} from './memory-sync';
+export type { KnowledgeSnapshotSyncEnvelope, MemorySyncBatch } from './memory-sync';
+
+export { buildSkillPromotionCandidate } from './candidate-builder';
+export type { AggregatedSkillPromotionCandidate, CandidateMetadata } from './candidate-builder';
 
 export { MemorySyncClient } from './memory-sync-client';
 export type { MemorySyncFetch } from './memory-sync-client';
@@ -21,8 +31,8 @@ export type { MemoryDiffEntry, MemoryDiffState } from './memory-diff';
 export { createWritebackApprovalRegistry, WritebackApprovalRegistry } from './writeback-token';
 export type { WritebackToken, WritebackTokenFailureReason, WritebackTokenRecord, WritebackTarget } from './writeback-token';
 
-export { approveSkillWriteback, planWritebackTargets, SkillWritebackService } from './writeback-flow';
-export type { ApplyWritebackResult, PlannedWriteFile, WritebackPlan } from './writeback-flow';
+export { approveSkillWriteback, planWritebackTargets, SkillKnowledgePromotionService, SkillWritebackService } from './writeback-flow';
+export type { ApplyWritebackResult, ApprovedSkillPromotion, PlannedWriteFile, PreparedSkillPromotion, WritebackPlan } from './writeback-flow';
 
 export { drainWritebackOutbox, enqueueWritebackJob, retryWritebackJob, serializeWritebackOutboxForTransfer } from './offline-outbox';
 export type { WritebackOutboxJob, WritebackOutboxJobStatus, WritebackOutboxState } from './offline-outbox';
