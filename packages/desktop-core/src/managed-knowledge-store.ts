@@ -8,7 +8,7 @@ import {
 } from '@agent-canvas/skill-store';
 
 import { canonicalJson } from './canonical-json.js';
-import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
+import { type FileHandleLike, type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
 
 const WRITE_LOCK_RETRY_MS = 10;
 const WRITE_LOCK_TIMEOUT_MS = 5_000;
@@ -42,6 +42,7 @@ interface ConfigurationFile {
 }
 
 interface WriteLock {
+  readonly handle: FileHandleLike;
   readonly path: string;
   readonly token: string;
 }
@@ -445,9 +446,7 @@ export class ManagedKnowledgeStore {
           createdAt: this.now().toISOString(),
         })}\n`);
         await handle.sync();
-        await handle.close();
-        closed = true;
-        return { path: lockPath, token };
+        return { handle, path: lockPath, token };
       } catch (error) {
         if (handle !== null && !closed) {
           try {
@@ -470,16 +469,28 @@ export class ManagedKnowledgeStore {
   }
 
   private async releaseWriteLock(lock: WriteLock): Promise<void> {
+    let closed = false;
     try {
       await this.assertManagedFile(lock.path);
       const raw = await this.fileSystem.readFile(lock.path, 'utf8');
       const parsed = JSON.parse(raw) as unknown;
       if (isOwnedWriteLock(parsed, lock.token)) {
+        await lock.handle.close();
+        closed = true;
         await this.fileSystem.unlink(lock.path);
+        return;
       }
     } catch {
       // A stale lock conservatively blocks future writers instead of deleting
       // a file that may have been replaced by another process.
+    } finally {
+      if (!closed) {
+        try {
+          await lock.handle.close();
+        } catch {
+          // Preserve the operation outcome.
+        }
+      }
     }
   }
 
@@ -716,7 +727,7 @@ function normalizeSnapshotDocuments(input: unknown): KnowledgeSnapshot['document
       content: requireString(document.content, 'content'),
       sha256: requireHash(document.sha256, 'sha256'),
     };
-  });
+  }).sort((left, right) => compareStrings(left.relativePath, right.relativePath));
 }
 
 function normalizeVersionSummary(

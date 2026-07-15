@@ -148,6 +148,31 @@ describe('ManagedKnowledgeStore', () => {
     await expect(store.readActive('scene-skill')).resolves.toEqual(first);
   });
 
+  it('accepts published snapshots whose documents are not already sorted', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+
+    const snapshot = createSnapshotFromDocuments([
+      { relativePath: 'memory/z.md', content: '# z' },
+      { relativePath: 'memory/a.md', content: '# a' },
+    ], 1);
+    await store.publish(snapshot);
+
+    await expect(store.readActive('scene-skill')).resolves.toEqual({
+      ...snapshot,
+      documents: [...snapshot.documents].sort((left, right) => (
+        left.relativePath.localeCompare(right.relativePath)
+      )),
+    });
+  });
+
   it('serializes concurrent publishes per knowledge base so versions are not lost', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');
@@ -683,14 +708,27 @@ describe('ManagedKnowledgeStore', () => {
 });
 
 function createSnapshot(content: string, version: number): KnowledgeSnapshot {
+  return createSnapshotFromDocuments([{ relativePath: 'memory/main.md', content }], version);
+}
+
+function createSnapshotFromDocuments(
+  documents: Array<{ readonly relativePath: string; readonly content: string }>,
+  version: number,
+): KnowledgeSnapshot {
   const candidate = createKnowledgeSnapshotCandidate({
     knowledgeBaseId: 'scene-skill',
     displayName: 'Scene Skill',
-    documents: [{ relativePath: 'memory/main.md', content }],
+    documents,
   });
 
   return {
     ...candidate,
+    documents: documents.map((document) => ({
+      ...document,
+      sha256: candidate.documents.find((candidateDocument) => (
+        candidateDocument.relativePath === document.relativePath
+      ))!.sha256,
+    })),
     version,
     publishedAt: `2026-07-15T08:0${version}:00.000Z`,
     sourceDeviceId: 'device-a',
