@@ -742,6 +742,7 @@ describe('project optimization memory', () => {
       projectId: 'local-project',
       currentRevision: 3,
       candidate: rolledBackCandidate,
+      candidates: [rolledBackCandidate],
       knowledgeState: knowledgeState({ version: 2, hashPrefix: 'b' }),
     });
     useAppStore.setState((state) => ({
@@ -760,6 +761,68 @@ describe('project optimization memory', () => {
 
     expect(useAppStore.getState().project.projectMemory).toEqual([memory]);
     expect(useAppStore.getState().project.skillPromotionCandidates[0]).toMatchObject({ reviewStatus: 'rolled_back' });
+  });
+
+  it('replaces the skill candidate collection atomically when rollback updates multiple candidates', async () => {
+    const candidateV3 = {
+      ...createSkillCandidate('candidate-v3', 'approved'),
+      targetKnowledgeBaseId: 'scene-skill',
+      publishedKnowledgeVersion: 3,
+      reviewedAt: '2026-07-15T09:00:00.000Z',
+    };
+    const selectedV4 = {
+      ...createSkillCandidate('candidate-v4', 'approved'),
+      targetKnowledgeBaseId: 'scene-skill',
+      publishedKnowledgeVersion: 4,
+      reviewedAt: '2026-07-15T09:05:00.000Z',
+    };
+    const retainedV2 = {
+      ...createSkillCandidate('candidate-v2', 'approved'),
+      targetKnowledgeBaseId: 'scene-skill',
+      publishedKnowledgeVersion: 2,
+      reviewedAt: '2026-07-15T08:55:00.000Z',
+    };
+    const rolledBackV3 = {
+      ...candidateV3,
+      reviewStatus: 'rolled_back' as const,
+      rolledBackAt: '2026-07-15T10:00:00.000Z',
+    };
+    const rolledBackV4 = {
+      ...selectedV4,
+      reviewStatus: 'rolled_back' as const,
+      rolledBackAt: '2026-07-15T10:00:00.000Z',
+    };
+    const client = createMockKnowledgeClient({
+      initialStates: [],
+      reviewResult: {
+        projectId: 'local-project',
+        currentRevision: 7,
+        candidate: rolledBackV4,
+        candidates: [retainedV2, rolledBackV3, rolledBackV4],
+        knowledgeState: knowledgeState({ version: 2, hashPrefix: 'b' }),
+      },
+    });
+    replaceKnowledgeClientForTests(client);
+    resetAppStoreForTests();
+    useAppStore.setState((state) => ({
+      project: {
+        ...state.project,
+        skillPromotionCandidates: [retainedV2, candidateV3, selectedV4],
+      },
+    }));
+
+    await useAppStore.getState().reviewSkillCandidate({
+      projectId: 'local-project',
+      candidateId: selectedV4.id,
+      decision: 'rolled_back',
+      targetVersion: 2,
+    });
+
+    expect(useAppStore.getState().project.skillPromotionCandidates.map((candidate) => [candidate.id, candidate.reviewStatus])).toEqual([
+      ['candidate-v2', 'approved'],
+      ['candidate-v3', 'rolled_back'],
+      ['candidate-v4', 'rolled_back'],
+    ]);
   });
   it('rejects broader POSIX absolute paths from conversation and feedback payloads', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
@@ -870,7 +933,9 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient>): Project
 
 function createMockKnowledgeClient(options: {
   initialStates: KnowledgeBaseStateSummary[];
-  reviewResult: Awaited<ReturnType<KnowledgeClient['review']>>;
+  reviewResult: Omit<Awaited<ReturnType<KnowledgeClient['review']>>, 'candidates'> & {
+    candidates?: Awaited<ReturnType<KnowledgeClient['review']>>['candidates'];
+  };
 }): KnowledgeClient & {
   configure: ReturnType<typeof vi.fn<KnowledgeClient['configure']>>;
   review: ReturnType<typeof vi.fn<KnowledgeClient['review']>>;
@@ -890,7 +955,10 @@ function createMockKnowledgeClient(options: {
       if (options.reviewResult.knowledgeState) {
         listener?.([options.reviewResult.knowledgeState]);
       }
-      return options.reviewResult;
+      return {
+        ...options.reviewResult,
+        candidates: options.reviewResult.candidates ?? [options.reviewResult.candidate],
+      };
     }),
     getLease: vi.fn(),
   };

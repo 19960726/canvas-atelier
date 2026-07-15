@@ -5,6 +5,7 @@ import { join, normalize } from 'node:path';
 import {
   createKnowledgeSnapshotCandidate,
   type KnowledgeBaseStateSummary,
+  type KnowledgeSnapshotCandidate,
   type KnowledgeSnapshot,
 } from '@agent-canvas/skill-store';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -239,6 +240,137 @@ describe('ManagedKnowledgeStore', () => {
       lastRollbackAt: expect.any(String),
     });
     await expect(store.readActive('scene-skill')).resolves.toEqual(first);
+  });
+
+  it('stages an approved snapshot durably without activating until post-ack reconciliation', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    await store.publish(first);
+
+    const candidate = createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# version 2' }],
+    });
+    const staged = await (store as unknown as {
+      stageApprovedSnapshot(
+        candidate: KnowledgeSnapshotCandidate,
+        metadata: {
+          stageId: string;
+          projectId: string;
+          candidateId: string;
+          transactionId: string;
+          expectedActiveVersion: number;
+          expectedActiveContentHash: string;
+          sourceDeviceId: string;
+          stagedAt: string;
+        },
+      ): Promise<{ stageId: string; snapshot: KnowledgeSnapshot }>;
+    }).stageApprovedSnapshot(candidate, {
+      stageId: 'stage-approve-1',
+      projectId: 'project-1',
+      candidateId: 'candidate-1',
+      transactionId: 'review-skill-candidate-1',
+      expectedActiveVersion: first.version,
+      expectedActiveContentHash: first.contentHash,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-15T10:00:00.000Z',
+    });
+
+    expect(staged).toMatchObject({
+      stageId: 'stage-approve-1',
+      snapshot: { version: 2, contentHash: candidate.contentHash },
+    });
+    await expect(store.readActive('scene-skill')).resolves.toEqual(first);
+
+    const restarted = new ManagedKnowledgeStore({ appDataRoot });
+    const stagedAfterRestart = await (restarted as unknown as {
+      listStagedKnowledgeTransitions(): Promise<Array<{ stageId: string; projectId: string; candidateId: string }>>;
+    }).listStagedKnowledgeTransitions();
+    expect(stagedAfterRestart).toEqual([
+      { stageId: 'stage-approve-1', projectId: 'project-1', candidateId: 'candidate-1' },
+    ]);
+
+    const activated = await (restarted as unknown as {
+      activateStagedTransition(stageId: string): Promise<KnowledgeBaseStateSummary>;
+    }).activateStagedTransition('stage-approve-1');
+
+    expect(activated).toMatchObject({
+      status: 'active',
+      activeVersion: 2,
+      activeContentHash: candidate.contentHash,
+      versionCount: 2,
+    });
+    await expect(restarted.readActive('scene-skill')).resolves.toMatchObject({
+      version: 2,
+      contentHash: candidate.contentHash,
+    });
+    await expect((restarted as unknown as {
+      listStagedKnowledgeTransitions(): Promise<unknown[]>;
+    }).listStagedKnowledgeTransitions()).resolves.toEqual([]);
+  });
+
+  it('stages rollback durably and leaves active knowledge unchanged until activation', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const first = createSnapshot('# version 1', 1);
+    const second = createSnapshot('# version 2', 2);
+    await store.publish(first);
+    await store.publish(second);
+
+    const staged = await (store as unknown as {
+      stageRollback(
+        input: { knowledgeBaseId: string; targetVersion: number },
+        metadata: {
+          stageId: string;
+          projectId: string;
+          candidateId: string;
+          transactionId: string;
+          expectedActiveVersion: number;
+          expectedActiveContentHash: string;
+          stagedAt: string;
+        },
+      ): Promise<{ stageId: string; targetVersion: number }>;
+    }).stageRollback({
+      knowledgeBaseId: 'scene-skill',
+      targetVersion: 1,
+    }, {
+      stageId: 'stage-rollback-1',
+      projectId: 'project-1',
+      candidateId: 'candidate-approved',
+      transactionId: 'review-skill-candidate-rollback',
+      expectedActiveVersion: second.version,
+      expectedActiveContentHash: second.contentHash,
+      stagedAt: '2026-07-15T10:00:00.000Z',
+    });
+
+    expect(staged).toEqual({ stageId: 'stage-rollback-1', targetVersion: 1 });
+    await expect(store.readActive('scene-skill')).resolves.toEqual(second);
+
+    const restarted = new ManagedKnowledgeStore({ appDataRoot });
+    const activated = await (restarted as unknown as {
+      activateStagedTransition(stageId: string): Promise<KnowledgeBaseStateSummary>;
+    }).activateStagedTransition('stage-rollback-1');
+
+    expect(activated).toMatchObject({
+      status: 'rolled_back',
+      activeVersion: 1,
+      versionCount: 2,
+    });
+    await expect(restarted.readActive('scene-skill')).resolves.toEqual(first);
   });
 
   it('durably records sanitized refresh failure while preserving known-good state and clears it on publish', async () => {

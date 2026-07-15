@@ -3,6 +3,7 @@ import { basename, dirname, join, normalize, resolve, sep } from 'node:path';
 
 import {
   createKnowledgeSnapshotCandidate,
+  type KnowledgeSnapshotCandidate,
   type KnowledgeBaseStateSummary,
   type KnowledgeSnapshot,
 } from '@agent-canvas/skill-store';
@@ -37,10 +38,65 @@ export interface ManagedKnowledgeStoreOptions {
   readonly now?: () => Date;
 }
 
+export interface StageApprovedSnapshotMetadata {
+  readonly stageId: string;
+  readonly projectId: string;
+  readonly candidateId: string;
+  readonly transactionId: string;
+  readonly expectedActiveVersion: number;
+  readonly expectedActiveContentHash: string;
+  readonly sourceDeviceId: string;
+  readonly stagedAt: string;
+}
+
+export interface StageRollbackMetadata {
+  readonly stageId: string;
+  readonly projectId: string;
+  readonly candidateId: string;
+  readonly transactionId: string;
+  readonly expectedActiveVersion: number;
+  readonly expectedActiveContentHash: string;
+  readonly stagedAt: string;
+}
+
+export interface StagedKnowledgeTransitionSummary {
+  readonly stageId: string;
+  readonly projectId: string;
+  readonly candidateId: string;
+}
+
 interface ConfigurationFile {
   readonly schemaVersion: 1;
   readonly configurations: InternalKnowledgeConfiguration[];
 }
+
+type StagedKnowledgeTransition =
+  | {
+    readonly schemaVersion: 1;
+    readonly kind: 'approved_snapshot';
+    readonly stageId: string;
+    readonly knowledgeBaseId: string;
+    readonly projectId: string;
+    readonly candidateId: string;
+    readonly transactionId: string;
+    readonly expectedActiveVersion: number;
+    readonly expectedActiveContentHash: string;
+    readonly stagedAt: string;
+    readonly snapshot: KnowledgeSnapshot;
+  }
+  | {
+    readonly schemaVersion: 1;
+    readonly kind: 'rollback';
+    readonly stageId: string;
+    readonly knowledgeBaseId: string;
+    readonly projectId: string;
+    readonly candidateId: string;
+    readonly transactionId: string;
+    readonly expectedActiveVersion: number;
+    readonly expectedActiveContentHash: string;
+    readonly stagedAt: string;
+    readonly targetVersion: number;
+  };
 
 interface WriteLock {
   readonly handle: FileHandleLike;
@@ -146,6 +202,137 @@ export class ManagedKnowledgeStore {
     });
   }
 
+  async stageApprovedSnapshot(
+    candidate: KnowledgeSnapshotCandidate,
+    metadata: StageApprovedSnapshotMetadata,
+  ): Promise<{ stageId: string; snapshot: KnowledgeSnapshot }> {
+    const canonical = createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: candidate.knowledgeBaseId,
+      displayName: candidate.displayName,
+      documents: candidate.documents.map((document) => ({
+        relativePath: document.relativePath,
+        content: document.content,
+      })),
+    });
+    const configuration = await this.requireConfiguration(canonical.knowledgeBaseId);
+    const normalizedMetadata = normalizeStageMetadata(metadata);
+    const sourceDeviceId = sanitizePublicMetadata(metadata.sourceDeviceId, 'sourceDeviceId');
+    const stagedAt = requireDateString(metadata.stagedAt, 'stagedAt');
+
+    return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      const current = await this.readSummaryFile(configuration.knowledgeRootId)
+        ?? createEmptySummary(configuration);
+      assertExpectedActiveSummary(current, normalizedMetadata);
+      const snapshot = normalizeSnapshot({
+        ...canonical,
+        version: allocateNextRetainedVersion(current),
+        publishedAt: stagedAt,
+        sourceDeviceId,
+      });
+      const transition: StagedKnowledgeTransition = {
+        schemaVersion: 1,
+        kind: 'approved_snapshot',
+        stageId: normalizedMetadata.stageId,
+        knowledgeBaseId: canonical.knowledgeBaseId,
+        projectId: normalizedMetadata.projectId,
+        candidateId: normalizedMetadata.candidateId,
+        transactionId: normalizedMetadata.transactionId,
+        expectedActiveVersion: normalizedMetadata.expectedActiveVersion,
+        expectedActiveContentHash: normalizedMetadata.expectedActiveContentHash,
+        stagedAt,
+        snapshot,
+      };
+      await this.writeStagedTransition(transition);
+      return {
+        stageId: transition.stageId,
+        snapshot: cloneSnapshot(snapshot),
+      };
+    });
+  }
+
+  async stageRollback(
+    input: { readonly knowledgeBaseId: string; readonly targetVersion: number },
+    metadata: StageRollbackMetadata,
+  ): Promise<{ stageId: string; targetVersion: number }> {
+    const knowledgeBaseId = requireNonEmptyString(input.knowledgeBaseId, 'knowledgeBaseId');
+    const targetVersion = requirePositiveInteger(input.targetVersion, 'targetVersion');
+    const configuration = await this.requireConfiguration(knowledgeBaseId);
+    const normalizedMetadata = normalizeStageMetadata(metadata);
+    const stagedAt = requireDateString(metadata.stagedAt, 'stagedAt');
+
+    return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      const current = await this.readSummaryFile(configuration.knowledgeRootId);
+      if (current === null) {
+        throw new Error('Unknown knowledge base');
+      }
+      assertExpectedActiveSummary(current, normalizedMetadata);
+      if (!current.versions.some((version) => version.version === targetVersion)) {
+        throw new Error('Unknown knowledge snapshot version');
+      }
+      if (current.activeVersion !== null && targetVersion >= current.activeVersion) {
+        throw new Error('Rollback target must be older than the current active snapshot');
+      }
+
+      const transition: StagedKnowledgeTransition = {
+        schemaVersion: 1,
+        kind: 'rollback',
+        stageId: normalizedMetadata.stageId,
+        knowledgeBaseId,
+        projectId: normalizedMetadata.projectId,
+        candidateId: normalizedMetadata.candidateId,
+        transactionId: normalizedMetadata.transactionId,
+        expectedActiveVersion: normalizedMetadata.expectedActiveVersion,
+        expectedActiveContentHash: normalizedMetadata.expectedActiveContentHash,
+        stagedAt,
+        targetVersion,
+      };
+      await this.writeStagedTransition(transition);
+      return {
+        stageId: transition.stageId,
+        targetVersion,
+      };
+    });
+  }
+
+  async listStagedKnowledgeTransitions(): Promise<StagedKnowledgeTransitionSummary[]> {
+    const directory = this.stagedDirectory();
+    let entries: string[];
+    try {
+      await this.assertManagedDirectory(directory);
+      entries = await this.fileSystem.readdir(directory);
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return [];
+      }
+      throw error;
+    }
+
+    const transitions = await Promise.all(entries
+      .filter((entry) => entry.endsWith('.json'))
+      .map(async (entry) => this.readStagedTransitionFile(confinedJoin(directory, entry))));
+    return transitions
+      .map((transition) => ({
+        stageId: transition.stageId,
+        projectId: transition.projectId,
+        candidateId: transition.candidateId,
+      }))
+      .sort(compareStagedTransitionSummaries);
+  }
+
+  async activateStagedTransition(stageId: string): Promise<KnowledgeBaseStateSummary> {
+    const transition = await this.readStagedTransition(stageId);
+    const configuration = await this.requireConfiguration(transition.knowledgeBaseId);
+    return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      const current = await this.readSummaryFile(configuration.knowledgeRootId)
+        ?? createEmptySummary(configuration);
+      const next = transition.kind === 'approved_snapshot'
+        ? await this.activateStagedApprovedSnapshot(configuration.knowledgeRootId, current, transition)
+        : await this.activateStagedRollback(configuration.knowledgeRootId, current, transition);
+      await this.removeStagedTransition(transition.stageId);
+      return cloneSummary(next);
+    });
+  }
+
   async readActive(knowledgeBaseId: string): Promise<KnowledgeSnapshot | null> {
     const configuration = await this.readConfiguration(knowledgeBaseId);
     if (configuration === null) {
@@ -178,6 +365,30 @@ export class ManagedKnowledgeStore {
       }
       throw error;
     }
+  }
+
+  async readVersion(knowledgeBaseId: string, version: number): Promise<KnowledgeSnapshot | null> {
+    const configuration = await this.readConfiguration(knowledgeBaseId);
+    if (configuration === null) {
+      return null;
+    }
+    const requestedVersion = requirePositiveInteger(version, 'version');
+    const summary = await this.readSummaryFile(configuration.knowledgeRootId);
+    if (summary === null) {
+      return null;
+    }
+    const metadata = summary.versions.find((candidate) => candidate.version === requestedVersion);
+    if (metadata === undefined) {
+      return null;
+    }
+    return this.readSnapshotFile(configuration.knowledgeRootId, {
+      knowledgeBaseId: summary.knowledgeBaseId,
+      version: metadata.version,
+      contentHash: metadata.contentHash,
+      displayName: metadata.displayName,
+      publishedAt: metadata.publishedAt,
+      sourceDeviceId: metadata.sourceDeviceId,
+    });
   }
 
   async listStates(): Promise<KnowledgeBaseStateSummary[]> {
@@ -578,6 +789,110 @@ export class ManagedKnowledgeStore {
       `v-${version}-${contentHash.slice(0, 12)}.json`,
     );
   }
+
+  private stagedDirectory(): string {
+    return confinedJoin(this.knowledgeRoot, 'staged');
+  }
+
+  private stagedTransitionPath(stageId: string): string {
+    return confinedJoin(this.stagedDirectory(), `stage-${createHash('sha256').update(stageId, 'utf8').digest('hex').slice(0, 24)}.json`);
+  }
+
+  private async writeStagedTransition(transition: StagedKnowledgeTransition): Promise<void> {
+    await this.ensureManagedDirectory(this.stagedDirectory());
+    const path = this.stagedTransitionPath(transition.stageId);
+    await this.assertManagedFileForWrite(path);
+    await writeAtomic(
+      this.fileSystem,
+      path,
+      `${canonicalJson(transition)}\n`,
+    );
+  }
+
+  private async readStagedTransition(stageId: string): Promise<StagedKnowledgeTransition> {
+    return this.readStagedTransitionFile(this.stagedTransitionPath(stageId));
+  }
+
+  private async readStagedTransitionFile(path: string): Promise<StagedKnowledgeTransition> {
+    await this.assertManagedFile(path);
+    const raw = await this.fileSystem.readFile(path, 'utf8');
+    return normalizeStagedTransition(JSON.parse(raw) as unknown);
+  }
+
+  private async removeStagedTransition(stageId: string): Promise<void> {
+    await this.fileSystem.rm(this.stagedTransitionPath(stageId), { force: true });
+  }
+
+  private async activateStagedApprovedSnapshot(
+    knowledgeRootId: string,
+    current: KnowledgeBaseStateSummary,
+    transition: Extract<StagedKnowledgeTransition, { kind: 'approved_snapshot' }>,
+  ): Promise<KnowledgeBaseStateSummary> {
+    if (
+      current.activeVersion === transition.snapshot.version &&
+      current.activeContentHash === transition.snapshot.contentHash
+    ) {
+      return current;
+    }
+    assertExpectedActiveSummary(current, transition);
+    const snapshotPath = this.snapshotPath(
+      knowledgeRootId,
+      transition.snapshot.version,
+      transition.snapshot.contentHash,
+    );
+    await this.ensureKnowledgeDirectories(knowledgeRootId);
+    await this.assertManagedFileForWrite(snapshotPath);
+    await writeAtomic(
+      this.fileSystem,
+      snapshotPath,
+      `${canonicalJson(transition.snapshot)}\n`,
+    );
+    const next = applyPublishedSnapshot(current, transition.snapshot);
+    await this.writeSummaryFile(knowledgeRootId, next);
+    return next;
+  }
+
+  private async activateStagedRollback(
+    knowledgeRootId: string,
+    current: KnowledgeBaseStateSummary,
+    transition: Extract<StagedKnowledgeTransition, { kind: 'rollback' }>,
+  ): Promise<KnowledgeBaseStateSummary> {
+    if (
+      current.status === 'rolled_back' &&
+      current.activeVersion === transition.targetVersion
+    ) {
+      return current;
+    }
+    assertExpectedActiveSummary(current, transition);
+    const target = current.versions.find((candidate) => candidate.version === transition.targetVersion);
+    if (target === undefined) {
+      throw new Error('Unknown knowledge snapshot version');
+    }
+
+    await this.readSnapshotFile(knowledgeRootId, {
+      knowledgeBaseId: current.knowledgeBaseId,
+      version: target.version,
+      contentHash: target.contentHash,
+      displayName: target.displayName,
+      publishedAt: target.publishedAt,
+      sourceDeviceId: target.sourceDeviceId,
+    });
+
+    const next: KnowledgeBaseStateSummary = {
+      schemaVersion: 1,
+      knowledgeBaseId: current.knowledgeBaseId,
+      displayName: target.displayName,
+      status: 'rolled_back',
+      activeVersion: target.version,
+      activeContentHash: target.contentHash,
+      versionCount: current.versions.length,
+      versions: current.versions.map(cloneVersionSummary).sort(compareVersionSummaries),
+      lastFailure: current.lastFailure ? { ...current.lastFailure } : null,
+      lastRollbackAt: transition.stagedAt,
+    };
+    await this.writeSummaryFile(knowledgeRootId, next);
+    return next;
+  }
 }
 
 function applyPublishedSnapshot(
@@ -621,6 +936,135 @@ function applyPublishedSnapshot(
     lastFailure: null,
     lastRollbackAt: null,
   };
+}
+
+function normalizeStageMetadata(input: {
+  readonly stageId: string;
+  readonly projectId: string;
+  readonly candidateId: string;
+  readonly transactionId: string;
+  readonly expectedActiveVersion: number;
+  readonly expectedActiveContentHash: string;
+}): {
+  readonly stageId: string;
+  readonly projectId: string;
+  readonly candidateId: string;
+  readonly transactionId: string;
+  readonly expectedActiveVersion: number;
+  readonly expectedActiveContentHash: string;
+} {
+  const metadata = {
+    stageId: requireNonEmptyString(input.stageId, 'stageId'),
+    projectId: requireNonEmptyString(input.projectId, 'projectId'),
+    candidateId: requireNonEmptyString(input.candidateId, 'candidateId'),
+    transactionId: requireNonEmptyString(input.transactionId, 'transactionId'),
+    expectedActiveVersion: requirePositiveInteger(input.expectedActiveVersion, 'expectedActiveVersion'),
+    expectedActiveContentHash: requireHash(input.expectedActiveContentHash, 'expectedActiveContentHash'),
+  };
+  scanProtectedMetadata([
+    metadata.stageId,
+    metadata.projectId,
+    metadata.candidateId,
+    metadata.transactionId,
+  ]);
+  return metadata;
+}
+
+function normalizeStagedTransition(input: unknown): StagedKnowledgeTransition {
+  if (!isRecord(input) || input.schemaVersion !== 1) {
+    throw new Error('Staged knowledge transition is invalid');
+  }
+
+  const metadata = normalizeStageMetadata({
+    stageId: input.stageId,
+    projectId: input.projectId,
+    candidateId: input.candidateId,
+    transactionId: input.transactionId,
+    expectedActiveVersion: input.expectedActiveVersion,
+    expectedActiveContentHash: input.expectedActiveContentHash,
+  } as StageRollbackMetadata);
+  const knowledgeBaseId = requireNonEmptyString(input.knowledgeBaseId, 'knowledgeBaseId');
+  const stagedAt = requireDateString(input.stagedAt, 'stagedAt');
+  scanProtectedMetadata([knowledgeBaseId, stagedAt]);
+
+  if (input.kind === 'approved_snapshot') {
+    const snapshot = normalizeSnapshot(input.snapshot as KnowledgeSnapshot);
+    if (snapshot.knowledgeBaseId !== knowledgeBaseId) {
+      throw new Error('Staged snapshot knowledge base mismatch');
+    }
+    return {
+      schemaVersion: 1,
+      kind: 'approved_snapshot',
+      stageId: metadata.stageId,
+      knowledgeBaseId,
+      projectId: metadata.projectId,
+      candidateId: metadata.candidateId,
+      transactionId: metadata.transactionId,
+      expectedActiveVersion: metadata.expectedActiveVersion,
+      expectedActiveContentHash: metadata.expectedActiveContentHash,
+      stagedAt,
+      snapshot,
+    };
+  }
+
+  if (input.kind === 'rollback') {
+    return {
+      schemaVersion: 1,
+      kind: 'rollback',
+      stageId: metadata.stageId,
+      knowledgeBaseId,
+      projectId: metadata.projectId,
+      candidateId: metadata.candidateId,
+      transactionId: metadata.transactionId,
+      expectedActiveVersion: metadata.expectedActiveVersion,
+      expectedActiveContentHash: metadata.expectedActiveContentHash,
+      stagedAt,
+      targetVersion: requirePositiveInteger(input.targetVersion, 'targetVersion'),
+    };
+  }
+
+  throw new Error('Staged knowledge transition kind is invalid');
+}
+
+function assertExpectedActiveSummary(
+  current: KnowledgeBaseStateSummary,
+  expected: {
+    readonly expectedActiveVersion: number;
+    readonly expectedActiveContentHash: string;
+  },
+): void {
+  if (
+    current.activeVersion !== expected.expectedActiveVersion ||
+    current.activeContentHash !== expected.expectedActiveContentHash
+  ) {
+    throw new Error('Active knowledge snapshot changed before staged transition activation');
+  }
+}
+
+function allocateNextRetainedVersion(current: KnowledgeBaseStateSummary): number {
+  return current.versions.reduce((max, version) => Math.max(max, version.version), current.activeVersion ?? 0) + 1;
+}
+
+function cloneSnapshot(snapshot: KnowledgeSnapshot): KnowledgeSnapshot {
+  return {
+    schemaVersion: 1,
+    knowledgeBaseId: snapshot.knowledgeBaseId,
+    displayName: snapshot.displayName,
+    contentHash: snapshot.contentHash,
+    version: snapshot.version,
+    publishedAt: snapshot.publishedAt,
+    sourceDeviceId: snapshot.sourceDeviceId,
+    documents: snapshot.documents.map((document) => ({ ...document })),
+  };
+}
+
+function compareStagedTransitionSummaries(
+  left: StagedKnowledgeTransitionSummary,
+  right: StagedKnowledgeTransitionSummary,
+): number {
+  return compareStrings(left.projectId, right.projectId)
+    || compareStrings(left.candidateId, right.candidateId)
+    || compareStrings(left.stageId, right.stageId);
 }
 
 function normalizeConfiguration(input: ConfigureKnowledgeRoot): InternalKnowledgeConfiguration {

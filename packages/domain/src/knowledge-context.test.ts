@@ -57,4 +57,33 @@ describe('agent knowledge lease', () => {
   it('keeps order when moving a reference before itself', () => {
     expect(reorderReferences(references, 'product', 'product')).toEqual(references);
   });
+
+  it('rejects image citations whose labels do not match the ordered reference', () => {
+    expect(() => createAgentKnowledgeLease({
+      runId: 'run-bad-citation-label',
+      capability: 'reverse_prompt',
+      snapshots: [],
+      references,
+      citations: [{ assetId: 'scene', label: 'Product' }],
+    }, {
+      leaseId: 'lease-bad-citation-label',
+      createdAt: '2026-07-15T10:00:00.000Z',
+    })).toThrow(/label/i);
+  });
+
+  it('rejects duplicate image citations for the same asset', () => {
+    expect(() => createAgentKnowledgeLease({
+      runId: 'run-duplicate-citation',
+      capability: 'reverse_prompt',
+      snapshots: [],
+      references,
+      citations: [
+        { assetId: 'scene', label: 'Scene' },
+        { assetId: 'scene', label: 'Scene' },
+      ],
+    }, {
+      leaseId: 'lease-duplicate-citation',
+      createdAt: '2026-07-15T10:00:00.000Z',
+    })).toThrow(/duplicate/i);
+  });
 });

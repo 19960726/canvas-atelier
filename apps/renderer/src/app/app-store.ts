@@ -233,9 +233,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         : state.knowledgeBases,
       project: {
         ...state.project,
-        skillPromotionCandidates: state.project.skillPromotionCandidates.map((candidate) => (
-          candidate.id === result.candidate.id ? result.candidate : candidate
-        )),
+        skillPromotionCandidates: result.candidates
+          ? [...result.candidates]
+          : state.project.skillPromotionCandidates.map((candidate) => (
+            candidate.id === result.candidate.id ? result.candidate : candidate
+          )),
       },
     }));
     return result;

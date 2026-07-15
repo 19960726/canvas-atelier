@@ -3,10 +3,9 @@ import { UNCONFIGURED_KNOWLEDGE_VERSION_KEY, type OrderedReference } from '@agen
 import type {
   KnowledgeStateBridgeResult,
   ReviewSkillCandidateBridgeRequest,
-  ReviewSkillCandidateBridgeResult,
 } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
-import { createKnowledgeClient } from './knowledge-client';
+import { createKnowledgeClient, type SkillCandidateReviewResult } from './knowledge-client';
 
 afterEach(() => {
   delete window.novusDesktop;
@@ -92,21 +91,23 @@ describe('KnowledgeClient', () => {
   it('configures and reviews only through the narrow bridge payloads', async () => {
     const configured = knowledgeState({ version: 1, hashPrefix: 'a' });
     const reviewed = knowledgeState({ version: 2, hashPrefix: 'b' });
-    const reviewResult: ReviewSkillCandidateBridgeResult = {
+    const reviewedCandidate = {
+      schemaVersion: 1 as const,
+      id: 'candidate-1',
+      sourceProjectId: 'project-1',
+      sourceProjectMemoryId: 'memory-1',
+      createdAt: '2026-07-15T08:00:00.000Z',
+      title: 'Approved rule',
+      rationale: 'Good evidence',
+      rule: 'Keep product identity locked',
+      evidence: { keep: [], change: [], never: [] },
+      reviewStatus: 'approved' as const,
+    };
+    const reviewResult: SkillCandidateReviewResult = {
       projectId: 'project-1',
       currentRevision: 7,
-      candidate: {
-        schemaVersion: 1,
-        id: 'candidate-1',
-        sourceProjectId: 'project-1',
-        sourceProjectMemoryId: 'memory-1',
-        createdAt: '2026-07-15T08:00:00.000Z',
-        title: 'Approved rule',
-        rationale: 'Good evidence',
-        rule: 'Keep product identity locked',
-        evidence: { keep: [], change: [], never: [] },
-        reviewStatus: 'approved',
-      },
+      candidate: reviewedCandidate,
+      candidates: [reviewedCandidate],
       knowledgeState: reviewed,
     };
     const configureKnowledgeBase = vi.fn(async () => configured);

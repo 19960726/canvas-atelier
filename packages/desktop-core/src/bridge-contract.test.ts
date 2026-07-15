@@ -7,8 +7,13 @@ import {
   createAgentKnowledgeLease,
   createUserFeedbackMemory,
   type CanvasProject,
+  type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
-import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
+import {
+  createKnowledgeSnapshotCandidate,
+  type KnowledgeBaseStateSummary,
+  type KnowledgeSnapshot,
+} from '@agent-canvas/skill-store';
 
 import type { CommitRequest } from './contracts';
 import { releaseJournalState } from './journal-writer';
@@ -305,6 +310,164 @@ describe('desktop bridge contract', () => {
     });
   });
 
+  it('does not activate approved knowledge before the project review commit is acknowledged', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    const project: CanvasProject = {
+      ...starterProject,
+      skillPromotionCandidates: [pendingCandidate],
+    };
+    const commit = vi.fn(async () => {
+      throw new Error('injected project commit failure');
+    });
+    const publish = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project'),
+      },
+      knowledgeRefreshService: {
+        refreshNow: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(1, 1)]),
+        publish,
+        readActive: vi.fn(async () => createKnowledgeSnapshot('# Scene Skill', 1)),
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    await expect(handlers.reviewSkillCandidate({}, {
+      candidateId: pendingCandidate.id,
+      decision: 'approved',
+      projectId: starterProject.id,
+    })).rejects.toThrow(/commit failure/);
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('does not activate rollback knowledge before the project review commit is acknowledged', async () => {
+    const approvedCandidate = createApprovedSkillCandidate();
+    const project: CanvasProject = {
+      ...starterProject,
+      skillPromotionCandidates: [approvedCandidate],
+    };
+    const commit = vi.fn(async () => {
+      throw new Error('injected rollback commit failure');
+    });
+    const rollback = vi.fn(async () => rolledBackKnowledgeState());
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project'),
+      },
+      knowledgeRefreshService: {
+        refreshNow: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(3, 3)]),
+        readActive: vi.fn(async () => null),
+        rollback,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    await expect(handlers.reviewSkillCandidate({}, {
+      candidateId: approvedCandidate.id,
+      decision: 'rolled_back',
+      projectId: starterProject.id,
+      targetVersion: 2,
+    })).rejects.toThrow(/commit failure/);
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(rollback).not.toHaveBeenCalled();
+  });
+
+  it('allocates approval versions after rollback from every retained version, not only the active snapshot', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    const project: CanvasProject = {
+      ...starterProject,
+      skillPromotionCandidates: [pendingCandidate],
+    };
+    const commit = vi.fn(async () => ({
+      committedAt: '2026-07-15T10:00:00.000Z',
+      projectId: starterProject.id,
+      revision: 6,
+      sequence: 6,
+      transactionId: 'review-skill-candidate-after-rollback',
+    }));
+    let publishedSnapshot: KnowledgeSnapshot | null = null;
+    const publish = vi.fn(async (snapshot: KnowledgeSnapshot) => {
+      publishedSnapshot = snapshot;
+    });
+    const enqueueApprovedSnapshot = vi.fn(async (_snapshot: KnowledgeSnapshot) => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      approvedSnapshotOutbox: { enqueueApprovedSnapshot },
+      createId: createSequentialId('session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project'),
+      },
+      knowledgeRefreshService: {
+        refreshNow: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(1, 3)]),
+        publish,
+        readActive: vi.fn(async () => createKnowledgeSnapshot('# Scene Skill', 1)),
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    const result = await handlers.reviewSkillCandidate({}, {
+      candidateId: pendingCandidate.id,
+      decision: 'approved',
+      projectId: starterProject.id,
+    });
+
+    expect(result.candidate).toMatchObject({
+      reviewStatus: 'approved',
+      publishedKnowledgeVersion: 4,
+    });
+    expect(publishedSnapshot).toMatchObject({ version: 4 });
+    expect(enqueueApprovedSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      knowledgeBaseId: 'scene-skill',
+      version: 4,
+    }));
+  });
+
   it('rolls back every approved candidate published above the target through the previous active version', async () => {
     const selected = {
       ...createApprovedSkillCandidate(),
@@ -459,6 +622,11 @@ describe('desktop bridge contract', () => {
       candidate: { id: selected.id, reviewStatus: 'rolled_back' },
       knowledgeState: { activeVersion: 2, status: 'rolled_back' },
     });
+    expect(result.candidates?.filter((candidate) => candidate.reviewStatus === 'rolled_back').map((candidate) => candidate.id).sort()).toEqual([
+      'candidate-v3',
+      'candidate-v4-selected',
+      'candidate-v5',
+    ]);
   });
   it('rejects rollback without a valid older target before mutating project or knowledge state', async () => {
     const approvedCandidate = createApprovedSkillCandidate();
@@ -920,6 +1088,41 @@ function createApprovedSkillCandidate() {
     reviewStatus: 'approved' as const,
     reviewedAt: '2026-07-15T09:00:00.000Z',
     publishedKnowledgeVersion: 3,
+  };
+}
+
+function createPendingSkillCandidate(): SkillPromotionCandidate {
+  return {
+    schemaVersion: 1,
+    id: 'candidate-pending',
+    sourceProjectId: 'project-1',
+    sourceProjectMemoryId: 'memory-feedback',
+    sourceProjectMemoryIds: ['memory-feedback'],
+    createdAt: '2026-07-15T08:00:00.000Z',
+    title: 'Liquid restraint',
+    rationale: 'Feedback asks for calmer liquid.',
+    rule: 'Use slower, heavier liquid arcs.',
+    targetKnowledgeBaseId: 'scene-skill',
+    targetKnowledgeSection: 'reverse-prompt/liquid',
+    counts: { supportingMemoryCount: 1 },
+    confidence: 0.9,
+    affectedCapabilities: ['reverse_prompt'],
+    evidence: { keep: ['product'], change: ['liquid'], never: [] },
+    reviewStatus: 'pending_review',
+  };
+}
+
+function createKnowledgeSnapshot(content: string, version: number): KnowledgeSnapshot {
+  const candidate = createKnowledgeSnapshotCandidate({
+    knowledgeBaseId: 'scene-skill',
+    displayName: 'Scene Skill',
+    documents: [{ relativePath: 'memory/main.md', content }],
+  });
+  return {
+    ...candidate,
+    version,
+    publishedAt: `2026-07-15T0${version}:00:00.000Z`,
+    sourceDeviceId: 'desktop-core',
   };
 }
 

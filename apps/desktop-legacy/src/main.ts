@@ -2,16 +2,20 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, shell } from 'electron';
 
 import {
   BRIDGE_CHANNELS,
+  ApprovedSnapshotOutbox,
   KnowledgeRefreshService,
   ManagedKnowledgeStore,
   createDesktopBridgeHandlers,
+  createApprovedSnapshotSyncClientFromEnv,
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
+  startApprovedSnapshotOutboxDrain,
   startConfiguredKnowledgeRefresh,
+  type ApprovedSnapshotOutboxDrainHandle,
   type BridgeDialogAdapter,
   type DesktopBridgeHandlers,
 } from '@agent-canvas/desktop-core';
@@ -27,6 +31,7 @@ const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
 let mainWindow: BrowserWindow | null = null;
 let safeModeLoaded = false;
 let desktopHandlers: DesktopBridgeHandlers | null = null;
+let approvedSnapshotDrainHandle: ApprovedSnapshotOutboxDrainHandle | null = null;
 let unsubscribeKnowledgeState: (() => void) | null = null;
 let closeAllStarted = false;
 
@@ -37,6 +42,12 @@ app.whenReady().then(async () => {
   const knowledgeRefreshService = new KnowledgeRefreshService({
     store: knowledgeStore,
   });
+  const approvedSnapshotSyncClient = createApprovedSnapshotSyncClientFromEnv(process.env);
+  const approvedSnapshotOutbox = new ApprovedSnapshotOutbox({
+    appDataRoot: app.getPath('userData'),
+    client: approvedSnapshotSyncClient ?? undefined,
+    store: knowledgeStore,
+  });
   unsubscribeKnowledgeState = knowledgeRefreshService.subscribe((state) => {
     mainWindow?.webContents.send(BRIDGE_CHANNELS.knowledgeStateChanged, state);
   });
@@ -44,6 +55,7 @@ app.whenReady().then(async () => {
     appDataRoot: app.getPath('userData'),
     channel: runtimeChannel,
     dialogs: createDialogAdapter(),
+    approvedSnapshotOutbox,
     knowledgeRefreshService,
     knowledgeStore,
   });
@@ -53,6 +65,12 @@ app.whenReady().then(async () => {
   });
 
   await startConfiguredKnowledgeRefresh(knowledgeStore, knowledgeRefreshService);
+  approvedSnapshotDrainHandle = startApprovedSnapshotOutboxDrain({
+    client: approvedSnapshotSyncClient,
+    isOnline: () => net.isOnline(),
+    outbox: approvedSnapshotOutbox,
+  });
+  await approvedSnapshotDrainHandle.drainNow();
   await createMainWindow();
 
   app.on('activate', () => {
@@ -76,6 +94,8 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   closeAllStarted = true;
   void desktopHandlers.closeAllProjects().finally(() => {
+    approvedSnapshotDrainHandle?.stop();
+    approvedSnapshotDrainHandle = null;
     unsubscribeKnowledgeState?.();
     unsubscribeKnowledgeState = null;
     app.quit();

@@ -223,5 +223,6 @@ export interface ReviewSkillCandidateBridgeResult {
   readonly projectId: string;
   readonly currentRevision: number;
   readonly candidate: SkillPromotionCandidate;
+  readonly candidates: readonly SkillPromotionCandidate[];
   readonly knowledgeState: KnowledgeBaseStateSummary | null;
 }

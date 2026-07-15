@@ -4,6 +4,7 @@ import {
   type AgentKnowledgeLease,
   type ImageCitation,
   type OrderedReference,
+  type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import type {
   ReviewSkillCandidateBridgeRequest,
@@ -16,12 +17,15 @@ export type SkillCandidateReviewRequest = Omit<ReviewSkillCandidateBridgeRequest
   decision: ReviewSkillCandidateBridgeRequest['decision'] | 'rolled_back';
   targetVersion?: number;
 };
+export type SkillCandidateReviewResult = ReviewSkillCandidateBridgeResult & {
+  candidates: readonly SkillPromotionCandidate[];
+};
 
 export interface KnowledgeClient {
   start(listener: (states: KnowledgeBaseStateSummary[]) => void): Promise<void>;
   stop(): void;
   configure(knowledgeBaseId: string, displayName: string): Promise<void>;
-  review(request: SkillCandidateReviewRequest): Promise<ReviewSkillCandidateBridgeResult>;
+  review(request: SkillCandidateReviewRequest): Promise<SkillCandidateReviewResult>;
   getLease(
     runId: string,
     capability: AgentKnowledgeCapability,
@@ -81,7 +85,7 @@ export function createKnowledgeClient(): KnowledgeClient {
     async review(request) {
       const bridge = window.novusDesktop;
       if (!bridge) throw new Error('Knowledge review is unavailable outside desktop mode');
-      const result = await bridge.reviewSkillCandidate(request as ReviewSkillCandidateBridgeRequest);
+      const result = await bridge.reviewSkillCandidate(request as ReviewSkillCandidateBridgeRequest) as SkillCandidateReviewResult;
       upsert(result.knowledgeState);
       return result;
     },

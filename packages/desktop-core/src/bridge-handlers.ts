@@ -15,6 +15,7 @@ import {
   SkillWritebackService,
   type KnowledgeBaseStateSummary,
   type KnowledgeSnapshot,
+  type KnowledgeSnapshotCandidate,
 } from '@agent-canvas/skill-store';
 
 import { canonicalJson, sha256Canonical } from './canonical-json.js';
@@ -54,6 +55,9 @@ import {
   type ConfigureKnowledgeRoot,
   type ConfiguredKnowledgeBase,
   ManagedKnowledgeStore,
+  type StageApprovedSnapshotMetadata,
+  type StageRollbackMetadata,
+  type StagedKnowledgeTransitionSummary,
 } from './managed-knowledge-store.js';
 import {
   NovusPackExporter,
@@ -122,10 +126,21 @@ interface NovusPackImporterLike {
 
 interface KnowledgeStoreLike {
   configure(input: ConfigureKnowledgeRoot): Promise<ConfiguredKnowledgeBase>;
+  activateStagedTransition?(stageId: string): Promise<KnowledgeBaseStateSummary>;
   listStates(): Promise<KnowledgeBaseStateSummary[]>;
+  listStagedKnowledgeTransitions?(): Promise<StagedKnowledgeTransitionSummary[]>;
   publish?(snapshot: KnowledgeSnapshot): Promise<void>;
   readActive(knowledgeBaseId: string): Promise<KnowledgeSnapshot | null>;
+  readVersion?(knowledgeBaseId: string, version: number): Promise<KnowledgeSnapshot | null>;
   rollback?(knowledgeBaseId: string, version: number): Promise<KnowledgeBaseStateSummary>;
+  stageApprovedSnapshot?(
+    candidate: KnowledgeSnapshotCandidate,
+    metadata: StageApprovedSnapshotMetadata,
+  ): Promise<{ stageId: string; snapshot: KnowledgeSnapshot }>;
+  stageRollback?(
+    input: { knowledgeBaseId: string; targetVersion: number },
+    metadata: StageRollbackMetadata,
+  ): Promise<{ stageId: string; targetVersion: number }>;
 }
 
 interface KnowledgeRefreshServiceLike {
@@ -133,6 +148,10 @@ interface KnowledgeRefreshServiceLike {
   start(knowledgeBaseIds: string[]): Promise<void>;
   stop(): Promise<void>;
   subscribe(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
+}
+
+interface ApprovedSnapshotOutboxLike {
+  enqueueApprovedSnapshot(snapshot: KnowledgeSnapshot): Promise<void>;
 }
 
 export interface BridgeDialogAdapter {
@@ -150,6 +169,7 @@ export interface DesktopBridgeHandlerDependencies {
   readonly dialogs?: Partial<BridgeDialogAdapter>;
   readonly fileSystem?: FileSystem;
   readonly importerIsolationRoot?: string;
+  readonly approvedSnapshotOutbox?: ApprovedSnapshotOutboxLike;
   readonly knowledgeRefreshService?: KnowledgeRefreshServiceLike;
   readonly knowledgeStore?: KnowledgeStoreLike;
   readonly packExporter?: NovusPackExporterLike;
@@ -183,6 +203,15 @@ interface BridgeSessionContext {
   sessionId: string;
   recoveryCandidatePaths: Map<string, string>;
   writer: BridgeWriter | null;
+}
+
+interface PreparedBridgeSkillReview {
+  readonly candidate: SkillPromotionCandidate;
+  readonly candidates: SkillPromotionCandidate[];
+  activateAfterAck(): Promise<{
+    readonly approvedSnapshot?: KnowledgeSnapshot;
+    readonly knowledgeState: KnowledgeBaseStateSummary | null;
+  }>;
 }
 
 interface RecoveryCandidateMirror {
@@ -219,6 +248,7 @@ export function createDesktopBridgeHandlers(
     appDataRoot: dependencies.appDataRoot ?? process.cwd(),
     fileSystem,
   });
+  const approvedSnapshotOutbox = dependencies.approvedSnapshotOutbox ?? null;
   const knowledgeRefreshService = dependencies.knowledgeRefreshService ?? new KnowledgeRefreshService({
     fileSystem,
     store: knowledgeStore as ManagedKnowledgeStore,
@@ -243,6 +273,7 @@ export function createDesktopBridgeHandlers(
       sessionId,
       writer,
     });
+    await reconcileStagedKnowledgeTransitionsForProject(opened);
 
     return summarizeSession(repository, sessionId, opened);
   }
@@ -372,6 +403,7 @@ export function createDesktopBridgeHandlers(
       sessionId,
       writer,
     });
+    await reconcileStagedKnowledgeTransitionsForProject(opened);
 
     return {
       ...await summarizeSession(repository, sessionId, opened),
@@ -424,31 +456,30 @@ export function createDesktopBridgeHandlers(
     }
     assertPublicBridgePayload(candidate);
 
-    const rollbackResult = validated.decision === 'rolled_back'
-      ? await rollbackSkillCandidatesForBridge(project.skillPromotionCandidates, candidate, validated)
-      : null;
-    const reviewed = sanitizeSkillPromotionCandidate(
-      rollbackResult?.candidate ?? await reviewSkillCandidateForBridge(candidate, validated),
-    );
-    const nextCandidates = rollbackResult === null
-      ? project.skillPromotionCandidates.map((item) => (
-        item.id === reviewed.id ? reviewed : item
-      ))
-      : rollbackResult.candidates.map(sanitizeSkillPromotionCandidate);
+    const transactionId = `review-skill-${candidate.id}-${Date.now()}`;
+    const preparedReview = validated.decision === 'rolled_back'
+      ? await prepareRollbackSkillCandidatesForBridge(project.skillPromotionCandidates, candidate, validated, transactionId)
+      : await prepareSkillCandidateReviewForBridge(project.skillPromotionCandidates, candidate, validated, transactionId);
+    const reviewed = sanitizeSkillPromotionCandidate(preparedReview.candidate);
+    const nextCandidates = preparedReview.candidates.map(sanitizeSkillPromotionCandidate);
     const currentRevision = await readCurrentRevision(repository, session.session);
     const ack = await requireBridgeWriter(session).commit({
       baseRevision: currentRevision,
       kind: 'system',
       projectId: validated.projectId,
       transaction: {
-        id: `review-skill-${reviewed.id}-${Date.now()}`,
+        id: transactionId,
         label: `Review skill candidate ${reviewed.id}`,
         operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
       },
     });
     await flushScheduledSnapshotAfterCommit(session, ack, 'system');
 
-    const knowledgeState = rollbackResult?.knowledgeState ?? (
+    const activated = await preparedReview.activateAfterAck();
+    if (activated.approvedSnapshot !== undefined) {
+      await approvedSnapshotOutbox?.enqueueApprovedSnapshot(activated.approvedSnapshot);
+    }
+    const knowledgeState = activated.knowledgeState ?? (
       reviewed.targetKnowledgeBaseId === undefined
         ? null
         : sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
@@ -457,6 +488,7 @@ export function createDesktopBridgeHandlers(
 
     return {
       candidate: sanitizeSkillPromotionCandidate(reviewed),
+      candidates: nextCandidates.map(sanitizeSkillPromotionCandidate),
       currentRevision: ack.revision,
       knowledgeState,
       projectId: validated.projectId,
@@ -551,27 +583,30 @@ export function createDesktopBridgeHandlers(
     session.session = await refreshSessionManifest(fileSystem, session.session);
   }
 
-  async function reviewSkillCandidateForBridge(
+  async function prepareSkillCandidateReviewForBridge(
+    candidates: readonly SkillPromotionCandidate[],
     candidate: SkillPromotionCandidate,
     request: ReviewSkillCandidateBridgeRequest,
-  ): Promise<SkillPromotionCandidate> {
+    transactionId: string,
+  ): Promise<PreparedBridgeSkillReview> {
     if (request.decision === 'rolled_back') {
       throw invalidRequest('Rollback must use the managed rollback flow');
     }
 
     if (request.decision !== 'approved') {
-      return reviewSkillPromotionCandidate(candidate, {
+      const reviewed = reviewSkillPromotionCandidate(candidate, {
         decision: request.decision,
         reviewedAt: new Date().toISOString(),
       });
+      return {
+        candidate: reviewed,
+        candidates: candidates.map((item) => item.id === reviewed.id ? reviewed : item),
+        activateAfterAck: async () => ({ knowledgeState: null }),
+      };
     }
 
     if (candidate.targetKnowledgeBaseId === undefined) {
       throw invalidRequest('Approved skill candidates require a target knowledge base');
-    }
-    const publish = knowledgeStore.publish;
-    if (publish === undefined) {
-      throw invalidRequest('Knowledge publication is unavailable');
     }
     const active = await knowledgeStore.readActive(candidate.targetKnowledgeBaseId);
     if (active === null) {
@@ -579,33 +614,45 @@ export function createDesktopBridgeHandlers(
     }
 
     try {
-      const registry = new KnowledgeSnapshotRegistry([{
-        schemaVersion: 1,
-        knowledgeBaseId: active.knowledgeBaseId,
-        displayName: active.displayName,
-        status: 'active',
+      const states = await knowledgeStore.listStates();
+      const targetSnapshot = await prepareApprovedKnowledgeSnapshotCandidate(candidate, active, states);
+      const stagedAt = new Date().toISOString();
+      const staged = knowledgeStore.stageApprovedSnapshot === undefined
+        ? null
+        : await knowledgeStore.stageApprovedSnapshot(targetSnapshot, {
+          stageId: `knowledge-${transactionId}`,
+          projectId: request.projectId,
+          candidateId: candidate.id,
+          transactionId,
+          expectedActiveVersion: active.version,
+          expectedActiveContentHash: active.contentHash,
+          sourceDeviceId: 'desktop-bridge',
+          stagedAt,
+        });
+      const snapshot = staged?.snapshot ?? createLocallyVersionedApprovedSnapshot(
+        targetSnapshot,
         active,
-        versions: [active],
-        lastFailure: null,
-        lastRollbackAt: null,
-      }]);
-      const writebackService = new SkillWritebackService();
-      const promotionService = new SkillKnowledgePromotionService({
-        registry,
-        sourceDeviceId: 'desktop-bridge',
-        writebackService,
+        states,
+        stagedAt,
+      );
+      const reviewed = reviewSkillPromotionCandidate(candidate, {
+        decision: 'approved',
+        reviewedAt: snapshot.publishedAt,
+        publishedKnowledgeVersion: snapshot.version,
       });
-      const prepared = promotionService.prepare(candidate, active);
-      const approval = writebackService.issueApproval(prepared.diffHash, {
-        random: () => 0.5,
-        ttlMs: 60_000,
-      });
-      const approved = await promotionService.approve(prepared.preparedId, approval.approvalToken);
-      if (!approved.ok) {
-        throw invalidRequest('Skill candidate approval is unavailable');
-      }
-      await publish.call(knowledgeStore, approved.snapshot);
-      return approved.candidate;
+      return {
+        candidate: reviewed,
+        candidates: candidates.map((item) => item.id === reviewed.id ? reviewed : item),
+        activateAfterAck: async () => {
+          const knowledgeState = staged === null
+            ? await publishApprovedSnapshotAfterAck(snapshot)
+            : await activateStagedKnowledgeAfterAck(staged.stageId);
+          return {
+            approvedSnapshot: snapshot,
+            knowledgeState,
+          };
+        },
+      };
     } catch (error) {
       if (isPersistenceErrorCode(error, 'INVALID_REQUEST')) {
         throw error;
@@ -614,15 +661,98 @@ export function createDesktopBridgeHandlers(
     }
   }
 
-  async function rollbackSkillCandidatesForBridge(
+  async function prepareApprovedKnowledgeSnapshotCandidate(
+    candidate: SkillPromotionCandidate,
+    active: KnowledgeSnapshot,
+    states: readonly KnowledgeBaseStateSummary[],
+  ): Promise<KnowledgeSnapshotCandidate> {
+    const retainedSnapshots = await readRetainedSnapshotsForRegistry(active, states);
+    const registry = new KnowledgeSnapshotRegistry([{
+      schemaVersion: 1,
+      knowledgeBaseId: active.knowledgeBaseId,
+      displayName: active.displayName,
+      status: 'active',
+      active,
+      versions: retainedSnapshots,
+      lastFailure: null,
+      lastRollbackAt: null,
+    }]);
+    const writebackService = new SkillWritebackService();
+    const promotionService = new SkillKnowledgePromotionService({
+      registry,
+      sourceDeviceId: 'desktop-bridge',
+      writebackService,
+    });
+    const prepared = promotionService.prepare(candidate, active);
+    const approval = writebackService.issueApproval(prepared.diffHash, {
+      random: () => 0.5,
+      ttlMs: 60_000,
+    });
+    const claimed = writebackService.claimApproval(prepared.diffHash, approval.approvalToken);
+    if (!claimed.ok) {
+      throw invalidRequest('Skill candidate approval is unavailable');
+    }
+    return prepared.targetSnapshot;
+  }
+
+  async function readRetainedSnapshotsForRegistry(
+    active: KnowledgeSnapshot,
+    states: readonly KnowledgeBaseStateSummary[],
+  ): Promise<KnowledgeSnapshot[]> {
+    const readVersion = knowledgeStore.readVersion;
+    const state = states.find((item) => item.knowledgeBaseId === active.knowledgeBaseId);
+    if (readVersion === undefined || state === undefined) {
+      return [active];
+    }
+    const versions = (await Promise.all(state.versions.map(async (version) => (
+      readVersion.call(knowledgeStore, active.knowledgeBaseId, version.version)
+    )))).filter((snapshot): snapshot is KnowledgeSnapshot => snapshot !== null);
+    if (!versions.some((snapshot) => snapshot.version === active.version)) {
+      versions.push(active);
+    }
+    return versions.sort((left, right) => left.version - right.version);
+  }
+
+  function createLocallyVersionedApprovedSnapshot(
+    targetSnapshot: KnowledgeSnapshotCandidate,
+    active: KnowledgeSnapshot,
+    states: readonly KnowledgeBaseStateSummary[],
+    publishedAt: string,
+  ): KnowledgeSnapshot {
+    const state = states.find((item) => item.knowledgeBaseId === active.knowledgeBaseId);
+    const retainedVersion = state?.versions.reduce((max, version) => Math.max(max, version.version), 0) ?? 0;
+    return {
+      ...targetSnapshot,
+      version: Math.max(retainedVersion, active.version) + 1,
+      publishedAt,
+      sourceDeviceId: 'desktop-bridge',
+    };
+  }
+
+  async function publishApprovedSnapshotAfterAck(snapshot: KnowledgeSnapshot): Promise<KnowledgeBaseStateSummary | null> {
+    const publish = knowledgeStore.publish;
+    if (publish === undefined) {
+      throw invalidRequest('Knowledge publication is unavailable');
+    }
+    await publish.call(knowledgeStore, snapshot);
+    return sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
+      .find((state) => state.knowledgeBaseId === snapshot.knowledgeBaseId) ?? null;
+  }
+
+  async function activateStagedKnowledgeAfterAck(stageId: string): Promise<KnowledgeBaseStateSummary | null> {
+    const activate = knowledgeStore.activateStagedTransition;
+    if (activate === undefined) {
+      throw invalidRequest('Knowledge staged activation is unavailable');
+    }
+    return sanitizeKnowledgeSummary(await activate.call(knowledgeStore, stageId));
+  }
+
+  async function prepareRollbackSkillCandidatesForBridge(
     candidates: readonly SkillPromotionCandidate[],
     candidate: SkillPromotionCandidate,
     request: ReviewSkillCandidateBridgeRequest,
-  ): Promise<{
-    readonly candidate: SkillPromotionCandidate;
-    readonly candidates: SkillPromotionCandidate[];
-    readonly knowledgeState: KnowledgeBaseStateSummary;
-  }> {
+    transactionId: string,
+  ): Promise<PreparedBridgeSkillReview> {
     const targetVersion = request.targetVersion;
     if (
       targetVersion === undefined ||
@@ -635,55 +765,99 @@ export function createDesktopBridgeHandlers(
     ) {
       throw invalidRequest('Rollback requires a valid older target version');
     }
-    const rollback = knowledgeStore.rollback;
-    if (rollback === undefined) {
-      throw invalidRequest('Knowledge rollback is unavailable');
-    }
     const states = await knowledgeStore.listStates();
     const state = states.find((item) => item.knowledgeBaseId === candidate.targetKnowledgeBaseId);
     if (
       state === undefined ||
       state.activeVersion === null ||
+      state.activeContentHash === null ||
       candidate.publishedKnowledgeVersion > state.activeVersion ||
       !state.versions.some((version) => version.version === targetVersion)
     ) {
       throw invalidRequest('Rollback target version is unavailable');
     }
 
+    const rolledBackAt = new Date().toISOString();
     const previousActiveVersion = state.activeVersion;
-    try {
-      const rolledBackState = sanitizeKnowledgeSummary(
-        await rollback.call(knowledgeStore, candidate.targetKnowledgeBaseId, targetVersion),
-      );
-      if (rolledBackState.activeVersion !== targetVersion) {
-        throw invalidRequest('Knowledge rollback target was not activated');
-      }
-      const rolledBackAt = rolledBackState.lastRollbackAt ?? new Date().toISOString();
-      const nextCandidates = candidates.map((item) => (
-        item.reviewStatus === 'approved' &&
-        item.targetKnowledgeBaseId === candidate.targetKnowledgeBaseId &&
-        item.publishedKnowledgeVersion !== undefined &&
-        item.publishedKnowledgeVersion > targetVersion &&
-        item.publishedKnowledgeVersion <= previousActiveVersion
-          ? rollbackSkillPromotionCandidate(item, rolledBackAt)
-          : item
-      ));
-      const reviewed = nextCandidates.find((item) => item.id === candidate.id);
-      if (reviewed === undefined || reviewed.reviewStatus !== 'rolled_back') {
-        throw invalidRequest('Rollback did not update the selected skill candidate');
-      }
-      return {
-        candidate: reviewed,
-        candidates: nextCandidates,
-        knowledgeState: rolledBackState,
-      };
-    } catch (error) {
-      if (isPersistenceErrorCode(error, 'INVALID_REQUEST')) {
-        throw error;
-      }
+    const staged = knowledgeStore.stageRollback === undefined
+      ? null
+      : await knowledgeStore.stageRollback({
+        knowledgeBaseId: candidate.targetKnowledgeBaseId,
+        targetVersion,
+      }, {
+        stageId: `knowledge-${transactionId}`,
+        projectId: request.projectId,
+        candidateId: candidate.id,
+        transactionId,
+        expectedActiveVersion: state.activeVersion,
+        expectedActiveContentHash: state.activeContentHash,
+        stagedAt: rolledBackAt,
+      });
+    if (staged === null && knowledgeStore.rollback === undefined) {
       throw invalidRequest('Knowledge rollback is unavailable');
     }
+
+    const nextCandidates = candidates.map((item) => (
+      item.reviewStatus === 'approved' &&
+      item.targetKnowledgeBaseId === candidate.targetKnowledgeBaseId &&
+      item.publishedKnowledgeVersion !== undefined &&
+      item.publishedKnowledgeVersion > targetVersion &&
+      item.publishedKnowledgeVersion <= previousActiveVersion
+        ? rollbackSkillPromotionCandidate(item, rolledBackAt)
+        : item
+    ));
+    const reviewed = nextCandidates.find((item) => item.id === candidate.id);
+    if (reviewed === undefined || reviewed.reviewStatus !== 'rolled_back') {
+      throw invalidRequest('Rollback did not update the selected skill candidate');
+    }
+
+    return {
+      candidate: reviewed,
+      candidates: nextCandidates,
+      activateAfterAck: async () => {
+        const rolledBackState = staged === null
+          ? sanitizeKnowledgeSummary(await knowledgeStore.rollback!.call(knowledgeStore, candidate.targetKnowledgeBaseId!, targetVersion))
+          : await activateStagedKnowledgeAfterAck(staged.stageId);
+        if (rolledBackState === null || rolledBackState.activeVersion !== targetVersion) {
+          throw invalidRequest('Knowledge rollback target was not activated');
+        }
+        return {
+          knowledgeState: rolledBackState,
+        };
+      },
+    };
   }
+
+  async function reconcileStagedKnowledgeTransitionsForProject(session: OpenedProjectSession): Promise<void> {
+    const listStaged = knowledgeStore.listStagedKnowledgeTransitions;
+    const activate = knowledgeStore.activateStagedTransition;
+    if (listStaged === undefined || activate === undefined) {
+      return;
+    }
+
+    const stagedTransitions = await listStaged.call(knowledgeStore);
+    if (stagedTransitions.length === 0) {
+      return;
+    }
+
+    const project = await repository.readCurrentProject(session);
+    const candidatesById = new Map(project.skillPromotionCandidates.map((candidate) => [candidate.id, candidate]));
+    for (const staged of stagedTransitions) {
+      if (staged.projectId !== project.id) {
+        continue;
+      }
+      const candidate = candidatesById.get(staged.candidateId);
+      if (candidate?.reviewStatus !== 'approved' && candidate?.reviewStatus !== 'rolled_back') {
+        continue;
+      }
+      try {
+        await activate.call(knowledgeStore, staged.stageId);
+      } catch {
+        // Leave the staged transition in place for the next recovery attempt.
+      }
+    }
+  }
+
 }
 
 export function registerDesktopBridgeHandlers(

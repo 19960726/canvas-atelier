@@ -79,15 +79,33 @@ export const agentKnowledgeLeaseSchema = z.object({
   citations: z.array(imageCitationSchema).default([]),
   versionKey: z.string().min(1),
 }).strict().superRefine((lease, context) => {
-  const referenceIds = new Set(lease.references.map((reference) => reference.assetId));
+  const referencesByAssetId = new Map(lease.references.map((reference) => [reference.assetId, reference]));
+  const citedAssetIds = new Set<string>();
   for (const [index, citation] of lease.citations.entries()) {
-    if (!referenceIds.has(citation.assetId)) {
+    const reference = referencesByAssetId.get(citation.assetId);
+    if (!reference) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['citations', index, 'assetId'],
         message: 'Citations must reference a known asset',
       });
+      continue;
     }
+    if (reference.label !== citation.label) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['citations', index, 'label'],
+        message: 'Citation label must match its ordered reference',
+      });
+    }
+    if (citedAssetIds.has(citation.assetId)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['citations', index, 'assetId'],
+        message: 'Duplicate asset citations are not allowed',
+      });
+    }
+    citedAssetIds.add(citation.assetId);
   }
 });
 

@@ -46,6 +46,19 @@ export type {
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
 export { AssetStore } from './asset-store.js';
 export type { AssetMetadata, StageAssetOptions } from './asset-store.js';
+export {
+  ApprovedSnapshotOutbox,
+  createApprovedSnapshotSyncClientFromEnv,
+  startApprovedSnapshotOutboxDrain,
+} from './approved-snapshot-outbox.js';
+export type {
+  ApprovedSnapshotOutboxDrainHandle,
+  ApprovedSnapshotOutboxDrainOptions,
+  ApprovedSnapshotOutboxOptions,
+  ApprovedSnapshotReadableStore,
+  ApprovedSnapshotSyncEnvironment,
+  ApprovedSnapshotSyncClient,
+} from './approved-snapshot-outbox.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
 export { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 export type {
@@ -53,6 +66,9 @@ export type {
   ConfiguredKnowledgeBase,
   InternalKnowledgeConfiguration,
   ManagedKnowledgeStoreOptions,
+  StageApprovedSnapshotMetadata,
+  StageRollbackMetadata,
+  StagedKnowledgeTransitionSummary,
 } from './managed-knowledge-store.js';
 export { KnowledgeRefreshService } from './knowledge-refresh-service.js';
 export { startConfiguredKnowledgeRefresh } from './knowledge-startup.js';
