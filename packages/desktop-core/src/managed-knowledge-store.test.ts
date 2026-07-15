@@ -47,6 +47,26 @@ describe('ManagedKnowledgeStore', () => {
       knowledgeRootId: configured.knowledgeRootId,
       rootPath: normalize(sourceRoot),
     });
+    await expect(store.readConfiguration(configured.knowledgeRootId)).resolves.toBeNull();
+    expect(JSON.stringify(await store.listStates())).not.toContain(sourceRoot);
+  });
+
+  it('rejects protected configuration metadata before public output', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+
+    await expect(store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Authorization: Bearer secret',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    })).rejects.toThrow(/protected/i);
+    await expect(store.configure({
+      knowledgeBaseId: 'C:\\Users\\Private\\skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    })).rejects.toThrow(/protected/i);
+    await expect(store.listStates()).resolves.toEqual([]);
   });
 
   it('serializes concurrent configuration writes so knowledge bases are not lost', async () => {

@@ -86,7 +86,7 @@ export class ManagedKnowledgeStore {
   async readConfiguration(id: string): Promise<InternalKnowledgeConfiguration | null> {
     const configurationFile = await this.readConfigurationFile();
     const matched = configurationFile.configurations.find((configuration) => (
-      configuration.knowledgeBaseId === id || configuration.knowledgeRootId === id
+      configuration.knowledgeBaseId === id
     ));
     return matched ? cloneConfiguration(matched) : null;
   }
@@ -572,6 +572,7 @@ function applyPublishedSnapshot(
 function normalizeConfiguration(input: ConfigureKnowledgeRoot): InternalKnowledgeConfiguration {
   const knowledgeBaseId = requireNonEmptyString(input.knowledgeBaseId, 'knowledgeBaseId');
   const displayName = requireNonEmptyString(input.displayName, 'displayName');
+  scanProtectedMetadata([knowledgeBaseId, displayName]);
   const rootPath = normalize(resolve(requireNonEmptyString(input.rootPath, 'rootPath')));
   return {
     schemaVersion: 1,
