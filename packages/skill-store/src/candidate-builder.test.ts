@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCanvasProject, type ProjectMemoryEntry } from '@agent-canvas/domain';
+import { createAgentKnowledgeLease, parseCanvasProject, type ProjectMemoryEntry } from '@agent-canvas/domain';
 import { buildSkillPromotionCandidate } from './candidate-builder';
 
 const now = '2026-07-15T10:00:00.000Z';
@@ -155,6 +155,18 @@ function feedback(id: string, patch: Partial<ProjectMemoryEntry> & { change?: st
       prompt: 'generate liquid product scene',
       referenceAssetIds: [],
       resultAssetIds: [],
+      knowledgeLease: createAgentKnowledgeLease({
+        runId: `run-${id}`,
+        capability: 'skill_conversation',
+        snapshots: [],
+        references: [],
+        citations: [],
+      }, {
+        leaseId: `lease-${id}`,
+        createdAt: patch.createdAt ?? '2026-07-15T09:00:00.000Z',
+      }),
+      references: [],
+      citations: [],
     },
     feedback: patch.feedback ?? {
       keep: ['product identity'],

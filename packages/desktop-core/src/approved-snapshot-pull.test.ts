@@ -177,6 +177,79 @@ describe('ApprovedSnapshotPullCoordinator', () => {
     await coordinator.stop();
   });
 
+  it('retains no-client startup offline status for later bridge hydration', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const coordinator = new ApprovedSnapshotPullCoordinator({
+      appDataRoot: fixture.appDataRoot,
+      client: null,
+      clearInterval: vi.fn(),
+      setInterval: () => 101,
+      store: fixture.store,
+    });
+
+    await coordinator.start(['scene-skill']);
+
+    expect(coordinator.listSyncStatuses()).toEqual([expect.objectContaining({
+      knowledgeBaseId: 'scene-skill',
+      status: 'offline',
+      lastFailure: expect.objectContaining({ reason: expect.any(String) }),
+    })]);
+    await coordinator.stop();
+  });
+
+  it('keeps a rolled-back retained remote version conflicted across restart without advancing its cursor', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const version2 = createSnapshot('# local version 2', 2);
+    const version3 = createSnapshot('# local version 3', 3);
+    await fixture.store.publish(version2);
+    await fixture.store.publish(version3);
+    await fixture.store.rollback('scene-skill', 2);
+    const cursorPath = join(fixture.appDataRoot, 'sync', 'approved-snapshot-pull-cursors.json');
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const pullApprovedSnapshot = vi.fn(async () => ({ snapshot: version3, cursor: 'cursor-rolled-back-v3' }));
+      const coordinator = createCoordinator(fixture, { pullApprovedSnapshot });
+      const statuses: Array<{ status: string }> = [];
+      coordinator.subscribeSyncStatus((status) => statuses.push(status));
+
+      await coordinator.start(['scene-skill']);
+
+      expect(pullApprovedSnapshot).toHaveBeenCalledWith('scene-skill', undefined);
+      await expect(fixture.store.readActive('scene-skill')).resolves.toEqual(version2);
+      expect(statuses[statuses.length - 1]).toMatchObject({ status: 'conflict' });
+      await expect(readFile(cursorPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await coordinator.stop();
+    }
+  });
+  it('assigns strictly increasing changedAt values when lifecycle transitions share one wall-clock millisecond', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const local = createSnapshot('# local version 2', 2);
+    await fixture.store.publish(local);
+    const pullApprovedSnapshot = vi.fn()
+      .mockResolvedValueOnce({ snapshot: createSnapshot('# conflict version 2', 2) })
+      .mockResolvedValueOnce({ snapshot: createSnapshot('# recovered version 3', 3) });
+    const coordinator = new ApprovedSnapshotPullCoordinator({
+      appDataRoot: fixture.appDataRoot,
+      client: { pullApprovedSnapshot },
+      clearInterval: vi.fn(),
+      now: () => Date.parse('2026-07-16T04:00:00.000Z'),
+      setInterval: () => 101,
+      store: fixture.store,
+    });
+    const statuses: Array<{ changedAt: string }> = [];
+    coordinator.subscribeSyncStatus((status) => statuses.push(status));
+
+    await coordinator.start(['scene-skill']);
+    await coordinator.pullNow();
+
+    expect(statuses.map((status) => status.changedAt)).toEqual([
+      '2026-07-16T04:00:00.000Z',
+      '2026-07-16T04:00:00.001Z',
+      '2026-07-16T04:00:00.002Z',
+      '2026-07-16T04:00:00.003Z',
+    ]);
+    await coordinator.stop();
+  });
   it('awaits an in-flight pull and publish during stop', async () => {
     const fixture = await createPullFixture(tempRoots);
     const started = deferred<void>();

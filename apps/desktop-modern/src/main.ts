@@ -16,6 +16,7 @@ import {
   registerDesktopBridgeHandlers,
   startApprovedSnapshotOutboxDrain,
   startConfiguredKnowledgeRefresh,
+  shutdownDesktopServices,
   type ApprovedSnapshotOutboxDrainHandle,
   type BridgeDialogAdapter,
   type DesktopBridgeHandlers,
@@ -79,6 +80,7 @@ app.whenReady().then(async () => {
     approvedSnapshotOutbox,
     knowledgeRefreshService,
     knowledgeStore,
+    knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
   ipcMain.on(diagnosticsChannel, (_event, message) => {
@@ -116,23 +118,23 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   closeAllStarted = true;
   const handlers = desktopHandlers;
-  void (async () => {
-    try {
-      await handlers.closeAllProjects();
-    } finally {
-      await Promise.all([
-        approvedSnapshotDrainHandle?.stop(),
-        approvedSnapshotPullCoordinator?.stop(),
-        knowledgeRefreshServiceHandle?.stop(),
-      ]);
-      approvedSnapshotDrainHandle = null;
-      approvedSnapshotPullCoordinator = null;
-      knowledgeRefreshServiceHandle = null;
-      unsubscribeKnowledgeState?.();
-      unsubscribeKnowledgeState = null;
-      app.quit();
-    }
-  })();
+  void shutdownDesktopServices({
+    closeAllProjects: () => handlers.closeAllProjects(),
+    stopApprovedSnapshotDrain: () => approvedSnapshotDrainHandle?.stop() ?? Promise.resolve(),
+    stopApprovedSnapshotPull: () => approvedSnapshotPullCoordinator?.stop() ?? Promise.resolve(),
+    stopKnowledgeRefresh: () => knowledgeRefreshServiceHandle?.stop() ?? Promise.resolve(),
+    unsubscribeKnowledgeState: () => {
+      try {
+        unsubscribeKnowledgeState?.();
+      } finally {
+        approvedSnapshotDrainHandle = null;
+        approvedSnapshotPullCoordinator = null;
+        knowledgeRefreshServiceHandle = null;
+        unsubscribeKnowledgeState = null;
+      }
+    },
+    quit: () => app.quit(),
+  });
 });
 
 async function createMainWindow(): Promise<void> {

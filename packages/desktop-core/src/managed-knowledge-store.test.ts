@@ -1552,6 +1552,13 @@ class DelegatingFileSystem implements FileSystem {
     this.delegate = delegate;
   }
 
+  async link(source: string, destination: string): Promise<void> {
+    if (!this.delegate.link) {
+      throw new Error('link unavailable');
+    }
+    await this.delegate.link(source, destination);
+  }
+
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
     await this.delegate.mkdir(path, options);
   }

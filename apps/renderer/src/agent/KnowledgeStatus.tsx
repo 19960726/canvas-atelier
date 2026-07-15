@@ -38,8 +38,8 @@ function selectDisplayStatus(
   syncStatuses: KnowledgeSyncStatusSummary[],
   pendingReviewCount: number,
 ): DisplayStatus {
-  if (syncStatuses.some((state) => state.status === 'offline')) return 'offline';
   if (syncStatuses.some((state) => state.status === 'conflict')) return 'conflict';
+  if (syncStatuses.some((state) => state.status === 'offline')) return 'offline';
   if (syncStatuses.some((state) => state.status === 'syncing')) return 'syncing';
   if (pendingReviewCount > 0) return 'pending_review';
   if (knowledgeBases.some((state) => state.status === 'fallback')) return 'fallback';

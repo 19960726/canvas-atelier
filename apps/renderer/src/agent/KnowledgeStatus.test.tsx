@@ -41,6 +41,29 @@ describe('KnowledgeStatus', () => {
     expect(screen.getByRole('status')).toHaveTextContent(status);
     expect(screen.getByText(/scene-skill@2/)).toBeVisible();
   });
+  it('prioritizes conflict over offline when different knowledge bases report both', () => {
+    render(<KnowledgeStatus
+      knowledgeBases={[knowledgeState({ status: 'active', version: 2 })]}
+      syncStatuses={[
+        {
+          schemaVersion: 1,
+          knowledgeBaseId: 'scene-skill',
+          status: 'offline',
+          changedAt: '2026-07-16T04:00:00.000Z',
+          lastFailure: { reason: 'Network unavailable', failedAt: '2026-07-16T04:00:00.000Z' },
+        },
+        {
+          schemaVersion: 1,
+          knowledgeBaseId: 'brand-rules',
+          status: 'conflict',
+          changedAt: '2026-07-16T04:01:00.000Z',
+          lastFailure: { reason: 'Version conflict', failedAt: '2026-07-16T04:01:00.000Z' },
+        },
+      ]}
+    />);
+
+    expect(screen.getByRole('status')).toHaveTextContent(/conflict/i);
+  });
   it('shows active version, update time, and the pinned run version', () => {
     render(<KnowledgeStatus
       knowledgeBases={[knowledgeState({ status: 'active', version: 9 })]}

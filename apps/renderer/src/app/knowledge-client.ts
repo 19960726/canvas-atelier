@@ -44,6 +44,7 @@ export function createKnowledgeClient(): KnowledgeClient {
   let unsubscribeState: (() => void) | undefined;
   let unsubscribeSync: (() => void) | undefined;
   let states: KnowledgeBaseStateSummary[] = [];
+  let syncStatuses: KnowledgeSyncStatusSummary[] = [];
   let stopped = true;
 
   const publish = (nextStates: KnowledgeBaseStateSummary[]) => {
@@ -51,7 +52,14 @@ export function createKnowledgeClient(): KnowledgeClient {
     listener?.(states.map(cloneSummary));
   };
   const publishSync = (status: KnowledgeSyncStatusSummary) => {
-    if (!stopped) syncListener?.(cloneSyncStatus(status));
+    if (stopped) return;
+    const existing = syncStatuses.find((item) => item.knowledgeBaseId === status.knowledgeBaseId);
+    if (existing !== undefined && existing.changedAt >= status.changedAt) return;
+    syncStatuses = [
+      ...syncStatuses.filter((item) => item.knowledgeBaseId !== status.knowledgeBaseId),
+      cloneSyncStatus(status),
+    ];
+    syncListener?.(cloneSyncStatus(status));
   };
   const upsert = (summary: KnowledgeBaseStateSummary | null) => {
     if (!summary || stopped) return;
@@ -65,6 +73,8 @@ export function createKnowledgeClient(): KnowledgeClient {
       stopped = false;
       listener = nextListener;
       syncListener = nextSyncListener;
+      states = [];
+      syncStatuses = [];
       const bridge = window.novusDesktop;
       if (!bridge) {
         publish([]);
@@ -73,11 +83,14 @@ export function createKnowledgeClient(): KnowledgeClient {
       }
 
       try {
+        unsubscribeSync = bridge.subscribeKnowledgeSyncStatus((status) => publishSync(status));
         const hydrated = await bridge.getKnowledgeState();
         if (stopped) return;
         publish([...hydrated.states]);
+        for (const status of hydrated.syncStatuses ?? []) {
+          publishSync(status);
+        }
         unsubscribeState = bridge.subscribeKnowledgeState((summary) => upsert(summary));
-        unsubscribeSync = bridge.subscribeKnowledgeSyncStatus((status) => publishSync(status));
       } catch {
         if (!stopped) {
           publish([]);
@@ -93,6 +106,7 @@ export function createKnowledgeClient(): KnowledgeClient {
       unsubscribeSync = undefined;
       listener = undefined;
       syncListener = undefined;
+      syncStatuses = [];
     },
     async configure(knowledgeBaseId, displayName) {
       const bridge = window.novusDesktop;

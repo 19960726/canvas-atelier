@@ -127,6 +127,52 @@ describe('KnowledgeClient', () => {
       expect.objectContaining({ status: 'updated' }),
     ]);
   });
+  it('subscribes before hydration and keeps a newer retained sync event over an older snapshot', async () => {
+    let syncListener: ((status: {
+      schemaVersion: 1;
+      knowledgeBaseId: string;
+      status: 'syncing' | 'updated' | 'offline' | 'conflict';
+      changedAt: string;
+      lastFailure: { reason: string; failedAt: string } | null;
+    }) => void) | undefined;
+    let resolveHydration!: (value: KnowledgeStateBridgeResult) => void;
+    const hydration = new Promise<KnowledgeStateBridgeResult>((resolve) => { resolveHydration = resolve; });
+    window.novusDesktop = createBridge({
+      getKnowledgeState: vi.fn(() => hydration),
+      subscribeKnowledgeSyncStatus: vi.fn((next) => {
+        syncListener = next;
+        return () => undefined;
+      }),
+    });
+    const client = createKnowledgeClient();
+    const statuses: Array<{ status: string; changedAt: string }> = [];
+
+    const start = client.start(() => undefined, (status) => statuses.push(status));
+    expect(syncListener).toBeDefined();
+    syncListener?.({
+      schemaVersion: 1,
+      knowledgeBaseId: 'scene-skill',
+      status: 'updated',
+      changedAt: '2026-07-16T04:01:00.000Z',
+      lastFailure: null,
+    });
+    resolveHydration({
+      states: [],
+      syncStatuses: [{
+        schemaVersion: 1,
+        knowledgeBaseId: 'scene-skill',
+        status: 'offline',
+        changedAt: '2026-07-16T04:00:00.000Z',
+        lastFailure: { reason: 'Earlier offline state', failedAt: '2026-07-16T04:00:00.000Z' },
+      }],
+    });
+    await start;
+
+    expect(statuses[statuses.length - 1]).toMatchObject({
+      status: 'updated',
+      changedAt: '2026-07-16T04:01:00.000Z',
+    });
+  });
   it('configures and reviews only through the narrow bridge payloads', async () => {
     const configured = knowledgeState({ version: 1, hashPrefix: 'a' });
     const reviewed = knowledgeState({ version: 2, hashPrefix: 'b' });

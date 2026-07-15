@@ -222,6 +222,7 @@ export interface KnowledgeSyncStatusSummary {
 }
 export interface KnowledgeStateBridgeResult {
   readonly states: readonly KnowledgeBaseStateSummary[];
+  readonly syncStatuses?: readonly KnowledgeSyncStatusSummary[];
 }
 
 export interface ReviewSkillCandidateBridgeRequest {

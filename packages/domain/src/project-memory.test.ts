@@ -231,6 +231,30 @@ describe('project memory', () => {
     });
   });
 
+  it.each(['knowledgeLease', 'references', 'citations'] as const)(
+    'requires canonical %s provenance for persisted user feedback',
+    (field) => {
+      const memory = createUserFeedbackMemory({
+        projectId: 'project-1',
+        projectRevision: 4,
+        title: 'Persisted feedback provenance',
+        userRequest: 'Keep the scene',
+        correction: 'Use reviewed references',
+        knowledgeLease: feedbackLease,
+        references: feedbackReferences,
+        citations: [{ assetId: 'scene', label: 'Scene' }],
+        feedback: { keep: ['scene'], change: [], never: [] },
+      }, {
+        memoryId: `feedback-missing-${field}`,
+        createdAt: '2026-07-15T10:02:00.000Z',
+        snapshots: feedbackSnapshots,
+      });
+      const persisted = JSON.parse(JSON.stringify(memory)) as ProjectMemoryEntry;
+      delete (persisted.context as Record<string, unknown>)[field];
+
+      expect(() => parseProjectMemoryEntry(persisted)).toThrow(/provenance|feedback/i);
+    },
+  );
   it('sanitizes feedback observations through project-memory validation', () => {
     expect(() => createUserFeedbackMemory({
       projectId: 'project-1',

@@ -69,6 +69,8 @@ export type {
   ApprovedSnapshotPullStore,
 } from './approved-snapshot-pull.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
+export { shutdownDesktopServices } from './desktop-shutdown.js';
+export type { DesktopShutdownServices } from './desktop-shutdown.js';
 export { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 export type {
   ConfigureKnowledgeRoot,

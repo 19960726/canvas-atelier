@@ -32,6 +32,7 @@ import {
   type ImportPackBridgeRequest,
   type ImportPackBridgeResult,
   type KnowledgeStateBridgeResult,
+  type KnowledgeSyncStatusSummary,
   type OpenProjectBridgeRequest,
   type OpenProjectBridgeResult,
   type PersistenceChannel,
@@ -160,6 +161,10 @@ interface ApprovedSnapshotOutboxLike {
   enqueueApprovedSnapshot(snapshot: KnowledgeSnapshot): Promise<void>;
 }
 
+interface KnowledgeSyncStatusProviderLike {
+  listSyncStatuses(): readonly KnowledgeSyncStatusSummary[];
+}
+
 export interface BridgeDialogAdapter {
   chooseImportDestination(): Promise<string | null>;
   chooseImportPackSource(): Promise<string | null>;
@@ -178,6 +183,7 @@ export interface DesktopBridgeHandlerDependencies {
   readonly approvedSnapshotOutbox?: ApprovedSnapshotOutboxLike;
   readonly knowledgeRefreshService?: KnowledgeRefreshServiceLike;
   readonly knowledgeStore?: KnowledgeStoreLike;
+  readonly knowledgeSyncStatusProvider?: KnowledgeSyncStatusProviderLike;
   readonly packExporter?: NovusPackExporterLike;
   readonly packImporter?: NovusPackImporterLike;
   readonly recoveryScanner?: RecoveryScannerLike;
@@ -257,6 +263,7 @@ export function createDesktopBridgeHandlers(
     fileSystem,
   });
   const approvedSnapshotOutbox = dependencies.approvedSnapshotOutbox ?? null;
+  const knowledgeSyncStatusProvider = dependencies.knowledgeSyncStatusProvider ?? null;
   const knowledgeRefreshService = dependencies.knowledgeRefreshService ?? new KnowledgeRefreshService({
     fileSystem,
     store: knowledgeStore as ManagedKnowledgeStore,
@@ -444,6 +451,9 @@ export function createDesktopBridgeHandlers(
   ): Promise<KnowledgeStateBridgeResult> {
     return {
       states: sanitizeKnowledgeSummaries(await knowledgeStore.listStates()),
+      ...(knowledgeSyncStatusProvider === null ? {} : {
+        syncStatuses: sanitizeKnowledgeSyncStatuses(knowledgeSyncStatusProvider.listSyncStatuses()),
+      }),
     };
   }
 
@@ -493,7 +503,6 @@ export function createDesktopBridgeHandlers(
       try {
         durableProject = await repository.readCurrentProject(session.session);
       } catch {
-        await discardPreparedReviewAfterCommitFailure(preparedReview.stagedTransitionId);
         throw commitError;
       }
       const durableCandidate = durableProject.skillPromotionCandidates.find((item) => item.id === reviewed.id);
@@ -501,7 +510,11 @@ export function createDesktopBridgeHandlers(
         await discardPreparedReviewAfterCommitFailure(preparedReview.stagedTransitionId);
         throw commitError;
       }
-      committedRevision = await readCurrentRevision(repository, session.session);
+      try {
+        committedRevision = await readCurrentRevision(repository, session.session);
+      } catch {
+        throw commitError;
+      }
     }
 
     const activated = await completePreparedReviewAfterAck(preparedReview);
@@ -1392,6 +1405,23 @@ function defaultId(): string {
   return `desktop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function sanitizeKnowledgeSyncStatuses(
+  statuses: readonly KnowledgeSyncStatusSummary[],
+): KnowledgeSyncStatusSummary[] {
+  return statuses.map((status) => {
+    assertPublicBridgePayload(status);
+    return {
+      schemaVersion: 1,
+      knowledgeBaseId: status.knowledgeBaseId,
+      status: status.status,
+      changedAt: status.changedAt,
+      lastFailure: status.lastFailure === null ? null : {
+        reason: status.lastFailure.reason,
+        failedAt: status.lastFailure.failedAt,
+      },
+    };
+  });
+}
 function sanitizeKnowledgeSummaries(
   states: readonly KnowledgeBaseStateSummary[],
 ): KnowledgeBaseStateSummary[] {

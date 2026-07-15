@@ -56,6 +56,7 @@ export class ApprovedSnapshotPullCoordinator {
   private readonly isOnline: () => boolean;
   private readonly listeners = new Set<(state: KnowledgeBaseStateSummary) => void>();
   private readonly syncListeners = new Set<(status: KnowledgeSyncStatusSummary) => void>();
+  private readonly latestSyncStatuses = new Map<string, KnowledgeSyncStatusSummary>();
   private readonly now: () => number;
   private readonly setTimer: (listener: () => void, intervalMs: number) => unknown;
   private readonly store: ApprovedSnapshotPullStore;
@@ -87,6 +88,12 @@ export class ApprovedSnapshotPullCoordinator {
     };
   }
 
+  listSyncStatuses(): KnowledgeSyncStatusSummary[] {
+    return [...this.latestSyncStatuses.values()]
+      .sort((left, right) => compareStrings(left.knowledgeBaseId, right.knowledgeBaseId))
+      .map(cloneSyncStatus);
+  }
+
   subscribeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void {
     this.syncListeners.add(listener);
     return () => {
@@ -97,6 +104,10 @@ export class ApprovedSnapshotPullCoordinator {
   async start(knowledgeBaseIds: string[]): Promise<void> {
     await this.stop();
     this.knowledgeBaseIds = [...new Set(knowledgeBaseIds)].sort(compareStrings);
+    const configuredIds = new Set(this.knowledgeBaseIds);
+    for (const knowledgeBaseId of this.latestSyncStatuses.keys()) {
+      if (!configuredIds.has(knowledgeBaseId)) this.latestSyncStatuses.delete(knowledgeBaseId);
+    }
     this.stopped = false;
     if (this.client !== null) {
       this.timer = this.setTimer(() => {
@@ -179,7 +190,15 @@ export class ApprovedSnapshotPullCoordinator {
     if (snapshot.knowledgeBaseId !== knowledgeBaseId) {
       return 'conflict';
     }
+    const state = (await this.store.listStates()).find((item) => item.knowledgeBaseId === knowledgeBaseId);
     const active = await this.store.readActive(knowledgeBaseId);
+    if (
+      state?.status === 'rolled_back' &&
+      state.activeVersion !== null &&
+      snapshot.version > state.activeVersion
+    ) {
+      return 'conflict';
+    }
     if (active !== null) {
       if (snapshot.version < active.version) {
         return 'updated';
@@ -217,7 +236,9 @@ export class ApprovedSnapshotPullCoordinator {
     status: KnowledgeSyncStatus,
     failureReason?: string,
   ): void {
-    const changedAt = new Date(this.now()).toISOString();
+    const previousChangedAt = this.latestSyncStatuses.get(knowledgeBaseId)?.changedAt;
+    const previousTime = previousChangedAt === undefined ? Number.NEGATIVE_INFINITY : Date.parse(previousChangedAt);
+    const changedAt = new Date(Math.max(this.now(), previousTime + 1)).toISOString();
     const summary: KnowledgeSyncStatusSummary = {
       schemaVersion: 1,
       knowledgeBaseId: normalizeKnowledgeBaseId(knowledgeBaseId),
@@ -228,6 +249,7 @@ export class ApprovedSnapshotPullCoordinator {
         failedAt: changedAt,
       },
     };
+    this.latestSyncStatuses.set(summary.knowledgeBaseId, cloneSyncStatus(summary));
     for (const listener of this.syncListeners) {
       listener(cloneSyncStatus(summary));
     }

@@ -1,7 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+import { basename, dirname, join } from 'node:path';
 
 import { canonicalJson } from './canonical-json.js';
-import type { FileHandleLike, FileSystem } from './file-system.js';
+import type { FileStatLike, FileSystem } from './file-system.js';
 
 export type ProcessLiveness = boolean | 'unknown';
 
@@ -10,8 +12,10 @@ export interface ConfinedFileLockOptions {
   readonly assertPathForRead: (path: string) => Promise<void>;
   readonly assertPathForWrite: (path: string) => Promise<void>;
   readonly isLocalProcessAlive?: (processId: number) => Promise<ProcessLiveness>;
+  readonly monotonicNow?: () => number;
   readonly now?: () => number;
   readonly processId?: number;
+  readonly processSessionFingerprint?: string;
   readonly retryMs?: number;
   readonly staleAgeMs?: number;
   readonly timeoutMs?: number;
@@ -19,66 +23,79 @@ export interface ConfinedFileLockOptions {
 }
 
 export interface ConfinedFileLock {
-  readonly handle: FileHandleLike;
   readonly path: string;
+  readonly processSessionFingerprint: string;
   readonly token: string;
   readonly options: ConfinedFileLockOptions;
 }
 
 interface PersistedLock {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
   readonly token: string;
   readonly processId: number;
+  readonly processSessionFingerprint: string | null;
   readonly createdAt: string;
+}
+
+interface IncompleteLockFingerprint {
+  readonly contentHash: string;
+  readonly mtimeMs: number;
+  readonly size: number;
 }
 
 type PersistedLockRead =
   | { readonly kind: 'missing' }
-  | { readonly kind: 'invalid' }
+  | { readonly kind: 'incomplete'; readonly fingerprint: IncompleteLockFingerprint }
   | { readonly kind: 'valid'; readonly lock: PersistedLock };
 
 const DEFAULT_RETRY_MS = 10;
 const DEFAULT_STALE_AGE_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
+const PROCESS_SESSION_FINGERPRINT = createHash('sha256')
+  .update(`${process.pid}:${Date.now()}:${randomBytes(16).toString('hex')}`, 'utf8')
+  .digest('hex');
 
 export async function acquireConfinedFileLock(
   path: string,
   options: ConfinedFileLockOptions,
 ): Promise<ConfinedFileLock> {
   const now = options.now ?? Date.now;
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
   const processId = options.processId ?? process.pid;
+  const processSessionFingerprint = options.processSessionFingerprint ?? PROCESS_SESSION_FINGERPRINT;
+  if (processSessionFingerprint.trim().length === 0) {
+    throw new Error('Confined file lock process session fingerprint is invalid');
+  }
   const retryMs = options.retryMs ?? DEFAULT_RETRY_MS;
   const staleAgeMs = options.staleAgeMs ?? DEFAULT_STALE_AGE_MS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const startedAt = Date.now();
+  const startedAt = monotonicNow();
   const token = createHash('sha256')
-    .update(`${processId}:${Date.now()}:${Math.random()}`, 'utf8')
+    .update(`${processId}:${processSessionFingerprint}:${Date.now()}:${Math.random()}`, 'utf8')
     .digest('hex');
 
   for (;;) {
     await assertWritablePath(path, options);
-    let handle: FileHandleLike | null = null;
-    try {
-      handle = await options.fileSystem.open(path, 'wx');
-      const createdAt = new Date(now()).toISOString();
-      await handle.writeFile(`${canonicalJson({ schemaVersion: 1, token, processId, createdAt })}\n`);
-      await handle.sync();
-      return { handle, path, token, options };
-    } catch (error) {
-      if (handle !== null) {
-        try {
-          await handle.close();
-        } catch {
-          // Preserve the acquisition failure.
-        }
-      }
-      if (!isErrno(error, 'EEXIST')) throw error;
+    const published = await tryPublishOwner(path, options, {
+      schemaVersion: 2,
+      token,
+      processId,
+      processSessionFingerprint,
+      createdAt: new Date(now()).toISOString(),
+    });
+    if (published) {
+      return { path, processSessionFingerprint, token, options };
     }
 
-    if (await reclaimDeadStaleLock(path, options, now(), staleAgeMs)) {
+    if (await reclaimStaleLock(path, options, {
+      now: now(),
+      processId,
+      processSessionFingerprint,
+      staleAgeMs,
+    })) {
       continue;
     }
-    if (Date.now() - startedAt >= timeoutMs) {
+    if (monotonicNow() - startedAt >= timeoutMs) {
       throw new Error(options.timeoutMessage ?? 'Timed out waiting for confined file lock');
     }
     await delay(retryMs);
@@ -86,26 +103,15 @@ export async function acquireConfinedFileLock(
 }
 
 export async function releaseConfinedFileLock(lock: ConfinedFileLock): Promise<void> {
-  let closed = false;
   try {
     const persisted = await readPersistedLock(lock.path, lock.options);
-    if (persisted.kind !== 'valid' || persisted.lock.token !== lock.token) return;
-    await lock.handle.close();
-    closed = true;
+    if (persisted.kind !== 'valid' || !isOwnedLock(persisted.lock, lock)) return;
     const revalidated = await readPersistedLock(lock.path, lock.options);
-    if (revalidated.kind === 'valid' && revalidated.lock.token === lock.token) {
+    if (revalidated.kind === 'valid' && isOwnedLock(revalidated.lock, lock)) {
       await lock.options.fileSystem.unlink(lock.path);
     }
   } catch {
-    // A replaced or inaccessible lock must remain for a future guarded recovery.
-  } finally {
-    if (!closed) {
-      try {
-        await lock.handle.close();
-      } catch {
-        // Preserve the operation outcome.
-      }
-    }
+    // A replaced or inaccessible lock must remain for guarded recovery.
   }
 }
 
@@ -118,24 +124,98 @@ export async function defaultLocalProcessLiveness(processId: number): Promise<Pr
   }
 }
 
-async function reclaimDeadStaleLock(
+async function tryPublishOwner(
   path: string,
   options: ConfinedFileLockOptions,
-  now: number,
-  staleAgeMs: number,
+  owner: {
+    readonly schemaVersion: 2;
+    readonly token: string;
+    readonly processId: number;
+    readonly processSessionFingerprint: string;
+    readonly createdAt: string;
+  },
+): Promise<boolean> {
+  const link = options.fileSystem.link;
+  if (link === undefined) throw new Error('Confined file lock requires atomic link support');
+  const tempPath = join(dirname(path), `.${basename(path)}.owner-${owner.token}.tmp`);
+  await options.assertPathForWrite(tempPath);
+  let handle: Awaited<ReturnType<FileSystem['open']>> | null = null;
+  let closed = false;
+  try {
+    handle = await options.fileSystem.open(tempPath, 'wx');
+    await handle.writeFile(`${canonicalJson(owner)}\n`);
+    await handle.sync();
+    await handle.close();
+    closed = true;
+    await options.assertPathForRead(tempPath);
+    const prepared = parsePersistedLock(await options.fileSystem.readFile(tempPath, 'utf8'));
+    if (prepared === null || !sameOwnerRecord(prepared, owner)) {
+      throw new Error('Confined file lock owner preparation is invalid');
+    }
+    try {
+      await link.call(options.fileSystem, tempPath, path);
+    } catch (error) {
+      if (isErrno(error, 'EEXIST')) return false;
+      throw error;
+    }
+    return true;
+  } finally {
+    if (handle !== null && !closed) {
+      try {
+        await handle.close();
+      } catch {
+        // Preserve the publication outcome.
+      }
+    }
+    try {
+      await options.fileSystem.rm(tempPath, { force: true });
+    } catch {
+      // A prepared temp is not authoritative and may be cleaned later.
+    }
+  }
+}
+
+async function reclaimStaleLock(
+  path: string,
+  options: ConfinedFileLockOptions,
+  current: {
+    readonly now: number;
+    readonly processId: number;
+    readonly processSessionFingerprint: string;
+    readonly staleAgeMs: number;
+  },
 ): Promise<boolean> {
   const existing = await readPersistedLock(path, options);
   if (existing.kind === 'missing') return true;
-  if (existing.kind === 'invalid') return false;
+  if (existing.kind === 'incomplete') {
+    if (current.now - existing.fingerprint.mtimeMs < current.staleAgeMs) return false;
+    const revalidated = await readPersistedLock(path, options);
+    if (revalidated.kind !== 'incomplete' || !sameIncompleteLock(existing.fingerprint, revalidated.fingerprint)) {
+      return false;
+    }
+    return unlinkGuarded(path, options.fileSystem);
+  }
+
   const createdAt = Date.parse(existing.lock.createdAt);
-  if (!Number.isFinite(createdAt) || now - createdAt < staleAgeMs) return false;
-  const liveness = await (options.isLocalProcessAlive ?? defaultLocalProcessLiveness)(existing.lock.processId);
-  if (liveness !== false) return false;
+  if (!Number.isFinite(createdAt) || current.now - createdAt < current.staleAgeMs) return false;
+  let ownerIsDead = false;
+  if (existing.lock.processId === current.processId) {
+    ownerIsDead = existing.lock.processSessionFingerprint !== null
+      && existing.lock.processSessionFingerprint !== current.processSessionFingerprint;
+  } else {
+    const liveness = await (options.isLocalProcessAlive ?? defaultLocalProcessLiveness)(existing.lock.processId);
+    ownerIsDead = liveness === false;
+  }
+  if (!ownerIsDead) return false;
 
   const revalidated = await readPersistedLock(path, options);
   if (revalidated.kind !== 'valid' || !samePersistedLock(existing.lock, revalidated.lock)) return false;
+  return unlinkGuarded(path, options.fileSystem);
+}
+
+async function unlinkGuarded(path: string, fileSystem: FileSystem): Promise<boolean> {
   try {
-    await options.fileSystem.unlink(path);
+    await fileSystem.unlink(path);
     return true;
   } catch (error) {
     return isErrno(error, 'ENOENT');
@@ -148,13 +228,33 @@ async function readPersistedLock(
 ): Promise<PersistedLockRead> {
   try {
     await assertReadablePath(path, options);
-    const parsed = parsePersistedLock(JSON.parse(await options.fileSystem.readFile(path, 'utf8')) as unknown);
-    return parsed === null ? { kind: 'invalid' } : { kind: 'valid', lock: parsed };
+    const stat = await requireLstat(options.fileSystem, path);
+    const raw = await options.fileSystem.readFile(path, 'utf8');
+    const parsed = parsePersistedLock(raw);
+    return parsed === null
+      ? { kind: 'incomplete', fingerprint: incompleteFingerprint(raw, stat) }
+      : { kind: 'valid', lock: parsed };
   } catch (error) {
     if (isErrno(error, 'ENOENT')) return { kind: 'missing' };
     if (await didVanishDuringWindowsRealpath(path, options.fileSystem, error)) return { kind: 'missing' };
-    return { kind: 'invalid' };
+    throw error;
   }
+}
+
+async function requireLstat(fileSystem: FileSystem, path: string): Promise<FileStatLike> {
+  if (fileSystem.lstat === undefined) throw new Error('Confined file lock requires file system lstat');
+  return fileSystem.lstat(path);
+}
+
+function incompleteFingerprint(raw: string, stat: FileStatLike): IncompleteLockFingerprint {
+  if (typeof stat.mtimeMs !== 'number' || !Number.isFinite(stat.mtimeMs)) {
+    throw new Error('Confined file lock requires file mtime');
+  }
+  return {
+    contentHash: createHash('sha256').update(raw, 'utf8').digest('hex'),
+    mtimeMs: stat.mtimeMs,
+    size: typeof stat.size === 'number' ? stat.size : Buffer.byteLength(raw),
+  };
 }
 
 async function assertWritablePath(path: string, options: ConfinedFileLockOptions): Promise<void> {
@@ -180,7 +280,7 @@ async function didVanishDuringWindowsRealpath(
   fileSystem: FileSystem,
   error: unknown,
 ): Promise<boolean> {
-  if (!isErrno(error, 'EPERM') || fileSystem.lstat === undefined) return false;
+  if ((!isErrno(error, 'EPERM') && !isErrno(error, 'EBADF')) || fileSystem.lstat === undefined) return false;
   try {
     await fileSystem.lstat(path);
     return false;
@@ -189,23 +289,63 @@ async function didVanishDuringWindowsRealpath(
   }
 }
 
-function parsePersistedLock(value: unknown): PersistedLock | null {
-  if (!isRecord(value) || value.schemaVersion !== 1) return null;
+function parsePersistedLock(raw: string): PersistedLock | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return null;
   if (typeof value.token !== 'string' || value.token.length === 0) return null;
   if (typeof value.processId !== 'number' || !Number.isInteger(value.processId) || value.processId <= 0) return null;
   if (typeof value.createdAt !== 'string' || !Number.isFinite(Date.parse(value.createdAt))) return null;
+  const processSessionFingerprint = value.schemaVersion === 2
+    ? value.processSessionFingerprint
+    : null;
+  if (value.schemaVersion === 2 && (typeof processSessionFingerprint !== 'string' || processSessionFingerprint.length === 0)) {
+    return null;
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion: value.schemaVersion,
     token: value.token,
     processId: value.processId,
+    processSessionFingerprint: processSessionFingerprint as string | null,
     createdAt: value.createdAt,
   };
+}
+
+function sameOwnerRecord(
+  persisted: PersistedLock,
+  owner: {
+    readonly token: string;
+    readonly processId: number;
+    readonly processSessionFingerprint: string;
+    readonly createdAt: string;
+  },
+): boolean {
+  return persisted.schemaVersion === 2
+    && persisted.token === owner.token
+    && persisted.processId === owner.processId
+    && persisted.processSessionFingerprint === owner.processSessionFingerprint
+    && persisted.createdAt === owner.createdAt;
+}
+function isOwnedLock(persisted: PersistedLock, lock: ConfinedFileLock): boolean {
+  return persisted.token === lock.token
+    && persisted.processSessionFingerprint === lock.processSessionFingerprint;
 }
 
 function samePersistedLock(left: PersistedLock, right: PersistedLock): boolean {
   return left.token === right.token
     && left.processId === right.processId
+    && left.processSessionFingerprint === right.processSessionFingerprint
     && left.createdAt === right.createdAt;
+}
+
+function sameIncompleteLock(left: IncompleteLockFingerprint, right: IncompleteLockFingerprint): boolean {
+  return left.contentHash === right.contentHash
+    && left.mtimeMs === right.mtimeMs
+    && left.size === right.size;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

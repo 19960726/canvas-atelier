@@ -95,6 +95,21 @@ export const projectMemoryEntrySchema = z.object({
   supersedesMemoryId: idSchema.optional(),
   supersedesMemoryIds: z.array(idSchema).optional(),
 }).strict().superRefine((entry, context) => {
+  if (
+    entry.kind === 'user_feedback' &&
+    (
+      entry.context.knowledgeLease === undefined ||
+      entry.context.references === undefined ||
+      entry.context.citations === undefined
+    )
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['context'],
+      message: 'User feedback requires canonical knowledge provenance',
+    });
+  }
+
   for (const text of collectStrings(entry)) {
     if (containsPrivatePath(text)) {
       context.addIssue({

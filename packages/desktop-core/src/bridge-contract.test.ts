@@ -248,6 +248,13 @@ describe('desktop bridge contract', () => {
 
   it('returns public knowledge summaries without private store fields', async () => {
     const state = createKnowledgeStateSummary();
+    const syncStatus = {
+      schemaVersion: 1 as const,
+      knowledgeBaseId: 'scene-skill',
+      status: 'offline' as const,
+      changedAt: '2026-07-16T04:00:00.000Z',
+      lastFailure: { reason: 'Network unavailable', failedAt: '2026-07-16T04:00:00.000Z' },
+    };
     const handlers = createDesktopBridgeHandlers({
       knowledgeRefreshService: {
         refreshNow: vi.fn(),
@@ -255,6 +262,7 @@ describe('desktop bridge contract', () => {
         stop: vi.fn(),
         subscribe: vi.fn(),
       },
+      knowledgeSyncStatusProvider: { listSyncStatuses: vi.fn(() => [syncStatus]) },
       knowledgeStore: {
         configure: vi.fn(),
         listStates: vi.fn(async () => [{ ...state, rootPath: 'C:\\Users\\Private\\Knowledge' }]),
@@ -267,11 +275,36 @@ describe('desktop bridge contract', () => {
 
     const result = await handlers.getKnowledgeState({}, undefined);
 
-    expect(result).toEqual({ states: [state] });
+    expect(result).toEqual({ states: [state], syncStatuses: [syncStatus] });
     expect(JSON.stringify(result)).not.toContain('Private');
     expect(JSON.stringify(result)).not.toContain('rootPath');
   });
 
+  it('rejects protected retained sync status during bridge hydration', async () => {
+    const handlers = createDesktopBridgeHandlers({
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates: vi.fn(async () => []),
+        readActive: vi.fn(async () => null),
+      },
+      knowledgeSyncStatusProvider: {
+        listSyncStatuses: () => [{
+          schemaVersion: 1,
+          knowledgeBaseId: 'scene-skill',
+          status: 'offline',
+          changedAt: '2026-07-16T04:00:00.000Z',
+          lastFailure: {
+            reason: 'Authorization: Bearer secret at C:\\Users\\Private\\sync.json',
+            failedAt: '2026-07-16T04:00:00.000Z',
+          },
+        }],
+      },
+      repository: { close: vi.fn(async () => undefined) },
+    });
+
+    await expect(handlers.getKnowledgeState({}, undefined)).rejects.toThrow(/protected|public/i);
+  });
   it('rejects missing active-project skill candidates with INVALID_REQUEST', async () => {
     const handlers = createDesktopBridgeHandlers({
       repository: {
@@ -518,7 +551,7 @@ describe('desktop bridge contract', () => {
     expect(stageApprovedSnapshot).toHaveBeenCalledTimes(2);
   });
 
-  it('discards the staged reservation and preserves the commit error when durable read-back also fails', async () => {
+  it('preserves the staged reservation and original commit error when durable read-back is ambiguous', async () => {
     const pendingCandidate = createPendingSkillCandidate();
     const project: CanvasProject = { ...starterProject, skillPromotionCandidates: [pendingCandidate] };
     const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
@@ -562,7 +595,176 @@ describe('desktop bridge contract', () => {
       projectId: starterProject.id,
     })).rejects.toBe(commitError);
 
-    expect(discardStagedTransition).toHaveBeenCalledWith(expect.any(String), 'commit_not_acknowledged');
+    expect(discardStagedTransition).not.toHaveBeenCalled();
+  });
+  it('preserves the original commit error and stage when exact-project revision readback is ambiguous', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    let persistedProject: CanvasProject = { ...starterProject, skillPromotionCandidates: [pendingCandidate] };
+    const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
+    const commitError = new Error('response lost after durable append');
+    const discardStagedTransition = vi.fn(async () => undefined);
+    const activateStagedTransition = vi.fn();
+    const commit = vi.fn(async (request: CommitRequest) => {
+      const operation = request.transaction.operations.find((item) => item.kind === 'set_skill_candidates');
+      if (operation?.kind !== 'set_skill_candidates') throw new Error('missing candidate commit');
+      persistedProject = { ...persistedProject, skillPromotionCandidates: [...operation.candidates] };
+      throw commitError;
+    });
+    const handlers = createDesktopBridgeHandlers({
+      approvedSnapshotOutbox: { enqueueApprovedSnapshot: vi.fn(async () => undefined) },
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition,
+        configure: vi.fn(),
+        discardStagedTransition,
+        finalizeStagedTransition: vi.fn(),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(1, 1)]),
+        readActive: vi.fn(async () => createKnowledgeSnapshot('# Scene Skill', 1)),
+        recordStagedTransitionOutboxIntent: vi.fn(),
+        stageApprovedSnapshot: vi.fn(async (_candidate, metadata: { stageId: string }) => ({
+          stageId: metadata.stageId,
+          snapshot,
+        })),
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => persistedProject),
+        readCurrentRevision: vi.fn()
+          .mockResolvedValueOnce(5)
+          .mockResolvedValueOnce(5)
+          .mockRejectedValueOnce(new Error('transient revision readback failure')),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    await expect(handlers.reviewSkillCandidate({}, {
+      candidateId: pendingCandidate.id,
+      decision: 'approved',
+      projectId: starterProject.id,
+    })).rejects.toBe(commitError);
+
+    expect(discardStagedTransition).not.toHaveBeenCalled();
+    expect(activateStagedTransition).not.toHaveBeenCalled();
+  });
+  it('preserves a response-lost acknowledged stage through transient readback failure for startup recovery', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    let persistedProject: CanvasProject = { ...starterProject, skillPromotionCandidates: [pendingCandidate] };
+    const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
+    let stagedSummary: {
+      stageId: string;
+      projectId: string;
+      candidateId: string;
+      transactionId: string;
+      knowledgeBaseId: string;
+      kind: 'approved_snapshot';
+      phase: 'staged';
+      expectedActiveVersion: number;
+      expectedActiveContentHash: string;
+      publicationVersion: number;
+      publicationContentHash: string;
+    } | null = null;
+    const discardStagedTransition = vi.fn(async () => undefined);
+    const commitError = new Error('response lost after durable append');
+    const commit = vi.fn(async (request: CommitRequest) => {
+      const operation = request.transaction.operations.find((item) => item.kind === 'set_skill_candidates');
+      if (operation?.kind !== 'set_skill_candidates') throw new Error('missing candidate commit');
+      persistedProject = { ...persistedProject, skillPromotionCandidates: [...operation.candidates] };
+      throw commitError;
+    });
+    let readCount = 0;
+    const firstHandlers = createDesktopBridgeHandlers({
+      approvedSnapshotOutbox: { enqueueApprovedSnapshot: vi.fn(async () => undefined) },
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition: vi.fn(),
+        configure: vi.fn(),
+        discardStagedTransition,
+        finalizeStagedTransition: vi.fn(),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(1, 1)]),
+        readActive: vi.fn(async () => createKnowledgeSnapshot('# Scene Skill', 1)),
+        recordStagedTransitionOutboxIntent: vi.fn(),
+        stageApprovedSnapshot: vi.fn(async (_candidate, metadata: {
+          stageId: string;
+          projectId: string;
+          candidateId: string;
+          transactionId: string;
+          expectedActiveVersion: number;
+          expectedActiveContentHash: string;
+        }) => {
+          stagedSummary = {
+            ...metadata,
+            knowledgeBaseId: 'scene-skill',
+            kind: 'approved_snapshot',
+            phase: 'staged',
+            publicationVersion: snapshot.version,
+            publicationContentHash: snapshot.contentHash,
+          };
+          return { stageId: metadata.stageId, snapshot };
+        }),
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => {
+          readCount += 1;
+          if (readCount === 3) throw new Error('transient durable readback failure');
+          return persistedProject;
+        }),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await firstHandlers.openProject({}, { mode: 'write' });
+    await expect(firstHandlers.reviewSkillCandidate({}, {
+      candidateId: pendingCandidate.id,
+      decision: 'approved',
+      projectId: starterProject.id,
+    })).rejects.toBe(commitError);
+    expect(discardStagedTransition).not.toHaveBeenCalled();
+    expect(stagedSummary).not.toBeNull();
+
+    const activateStagedTransition = vi.fn(async () => knowledgeStateAtVersion(2, 2));
+    const enqueueApprovedSnapshot = vi.fn(async () => undefined);
+    const recordStagedTransitionOutboxIntent = vi.fn(async () => undefined);
+    const finalizeStagedTransition = vi.fn(async () => undefined);
+    const recoveredHandlers = createDesktopBridgeHandlers({
+      approvedSnapshotOutbox: { enqueueApprovedSnapshot },
+      createId: createSequentialId('recovered-session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition,
+        configure: vi.fn(),
+        discardStagedTransition,
+        finalizeStagedTransition,
+        listStagedKnowledgeTransitions: vi.fn(async () => [stagedSummary!]),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(2, 2)]),
+        readActive: vi.fn(async () => snapshot),
+        readVersion: vi.fn(async () => snapshot),
+        recordStagedTransitionOutboxIntent,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => persistedProject),
+        readCurrentRevision: vi.fn(async () => 6),
+      },
+    });
+
+    await recoveredHandlers.openProject({}, { mode: 'write' });
+
+    expect(activateStagedTransition).toHaveBeenCalledWith(stagedSummary!.stageId);
+    expect(enqueueApprovedSnapshot).toHaveBeenCalledWith(snapshot);
+    expect(recordStagedTransitionOutboxIntent).toHaveBeenCalledWith(stagedSummary!.stageId);
+    expect(finalizeStagedTransition).toHaveBeenCalledWith(stagedSummary!.stageId);
   });
   it('completes an exact durable approval when commit appended but its response was lost', async () => {
     const pendingCandidate = createPendingSkillCandidate();
