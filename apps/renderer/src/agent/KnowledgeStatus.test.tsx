@@ -13,17 +13,34 @@ describe('KnowledgeStatus', () => {
     ['updated', [knowledgeState({ status: 'active', version: 4 })], /updated/i],
     ['pending_review', [knowledgeState({ status: 'active', version: 4 })], /pending review/i, 1],
     ['fallback', [knowledgeState({ status: 'fallback', version: 3, failure: 'Disk unavailable' })], /fallback/i],
-    ['offline', [knowledgeState({ status: 'offline', version: null })], /offline/i],
-    ['conflict', [knowledgeState({ status: 'conflict', version: 2, failure: 'Version conflict' })], /conflict/i],
   ])('renders %s status', (_name, knowledgeBases, expected, pendingReviewCount = 0) => {
     render(<KnowledgeStatus
       knowledgeBases={knowledgeBases}
       pendingReviewCount={pendingReviewCount}
+      syncStatuses={[]}
     />);
 
     expect(screen.getByRole('status')).toHaveTextContent(expected);
   });
 
+  it.each(['offline', 'conflict', 'updated'] as const)('renders %s sync lifecycle without replacing active snapshot state', (status) => {
+    render(<KnowledgeStatus
+      knowledgeBases={[knowledgeState({ status: 'active', version: 2 })]}
+      syncStatuses={[{
+        schemaVersion: 1,
+        knowledgeBaseId: 'scene-skill',
+        status,
+        changedAt: '2026-07-16T04:00:00.000Z',
+        lastFailure: status === 'updated' ? null : {
+          reason: status === 'offline' ? 'Network unavailable' : 'Version conflict',
+          failedAt: '2026-07-16T04:00:00.000Z',
+        },
+      }]}
+    />);
+
+    expect(screen.getByRole('status')).toHaveTextContent(status);
+    expect(screen.getByText(/scene-skill@2/)).toBeVisible();
+  });
   it('shows active version, update time, and the pinned run version', () => {
     render(<KnowledgeStatus
       knowledgeBases={[knowledgeState({ status: 'active', version: 9 })]}

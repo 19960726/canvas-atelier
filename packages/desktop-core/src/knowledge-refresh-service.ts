@@ -233,11 +233,20 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
       if (error instanceof RefreshCancelledError || !this.isRefreshActive(epoch)) {
         return cloneSummary(await this.readCurrentSummary(configuration));
       }
-      const fallback = await this.store.recordRefreshFailure(
-        configuration.knowledgeBaseId,
-        sanitizeFailureReason(error, configuration.rootPath),
-        this.clock.now().toISOString(),
-      );
+      let fallback: KnowledgeBaseStateSummary;
+      try {
+        fallback = await this.store.recordRefreshFailure(
+          configuration.knowledgeBaseId,
+          sanitizeFailureReason(error, configuration.rootPath),
+          this.clock.now().toISOString(),
+        );
+      } catch (fallbackError) {
+        if (isReservationError(fallbackError)) {
+          this.scheduleRetry(knowledgeBaseId, epoch);
+          return cloneSummary(await this.readCurrentSummary(configuration));
+        }
+        throw fallbackError;
+      }
       if (this.isRefreshActive(epoch)) {
         this.emit(fallback);
       }

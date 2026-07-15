@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { KnowledgeSyncStatusSummary } from '@agent-canvas/desktop-core';
 import {
   appendProjectMemoryEntry,
   applyProjectTransaction,
@@ -77,6 +78,7 @@ interface AppState {
   desktopRevision: number;
   availableSnapshotIds: string[];
   knowledgeBases: KnowledgeBaseStateSummary[];
+  knowledgeSyncStatuses: KnowledgeSyncStatusSummary[];
   saveStatus: ProjectSaveStatus;
   saveErrorCode: string | null;
   agentPanelCollapsed: boolean;
@@ -222,7 +224,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
   initializeKnowledge: async () => {
-    await knowledgeClient.start((knowledgeBases) => set({ knowledgeBases }));
+    await knowledgeClient.start(
+      (knowledgeBases) => set({ knowledgeBases }),
+      (syncStatus) => set((state) => ({
+        knowledgeSyncStatuses: upsertKnowledgeSyncStatus(state.knowledgeSyncStatuses, syncStatus),
+      })),
+    );
   },
   reviewSkillCandidate: async (request) => {
     const result = await knowledgeClient.review(request);
@@ -560,7 +567,7 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   const restoredProject = desktopMode ? null : loadPersistedProjectBundle()?.current;
   return {
@@ -571,6 +578,7 @@ function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'd
     confirmedModelJobs: 0,
     desktopRevision: 0,
     knowledgeBases: [],
+    knowledgeSyncStatuses: [],
     persistenceMode: desktopMode ? 'desktop' : 'browser',
     project: restoredProject ?? createStarterProject(),
     saveErrorCode: null,
@@ -781,6 +789,15 @@ function readAvailableSnapshotIds(): string[] {
   return loadPersistedProjectBundle()?.snapshots.map((snapshot) => snapshot.id) ?? [];
 }
 
+function upsertKnowledgeSyncStatus(
+  statuses: KnowledgeSyncStatusSummary[],
+  nextStatus: KnowledgeSyncStatusSummary,
+): KnowledgeSyncStatusSummary[] {
+  return [
+    ...statuses.filter((status) => status.knowledgeBaseId !== nextStatus.knowledgeBaseId),
+    { ...nextStatus, lastFailure: nextStatus.lastFailure === null ? null : { ...nextStatus.lastFailure } },
+  ].sort((left, right) => left.knowledgeBaseId.localeCompare(right.knowledgeBaseId));
+}
 function upsertKnowledgeSummary(
   states: KnowledgeBaseStateSummary[],
   nextState: KnowledgeBaseStateSummary,

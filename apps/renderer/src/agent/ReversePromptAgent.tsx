@@ -14,6 +14,7 @@ import {
   type ReversePromptResult,
   type ReversePromptRun,
 } from '@agent-canvas/domain';
+import type { KnowledgeSyncStatusSummary } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import type { KnowledgeClient } from '../app/knowledge-client';
 import { KnowledgeStatus } from './KnowledgeStatus';
@@ -26,6 +27,7 @@ interface ReversePromptAgentProps {
   getProjectMemoryIds?: () => string[];
   getKnowledgeLease?: KnowledgeClient['getLease'];
   knowledgeBases?: KnowledgeBaseStateSummary[];
+  knowledgeSyncStatuses?: KnowledgeSyncStatusSummary[];
   pendingKnowledgeReviewCount?: number;
   analyze: (run: ReversePromptRun) => Promise<ReversePromptResult>;
   analysisMode?: 'provider' | 'local_draft';
@@ -63,6 +65,7 @@ export function ReversePromptAgent({
   getProjectMemoryIds = () => [],
   getKnowledgeLease = createFallbackKnowledgeLease,
   knowledgeBases = [],
+  knowledgeSyncStatuses = [],
   pendingKnowledgeReviewCount = 0,
   analyze,
   analysisMode = 'provider',
@@ -157,6 +160,7 @@ export function ReversePromptAgent({
       <KnowledgeStatus
         knowledgeBases={knowledgeBases}
         pendingReviewCount={pendingKnowledgeReviewCount}
+        syncStatuses={knowledgeSyncStatuses}
         pinnedLease={history[0]?.run.knowledgeLease ?? null}
       />
       {analysisMode === 'local_draft' && <p className="reverse-agent__mode">本地草稿，未调用模型</p>}

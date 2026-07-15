@@ -8,7 +8,9 @@ import {
 } from '@agent-canvas/skill-store';
 
 import { canonicalJson } from './canonical-json.js';
-import { type FileHandleLike, type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
+import type { KnowledgeSyncStatus, KnowledgeSyncStatusSummary } from './contracts.js';
+import { acquireConfinedFileLock, releaseConfinedFileLock } from './confined-file-lock.js';
+import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
 
 export interface ApprovedSnapshotPullClient {
   pullApprovedSnapshot(
@@ -41,15 +43,9 @@ interface CursorState {
   readonly cursors: Readonly<Record<string, string>>;
 }
 
-interface PullLock {
-  readonly handle: FileHandleLike;
-  readonly path: string;
-  readonly token: string;
-}
+type PullApplyOutcome = 'updated' | 'conflict' | 'deferred';
 
 const DEFAULT_PULL_INTERVAL_MS = 30_000;
-const LOCK_RETRY_MS = 10;
-const LOCK_TIMEOUT_MS = 5_000;
 
 export class ApprovedSnapshotPullCoordinator {
   private readonly appDataRoot: string;
@@ -59,6 +55,7 @@ export class ApprovedSnapshotPullCoordinator {
   private readonly intervalMs: number;
   private readonly isOnline: () => boolean;
   private readonly listeners = new Set<(state: KnowledgeBaseStateSummary) => void>();
+  private readonly syncListeners = new Set<(status: KnowledgeSyncStatusSummary) => void>();
   private readonly now: () => number;
   private readonly setTimer: (listener: () => void, intervalMs: number) => unknown;
   private readonly store: ApprovedSnapshotPullStore;
@@ -90,27 +87,39 @@ export class ApprovedSnapshotPullCoordinator {
     };
   }
 
+  subscribeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void {
+    this.syncListeners.add(listener);
+    return () => {
+      this.syncListeners.delete(listener);
+    };
+  }
+
   async start(knowledgeBaseIds: string[]): Promise<void> {
     await this.stop();
     this.knowledgeBaseIds = [...new Set(knowledgeBaseIds)].sort(compareStrings);
     this.stopped = false;
     if (this.client !== null) {
       this.timer = this.setTimer(() => {
-        void this.pullNow();
+        void this.pullNow('poll');
       }, this.intervalMs);
     }
-    await this.pullNow();
+    await this.pullNow('startup');
   }
 
-  async pullNow(): Promise<void> {
-    if (this.stopped || this.client === null || !this.isOnline()) {
+  async pullNow(trigger: 'startup' | 'poll' = 'poll'): Promise<void> {
+    if (this.stopped) return;
+    if (this.client === null) {
+      this.emitOfflineForConfigured('Approved snapshot sync is unavailable');
+      return;
+    }
+    if (!this.isOnline()) {
+      this.emitOfflineForConfigured('Network unavailable');
       return;
     }
     if (this.inFlight !== null) {
       return this.inFlight;
     }
-    this.inFlight = this.pullConfiguredKnowledgeBases()
-      .catch(() => undefined)
+    this.inFlight = this.pullConfiguredKnowledgeBases(trigger)
       .finally(() => {
         this.inFlight = null;
       });
@@ -126,15 +135,16 @@ export class ApprovedSnapshotPullCoordinator {
     await this.inFlight;
   }
 
-  private async pullConfiguredKnowledgeBases(): Promise<void> {
+  private async pullConfiguredKnowledgeBases(_trigger: 'startup' | 'poll'): Promise<void> {
     for (const knowledgeBaseId of this.knowledgeBaseIds) {
       if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
         continue;
       }
+      this.emitSyncStatus(knowledgeBaseId, 'syncing');
       try {
-        await this.withLock(this.pullLockPath(knowledgeBaseId), async () => {
+        const outcome = await this.withLock<PullApplyOutcome>(this.pullLockPath(knowledgeBaseId), async () => {
           if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
-            return;
+            return 'deferred';
           }
           const cursor = await this.readCursor(knowledgeBaseId);
           const result = await this.client!.pullApprovedSnapshot(knowledgeBaseId, cursor);
@@ -143,17 +153,21 @@ export class ApprovedSnapshotPullCoordinator {
             : knowledgeSnapshotSyncSchema.parse(result.snapshot);
           const nextCursor = result.cursor === undefined ? undefined : normalizeCursor(result.cursor);
           if (snapshot !== null) {
-            const handled = await this.applyRemoteSnapshot(knowledgeBaseId, snapshot);
-            if (!handled) {
-              return;
-            }
+            const applied = await this.applyRemoteSnapshot(knowledgeBaseId, snapshot);
+            if (applied !== 'updated') return applied;
           }
           if (nextCursor !== undefined) {
             await this.writeCursor(knowledgeBaseId, nextCursor);
           }
+          return 'updated';
         });
+        if (outcome === 'conflict') {
+          this.emitSyncStatus(knowledgeBaseId, 'conflict', 'Approved snapshot version conflict');
+        } else if (outcome === 'updated') {
+          this.emitSyncStatus(knowledgeBaseId, 'updated');
+        }
       } catch {
-        // Preserve the cursor and known-good snapshot for the next online poll.
+        this.emitSyncStatus(knowledgeBaseId, 'offline', 'Approved snapshot pull failed');
       }
     }
   }
@@ -161,38 +175,61 @@ export class ApprovedSnapshotPullCoordinator {
   private async applyRemoteSnapshot(
     knowledgeBaseId: string,
     snapshot: KnowledgeSnapshot,
-  ): Promise<boolean> {
+  ): Promise<PullApplyOutcome> {
     if (snapshot.knowledgeBaseId !== knowledgeBaseId) {
-      return false;
+      return 'conflict';
     }
     const active = await this.store.readActive(knowledgeBaseId);
     if (active !== null) {
       if (snapshot.version < active.version) {
-        return true;
+        return 'updated';
       }
       if (snapshot.version === active.version) {
-        return canonicalJson(snapshot) === canonicalJson(active);
+        return canonicalJson(snapshot) === canonicalJson(active) ? 'updated' : 'conflict';
       }
     }
     if (await this.store.hasUnresolvedKnowledgeTransition(knowledgeBaseId)) {
-      return false;
+      return 'deferred';
     }
-    try {
-      await this.store.publish(snapshot);
-    } catch {
-      return false;
-    }
+    await this.store.publish(snapshot);
     const next = (await this.store.listStates()).find((state) => state.knowledgeBaseId === knowledgeBaseId);
     if (next !== undefined) {
       this.emit(next);
     }
-    return true;
+    return 'updated';
   }
 
   private emit(state: KnowledgeBaseStateSummary): void {
     const cloned = cloneSummary(state);
     for (const listener of this.listeners) {
       listener(cloned);
+    }
+  }
+
+  private emitOfflineForConfigured(reason: string): void {
+    for (const knowledgeBaseId of this.knowledgeBaseIds) {
+      this.emitSyncStatus(knowledgeBaseId, 'offline', reason);
+    }
+  }
+
+  private emitSyncStatus(
+    knowledgeBaseId: string,
+    status: KnowledgeSyncStatus,
+    failureReason?: string,
+  ): void {
+    const changedAt = new Date(this.now()).toISOString();
+    const summary: KnowledgeSyncStatusSummary = {
+      schemaVersion: 1,
+      knowledgeBaseId: normalizeKnowledgeBaseId(knowledgeBaseId),
+      status,
+      changedAt,
+      lastFailure: failureReason === undefined ? null : {
+        reason: sanitizeSyncFailureReason(failureReason),
+        failedAt: changedAt,
+      },
+    };
+    for (const listener of this.syncListeners) {
+      listener(cloneSyncStatus(summary));
     }
   }
 
@@ -245,68 +282,19 @@ export class ApprovedSnapshotPullCoordinator {
     }
   }
 
-  private async acquireLock(lockPath: string): Promise<PullLock> {
-    const token = createHash('sha256')
-      .update(`${process.pid}:${Date.now()}:${Math.random()}`, 'utf8')
-      .digest('hex');
-    const startedAt = Date.now();
-    for (;;) {
-      await this.assertManagedFileForWrite(lockPath);
-      let handle: FileHandleLike | null = null;
-      let closed = false;
-      try {
-        handle = await this.fileSystem.open(lockPath, 'wx');
-        await handle.writeFile(`${canonicalJson({
-          schemaVersion: 1,
-          token,
-          processId: process.pid,
-          createdAt: new Date(this.now()).toISOString(),
-        })}\n`);
-        await handle.sync();
-        return { handle, path: lockPath, token };
-      } catch (error) {
-        if (handle !== null && !closed) {
-          try {
-            await handle.close();
-            closed = true;
-          } catch {
-            // Preserve the lock acquisition failure.
-          }
-        }
-        if (!isErrno(error, 'EEXIST')) {
-          throw error;
-        }
-        if (Date.now() - startedAt >= LOCK_TIMEOUT_MS) {
-          throw new Error('Timed out waiting for approved snapshot pull lock');
-        }
-        await delay(LOCK_RETRY_MS);
-      }
-    }
+  private async acquireLock(lockPath: string) {
+    return acquireConfinedFileLock(lockPath, {
+      fileSystem: this.fileSystem,
+      assertPathForRead: (path) => this.assertManagedFile(path),
+      assertPathForWrite: (path) => this.assertManagedFileForWrite(path),
+      now: this.now,
+      timeoutMessage: 'Timed out waiting for approved snapshot pull lock',
+    });
   }
 
-  private async releaseLock(lock: PullLock): Promise<void> {
-    let closed = false;
-    try {
-      await this.assertManagedFile(lock.path);
-      const parsed = JSON.parse(await this.fileSystem.readFile(lock.path, 'utf8')) as unknown;
-      if (isOwnedLock(parsed, lock.token)) {
-        await lock.handle.close();
-        closed = true;
-        await this.fileSystem.unlink(lock.path);
-      }
-    } catch {
-      // Do not remove a lock that may have been replaced by another process.
-    } finally {
-      if (!closed) {
-        try {
-          await lock.handle.close();
-        } catch {
-          // Preserve the operation outcome.
-        }
-      }
-    }
+  private async releaseLock(lock: Awaited<ReturnType<ApprovedSnapshotPullCoordinator['acquireLock']>>): Promise<void> {
+    await releaseConfinedFileLock(lock);
   }
-
   private async ensureSyncDirectory(): Promise<void> {
     await this.fileSystem.mkdir(this.appDataRoot, { recursive: true });
     await this.fileSystem.mkdir(this.syncRoot, { recursive: true });
@@ -418,6 +406,21 @@ function containsProtectedValue(value: string): boolean {
     || /(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{64,}={0,2}(?![A-Za-z0-9+/=])/u.test(value);
 }
 
+function cloneSyncStatus(status: KnowledgeSyncStatusSummary): KnowledgeSyncStatusSummary {
+  return {
+    schemaVersion: 1,
+    knowledgeBaseId: status.knowledgeBaseId,
+    status: status.status,
+    changedAt: status.changedAt,
+    lastFailure: status.lastFailure === null ? null : { ...status.lastFailure },
+  };
+}
+
+function sanitizeSyncFailureReason(reason: string): string {
+  if (containsProtectedValue(reason)) return 'Approved snapshot sync failed';
+  const trimmed = reason.trim();
+  return trimmed.length === 0 ? 'Approved snapshot sync failed' : trimmed.slice(0, 160);
+}
 function cloneSummary(summary: KnowledgeBaseStateSummary): KnowledgeBaseStateSummary {
   return {
     schemaVersion: 1,
@@ -451,9 +454,6 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
   return Object.keys(value).every((key) => allowedSet.has(key));
 }
 
-function isOwnedLock(value: unknown, token: string): boolean {
-  return isRecord(value) && value.schemaVersion === 1 && value.token === token;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -469,10 +469,4 @@ function isErrno(error: unknown, code: string): boolean {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-async function delay(ms: number): Promise<void> {
-  await new Promise<void>((resolveDelay) => {
-    setTimeout(resolveDelay, ms);
-  });
 }

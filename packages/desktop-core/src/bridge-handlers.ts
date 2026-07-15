@@ -129,7 +129,7 @@ interface KnowledgeStoreLike {
   activateStagedTransition?(stageId: string): Promise<KnowledgeBaseStateSummary>;
   discardStagedTransition?(
     stageId: string,
-    reason: 'unacknowledged_project_transaction' | 'superseded_project_transaction',
+    reason: 'commit_not_acknowledged' | 'unacknowledged_project_transaction' | 'superseded_project_transaction',
   ): Promise<void>;
   finalizeStagedTransition?(stageId: string): Promise<void>;
   recordStagedTransitionOutboxIntent?(stageId: string): Promise<void>;
@@ -214,6 +214,7 @@ interface BridgeSessionContext {
 interface PreparedBridgeSkillReview {
   readonly candidate: SkillPromotionCandidate;
   readonly candidates: SkillPromotionCandidate[];
+  readonly stagedTransitionId?: string;
   activateAfterAck(): Promise<{
     readonly approvedSnapshot?: KnowledgeSnapshot;
     readonly stagedTransitionId?: string;
@@ -470,18 +471,70 @@ export function createDesktopBridgeHandlers(
     const reviewed = sanitizeSkillPromotionCandidate(preparedReview.candidate);
     const nextCandidates = preparedReview.candidates.map(sanitizeSkillPromotionCandidate);
     const currentRevision = await readCurrentRevision(repository, session.session);
-    const ack = await requireBridgeWriter(session).commit({
-      baseRevision: currentRevision,
-      kind: 'system',
-      projectId: validated.projectId,
-      transaction: {
-        id: transactionId,
-        label: `Review skill candidate ${reviewed.id}`,
-        operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
-      },
-    });
-    await flushScheduledSnapshotAfterCommit(session, ack, 'system');
+    let committedRevision: number;
+    try {
+      const ack = await requireBridgeWriter(session).commit({
+        baseRevision: currentRevision,
+        kind: 'system',
+        projectId: validated.projectId,
+        transaction: {
+          id: transactionId,
+          label: `Review skill candidate ${reviewed.id}`,
+          operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
+        },
+      });
+      committedRevision = ack.revision;
+      await flushScheduledSnapshotAfterCommit(session, ack, 'system');
+    } catch (commitError) {
+      if (preparedReview.stagedTransitionId === undefined) {
+        throw commitError;
+      }
+      let durableProject: CanvasProject;
+      try {
+        durableProject = await repository.readCurrentProject(session.session);
+      } catch {
+        await discardPreparedReviewAfterCommitFailure(preparedReview.stagedTransitionId);
+        throw commitError;
+      }
+      const durableCandidate = durableProject.skillPromotionCandidates.find((item) => item.id === reviewed.id);
+      if (!isExactAcknowledgedReview(durableCandidate, reviewed, transactionId)) {
+        await discardPreparedReviewAfterCommitFailure(preparedReview.stagedTransitionId);
+        throw commitError;
+      }
+      committedRevision = await readCurrentRevision(repository, session.session);
+    }
 
+    const activated = await completePreparedReviewAfterAck(preparedReview);
+    const knowledgeState = activated.knowledgeState ?? (
+      reviewed.targetKnowledgeBaseId === undefined
+        ? null
+        : sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
+          .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null
+    );
+
+    return {
+      candidate: sanitizeSkillPromotionCandidate(reviewed),
+      candidates: nextCandidates.map(sanitizeSkillPromotionCandidate),
+      currentRevision: committedRevision,
+      knowledgeState,
+      projectId: validated.projectId,
+    };
+  }
+
+  async function discardPreparedReviewAfterCommitFailure(stageId: string): Promise<void> {
+    try {
+      await requireMethod(knowledgeStore, 'discardStagedTransition').call(
+        knowledgeStore,
+        stageId,
+        'commit_not_acknowledged',
+      );
+    } catch {
+      // Preserve the original commit boundary failure for the caller.
+    }
+  }
+  async function completePreparedReviewAfterAck(
+    preparedReview: PreparedBridgeSkillReview,
+  ): Promise<Awaited<ReturnType<PreparedBridgeSkillReview['activateAfterAck']>>> {
     const activated = await preparedReview.activateAfterAck();
     if (activated.approvedSnapshot !== undefined) {
       if (approvedSnapshotOutbox === null) {
@@ -495,22 +548,8 @@ export function createDesktopBridgeHandlers(
     } else if (activated.stagedTransitionId !== undefined) {
       await requireMethod(knowledgeStore, 'finalizeStagedTransition').call(knowledgeStore, activated.stagedTransitionId);
     }
-    const knowledgeState = activated.knowledgeState ?? (
-      reviewed.targetKnowledgeBaseId === undefined
-        ? null
-        : sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
-          .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null
-    );
-
-    return {
-      candidate: sanitizeSkillPromotionCandidate(reviewed),
-      candidates: nextCandidates.map(sanitizeSkillPromotionCandidate),
-      currentRevision: ack.revision,
-      knowledgeState,
-      projectId: validated.projectId,
-    };
+    return activated;
   }
-
   async function closeProject(_event: unknown, request: unknown): Promise<void> {
     const validated = validateSessionRequest(request);
     const session = requireSession(sessions, validated.sessionId);
@@ -661,6 +700,7 @@ export function createDesktopBridgeHandlers(
       return {
         candidate: reviewed,
         candidates: candidates.map((item) => item.id === reviewed.id ? reviewed : item),
+        ...(staged === null ? {} : { stagedTransitionId: staged.stageId }),
         activateAfterAck: async () => {
           const knowledgeState = staged === null
             ? await publishApprovedSnapshotAfterAck(snapshot)
@@ -833,6 +873,7 @@ export function createDesktopBridgeHandlers(
     return {
       candidate: reviewed,
       candidates: nextCandidates,
+      ...(staged === null ? {} : { stagedTransitionId: staged.stageId }),
       activateAfterAck: async () => {
         const rolledBackState = staged === null
           ? sanitizeKnowledgeSummary(await knowledgeStore.rollback!.call(knowledgeStore, candidate.targetKnowledgeBaseId!, targetVersion))
@@ -1242,6 +1283,27 @@ function validateRestoreBridgeRequest(value: unknown): RestoreBridgeRequest {
   };
 }
 
+function isExactAcknowledgedReview(
+  durableCandidate: SkillPromotionCandidate | undefined,
+  expectedCandidate: SkillPromotionCandidate,
+  transactionId: string,
+): boolean {
+  if (
+    durableCandidate === undefined ||
+    durableCandidate.reviewTransactionId !== transactionId ||
+    durableCandidate.reviewStatus !== expectedCandidate.reviewStatus
+  ) {
+    return false;
+  }
+  if (expectedCandidate.reviewStatus === 'approved') {
+    return durableCandidate.publishedKnowledgeVersion === expectedCandidate.publishedKnowledgeVersion;
+  }
+  if (expectedCandidate.reviewStatus === 'rolled_back') {
+    return durableCandidate.publishedKnowledgeVersion === expectedCandidate.publishedKnowledgeVersion
+      && durableCandidate.rolledBackAt === expectedCandidate.rolledBackAt;
+  }
+  return durableCandidate.reviewedAt === expectedCandidate.reviewedAt;
+}
 function validateReviewSkillCandidateBridgeRequest(value: unknown): ReviewSkillCandidateBridgeRequest {
   const record = expectPlainRecord(value);
   const decision = record.decision;

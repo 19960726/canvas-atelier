@@ -9,10 +9,9 @@ import {
 } from '@agent-canvas/skill-store';
 
 import { canonicalJson } from './canonical-json.js';
-import { type FileHandleLike, type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
+import { acquireConfinedFileLock, releaseConfinedFileLock, type ConfinedFileLock } from './confined-file-lock.js';
+import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
 
-const WRITE_LOCK_RETRY_MS = 10;
-const WRITE_LOCK_TIMEOUT_MS = 5_000;
 const REFRESH_FAILURE_REASON = 'Knowledge refresh failed';
 
 export interface ConfigureKnowledgeRoot {
@@ -112,12 +111,6 @@ type StagedKnowledgeTransition =
     readonly targetVersion: number;
   };
 
-interface WriteLock {
-  readonly handle: FileHandleLike;
-  readonly path: string;
-  readonly token: string;
-}
-
 export class ManagedKnowledgeStore {
   private readonly appDataRoot: string;
   private readonly fileSystem: FileSystem;
@@ -133,22 +126,24 @@ export class ManagedKnowledgeStore {
 
   async configure(input: ConfigureKnowledgeRoot): Promise<ConfiguredKnowledgeBase> {
     const configured = normalizeConfiguration(input);
+    // Global lock order is configuration -> knowledge-base. No code may acquire
+    // the configuration lock while holding a knowledge-base lock.
     await this.withConfigurationWriteLock(async () => {
-      const configurationFile = await this.readConfigurationFile();
-      const configurations = configurationFile.configurations.filter((existing) => (
-        existing.knowledgeBaseId !== configured.knowledgeBaseId
-      ));
-      configurations.push(configured);
-      configurations.sort(compareConfigurations);
+      await this.withKnowledgeWriteLock(configured.knowledgeRootId, async () => {
+        await this.assertNoKnowledgeReservation(configured.knowledgeRootId);
+        const configurationFile = await this.readConfigurationFile();
+        const configurations = configurationFile.configurations.filter((existing) => (
+          existing.knowledgeBaseId !== configured.knowledgeBaseId
+        ));
+        configurations.push(configured);
+        configurations.sort(compareConfigurations);
 
-      await this.writeConfigurationFile(configurations);
-    });
-
-    await this.withKnowledgeWriteLock(configured.knowledgeRootId, async () => {
-      const summary = await this.readSummaryFile(configured.knowledgeRootId);
-      if (summary === null) {
-        await this.writeSummaryFile(configured.knowledgeRootId, createEmptySummary(configured));
-      }
+        await this.writeConfigurationFile(configurations);
+        const summary = await this.readSummaryFile(configured.knowledgeRootId);
+        if (summary === null) {
+          await this.writeSummaryFile(configured.knowledgeRootId, createEmptySummary(configured));
+        }
+      });
     });
 
     return toConfiguredKnowledgeBase(configured);
@@ -194,6 +189,7 @@ export class ManagedKnowledgeStore {
     const normalizedFailedAt = requireDateString(failedAt, 'failedAt');
 
     return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      await this.assertNoKnowledgeReservation(configuration.knowledgeRootId);
       const current = await this.readSummaryFile(configuration.knowledgeRootId)
         ?? createEmptySummary(configuration);
       const next: KnowledgeBaseStateSummary = {
@@ -403,7 +399,7 @@ export class ManagedKnowledgeStore {
 
   async discardStagedTransition(
     stageId: string,
-    reason: 'unacknowledged_project_transaction' | 'superseded_project_transaction',
+    reason: 'commit_not_acknowledged' | 'unacknowledged_project_transaction' | 'superseded_project_transaction',
   ): Promise<void> {
     const transition = await this.readStagedTransition(stageId);
     const configuration = await this.requireConfiguration(transition.knowledgeBaseId);
@@ -713,19 +709,6 @@ export class ManagedKnowledgeStore {
     }
   }
 
-  private async didFileVanishAfterWindowsRealpathFailure(path: string, error: unknown): Promise<boolean> {
-    if (!isErrno(error, 'EPERM')) {
-      return false;
-    }
-    const lstat = this.requireFileSystemMethod('lstat', this.fileSystem.lstat);
-    try {
-      await lstat.call(this.fileSystem, path);
-      return false;
-    } catch (recheckError) {
-      return isMissingOrVanishedFileError(recheckError);
-    }
-  }
-
   private async assertRealManagedWriteTarget(path: string): Promise<void> {
     const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
     const realAppDataRoot = normalize(await realpath.call(this.fileSystem, this.appDataRoot));
@@ -793,84 +776,23 @@ export class ManagedKnowledgeStore {
     }
   }
 
-  private async acquireWriteLock(knowledgeRootId: string): Promise<WriteLock> {
+  private async acquireWriteLock(knowledgeRootId: string): Promise<ConfinedFileLock> {
     return this.acquireLock(this.writeLockPath(knowledgeRootId));
   }
 
-  private async acquireLock(lockPath: string): Promise<WriteLock> {
-    const token = createHash('sha256')
-      .update(`${process.pid}:${Date.now()}:${Math.random()}`, 'utf8')
-      .digest('hex');
-    const startedAt = Date.now();
-
-    for (;;) {
-      try {
-        await this.assertManagedFileForWrite(lockPath);
-      } catch (error) {
-        if (!await this.didFileVanishAfterWindowsRealpathFailure(lockPath, error)) {
-          throw error;
-        }
-        await this.assertRealManagedWriteTarget(lockPath);
-      }
-      let handle = null as Awaited<ReturnType<FileSystem['open']>> | null;
-      let closed = false;
-      try {
-        handle = await this.fileSystem.open(lockPath, 'wx');
-        await handle.writeFile(`${canonicalJson({
-          schemaVersion: 1,
-          token,
-          processId: process.pid,
-          createdAt: this.now().toISOString(),
-        })}\n`);
-        await handle.sync();
-        return { handle, path: lockPath, token };
-      } catch (error) {
-        if (handle !== null && !closed) {
-          try {
-            await handle.close();
-          } catch {
-            // Preserve the lock acquisition failure.
-          }
-        }
-
-        if (!isErrno(error, 'EEXIST')) {
-          throw error;
-        }
-
-        if (Date.now() - startedAt >= WRITE_LOCK_TIMEOUT_MS) {
-          throw new Error('Timed out waiting for managed knowledge write lock');
-        }
-        await delay(WRITE_LOCK_RETRY_MS);
-      }
-    }
+  private async acquireLock(lockPath: string): Promise<ConfinedFileLock> {
+    return acquireConfinedFileLock(lockPath, {
+      fileSystem: this.fileSystem,
+      assertPathForRead: (path) => this.assertManagedFile(path),
+      assertPathForWrite: (path) => this.assertManagedFileForWrite(path),
+      now: () => this.now().getTime(),
+      timeoutMessage: 'Timed out waiting for managed knowledge write lock',
+    });
   }
 
-  private async releaseWriteLock(lock: WriteLock): Promise<void> {
-    let closed = false;
-    try {
-      await this.assertManagedFile(lock.path);
-      const raw = await this.fileSystem.readFile(lock.path, 'utf8');
-      const parsed = JSON.parse(raw) as unknown;
-      if (isOwnedWriteLock(parsed, lock.token)) {
-        await lock.handle.close();
-        closed = true;
-        await this.fileSystem.unlink(lock.path);
-        return;
-      }
-    } catch {
-      // A stale lock conservatively blocks future writers instead of deleting
-      // a file that may have been replaced by another process.
-    } finally {
-      if (!closed) {
-        try {
-          await lock.handle.close();
-        } catch {
-          // Preserve the operation outcome.
-        }
-      }
-    }
+  private async releaseWriteLock(lock: ConfinedFileLock): Promise<void> {
+    await releaseConfinedFileLock(lock);
   }
-
   private configurationFilePath(): string {
     return confinedJoin(this.knowledgeRoot, 'config.json');
   }
@@ -1680,19 +1602,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function isOwnedWriteLock(value: unknown, token: string): boolean {
-  return (
-    isRecord(value) &&
-    value.schemaVersion === 1 &&
-    value.token === token
-  );
-}
 
-async function delay(ms: number): Promise<void> {
-  await new Promise<void>((resolveDelay) => {
-    setTimeout(resolveDelay, ms);
-  });
-}
 
 function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string') {

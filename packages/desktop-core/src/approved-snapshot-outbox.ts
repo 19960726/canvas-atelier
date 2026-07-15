@@ -17,8 +17,9 @@ import {
 } from '@agent-canvas/skill-store';
 
 import { canonicalJson } from './canonical-json.js';
+import { acquireConfinedFileLock, releaseConfinedFileLock } from './confined-file-lock.js';
 import type { ApprovedSnapshotPullClient } from './approved-snapshot-pull.js';
-import { type FileHandleLike, type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
+import { type FileSystem, NodeFileSystem, writeAtomic } from './file-system.js';
 
 export interface ApprovedSnapshotUploadClient {
   uploadApprovedSnapshot(
@@ -61,12 +62,6 @@ export interface ApprovedSnapshotOutboxDrainOptions {
   readonly isOnline?: () => boolean;
   readonly outbox: Pick<ApprovedSnapshotOutbox, 'drainApprovedSnapshots'>;
   readonly setInterval?: (listener: () => void, intervalMs: number) => unknown;
-}
-
-interface OutboxLock {
-  readonly handle: FileHandleLike;
-  readonly path: string;
-  readonly token: string;
 }
 
 const DEFAULT_APPROVED_SNAPSHOT_DRAIN_INTERVAL_MS = 30_000;
@@ -222,69 +217,19 @@ export class ApprovedSnapshotOutbox {
     }
   }
 
-  private async acquireLock(lockPath: string): Promise<OutboxLock> {
-    const token = createHash('sha256')
-      .update(`${process.pid}:${Date.now()}:${Math.random()}`, 'utf8')
-      .digest('hex');
-    const startedAt = Date.now();
-
-    for (;;) {
-      await this.assertManagedFileForWrite(lockPath);
-      let handle: FileHandleLike | null = null;
-      let closed = false;
-      try {
-        handle = await this.fileSystem.open(lockPath, 'wx');
-        await handle.writeFile(`${canonicalJson({
-          schemaVersion: 1,
-          token,
-          processId: process.pid,
-          createdAt: new Date(this.now()).toISOString(),
-        })}\n`);
-        await handle.sync();
-        return { handle, path: lockPath, token };
-      } catch (error) {
-        if (handle !== null && !closed) {
-          try {
-            await handle.close();
-            closed = true;
-          } catch {
-            // Preserve the lock acquisition failure.
-          }
-        }
-        if (!isErrno(error, 'EEXIST')) {
-          throw error;
-        }
-        if (Date.now() - startedAt >= OUTBOX_LOCK_TIMEOUT_MS) {
-          throw new Error('Timed out waiting for approved snapshot outbox lock');
-        }
-        await delay(OUTBOX_LOCK_RETRY_MS);
-      }
-    }
+  private async acquireLock(lockPath: string) {
+    return acquireConfinedFileLock(lockPath, {
+      fileSystem: this.fileSystem,
+      assertPathForRead: (path) => this.assertManagedFile(path),
+      assertPathForWrite: (path) => this.assertManagedFileForWrite(path),
+      now: this.now,
+      timeoutMessage: 'Timed out waiting for approved snapshot outbox lock',
+    });
   }
 
-  private async releaseLock(lock: OutboxLock): Promise<void> {
-    let closed = false;
-    try {
-      await this.assertManagedFile(lock.path);
-      const parsed = JSON.parse(await this.fileSystem.readFile(lock.path, 'utf8')) as unknown;
-      if (isOwnedLock(parsed, lock.token)) {
-        await lock.handle.close();
-        closed = true;
-        await this.fileSystem.unlink(lock.path);
-      }
-    } catch {
-      // Do not remove a lock that may have been replaced by another process.
-    } finally {
-      if (!closed) {
-        try {
-          await lock.handle.close();
-        } catch {
-          // Preserve the operation outcome.
-        }
-      }
-    }
+  private async releaseLock(lock: Awaited<ReturnType<ApprovedSnapshotOutbox['acquireLock']>>): Promise<void> {
+    await releaseConfinedFileLock(lock);
   }
-
   private async ensureSyncDirectory(): Promise<void> {
     await this.fileSystem.mkdir(this.appDataRoot, { recursive: true });
     await this.fileSystem.mkdir(this.syncRoot, { recursive: true });
@@ -646,9 +591,6 @@ function isWithinDirectory(base: string, target: string): boolean {
   return target === base || target.startsWith(`${base}${sep}`);
 }
 
-function isOwnedLock(value: unknown, token: string): boolean {
-  return isRecord(value) && value.schemaVersion === 1 && value.token === token;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -660,10 +602,4 @@ function isMissingFileError(error: unknown): boolean {
 
 function isErrno(error: unknown, code: string): boolean {
   return isRecord(error) && error.code === code;
-}
-
-async function delay(ms: number): Promise<void> {
-  await new Promise<void>((resolveDelay) => {
-    setTimeout(resolveDelay, ms);
-  });
 }

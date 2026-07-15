@@ -7,6 +7,7 @@ import {
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import type {
+  KnowledgeSyncStatusSummary,
   ReviewSkillCandidateBridgeRequest,
   ReviewSkillCandidateBridgeResult,
 } from '@agent-canvas/desktop-core';
@@ -22,7 +23,10 @@ export type SkillCandidateReviewResult = ReviewSkillCandidateBridgeResult & {
 };
 
 export interface KnowledgeClient {
-  start(listener: (states: KnowledgeBaseStateSummary[]) => void): Promise<void>;
+  start(
+    listener: (states: KnowledgeBaseStateSummary[]) => void,
+    syncListener?: (status: KnowledgeSyncStatusSummary) => void,
+  ): Promise<void>;
   stop(): void;
   configure(knowledgeBaseId: string, displayName: string): Promise<void>;
   review(request: SkillCandidateReviewRequest): Promise<SkillCandidateReviewResult>;
@@ -36,7 +40,9 @@ export interface KnowledgeClient {
 
 export function createKnowledgeClient(): KnowledgeClient {
   let listener: ((states: KnowledgeBaseStateSummary[]) => void) | undefined;
-  let unsubscribe: (() => void) | undefined;
+  let syncListener: ((status: KnowledgeSyncStatusSummary) => void) | undefined;
+  let unsubscribeState: (() => void) | undefined;
+  let unsubscribeSync: (() => void) | undefined;
   let states: KnowledgeBaseStateSummary[] = [];
   let stopped = true;
 
@@ -44,7 +50,9 @@ export function createKnowledgeClient(): KnowledgeClient {
     states = sortStates(nextStates.map(cloneSummary));
     listener?.(states.map(cloneSummary));
   };
-
+  const publishSync = (status: KnowledgeSyncStatusSummary) => {
+    if (!stopped) syncListener?.(cloneSyncStatus(status));
+  };
   const upsert = (summary: KnowledgeBaseStateSummary | null) => {
     if (!summary || stopped) return;
     const next = states.filter((state) => state.knowledgeBaseId !== summary.knowledgeBaseId);
@@ -52,13 +60,15 @@ export function createKnowledgeClient(): KnowledgeClient {
   };
 
   return {
-    async start(nextListener) {
+    async start(nextListener, nextSyncListener) {
       this.stop();
       stopped = false;
       listener = nextListener;
+      syncListener = nextSyncListener;
       const bridge = window.novusDesktop;
       if (!bridge) {
-        publish([createOfflineSummary()]);
+        publish([]);
+        publishSync(createOfflineSyncStatus('desktop-bridge', 'Desktop knowledge bridge unavailable'));
         return;
       }
 
@@ -66,16 +76,23 @@ export function createKnowledgeClient(): KnowledgeClient {
         const hydrated = await bridge.getKnowledgeState();
         if (stopped) return;
         publish([...hydrated.states]);
-        unsubscribe = bridge.subscribeKnowledgeState((summary) => upsert(summary));
+        unsubscribeState = bridge.subscribeKnowledgeState((summary) => upsert(summary));
+        unsubscribeSync = bridge.subscribeKnowledgeSyncStatus((status) => publishSync(status));
       } catch {
-        if (!stopped) publish([createOfflineSummary()]);
+        if (!stopped) {
+          publish([]);
+          publishSync(createOfflineSyncStatus('desktop-bridge', 'Desktop knowledge bridge unavailable'));
+        }
       }
     },
     stop() {
       stopped = true;
-      unsubscribe?.();
-      unsubscribe = undefined;
+      unsubscribeState?.();
+      unsubscribeSync?.();
+      unsubscribeState = undefined;
+      unsubscribeSync = undefined;
       listener = undefined;
+      syncListener = undefined;
     },
     async configure(knowledgeBaseId, displayName) {
       const bridge = window.novusDesktop;
@@ -115,9 +132,7 @@ export function createKnowledgeClient(): KnowledgeClient {
 function hasPinnableSnapshot(state: KnowledgeBaseStateSummary): boolean {
   return state.activeVersion !== null
     && state.activeContentHash !== null
-    && state.status !== 'empty'
-    && state.status !== ('offline' as KnowledgeBaseStateSummary['status'])
-    && state.status !== ('conflict' as KnowledgeBaseStateSummary['status']);
+    && state.status !== 'empty';
 }
 
 function cloneSummary(summary: KnowledgeBaseStateSummary): KnowledgeBaseStateSummary {
@@ -128,25 +143,25 @@ function cloneSummary(summary: KnowledgeBaseStateSummary): KnowledgeBaseStateSum
   };
 }
 
+function cloneSyncStatus(status: KnowledgeSyncStatusSummary): KnowledgeSyncStatusSummary {
+  return {
+    ...status,
+    lastFailure: status.lastFailure === null ? null : { ...status.lastFailure },
+  };
+}
+
 function sortStates(input: KnowledgeBaseStateSummary[]): KnowledgeBaseStateSummary[] {
   return [...input].sort((left, right) => left.knowledgeBaseId.localeCompare(right.knowledgeBaseId));
 }
 
-function createOfflineSummary(): KnowledgeBaseStateSummary {
+function createOfflineSyncStatus(knowledgeBaseId: string, reason: string): KnowledgeSyncStatusSummary {
+  const changedAt = new Date().toISOString();
   return {
     schemaVersion: 1,
-    knowledgeBaseId: 'browser-offline',
-    displayName: 'Browser fallback',
-    status: 'offline' as KnowledgeBaseStateSummary['status'],
-    activeVersion: null,
-    activeContentHash: null,
-    versionCount: 0,
-    versions: [],
-    lastFailure: {
-      reason: 'Desktop knowledge bridge unavailable',
-      failedAt: new Date().toISOString(),
-    },
-    lastRollbackAt: null,
+    knowledgeBaseId,
+    status: 'offline',
+    changedAt,
+    lastFailure: { reason, failedAt: changedAt },
   };
 }
 

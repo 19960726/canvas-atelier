@@ -64,9 +64,13 @@ app.whenReady().then(async () => {
   const unsubscribePullState = approvedSnapshotPullCoordinator.subscribe((state) => {
     mainWindow?.webContents.send(BRIDGE_CHANNELS.knowledgeStateChanged, state);
   });
+  const unsubscribePullSyncStatus = approvedSnapshotPullCoordinator.subscribeSyncStatus((status) => {
+    mainWindow?.webContents.send(BRIDGE_CHANNELS.knowledgeSyncStatusChanged, status);
+  });
   unsubscribeKnowledgeState = () => {
     unsubscribeRefreshState();
     unsubscribePullState();
+    unsubscribePullSyncStatus();
   };
   desktopHandlers = createDesktopBridgeHandlers({
     appDataRoot: app.getPath('userData'),

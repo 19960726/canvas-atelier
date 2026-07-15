@@ -337,6 +337,45 @@ describe('project optimization memory', () => {
     expect(JSON.stringify(useAppStore.getState().knowledgeBases)).not.toContain('E:\\');
   });
 
+  it('stores sync lifecycle separately and replaces conflict with updated for the same knowledge base', async () => {
+    const client = createMockKnowledgeClient({
+      initialStates: [knowledgeState({ version: 2, hashPrefix: 'a' })],
+      reviewResult: {
+        projectId: 'local-project',
+        currentRevision: 2,
+        candidate: createSkillCandidate('candidate-sync', 'approved'),
+        knowledgeState: null,
+      },
+    });
+    client.start.mockImplementationOnce(async (stateListener, syncListener) => {
+      stateListener([knowledgeState({ version: 2, hashPrefix: 'a' })]);
+      syncListener?.({
+        schemaVersion: 1,
+        knowledgeBaseId: 'scene-skill',
+        status: 'conflict',
+        changedAt: '2026-07-16T04:00:00.000Z',
+        lastFailure: { reason: 'Version conflict', failedAt: '2026-07-16T04:00:00.000Z' },
+      });
+      syncListener?.({
+        schemaVersion: 1,
+        knowledgeBaseId: 'scene-skill',
+        status: 'updated',
+        changedAt: '2026-07-16T04:01:00.000Z',
+        lastFailure: null,
+      });
+    });
+    replaceKnowledgeClientForTests(client);
+    resetAppStoreForTests();
+
+    await useAppStore.getState().initializeKnowledge();
+
+    expect(useAppStore.getState().knowledgeBases).toEqual([
+      expect.objectContaining({ activeVersion: 2, status: 'active' }),
+    ]);
+    expect(useAppStore.getState().knowledgeSyncStatuses).toEqual([
+      expect.objectContaining({ knowledgeBaseId: 'scene-skill', status: 'updated', lastFailure: null }),
+    ]);
+  });
   it('commits one placement update while preserving fields and untouched object slots', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,

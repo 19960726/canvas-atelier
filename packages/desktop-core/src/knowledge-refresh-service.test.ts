@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 
-import { createKnowledgeSnapshotCandidate } from '@agent-canvas/skill-store';
+import { createKnowledgeSnapshotCandidate, type KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { NodeFileSystem } from './file-system';
@@ -398,7 +398,65 @@ describe('KnowledgeRefreshService', () => {
     expect(fixture.store.publishCount).toBe(0);
     expect(states).toEqual([]);
   });
-});
+  it('defers fallback recording when a reservation begins after the refresh precheck', async () => {
+    const fixture = await createConfiguredFixture(tempRoots);
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# initial valid content');
+    const initialService = new KnowledgeRefreshService({
+      sourceDeviceId: 'test-device',
+      stabilityWait: async () => undefined,
+      store: fixture.store,
+      watchAdapter: new ManualWatchAdapter(),
+    });
+    const initial = await initialService.refreshNow('scene-skill');
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', 'Authorization: Bearer protected-value');
+
+    const gate = createRefreshFailureGate();
+    const racingStore = new BlockingRefreshFailureStore({ appDataRoot: fixture.appDataRoot }, gate);
+    const clock = new ManualClock();
+    const states: KnowledgeBaseStateSummary[] = [];
+    const service = new KnowledgeRefreshService({
+      clock,
+      sourceDeviceId: 'test-device',
+      stabilityWait: async () => undefined,
+      store: racingStore,
+      watchAdapter: new ManualWatchAdapter(),
+    });
+    service.subscribe((state) => states.push(state));
+    await service.start(['scene-skill']);
+    const refresh = service.refreshNow('scene-skill');
+    await gate.entered.promise;
+
+    await fixture.store.stageApprovedSnapshot(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# staged review' }],
+    }), {
+      stageId: 'stage-fallback-race',
+      projectId: 'project-1',
+      candidateId: 'candidate-1',
+      transactionId: 'transaction-1',
+      expectedActiveVersion: initial.activeVersion!,
+      expectedActiveContentHash: initial.activeContentHash!,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-16T03:00:00.000Z',
+    });
+    gate.release.resolve();
+    await refresh;
+
+    expect(states).toEqual([]);
+    await expect(fixture.store.listStates()).resolves.toEqual([
+      expect.objectContaining({ status: 'active', activeVersion: 1, lastFailure: null }),
+    ]);
+
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# latest valid content');
+    await fixture.store.discardStagedTransition('stage-fallback-race', 'unacknowledged_project_transaction');
+    await clock.advanceBy(250);
+    await expect(fixture.store.readActive('scene-skill')).resolves.toMatchObject({
+      version: 2,
+      documents: [expect.objectContaining({ content: '# latest valid content' })],
+    });
+    await service.stop();
+  });});
 
 async function createConfiguredFixture(tempRoots: string[]) {
   const tempRoot = await mkdtemp(join(tmpdir(), 'knowledge-refresh-service-'));
@@ -431,6 +489,30 @@ class CountingManagedKnowledgeStore extends ManagedKnowledgeStore {
   }
 }
 
+function createRefreshFailureGate() {
+  return {
+    entered: deferred<void>(),
+    release: deferred<void>(),
+  };
+}
+class BlockingRefreshFailureStore extends ManagedKnowledgeStore {
+  private readonly gate: ReturnType<typeof createRefreshFailureGate>;
+
+  constructor(options: ConstructorParameters<typeof ManagedKnowledgeStore>[0], gate: ReturnType<typeof createRefreshFailureGate>) {
+    super(options);
+    this.gate = gate;
+  }
+
+  override async recordRefreshFailure(
+    knowledgeBaseId: string,
+    reason: string,
+    failedAt: string,
+  ): Promise<KnowledgeBaseStateSummary> {
+    this.gate.entered.resolve();
+    await this.gate.release.promise;
+    return super.recordRefreshFailure(knowledgeBaseId, reason, failedAt);
+  }
+}
 class BlockingManagedKnowledgeStore extends ManagedKnowledgeStore {
   readonly firstPublishStarted = deferred<void>();
   readonly releaseFirstPublish = deferred<void>();

@@ -1388,7 +1388,86 @@ describe('ManagedKnowledgeStore', () => {
 
     await expect(store.listStates()).rejects.toThrow(/protected/i);
   });
-});
+  it('holds configuration then knowledge lock so a review reservation cannot begin before reconfiguration mutation', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const originalRoot = join(tempRoot, 'workspace', 'scene-skill-original');
+    const replacementRoot = join(tempRoot, 'workspace', 'scene-skill-replacement');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    await store.configure({ knowledgeBaseId: 'scene-skill', displayName: 'Scene Skill', rootPath: originalRoot });
+    const active = createSnapshot('# version 1', 1);
+    await store.publish(active);
+
+    const gate = createPauseGate();
+    const reconfiguringStore = new ManagedKnowledgeStore({ appDataRoot, fileSystem: new PauseOnConfigFileSystem(gate) });
+    const reconfigure = reconfiguringStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill Replacement',
+      rootPath: replacementRoot,
+    });
+    await gate.entered.promise;
+
+    let stageSettled = false;
+    const stagePromise = store.stageApprovedSnapshot(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# staged after reconfigure' }],
+    }), {
+      stageId: 'stage-config-lock-order',
+      projectId: 'project-1',
+      candidateId: 'candidate-1',
+      transactionId: 'transaction-1',
+      expectedActiveVersion: active.version,
+      expectedActiveContentHash: active.contentHash,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-16T03:00:00.000Z',
+    }).finally(() => { stageSettled = true; });
+    await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 20));
+
+    expect(stageSettled).toBe(false);
+    gate.release.resolve();
+    await Promise.all([reconfigure, stagePromise]);
+    await expect(store.readConfiguration('scene-skill')).resolves.toMatchObject({
+      displayName: 'Scene Skill Replacement',
+      rootPath: normalize(replacementRoot),
+    });
+  });
+
+  it('rejects refresh failure metadata while a review transition reserves the knowledge base', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    const active = createSnapshot('# version 1', 1);
+    await store.publish(active);
+    await store.stageApprovedSnapshot(createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{ relativePath: 'memory/main.md', content: '# staged review' }],
+    }), {
+      stageId: 'stage-refresh-failure-reservation',
+      projectId: 'project-1',
+      candidateId: 'candidate-1',
+      transactionId: 'transaction-1',
+      expectedActiveVersion: active.version,
+      expectedActiveContentHash: active.contentHash,
+      sourceDeviceId: 'device-a',
+      stagedAt: '2026-07-16T03:00:00.000Z',
+    });
+
+    await expect(store.recordRefreshFailure(
+      'scene-skill',
+      'source temporarily invalid',
+      '2026-07-16T03:01:00.000Z',
+    )).rejects.toThrow(/reserved by an unresolved review transition/i);
+    await expect(store.listStates()).resolves.toEqual([
+      expect.objectContaining({ status: 'active', activeVersion: 1, lastFailure: null }),
+    ]);
+  });});
 
 async function recordRefreshFailure(
   store: ManagedKnowledgeStore,

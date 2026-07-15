@@ -1,8 +1,10 @@
 import type { AgentKnowledgeLease } from '@agent-canvas/domain';
+import type { KnowledgeSyncStatusSummary } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 
 interface KnowledgeStatusProps {
   knowledgeBases: KnowledgeBaseStateSummary[];
+  syncStatuses?: KnowledgeSyncStatusSummary[];
   pendingReviewCount?: number;
   pinnedLease?: AgentKnowledgeLease | null;
 }
@@ -11,10 +13,11 @@ type DisplayStatus = 'syncing' | 'updated' | 'pending_review' | 'fallback' | 'of
 
 export function KnowledgeStatus({
   knowledgeBases,
+  syncStatuses = [],
   pendingReviewCount = 0,
   pinnedLease = null,
 }: KnowledgeStatusProps) {
-  const displayStatus = selectDisplayStatus(knowledgeBases, pendingReviewCount);
+  const displayStatus = selectDisplayStatus(knowledgeBases, syncStatuses, pendingReviewCount);
   const active = selectActiveVersion(knowledgeBases);
 
   return (
@@ -32,12 +35,15 @@ export function KnowledgeStatus({
 
 function selectDisplayStatus(
   knowledgeBases: KnowledgeBaseStateSummary[],
+  syncStatuses: KnowledgeSyncStatusSummary[],
   pendingReviewCount: number,
 ): DisplayStatus {
-  if (knowledgeBases.some((state) => state.status === ('offline' as KnowledgeBaseStateSummary['status']))) return 'offline';
-  if (knowledgeBases.some((state) => state.status === ('conflict' as KnowledgeBaseStateSummary['status']))) return 'conflict';
+  if (syncStatuses.some((state) => state.status === 'offline')) return 'offline';
+  if (syncStatuses.some((state) => state.status === 'conflict')) return 'conflict';
+  if (syncStatuses.some((state) => state.status === 'syncing')) return 'syncing';
   if (pendingReviewCount > 0) return 'pending_review';
   if (knowledgeBases.some((state) => state.status === 'fallback')) return 'fallback';
+  if (syncStatuses.some((state) => state.status === 'updated')) return 'updated';
   if (knowledgeBases.some((state) => state.activeVersion !== null)) return 'updated';
   return 'syncing';
 }
@@ -63,10 +69,5 @@ function selectActiveVersion(knowledgeBases: KnowledgeBaseStateSummary[]): {
 }
 
 function formatStatus(status: DisplayStatus): string {
-  switch (status) {
-    case 'pending_review':
-      return 'pending review';
-    default:
-      return status;
-  }
+  return status === 'pending_review' ? 'pending review' : status;
 }

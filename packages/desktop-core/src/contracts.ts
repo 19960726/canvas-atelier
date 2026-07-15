@@ -208,6 +208,18 @@ export interface ConfigureKnowledgeBaseBridgeRequest {
   readonly displayName: string;
 }
 
+export type KnowledgeSyncStatus = 'syncing' | 'updated' | 'offline' | 'conflict';
+
+export interface KnowledgeSyncStatusSummary {
+  readonly schemaVersion: 1;
+  readonly knowledgeBaseId: string;
+  readonly status: KnowledgeSyncStatus;
+  readonly changedAt: string;
+  readonly lastFailure: {
+    readonly reason: string;
+    readonly failedAt: string;
+  } | null;
+}
 export interface KnowledgeStateBridgeResult {
   readonly states: readonly KnowledgeBaseStateSummary[];
 }

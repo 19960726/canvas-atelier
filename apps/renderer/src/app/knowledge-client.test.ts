@@ -71,23 +71,62 @@ describe('KnowledgeClient', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back safely in the browser with offline state and an unconfigured lease', async () => {
+  it('falls back safely in the browser with separate offline sync state and an unconfigured lease', async () => {
     const client = createKnowledgeClient();
     const states: KnowledgeBaseStateSummary[][] = [];
+    const syncStatuses: unknown[] = [];
 
-    await client.start((next) => states.push(next));
+    await client.start((next) => states.push(next), (next) => syncStatuses.push(next));
     const lease = client.getLease('run-browser', 'reverse_prompt', references, []);
 
-    expect(states[0]?.[0]).toMatchObject({
-      knowledgeBaseId: 'browser-offline',
-      status: 'offline',
-      activeVersion: null,
-      activeContentHash: null,
-    });
+    expect(states).toEqual([[]]);
+    expect(syncStatuses).toEqual([expect.objectContaining({ status: 'offline' })]);
     expect(lease.versionKey).toBe(UNCONFIGURED_KNOWLEDGE_VERSION_KEY);
     expect(lease.snapshots).toEqual([]);
   });
 
+  it('delivers sync lifecycle independently while preserving active knowledge state', async () => {
+    let syncListener: ((status: {
+      schemaVersion: 1;
+      knowledgeBaseId: string;
+      status: 'syncing' | 'updated' | 'offline' | 'conflict';
+      changedAt: string;
+      lastFailure: { reason: string; failedAt: string } | null;
+    }) => void) | undefined;
+    window.novusDesktop = createBridge({
+      getKnowledgeState: async () => ({ states: [knowledgeState({ version: 2, hashPrefix: 'a' })] }),
+      subscribeKnowledgeSyncStatus: vi.fn((next) => {
+        syncListener = next;
+        return () => undefined;
+      }),
+    });
+    const client = createKnowledgeClient();
+    const states: KnowledgeBaseStateSummary[][] = [];
+    const statuses: unknown[] = [];
+
+    await client.start((next) => states.push(next), (next) => statuses.push(next));
+    syncListener?.({
+      schemaVersion: 1,
+      knowledgeBaseId: 'scene-skill',
+      status: 'conflict',
+      changedAt: '2026-07-16T04:00:00.000Z',
+      lastFailure: { reason: 'Version conflict', failedAt: '2026-07-16T04:00:00.000Z' },
+    });
+    syncListener?.({
+      schemaVersion: 1,
+      knowledgeBaseId: 'scene-skill',
+      status: 'updated',
+      changedAt: '2026-07-16T04:01:00.000Z',
+      lastFailure: null,
+    });
+
+    expect(states).toHaveLength(1);
+    expect(states[0]?.[0]).toMatchObject({ activeVersion: 2, status: 'active' });
+    expect(statuses).toEqual([
+      expect.objectContaining({ status: 'conflict' }),
+      expect.objectContaining({ status: 'updated' }),
+    ]);
+  });
   it('configures and reviews only through the narrow bridge payloads', async () => {
     const configured = knowledgeState({ version: 1, hashPrefix: 'a' });
     const reviewed = knowledgeState({ version: 2, hashPrefix: 'b' });
@@ -154,6 +193,7 @@ function createBridge(overrides: Partial<typeof window.novusDesktop>): typeof wi
     restore: vi.fn(),
     reviewSkillCandidate: vi.fn(),
     subscribeKnowledgeState: vi.fn(() => () => undefined),
+    subscribeKnowledgeSyncStatus: vi.fn(() => () => undefined),
     ...overrides,
   } as typeof window.novusDesktop;
 }

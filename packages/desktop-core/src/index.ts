@@ -22,6 +22,8 @@ export type {
   ImportPackBridgeRequest,
   ImportPackBridgeResult,
   KnowledgeStateBridgeResult,
+  KnowledgeSyncStatus,
+  KnowledgeSyncStatusSummary,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
   PersistenceChannel,

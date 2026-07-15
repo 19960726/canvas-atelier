@@ -241,6 +241,49 @@ describe('parseCanvasProject', () => {
     expect(project.skillPromotionCandidates[0]?.targetKnowledgeSection).toBe('liquid');
   });
 
+  it('rejects a persisted project whose feedback lease version key was tampered', () => {
+    const references = [{
+      assetId: 'scene',
+      label: 'Scene',
+      role: 'scene_composition' as const,
+      position: 0,
+    }];
+    const feedbackMemory = createUserFeedbackMemory({
+      projectId: 'p1',
+      projectRevision: 1,
+      title: 'Persisted feedback',
+      userRequest: 'Keep the scene',
+      correction: 'Use reviewed references',
+      knowledgeLease: createAgentKnowledgeLease({
+        runId: 'run-tampered-project',
+        capability: 'image_generation',
+        snapshots: [{ knowledgeBaseId: 'kb-style', version: 4, contentHash: 'a'.repeat(64) }],
+        references,
+        citations: [{ assetId: 'scene', label: 'Scene' }],
+      }, {
+        leaseId: 'lease-tampered-project',
+        createdAt: '2026-07-15T10:00:00.000Z',
+      }),
+      references,
+      citations: [{ assetId: 'scene', label: 'Scene' }],
+      feedback: { keep: ['scene'], change: [], never: [] },
+    }, {
+      memoryId: 'feedback-tampered-project',
+      createdAt: '2026-07-15T10:01:00.000Z',
+      snapshots: { beforeId: 'before', afterId: 'after' },
+    });
+    const persisted = JSON.parse(JSON.stringify(feedbackMemory)) as typeof feedbackMemory;
+    persisted.context.knowledgeLease!.versionKey = 'forged-version-key';
+
+    expect(() => parseCanvasProject({
+      version: 1,
+      id: 'p1',
+      name: 'tampered feedback project',
+      nodes: [],
+      edges: [],
+      projectMemory: [persisted],
+    })).toThrow(/version/i);
+  });
   it('rejects invalid review lifecycle metadata on Skill candidates', () => {
     const memory = {
       schemaVersion: 1,

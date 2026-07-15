@@ -1,17 +1,10 @@
+import { MAX_GENERATION_REFERENCES, referenceRoleSchema } from './agent-knowledge-contract';
 import { projectMemoryEntrySchema, selectActiveProjectMemoryEntries, skillPromotionCandidateSchema } from './project-memory';
 import { z } from 'zod';
 
 const idSchema = z.string().min(1);
 const normalizedSchema = z.number().min(0).max(1);
-export const MAX_GENERATION_REFERENCES = 20;
-
-export const referenceRoleSchema = z.enum([
-  'product_identity',
-  'scene_composition',
-  'prop_reference',
-  'material_lighting',
-  'placement_preview',
-]);
+export { MAX_GENERATION_REFERENCES, referenceRoleSchema };
 
 export const placementSafeAreaSchema = z.object({
   id: idSchema,

@@ -1,56 +1,16 @@
 import { z } from 'zod';
-import type { AgentKnowledgeLease, ImageCitation, OrderedReference } from './knowledge-context';
+import {
+  agentKnowledgeCapabilitySchema,
+  agentKnowledgeLeaseSchema,
+  imageCitationListSchema,
+  orderedReferenceListSchema,
+  type AgentKnowledgeLease,
+  type ImageCitation,
+  type OrderedReference,
+} from './agent-knowledge-contract';
 
 const idSchema = z.string().min(1);
 const stringListSchema = z.array(z.string().min(1));
-
-const referenceRoleSchema = z.enum([
-  'product_identity',
-  'scene_composition',
-  'prop_reference',
-  'material_lighting',
-  'placement_preview',
-]);
-
-const agentKnowledgeCapabilitySchema = z.enum([
-  'reverse_prompt',
-  'image_generation',
-  'ecommerce_detail',
-  'video_analysis',
-  'line_art',
-  'skill_conversation',
-]);
-
-const orderedReferenceSchema = z.object({
-  assetId: idSchema,
-  label: z.string().min(1),
-  role: referenceRoleSchema,
-  position: z.number().int().nonnegative(),
-  weight: z.number().min(0).max(1).optional(),
-}).strict();
-
-const imageCitationSchema = z.object({
-  assetId: idSchema,
-  label: z.string().min(1),
-}).strict();
-
-const knowledgeSnapshotPinSchema = z.object({
-  knowledgeBaseId: idSchema,
-  version: z.number().int().positive(),
-  contentHash: z.string().regex(/^[a-f0-9]{64}$/),
-}).strict();
-
-const agentKnowledgeLeaseSchema = z.object({
-  schemaVersion: z.literal(1),
-  leaseId: idSchema,
-  runId: idSchema,
-  createdAt: z.string().datetime(),
-  capability: agentKnowledgeCapabilitySchema,
-  snapshots: z.array(knowledgeSnapshotPinSchema),
-  references: z.array(orderedReferenceSchema),
-  citations: z.array(imageCitationSchema).default([]),
-  versionKey: z.string().min(1),
-}).strict();
 
 const feedbackSchema = z.object({
   keep: stringListSchema,
@@ -84,8 +44,8 @@ const projectMemoryContextSchema = z.object({
   referenceAssetIds: stringListSchema,
   resultAssetIds: stringListSchema,
   knowledgeLease: agentKnowledgeLeaseSchema.optional(),
-  references: z.array(orderedReferenceSchema).optional(),
-  citations: z.array(imageCitationSchema).optional(),
+  references: orderedReferenceListSchema.optional(),
+  citations: imageCitationListSchema.optional(),
 }).strict().superRefine((contextValue, refinement) => {
   if (contextValue.references && !matchReferenceAssetIds(contextValue.references, contextValue.referenceAssetIds)) {
     refinement.addIssue({

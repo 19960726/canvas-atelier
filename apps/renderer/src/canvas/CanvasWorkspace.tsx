@@ -72,6 +72,7 @@ export function CanvasWorkspace() {
   const saveErrorCode = useAppStore((state) => state.saveErrorCode);
   const availableSnapshotIds = useAppStore((state) => state.availableSnapshotIds);
   const knowledgeBases = useAppStore((state) => state.knowledgeBases);
+  const knowledgeSyncStatuses = useAppStore((state) => state.knowledgeSyncStatuses);
   const getKnowledgeLease = useAppStore((state) => state.getKnowledgeLease);
   const draftAgentPlan = useAppStore((state) => state.draftAgentPlan);
   const confirmAgentPlan = useAppStore((state) => state.confirmAgentPlan);
@@ -409,6 +410,7 @@ export function CanvasWorkspace() {
               getProjectMemoryIds={getProjectMemoryIds}
               getKnowledgeLease={getKnowledgeLease}
               knowledgeBases={knowledgeBases}
+              knowledgeSyncStatuses={knowledgeSyncStatuses}
               pendingKnowledgeReviewCount={pendingKnowledgeReviewCount}
               analyze={analyzeReversePromptDraft}
               analysisMode="local_draft"

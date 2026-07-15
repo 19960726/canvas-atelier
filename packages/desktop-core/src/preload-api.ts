@@ -8,6 +8,7 @@ import type {
   ImportPackBridgeRequest,
   ImportPackBridgeResult,
   KnowledgeStateBridgeResult,
+  KnowledgeSyncStatusSummary,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
   RecoveryPlanBridgeRequest,
@@ -33,6 +34,7 @@ export const BRIDGE_CHANNELS = {
   getRecoveryPlan: 'novus-desktop:get-recovery-plan',
   importPack: 'novus-desktop:import-pack',
   knowledgeStateChanged: 'novus-desktop:knowledge-state-changed',
+  knowledgeSyncStatusChanged: 'novus-desktop:knowledge-sync-status-changed',
   openProject: 'novus-desktop:open-project',
   reviewSkillCandidate: 'novus-desktop:review-skill-candidate',
   restore: 'novus-desktop:restore',
@@ -57,6 +59,7 @@ export interface DesktopBridgeApi {
   getKnowledgeState(): Promise<KnowledgeStateBridgeResult>;
   reviewSkillCandidate(request: ReviewSkillCandidateBridgeRequest): Promise<ReviewSkillCandidateBridgeResult>;
   subscribeKnowledgeState(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
+  subscribeKnowledgeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void;
 }
 
 export interface SafeModeBridgeApi {
@@ -118,6 +121,13 @@ export function createPreloadApi(
         listener(state as KnowledgeBaseStateSummary);
       });
     },
+    subscribeKnowledgeSyncStatus(listener) {
+      return subscribe(BRIDGE_CHANNELS.knowledgeSyncStatusChanged, (status) => {
+        if (isKnowledgeSyncStatusSummary(status)) {
+          listener(cloneKnowledgeSyncStatus(status));
+        }
+      });
+    },
   };
 }
 
@@ -143,4 +153,59 @@ export function redactBridgeDiagnostics(input: string): string {
     .replace(/[A-Za-z]:\\[^\r\n"'<>]*/g, '[redacted-path]')
     .replace(/\\\\[^\r\n"'<>]*/g, '[redacted-path]')
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, '[redacted-image]');
+}
+
+function isKnowledgeSyncStatusSummary(value: unknown): value is KnowledgeSyncStatusSummary {
+  if (typeof value !== 'object' || value === null) return false;
+  if (!hasOnlyKeys(value, ['schemaVersion', 'knowledgeBaseId', 'status', 'changedAt', 'lastFailure'])) return false;
+  const status = value as Partial<KnowledgeSyncStatusSummary>;
+  if (
+    status.schemaVersion !== 1 ||
+    typeof status.knowledgeBaseId !== 'string' ||
+    status.knowledgeBaseId.length === 0 ||
+    status.knowledgeBaseId.length > 160 ||
+    containsProtectedSyncValue(status.knowledgeBaseId) ||
+    !['syncing', 'updated', 'offline', 'conflict'].includes(String(status.status)) ||
+    typeof status.changedAt !== 'string' ||
+    !Number.isFinite(Date.parse(status.changedAt))
+  ) {
+    return false;
+  }
+  if (status.lastFailure === null) return true;
+  return typeof status.lastFailure === 'object'
+    && status.lastFailure !== null
+    && hasOnlyKeys(status.lastFailure, ['reason', 'failedAt'])
+    && typeof status.lastFailure.reason === 'string'
+    && status.lastFailure.reason.length > 0
+    && status.lastFailure.reason.length <= 160
+    && !containsProtectedSyncValue(status.lastFailure.reason)
+    && typeof status.lastFailure.failedAt === 'string'
+    && Number.isFinite(Date.parse(status.lastFailure.failedAt));
+}
+
+function hasOnlyKeys(value: object, allowedKeys: readonly string[]): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function containsProtectedSyncValue(value: string): boolean {
+  return /authorization\s*:/iu.test(value)
+    || /\bbearer\s+\S+/iu.test(value)
+    || /\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/iu.test(value)
+    || /data:[^,\s;]+(?:;[^,\s;]+)*;base64,/iu.test(value)
+    || /[A-Za-z]:\\/u.test(value)
+    || /\\\\[^\\\s]+\\/u.test(value)
+    || /(?:^|\s)\/(?:Users|home|var|etc|opt|tmp)\//u.test(value);
+}
+function cloneKnowledgeSyncStatus(status: KnowledgeSyncStatusSummary): KnowledgeSyncStatusSummary {
+  return {
+    schemaVersion: 1,
+    knowledgeBaseId: status.knowledgeBaseId,
+    status: status.status,
+    changedAt: status.changedAt,
+    lastFailure: status.lastFailure === null ? null : {
+      reason: status.lastFailure.reason,
+      failedAt: status.lastFailure.failedAt,
+    },
+  };
 }

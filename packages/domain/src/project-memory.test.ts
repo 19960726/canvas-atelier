@@ -256,6 +256,62 @@ describe('project memory', () => {
     })).toThrow(/private path/i);
   });
 
+  it.each([
+    ['duplicate reference positions', (memory: ProjectMemoryEntry) => {
+      const context = memory.context as Record<string, unknown>;
+      const references = [
+        { assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 },
+        { assetId: 'product', label: 'Product', role: 'product_identity', position: 0 },
+      ];
+      context.referenceAssetIds = ['scene', 'product'];
+      context.references = references;
+      context.knowledgeLease = { ...(context.knowledgeLease as object), references };
+    }],
+    ['duplicate snapshot knowledge bases', (memory: ProjectMemoryEntry) => {
+      const context = memory.context as Record<string, unknown>;
+      const lease = context.knowledgeLease as { snapshots: unknown[] };
+      context.knowledgeLease = { ...lease, snapshots: [...lease.snapshots, lease.snapshots[0]] };
+    }],
+    ['citation labels that do not match references', (memory: ProjectMemoryEntry) => {
+      const context = memory.context as Record<string, unknown>;
+      const citations = [{ assetId: 'scene', label: 'Wrong label' }];
+      context.citations = citations;
+      context.knowledgeLease = { ...(context.knowledgeLease as object), citations };
+    }],
+    ['duplicate asset citations', (memory: ProjectMemoryEntry) => {
+      const context = memory.context as Record<string, unknown>;
+      const citations = [
+        { assetId: 'scene', label: 'Scene' },
+        { assetId: 'scene', label: 'Scene' },
+      ];
+      context.citations = citations;
+      context.knowledgeLease = { ...(context.knowledgeLease as object), citations };
+    }],
+    ['a forged version key', (memory: ProjectMemoryEntry) => {
+      const context = memory.context as Record<string, unknown>;
+      context.knowledgeLease = { ...(context.knowledgeLease as object), versionKey: 'forged-version-key' };
+    }],
+  ])('rejects persisted feedback with %s', (_name, tamper) => {
+    const memory = createUserFeedbackMemory({
+      projectId: 'project-1',
+      projectRevision: 4,
+      title: 'Persisted feedback',
+      userRequest: 'Keep the scene',
+      correction: 'Use reviewed references',
+      knowledgeLease: feedbackLease,
+      references: feedbackReferences,
+      citations: [{ assetId: 'scene', label: 'Scene' }],
+      feedback: { keep: ['scene'], change: [], never: [] },
+    }, {
+      memoryId: 'feedback-tampered',
+      createdAt: '2026-07-15T10:02:00.000Z',
+      snapshots: feedbackSnapshots,
+    });
+    const persisted = JSON.parse(JSON.stringify(memory)) as ProjectMemoryEntry;
+    tamper(persisted);
+
+    expect(() => parseProjectMemoryEntry(persisted)).toThrow();
+  });
   it('approves and rolls back without losing provenance', () => {
     const candidate = createSkillPromotionCandidate(optimization, {
       candidateId: 'skill-candidate-2',

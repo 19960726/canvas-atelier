@@ -53,6 +53,43 @@ describe('ApprovedSnapshotPullCoordinator', () => {
     await restarted.stop();
   });
 
+  it('emits sanitized offline and conflict lifecycle states, then recovers to updated without changing known-good state early', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const local = createSnapshot('# local version 2', 2);
+    const conflicting = createSnapshot('# conflicting version 2', 2);
+    const recovered = createSnapshot('# remote version 3', 3);
+    await fixture.store.publish(local);
+
+    const offline = createCoordinator(fixture, { pullApprovedSnapshot: vi.fn() }, false);
+    const offlineStatuses: unknown[] = [];
+    offline.subscribeSyncStatus((status) => offlineStatuses.push(status));
+    await offline.start(['scene-skill']);
+    expect(offlineStatuses).toEqual([expect.objectContaining({
+      knowledgeBaseId: 'scene-skill',
+      status: 'offline',
+      lastFailure: expect.objectContaining({ reason: expect.any(String), failedAt: expect.any(String) }),
+    })]);
+    await expect(fixture.store.readActive('scene-skill')).resolves.toEqual(local);
+    await offline.stop();
+
+    const pullApprovedSnapshot = vi.fn()
+      .mockResolvedValueOnce({ snapshot: conflicting, cursor: 'cursor-conflict' })
+      .mockResolvedValueOnce({ snapshot: recovered, cursor: 'cursor-3' });
+    const coordinator = createCoordinator(fixture, { pullApprovedSnapshot });
+    const statuses: unknown[] = [];
+    coordinator.subscribeSyncStatus((status) => statuses.push(status));
+    await coordinator.start(['scene-skill']);
+    await expect(fixture.store.readActive('scene-skill')).resolves.toEqual(local);
+    expect(statuses.map((status) => (status as { status: string }).status)).toEqual(['syncing', 'conflict']);
+
+    await coordinator.pullNow();
+    await expect(fixture.store.readActive('scene-skill')).resolves.toEqual(recovered);
+    expect(statuses.map((status) => (status as { status: string }).status)).toEqual([
+      'syncing', 'conflict', 'syncing', 'updated',
+    ]);
+    expect(JSON.stringify(statuses)).not.toMatch(/Authorization|Bearer|data:image|[A-Za-z]:\\/u);
+    await coordinator.stop();
+  });
   it('restores and advances the per-knowledge-base cursor after restart', async () => {
     const fixture = await createPullFixture(tempRoots);
     const first = createCoordinator(fixture, {
