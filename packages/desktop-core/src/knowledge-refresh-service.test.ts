@@ -12,6 +12,7 @@ import {
   type KnowledgeWatchEvent,
   type KnowledgeWatchHandle,
 } from './knowledge-refresh-service';
+import { createDesktopBridgeHandlers } from './bridge-handlers';
 import { ManagedKnowledgeStore } from './managed-knowledge-store';
 
 describe('KnowledgeRefreshService', () => {
@@ -71,7 +72,15 @@ describe('KnowledgeRefreshService', () => {
       watchAdapter: new ManualWatchAdapter(),
     });
     const states: unknown[] = [];
-    service.subscribe((state) => states.push(state));
+    let persistedAtFallbackEmit: Promise<unknown> | null = null;
+    service.subscribe((state) => {
+      states.push(state);
+      if (state.status === 'fallback') {
+        persistedAtFallbackEmit = new ManagedKnowledgeStore({ appDataRoot: fixture.appDataRoot })
+          .listStates()
+          .then((persisted) => persisted[0]);
+      }
+    });
     const first = await service.refreshNow('scene-skill');
 
     await writeKnowledgeFile(
@@ -98,6 +107,32 @@ describe('KnowledgeRefreshService', () => {
     });
     expect(fixture.store.publishCount).toBe(1);
     expect(states[states.length - 1]).toEqual(fallback);
+    await expect(persistedAtFallbackEmit).resolves.toEqual(fallback);
+
+    const restartedStore = new ManagedKnowledgeStore({ appDataRoot: fixture.appDataRoot });
+    await expect(restartedStore.listStates()).resolves.toEqual([fallback]);
+    const restartedService = new KnowledgeRefreshService({
+      clock,
+      sourceDeviceId: 'test-device',
+      store: restartedStore,
+      watchAdapter: new ManualWatchAdapter(),
+    });
+    const handlers = createDesktopBridgeHandlers({
+      knowledgeRefreshService: restartedService,
+      knowledgeStore: restartedStore,
+      repository: { close: async () => undefined },
+    });
+    await expect(handlers.getKnowledgeState({}, undefined)).resolves.toEqual({ states: [fallback] });
+
+    await writeKnowledgeFile(fixture.sourceRoot, 'memory/main.md', '# Recovered scene memory');
+    const recovered = await restartedService.refreshNow('scene-skill');
+    expect(recovered).toMatchObject({
+      status: 'active',
+      activeVersion: 2,
+      versionCount: 2,
+      lastFailure: null,
+    });
+    await expect(new ManagedKnowledgeStore({ appDataRoot: fixture.appDataRoot }).listStates()).resolves.toEqual([recovered]);
   });
 
   it('does not publish or emit a new state when refreshed files have duplicate content', async () => {
@@ -200,6 +235,7 @@ describe('KnowledgeRefreshService', () => {
     expect(serialized).not.toContain(privatePath);
     expect(serialized).not.toContain(fixture.sourceRoot);
     expect(states).toEqual([fallback]);
+    await expect(new ManagedKnowledgeStore({ appDataRoot: fixture.appDataRoot }).listStates()).resolves.toEqual([fallback]);
   });
 });
 

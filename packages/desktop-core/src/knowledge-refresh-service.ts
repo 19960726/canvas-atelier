@@ -135,10 +135,8 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
       this.emit(next);
       return cloneSummary(next);
     } catch (error) {
-      const current = await this.readCurrentSummaryForFallback(configuration);
-      const fallback = createFallbackSummary(
-        configuration,
-        current,
+      const fallback = await this.store.recordRefreshFailure(
+        configuration.knowledgeBaseId,
         sanitizeFailureReason(error, configuration.rootPath),
         this.clock.now().toISOString(),
       );
@@ -214,15 +212,6 @@ export class KnowledgeRefreshService<Timer = ReturnType<typeof setTimeout>> {
     )) ?? createEmptySummary(configuration);
   }
 
-  private async readCurrentSummaryForFallback(
-    configuration: InternalKnowledgeConfiguration,
-  ): Promise<KnowledgeBaseStateSummary> {
-    try {
-      return await this.readCurrentSummary(configuration);
-    } catch {
-      return createEmptySummary(configuration);
-    }
-  }
 
   private emit(state: KnowledgeBaseStateSummary): void {
     for (const listener of this.listeners) {
@@ -258,26 +247,6 @@ function createSystemClock<Timer>(): KnowledgeRefreshClock<Timer> {
         void callback();
       }, delayMs) as Timer
     ),
-  };
-}
-
-function createFallbackSummary(
-  configuration: InternalKnowledgeConfiguration,
-  current: KnowledgeBaseStateSummary,
-  reason: string,
-  failedAt: string,
-): KnowledgeBaseStateSummary {
-  return {
-    schemaVersion: 1,
-    knowledgeBaseId: configuration.knowledgeBaseId,
-    displayName: current.displayName ?? configuration.displayName,
-    status: current.activeVersion === null ? 'empty' : 'fallback',
-    activeVersion: current.activeVersion,
-    activeContentHash: current.activeContentHash,
-    versionCount: current.versionCount,
-    versions: current.versions.map((version) => ({ ...version })),
-    lastFailure: { reason, failedAt },
-    lastRollbackAt: null,
   };
 }
 

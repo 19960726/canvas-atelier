@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { CanvasProject } from '@agent-canvas/domain';
+import {
+  applyProjectTransaction,
+  createAgentKnowledgeLease,
+  createUserFeedbackMemory,
+  type CanvasProject,
+} from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 
 import type { CommitRequest } from './contracts';
@@ -249,7 +254,7 @@ describe('desktop bridge contract', () => {
       },
       knowledgeStore: {
         configure: vi.fn(),
-        listStates: vi.fn(async () => [rolledBackKnowledgeState()]),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(3, 3)]),
         readActive: vi.fn(async () => null),
         rollback,
       } as never,
@@ -300,6 +305,161 @@ describe('desktop bridge contract', () => {
     });
   });
 
+  it('rolls back every approved candidate published above the target through the previous active version', async () => {
+    const selected = {
+      ...createApprovedSkillCandidate(),
+      id: 'candidate-v4-selected',
+      sourceProjectMemoryId: 'memory-v4',
+      sourceProjectMemoryIds: ['memory-v4'],
+      publishedKnowledgeVersion: 4,
+    };
+    const candidateV3 = {
+      ...createApprovedSkillCandidate(),
+      id: 'candidate-v3',
+      sourceProjectMemoryId: 'memory-v3',
+      sourceProjectMemoryIds: ['memory-v3'],
+      publishedKnowledgeVersion: 3,
+    };
+    const candidateV5 = {
+      ...createApprovedSkillCandidate(),
+      id: 'candidate-v5',
+      sourceProjectMemoryId: 'memory-v5',
+      sourceProjectMemoryIds: ['memory-v5'],
+      publishedKnowledgeVersion: 5,
+    };
+    const candidateAtTarget = {
+      ...createApprovedSkillCandidate(),
+      id: 'candidate-v2',
+      sourceProjectMemoryId: 'memory-v2',
+      sourceProjectMemoryIds: ['memory-v2'],
+      publishedKnowledgeVersion: 2,
+    };
+    const candidateAfterPreviousActive = {
+      ...createApprovedSkillCandidate(),
+      id: 'candidate-v6',
+      sourceProjectMemoryId: 'memory-v6',
+      sourceProjectMemoryIds: ['memory-v6'],
+      publishedKnowledgeVersion: 6,
+    };
+    const otherKnowledgeBase = {
+      ...createApprovedSkillCandidate(),
+      id: 'candidate-other-kb',
+      sourceProjectMemoryId: 'memory-other',
+      sourceProjectMemoryIds: ['memory-other'],
+      targetKnowledgeBaseId: 'other-skill',
+      publishedKnowledgeVersion: 4,
+    };
+    const rejectedCandidate = {
+      ...createApprovedSkillCandidate(),
+      id: 'candidate-rejected',
+      sourceProjectMemoryId: 'memory-rejected',
+      sourceProjectMemoryIds: ['memory-rejected'],
+      reviewStatus: 'rejected' as const,
+      publishedKnowledgeVersion: undefined,
+    };
+    const feedbackHistory = [
+      'memory-v2',
+      'memory-v3',
+      'memory-v4',
+      'memory-v5',
+      'memory-v6',
+      'memory-other',
+      'memory-rejected',
+    ].map((memoryId, index) => createBridgeFeedbackMemory(memoryId, index + 1));
+    const project: CanvasProject = {
+      ...starterProject,
+      projectMemory: feedbackHistory,
+      skillPromotionCandidates: [
+        candidateAtTarget,
+        candidateV3,
+        selected,
+        candidateV5,
+        candidateAfterPreviousActive,
+        otherKnowledgeBase,
+        rejectedCandidate,
+      ],
+    };
+    const beforeRollback = knowledgeStateAtVersion(5, 6);
+    const afterRollback = {
+      ...knowledgeStateAtVersion(2, 6),
+      status: 'rolled_back' as const,
+      lastRollbackAt: '2026-07-15T10:00:00.000Z',
+    };
+    let persistedProject = project;
+    const commit = vi.fn(async (request: CommitRequest) => {
+      persistedProject = applyProjectTransaction(persistedProject, request.transaction);
+      return {
+        committedAt: '2026-07-15T10:00:00.000Z',
+        projectId: starterProject.id,
+        revision: 6,
+        sequence: 6,
+        transactionId: 'review-skill-candidate-range',
+      };
+    });
+    const listStates = vi.fn()
+      .mockResolvedValueOnce([beforeRollback])
+      .mockResolvedValue([afterRollback]);
+    const rollback = vi.fn(async () => afterRollback);
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project'),
+      },
+      knowledgeRefreshService: {
+        refreshNow: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates,
+        readActive: vi.fn(async () => null),
+        rollback,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    const result = await handlers.reviewSkillCandidate({}, {
+      candidateId: selected.id,
+      decision: 'rolled_back',
+      projectId: starterProject.id,
+      targetVersion: 2,
+    });
+
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(rollback).toHaveBeenCalledWith('scene-skill', 2);
+    expect(commit).toHaveBeenCalledOnce();
+    const transaction = commit.mock.calls[0]![0].transaction;
+    expect(transaction.operations).toHaveLength(1);
+    const operation = transaction.operations[0];
+    expect(operation).toMatchObject({ kind: 'set_skill_candidates' });
+    if (operation?.kind !== 'set_skill_candidates') {
+      throw new Error('Expected one set_skill_candidates rollback operation');
+    }
+    const persisted = operation.candidates;
+    expect(persisted.filter((candidate) => candidate.reviewStatus === 'rolled_back').map((candidate) => candidate.id).sort()).toEqual([
+      'candidate-v3',
+      'candidate-v4-selected',
+      'candidate-v5',
+    ]);
+    expect(persisted.find((candidate) => candidate.id === candidateAtTarget.id)?.reviewStatus).toBe('approved');
+    expect(persisted.find((candidate) => candidate.id === candidateAfterPreviousActive.id)?.reviewStatus).toBe('approved');
+    expect(persisted.find((candidate) => candidate.id === otherKnowledgeBase.id)?.reviewStatus).toBe('approved');
+    expect(persisted.find((candidate) => candidate.id === rejectedCandidate.id)?.reviewStatus).toBe('rejected');
+    expect(persistedProject.projectMemory).toEqual(feedbackHistory);
+    expect(result).toMatchObject({
+      candidate: { id: selected.id, reviewStatus: 'rolled_back' },
+      knowledgeState: { activeVersion: 2, status: 'rolled_back' },
+    });
+  });
   it('rejects rollback without a valid older target before mutating project or knowledge state', async () => {
     const approvedCandidate = createApprovedSkillCandidate();
     const commit = vi.fn();
@@ -678,6 +838,52 @@ function createKnowledgeStateSummary(): KnowledgeBaseStateSummary {
   };
 }
 
+function createBridgeFeedbackMemory(memoryId: string, projectRevision: number) {
+  const createdAt = `2026-07-15T08:0${projectRevision}:00.000Z`;
+  const knowledgeLease = createAgentKnowledgeLease({
+    runId: `run-${memoryId}`,
+    capability: 'reverse_prompt',
+    snapshots: [],
+    references: [],
+    citations: [],
+  }, {
+    leaseId: `lease-${memoryId}`,
+    createdAt,
+  });
+  return createUserFeedbackMemory({
+    projectId: 'project-1',
+    projectRevision,
+    title: `Feedback ${memoryId}`,
+    userRequest: 'Keep the product stable',
+    correction: 'Use the reviewed scene rule',
+    knowledgeLease,
+    references: [],
+    citations: [],
+    feedback: { keep: ['product'], change: ['scene'], never: [] },
+  }, {
+    memoryId,
+    createdAt,
+    snapshots: {
+      beforeId: `${memoryId}-before`,
+      afterId: `${memoryId}-after`,
+    },
+  });
+}
+function knowledgeStateAtVersion(activeVersion: number, versionCount: number): KnowledgeBaseStateSummary {
+  return {
+    ...createKnowledgeStateSummary(),
+    activeVersion,
+    activeContentHash: String.fromCharCode(96 + activeVersion).repeat(64),
+    versionCount,
+    versions: Array.from({ length: versionCount }, (_, index) => ({
+      version: index + 1,
+      contentHash: String.fromCharCode(97 + index).repeat(64),
+      publishedAt: `2026-07-15T0${index}:00:00.000Z`,
+      sourceDeviceId: 'desktop-core',
+      displayName: 'Scene Skill',
+    })),
+  };
+}
 function rolledBackKnowledgeState(): KnowledgeBaseStateSummary {
   return {
     ...createKnowledgeStateSummary(),

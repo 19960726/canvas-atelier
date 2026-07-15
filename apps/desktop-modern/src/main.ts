@@ -11,6 +11,7 @@ import {
   createDesktopBridgeHandlers,
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
+  startConfiguredKnowledgeRefresh,
   type BridgeDialogAdapter,
   type DesktopBridgeHandlers,
 } from '@agent-canvas/desktop-core';
@@ -51,6 +52,7 @@ app.whenReady().then(async () => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
   });
 
+  await startConfiguredKnowledgeRefresh(knowledgeStore, knowledgeRefreshService);
   await createMainWindow();
 
   app.on('activate', () => {

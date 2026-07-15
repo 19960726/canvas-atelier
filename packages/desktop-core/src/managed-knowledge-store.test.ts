@@ -183,6 +183,79 @@ describe('ManagedKnowledgeStore', () => {
     await expect(store.readActive('scene-skill')).resolves.toEqual(first);
   });
 
+  it('durably records sanitized refresh failure while preserving known-good state and clears it on publish', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const sourceRoot = join(tempRoot, 'workspace', 'scene-skill');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: sourceRoot,
+    });
+    const first = createSnapshot('# version 1', 1);
+    await store.publish(first);
+    const protectedReason = [
+      'Author',
+      'ization: Bearer synthetic-value ',
+      join(sourceRoot, 'memory', 'main.md'),
+      ' data:image/png;base64,',
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+    ].join('');
+
+    const failed = await recordRefreshFailure(
+      store,
+      'scene-skill',
+      protectedReason,
+      '2026-07-15T08:05:00.000Z',
+    );
+
+    expect(failed).toMatchObject({
+      status: 'fallback',
+      activeVersion: 1,
+      activeContentHash: first.contentHash,
+      versionCount: 1,
+      lastFailure: {
+        failedAt: '2026-07-15T08:05:00.000Z',
+        reason: expect.any(String),
+      },
+    });
+    const serialized = JSON.stringify(failed);
+    expect(serialized).not.toContain('synthetic-value');
+    expect(serialized).not.toContain(sourceRoot);
+    expect(serialized).not.toContain('data:image');
+    expect(serialized).not.toContain('iVBORw0KGgo');
+    await expect(store.readActive('scene-skill')).resolves.toEqual(first);
+
+    const restartedStore = new ManagedKnowledgeStore({ appDataRoot });
+    await expect(restartedStore.listStates()).resolves.toEqual([failed]);
+    await expect(readJson<KnowledgeBaseStateSummary>(
+      managedKnowledgePaths(appDataRoot, configured.knowledgeRootId).currentPath,
+    )).resolves.toEqual(failed);
+
+    await restartedStore.publish(createSnapshot('# version 2', 2));
+    await expect(new ManagedKnowledgeStore({ appDataRoot }).listStates()).resolves.toEqual([
+      expect.objectContaining({
+        status: 'active',
+        activeVersion: 2,
+        versionCount: 2,
+        lastFailure: null,
+      }),
+    ]);
+
+    const failureBeforeRollback = await recordRefreshFailure(
+      restartedStore,
+      'scene-skill',
+      'Source parse failed',
+      '2026-07-15T08:06:00.000Z',
+    );
+    const rolledBack = await restartedStore.rollback('scene-skill', 1);
+    expect(rolledBack).toMatchObject({
+      status: 'rolled_back',
+      activeVersion: 1,
+      lastFailure: failureBeforeRollback.lastFailure,
+    });
+  });
   it('accepts published snapshots whose documents are not already sorted', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');
@@ -910,6 +983,22 @@ describe('ManagedKnowledgeStore', () => {
   });
 });
 
+async function recordRefreshFailure(
+  store: ManagedKnowledgeStore,
+  knowledgeBaseId: string,
+  reason: string,
+  failedAt: string,
+): Promise<KnowledgeBaseStateSummary> {
+  const method = (store as unknown as {
+    recordRefreshFailure?: (
+      knowledgeBaseId: string,
+      reason: string,
+      failedAt: string,
+    ) => Promise<KnowledgeBaseStateSummary>;
+  }).recordRefreshFailure;
+  expect(typeof method).toBe('function');
+  return method!.call(store, knowledgeBaseId, reason, failedAt);
+}
 function createSnapshot(content: string, version: number): KnowledgeSnapshot {
   return createSnapshotFromDocuments([{ relativePath: 'memory/main.md', content }], version);
 }

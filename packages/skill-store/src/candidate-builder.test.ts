@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ProjectMemoryEntry } from '@agent-canvas/domain';
+import { parseCanvasProject, type ProjectMemoryEntry } from '@agent-canvas/domain';
 import { buildSkillPromotionCandidate } from './candidate-builder';
 
 const now = '2026-07-15T10:00:00.000Z';
@@ -23,8 +23,6 @@ describe('buildSkillPromotionCandidate', () => {
       reviewStatus: 'pending_review',
       targetKnowledgeBaseId: 'scene-skill',
       targetKnowledgeSection: 'reverse-prompt/liquid',
-      supportingEvidenceCount: 2,
-      contradictingEvidenceCount: 1,
       counts: {
         supportingMemoryCount: 2,
       },
@@ -36,6 +34,44 @@ describe('buildSkillPromotionCandidate', () => {
     expect(candidate.evidence.never).toEqual(['add heavy liquid']);
     expect(candidate).not.toHaveProperty('reviewedAt');
     expect(candidate).not.toHaveProperty('publishedKnowledgeVersion');
+  });
+
+  it('persists the builder inclusive aggregate source list through the project schema', () => {
+    const first = feedback('feedback-a', { projectRevision: 1, change: ['add heavy liquid'] });
+    const second = feedback('feedback-b', { projectRevision: 2, change: ['keep camera locked'] });
+    const candidate = buildSkillPromotionCandidate([first, second], metadata());
+
+    const project = parseCanvasProject({
+      version: 1,
+      id: 'project-1',
+      name: 'Aggregated feedback project',
+      nodes: [],
+      edges: [],
+      projectMemory: [first, second],
+      skillPromotionCandidates: [candidate],
+    });
+
+    expect(project.skillPromotionCandidates[0]?.sourceProjectMemoryId).toBe(first.id);
+    expect(project.skillPromotionCandidates[0]?.sourceProjectMemoryIds).toEqual([first.id, second.id]);
+  });
+
+  it('rejects true duplicates inside an aggregate source list', () => {
+    const first = feedback('feedback-a', { projectRevision: 1, change: ['add heavy liquid'] });
+    const second = feedback('feedback-b', { projectRevision: 2, change: ['keep camera locked'] });
+    const candidate = buildSkillPromotionCandidate([first, second], metadata());
+
+    expect(() => parseCanvasProject({
+      version: 1,
+      id: 'project-1',
+      name: 'Duplicate aggregate feedback project',
+      nodes: [],
+      edges: [],
+      projectMemory: [first, second],
+      skillPromotionCandidates: [{
+        ...candidate,
+        sourceProjectMemoryIds: [first.id, second.id, second.id],
+      }],
+    })).toThrow(/unique/i);
   });
 
   it('rejects invalid or unsafe aggregation inputs through domain parsing', () => {
@@ -69,7 +105,7 @@ describe('buildSkillPromotionCandidate', () => {
 
     expect(candidate.sourceProjectMemoryIds).toEqual(['feedback-replacement', 'feedback-stable']);
     expect(candidate.evidence.change).toEqual(['new heavy liquid rule', 'keep camera locked']);
-    expect(candidate.supportingEvidenceCount).toBe(2);
+    expect(candidate.counts?.supportingMemoryCount).toBe(2);
   });
 
   it('canonicalizes unordered evidence before selecting active timeline entries', () => {
@@ -89,7 +125,7 @@ describe('buildSkillPromotionCandidate', () => {
 
     expect(candidate.sourceProjectMemoryIds).toEqual(['feedback-replacement']);
     expect(candidate.evidence.change).toEqual(['new heavy liquid rule']);
-    expect(candidate.supportingEvidenceCount).toBe(1);
+    expect(candidate.counts?.supportingMemoryCount).toBe(1);
   });
 });
 

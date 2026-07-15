@@ -17,10 +17,7 @@ export interface CandidateMetadata {
   affectedCapabilities?: AgentKnowledgeCapability[];
 }
 
-export type AggregatedSkillPromotionCandidate = SkillPromotionCandidate & {
-  supportingEvidenceCount: number;
-  contradictingEvidenceCount: number;
-};
+export type AggregatedSkillPromotionCandidate = SkillPromotionCandidate;
 
 export function buildSkillPromotionCandidate(
   entries: ProjectMemoryEntry[],
@@ -46,7 +43,7 @@ export function buildSkillPromotionCandidate(
   const contradictingEvidenceCount = ordered.filter((entry) => entry.feedback.never.some((item) => supportingChanges.has(item))).length;
   const totalEvidence = supportingEvidenceCount + contradictingEvidenceCount;
   const first = ordered[0]!;
-  const candidate = skillPromotionCandidateSchema.parse({
+  return skillPromotionCandidateSchema.parse({
     schemaVersion: 1,
     id: metadata.candidateId,
     sourceProjectId,
@@ -70,11 +67,7 @@ export function buildSkillPromotionCandidate(
     reviewStatus: 'pending_review',
   });
 
-  return {
-    ...candidate,
-    supportingEvidenceCount,
-    contradictingEvidenceCount,
-  };
+
 }
 
 function compareEvidenceOrder(left: ProjectMemoryEntry, right: ProjectMemoryEntry): number {

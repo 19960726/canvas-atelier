@@ -556,6 +556,10 @@ describe('project optimization memory', () => {
       knowledgeLease: lease,
       references,
       citations,
+      observations: {
+        composition: ['Keep the product centered'],
+        liquid: ['Use calmer liquid arcs'],
+      },
       feedback: { keep: ['product'], change: ['scene'], never: ['extra props'] },
     });
 
@@ -568,6 +572,16 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().project.skillPromotionCandidates[useAppStore.getState().project.skillPromotionCandidates.length - 1]).toMatchObject({
       reviewStatus: 'pending_review',
       sourceProjectMemoryId: useAppStore.getState().project.projectMemory[useAppStore.getState().project.projectMemory.length - 1]?.id,
+      targetKnowledgeBaseId: 'scene-skill',
+      targetKnowledgeSection: 'reverse-prompt/feedback',
+      affectedCapabilities: ['reverse_prompt'],
+      counts: {
+        supportingMemoryCount: 1,
+        referenceCount: 1,
+        citationCount: 1,
+        observationCount: 2,
+      },
+      confidence: 1,
     });
     expect(useAppStore.getState().project.skillPromotionCandidates.some((candidate) => candidate.reviewStatus === 'approved')).toBe(false);
 

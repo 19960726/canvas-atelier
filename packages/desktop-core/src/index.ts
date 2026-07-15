@@ -55,6 +55,7 @@ export type {
   ManagedKnowledgeStoreOptions,
 } from './managed-knowledge-store.js';
 export { KnowledgeRefreshService } from './knowledge-refresh-service.js';
+export { startConfiguredKnowledgeRefresh } from './knowledge-startup.js';
 export type {
   KnowledgeRefreshClock,
   KnowledgeRefreshServiceOptions,

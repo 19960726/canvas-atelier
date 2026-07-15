@@ -7,6 +7,7 @@ import {
   confirmAgentPlan as confirmDomainPlan,
   revertTransaction,
   selectActiveProjectMemoryEntries,
+  skillPromotionCandidateSchema,
   type AgentCanvasPlan,
   type AgentKnowledgeLease,
   type AgentPlanApprovalSelection,
@@ -354,7 +355,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         afterId: `feedback-${suffix}:after`,
       },
     });
-    const candidate = createSkillPromotionCandidate(memoryEntry, {
+    const candidate = createFeedbackSkillPromotionCandidate(memoryEntry, input, {
       candidateId: `skill-candidate-feedback-${suffix}`,
       createdAt: memoryEntry.createdAt,
     });
@@ -714,6 +715,41 @@ function filterValidSkillPromotionCandidates(
 function isPromotableMemory(timeline: ProjectMemoryEntry[], memory: ProjectMemoryEntry): boolean {
   if (!['optimization', 'generation', 'reverse_prompt', 'user_feedback'].includes(memory.kind)) return false;
   return selectActiveProjectMemoryEntries(timeline).some((entry) => entry.id === memory.id);
+}
+
+function createFeedbackSkillPromotionCandidate(
+  memory: ProjectMemoryEntry,
+  input: RecordUserFeedbackInput,
+  metadata: { candidateId: string; createdAt: string },
+): SkillPromotionCandidate {
+  const target = resolveFeedbackKnowledgeTarget(input.knowledgeLease);
+  return skillPromotionCandidateSchema.parse({
+    ...createSkillPromotionCandidate(memory, metadata),
+    targetKnowledgeBaseId: target.knowledgeBaseId,
+    targetKnowledgeSection: target.section,
+    counts: {
+      supportingMemoryCount: 1,
+      referenceCount: new Set(input.references.map((reference) => reference.assetId)).size,
+      citationCount: new Set(input.citations.map((citation) => citation.assetId)).size,
+      observationCount: Object.values(input.observations ?? {}).reduce((sum, observations) => sum + observations.length, 0),
+    },
+    confidence: 1,
+    affectedCapabilities: [input.knowledgeLease.capability],
+  });
+}
+
+function resolveFeedbackKnowledgeTarget(lease: AgentKnowledgeLease): {
+  knowledgeBaseId: string;
+  section: string;
+} {
+  if (lease.capability === 'reverse_prompt') {
+    return { knowledgeBaseId: 'scene-skill', section: 'reverse-prompt/feedback' };
+  }
+  const capabilitySlug = lease.capability.replace(/_/g, '-');
+  return {
+    knowledgeBaseId: lease.snapshots[0]?.knowledgeBaseId ?? `${capabilitySlug}-skill`,
+    section: `${capabilitySlug}/feedback`,
+  };
 }
 
 function containsProtectedRendererPayload(value: unknown): boolean {

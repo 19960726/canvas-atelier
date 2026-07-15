@@ -424,10 +424,17 @@ export function createDesktopBridgeHandlers(
     }
     assertPublicBridgePayload(candidate);
 
-    const reviewed = sanitizeSkillPromotionCandidate(await reviewSkillCandidateForBridge(candidate, validated));
-    const nextCandidates = project.skillPromotionCandidates.map((item) => (
-      item.id === reviewed.id ? reviewed : item
-    ));
+    const rollbackResult = validated.decision === 'rolled_back'
+      ? await rollbackSkillCandidatesForBridge(project.skillPromotionCandidates, candidate, validated)
+      : null;
+    const reviewed = sanitizeSkillPromotionCandidate(
+      rollbackResult?.candidate ?? await reviewSkillCandidateForBridge(candidate, validated),
+    );
+    const nextCandidates = rollbackResult === null
+      ? project.skillPromotionCandidates.map((item) => (
+        item.id === reviewed.id ? reviewed : item
+      ))
+      : rollbackResult.candidates.map(sanitizeSkillPromotionCandidate);
     const currentRevision = await readCurrentRevision(repository, session.session);
     const ack = await requireBridgeWriter(session).commit({
       baseRevision: currentRevision,
@@ -441,10 +448,12 @@ export function createDesktopBridgeHandlers(
     });
     await flushScheduledSnapshotAfterCommit(session, ack, 'system');
 
-    const knowledgeState = reviewed.targetKnowledgeBaseId === undefined
-      ? null
-      : sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
-        .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null;
+    const knowledgeState = rollbackResult?.knowledgeState ?? (
+      reviewed.targetKnowledgeBaseId === undefined
+        ? null
+        : sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
+          .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null
+    );
 
     return {
       candidate: sanitizeSkillPromotionCandidate(reviewed),
@@ -547,7 +556,7 @@ export function createDesktopBridgeHandlers(
     request: ReviewSkillCandidateBridgeRequest,
   ): Promise<SkillPromotionCandidate> {
     if (request.decision === 'rolled_back') {
-      return rollbackSkillCandidateForBridge(candidate, request);
+      throw invalidRequest('Rollback must use the managed rollback flow');
     }
 
     if (request.decision !== 'approved') {
@@ -605,10 +614,15 @@ export function createDesktopBridgeHandlers(
     }
   }
 
-  async function rollbackSkillCandidateForBridge(
+  async function rollbackSkillCandidatesForBridge(
+    candidates: readonly SkillPromotionCandidate[],
     candidate: SkillPromotionCandidate,
     request: ReviewSkillCandidateBridgeRequest,
-  ): Promise<SkillPromotionCandidate> {
+  ): Promise<{
+    readonly candidate: SkillPromotionCandidate;
+    readonly candidates: SkillPromotionCandidate[];
+    readonly knowledgeState: KnowledgeBaseStateSummary;
+  }> {
     const targetVersion = request.targetVersion;
     if (
       targetVersion === undefined ||
@@ -627,10 +641,16 @@ export function createDesktopBridgeHandlers(
     }
     const states = await knowledgeStore.listStates();
     const state = states.find((item) => item.knowledgeBaseId === candidate.targetKnowledgeBaseId);
-    if (state === undefined || !state.versions.some((version) => version.version === targetVersion)) {
+    if (
+      state === undefined ||
+      state.activeVersion === null ||
+      candidate.publishedKnowledgeVersion > state.activeVersion ||
+      !state.versions.some((version) => version.version === targetVersion)
+    ) {
       throw invalidRequest('Rollback target version is unavailable');
     }
 
+    const previousActiveVersion = state.activeVersion;
     try {
       const rolledBackState = sanitizeKnowledgeSummary(
         await rollback.call(knowledgeStore, candidate.targetKnowledgeBaseId, targetVersion),
@@ -638,10 +658,25 @@ export function createDesktopBridgeHandlers(
       if (rolledBackState.activeVersion !== targetVersion) {
         throw invalidRequest('Knowledge rollback target was not activated');
       }
-      return rollbackSkillPromotionCandidate(
-        candidate,
-        rolledBackState.lastRollbackAt ?? new Date().toISOString(),
-      );
+      const rolledBackAt = rolledBackState.lastRollbackAt ?? new Date().toISOString();
+      const nextCandidates = candidates.map((item) => (
+        item.reviewStatus === 'approved' &&
+        item.targetKnowledgeBaseId === candidate.targetKnowledgeBaseId &&
+        item.publishedKnowledgeVersion !== undefined &&
+        item.publishedKnowledgeVersion > targetVersion &&
+        item.publishedKnowledgeVersion <= previousActiveVersion
+          ? rollbackSkillPromotionCandidate(item, rolledBackAt)
+          : item
+      ));
+      const reviewed = nextCandidates.find((item) => item.id === candidate.id);
+      if (reviewed === undefined || reviewed.reviewStatus !== 'rolled_back') {
+        throw invalidRequest('Rollback did not update the selected skill candidate');
+      }
+      return {
+        candidate: reviewed,
+        candidates: nextCandidates,
+        knowledgeState: rolledBackState,
+      };
     } catch (error) {
       if (isPersistenceErrorCode(error, 'INVALID_REQUEST')) {
         throw error;

@@ -224,18 +224,20 @@ export const canvasProjectSchema = z.object({
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index], message: 'Skill 鍊欓€夊繀椤诲紩鐢ㄥ綋鍓嶉」鐩蹇?' });
     }
 
-    const sourceMemoryIds = [
-      candidate.sourceProjectMemoryId,
-      ...(candidate.sourceProjectMemoryIds ?? []),
-    ];
-    const combinedSourceIds = new Set<string>();
-    for (const sourceMemoryId of sourceMemoryIds) {
-      if (combinedSourceIds.has(sourceMemoryId)) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index, 'sourceProjectMemoryIds'], message: 'Combined source project memory ids must be unique' });
+    const aggregateSourceIds = candidate.sourceProjectMemoryIds ?? [];
+    const uniqueAggregateSourceIds = new Set<string>();
+    for (const sourceMemoryId of aggregateSourceIds) {
+      if (uniqueAggregateSourceIds.has(sourceMemoryId)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index, 'sourceProjectMemoryIds'], message: 'Aggregate source project memory ids must be unique' });
         break;
       }
-      combinedSourceIds.add(sourceMemoryId);
+      uniqueAggregateSourceIds.add(sourceMemoryId);
     }
+    const sourceMemoryIds = aggregateSourceIds.length === 0
+      ? [candidate.sourceProjectMemoryId]
+      : uniqueAggregateSourceIds.has(candidate.sourceProjectMemoryId)
+        ? aggregateSourceIds
+        : [candidate.sourceProjectMemoryId, ...aggregateSourceIds];
     const sourceMemories = sourceMemoryIds
       .map((memoryId) => memoryById.get(memoryId))
       .filter((memory): memory is NonNullable<typeof memory> => memory !== undefined);

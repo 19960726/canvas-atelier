@@ -285,7 +285,7 @@ describe('parseCanvasProject', () => {
     })).toThrow(/published/i);
   });
 
-  it('rejects repeated source ids across the combined candidate source set', () => {
+  it('allows the primary id once in inclusive source lists and rejects true list duplicates', () => {
     const memory = {
       schemaVersion: 1,
       id: 'memory-1',
@@ -313,7 +313,7 @@ describe('parseCanvasProject', () => {
       projectMemory: [memory, secondMemory, thirdMemory],
     };
 
-    expect(() => parseCanvasProject({
+    const inclusive = parseCanvasProject({
       ...project,
       skillPromotionCandidates: [{
         schemaVersion: 1,
@@ -328,7 +328,8 @@ describe('parseCanvasProject', () => {
         evidence: memory.feedback,
         reviewStatus: 'pending_review',
       }],
-    })).toThrow(/unique/i);
+    });
+    expect(inclusive.skillPromotionCandidates[0]?.sourceProjectMemoryIds).toEqual([memory.id, secondMemory.id]);
 
     expect(() => parseCanvasProject({
       ...project,

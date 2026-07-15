@@ -12,6 +12,7 @@ import { type FileHandleLike, type FileSystem, NodeFileSystem, writeAtomic } fro
 
 const WRITE_LOCK_RETRY_MS = 10;
 const WRITE_LOCK_TIMEOUT_MS = 5_000;
+const REFRESH_FAILURE_REASON = 'Knowledge refresh failed';
 
 export interface ConfigureKnowledgeRoot {
   readonly knowledgeBaseId: string;
@@ -109,6 +110,39 @@ export class ManagedKnowledgeStore {
         `${canonicalJson(normalizedSnapshot)}\n`,
       );
       await this.writeSummaryFile(configuration.knowledgeRootId, next);
+    });
+  }
+
+  async recordRefreshFailure(
+    knowledgeBaseId: string,
+    reason: string,
+    failedAt: string,
+  ): Promise<KnowledgeBaseStateSummary> {
+    const configuration = await this.requireConfiguration(knowledgeBaseId);
+    const sanitizedReason = sanitizeRefreshFailureReason(reason);
+    const normalizedFailedAt = requireDateString(failedAt, 'failedAt');
+
+    return this.withKnowledgeWriteLock(configuration.knowledgeRootId, async () => {
+      const current = await this.readSummaryFile(configuration.knowledgeRootId)
+        ?? createEmptySummary(configuration);
+      const next: KnowledgeBaseStateSummary = {
+        schemaVersion: 1,
+        knowledgeBaseId: current.knowledgeBaseId,
+        displayName: current.displayName ?? configuration.displayName,
+        status: current.activeVersion === null ? 'empty' : 'fallback',
+        activeVersion: current.activeVersion,
+        activeContentHash: current.activeContentHash,
+        versionCount: current.versionCount,
+        versions: current.versions.map(cloneVersionSummary).sort(compareVersionSummaries),
+        lastFailure: {
+          reason: sanitizedReason,
+          failedAt: normalizedFailedAt,
+        },
+        lastRollbackAt: null,
+      };
+
+      await this.writeSummaryFile(configuration.knowledgeRootId, next);
+      return cloneSummary(next);
     });
   }
 
@@ -564,7 +598,7 @@ function applyPublishedSnapshot(
     activeContentHash: snapshot.contentHash,
     versionCount: versions.length,
     versions,
-    lastFailure: current.lastFailure ? { ...current.lastFailure } : null,
+    lastFailure: null,
     lastRollbackAt: null,
   };
 }
@@ -737,6 +771,38 @@ function normalizeSnapshotDocuments(input: unknown): KnowledgeSnapshot['document
   }).sort((left, right) => compareStrings(left.relativePath, right.relativePath));
 }
 
+function sanitizeRefreshFailureReason(value: unknown): string {
+  const rawReason = requireNonEmptyString(value, 'reason');
+  const reason = rawReason
+    .replace(/authorization\s*:\s*(?:basic|bearer|token)?\s*\S+/gi, 'Authorization: [REDACTED_AUTH]')
+    .replace(/\bbearer\s+[a-z0-9._~+/=\-]{8,}/gi, '[REDACTED_AUTH]')
+    .replace(/\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/gi, '[REDACTED_SECRET]')
+    .replace(/\bsk-[a-z0-9_-]{8,}\b/gi, '[REDACTED_SECRET]')
+    .replace(/\bgh[pousr]_[a-z0-9_]{8,}\b/gi, '[REDACTED_SECRET]')
+    .replace(/\bgithub_pat_[a-z0-9_]+\b/gi, '[REDACTED_SECRET]')
+    .replace(/\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/gi, '[REDACTED_SECRET]')
+    .replace(/data:[^,\s;]+(?:;[^,\s;=]+(?:=[^,\s;]+)?)*;base64,[a-z0-9+/=\s-]+/gi, '[REDACTED_DATA_URL]')
+    .replace(/[A-Za-z]:\\(?:[^\\\s"]+\\)*[^\\\s"]+/g, '[REDACTED_PATH]')
+    .replace(/\\\\[^\\\s]+\\(?:[^\\\s"]+\\)*[^\\\s"]+/g, '[REDACTED_PATH]')
+    .replace(/(?:^|\s)\/(?:Users|home|var|etc|opt|tmp)\/[^\s"]+/g, ' [REDACTED_PATH]')
+    .replace(/(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{64,}={0,2}(?![A-Za-z0-9+/=])/g, '[REDACTED_BASE64]')
+    .trim();
+
+  if (!reason || containsProtectedFailureValue(reason)) {
+    return REFRESH_FAILURE_REASON;
+  }
+  return reason.slice(0, 240);
+}
+
+function containsProtectedFailureValue(value: string): boolean {
+  return /authorization\s*:/i.test(value)
+    || /\bbearer\s+[a-z0-9._~+/=\-]{8,}/i.test(value)
+    || /\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/i.test(value)
+    || /data:[^,\s;]+(?:;[^,\s;]+)*;base64,/i.test(value)
+    || /[A-Za-z]:\\/.test(value)
+    || /\\\\[^\\\s]+\\/.test(value)
+    || /(?:^|\s)\/(?:Users|home|var|etc|opt|tmp)\//.test(value);
+}
 function sanitizePublicMetadata(value: unknown, label: string): string {
   const stringValue = requireNonEmptyString(value, label);
   scanProtectedMetadata([stringValue]);
