@@ -1,5 +1,13 @@
 export { appendProjectMemoryEntry, buildProjectMemoryContext, createSkillPromotionCandidate, parseProjectMemoryEntry, selectActiveProjectMemoryEntries } from './project-memory';
 export type { ProjectMemoryEntry, SkillPromotionCandidate } from './project-memory';
+export { createAgentKnowledgeLease, reorderReferences } from './knowledge-context';
+export type {
+  AgentKnowledgeCapability,
+  AgentKnowledgeLease,
+  ImageCitation,
+  KnowledgeSnapshotPin,
+  OrderedReference,
+} from './knowledge-context';
 export { DEFAULT_REVERSE_PROMPT_PERSONA, REVERSE_PROMPT_PERSONAS, createReversePromptRun, parseReversePromptResult } from './reverse-prompt-agent';
 export type { ApprovedMemorySnapshot, ReversePromptPersona, ReversePromptResult, ReversePromptRun } from './reverse-prompt-agent';
 export { MAX_GENERATION_REFERENCES, parseGenerationRequest } from './generation-request';

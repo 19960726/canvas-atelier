@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  type AgentKnowledgeLease,
+  agentKnowledgeLeaseSchema,
+  orderedReferenceSchema,
+  orderedReferencesMatch,
+} from './knowledge-context';
 import { MAX_GENERATION_REFERENCES } from './project-schema';
 
 export const reversePromptPersonaIdSchema = z.enum([
@@ -30,6 +36,30 @@ export const approvedMemorySnapshotSchema = z.object({
   approvedMemoryIds: z.array(z.string().min(1)),
 }).strict();
 
+const reversePromptReferenceSchema = z.array(orderedReferenceSchema)
+  .max(MAX_GENERATION_REFERENCES, '参考图最多 20 张')
+  .superRefine((references, context) => {
+    const assetIds = new Set<string>();
+    for (const [index, reference] of references.entries()) {
+      if (assetIds.has(reference.assetId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, 'assetId'],
+          message: '参考图不能重复',
+        });
+      }
+      assetIds.add(reference.assetId);
+    }
+  });
+
+const reversePromptReferenceAssetIdsSchema = z.array(z.string().min(1))
+  .max(MAX_GENERATION_REFERENCES, '参考图最多 20 张')
+  .superRefine((assetIds, context) => {
+    if (new Set(assetIds).size !== assetIds.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: '参考图不能重复' });
+    }
+  });
+
 export const reversePromptRunSchema = z.object({
   sessionId: z.string().min(1),
   nonce: z.string().min(1),
@@ -37,19 +67,37 @@ export const reversePromptRunSchema = z.object({
   projectId: z.string().min(1),
   skill: z.object({ id: z.string().min(1), version: z.string().min(1) }).strict(),
   persona: reversePromptPersonaSchema,
+  knowledgeLease: agentKnowledgeLeaseSchema,
   approvedMemorySnapshot: approvedMemorySnapshotSchema,
   projectMemoryIds: z.array(z.string().min(1)).default([]),
-  referenceAssetIds: z.array(z.string().min(1)).max(MAX_GENERATION_REFERENCES, '参考图最多 20 张'),
+  references: reversePromptReferenceSchema,
+  referenceAssetIds: reversePromptReferenceAssetIdsSchema,
 }).strict().superRefine((run, context) => {
-  if (new Set(run.referenceAssetIds).size !== run.referenceAssetIds.length) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['referenceAssetIds'], message: '参考图不能重复' });
+  if (!orderedReferencesMatch(run.references, run.knowledgeLease.references)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['knowledgeLease', 'references'],
+      message: 'Knowledge lease references must match reverse-prompt references',
+    });
+  }
+
+  const referenceAssetIds = run.references.map((reference) => reference.assetId);
+  if (
+    referenceAssetIds.length !== run.referenceAssetIds.length
+    || referenceAssetIds.some((assetId, index) => assetId !== run.referenceAssetIds[index])
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['referenceAssetIds'],
+      message: 'Reference asset ids must match ordered references',
+    });
   }
 });
 
 export const reversePromptResultSchema = z.object({
   sessionId: z.string().min(1),
   nonce: z.string().min(1),
-  knowledgeSnapshotVersion: z.string().min(1),
+  knowledgeSnapshotVersion: z.string(),
   analysis: z.string().min(1),
   keywords: z.array(z.string().min(1)).min(1),
   positivePrompt: z.string().min(1),
@@ -68,27 +116,36 @@ interface RunDeps {
   now?: () => string;
 }
 
+interface CreateReversePromptRunInput {
+  projectId: string;
+  skill: { id: string; version: string };
+  persona?: ReversePromptPersona;
+  knowledgeLease?: AgentKnowledgeLease;
+  approvedMemorySnapshot: ApprovedMemorySnapshot;
+  projectMemoryIds?: string[];
+  references?: ReversePromptRun['references'];
+  referenceAssetIds?: string[];
+}
+
 export function createReversePromptRun(
-  input: {
-    projectId: string;
-    skill: { id: string; version: string };
-    persona?: ReversePromptPersona;
-    approvedMemorySnapshot: ApprovedMemorySnapshot;
-    projectMemoryIds?: string[];
-    referenceAssetIds: string[];
-  },
+  input: CreateReversePromptRunInput,
   deps: RunDeps = {},
 ): ReversePromptRun {
+  const sessionId = (deps.createId ?? createUniqueValue)();
+  const createdAt = (deps.now ?? (() => new Date().toISOString()))();
+  const references = normalizeReferences(input.references, input.referenceAssetIds);
   return reversePromptRunSchema.parse({
-    sessionId: (deps.createId ?? createUniqueValue)(),
+    sessionId,
     nonce: (deps.createNonce ?? createUniqueValue)(),
-    createdAt: (deps.now ?? (() => new Date().toISOString()))(),
+    createdAt,
     projectId: input.projectId,
     skill: input.skill,
     persona: input.persona ?? DEFAULT_REVERSE_PROMPT_PERSONA,
+    knowledgeLease: input.knowledgeLease ?? createLegacyKnowledgeLease(sessionId, createdAt, input.approvedMemorySnapshot, references),
     approvedMemorySnapshot: input.approvedMemorySnapshot,
     projectMemoryIds: input.projectMemoryIds ?? [],
-    referenceAssetIds: input.referenceAssetIds,
+    references,
+    referenceAssetIds: references.map((reference) => reference.assetId),
   });
 }
 
@@ -97,11 +154,44 @@ export function parseReversePromptResult(input: unknown, run: ReversePromptRun):
   if (
     result.sessionId !== run.sessionId
     || result.nonce !== run.nonce
-    || result.knowledgeSnapshotVersion !== run.approvedMemorySnapshot.version
+    || result.knowledgeSnapshotVersion !== run.knowledgeLease.versionKey
   ) {
     throw new Error('反推结果运行身份不匹配');
   }
   return result;
+}
+
+function createLegacyKnowledgeLease(
+  runId: string,
+  createdAt: string,
+  approvedMemorySnapshot: ApprovedMemorySnapshot,
+  references: ReversePromptRun['references'],
+): AgentKnowledgeLease {
+  return agentKnowledgeLeaseSchema.parse({
+    schemaVersion: 1,
+    leaseId: `legacy-${runId}`,
+    runId,
+    createdAt,
+    capability: 'reverse_prompt',
+    snapshots: [],
+    references,
+    citations: [],
+    versionKey: approvedMemorySnapshot.version,
+  });
+}
+
+function normalizeReferences(
+  references: ReversePromptRun['references'] | undefined,
+  referenceAssetIds: string[] | undefined,
+): ReversePromptRun['references'] {
+  const baseReferences = references ?? referenceAssetIds?.map((assetId, index) => ({
+    assetId,
+    label: assetId,
+    role: 'product_identity' as const,
+    position: index,
+  })) ?? [];
+
+  return baseReferences.map((reference, index) => ({ ...reference, position: index }));
 }
 
 function createUniqueValue(): string {
