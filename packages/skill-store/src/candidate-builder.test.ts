@@ -71,6 +71,26 @@ describe('buildSkillPromotionCandidate', () => {
     expect(candidate.evidence.change).toEqual(['new heavy liquid rule', 'keep camera locked']);
     expect(candidate.supportingEvidenceCount).toBe(2);
   });
+
+  it('canonicalizes unordered evidence before selecting active timeline entries', () => {
+    const oldFeedback = feedback('feedback-old', {
+      projectRevision: 3,
+      createdAt: '2026-07-15T09:10:00.000Z',
+      change: ['old thin splash rule'],
+    });
+    const replacement = feedback('feedback-replacement', {
+      projectRevision: 4,
+      createdAt: '2026-07-15T09:00:00.000Z',
+      change: ['new heavy liquid rule'],
+      supersedesMemoryId: oldFeedback.id,
+    });
+
+    const candidate = buildSkillPromotionCandidate([replacement, oldFeedback], metadata());
+
+    expect(candidate.sourceProjectMemoryIds).toEqual(['feedback-replacement']);
+    expect(candidate.evidence.change).toEqual(['new heavy liquid rule']);
+    expect(candidate.supportingEvidenceCount).toBe(1);
+  });
 });
 
 function metadata() {

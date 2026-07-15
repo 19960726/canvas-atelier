@@ -39,7 +39,8 @@ export function buildSkillPromotionCandidate(
     throw new Error('Skill promotion candidate cannot mix projects');
   }
 
-  const ordered = selectActiveProjectMemoryEntries(parsed).sort(compareEvidenceOrder);
+  const timeline = [...parsed].sort(compareTimelineOrder);
+  const ordered = selectActiveProjectMemoryEntries(timeline).sort(compareEvidenceOrder);
   const supportingEvidenceCount = ordered.filter((entry) => entry.feedback.change.length > 0).length;
   const supportingChanges = new Set(ordered.flatMap((entry) => entry.feedback.change));
   const contradictingEvidenceCount = ordered.filter((entry) => entry.feedback.never.some((item) => supportingChanges.has(item))).length;
@@ -78,6 +79,10 @@ export function buildSkillPromotionCandidate(
 
 function compareEvidenceOrder(left: ProjectMemoryEntry, right: ProjectMemoryEntry): number {
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+}
+
+function compareTimelineOrder(left: ProjectMemoryEntry, right: ProjectMemoryEntry): number {
+  return left.projectRevision - right.projectRevision || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
 function selectCandidateRule(entries: ProjectMemoryEntry[]): string {
