@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 
 import {
+  BRIDGE_CHANNELS,
+  KnowledgeRefreshService,
+  ManagedKnowledgeStore,
   createDesktopBridgeHandlers,
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
@@ -23,13 +26,25 @@ const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
 let mainWindow: BrowserWindow | null = null;
 let safeModeLoaded = false;
 let desktopHandlers: DesktopBridgeHandlers | null = null;
+let unsubscribeKnowledgeState: (() => void) | null = null;
 let closeAllStarted = false;
 
 app.whenReady().then(async () => {
+  const knowledgeStore = new ManagedKnowledgeStore({
+    appDataRoot: app.getPath('userData'),
+  });
+  const knowledgeRefreshService = new KnowledgeRefreshService({
+    store: knowledgeStore,
+  });
+  unsubscribeKnowledgeState = knowledgeRefreshService.subscribe((state) => {
+    mainWindow?.webContents.send(BRIDGE_CHANNELS.knowledgeStateChanged, state);
+  });
   desktopHandlers = createDesktopBridgeHandlers({
     appDataRoot: app.getPath('userData'),
     channel: runtimeChannel,
     dialogs: createDialogAdapter(),
+    knowledgeRefreshService,
+    knowledgeStore,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
   ipcMain.on(diagnosticsChannel, (_event, message) => {
@@ -58,7 +73,11 @@ app.on('before-quit', (event) => {
 
   event.preventDefault();
   closeAllStarted = true;
-  void desktopHandlers.closeAllProjects().finally(() => app.quit());
+  void desktopHandlers.closeAllProjects().finally(() => {
+    unsubscribeKnowledgeState?.();
+    unsubscribeKnowledgeState = null;
+    app.quit();
+  });
 });
 
 async function createMainWindow(): Promise<void> {
@@ -190,6 +209,13 @@ function createDialogAdapter(): BridgeDialogAdapter {
         filters: [{ name: 'Novus Pack', extensions: ['novuspack', 'zip'] }],
         properties: ['openFile'],
         title: 'Choose Novus package',
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    },
+    async chooseKnowledgeRoot(request) {
+      const result = await dialog.showOpenDialog({
+        properties: ['openDirectory'],
+        title: `Choose knowledge folder for ${request.displayName}`,
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
     },

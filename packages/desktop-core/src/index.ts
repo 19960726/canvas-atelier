@@ -14,12 +14,14 @@ export type {
   CommitAck,
   CommitBridgeRequest,
   CommitRequest,
+  ConfigureKnowledgeBaseBridgeRequest,
   ExportPackBridgeRequest,
   ExportPackBridgeResult,
   JournalRecord,
   JournalTransactionKind,
   ImportPackBridgeRequest,
   ImportPackBridgeResult,
+  KnowledgeStateBridgeResult,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
   PersistenceChannel,
@@ -32,6 +34,8 @@ export type {
   RecoveryPlanBridgeResult,
   RecoveryAction,
   RecoveryPlan,
+  ReviewSkillCandidateBridgeRequest,
+  ReviewSkillCandidateBridgeResult,
   RestoreBridgeRequest,
   RestoreBridgeResult,
   SnapshotEnvelope,
@@ -107,7 +111,12 @@ export {
   createSafeModePreloadApi,
   redactBridgeDiagnostics,
 } from './preload-api.js';
-export type { DesktopBridgeApi, DesktopBridgeInvoke, SafeModeBridgeApi } from './preload-api.js';
+export type {
+  DesktopBridgeApi,
+  DesktopBridgeInvoke,
+  DesktopBridgeSubscribe,
+  SafeModeBridgeApi,
+} from './preload-api.js';
 export { createDesktopBridgeHandlers, registerDesktopBridgeHandlers } from './bridge-handlers.js';
 export type {
   BridgeDialogAdapter,

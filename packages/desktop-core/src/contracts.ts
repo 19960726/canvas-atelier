@@ -1,4 +1,5 @@
-import type { CanvasProject, ProjectOperation, ProjectTransaction } from '@agent-canvas/domain';
+import type { CanvasProject, ProjectOperation, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
+import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 
 export const PROJECT_FORMAT_VERSION = 1;
 export const JOURNAL_SCHEMA_VERSION = 1;
@@ -200,4 +201,26 @@ export interface ImportPackBridgeResult extends BridgeSessionSummary {
 
 export interface CloseProjectBridgeRequest {
   readonly sessionId: string;
+}
+
+export interface ConfigureKnowledgeBaseBridgeRequest {
+  readonly knowledgeBaseId: string;
+  readonly displayName: string;
+}
+
+export interface KnowledgeStateBridgeResult {
+  readonly states: readonly KnowledgeBaseStateSummary[];
+}
+
+export interface ReviewSkillCandidateBridgeRequest {
+  readonly projectId: string;
+  readonly candidateId: string;
+  readonly decision: 'approved' | 'rejected' | 'superseded';
+}
+
+export interface ReviewSkillCandidateBridgeResult {
+  readonly projectId: string;
+  readonly currentRevision: number;
+  readonly candidate: SkillPromotionCandidate;
+  readonly knowledgeState: KnowledgeBaseStateSummary | null;
 }

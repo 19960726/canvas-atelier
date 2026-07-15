@@ -1,6 +1,20 @@
 import { basename, join } from 'node:path';
 
-import { parseCanvasProject, projectTransactionSchema, type CanvasProject } from '@agent-canvas/domain';
+import {
+  parseCanvasProject,
+  projectTransactionSchema,
+  reviewSkillPromotionCandidate,
+  skillPromotionCandidateSchema,
+  type CanvasProject,
+  type SkillPromotionCandidate,
+} from '@agent-canvas/domain';
+import {
+  KnowledgeSnapshotRegistry,
+  SkillKnowledgePromotionService,
+  SkillWritebackService,
+  type KnowledgeBaseStateSummary,
+  type KnowledgeSnapshot,
+} from '@agent-canvas/skill-store';
 
 import { canonicalJson, sha256Canonical } from './canonical-json.js';
 import {
@@ -10,17 +24,22 @@ import {
   type CloseProjectBridgeRequest,
   type CommitAck,
   type CommitBridgeRequest,
+  type ConfigureKnowledgeBaseBridgeRequest,
   type ExportPackBridgeRequest,
   type ExportPackBridgeResult,
   type ImportPackBridgeRequest,
   type ImportPackBridgeResult,
+  type KnowledgeStateBridgeResult,
   type OpenProjectBridgeRequest,
   type OpenProjectBridgeResult,
   type PersistenceChannel,
+  type PersistenceError,
   type ProjectManifest,
   type RecoveryCandidateBridgeSummary,
   type RecoveryPlanBridgeRequest,
   type RecoveryPlanBridgeResult,
+  type ReviewSkillCandidateBridgeRequest,
+  type ReviewSkillCandidateBridgeResult,
   type RestoreBridgeRequest,
   type RestoreBridgeResult,
   type SnapshotEnvelope,
@@ -29,6 +48,12 @@ import {
 } from './contracts.js';
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
 import { createPersistenceError, releaseJournalState, writeInitialJournalCommitBoundary } from './journal-writer.js';
+import { KnowledgeRefreshService } from './knowledge-refresh-service.js';
+import {
+  type ConfigureKnowledgeRoot,
+  type ConfiguredKnowledgeBase,
+  ManagedKnowledgeStore,
+} from './managed-knowledge-store.js';
 import {
   NovusPackExporter,
   NovusPackImporter,
@@ -94,9 +119,24 @@ interface NovusPackImporterLike {
   importTo(packagePath: string, destinationRoot: string): Promise<NovusPackImportResult>;
 }
 
+interface KnowledgeStoreLike {
+  configure(input: ConfigureKnowledgeRoot): Promise<ConfiguredKnowledgeBase>;
+  listStates(): Promise<KnowledgeBaseStateSummary[]>;
+  publish?(snapshot: KnowledgeSnapshot): Promise<void>;
+  readActive(knowledgeBaseId: string): Promise<KnowledgeSnapshot | null>;
+}
+
+interface KnowledgeRefreshServiceLike {
+  refreshNow(knowledgeBaseId: string): Promise<KnowledgeBaseStateSummary>;
+  start(knowledgeBaseIds: string[]): Promise<void>;
+  stop(): Promise<void>;
+  subscribe(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
+}
+
 export interface BridgeDialogAdapter {
   chooseImportDestination(): Promise<string | null>;
   chooseImportPackSource(): Promise<string | null>;
+  chooseKnowledgeRoot(request: ConfigureKnowledgeBaseBridgeRequest): Promise<string | null>;
   choosePackExportPath(session: BridgeSessionSummary): Promise<string | null>;
   chooseProjectRoot(request: OpenProjectBridgeRequest): Promise<string | null>;
 }
@@ -108,6 +148,8 @@ export interface DesktopBridgeHandlerDependencies {
   readonly dialogs?: Partial<BridgeDialogAdapter>;
   readonly fileSystem?: FileSystem;
   readonly importerIsolationRoot?: string;
+  readonly knowledgeRefreshService?: KnowledgeRefreshServiceLike;
+  readonly knowledgeStore?: KnowledgeStoreLike;
   readonly packExporter?: NovusPackExporterLike;
   readonly packImporter?: NovusPackImporterLike;
   readonly recoveryScanner?: RecoveryScannerLike;
@@ -119,11 +161,14 @@ export interface DesktopBridgeHandlers {
   closeAllProjects(): Promise<void>;
   closeProject(event: unknown, request: unknown): Promise<void>;
   commit(event: unknown, request: unknown): Promise<CommitAck>;
+  configureKnowledgeBase(event: unknown, request: unknown): Promise<KnowledgeBaseStateSummary | null>;
   createStablePoint(event: unknown, request: unknown): Promise<StablePointBridgeResult>;
   exportPack(event: unknown, request: unknown): Promise<ExportPackBridgeResult | null>;
+  getKnowledgeState(event: unknown, request: unknown): Promise<KnowledgeStateBridgeResult>;
   getRecoveryPlan(event: unknown, request: unknown): Promise<RecoveryPlanBridgeResult>;
   importPack(event: unknown, request: unknown): Promise<ImportPackBridgeResult | null>;
   openProject(event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null>;
+  reviewSkillCandidate(event: unknown, request: unknown): Promise<ReviewSkillCandidateBridgeResult>;
   restore(event: unknown, request: unknown): Promise<RestoreBridgeResult>;
 }
 
@@ -167,6 +212,14 @@ export function createDesktopBridgeHandlers(
   const packExporter = dependencies.packExporter ?? new NovusPackExporter();
   const packImporter = dependencies.packImporter ?? new NovusPackImporter({
     isolationRoot: dependencies.importerIsolationRoot,
+  });
+  const knowledgeStore = dependencies.knowledgeStore ?? new ManagedKnowledgeStore({
+    appDataRoot: dependencies.appDataRoot ?? process.cwd(),
+    fileSystem,
+  });
+  const knowledgeRefreshService = dependencies.knowledgeRefreshService ?? new KnowledgeRefreshService({
+    fileSystem,
+    store: knowledgeStore as ManagedKnowledgeStore,
   });
   const sessions = new Map<string, BridgeSessionContext>();
 
@@ -324,6 +377,81 @@ export function createDesktopBridgeHandlers(
     };
   }
 
+  async function configureKnowledgeBase(
+    _event: unknown,
+    request: unknown,
+  ): Promise<KnowledgeBaseStateSummary | null> {
+    const validated = validateConfigureKnowledgeBaseBridgeRequest(request);
+    const rootPath = await dialogs.chooseKnowledgeRoot(validated);
+    if (rootPath === null) {
+      return null;
+    }
+
+    await knowledgeStore.configure({
+      ...validated,
+      rootPath,
+    });
+    const states = await knowledgeStore.listStates();
+    await knowledgeRefreshService.start(states.map((state) => state.knowledgeBaseId));
+    return sanitizeKnowledgeSummary(await knowledgeRefreshService.refreshNow(validated.knowledgeBaseId));
+  }
+
+  async function getKnowledgeState(
+    _event: unknown,
+    _request: unknown,
+  ): Promise<KnowledgeStateBridgeResult> {
+    return {
+      states: sanitizeKnowledgeSummaries(await knowledgeStore.listStates()),
+    };
+  }
+
+  async function reviewSkillCandidate(
+    _event: unknown,
+    request: unknown,
+  ): Promise<ReviewSkillCandidateBridgeResult> {
+    const validated = validateReviewSkillCandidateBridgeRequest(request);
+    const session = requireSingleWritableProjectSession(sessions, validated.projectId);
+    const project = await repository.readCurrentProject(session.session);
+    if (project.id !== validated.projectId) {
+      throw invalidRequest('Project is not active');
+    }
+
+    const candidate = project.skillPromotionCandidates.find((item) => item.id === validated.candidateId);
+    if (candidate === undefined) {
+      throw invalidRequest('Skill candidate is unavailable');
+    }
+    assertPublicBridgePayload(candidate);
+
+    const reviewed = await reviewSkillCandidateForBridge(candidate, validated);
+    const nextCandidates = project.skillPromotionCandidates.map((item) => (
+      item.id === reviewed.id ? reviewed : item
+    ));
+    const currentRevision = await readCurrentRevision(repository, session.session);
+    const ack = await requireBridgeWriter(session).commit({
+      baseRevision: currentRevision,
+      kind: 'system',
+      projectId: validated.projectId,
+      transaction: {
+        id: `review-skill-${reviewed.id}-${Date.now()}`,
+        label: `Review skill candidate ${reviewed.id}`,
+        operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
+      },
+    });
+    await flushScheduledSnapshotAfterCommit(session, ack, 'system');
+
+    const knowledgeState = reviewed.targetKnowledgeBaseId === undefined
+      ? null
+      : sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
+        .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null;
+
+    return {
+      candidate: sanitizeSkillPromotionCandidate(reviewed),
+      currentRevision: ack.revision,
+      knowledgeState,
+      projectId: validated.projectId,
+    };
+  }
+
   async function closeProject(_event: unknown, request: unknown): Promise<void> {
     const validated = validateSessionRequest(request);
     const session = requireSession(sessions, validated.sessionId);
@@ -337,17 +465,21 @@ export function createDesktopBridgeHandlers(
     for (const session of activeSessions) {
       await closeBridgeSession(session);
     }
+    await knowledgeRefreshService.stop();
   }
 
   return {
     closeAllProjects,
     closeProject,
     commit,
+    configureKnowledgeBase,
     createStablePoint,
     exportPack,
+    getKnowledgeState,
     getRecoveryPlan,
     importPack,
     openProject,
+    reviewSkillCandidate,
     restore,
   };
 
@@ -407,6 +539,65 @@ export function createDesktopBridgeHandlers(
     await snapshotScheduler.flush(session.session, { reason: decision.reason });
     session.session = await refreshSessionManifest(fileSystem, session.session);
   }
+
+  async function reviewSkillCandidateForBridge(
+    candidate: SkillPromotionCandidate,
+    request: ReviewSkillCandidateBridgeRequest,
+  ): Promise<SkillPromotionCandidate> {
+    if (request.decision !== 'approved') {
+      return reviewSkillPromotionCandidate(candidate, {
+        decision: request.decision,
+        reviewedAt: new Date().toISOString(),
+      });
+    }
+
+    if (candidate.targetKnowledgeBaseId === undefined) {
+      throw invalidRequest('Approved skill candidates require a target knowledge base');
+    }
+    const publish = knowledgeStore.publish;
+    if (publish === undefined) {
+      throw invalidRequest('Knowledge publication is unavailable');
+    }
+    const active = await knowledgeStore.readActive(candidate.targetKnowledgeBaseId);
+    if (active === null) {
+      throw invalidRequest('Active knowledge snapshot is unavailable');
+    }
+
+    try {
+      const registry = new KnowledgeSnapshotRegistry([{
+        schemaVersion: 1,
+        knowledgeBaseId: active.knowledgeBaseId,
+        displayName: active.displayName,
+        status: 'active',
+        active,
+        versions: [active],
+        lastFailure: null,
+        lastRollbackAt: null,
+      }]);
+      const writebackService = new SkillWritebackService();
+      const promotionService = new SkillKnowledgePromotionService({
+        registry,
+        sourceDeviceId: 'desktop-bridge',
+        writebackService,
+      });
+      const prepared = promotionService.prepare(candidate, active);
+      const approval = writebackService.issueApproval(prepared.diffHash, {
+        random: () => 0.5,
+        ttlMs: 60_000,
+      });
+      const approved = await promotionService.approve(prepared.preparedId, approval.approvalToken);
+      if (!approved.ok) {
+        throw invalidRequest('Skill candidate approval is unavailable');
+      }
+      await publish.call(knowledgeStore, approved.snapshot);
+      return approved.candidate;
+    } catch (error) {
+      if (isPersistenceErrorCode(error, 'INVALID_REQUEST')) {
+        throw error;
+      }
+      throw invalidRequest('Skill candidate approval is unavailable');
+    }
+  }
 }
 
 export function registerDesktopBridgeHandlers(
@@ -421,12 +612,16 @@ export function registerDesktopBridgeHandlers(
   ipcMain.handle(BRIDGE_CHANNELS.importPack, handlers.importPack);
   ipcMain.handle(BRIDGE_CHANNELS.closeProject, handlers.closeProject);
   ipcMain.handle(BRIDGE_CHANNELS.getRecoveryPlan, handlers.getRecoveryPlan);
+  ipcMain.handle(BRIDGE_CHANNELS.configureKnowledgeBase, handlers.configureKnowledgeBase);
+  ipcMain.handle(BRIDGE_CHANNELS.getKnowledgeState, handlers.getKnowledgeState);
+  ipcMain.handle(BRIDGE_CHANNELS.reviewSkillCandidate, handlers.reviewSkillCandidate);
 }
 
 function withDialogDefaults(dialogs: Partial<BridgeDialogAdapter> | undefined): BridgeDialogAdapter {
   return {
     chooseImportDestination: dialogs?.chooseImportDestination ?? (async () => null),
     chooseImportPackSource: dialogs?.chooseImportPackSource ?? (async () => null),
+    chooseKnowledgeRoot: dialogs?.chooseKnowledgeRoot ?? (async () => null),
     choosePackExportPath: dialogs?.choosePackExportPath ?? (async () => null),
     chooseProjectRoot: dialogs?.chooseProjectRoot ?? (async () => null),
   };
@@ -517,6 +712,27 @@ function requireWritableSession(
     );
   }
   return session;
+}
+
+function requireSingleWritableProjectSession(
+  sessions: Map<string, BridgeSessionContext>,
+  projectId: string,
+): BridgeSessionContext {
+  const matches = [...sessions.values()].filter((context) => (
+    context.session.mode === 'write' &&
+    context.session.manifest.projectId === projectId
+  ));
+  if (matches.length !== 1) {
+    throw invalidRequest('Expected exactly one active writable project session');
+  }
+  return matches[0]!;
+}
+
+function requireBridgeWriter(session: BridgeSessionContext): BridgeWriter {
+  if (session.writer === null) {
+    throw invalidRequest('Skill candidate review requires a writable desktop session');
+  }
+  return session.writer;
 }
 
 function sanitizeRecoveryPlan(
@@ -669,6 +885,16 @@ function validateOpenProjectBridgeRequest(value: unknown): OpenProjectBridgeRequ
   };
 }
 
+function validateConfigureKnowledgeBaseBridgeRequest(value: unknown): ConfigureKnowledgeBaseBridgeRequest {
+  const record = expectPlainRecord(value);
+  const request = {
+    displayName: parseNonEmptyString(record.displayName, 'displayName'),
+    knowledgeBaseId: parseNonEmptyString(record.knowledgeBaseId, 'knowledgeBaseId'),
+  };
+  assertPublicBridgePayload(request);
+  return request;
+}
+
 function validateCommitBridgeRequest(value: unknown): CommitBridgeRequest {
   const record = expectPlainRecord(value);
   return {
@@ -694,6 +920,19 @@ function validateRestoreBridgeRequest(value: unknown): RestoreBridgeRequest {
       ? undefined
       : parseNonEmptyString(record.candidateId, 'candidateId'),
     sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+  };
+}
+
+function validateReviewSkillCandidateBridgeRequest(value: unknown): ReviewSkillCandidateBridgeRequest {
+  const record = expectPlainRecord(value);
+  const decision = record.decision;
+  if (decision !== 'approved' && decision !== 'rejected' && decision !== 'superseded') {
+    throw invalidRequest('Skill candidate review decision is invalid');
+  }
+  return {
+    candidateId: parseNonEmptyString(record.candidateId, 'candidateId'),
+    decision,
+    projectId: parseNonEmptyString(record.projectId, 'projectId'),
   };
 }
 
@@ -750,6 +989,10 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object';
+}
+
 function requireMethod<TObject extends object, TKey extends keyof TObject>(
   value: TObject,
   key: TKey,
@@ -763,4 +1006,132 @@ function requireMethod<TObject extends object, TKey extends keyof TObject>(
 
 function defaultId(): string {
   return `desktop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function sanitizeKnowledgeSummaries(
+  states: readonly KnowledgeBaseStateSummary[],
+): KnowledgeBaseStateSummary[] {
+  return states.map(sanitizeKnowledgeSummary).sort(compareKnowledgeSummaries);
+}
+
+function sanitizeKnowledgeSummary(state: KnowledgeBaseStateSummary): KnowledgeBaseStateSummary {
+  const summary: KnowledgeBaseStateSummary = {
+    schemaVersion: 1,
+    knowledgeBaseId: parseNonEmptyString(state.knowledgeBaseId, 'knowledgeBaseId'),
+    displayName: state.displayName === null
+      ? null
+      : parseNonEmptyString(state.displayName, 'displayName'),
+    status: parseKnowledgeStatus(state.status),
+    activeVersion: state.activeVersion === null
+      ? null
+      : parsePositiveInteger(state.activeVersion, 'activeVersion'),
+    activeContentHash: state.activeContentHash === null
+      ? null
+      : parseHash(state.activeContentHash, 'activeContentHash'),
+    versionCount: parseNonNegativeInteger(state.versionCount, 'versionCount'),
+    versions: Array.isArray(state.versions)
+      ? state.versions.map((version) => ({
+        version: parsePositiveInteger(version.version, 'version'),
+        contentHash: parseHash(version.contentHash, 'contentHash'),
+        publishedAt: parseDateString(version.publishedAt, 'publishedAt'),
+        sourceDeviceId: parseNonEmptyString(version.sourceDeviceId, 'sourceDeviceId'),
+        displayName: parseNonEmptyString(version.displayName, 'displayName'),
+      })).sort((left, right) => left.version - right.version)
+      : [],
+    lastFailure: state.lastFailure === null
+      ? null
+      : {
+        reason: parseNonEmptyString(state.lastFailure.reason, 'reason'),
+        failedAt: parseDateString(state.lastFailure.failedAt, 'failedAt'),
+      },
+    lastRollbackAt: state.lastRollbackAt === null
+      ? null
+      : parseDateString(state.lastRollbackAt, 'lastRollbackAt'),
+  };
+  if (summary.versions.length !== summary.versionCount) {
+    throw invalidRequest('Knowledge state version count is invalid');
+  }
+  assertPublicBridgePayload(summary);
+  return summary;
+}
+
+function sanitizeSkillPromotionCandidate(candidate: SkillPromotionCandidate): SkillPromotionCandidate {
+  const parsed = skillPromotionCandidateSchema.parse(candidate);
+  assertPublicBridgePayload(parsed);
+  return parsed;
+}
+
+function assertPublicBridgePayload(value: unknown): void {
+  for (const text of collectStrings(value)) {
+    if (containsProtectedBridgeText(text)) {
+      throw invalidRequest('Public bridge payload contains protected content');
+    }
+  }
+}
+
+function collectStrings(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return [value];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(collectStrings);
+  }
+  if (isRecord(value)) {
+    return Object.values(value).flatMap(collectStrings);
+  }
+  return [];
+}
+
+function containsProtectedBridgeText(value: string): boolean {
+  return /authorization\s*:/i.test(value)
+    || /\bbearer\s+[a-z0-9._~+/=\-]{8,}/i.test(value)
+    || /\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/i.test(value)
+    || /\bsk-[a-z0-9_-]{8,}\b/i.test(value)
+    || /\bgithub_pat_[a-z0-9_]+\b/i.test(value)
+    || /data:image\/[a-z0-9.+-]+;base64,/i.test(value)
+    || /[A-Za-z]:\\/.test(value)
+    || /\\\\[^\\\s]+\\/.test(value)
+    || /(?:^|\s)\/(?:Users|home|var|etc)\//.test(value);
+}
+
+function parseKnowledgeStatus(value: unknown): KnowledgeBaseStateSummary['status'] {
+  if (value === 'empty' || value === 'active' || value === 'fallback' || value === 'rolled_back') {
+    return value;
+  }
+  throw invalidRequest('Knowledge state status is invalid');
+}
+
+function parsePositiveInteger(value: unknown, fieldName: string): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  throw invalidRequest(`${fieldName} must be a positive integer`);
+}
+
+function parseHash(value: unknown, fieldName: string): string {
+  const stringValue = parseNonEmptyString(value, fieldName);
+  if (!/^[a-f0-9]{64}$/u.test(stringValue)) {
+    throw invalidRequest(`${fieldName} must be a lowercase SHA-256 digest`);
+  }
+  return stringValue;
+}
+
+function parseDateString(value: unknown, fieldName: string): string {
+  const stringValue = parseNonEmptyString(value, fieldName);
+  if (Number.isNaN(Date.parse(stringValue))) {
+    throw invalidRequest(`${fieldName} must be an ISO timestamp`);
+  }
+  return stringValue;
+}
+
+function compareKnowledgeSummaries(left: KnowledgeBaseStateSummary, right: KnowledgeBaseStateSummary): number {
+  return left.knowledgeBaseId < right.knowledgeBaseId ? -1 : left.knowledgeBaseId > right.knowledgeBaseId ? 1 : 0;
+}
+
+function invalidRequest(message: string): PersistenceError {
+  return createPersistenceError('INVALID_REQUEST', false, message);
+}
+
+function isPersistenceErrorCode(error: unknown, code: string): boolean {
+  return isRecord(error) && error.code === code;
 }

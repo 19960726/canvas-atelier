@@ -3,14 +3,16 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { CanvasProject } from '@agent-canvas/domain';
+import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 
 import type { CommitRequest } from './contracts';
 import { releaseJournalState } from './journal-writer';
 import { NodeFileSystem } from './file-system';
 import { ProjectRepository, type OpenedProjectSession } from './project-repository';
-import { createDesktopBridgeHandlers } from './bridge-handlers';
+import { createDesktopBridgeHandlers, registerDesktopBridgeHandlers } from './bridge-handlers';
 import { SnapshotScheduler } from './snapshot-scheduler';
 import {
+  BRIDGE_CHANNELS,
   createPreloadApi,
   createSafeModePreloadApi,
   redactBridgeDiagnostics,
@@ -34,13 +36,36 @@ describe('desktop bridge contract', () => {
     expect(Object.keys(createPreloadApi(mockInvoke)).sort()).toEqual([
       'closeProject',
       'commit',
+      'configureKnowledgeBase',
       'createStablePoint',
       'exportPack',
+      'getKnowledgeState',
       'getRecoveryPlan',
       'importPack',
       'openProject',
       'restore',
+      'reviewSkillCandidate',
+      'subscribeKnowledgeState',
     ]);
+    expect(createPreloadApi(mockInvoke)).not.toHaveProperty('readFile');
+    expect(createPreloadApi(mockInvoke)).not.toHaveProperty('watchPath');
+  });
+
+  it('subscribes and unsubscribes knowledge state listeners through the event channel', () => {
+    const mockInvoke = vi.fn(async () => undefined) as DesktopBridgeInvoke;
+    const unsubscribe = vi.fn();
+    const subscribe = vi.fn((_channel, _listener) => unsubscribe);
+    const api = createPreloadApi(mockInvoke, subscribe);
+    const listener = vi.fn();
+
+    const stop = api.subscribeKnowledgeState(listener);
+    const eventListener = subscribe.mock.calls[0]?.[1];
+    eventListener?.(createKnowledgeStateSummary());
+    stop();
+
+    expect(subscribe).toHaveBeenCalledWith(BRIDGE_CHANNELS.knowledgeStateChanged, expect.any(Function));
+    expect(listener).toHaveBeenCalledWith(createKnowledgeStateSummary());
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it('restricts safe mode to recovery-only bridge methods', () => {
@@ -119,6 +144,104 @@ describe('desktop bridge contract', () => {
       projectId: starterProject.id,
       stableSnapshotRevision: 2,
     });
+  });
+
+  it('cancels knowledge configuration through the main-process picker without accepting renderer paths', async () => {
+    const chooseKnowledgeRoot = vi.fn(async () => null);
+    const configure = vi.fn();
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: {
+        chooseKnowledgeRoot,
+      },
+      knowledgeRefreshService: {
+        refreshNow: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure,
+        listStates: vi.fn(async () => []),
+        readActive: vi.fn(async () => null),
+      },
+      repository: {
+        close: vi.fn(async () => undefined),
+      },
+    });
+
+    await expect(handlers.configureKnowledgeBase({}, {
+      displayName: 'Scene Skill',
+      knowledgeBaseId: 'scene-skill',
+      rootPath: 'C:\\Users\\Private\\Documents',
+    })).resolves.toBeNull();
+
+    expect(chooseKnowledgeRoot).toHaveBeenCalledWith({
+      displayName: 'Scene Skill',
+      knowledgeBaseId: 'scene-skill',
+    });
+    expect(configure).not.toHaveBeenCalled();
+  });
+
+  it('returns public knowledge summaries without private store fields', async () => {
+    const state = createKnowledgeStateSummary();
+    const handlers = createDesktopBridgeHandlers({
+      knowledgeRefreshService: {
+        refreshNow: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates: vi.fn(async () => [{ ...state, rootPath: 'C:\\Users\\Private\\Knowledge' }]),
+        readActive: vi.fn(async () => null),
+      },
+      repository: {
+        close: vi.fn(async () => undefined),
+      },
+    });
+
+    const result = await handlers.getKnowledgeState({}, undefined);
+
+    expect(result).toEqual({ states: [state] });
+    expect(JSON.stringify(result)).not.toContain('Private');
+    expect(JSON.stringify(result)).not.toContain('rootPath');
+  });
+
+  it('rejects missing active-project skill candidates with INVALID_REQUEST', async () => {
+    const handlers = createDesktopBridgeHandlers({
+      repository: {
+        close: vi.fn(async () => undefined),
+      },
+    });
+
+    await expect(handlers.reviewSkillCandidate({}, {
+      candidateId: 'candidate-missing',
+      decision: 'rejected',
+      projectId: starterProject.id,
+    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+  });
+
+  it('registers managed knowledge invoke channels', () => {
+    const channels: string[] = [];
+    const ipcMain = {
+      handle: vi.fn((channel: string) => {
+        channels.push(channel);
+      }),
+    };
+    const handlers = createDesktopBridgeHandlers({
+      repository: {
+        close: vi.fn(async () => undefined),
+      },
+    });
+
+    registerDesktopBridgeHandlers(ipcMain, handlers);
+
+    expect(channels).toEqual(expect.arrayContaining([
+      BRIDGE_CHANNELS.configureKnowledgeBase,
+      BRIDGE_CHANNELS.getKnowledgeState,
+      BRIDGE_CHANNELS.reviewSkillCandidate,
+    ]));
   });
 
   it('returns the active journal head revision when reopening newer-than-stable projects', async () => {
@@ -403,6 +526,27 @@ function createOpenedSession(root = 'C:\\redacted\\Demo.novus-project'): OpenedP
     },
     mode: 'write',
     root,
+  };
+}
+
+function createKnowledgeStateSummary(): KnowledgeBaseStateSummary {
+  return {
+    schemaVersion: 1,
+    knowledgeBaseId: 'scene-skill',
+    displayName: 'Scene Skill',
+    status: 'active',
+    activeVersion: 1,
+    activeContentHash: 'a'.repeat(64),
+    versionCount: 1,
+    versions: [{
+      version: 1,
+      contentHash: 'a'.repeat(64),
+      publishedAt: '2026-07-15T00:00:00.000Z',
+      sourceDeviceId: 'desktop-core',
+      displayName: 'Scene Skill',
+    }],
+    lastFailure: null,
+    lastRollbackAt: null,
   };
 }
 

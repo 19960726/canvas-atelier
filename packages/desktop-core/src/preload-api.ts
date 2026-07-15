@@ -2,30 +2,39 @@ import type {
   CloseProjectBridgeRequest,
   CommitAck,
   CommitBridgeRequest,
+  ConfigureKnowledgeBaseBridgeRequest,
   ExportPackBridgeRequest,
   ExportPackBridgeResult,
   ImportPackBridgeRequest,
   ImportPackBridgeResult,
+  KnowledgeStateBridgeResult,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
   RecoveryPlanBridgeRequest,
   RecoveryPlanBridgeResult,
+  ReviewSkillCandidateBridgeRequest,
+  ReviewSkillCandidateBridgeResult,
   RestoreBridgeRequest,
   RestoreBridgeResult,
   StablePointBridgeRequest,
   StablePointBridgeResult,
 } from './contracts.js';
+import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 
 export const DESKTOP_BRIDGE_PRELOAD_KEY = 'novusDesktop';
 
 export const BRIDGE_CHANNELS = {
   closeProject: 'novus-desktop:close-project',
   commit: 'novus-desktop:commit',
+  configureKnowledgeBase: 'novus-desktop:configure-knowledge-base',
   createStablePoint: 'novus-desktop:create-stable-point',
   exportPack: 'novus-desktop:export-pack',
+  getKnowledgeState: 'novus-desktop:get-knowledge-state',
   getRecoveryPlan: 'novus-desktop:get-recovery-plan',
   importPack: 'novus-desktop:import-pack',
+  knowledgeStateChanged: 'novus-desktop:knowledge-state-changed',
   openProject: 'novus-desktop:open-project',
+  reviewSkillCandidate: 'novus-desktop:review-skill-candidate',
   restore: 'novus-desktop:restore',
 } as const;
 
@@ -44,6 +53,10 @@ export interface DesktopBridgeApi {
   importPack(request: ImportPackBridgeRequest): Promise<ImportPackBridgeResult | null>;
   closeProject(request: CloseProjectBridgeRequest): Promise<void>;
   getRecoveryPlan(request: RecoveryPlanBridgeRequest): Promise<RecoveryPlanBridgeResult>;
+  configureKnowledgeBase(request: ConfigureKnowledgeBaseBridgeRequest): Promise<KnowledgeBaseStateSummary | null>;
+  getKnowledgeState(): Promise<KnowledgeStateBridgeResult>;
+  reviewSkillCandidate(request: ReviewSkillCandidateBridgeRequest): Promise<ReviewSkillCandidateBridgeResult>;
+  subscribeKnowledgeState(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
 }
 
 export interface SafeModeBridgeApi {
@@ -57,7 +70,15 @@ export type DesktopBridgeInvoke = <TResponse>(
   payload?: unknown,
 ) => Promise<TResponse>;
 
-export function createPreloadApi(invoke: DesktopBridgeInvoke): DesktopBridgeApi {
+export type DesktopBridgeSubscribe = (
+  channel: string,
+  listener: (payload: unknown) => void,
+) => () => void;
+
+export function createPreloadApi(
+  invoke: DesktopBridgeInvoke,
+  subscribe: DesktopBridgeSubscribe = () => () => undefined,
+): DesktopBridgeApi {
   return {
     openProject(request) {
       return invoke<OpenProjectBridgeResult | null>(BRIDGE_CHANNELS.openProject, request);
@@ -82,6 +103,20 @@ export function createPreloadApi(invoke: DesktopBridgeInvoke): DesktopBridgeApi 
     },
     getRecoveryPlan(request) {
       return invoke<RecoveryPlanBridgeResult>(BRIDGE_CHANNELS.getRecoveryPlan, request);
+    },
+    configureKnowledgeBase(request) {
+      return invoke<KnowledgeBaseStateSummary | null>(BRIDGE_CHANNELS.configureKnowledgeBase, request);
+    },
+    getKnowledgeState() {
+      return invoke<KnowledgeStateBridgeResult>(BRIDGE_CHANNELS.getKnowledgeState);
+    },
+    reviewSkillCandidate(request) {
+      return invoke<ReviewSkillCandidateBridgeResult>(BRIDGE_CHANNELS.reviewSkillCandidate, request);
+    },
+    subscribeKnowledgeState(listener) {
+      return subscribe(BRIDGE_CHANNELS.knowledgeStateChanged, (state) => {
+        listener(state as KnowledgeBaseStateSummary);
+      });
     },
   };
 }

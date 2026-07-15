@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 import {
   DESKTOP_BRIDGE_PRELOAD_KEY,
@@ -8,7 +8,18 @@ import {
 
 contextBridge.exposeInMainWorld(
   DESKTOP_BRIDGE_PRELOAD_KEY,
-  createPreloadApi((channel, payload) => ipcRenderer.invoke(channel, payload)),
+  createPreloadApi(
+    (channel, payload) => ipcRenderer.invoke(channel, payload),
+    (channel, listener) => {
+      const wrapped = (_event: IpcRendererEvent, payload: unknown) => {
+        listener(payload);
+      };
+      ipcRenderer.on(channel, wrapped);
+      return () => {
+        ipcRenderer.removeListener(channel, wrapped);
+      };
+    },
+  ),
 );
 
 const reportSafeModeFailure = (value: unknown) => {
