@@ -424,7 +424,7 @@ export function createDesktopBridgeHandlers(
     }
     assertPublicBridgePayload(candidate);
 
-    const reviewed = await reviewSkillCandidateForBridge(candidate, validated);
+    const reviewed = sanitizeSkillPromotionCandidate(await reviewSkillCandidateForBridge(candidate, validated));
     const nextCandidates = project.skillPromotionCandidates.map((item) => (
       item.id === reviewed.id ? reviewed : item
     ));
@@ -1111,8 +1111,30 @@ function sanitizeKnowledgeSummary(state: KnowledgeBaseStateSummary): KnowledgeBa
 
 function sanitizeSkillPromotionCandidate(candidate: SkillPromotionCandidate): SkillPromotionCandidate {
   const parsed = skillPromotionCandidateSchema.parse(candidate);
-  assertPublicBridgePayload(parsed);
-  return parsed;
+  const sanitized = skillPromotionCandidateSchema.parse({
+    schemaVersion: parsed.schemaVersion,
+    id: parsed.id,
+    sourceProjectId: parsed.sourceProjectId,
+    sourceProjectMemoryId: parsed.sourceProjectMemoryId,
+    createdAt: parsed.createdAt,
+    title: parsed.title,
+    rationale: parsed.rationale,
+    rule: parsed.rule,
+    evidence: parsed.evidence,
+    reviewStatus: parsed.reviewStatus,
+    ...(parsed.sourceProjectMemoryIds === undefined ? {} : { sourceProjectMemoryIds: parsed.sourceProjectMemoryIds }),
+    ...(parsed.beforeRule === undefined ? {} : { beforeRule: parsed.beforeRule }),
+    ...(parsed.targetKnowledgeBaseId === undefined ? {} : { targetKnowledgeBaseId: parsed.targetKnowledgeBaseId }),
+    ...(parsed.targetKnowledgeSection === undefined ? {} : { targetKnowledgeSection: parsed.targetKnowledgeSection }),
+    ...(parsed.counts === undefined ? {} : { counts: parsed.counts }),
+    ...(parsed.confidence === undefined ? {} : { confidence: parsed.confidence }),
+    ...(parsed.affectedCapabilities === undefined ? {} : { affectedCapabilities: parsed.affectedCapabilities }),
+    ...(parsed.reviewedAt === undefined ? {} : { reviewedAt: parsed.reviewedAt }),
+    ...(parsed.publishedKnowledgeVersion === undefined ? {} : { publishedKnowledgeVersion: parsed.publishedKnowledgeVersion }),
+    ...(parsed.rolledBackAt === undefined ? {} : { rolledBackAt: parsed.rolledBackAt }),
+  });
+  assertPublicBridgePayload(sanitized);
+  return sanitized;
 }
 
 function assertPublicBridgePayload(value: unknown): void {

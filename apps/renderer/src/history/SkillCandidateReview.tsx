@@ -89,12 +89,12 @@ function unique(value: string, index: number, values: string[]): boolean {
 function formatEvidence(candidate: SkillPromotionCandidate): string {
   const counts = candidate.counts;
   if (!counts) return 'n/a';
-  return [
-    `supporting ${counts.supportingMemoryCount ?? 0}`,
-    `contradicting ${counts.observationCount ?? 0}`,
-    `refs ${counts.referenceCount ?? 0}`,
-    `citations ${counts.citationCount ?? 0}`,
-  ].join(' / ');
+  const evidence: string[] = [];
+  if (counts.supportingMemoryCount !== undefined) evidence.push(`supporting ${counts.supportingMemoryCount}`);
+  if (counts.observationCount !== undefined) evidence.push(`observations ${counts.observationCount}`);
+  if (counts.referenceCount !== undefined) evidence.push(`refs ${counts.referenceCount}`);
+  if (counts.citationCount !== undefined) evidence.push(`citations ${counts.citationCount}`);
+  return evidence.length === 0 ? 'n/a' : evidence.join(' / ');
 }
 
 function findRollbackTarget(

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SkillPromotionCandidate } from '@agent-canvas/domain';
+import { skillPromotionCandidateSchema, type SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import { SkillCandidateReview } from './SkillCandidateReview';
 
@@ -57,6 +57,39 @@ describe('SkillCandidateReview', () => {
       projectId: 'project-1',
       targetVersion: 2,
     }));
+  });
+
+  it('labels persisted observation counts honestly without inventing contradiction evidence', () => {
+    const persisted = skillPromotionCandidateSchema.parse(candidate());
+
+    render(<SkillCandidateReview
+      candidates={[persisted]}
+      knowledgeBases={[knowledgeState()]}
+      onReview={async () => undefined}
+      projectId="project-1"
+    />);
+
+    expect(screen.getByText('supporting 2 / observations 1 / refs 1 / citations 1')).toBeVisible();
+    expect(screen.queryByText(/contradicting/i)).not.toBeInTheDocument();
+  });
+
+  it('omits evidence counts that are not present in the persisted candidate', () => {
+    const persisted = skillPromotionCandidateSchema.parse(candidate({
+      counts: { observationCount: 3 },
+    }));
+
+    render(<SkillCandidateReview
+      candidates={[persisted]}
+      knowledgeBases={[knowledgeState()]}
+      onReview={async () => undefined}
+      projectId="project-1"
+    />);
+
+    expect(screen.getByText('observations 3')).toBeVisible();
+    expect(screen.queryByText(/supporting/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/contradicting/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/refs/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/citations/i)).not.toBeInTheDocument();
   });
 
   it('keeps rejected and rolled-back candidates visible for audit', () => {
