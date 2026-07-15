@@ -390,6 +390,19 @@ export class ManagedKnowledgeStore {
     }
   }
 
+  private async didFileVanishAfterWindowsRealpathFailure(path: string, error: unknown): Promise<boolean> {
+    if (!isErrno(error, 'EPERM')) {
+      return false;
+    }
+    const lstat = this.requireFileSystemMethod('lstat', this.fileSystem.lstat);
+    try {
+      await lstat.call(this.fileSystem, path);
+      return false;
+    } catch (recheckError) {
+      return isMissingOrVanishedFileError(recheckError);
+    }
+  }
+
   private async assertRealManagedWriteTarget(path: string): Promise<void> {
     const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
     const realAppDataRoot = normalize(await realpath.call(this.fileSystem, this.appDataRoot));
@@ -468,7 +481,14 @@ export class ManagedKnowledgeStore {
     const startedAt = Date.now();
 
     for (;;) {
-      await this.assertManagedFileForWrite(lockPath);
+      try {
+        await this.assertManagedFileForWrite(lockPath);
+      } catch (error) {
+        if (!await this.didFileVanishAfterWindowsRealpathFailure(lockPath, error)) {
+          throw error;
+        }
+        await this.assertRealManagedWriteTarget(lockPath);
+      }
       let handle = null as Awaited<ReturnType<FileSystem['open']>> | null;
       let closed = false;
       try {

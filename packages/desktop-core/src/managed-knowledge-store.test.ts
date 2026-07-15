@@ -116,6 +116,64 @@ describe('ManagedKnowledgeStore', () => {
     ]);
   });
 
+  it('retries configuration lock acquisition when the lock vanishes between lstat and Windows realpath', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const gate = createPauseGate();
+    const slowStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new PauseOnConfigFileSystem(gate),
+    });
+    const configureScene = slowStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    await gate.entered.promise;
+
+    const raceFileSystem = new LockRealpathRaceFileSystem({
+      lockPath: join(appDataRoot, 'knowledge', 'config.lock'),
+      releaseHolder: gate.release.resolve,
+      vanishBeforeEperm: true,
+    });
+    const racingStore = new ManagedKnowledgeStore({ appDataRoot, fileSystem: raceFileSystem });
+    const configureDetail = racingStore.configure({
+      knowledgeBaseId: 'detail-skill',
+      displayName: 'Detail Skill',
+      rootPath: join(tempRoot, 'workspace', 'detail-skill'),
+    });
+
+    await Promise.all([configureScene, configureDetail]);
+
+    expect(raceFileSystem.injectedEpermCount).toBe(1);
+    await expect(racingStore.listStates()).resolves.toEqual([
+      expect.objectContaining({ knowledgeBaseId: 'detail-skill' }),
+      expect.objectContaining({ knowledgeBaseId: 'scene-skill' }),
+    ]);
+  });
+
+  it('does not treat persistent lock realpath EPERM as a vanished file', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const knowledgeRoot = join(appDataRoot, 'knowledge');
+    const lockPath = join(knowledgeRoot, 'config.lock');
+    await mkdir(knowledgeRoot, { recursive: true });
+    await writeFile(lockPath, '{"schemaVersion":1}\n', 'utf8');
+    const fileSystem = new LockRealpathRaceFileSystem({
+      lockPath,
+      releaseHolder: () => undefined,
+      vanishBeforeEperm: false,
+    });
+    const store = new ManagedKnowledgeStore({ appDataRoot, fileSystem });
+
+    await expect(store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    })).rejects.toMatchObject({ code: 'EPERM' });
+    expect(fileSystem.injectedEpermCount).toBe(1);
+    await expect(readFile(lockPath, 'utf8')).resolves.toContain('schemaVersion');
+  });
   it('writes snapshot bytes before current metadata', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');
@@ -1176,6 +1234,70 @@ function createDeferredVoid(): DeferredVoid {
   return { promise, resolve };
 }
 
+class LockRealpathRaceFileSystem extends DelegatingFileSystem {
+  injectedEpermCount = 0;
+  private lockWasSeen = false;
+  private readonly lockPath: string;
+  private readonly releaseHolder: () => void;
+  private readonly vanishBeforeEperm: boolean;
+
+  constructor(options: {
+    readonly lockPath: string;
+    readonly releaseHolder: () => void;
+    readonly vanishBeforeEperm: boolean;
+  }) {
+    super();
+    this.lockPath = normalize(options.lockPath);
+    this.releaseHolder = options.releaseHolder;
+    this.vanishBeforeEperm = options.vanishBeforeEperm;
+  }
+
+  override async lstat(path: string) {
+    const result = await super.lstat(path);
+    if (sameExactPath(path, this.lockPath)) {
+      this.lockWasSeen = true;
+    }
+    return result;
+  }
+
+  override async realpath(path: string): Promise<string> {
+    if (
+      this.injectedEpermCount === 0 &&
+      this.lockWasSeen &&
+      sameExactPath(path, this.lockPath)
+    ) {
+      this.injectedEpermCount += 1;
+      this.releaseHolder();
+      if (this.vanishBeforeEperm) {
+        await waitForMissingFile(this.delegate, this.lockPath);
+      }
+      throw Object.assign(new Error('injected Windows lock realpath race'), { code: 'EPERM' });
+    }
+    return super.realpath(path);
+  }
+}
+
+async function waitForMissingFile(fileSystem: FileSystem, path: string): Promise<void> {
+  if (!fileSystem.lstat) {
+    throw new Error('lstat unavailable');
+  }
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await fileSystem.lstat(path);
+    } catch (error) {
+      if (isFileSystemErrorCode(error, 'ENOENT')) {
+        return;
+      }
+      throw error;
+    }
+    await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 1));
+  }
+  throw new Error('Timed out waiting for lock deletion');
+}
+
+function isFileSystemErrorCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
 class PauseOnCurrentMetadataFileSystem extends DelegatingFileSystem {
   private pauseCount = 0;
   private readonly gate: PauseGate;
