@@ -61,14 +61,16 @@ export class ManagedKnowledgeStore {
 
   async configure(input: ConfigureKnowledgeRoot): Promise<ConfiguredKnowledgeBase> {
     const configured = normalizeConfiguration(input);
-    const configurationFile = await this.readConfigurationFile();
-    const configurations = configurationFile.configurations.filter((existing) => (
-      existing.knowledgeBaseId !== configured.knowledgeBaseId
-    ));
-    configurations.push(configured);
-    configurations.sort(compareConfigurations);
+    await this.withConfigurationWriteLock(async () => {
+      const configurationFile = await this.readConfigurationFile();
+      const configurations = configurationFile.configurations.filter((existing) => (
+        existing.knowledgeBaseId !== configured.knowledgeBaseId
+      ));
+      configurations.push(configured);
+      configurations.sort(compareConfigurations);
 
-    await this.writeConfigurationFile(configurations);
+      await this.writeConfigurationFile(configurations);
+    });
 
     await this.withKnowledgeWriteLock(configured.knowledgeRootId, async () => {
       const summary = await this.readSummaryFile(configured.knowledgeRootId);
@@ -410,8 +412,21 @@ export class ManagedKnowledgeStore {
     }
   }
 
+  private async withConfigurationWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    await this.ensureManagedDirectory(this.knowledgeRoot);
+    const lock = await this.acquireLock(this.configurationLockPath());
+    try {
+      return await operation();
+    } finally {
+      await this.releaseWriteLock(lock);
+    }
+  }
+
   private async acquireWriteLock(knowledgeRootId: string): Promise<WriteLock> {
-    const lockPath = this.writeLockPath(knowledgeRootId);
+    return this.acquireLock(this.writeLockPath(knowledgeRootId));
+  }
+
+  private async acquireLock(lockPath: string): Promise<WriteLock> {
     const token = createHash('sha256')
       .update(`${process.pid}:${Date.now()}:${Math.random()}`, 'utf8')
       .digest('hex');
@@ -470,6 +485,10 @@ export class ManagedKnowledgeStore {
 
   private configurationFilePath(): string {
     return confinedJoin(this.knowledgeRoot, 'config.json');
+  }
+
+  private configurationLockPath(): string {
+    return confinedJoin(this.knowledgeRoot, 'config.lock');
   }
 
   private knowledgeBaseDirectory(knowledgeRootId: string): string {
@@ -841,7 +860,7 @@ function isMissingFileError(error: unknown): boolean {
 function isMissingOrVanishedFileError(error: unknown): boolean {
   return (
     isMissingFileError(error) ||
-    (isRecord(error) && error.code === 'UNKNOWN')
+    (isRecord(error) && (error.code === 'UNKNOWN' || error.code === 'EBADF'))
   );
 }
 

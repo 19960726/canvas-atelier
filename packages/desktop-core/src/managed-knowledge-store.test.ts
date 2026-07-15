@@ -49,6 +49,38 @@ describe('ManagedKnowledgeStore', () => {
     });
   });
 
+  it('serializes concurrent configuration writes so knowledge bases are not lost', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const gate = createPauseGate();
+    const slowStore = new ManagedKnowledgeStore({
+      appDataRoot,
+      fileSystem: new PauseOnConfigFileSystem(gate),
+    });
+    const fastStore = new ManagedKnowledgeStore({ appDataRoot });
+
+    const configureScene = slowStore.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    await gate.entered.promise;
+    const configureDetail = fastStore.configure({
+      knowledgeBaseId: 'detail-skill',
+      displayName: 'Detail Skill',
+      rootPath: join(tempRoot, 'workspace', 'detail-skill'),
+    });
+
+    gate.release.resolve();
+    await configureScene;
+    await configureDetail;
+
+    await expect(fastStore.listStates()).resolves.toEqual([
+      expect.objectContaining({ knowledgeBaseId: 'detail-skill' }),
+      expect.objectContaining({ knowledgeBaseId: 'scene-skill' }),
+    ]);
+  });
+
   it('writes snapshot bytes before current metadata', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const appDataRoot = join(tempRoot, 'app-data');
@@ -829,6 +861,28 @@ class PauseOnCurrentMetadataFileSystem extends DelegatingFileSystem {
     if (
       this.pauseCount === 0 &&
       samePath(destination, join('knowledge', this.knowledgeRootId, 'current.json'))
+    ) {
+      this.pauseCount += 1;
+      this.gate.entered.resolve();
+      await this.gate.release.promise;
+    }
+    await super.rename(source, destination);
+  }
+}
+
+class PauseOnConfigFileSystem extends DelegatingFileSystem {
+  private pauseCount = 0;
+  private readonly gate: PauseGate;
+
+  constructor(gate: PauseGate) {
+    super();
+    this.gate = gate;
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    if (
+      this.pauseCount === 0 &&
+      samePath(destination, join('knowledge', 'config.json'))
     ) {
       this.pauseCount += 1;
       this.gate.entered.resolve();
