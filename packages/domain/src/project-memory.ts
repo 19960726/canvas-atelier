@@ -290,6 +290,10 @@ interface CreateUserFeedbackMemoryInput {
 interface CreateUserFeedbackMemoryMetadata {
   memoryId: string;
   createdAt: string;
+  snapshots: {
+    beforeId: string;
+    afterId: string;
+  };
 }
 
 interface ReviewSkillPromotionCandidateInput {
@@ -385,10 +389,7 @@ export function createUserFeedbackMemory(
     title: input.title,
     changeSummary: input.correction,
     rationale: input.userRequest,
-    snapshots: {
-      beforeId: `${metadata.memoryId}-before`,
-      afterId: `${metadata.memoryId}-after`,
-    },
+    snapshots: metadata.snapshots,
     context: {
       prompt: input.userRequest,
       negativePrompt: input.correction,

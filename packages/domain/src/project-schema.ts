@@ -228,6 +228,14 @@ export const canvasProjectSchema = z.object({
       candidate.sourceProjectMemoryId,
       ...(candidate.sourceProjectMemoryIds ?? []),
     ];
+    const combinedSourceIds = new Set<string>();
+    for (const sourceMemoryId of sourceMemoryIds) {
+      if (combinedSourceIds.has(sourceMemoryId)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['skillPromotionCandidates', index, 'sourceProjectMemoryIds'], message: 'Combined source project memory ids must be unique' });
+        break;
+      }
+      combinedSourceIds.add(sourceMemoryId);
+    }
     const sourceMemories = sourceMemoryIds
       .map((memoryId) => memoryById.get(memoryId))
       .filter((memory): memory is NonNullable<typeof memory> => memory !== undefined);

@@ -33,6 +33,11 @@ const feedbackLease = createAgentKnowledgeLease({
   createdAt: '2026-07-15T10:00:00.000Z',
 });
 
+const feedbackSnapshots = {
+  beforeId: 'snapshot-feedback-before',
+  afterId: 'snapshot-feedback-after',
+};
+
 const optimization: ProjectMemoryEntry = {
   schemaVersion: 1,
   id: 'memory-optimization-1',
@@ -211,9 +216,11 @@ describe('project memory', () => {
     }, {
       memoryId: 'feedback-1',
       createdAt: '2026-07-15T10:01:00.000Z',
+      snapshots: feedbackSnapshots,
     });
 
     expect(memory.kind).toBe('user_feedback');
+    expect(memory.snapshots).toEqual(feedbackSnapshots);
     expect(memory.context.knowledgeLease?.leaseId).toBe('lease-1');
     expect(memory.context.references).toEqual(feedbackReferences);
     expect(memory.context.citations).toEqual([{ assetId: 'scene', label: 'Scene' }]);
@@ -245,6 +252,7 @@ describe('project memory', () => {
     }, {
       memoryId: 'feedback-secret',
       createdAt: '2026-07-15T10:02:00.000Z',
+      snapshots: feedbackSnapshots,
     })).toThrow(/private path/i);
   });
 

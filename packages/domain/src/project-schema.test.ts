@@ -199,6 +199,10 @@ describe('parseCanvasProject', () => {
     }, {
       memoryId: 'feedback-1',
       createdAt: '2026-07-15T10:01:00.000Z',
+      snapshots: {
+        beforeId: 'snapshot-feedback-before',
+        afterId: 'snapshot-feedback-after',
+      },
     });
 
     const approvedCandidate = reviewSkillPromotionCandidate({
@@ -206,7 +210,6 @@ describe('parseCanvasProject', () => {
         candidateId: 'candidate-feedback-1',
         createdAt: '2026-07-15T10:02:00.000Z',
       }),
-      sourceProjectMemoryIds: [feedbackMemory.id],
       targetKnowledgeBaseId: 'kb-style',
       targetKnowledgeSection: 'liquid',
       beforeRule: 'existing-liquid-rule',
@@ -280,6 +283,69 @@ describe('parseCanvasProject', () => {
         reviewedAt: '2026-07-15T10:03:00.000Z',
       }],
     })).toThrow(/published/i);
+  });
+
+  it('rejects repeated source ids across the combined candidate source set', () => {
+    const memory = {
+      schemaVersion: 1,
+      id: 'memory-1',
+      projectId: 'p1',
+      projectRevision: 1,
+      createdAt: '2026-07-14T01:00:00.000Z',
+      kind: 'optimization',
+      actor: 'agent',
+      title: 'Composition refinement',
+      changeSummary: 'Move the product upward.',
+      rationale: 'Keep the copy-safe area open.',
+      snapshots: { beforeId: 'before-1', afterId: 'after-1' },
+      context: { referenceAssetIds: [], resultAssetIds: [] },
+      feedback: { keep: [], change: [], never: [] },
+      nextStep: 'Keep reviewing.',
+    };
+    const secondMemory = { ...memory, id: 'memory-2', projectRevision: 2, snapshots: { beforeId: 'before-2', afterId: 'after-2' } };
+    const thirdMemory = { ...memory, id: 'memory-3', projectRevision: 3, snapshots: { beforeId: 'before-3', afterId: 'after-3' } };
+    const project = {
+      version: 1,
+      id: 'p1',
+      name: 'combined source uniqueness',
+      nodes: [],
+      edges: [],
+      projectMemory: [memory, secondMemory, thirdMemory],
+    };
+
+    expect(() => parseCanvasProject({
+      ...project,
+      skillPromotionCandidates: [{
+        schemaVersion: 1,
+        id: 'candidate-repeat-primary',
+        sourceProjectId: 'p1',
+        sourceProjectMemoryId: memory.id,
+        sourceProjectMemoryIds: [memory.id, secondMemory.id],
+        createdAt: '2026-07-15T10:02:00.000Z',
+        title: memory.title,
+        rationale: memory.rationale,
+        rule: memory.nextStep,
+        evidence: memory.feedback,
+        reviewStatus: 'pending_review',
+      }],
+    })).toThrow(/unique/i);
+
+    expect(() => parseCanvasProject({
+      ...project,
+      skillPromotionCandidates: [{
+        schemaVersion: 1,
+        id: 'candidate-repeat-supplemental',
+        sourceProjectId: 'p1',
+        sourceProjectMemoryId: memory.id,
+        sourceProjectMemoryIds: [secondMemory.id, secondMemory.id, thirdMemory.id],
+        createdAt: '2026-07-15T10:02:00.000Z',
+        title: memory.title,
+        rationale: memory.rationale,
+        rule: memory.nextStep,
+        evidence: memory.feedback,
+        reviewStatus: 'pending_review',
+      }],
+    })).toThrow(/unique/i);
   });
 
   it('rejects a reference node without a role', () => {

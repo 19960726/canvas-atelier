@@ -126,6 +126,10 @@ describe('project transactions', () => {
     }, {
       memoryId: 'feedback-1',
       createdAt: '2026-07-15T10:01:00.000Z',
+      snapshots: {
+        beforeId: 'snapshot-feedback-before',
+        afterId: 'snapshot-feedback-after',
+      },
     });
     const reviewedCandidate = reviewSkillPromotionCandidate(createSkillPromotionCandidate(feedbackMemory, {
       candidateId: 'candidate-feedback-1',
