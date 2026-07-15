@@ -66,6 +66,21 @@ describe('ManagedKnowledgeStore', () => {
       displayName: 'Scene Skill',
       rootPath: join(tempRoot, 'workspace', 'scene-skill'),
     })).rejects.toThrow(/protected/i);
+    await expect(store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'D:\\buildkite\\secret',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    })).rejects.toThrow(/protected/i);
+    await expect(store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: '/opt/secret',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    })).rejects.toThrow(/protected/i);
+    await expect(store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'github_pat_secret',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    })).rejects.toThrow(/protected/i);
     await expect(store.listStates()).resolves.toEqual([]);
   });
 
@@ -211,6 +226,14 @@ describe('ManagedKnowledgeStore', () => {
     await expect(store.publish({
       ...createSnapshot('# version 2', 2),
       displayName: 'C:\\Users\\Private\\skill',
+    })).rejects.toThrow(/protected/i);
+    await expect(store.publish({
+      ...createSnapshot('# version 3', 3),
+      sourceDeviceId: 'github_pat_secret',
+    })).rejects.toThrow(/protected/i);
+    await expect(store.publish({
+      ...createSnapshot('# version 4', 4),
+      displayName: '/opt/private',
     })).rejects.toThrow(/protected/i);
     await expect(store.listStates()).resolves.toEqual([expect.objectContaining({
       activeVersion: null,
@@ -749,6 +772,64 @@ describe('ManagedKnowledgeStore', () => {
       activeVersion: 2,
       status: 'active',
     });
+  });
+
+  it('rejects tampered public configuration metadata on read', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+
+    const configPath = join(appDataRoot, 'knowledge', 'config.json');
+    const config = await readJson<{
+      readonly schemaVersion: 1;
+      readonly configurations: Array<Record<string, unknown>>;
+    }>(configPath);
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        ...config,
+        configurations: [{
+          ...config.configurations[0],
+          displayName: 'Authorization: Bearer secret',
+        }],
+      })}\n`,
+      'utf8',
+    );
+
+    await expect(store.listStates()).rejects.toThrow(/protected/i);
+  });
+
+  it('rejects tampered public summary metadata on read', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const appDataRoot = join(tempRoot, 'app-data');
+    const store = new ManagedKnowledgeStore({ appDataRoot });
+    const configured = await store.configure({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      rootPath: join(tempRoot, 'workspace', 'scene-skill'),
+    });
+    await store.publish(createSnapshot('# version 1', 1));
+
+    const currentPath = managedKnowledgePaths(appDataRoot, configured.knowledgeRootId).currentPath;
+    const summary = await readJson<KnowledgeBaseStateSummary>(currentPath);
+    await writeFile(
+      currentPath,
+      `${JSON.stringify({
+        ...summary,
+        versions: summary.versions.map((version) => ({
+          ...version,
+          sourceDeviceId: 'github_pat_secret',
+        })),
+      })}\n`,
+      'utf8',
+    );
+
+    await expect(store.listStates()).rejects.toThrow(/protected/i);
   });
 });
 

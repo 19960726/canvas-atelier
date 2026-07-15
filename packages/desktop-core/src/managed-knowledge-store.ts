@@ -612,6 +612,7 @@ function normalizeStoredConfiguration(input: unknown): InternalKnowledgeConfigur
   const displayName = requireNonEmptyString(input.displayName, 'displayName');
   const knowledgeRootId = requireNonEmptyString(input.knowledgeRootId, 'knowledgeRootId');
   const rootPath = normalize(resolve(requireNonEmptyString(input.rootPath, 'rootPath')));
+  scanProtectedMetadata([knowledgeBaseId, displayName]);
 
   return {
     schemaVersion: 1,
@@ -629,6 +630,7 @@ function normalizeSummary(input: KnowledgeBaseStateSummary): KnowledgeBaseStateS
 
   const knowledgeBaseId = requireNonEmptyString(input.knowledgeBaseId, 'knowledgeBaseId');
   const displayName = input.displayName === null ? null : requireNonEmptyString(input.displayName, 'displayName');
+  scanProtectedMetadata([knowledgeBaseId, ...(displayName === null ? [] : [displayName])]);
   const status = normalizeStatus(input.status);
   const activeVersion = input.activeVersion === null ? null : requirePositiveInteger(input.activeVersion, 'activeVersion');
   const activeContentHash = input.activeContentHash === null ? null : requireHash(input.activeContentHash, 'activeContentHash');
@@ -732,17 +734,24 @@ function normalizeSnapshotDocuments(input: unknown): KnowledgeSnapshot['document
   }).sort((left, right) => compareStrings(left.relativePath, right.relativePath));
 }
 
+function sanitizePublicMetadata(value: unknown, label: string): string {
+  const stringValue = requireNonEmptyString(value, label);
+  scanProtectedMetadata([stringValue]);
+  return stringValue;
+}
+
 function scanProtectedMetadata(values: readonly string[]): void {
   const protectedPattern = new RegExp([
     String.raw`authorization\s*:`,
     String.raw`bearer\s+[a-z0-9._-]+`,
     String.raw`sk-[a-z0-9_-]{8,}`,
     String.raw`ghp_[a-z0-9_]{8,}`,
+    String.raw`github_pat_[a-z0-9_]+`,
     String.raw`xox[baprs]-[a-z0-9-]{8,}`,
     String.raw`data:image\/[a-z0-9.+-]+;base64,`,
-    String.raw`[a-z]:\\(?:users|documents and settings)\\`,
+    String.raw`[a-z]:\\`,
     String.raw`\\\\[^\\\/]+\\[^\\\/]+`,
-    String.raw`\/(?:users|home|var|etc)\/`,
+    String.raw`\/[a-z0-9._-]+(?:\/|$)`,
   ].join('|'), 'iu');
 
   if (values.some((value) => protectedPattern.test(value))) {
@@ -761,8 +770,8 @@ function normalizeVersionSummary(
     version: requirePositiveInteger(input.version, 'version'),
     contentHash: requireHash(input.contentHash, 'contentHash'),
     publishedAt: requireDateString(input.publishedAt, 'publishedAt'),
-    sourceDeviceId: requireNonEmptyString(input.sourceDeviceId, 'sourceDeviceId'),
-    displayName: requireNonEmptyString(input.displayName, 'displayName'),
+    sourceDeviceId: sanitizePublicMetadata(input.sourceDeviceId, 'sourceDeviceId'),
+    displayName: sanitizePublicMetadata(input.displayName, 'displayName'),
   };
 }
 
