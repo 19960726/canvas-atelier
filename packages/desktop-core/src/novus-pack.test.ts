@@ -11,12 +11,13 @@ import type archiver from 'archiver';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { canonicalJson, sha256Canonical } from './canonical-json';
-import { PROJECT_FORMAT_VERSION, SNAPSHOT_SCHEMA_VERSION, type ProjectManifest, type SnapshotEnvelope } from './contracts';
+import { PROJECT_FORMAT_VERSION, SNAPSHOT_SCHEMA_VERSION, type CommitRequest, type ProjectManifest, type SnapshotEnvelope } from './contracts';
 import {
   NovusPackExporter,
   NovusPackImporter,
   redactNovusPackDiagnostics,
 } from './novus-pack';
+import { ProjectRepository } from './project-repository';
 
 const gzipAsync = promisify(gzip);
 
@@ -101,6 +102,33 @@ describe('NovusPack export and import', () => {
       stableSnapshotRevision: 7,
     });
     expect(await readFile(join(destination, ...snapshotPath.split('/')))).toEqual(entries.get(snapshotPath));
+  });
+
+  it('imports a gzip stable snapshot as a writable project at the imported revision', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const { projectRoot } = await createProjectFixture(tempRoot, { gzipSnapshot: true });
+    const packagePath = join(tempRoot, 'writable-import.novuspack');
+    const destination = join(tempRoot, 'WritableImport.novus-project');
+    await new NovusPackExporter().exportRevision(projectRoot, packagePath);
+
+    await new NovusPackImporter().importTo(packagePath, destination);
+
+    const repository = new ProjectRepository({
+      createId: createSequentialId('imported'),
+      now: () => new Date('2026-07-15T00:00:00.000Z'),
+      processId: 7115,
+    });
+    const opened = await repository.open(destination, { mode: 'write' });
+    try {
+      expect(opened.mode).toBe('write');
+      const writer = await repository.openJournalWriter(opened);
+
+      await expect(writer.commit(makeCreatePromptCommitRequest('tx-imported-commit', 7, 'prompt-imported')))
+        .resolves.toMatchObject({ revision: 8, sequence: 8 });
+      await expect(repository.readCurrentRevision(opened)).resolves.toBe(8);
+    } finally {
+      await repository.close(opened);
+    }
   });
 
   it.each(['../escape.txt', 'C:/escape.txt', '/escape.txt', '//server/share/escape.txt', 'safe\\escape.txt'])(
@@ -595,6 +623,35 @@ async function createTempRoot(tempRoots: string[]): Promise<string> {
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function createSequentialId(prefix: string): () => string {
+  let next = 0;
+  return () => `${prefix}-${++next}`;
+}
+
+function makeCreatePromptCommitRequest(transactionId: string, baseRevision: number, nodeId: string): CommitRequest {
+  return {
+    baseRevision,
+    kind: 'canvas' as const,
+    projectId: 'project-pack',
+    transaction: {
+      id: transactionId,
+      label: `create ${nodeId}`,
+      operations: [{
+        kind: 'canvas' as const,
+        operation: {
+          kind: 'create_node' as const,
+          node: {
+            data: { prompt: `Prompt ${nodeId}`, requirementIds: [] },
+            id: nodeId,
+            position: { x: 0, y: 0 },
+            type: 'prompt',
+          },
+        },
+      }],
+    },
+  };
 }
 
 async function capturePackageFailure(promise: Promise<unknown>): Promise<Error & { code?: string }> {

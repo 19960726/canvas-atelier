@@ -15,7 +15,8 @@ import {
   type ProjectManifest,
   type SnapshotEnvelope,
 } from './contracts.js';
-import { createPersistenceError } from './journal-writer.js';
+import { createPersistenceError, writeInitialJournalCommitBoundary } from './journal-writer.js';
+import { NodeFileSystem } from './file-system.js';
 import { readSnapshotEnvelope } from './snapshot-scheduler.js';
 
 export interface NovusPackExportResult {
@@ -189,6 +190,7 @@ export class NovusPackImporter {
       await mkdir(stagingRoot, { recursive: false });
       const extracted = await extractAndValidate(packagePath, stagingRoot, this.limits);
       const packageManifest = await validateExtractedPackage(stagingRoot, extracted);
+      await initializeImportedProjectRuntime(stagingRoot);
       await reserveImportDestination(destinationRoot);
       ownership = await createPromotionOwnership(destinationRoot);
       await promoteStagedPackage(stagingRoot, destinationRoot, ownership);
@@ -498,6 +500,22 @@ async function validateExtractedPackage(
   return packageManifest;
 }
 
+async function initializeImportedProjectRuntime(stagingRoot: string): Promise<void> {
+  const projectManifest = parseProjectManifest(await readJson(join(stagingRoot, 'project.novus.json')));
+  const activeJournalSegment = validateActiveJournalSegment(projectManifest.activeJournalSegment);
+  const activeJournalPath = join(stagingRoot, ...activeJournalSegment.split('/'));
+
+  await mkdir(dirname(activeJournalPath), { recursive: true });
+  await writeFile(activeJournalPath, '', { flag: 'wx' });
+  await writeInitialJournalCommitBoundary(new NodeFileSystem(), activeJournalPath, {
+    baseRevision: projectManifest.stableSnapshotRevision,
+    nextSequence: projectManifest.nextSequence,
+    projectId: projectManifest.projectId,
+    updatedAt: new Date().toISOString(),
+  });
+  await mkdir(join(stagingRoot, 'recovery'), { recursive: true });
+}
+
 function validateZipEntry(entry: yauzl.Entry, limits: NovusPackLimits): void {
   if ((entry.generalPurposeBitFlag & 1) === 1) {
     throw packageValidationError('Encrypted package entries are not supported');
@@ -542,6 +560,18 @@ function validatePackagePath(path: string): string {
   }
   if (!path.endsWith('/') && EXECUTABLE_EXTENSIONS.has(extname(path).toLowerCase())) {
     throw packageValidationError('Executable package payloads are not allowed');
+  }
+  return normalized;
+}
+
+function validateActiveJournalSegment(path: string): string {
+  const normalized = validatePackagePath(path);
+  if (
+    normalized.endsWith('/') ||
+    !normalized.startsWith('journal/') ||
+    normalized === 'journal/'
+  ) {
+    throw packageValidationError('Project active journal path is invalid');
   }
   return normalized;
 }
