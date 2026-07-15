@@ -222,6 +222,24 @@ describe('KnowledgeClient', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it('accepts a newer live summary revision over an older hydrated state', async () => {
+    let listener: ((state: KnowledgeBaseStateSummary) => void) | undefined;
+    window.novusDesktop = createBridge({
+      getKnowledgeState: vi.fn(async () => ({ states: [knowledgeState({ version: 1, hashPrefix: 'a', stateRevision: 4 })] })),
+      subscribeKnowledgeState: vi.fn((next) => {
+        listener = next;
+        return () => undefined;
+      }),
+    });
+    const client = createKnowledgeClient();
+
+    await client.start(() => undefined);
+    listener?.(knowledgeState({ version: 2, hashPrefix: 'b', stateRevision: 5 }));
+
+    expect(client.getLease('run-live-revision', 'reverse_prompt', references, []).versionKey)
+      .toBe(`scene-skill@2:${'b'.repeat(12)}`);
+  });
+
   it('falls back safely in the browser with separate offline sync state and an unconfigured lease', async () => {
     const client = createKnowledgeClient();
     const states: KnowledgeBaseStateSummary[][] = [];

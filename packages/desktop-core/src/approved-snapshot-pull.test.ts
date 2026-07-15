@@ -129,6 +129,26 @@ describe('ApprovedSnapshotPullCoordinator', () => {
     await coordinator.stop();
   });
 
+  it('preserves stateRevision on the emitted summary after publishing a pulled snapshot', async () => {
+    const fixture = await createPullFixture(tempRoots);
+    const remote = createSnapshot('# remote version 2', 2);
+    const coordinator = createCoordinator(fixture, {
+      pullApprovedSnapshot: vi.fn(async () => ({ snapshot: remote, cursor: 'cursor-state-revision' })),
+    });
+    const emittedStates: Array<{ knowledgeBaseId: string; stateRevision?: number }> = [];
+    coordinator.subscribe((state) => emittedStates.push(state));
+
+    await coordinator.start(['scene-skill']);
+
+    const [publishedState] = await fixture.store.listStates();
+    expect(publishedState).toBeDefined();
+    expect(emittedStates).toEqual([expect.objectContaining({
+      knowledgeBaseId: 'scene-skill',
+      stateRevision: publishedState?.stateRevision,
+    })]);
+    await coordinator.stop();
+  });
+
   it('preserves known-good knowledge and does not advance the cursor on a same-version hash conflict', async () => {
     const fixture = await createPullFixture(tempRoots);
     const local = createSnapshot('# local version 2', 2);

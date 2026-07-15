@@ -521,6 +521,7 @@ function cloneSummary(summary: KnowledgeBaseStateSummary): KnowledgeBaseStateSum
     status: summary.status,
     activeVersion: summary.activeVersion,
     activeContentHash: summary.activeContentHash,
+    stateRevision: summary.stateRevision,
     versionCount: summary.versionCount,
     versions: summary.versions.map((version) => ({ ...version })),
     lastFailure: summary.lastFailure ? { ...summary.lastFailure } : null,
