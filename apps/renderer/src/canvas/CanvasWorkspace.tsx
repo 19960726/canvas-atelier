@@ -252,6 +252,13 @@ export function CanvasWorkspace() {
     setSelectedPlacementObjectId(objectId);
   };
 
+  const previewAgentReferenceOrder = (assetIds: string[]) => {
+    const persistedAssetIds = persistedOrderedReferences.map((reference) => reference.assetId);
+    const matchesPersisted = assetIds.length === persistedAssetIds.length
+      && assetIds.every((assetId, index) => assetId === persistedAssetIds[index]);
+    setReferenceOrderPreview(matchesPersisted ? null : assetIds);
+  };
+
   const commitAgentReferenceOrder = (assetIds: string[]) => {
     setReferenceOrderPreview(assetIds);
     void commitReferenceOrder(assetIds).finally(() => setReferenceOrderPreview(null));
@@ -389,7 +396,7 @@ export function CanvasWorkspace() {
           <div id="agent-panel-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden={activeAgentTab !== 'conversation'}>
             <ReferenceOrderList
               references={orderedReferences}
-              onPreviewOrder={setReferenceOrderPreview}
+              onPreviewOrder={previewAgentReferenceOrder}
               onCommitOrder={commitAgentReferenceOrder}
             />
             <ReversePromptAgent

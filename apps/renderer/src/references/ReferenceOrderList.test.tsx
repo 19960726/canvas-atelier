@@ -30,6 +30,35 @@ describe('ReferenceOrderList', () => {
     expect(onCommitOrder).toHaveBeenCalledWith(['scene', 'product', 'prop']);
   });
 
+  it('restores persisted order when a drag ends outside a valid drop target', () => {
+    const onPreviewOrder = vi.fn();
+    const onCommitOrder = vi.fn();
+    render(<ReferenceOrderList references={references} onPreviewOrder={onPreviewOrder} onCommitOrder={onCommitOrder} />);
+
+    fireEvent.dragStart(screen.getByText('Scene'));
+    fireEvent.dragOver(screen.getByText('Product'));
+    expect(onPreviewOrder).toHaveBeenLastCalledWith(['scene', 'product', 'prop']);
+
+    fireEvent.dragEnd(screen.getByText('Scene'));
+
+    expect(onPreviewOrder).toHaveBeenLastCalledWith(['product', 'scene', 'prop']);
+    expect(onCommitOrder).not.toHaveBeenCalled();
+  });
+
+  it('restores persisted order when Escape cancels an active drag', () => {
+    const onPreviewOrder = vi.fn();
+    const onCommitOrder = vi.fn();
+    render(<ReferenceOrderList references={references} onPreviewOrder={onPreviewOrder} onCommitOrder={onCommitOrder} />);
+
+    fireEvent.dragStart(screen.getByText('Product'));
+    fireEvent.dragOver(screen.getByLabelText('Drop reference at end'));
+    expect(onPreviewOrder).toHaveBeenLastCalledWith(['scene', 'prop', 'product']);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(onPreviewOrder).toHaveBeenLastCalledWith(['product', 'scene', 'prop']);
+    expect(onCommitOrder).not.toHaveBeenCalled();
+  });
   it('moves the first reference to the end without persisting before drop', () => {
     const onPreviewOrder = vi.fn();
     const onCommitOrder = vi.fn();

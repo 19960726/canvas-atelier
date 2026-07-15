@@ -210,6 +210,43 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByText(/Pinned scene-skill@7/)).toBeInTheDocument();
   });
 
+  it('clears an uncommitted workspace preview when reference dragging is cancelled', () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests();
+    const project = createStarterProject();
+    useAppStore.setState({
+      project: {
+        ...project,
+        nodes: project.nodes.map((node) => node.type === 'placement_preview'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                objects: [
+                  { ...node.data.objects[0]!, id: 'product', assetId: 'product', name: 'Product' },
+                  { ...node.data.objects[0]!, id: 'scene', assetId: 'scene', name: 'Scene', role: 'scene_composition' },
+                ],
+              },
+            }
+          : node),
+      },
+    });
+
+    render(<CanvasWorkspace />);
+    fireEvent.dragStart(screen.getByText('Scene'));
+    fireEvent.dragOver(screen.getByText('Product'));
+    expect(screen.getByRole('button', { name: 'Move Scene up' })).toBeDisabled();
+
+    fireEvent.dragEnd(screen.getByText('Scene'));
+
+    expect(screen.getByRole('button', { name: 'Move Product up' })).toBeDisabled();
+    expect(commit).not.toHaveBeenCalled();
+  });
   it('shares persisted reference order and structured citations with reverse prompt', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,

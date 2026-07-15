@@ -12,11 +12,32 @@ export function ReferenceOrderList({ references, onPreviewOrder, onCommitOrder }
   const [previewReferences, setPreviewReferences] = useState(references);
   const previewRef = useRef(references);
   const draggingAssetIdRef = useRef<string | null>(null);
+  const dragBaselineRef = useRef<OrderedReference[] | null>(null);
+
+  const cancelDrag = () => {
+    const baseline = dragBaselineRef.current;
+    if (!draggingAssetIdRef.current || !baseline) return;
+    draggingAssetIdRef.current = null;
+    dragBaselineRef.current = null;
+    previewRef.current = baseline;
+    setPreviewReferences(baseline);
+    onPreviewOrder(baseline.map((reference) => reference.assetId));
+  };
 
   useEffect(() => {
     previewRef.current = references;
     setPreviewReferences(references);
   }, [references]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      cancelDrag();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onPreviewOrder]);
 
   const publishPreview = (next: OrderedReference[]) => {
     previewRef.current = next;
@@ -49,15 +70,19 @@ export function ReferenceOrderList({ references, onPreviewOrder, onCommitOrder }
       <ol>
         {previewReferences.map((reference, index) => (
           <li key={reference.assetId} draggable
-            onDragStart={() => { draggingAssetIdRef.current = reference.assetId; }}
+            onDragStart={() => {
+              dragBaselineRef.current = references.map((item) => ({ ...item }));
+              draggingAssetIdRef.current = reference.assetId;
+            }}
             onDragOver={(event) => { event.preventDefault(); previewBefore(reference.assetId); }}
             onDrop={(event) => {
               event.preventDefault();
               const next = previewBefore(reference.assetId);
               draggingAssetIdRef.current = null;
+              dragBaselineRef.current = null;
               onCommitOrder(next.map((item) => item.assetId));
             }}
-            onDragEnd={() => { draggingAssetIdRef.current = null; }}
+            onDragEnd={cancelDrag}
           >
             <GripVertical size={13} aria-hidden="true" />
             <span className="reference-order__label">{reference.label}<small>{roleLabel(reference.role)}</small></span>

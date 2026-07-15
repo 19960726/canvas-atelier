@@ -382,6 +382,40 @@ describe('project optimization memory', () => {
       : undefined).toMatchObject({ locked: true, x: 0.2, name: 'Product' });
   });
 
+  it('keeps the last order from rapid sequential reference reorder commands', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      await Promise.resolve();
+      return { ok: true, project: nextProject, revision: commit.mock.calls.length };
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+    const project = createStarterProject();
+    const placement = project.nodes.find((node) => node.type === 'placement_preview');
+    if (!placement || placement.type !== 'placement_preview') throw new Error('Missing placement');
+    const objects = [
+      { ...placement.data.objects[0]!, id: 'product', assetId: 'product', name: 'Product' },
+      { ...placement.data.objects[0]!, id: 'scene', assetId: 'scene', name: 'Scene', role: 'scene_composition' as const },
+      { ...placement.data.objects[0]!, id: 'prop', assetId: 'prop', name: 'Prop', role: 'prop_reference' as const },
+    ];
+    useAppStore.setState({
+      project: {
+        ...project,
+        nodes: project.nodes.map((node) => node.id === placement.id
+          ? { ...placement, data: { ...placement.data, objects } }
+          : node),
+      },
+    });
+
+    const first = useAppStore.getState().commitReferenceOrder(['scene', 'product', 'prop']);
+    const second = useAppStore.getState().commitReferenceOrder(['prop', 'scene', 'product']);
+    await Promise.all([first, second]);
+
+    expect(commit).toHaveBeenCalledTimes(2);
+    const savedPlacement = useAppStore.getState().project.nodes.find((node) => node.id === placement.id);
+    expect(savedPlacement?.type === 'placement_preview'
+      ? savedPlacement.data.objects.map((object) => object.assetId)
+      : []).toEqual(['prop', 'scene', 'product']);
+  });
   it('hydrates a persisted reference order for reopening', async () => {
     const project = createStarterProject();
     const placement = project.nodes.find((node) => node.type === 'placement_preview');
@@ -492,6 +526,66 @@ describe('project optimization memory', () => {
     expect(JSON.stringify(useAppStore.getState().project)).not.toMatch(/data:image|Bearer secret|C:\\\\Users/i);
   });
 
+  it('rejects arbitrary Authorization schemes and single-segment POSIX paths without blocking slash prose', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+    const references: OrderedReference[] = [
+      { assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 },
+    ];
+    const citations = [{ assetId: 'scene', label: 'Scene' }];
+    const lease = createAgentKnowledgeLease({
+      runId: 'run-security-regression',
+      capability: 'reverse_prompt',
+      snapshots: [],
+      references,
+      citations,
+    }, {
+      leaseId: 'lease-security-regression',
+      createdAt: '2026-07-15T08:00:00.000Z',
+    });
+    const feedbackInput = {
+      title: 'Security regression',
+      knowledgeLease: lease,
+      references,
+      citations,
+      feedback: { keep: [] as string[], change: ['scene'], never: [] as string[] },
+    };
+
+    useAppStore.getState().draftAgentPlan('Authorization: ApiKey abcdefghijklmnop');
+    expect(useAppStore.getState().agentPlan).toBeNull();
+    useAppStore.getState().draftAgentPlan('Use /secret.key');
+    expect(useAppStore.getState().agentPlan).toBeNull();
+    useAppStore.getState().draftAgentPlan('Compare keep/change and 1 / 2');
+    expect(useAppStore.getState().agentPlan).not.toBeNull();
+    useAppStore.getState().cancelAgentPlan();
+
+    const authorizationSaved = await useAppStore.getState().recordUserFeedback({
+      ...feedbackInput,
+      userRequest: 'Authorization: ApiKey abcdefghijklmnop',
+      correction: 'Keep the scene',
+    });
+    const pathSaved = await useAppStore.getState().recordUserFeedback({
+      ...feedbackInput,
+      userRequest: 'Keep the scene',
+      correction: 'Read /secret.key',
+    });
+    const slashProseSaved = await useAppStore.getState().recordUserFeedback({
+      ...feedbackInput,
+      userRequest: 'Compare keep/change',
+      correction: 'Balance at 1 / 2 scale',
+    });
+
+    expect(authorizationSaved).toBe(false);
+    expect(pathSaved).toBe(false);
+    expect(slashProseSaved).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+  });
   it('rejects broader POSIX absolute paths from conversation and feedback payloads', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
