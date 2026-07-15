@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { MAX_GENERATION_REFERENCES, referenceRoleSchema } from './project-schema';
 
+export const UNCONFIGURED_KNOWLEDGE_VERSION_KEY = 'no-snapshots-configured';
+
 export const agentKnowledgeCapabilitySchema = z.enum([
   'reverse_prompt',
   'image_generation',
@@ -75,7 +77,7 @@ export const agentKnowledgeLeaseSchema = z.object({
   }),
   references: orderedReferenceListSchema,
   citations: z.array(imageCitationSchema).default([]),
-  versionKey: z.string(),
+  versionKey: z.string().min(1),
 }).strict().superRefine((lease, context) => {
   const referenceIds = new Set(lease.references.map((reference) => reference.assetId));
   for (const [index, citation] of lease.citations.entries()) {
@@ -123,7 +125,9 @@ export function createAgentKnowledgeLease(
     snapshots,
     references,
     citations: input.citations,
-    versionKey: snapshots.map((item) => `${item.knowledgeBaseId}@${item.version}:${item.contentHash.slice(0, 12)}`).join('|'),
+    versionKey: snapshots.length > 0
+      ? snapshots.map((item) => `${item.knowledgeBaseId}@${item.version}:${item.contentHash.slice(0, 12)}`).join('|')
+      : UNCONFIGURED_KNOWLEDGE_VERSION_KEY,
   });
 }
 

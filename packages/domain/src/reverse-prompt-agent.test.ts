@@ -6,7 +6,10 @@ import {
   parseReversePromptResult,
   reversePromptPersonaSchema,
 } from './reverse-prompt-agent';
-import { createAgentKnowledgeLease } from './knowledge-context';
+import {
+  UNCONFIGURED_KNOWLEDGE_VERSION_KEY,
+  createAgentKnowledgeLease,
+} from './knowledge-context';
 
 const snapshot = {
   version: 'approved-2026-07-13-2',
@@ -19,19 +22,21 @@ const references = [
   { assetId: 'asset-scene', label: 'Scene', role: 'scene_composition' as const, position: 1 },
 ];
 
-const knowledgeLease = createAgentKnowledgeLease({
-  runId: 'run-1',
-  capability: 'reverse_prompt',
-  snapshots: [
-    { knowledgeBaseId: 'scene-skill', version: 3, contentHash: 'b'.repeat(64) },
-    { knowledgeBaseId: 'ecommerce-detail', version: 2, contentHash: 'a'.repeat(64) },
-  ],
-  references,
-  citations: [{ assetId: 'asset-scene', label: 'Scene' }],
-}, {
-  leaseId: 'lease-1',
-  createdAt: '2026-07-15T10:00:00.000Z',
-});
+function createKnowledgeLease(runId = 'run-1') {
+  return createAgentKnowledgeLease({
+    runId,
+    capability: 'reverse_prompt',
+    snapshots: [
+      { knowledgeBaseId: 'scene-skill', version: 3, contentHash: 'b'.repeat(64) },
+      { knowledgeBaseId: 'ecommerce-detail', version: 2, contentHash: 'a'.repeat(64) },
+    ],
+    references,
+    citations: [{ assetId: 'asset-scene', label: 'Scene' }],
+  }, {
+    leaseId: `lease-${runId}`,
+    createdAt: '2026-07-15T10:00:00.000Z',
+  });
+}
 
 function deps(ids: string[], nonces: string[]) {
   return {
@@ -54,6 +59,7 @@ describe('reverse prompt personas', () => {
 
 describe('reverse prompt runs', () => {
   it('captures the newest approved memory snapshot and pinned ordered references', () => {
+    const knowledgeLease = createKnowledgeLease('run-1');
     const run = createReversePromptRun({
       projectId: 'project-1',
       skill: { id: 'scene-skill', version: 'v2' },
@@ -64,7 +70,7 @@ describe('reverse prompt runs', () => {
     }, deps(['session-1'], ['nonce-1']));
 
     expect(run).toMatchObject({
-      sessionId: 'session-1',
+      sessionId: 'run-1',
       nonce: 'nonce-1',
       persona: DEFAULT_REVERSE_PROMPT_PERSONA,
       knowledgeLease,
@@ -75,6 +81,7 @@ describe('reverse prompt runs', () => {
   });
 
   it('rejects references that differ from the pinned lease', () => {
+    const knowledgeLease = createKnowledgeLease('run-1');
     expect(() => createReversePromptRun({
       projectId: 'project-1',
       skill: { id: 'scene-skill', version: 'v2' },
@@ -83,22 +90,38 @@ describe('reverse prompt runs', () => {
       references: [...references].reverse(),
     })).toThrow(ZodError);
   });
-  it('creates a fresh session and nonce every time even when references are unchanged', () => {
-    const identity = deps(['session-1', 'session-2'], ['nonce-1', 'nonce-2']);
-    const input = {
+
+  it('requires an explicit knowledge lease', () => {
+    const legacyInput = {
       projectId: 'project-1',
       skill: { id: 'scene-skill', version: 'v2' },
-      knowledgeLease,
+      approvedMemorySnapshot: snapshot,
+      references,
+    } as unknown as Parameters<typeof createReversePromptRun>[0];
+
+    expect(() => createReversePromptRun(legacyInput)).toThrow(ZodError);
+  });
+
+  it('creates a fresh session and nonce every time even when references are unchanged', () => {
+    const identity = deps(['session-1', 'session-2'], ['nonce-1', 'nonce-2']);
+    const first = createReversePromptRun({
+      projectId: 'project-1',
+      skill: { id: 'scene-skill', version: 'v2' },
+      knowledgeLease: createKnowledgeLease('run-1'),
       approvedMemorySnapshot: snapshot,
       projectMemoryIds: ['project-memory-1'],
       references,
-    };
-    const first = createReversePromptRun(input, identity);
+    }, identity);
     const second = createReversePromptRun({
-      ...input,
+      projectId: 'project-1',
+      skill: { id: 'scene-skill', version: 'v2' },
+      knowledgeLease: createKnowledgeLease('run-2'),
       approvedMemorySnapshot: { ...snapshot, version: 'approved-2026-07-13-3' },
+      projectMemoryIds: ['project-memory-1'],
+      references,
     }, identity);
     expect(second.sessionId).not.toBe(first.sessionId);
+    expect(second.sessionId).toBe('run-2');
     expect(second.nonce).not.toBe(first.nonce);
     expect(second.approvedMemorySnapshot.version).toBe('approved-2026-07-13-3');
   });
@@ -108,7 +131,7 @@ describe('reverse prompt runs', () => {
       createReversePromptRun({
         projectId: 'project-1',
         skill: { id: 'scene-skill', version: 'v2' },
-        knowledgeLease,
+        knowledgeLease: createKnowledgeLease('run-1'),
         approvedMemorySnapshot: snapshot,
         references: Array.from({ length: 21 }, (_, index) => ({
           assetId: `asset-${index}`,
@@ -136,6 +159,7 @@ describe('reverse prompt runs', () => {
   });
 
   it('requires structured output to match the current run identity', () => {
+    const knowledgeLease = createKnowledgeLease('run-1');
     const run = createReversePromptRun({
       projectId: 'project-1',
       skill: { id: 'scene-skill', version: 'v2' },
@@ -155,6 +179,29 @@ describe('reverse prompt runs', () => {
       executionChecklist: ['Verify product identity', 'Verify safe area'],
     };
     expect(parseReversePromptResult(result, run)).toEqual(result);
+    expect(() => parseReversePromptResult({ ...result, knowledgeSnapshotVersion: '' }, run)).toThrow(ZodError);
     expect(() => parseReversePromptResult({ ...result, knowledgeSnapshotVersion: 'stale-version' }, run)).toThrowError(Error);
+  });
+
+  it('accepts an explicit no-snapshots lease for legacy callers', () => {
+    const run = createReversePromptRun({
+      projectId: 'project-1',
+      skill: { id: 'scene-skill', version: 'v2' },
+      knowledgeLease: createAgentKnowledgeLease({
+        runId: 'run-legacy',
+        capability: 'reverse_prompt',
+        snapshots: [],
+        references,
+        citations: [],
+      }, {
+        leaseId: 'lease-legacy',
+        createdAt: '2026-07-15T10:00:00.000Z',
+      }),
+      approvedMemorySnapshot: snapshot,
+      references,
+    }, deps(['session-ignored'], ['nonce-1']));
+
+    expect(run.sessionId).toBe('run-legacy');
+    expect(run.knowledgeLease.versionKey).toBe(UNCONFIGURED_KNOWLEDGE_VERSION_KEY);
   });
 });

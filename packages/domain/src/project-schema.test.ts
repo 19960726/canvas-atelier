@@ -244,6 +244,7 @@ describe('public domain API', () => {
       'DEFAULT_REVERSE_PROMPT_PERSONA',
       'MAX_GENERATION_REFERENCES',
       'REVERSE_PROMPT_PERSONAS',
+      'UNCONFIGURED_KNOWLEDGE_VERSION_KEY',
       'appendProjectMemoryEntry',
       'applyProjectTransaction',
       'applyTransaction',

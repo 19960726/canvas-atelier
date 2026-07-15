@@ -1,6 +1,10 @@
 export { appendProjectMemoryEntry, buildProjectMemoryContext, createSkillPromotionCandidate, parseProjectMemoryEntry, selectActiveProjectMemoryEntries } from './project-memory';
 export type { ProjectMemoryEntry, SkillPromotionCandidate } from './project-memory';
-export { createAgentKnowledgeLease, reorderReferences } from './knowledge-context';
+export {
+  UNCONFIGURED_KNOWLEDGE_VERSION_KEY,
+  createAgentKnowledgeLease,
+  reorderReferences,
+} from './knowledge-context';
 export type {
   AgentKnowledgeCapability,
   AgentKnowledgeLease,

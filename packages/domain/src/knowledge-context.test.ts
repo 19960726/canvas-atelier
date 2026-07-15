@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createAgentKnowledgeLease, reorderReferences, type OrderedReference } from './knowledge-context';
+import {
+  UNCONFIGURED_KNOWLEDGE_VERSION_KEY,
+  createAgentKnowledgeLease,
+  reorderReferences,
+  type OrderedReference,
+} from './knowledge-context';
 
 const references: OrderedReference[] = [
   { assetId: 'product', label: 'Product', role: 'product_identity', position: 0 },
@@ -25,6 +30,21 @@ describe('agent knowledge lease', () => {
     expect(lease.snapshots.map((item) => item.knowledgeBaseId)).toEqual(['ecommerce-detail', 'scene-skill']);
     expect(lease.references.map((item) => item.assetId)).toEqual(['product', 'scene']);
     expect(lease.versionKey).toMatch(/^ecommerce-detail@2:/);
+  });
+
+  it('uses a stable explicit fallback version key when snapshots are not configured', () => {
+    const lease = createAgentKnowledgeLease({
+      runId: 'run-no-snapshots',
+      capability: 'reverse_prompt',
+      snapshots: [],
+      references,
+      citations: [],
+    }, {
+      leaseId: 'lease-no-snapshots',
+      createdAt: '2026-07-15T10:00:00.000Z',
+    });
+
+    expect(lease.versionKey).toBe(UNCONFIGURED_KNOWLEDGE_VERSION_KEY);
   });
 
   it('reorders without mutating input', () => {

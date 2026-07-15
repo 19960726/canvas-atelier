@@ -1,7 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ApprovedMemorySnapshot, ReversePromptRun, ReversePromptResult } from '@agent-canvas/domain';
+import {
+  UNCONFIGURED_KNOWLEDGE_VERSION_KEY,
+  type ApprovedMemorySnapshot,
+  type ReversePromptRun,
+  type ReversePromptResult,
+} from '@agent-canvas/domain';
 import { ReversePromptAgent } from './ReversePromptAgent';
 
 afterEach(() => cleanup());
@@ -16,7 +21,7 @@ function resultFor(run: ReversePromptRun): ReversePromptResult {
   return {
     sessionId: run.sessionId,
     nonce: run.nonce,
-    knowledgeSnapshotVersion: run.approvedMemorySnapshot.version,
+    knowledgeSnapshotVersion: run.knowledgeLease.versionKey,
     analysis: `本次分析 ${run.nonce}`,
     keywords: [`新关键词-${run.nonce}`],
     positivePrompt: '高端产品主视觉，严格保持产品身份。',
@@ -68,6 +73,9 @@ describe('ReversePromptAgent', () => {
     expect(first.approvedMemorySnapshot.version).toBe('approved-memory-v3');
     expect(second.approvedMemorySnapshot.version).toBe('approved-memory-v4');
     expect(second.sessionId).not.toBe(first.sessionId);
+    expect(first.sessionId).toBe(first.knowledgeLease.runId);
+    expect(second.sessionId).toBe(second.knowledgeLease.runId);
+    expect(first.knowledgeLease.versionKey).toBe(UNCONFIGURED_KNOWLEDGE_VERSION_KEY);
     expect(second.nonce).not.toBe(first.nonce);
     expect(screen.getAllByText('本次新生成')).toHaveLength(2);
     expect(screen.getByText(`新关键词-${second.nonce}`)).toBeVisible();
@@ -98,6 +106,6 @@ describe('ReversePromptAgent', () => {
     expect(screen.getByText('反推正向提示词')).toBeVisible();
     expect(screen.getByText('负面约束')).toBeVisible();
     expect(screen.getByText('执行检查清单')).toBeVisible();
-    expect(screen.getByText('approved-memory-v3')).toBeVisible();
+    expect(screen.getByText(UNCONFIGURED_KNOWLEDGE_VERSION_KEY)).toBeVisible();
   });
 });

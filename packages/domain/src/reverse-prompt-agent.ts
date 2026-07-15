@@ -73,6 +73,13 @@ export const reversePromptRunSchema = z.object({
   references: reversePromptReferenceSchema,
   referenceAssetIds: reversePromptReferenceAssetIdsSchema,
 }).strict().superRefine((run, context) => {
+  if (run.sessionId !== run.knowledgeLease.runId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sessionId'],
+      message: 'Reverse-prompt sessionId must match knowledge lease runId',
+    });
+  }
   if (!orderedReferencesMatch(run.references, run.knowledgeLease.references)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -97,7 +104,7 @@ export const reversePromptRunSchema = z.object({
 export const reversePromptResultSchema = z.object({
   sessionId: z.string().min(1),
   nonce: z.string().min(1),
-  knowledgeSnapshotVersion: z.string(),
+  knowledgeSnapshotVersion: z.string().min(1),
   analysis: z.string().min(1),
   keywords: z.array(z.string().min(1)).min(1),
   positivePrompt: z.string().min(1),
@@ -111,7 +118,6 @@ export type ReversePromptRun = z.infer<typeof reversePromptRunSchema>;
 export type ReversePromptResult = z.infer<typeof reversePromptResultSchema>;
 
 interface RunDeps {
-  createId?: () => string;
   createNonce?: () => string;
   now?: () => string;
 }
@@ -120,32 +126,29 @@ interface CreateReversePromptRunInput {
   projectId: string;
   skill: { id: string; version: string };
   persona?: ReversePromptPersona;
-  knowledgeLease?: AgentKnowledgeLease;
+  knowledgeLease: AgentKnowledgeLease;
   approvedMemorySnapshot: ApprovedMemorySnapshot;
   projectMemoryIds?: string[];
-  references?: ReversePromptRun['references'];
-  referenceAssetIds?: string[];
+  references: ReversePromptRun['references'];
 }
 
 export function createReversePromptRun(
   input: CreateReversePromptRunInput,
   deps: RunDeps = {},
 ): ReversePromptRun {
-  const sessionId = (deps.createId ?? createUniqueValue)();
-  const createdAt = (deps.now ?? (() => new Date().toISOString()))();
-  const references = normalizeReferences(input.references, input.referenceAssetIds);
+  const normalizedReferences = input.references.map((reference, index) => ({ ...reference, position: index }));
   return reversePromptRunSchema.parse({
-    sessionId,
+    sessionId: input.knowledgeLease?.runId ?? '',
     nonce: (deps.createNonce ?? createUniqueValue)(),
-    createdAt,
+    createdAt: (deps.now ?? (() => new Date().toISOString()))(),
     projectId: input.projectId,
     skill: input.skill,
     persona: input.persona ?? DEFAULT_REVERSE_PROMPT_PERSONA,
-    knowledgeLease: input.knowledgeLease ?? createLegacyKnowledgeLease(sessionId, createdAt, input.approvedMemorySnapshot, references),
+    knowledgeLease: input.knowledgeLease,
     approvedMemorySnapshot: input.approvedMemorySnapshot,
     projectMemoryIds: input.projectMemoryIds ?? [],
-    references,
-    referenceAssetIds: references.map((reference) => reference.assetId),
+    references: normalizedReferences,
+    referenceAssetIds: normalizedReferences.map((reference) => reference.assetId),
   });
 }
 
@@ -159,39 +162,6 @@ export function parseReversePromptResult(input: unknown, run: ReversePromptRun):
     throw new Error('反推结果运行身份不匹配');
   }
   return result;
-}
-
-function createLegacyKnowledgeLease(
-  runId: string,
-  createdAt: string,
-  approvedMemorySnapshot: ApprovedMemorySnapshot,
-  references: ReversePromptRun['references'],
-): AgentKnowledgeLease {
-  return agentKnowledgeLeaseSchema.parse({
-    schemaVersion: 1,
-    leaseId: `legacy-${runId}`,
-    runId,
-    createdAt,
-    capability: 'reverse_prompt',
-    snapshots: [],
-    references,
-    citations: [],
-    versionKey: approvedMemorySnapshot.version,
-  });
-}
-
-function normalizeReferences(
-  references: ReversePromptRun['references'] | undefined,
-  referenceAssetIds: string[] | undefined,
-): ReversePromptRun['references'] {
-  const baseReferences = references ?? referenceAssetIds?.map((assetId, index) => ({
-    assetId,
-    label: assetId,
-    role: 'product_identity' as const,
-    position: index,
-  })) ?? [];
-
-  return baseReferences.map((reference, index) => ({ ...reference, position: index }));
 }
 
 function createUniqueValue(): string {

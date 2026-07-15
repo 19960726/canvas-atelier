@@ -406,7 +406,7 @@ async function analyzeReversePromptDraft(run: ReversePromptRun): Promise<Reverse
   return {
     sessionId: run.sessionId,
     nonce: run.nonce,
-    knowledgeSnapshotVersion: run.approvedMemorySnapshot.version,
+    knowledgeSnapshotVersion: run.knowledgeLease.versionKey,
     analysis: `本地草稿根据 ${run.referenceAssetIds.length} 个参考图资产 ID、${run.projectMemoryIds.length} 条有效项目记忆索引和“${run.persona.label}”角色重新组织。本次未读取记忆正文，也尚未调用 Comfly 模型。`,
     keywords: [run.persona.label, freshKeyword, '产品身份锁定', '商业构图层次'],
     positivePrompt: '高端商业产品主视觉，严格保持产品外形、Logo、品牌颜色与材质，依据参考图重建构图、光线、道具关系和文案安全区。',

@@ -45,6 +45,16 @@ describe('generation request reference validation', () => {
     expect(() => parseGenerationRequest(request)).toThrow(ZodError);
   });
 
+  it('rejects a lease with an empty version key', () => {
+    const request = requestWithCount(2);
+    request.knowledgeLease = {
+      ...request.knowledgeLease,
+      versionKey: '',
+    };
+
+    expect(() => parseGenerationRequest(request)).toThrow(ZodError);
+  });
+
   it('rejects image 21 with a stable max-reference issue', () => {
     try {
       parseGenerationRequest(requestWithCount(21));

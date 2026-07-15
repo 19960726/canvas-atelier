@@ -3,9 +3,11 @@ import { MoreHorizontal, Pencil, Sparkles } from 'lucide-react';
 import {
   DEFAULT_REVERSE_PROMPT_PERSONA,
   REVERSE_PROMPT_PERSONAS,
+  createAgentKnowledgeLease,
   createReversePromptRun,
   parseReversePromptResult,
   type ApprovedMemorySnapshot,
+  type OrderedReference,
   type ReversePromptPersona,
   type ReversePromptResult,
   type ReversePromptRun,
@@ -54,13 +56,26 @@ export function ReversePromptAgent({
     setError(null);
     try {
       const approvedMemorySnapshot = getApprovedMemorySnapshot();
+      const createdAt = new Date().toISOString();
+      const runId = createClientUniqueValue();
+      const references = buildFallbackReferences(referenceAssetIds);
       const run = createReversePromptRun({
         projectId,
         skill: { id: 'scene-skill', version: 'managed-latest' },
         persona,
+        knowledgeLease: createAgentKnowledgeLease({
+          runId,
+          capability: 'reverse_prompt',
+          snapshots: [],
+          references,
+          citations: [],
+        }, {
+          leaseId: createClientUniqueValue(),
+          createdAt,
+        }),
         approvedMemorySnapshot,
         projectMemoryIds: getProjectMemoryIds(),
-        referenceAssetIds,
+        references,
       });
       const result = parseReversePromptResult(await analyze(run), run);
       setHistory((current) => [{ run, result }, ...current]);
@@ -123,4 +138,20 @@ export function ReversePromptAgent({
 
 function ResultSection({ title, children }: { title: string; children: ReactNode }) {
   return <section className="reverse-result__section"><h3>{title}</h3>{children}</section>;
+}
+
+function buildFallbackReferences(referenceAssetIds: string[]): OrderedReference[] {
+  return referenceAssetIds.map((assetId, index) => ({
+    assetId,
+    label: assetId,
+    role: 'product_identity',
+    position: index,
+  }));
+}
+
+function createClientUniqueValue(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
