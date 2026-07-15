@@ -8,6 +8,7 @@
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
     "perf:persistence": "node -e \"const { spawnSync } = require('node:child_process'); const result = spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.config.ts', 'packages/desktop-core/src/persistence-performance.test.ts'], { stdio: 'inherit', env: { ...process.env, NOVUS_RUN_PERSISTENCE_PERF: '1' } }); process.exit(result.status ?? 1);\"",
+    "perf:knowledge": "node -e \"const { spawnSync } = require('node:child_process'); const result = spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.config.ts', 'packages/desktop-core/src/knowledge-refresh-performance.test.ts'], { stdio: 'inherit', env: { ...process.env, NOVUS_RUN_KNOWLEDGE_PERF: '1' } }); process.exit(result.status ?? 1);\"",
     "typecheck": "tsc -p packages/domain/tsconfig.json --noEmit && tsc -p packages/skill-store/tsconfig.json --noEmit && tsc -p packages/desktop-core/tsconfig.json --noEmit && tsc -p apps/desktop-legacy/tsconfig.json --noEmit && tsc -p apps/desktop-modern/tsconfig.json --noEmit && tsc -p apps/renderer/tsconfig.json --noEmit",
     "build": "npm run typecheck && npm run build -w @agent-canvas/desktop-core && npm run build -w @agent-canvas/renderer && npm run build -w @agent-canvas/desktop-legacy && npm run build -w @agent-canvas/desktop-modern",
     "e2e": "echo \"e2e not configured yet\""

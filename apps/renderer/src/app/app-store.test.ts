@@ -658,6 +658,95 @@ describe('project optimization memory', () => {
     expect(commit).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
   });
+
+  it('preserves feedback memory after candidate rejection and rollback review results', async () => {
+    const references: OrderedReference[] = [
+      { assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 },
+    ];
+    const lease = createAgentKnowledgeLease({
+      runId: 'run-review-memory',
+      capability: 'reverse_prompt',
+      snapshots: [],
+      references,
+      citations: [],
+    }, {
+      leaseId: 'lease-review-memory',
+      createdAt: '2026-07-15T08:00:00.000Z',
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit: vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: nextProject,
+        revision: 1,
+      })),
+    }));
+    resetAppStoreForTests();
+    await useAppStore.getState().recordUserFeedback({
+      title: 'Feedback survives review',
+      userRequest: 'premium product visual',
+      correction: 'Simplify the scene',
+      knowledgeLease: lease,
+      references,
+      citations: [],
+      feedback: { keep: ['product'], change: ['scene'], never: [] },
+    });
+    const memory = useAppStore.getState().project.projectMemory[0]!;
+    const pendingCandidate = useAppStore.getState().project.skillPromotionCandidates[0]!;
+    const rejectedCandidate = {
+      ...pendingCandidate,
+      reviewStatus: 'rejected' as const,
+      reviewedAt: '2026-07-15T09:00:00.000Z',
+    };
+    const rolledBackCandidate = {
+      ...pendingCandidate,
+      reviewStatus: 'rolled_back' as const,
+      reviewedAt: '2026-07-15T09:00:00.000Z',
+      publishedKnowledgeVersion: 3,
+      rolledBackAt: '2026-07-15T10:00:00.000Z',
+    };
+    const client = createMockKnowledgeClient({
+      initialStates: [],
+      reviewResult: {
+        projectId: 'local-project',
+        currentRevision: 2,
+        candidate: rejectedCandidate,
+        knowledgeState: null,
+      },
+    });
+    replaceKnowledgeClientForTests(client);
+
+    await useAppStore.getState().reviewSkillCandidate({
+      projectId: 'local-project',
+      candidateId: pendingCandidate.id,
+      decision: 'rejected',
+    });
+
+    expect(useAppStore.getState().project.projectMemory).toEqual([memory]);
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]).toMatchObject({ reviewStatus: 'rejected' });
+
+    client.review.mockResolvedValueOnce({
+      projectId: 'local-project',
+      currentRevision: 3,
+      candidate: rolledBackCandidate,
+      knowledgeState: knowledgeState({ version: 2, hashPrefix: 'b' }),
+    });
+    useAppStore.setState((state) => ({
+      project: {
+        ...state.project,
+        skillPromotionCandidates: [{ ...pendingCandidate, reviewStatus: 'approved', reviewedAt: '2026-07-15T09:00:00.000Z', publishedKnowledgeVersion: 3 }],
+      },
+    }));
+
+    await useAppStore.getState().reviewSkillCandidate({
+      projectId: 'local-project',
+      candidateId: pendingCandidate.id,
+      decision: 'rolled_back',
+      targetVersion: 2,
+    });
+
+    expect(useAppStore.getState().project.projectMemory).toEqual([memory]);
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]).toMatchObject({ reviewStatus: 'rolled_back' });
+  });
   it('rejects broader POSIX absolute paths from conversation and feedback payloads', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,

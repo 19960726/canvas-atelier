@@ -317,6 +317,77 @@ describe('CanvasWorkspace', () => {
     expect(getLease.mock.calls[0]![2].map((reference: { role: string }) => reference.role)).toEqual(['scene_composition', 'product_identity']);
     expect(getLease.mock.calls[0]![3]).toEqual([{ assetId: 'scene', label: 'Scene' }]);
   });
+  it('records reverse-prompt feedback as durable memory and pending review without auto-approving', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const review = vi.fn();
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    replaceKnowledgeClientForTests(createKnowledgeClient({
+      getLease: (runId, capability, references, citations) => createAgentKnowledgeLease({
+        runId,
+        capability,
+        snapshots: [],
+        references,
+        citations,
+      }, {
+        leaseId: 'lease-workspace-feedback',
+        createdAt: '2026-07-15T08:00:00.000Z',
+      }),
+      review,
+    }));
+    resetAppStoreForTests();
+    const project = createStarterProject();
+    useAppStore.setState({
+      project: {
+        ...project,
+        nodes: project.nodes.map((node) => node.type === 'placement_preview'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                objects: [{
+                  ...node.data.objects[0]!,
+                  assetId: 'scene',
+                  id: 'scene',
+                  name: 'Scene',
+                  role: 'scene_composition',
+                }],
+              },
+            }
+          : node),
+      },
+    });
+
+    render(<CanvasWorkspace />);
+    const run = document.querySelector<HTMLButtonElement>('.reverse-agent__run');
+    if (!run) throw new Error('Missing reverse prompt button');
+    fireEvent.click(run);
+    await waitFor(() => expect(document.querySelector('.reverse-result')).not.toBeNull());
+    const feedbackBox = screen.getByLabelText(/^Feedback for /);
+    fireEvent.change(feedbackBox, { target: { value: 'Keep the atmosphere but simplify props.' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save feedback for / }));
+
+    await waitFor(() => expect(useAppStore.getState().project.projectMemory).toHaveLength(1));
+    expect(useAppStore.getState().project.projectMemory[0]).toMatchObject({
+      kind: 'user_feedback',
+      context: {
+        knowledgeLease: { leaseId: 'lease-workspace-feedback' },
+        references: [{ assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 }],
+        citations: [],
+      },
+      feedback: {
+        change: ['Keep the atmosphere but simplify props.'],
+      },
+    });
+    expect(useAppStore.getState().project.skillPromotionCandidates).toMatchObject([{
+      reviewStatus: 'pending_review',
+      sourceProjectMemoryId: useAppStore.getState().project.projectMemory[0]?.id,
+    }]);
+    expect(review).not.toHaveBeenCalled();
+  });
   it('shows a specific notice after desktop revision conflicts', () => {
     resetAppStoreForTests();
     useAppStore.setState({

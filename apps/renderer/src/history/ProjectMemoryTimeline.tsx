@@ -5,13 +5,18 @@ import {
   type ProjectMemoryEntry,
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
+import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
+import type { SkillCandidateReviewRequest } from '../app/knowledge-client';
+import { SkillCandidateReview } from './SkillCandidateReview';
 
 interface ProjectMemoryTimelineProps {
   entries: ProjectMemoryEntry[];
   promotionCandidates: SkillPromotionCandidate[];
   availableSnapshotIds: string[];
+  knowledgeBases?: KnowledgeBaseStateSummary[];
   onRestore: (snapshotId: string) => void;
   onPromote: (memoryId: string) => void;
+  onReviewSkillCandidate?: (request: SkillCandidateReviewRequest) => Promise<unknown>;
 }
 
 type MemoryFilter = 'all' | ProjectMemoryEntry['kind'];
@@ -28,8 +33,10 @@ export function ProjectMemoryTimeline({
   entries,
   promotionCandidates,
   availableSnapshotIds,
+  knowledgeBases = [],
   onRestore,
   onPromote,
+  onReviewSkillCandidate,
 }: ProjectMemoryTimelineProps) {
   const [filter, setFilter] = useState<MemoryFilter>('all');
   const pendingMemoryIds = useMemo(
@@ -117,6 +124,14 @@ export function ProjectMemoryTimeline({
             );
           })}
         </div>
+      )}
+      {onReviewSkillCandidate && (
+        <SkillCandidateReview
+          candidates={promotionCandidates}
+          knowledgeBases={knowledgeBases}
+          onReview={onReviewSkillCandidate}
+          projectId={entries[0]?.projectId ?? promotionCandidates[0]?.sourceProjectId ?? 'local-project'}
+        />
       )}
     </section>
   );

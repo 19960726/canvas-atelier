@@ -78,4 +78,41 @@ describe('ProjectMemoryTimeline', () => {
     expect(screen.getByRole('button', { name: '优化产品构图 已进入 Skill 审批' })).toBeDisabled();
     expect(screen.getByText('待审批')).toBeVisible();
   });
+  it('keeps timeline entries visible while candidate review status changes', () => {
+    render(<ProjectMemoryTimeline
+      entries={[optimization]}
+      promotionCandidates={[{
+        ...candidate,
+        reviewStatus: 'rolled_back',
+        reviewedAt: '2026-07-15T09:00:00.000Z',
+        publishedKnowledgeVersion: 3,
+        rolledBackAt: '2026-07-15T10:00:00.000Z',
+        targetKnowledgeBaseId: 'scene-skill',
+      }]}
+      availableSnapshotIds={['snapshot-after']}
+      knowledgeBases={[{
+        schemaVersion: 1,
+        knowledgeBaseId: 'scene-skill',
+        displayName: 'Scene Skill',
+        status: 'rolled_back',
+        activeVersion: 2,
+        activeContentHash: 'b'.repeat(64),
+        versionCount: 3,
+        versions: [
+          { version: 1, contentHash: 'a'.repeat(64), publishedAt: '2026-07-15T07:00:00.000Z', sourceDeviceId: 'device-a', displayName: 'Scene Skill' },
+          { version: 2, contentHash: 'b'.repeat(64), publishedAt: '2026-07-15T08:00:00.000Z', sourceDeviceId: 'device-a', displayName: 'Scene Skill' },
+          { version: 3, contentHash: 'c'.repeat(64), publishedAt: '2026-07-15T09:00:00.000Z', sourceDeviceId: 'device-a', displayName: 'Scene Skill' },
+        ],
+        lastFailure: null,
+        lastRollbackAt: '2026-07-15T10:00:00.000Z',
+      }]}
+      onPromote={() => {}}
+      onRestore={() => {}}
+      onReviewSkillCandidate={async () => undefined}
+    />);
+
+    expect(screen.getByText(/产品构图/)).toBeVisible();
+    expect(screen.getByText('candidate-1')).toBeVisible();
+    expect(screen.getByText('rolled_back')).toBeVisible();
+  });
 });

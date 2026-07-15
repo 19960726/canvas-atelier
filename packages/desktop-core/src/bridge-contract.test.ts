@@ -222,6 +222,134 @@ describe('desktop bridge contract', () => {
     })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
   });
 
+  it('rolls back approved skill candidates through managed knowledge rollback and persists audit state', async () => {
+    const approvedCandidate = createApprovedSkillCandidate();
+    const project: CanvasProject = {
+      ...starterProject,
+      skillPromotionCandidates: [approvedCandidate],
+    };
+    const commit = vi.fn(async () => ({
+      committedAt: '2026-07-15T10:00:00.000Z',
+      projectId: starterProject.id,
+      revision: 6,
+      sequence: 6,
+      transactionId: 'review-skill-candidate-1',
+    }));
+    const rollback = vi.fn(async () => rolledBackKnowledgeState());
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project'),
+      },
+      knowledgeRefreshService: {
+        refreshNow: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates: vi.fn(async () => [rolledBackKnowledgeState()]),
+        readActive: vi.fn(async () => null),
+        rollback,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    const result = await handlers.reviewSkillCandidate({}, {
+      candidateId: approvedCandidate.id,
+      decision: 'rolled_back',
+      projectId: starterProject.id,
+      targetVersion: 2,
+    });
+
+    expect(rollback).toHaveBeenCalledWith('scene-skill', 2);
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({
+      baseRevision: 5,
+      kind: 'system',
+      projectId: starterProject.id,
+      transaction: expect.objectContaining({
+        operations: [expect.objectContaining({
+          kind: 'set_skill_candidates',
+          candidates: [expect.objectContaining({
+            id: approvedCandidate.id,
+            reviewStatus: 'rolled_back',
+            publishedKnowledgeVersion: 3,
+            rolledBackAt: expect.any(String),
+          })],
+        })],
+      }),
+    }));
+    expect(result).toMatchObject({
+      currentRevision: 6,
+      candidate: {
+        id: approvedCandidate.id,
+        reviewStatus: 'rolled_back',
+      },
+      knowledgeState: {
+        activeVersion: 2,
+        status: 'rolled_back',
+      },
+    });
+  });
+
+  it('rejects rollback without a valid older target before mutating project or knowledge state', async () => {
+    const approvedCandidate = createApprovedSkillCandidate();
+    const commit = vi.fn();
+    const rollback = vi.fn();
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project'),
+      },
+      knowledgeRefreshService: {
+        refreshNow: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        subscribe: vi.fn(),
+      },
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates: vi.fn(async () => [createKnowledgeStateSummary()]),
+        readActive: vi.fn(async () => null),
+        rollback,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => ({
+          ...starterProject,
+          skillPromotionCandidates: [approvedCandidate],
+        })),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+
+    await expect(handlers.reviewSkillCandidate({}, {
+      candidateId: approvedCandidate.id,
+      decision: 'rolled_back',
+      projectId: starterProject.id,
+    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    await expect(handlers.reviewSkillCandidate({}, {
+      candidateId: approvedCandidate.id,
+      decision: 'rolled_back',
+      projectId: starterProject.id,
+      targetVersion: 3,
+    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(rollback).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it('registers managed knowledge invoke channels', () => {
     const channels: string[] = [];
     const ipcMain = {
@@ -547,6 +675,45 @@ function createKnowledgeStateSummary(): KnowledgeBaseStateSummary {
     }],
     lastFailure: null,
     lastRollbackAt: null,
+  };
+}
+
+function rolledBackKnowledgeState(): KnowledgeBaseStateSummary {
+  return {
+    ...createKnowledgeStateSummary(),
+    status: 'rolled_back',
+    activeVersion: 2,
+    activeContentHash: 'b'.repeat(64),
+    versionCount: 3,
+    versions: [
+      { version: 1, contentHash: 'a'.repeat(64), publishedAt: '2026-07-15T00:00:00.000Z', sourceDeviceId: 'desktop-core', displayName: 'Scene Skill' },
+      { version: 2, contentHash: 'b'.repeat(64), publishedAt: '2026-07-15T01:00:00.000Z', sourceDeviceId: 'desktop-core', displayName: 'Scene Skill' },
+      { version: 3, contentHash: 'c'.repeat(64), publishedAt: '2026-07-15T02:00:00.000Z', sourceDeviceId: 'desktop-core', displayName: 'Scene Skill' },
+    ],
+    lastRollbackAt: '2026-07-15T10:00:00.000Z',
+  };
+}
+
+function createApprovedSkillCandidate() {
+  return {
+    schemaVersion: 1 as const,
+    id: 'candidate-approved',
+    sourceProjectId: 'project-1',
+    sourceProjectMemoryId: 'memory-feedback',
+    sourceProjectMemoryIds: ['memory-feedback'],
+    createdAt: '2026-07-15T08:00:00.000Z',
+    title: 'Liquid restraint',
+    rationale: 'Feedback asks for calmer liquid.',
+    rule: 'Use slower, heavier liquid arcs.',
+    targetKnowledgeBaseId: 'scene-skill',
+    targetKnowledgeSection: 'reverse-prompt/liquid',
+    counts: { supportingMemoryCount: 1 },
+    confidence: 0.9,
+    affectedCapabilities: ['reverse_prompt' as const],
+    evidence: { keep: ['product'], change: ['liquid'], never: [] },
+    reviewStatus: 'approved' as const,
+    reviewedAt: '2026-07-15T09:00:00.000Z',
+    publishedKnowledgeVersion: 3,
   };
 }
 

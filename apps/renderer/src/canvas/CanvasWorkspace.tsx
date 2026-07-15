@@ -78,6 +78,8 @@ export function CanvasWorkspace() {
   const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
   const undo = useAppStore((state) => state.undo);
   const promoteProjectMemory = useAppStore((state) => state.promoteProjectMemory);
+  const recordUserFeedback = useAppStore((state) => state.recordUserFeedback);
+  const reviewSkillCandidate = useAppStore((state) => state.reviewSkillCandidate);
   const restoreProjectSnapshot = useAppStore((state) => state.restoreProjectSnapshot);
   const commitProjectTransaction = useAppStore((state) => state.commitProjectTransaction);
   const commitReferenceOrder = useAppStore((state) => state.commitReferenceOrder);
@@ -410,6 +412,7 @@ export function CanvasWorkspace() {
               pendingKnowledgeReviewCount={pendingKnowledgeReviewCount}
               analyze={analyzeReversePromptDraft}
               analysisMode="local_draft"
+              onFeedback={recordUserFeedback}
             />
             <div className="agent-message">
               <span className="agent-avatar">A</span>
@@ -434,8 +437,10 @@ export function CanvasWorkspace() {
               entries={project.projectMemory}
               promotionCandidates={project.skillPromotionCandidates}
               availableSnapshotIds={availableSnapshotIds}
+              knowledgeBases={knowledgeBases}
               onRestore={restoreProjectSnapshot}
               onPromote={promoteProjectMemory}
+              onReviewSkillCandidate={reviewSkillCandidate}
             />
           </div>
         </div>

@@ -4,6 +4,7 @@ import {
   parseCanvasProject,
   projectTransactionSchema,
   reviewSkillPromotionCandidate,
+  rollbackSkillPromotionCandidate,
   skillPromotionCandidateSchema,
   type CanvasProject,
   type SkillPromotionCandidate,
@@ -124,6 +125,7 @@ interface KnowledgeStoreLike {
   listStates(): Promise<KnowledgeBaseStateSummary[]>;
   publish?(snapshot: KnowledgeSnapshot): Promise<void>;
   readActive(knowledgeBaseId: string): Promise<KnowledgeSnapshot | null>;
+  rollback?(knowledgeBaseId: string, version: number): Promise<KnowledgeBaseStateSummary>;
 }
 
 interface KnowledgeRefreshServiceLike {
@@ -544,6 +546,10 @@ export function createDesktopBridgeHandlers(
     candidate: SkillPromotionCandidate,
     request: ReviewSkillCandidateBridgeRequest,
   ): Promise<SkillPromotionCandidate> {
+    if (request.decision === 'rolled_back') {
+      return rollbackSkillCandidateForBridge(candidate, request);
+    }
+
     if (request.decision !== 'approved') {
       return reviewSkillPromotionCandidate(candidate, {
         decision: request.decision,
@@ -596,6 +602,51 @@ export function createDesktopBridgeHandlers(
         throw error;
       }
       throw invalidRequest('Skill candidate approval is unavailable');
+    }
+  }
+
+  async function rollbackSkillCandidateForBridge(
+    candidate: SkillPromotionCandidate,
+    request: ReviewSkillCandidateBridgeRequest,
+  ): Promise<SkillPromotionCandidate> {
+    const targetVersion = request.targetVersion;
+    if (
+      targetVersion === undefined ||
+      !Number.isInteger(targetVersion) ||
+      targetVersion <= 0 ||
+      candidate.reviewStatus !== 'approved' ||
+      candidate.targetKnowledgeBaseId === undefined ||
+      candidate.publishedKnowledgeVersion === undefined ||
+      targetVersion >= candidate.publishedKnowledgeVersion
+    ) {
+      throw invalidRequest('Rollback requires a valid older target version');
+    }
+    const rollback = knowledgeStore.rollback;
+    if (rollback === undefined) {
+      throw invalidRequest('Knowledge rollback is unavailable');
+    }
+    const states = await knowledgeStore.listStates();
+    const state = states.find((item) => item.knowledgeBaseId === candidate.targetKnowledgeBaseId);
+    if (state === undefined || !state.versions.some((version) => version.version === targetVersion)) {
+      throw invalidRequest('Rollback target version is unavailable');
+    }
+
+    try {
+      const rolledBackState = sanitizeKnowledgeSummary(
+        await rollback.call(knowledgeStore, candidate.targetKnowledgeBaseId, targetVersion),
+      );
+      if (rolledBackState.activeVersion !== targetVersion) {
+        throw invalidRequest('Knowledge rollback target was not activated');
+      }
+      return rollbackSkillPromotionCandidate(
+        candidate,
+        rolledBackState.lastRollbackAt ?? new Date().toISOString(),
+      );
+    } catch (error) {
+      if (isPersistenceErrorCode(error, 'INVALID_REQUEST')) {
+        throw error;
+      }
+      throw invalidRequest('Knowledge rollback is unavailable');
     }
   }
 }
@@ -926,13 +977,16 @@ function validateRestoreBridgeRequest(value: unknown): RestoreBridgeRequest {
 function validateReviewSkillCandidateBridgeRequest(value: unknown): ReviewSkillCandidateBridgeRequest {
   const record = expectPlainRecord(value);
   const decision = record.decision;
-  if (decision !== 'approved' && decision !== 'rejected' && decision !== 'superseded') {
+  if (decision !== 'approved' && decision !== 'rejected' && decision !== 'superseded' && decision !== 'rolled_back') {
     throw invalidRequest('Skill candidate review decision is invalid');
   }
   return {
     candidateId: parseNonEmptyString(record.candidateId, 'candidateId'),
     decision,
     projectId: parseNonEmptyString(record.projectId, 'projectId'),
+    targetVersion: record.targetVersion === undefined
+      ? undefined
+      : parsePositiveInteger(record.targetVersion, 'targetVersion'),
   };
 }
 

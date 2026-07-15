@@ -7,6 +7,7 @@ import {
   createReversePromptRun,
   parseReversePromptResult,
   type ApprovedMemorySnapshot,
+  type FeedbackObservations,
   type ImageCitation,
   type OrderedReference,
   type ReversePromptPersona,
@@ -29,12 +30,29 @@ interface ReversePromptAgentProps {
   analyze: (run: ReversePromptRun) => Promise<ReversePromptResult>;
   analysisMode?: 'provider' | 'local_draft';
   onEditSkill?: () => void;
+  onFeedback?: (input: ReversePromptFeedbackInput) => Promise<boolean>;
   onMoreSkill?: () => void;
 }
 
 interface RunHistoryEntry {
   run: ReversePromptRun;
   result: ReversePromptResult;
+}
+
+interface ReversePromptFeedbackInput {
+  title: string;
+  userRequest: string;
+  correction: string;
+  knowledgeLease: ReversePromptRun['knowledgeLease'];
+  references: OrderedReference[];
+  citations: ImageCitation[];
+  observations?: FeedbackObservations;
+  feedback: {
+    keep: string[];
+    change: string[];
+    never: string[];
+    score?: number;
+  };
 }
 
 export function ReversePromptAgent({
@@ -49,10 +67,13 @@ export function ReversePromptAgent({
   analyze,
   analysisMode = 'provider',
   onEditSkill,
+  onFeedback,
   onMoreSkill,
 }: ReversePromptAgentProps) {
   const [personaId, setPersonaId] = useState<ReversePromptPersona['id']>(DEFAULT_REVERSE_PROMPT_PERSONA.id);
   const [history, setHistory] = useState<RunHistoryEntry[]>([]);
+  const [feedbackDrafts, setFeedbackDrafts] = useState<Record<string, string>>({});
+  const [savedFeedbackIds, setSavedFeedbackIds] = useState<Set<string>>(() => new Set());
   const [status, setStatus] = useState<'idle' | 'running'>('idle');
   const [error, setError] = useState<string | null>(null);
   const runningRef = useRef(false);
@@ -87,6 +108,27 @@ export function ReversePromptAgent({
       runningRef.current = false;
       setStatus('idle');
     }
+  };
+
+  const saveFeedback = async (entry: RunHistoryEntry) => {
+    if (!onFeedback) return;
+    const correction = feedbackDrafts[entry.run.sessionId]?.trim() ?? '';
+    if (correction.length === 0) return;
+    const saved = await onFeedback({
+      title: 'Reverse prompt feedback',
+      userRequest: entry.result.positivePrompt,
+      correction,
+      knowledgeLease: entry.run.knowledgeLease,
+      references: entry.run.references.map((reference) => ({ ...reference })),
+      citations: entry.run.knowledgeLease.citations.map((citation) => ({ ...citation })),
+      feedback: {
+        keep: [],
+        change: [correction],
+        never: [],
+      },
+    });
+    if (!saved) return;
+    setSavedFeedbackIds((current) => new Set([...current, entry.run.sessionId]));
   };
 
   return (
@@ -135,6 +177,31 @@ export function ReversePromptAgent({
               <ResultSection title="负面约束"><ul>{result.negativeConstraints.map((item) => <li key={item}>{item}</li>)}</ul></ResultSection>
               <ResultSection title="执行检查清单"><ul>{result.executionChecklist.map((item) => <li key={item}>{item}</li>)}</ul></ResultSection>
               <footer>知识快照 <b>{result.knowledgeSnapshotVersion}</b> · nonce {run.nonce.slice(0, 8)}</footer>
+              {onFeedback && (
+                <div className="reverse-result__feedback">
+                  <label>
+                    <span>Feedback</span>
+                    <textarea
+                      aria-label={`Feedback for ${run.sessionId}`}
+                      rows={2}
+                      value={feedbackDrafts[run.sessionId] ?? ''}
+                      onChange={(event) => setFeedbackDrafts((current) => ({
+                        ...current,
+                        [run.sessionId]: event.target.value,
+                      }))}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    aria-label={`Save feedback for ${run.sessionId}`}
+                    disabled={(feedbackDrafts[run.sessionId]?.trim().length ?? 0) === 0 || savedFeedbackIds.has(run.sessionId)}
+                    onClick={() => void saveFeedback({ run, result })}
+                  >
+                    Save feedback
+                  </button>
+                  {savedFeedbackIds.has(run.sessionId) && <span>Feedback saved</span>}
+                </div>
+              )}
             </article>
           ))}
         </div>

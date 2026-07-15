@@ -215,7 +215,8 @@ export interface KnowledgeStateBridgeResult {
 export interface ReviewSkillCandidateBridgeRequest {
   readonly projectId: string;
   readonly candidateId: string;
-  readonly decision: 'approved' | 'rejected' | 'superseded';
+  readonly decision: 'approved' | 'rejected' | 'superseded' | 'rolled_back';
+  readonly targetVersion?: number;
 }
 
 export interface ReviewSkillCandidateBridgeResult {

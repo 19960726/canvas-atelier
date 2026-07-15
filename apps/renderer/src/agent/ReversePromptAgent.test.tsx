@@ -233,6 +233,50 @@ describe('ReversePromptAgent', () => {
     expect(analyze.mock.calls[0]![0].references).toEqual(references);
     expect(analyze.mock.calls[0]![0].knowledgeLease.citations).toEqual(citations);
   });
+
+  it('saves meaningful feedback against the immutable run lease without auto-reviewing candidates', async () => {
+    const references: OrderedReference[] = [
+      { assetId: 'scene', label: 'Scene', role: 'scene_composition', position: 0 },
+    ];
+    const citations: ImageCitation[] = [{ assetId: 'scene', label: 'Scene' }];
+    const onFeedback = vi.fn(async () => true);
+    const analyze = vi.fn(async (run: ReversePromptRun) => resultFor(run));
+    const view = renderAgent({ analyze, citations, onFeedback, references });
+
+    fireEvent.click(runButton());
+    await waitFor(() => expect(analyze).toHaveBeenCalledTimes(1));
+    const startedRun = analyze.mock.calls[0]![0];
+
+    view.rerender(<ReversePromptAgent
+      projectId="project-1"
+      references={[{ assetId: 'product', label: 'Product', role: 'product_identity', position: 0 }]}
+      citations={[{ assetId: 'product', label: 'Product' }]}
+      getApprovedMemorySnapshot={() => approvedMemorySnapshot}
+      analyze={analyze}
+      onFeedback={onFeedback}
+    />);
+
+    fireEvent.change(screen.getByLabelText(`Feedback for ${startedRun.sessionId}`), {
+      target: { value: 'Keep the product but remove the extra props.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: `Save feedback for ${startedRun.sessionId}` }));
+
+    await waitFor(() => expect(onFeedback).toHaveBeenCalledTimes(1));
+    expect(onFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Reverse prompt feedback',
+      userRequest: 'premium product visual',
+      correction: 'Keep the product but remove the extra props.',
+      knowledgeLease: startedRun.knowledgeLease,
+      references,
+      citations,
+      feedback: {
+        keep: [],
+        change: ['Keep the product but remove the extra props.'],
+        never: [],
+      },
+    }));
+    expect(screen.getByText('Feedback saved')).toBeVisible();
+  });
 });
 
 function runButton(): HTMLButtonElement {
