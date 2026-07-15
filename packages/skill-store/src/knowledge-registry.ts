@@ -126,7 +126,7 @@ export class KnowledgeSnapshotRegistry {
       active: cloneSnapshot(active),
       versions,
       lastFailure: current.lastFailure ? { ...current.lastFailure } : null,
-      lastRollbackAt: current.lastRollbackAt,
+      lastRollbackAt: null,
     };
 
     this.states.set(nextState.knowledgeBaseId, nextState);
@@ -180,6 +180,7 @@ export class KnowledgeSnapshotRegistry {
         reason: sanitizeFailureReason(reason),
         failedAt: z.string().datetime().parse(failedAt),
       },
+      lastRollbackAt: null,
     };
     this.states.set(knowledgeBaseId, nextState);
   }
@@ -222,12 +223,25 @@ function normalizeState(input: KnowledgeBaseState): KnowledgeBaseState {
     throw new Error('Knowledge base active snapshot must stay within one knowledge base');
   }
 
+  const isVersionedState = versions.length > 0 || state.active !== null;
+  if (isVersionedState && state.displayName === null) {
+    throw new Error('Non-empty knowledge bases require displayName');
+  }
+
   if (state.status === 'empty') {
     if (versions.length > 0 || state.active !== null) {
       throw new Error('Empty knowledge bases cannot contain versions');
     }
   } else if (state.active === null) {
     throw new Error('Non-empty knowledge bases require an active snapshot');
+  }
+
+  if (state.status === 'rolled_back') {
+    if (state.lastRollbackAt === null) {
+      throw new Error('Rolled-back knowledge bases require rollback metadata');
+    }
+  } else if (state.lastRollbackAt !== null) {
+    throw new Error('Only rolled-back knowledge bases can carry rollback metadata');
   }
 
   let active: KnowledgeSnapshot | null = null;

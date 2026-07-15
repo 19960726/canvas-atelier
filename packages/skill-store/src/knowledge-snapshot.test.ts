@@ -49,7 +49,10 @@ describe('createKnowledgeSnapshotCandidate', () => {
     buildAuthorizationHeader(),
     buildInlineImage(),
     buildGenericDataUrl(),
-    buildRawBase64Payload(),
+    buildRawPngPayload(),
+    buildRawJpegPayload(),
+    buildRawGifPayload(),
+    buildRawWebpPayload(),
     buildAbsolutePath(),
   ])('rejects protected content', (content) => {
     expect(() => createKnowledgeSnapshotCandidate({
@@ -90,6 +93,25 @@ describe('createKnowledgeSnapshotCandidate', () => {
 
     expect(candidate.documents[0]?.content).toContain('ordinary prose');
   });
+
+  it('accepts long hashes and opaque identifiers that are not embedded binary payloads', () => {
+    const candidate = createKnowledgeSnapshotCandidate({
+      knowledgeBaseId: 'scene-skill',
+      displayName: 'Scene Skill',
+      documents: [{
+        relativePath: 'memory/main.md',
+        content: [
+          'SHA256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          'Opaque ID 550e8400-e29b-41d4-a716-446655440000',
+          'Token QWxwaGFOdW1lcmljSWRlbnRpZmllckZvclRlc3RpbmdPbmx5MTIzNDU2',
+          'Technical prose about base64, image headers, and transport encodings.',
+        ].join('\n'),
+      }],
+    });
+
+    expect(candidate.documents[0]?.content).toContain('Opaque ID');
+    expect(candidate.documents[0]?.content).toContain('Technical prose');
+  });
 });
 
 function buildAuthorizationHeader(): string {
@@ -115,8 +137,20 @@ function buildGenericDataUrl(): string {
   ].join('');
 }
 
-function buildRawBase64Payload(): string {
-  return Buffer.from(Array.from({ length: 64 }, (_, index) => index)).toString('base64');
+function buildRawPngPayload(): string {
+  return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0xkAAAAASUVORK5CYII=';
+}
+
+function buildRawJpegPayload(): string {
+  return '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBAQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolHRUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHR0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAEBAQEAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAXEAEBAQEAAAAAAAAAAAAAAAAAAREC/9oACAEBAAEFAjKf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwEf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPwEf/8QAGhAAAwADAQAAAAAAAAAAAAAAAQIRITHB8P/aAAgBAQAGPwJm1mM//8QAGxABAQACAwEAAAAAAAAAAAAAAQARITFBUWH/2gAIAQEAAT8hNZ1xuq4Tj6gI2x//2gAMAwEAAgADAAAAEB//xAAXEQEAAwAAAAAAAAAAAAAAAAABABEh/9oACAEDAQE/ECm//8QAFxEBAQEBAAAAAAAAAAAAAAAAAQARIf/aAAgBAgEBPxBXR//EAB0QAQACAQUBAAAAAAAAAAAAAAEAESExQVFhcfD/2gAIAQEAAT8Qp6d1lYuG8J0iNwQ6n2g07m4W8W//2Q==';
+}
+
+function buildRawGifPayload(): string {
+  return 'R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+}
+
+function buildRawWebpPayload(): string {
+  return 'UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoBAAEAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA=';
 }
 
 function buildAbsolutePath(): string {

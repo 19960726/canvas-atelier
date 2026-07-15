@@ -124,7 +124,7 @@ function isManagedTextDocument(relativePath: string): boolean {
 }
 
 function containsProtectedContent(value: string): boolean {
-  return containsCredential(value) || containsDataUrl(value) || containsRawBinaryBase64(value) || containsPrivatePath(value);
+  return containsCredential(value) || containsDataUrl(value) || containsRawEmbeddedBinary(value) || containsPrivatePath(value);
 }
 
 function containsCredential(value: string): boolean {
@@ -147,31 +147,40 @@ function containsPrivatePath(value: string): boolean {
     || /%(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|HOMEDRIVE|HOMEPATH)%[\\/]/i.test(value);
 }
 
-function containsRawBinaryBase64(value: string): boolean {
-  const matches = value.match(/(?:^|[^A-Za-z0-9+/=])([A-Za-z0-9+/]{64,}={0,2})(?=$|[^A-Za-z0-9+/=])/g) ?? [];
+function containsRawEmbeddedBinary(value: string): boolean {
+  const matches = value.matchAll(/(?:^|[^A-Za-z0-9+/=])([A-Za-z0-9+/]{16,}={0,2})(?=$|[^A-Za-z0-9+/=])/g);
   for (const match of matches) {
-    const token = match.trim();
-    if (token.length < 64 || token.length % 4 !== 0) continue;
+    const token = match[1];
+    if (!token || token.length % 4 !== 0) continue;
     let decoded: Buffer;
     try {
       decoded = Buffer.from(token, 'base64');
     } catch {
       continue;
     }
-    if (decoded.length < 32) continue;
+    if (decoded.length < 6) continue;
     const normalized = decoded.toString('base64').replace(/=+$/u, '');
     if (normalized !== token.replace(/=+$/u, '')) continue;
-    if (isLikelyBinaryPayload(decoded)) return true;
+    if (hasKnownBinarySignature(decoded)) return true;
   }
   return false;
 }
 
-function isLikelyBinaryPayload(buffer: Buffer): boolean {
-  let printable = 0;
-  for (const byte of buffer.values()) {
-    if (byte === 0x09 || byte === 0x0a || byte === 0x0d || (byte >= 0x20 && byte <= 0x7e)) printable += 1;
-  }
-  return printable / buffer.length < 0.85;
+function hasKnownBinarySignature(buffer: Buffer): boolean {
+  return hasPrefix(buffer, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    || hasPrefix(buffer, [0xff, 0xd8, 0xff])
+    || hasAsciiPrefix(buffer, 'GIF87a')
+    || hasAsciiPrefix(buffer, 'GIF89a')
+    || (hasAsciiPrefix(buffer, 'RIFF') && buffer.length >= 12 && buffer.subarray(8, 12).toString('ascii') === 'WEBP');
+}
+
+function hasPrefix(buffer: Buffer, prefix: number[]): boolean {
+  if (buffer.length < prefix.length) return false;
+  return prefix.every((byte, index) => buffer[index] === byte);
+}
+
+function hasAsciiPrefix(buffer: Buffer, prefix: string): boolean {
+  return buffer.length >= prefix.length && buffer.subarray(0, prefix.length).toString('ascii') === prefix;
 }
 
 function canonicalizeDocuments(documents: KnowledgeDocument[]): string {

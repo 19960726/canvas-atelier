@@ -140,6 +140,35 @@ describe('KnowledgeSnapshotRegistry', () => {
       ],
     }])).toThrow(/knowledge base/i);
   });
+
+  it('rejects seeded non-empty states without a displayName', () => {
+    const state = seededRegistry().getState('scene-skill');
+
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      displayName: null,
+    }])).toThrow(/displayname/i);
+  });
+
+  it('requires rollback metadata only for rolled-back states and forbids stale rollback metadata elsewhere', () => {
+    const state = seededRegistry().getState('scene-skill');
+
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      status: 'rolled_back',
+      lastRollbackAt: null,
+    }])).toThrow(/rollback/i);
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      status: 'active',
+      lastRollbackAt: rolledBackAt,
+    }])).toThrow(/rollback/i);
+    expect(() => new KnowledgeSnapshotRegistry([{
+      ...state,
+      status: 'fallback',
+      lastRollbackAt: rolledBackAt,
+    }])).toThrow(/rollback/i);
+  });
 });
 
 function createCandidate(content: string) {
