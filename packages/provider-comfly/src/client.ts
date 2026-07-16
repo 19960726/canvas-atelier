@@ -131,10 +131,11 @@ export class ComflyClient {
   }
 
   async generateGeminiContent(input: ComflyGeminiContentRequest) {
-    return this.request(`/v1beta/models/${encodeURIComponent(input.model)}:generateContent`, {
+    const { model, ...body } = input;
+    return this.request(`/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
-      body: input,
-      model: input.model,
+      body,
+      model,
       schema: geminiResponseSchema,
     });
   }

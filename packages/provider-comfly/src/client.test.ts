@@ -104,20 +104,28 @@ describe('ComflyClient', () => {
   });
 
   it('posts Gemini-native payloads to /v1beta/models/{model}:generateContent', async () => {
-    const fetch = vi.fn(async () => jsonResponse({
-      candidates: [{ content: { parts: [{ text: 'ok' }], role: 'model' }, finishReason: 'STOP' }],
-    }));
+    const contents = [{ role: 'user', parts: [{ text: 'Describe this scene.' }] }];
+    let postedBody: string | undefined;
+    const fetch: ComflyFetch = vi.fn(async (_url, init) => {
+      postedBody = init?.body;
+      return jsonResponse({
+        candidates: [{ content: { parts: [{ text: 'ok' }], role: 'model' }, finishReason: 'STOP' }],
+      });
+    });
     const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
 
     await expect(client.generateGeminiContent({
       model: 'gemini-image',
-      contents: [{ role: 'user', parts: [{ text: 'Describe this scene.' }] }],
+      contents,
     })).resolves.toMatchObject({ candidates: [{ finishReason: 'STOP' }] });
 
     expect(fetch).toHaveBeenCalledWith(
       'https://ai.comfly.org/v1beta/models/gemini-image:generateContent',
       expect.objectContaining({ method: 'POST' }),
     );
+    const body = JSON.parse(String(postedBody));
+    expect(body).toEqual({ contents });
+    expect(body).not.toHaveProperty('model');
   });
 
   it('aborts timed out requests and redacts provider secrets from timeout errors', async () => {

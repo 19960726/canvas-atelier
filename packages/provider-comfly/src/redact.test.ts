@@ -26,4 +26,46 @@ describe('redactProviderLog', () => {
     const raw = Buffer.alloc(72, 7).toString('base64');
     expect(redactProviderLog(raw)).toBe('[redacted-base64]');
   });
+
+  it('redacts JSON-style credential fields in string provider logs', () => {
+    const redacted = redactProviderLog([
+      '{"apiKey":"camel-secret"}',
+      '{"api_key":"snake-secret"}',
+      '{"token":"token-secret"}',
+      '{"secret":"plain-secret"}',
+      '{"password":"password-secret"}',
+    ].join('\n'));
+
+    expect(redacted).toContain('[redacted-key]');
+    expect(redacted).not.toContain('camel-secret');
+    expect(redacted).not.toContain('snake-secret');
+    expect(redacted).not.toContain('token-secret');
+    expect(redacted).not.toContain('plain-secret');
+    expect(redacted).not.toContain('password-secret');
+  });
+
+  it('redacts JSON-style credential fields after stringifying provider objects', () => {
+    const redacted = redactProviderLog({
+      error: {
+        apiKey: 'object-secret',
+        api_key: 'object-snake-secret',
+        token: 'object-token-secret',
+      },
+      message: 'failed',
+    });
+
+    expect(redacted).toContain('[redacted-key]');
+    expect(redacted).toContain('failed');
+    expect(redacted).not.toContain('object-secret');
+    expect(redacted).not.toContain('object-snake-secret');
+    expect(redacted).not.toContain('object-token-secret');
+  });
+
+  it('redacts slash-style Windows absolute paths', () => {
+    const redacted = redactProviderLog('failed to read C:/Users/alice/secret.png');
+
+    expect(redacted).toContain('[redacted-path]');
+    expect(redacted).not.toContain('alice');
+    expect(redacted).not.toContain('secret.png');
+  });
 });
