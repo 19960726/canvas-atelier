@@ -33,6 +33,7 @@ export function SkillCandidateReview({
             ? knowledgeBases.find((item) => item.knowledgeBaseId === candidate.targetKnowledgeBaseId)
             : undefined;
           const rollbackTarget = findRollbackTarget(candidate, state);
+          const reviewability = getReviewability(candidate);
           return (
             <article className="skill-candidate" key={candidate.id}>
               <header>
@@ -40,9 +41,12 @@ export function SkillCandidateReview({
                 <span data-testid="skill-candidate-status" className={`skill-candidate__status is-${candidate.reviewStatus}`}>{candidate.reviewStatus}</span>
               </header>
               <dl>
-                <div><dt>Source rule</dt><dd data-testid="skill-sync-source">{candidate.beforeRule ?? 'No source rule shown'}</dd></div>
-                <div><dt>Managed rule</dt><dd data-testid="skill-sync-managed">{managedRuleLabel(state)}</dd></div>
+                <div><dt>Source rule</dt><dd data-testid="skill-sync-source">{candidate.sourceRule ?? 'Source rule unavailable'}</dd></div>
+                <div><dt>Managed rule</dt><dd data-testid="skill-sync-managed">{candidate.managedRule ?? 'Managed rule unavailable'}</dd></div>
                 <div><dt>Proposed rule</dt><dd data-testid="skill-sync-proposed">{candidate.rule}</dd></div>
+                {candidate.diffHunks && candidate.diffHunks.length > 0 && (
+                  <div><dt>Diff hunks</dt><dd data-testid="skill-sync-diff-hunks">{candidate.diffHunks.join('\n')}</dd></div>
+                )}
                 <div><dt>Source memory</dt><dd>{[candidate.sourceProjectMemoryId, ...(candidate.sourceProjectMemoryIds ?? [])].filter(unique).join(', ')}</dd></div>
                 <div><dt>Evidence</dt><dd>{formatEvidence(candidate)}</dd></div>
                 <div><dt>Confidence</dt><dd>{candidate.confidence === undefined ? 'n/a' : `${Math.round(candidate.confidence * 100)}%`}</dd></div>
@@ -54,7 +58,15 @@ export function SkillCandidateReview({
               <div className="skill-candidate__actions">
                 {candidate.reviewStatus === 'pending_review' && (
                   <>
-                    <button data-testid="skill-approve" type="button" aria-label={`Approve ${candidate.id}`} onClick={() => setConfirmingCandidateId(candidate.id)}>
+                    <button
+                      data-testid="skill-approve"
+                      type="button"
+                      aria-label={`Approve ${candidate.id}`}
+                      disabled={!reviewability.canReview}
+                      onClick={() => {
+                        if (reviewability.canReview) setConfirmingCandidateId(candidate.id);
+                      }}
+                    >
                       <Check size={14} />Approve
                     </button>
                     <button type="button" aria-label={`Reject ${candidate.id}`} onClick={() => void onReview({ projectId, candidateId: candidate.id, decision: 'rejected' })}>
@@ -78,7 +90,10 @@ export function SkillCandidateReview({
                   </button>
                 )}
               </div>
-              {candidate.reviewStatus === 'pending_review' && confirmingCandidateId === candidate.id && (
+              {candidate.reviewStatus === 'pending_review' && !reviewability.canReview && (
+                <p data-testid="skill-review-unavailable" className="skill-candidate__unavailable">{reviewability.reason}</p>
+              )}
+              {candidate.reviewStatus === 'pending_review' && reviewability.canReview && confirmingCandidateId === candidate.id && (
                 <div className="skill-sync-confirmation" data-testid="skill-sync-confirmation" role="group" aria-label="Skill 同步确认">
                   <strong>Skill 同步确认</strong>
                   <p>{candidate.targetKnowledgeBaseId ?? 'local-skill'} / {candidate.targetKnowledgeSection ?? 'default'}</p>
@@ -105,12 +120,14 @@ export function SkillCandidateReview({
   );
 }
 
-function managedRuleLabel(state: KnowledgeBaseStateSummary | undefined): string {
-  if (!state || state.activeVersion === null) return 'managed empty';
-  const active = state.versions.find((version) => version.version === state.activeVersion);
-  const label = active?.displayName ?? 'managed active';
-  const hash = state.activeContentHash ? ` ${state.activeContentHash.slice(0, 8)}` : '';
-  return `${label} v${state.activeVersion}${hash}`;
+function getReviewability(candidate: SkillPromotionCandidate): { canReview: boolean; reason: string } {
+  if (candidate.sourceRule && candidate.managedRule) {
+    return { canReview: true, reason: '' };
+  }
+  return {
+    canReview: false,
+    reason: 'Cannot review until source and managed rule text are available.',
+  };
 }
 
 function unique(value: string, index: number, values: string[]): boolean {

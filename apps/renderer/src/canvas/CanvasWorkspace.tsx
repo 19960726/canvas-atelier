@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
 import type { Viewport } from '@xyflow/react';
+import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type {
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
@@ -44,7 +45,6 @@ import { useInteractionQuality } from './use-interaction-quality';
 import { useViewportCulling } from './use-viewport-culling';
 
 type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
-type ModelRouteId = 'gpt-image' | 'nano-banana-2';
 
 interface SubmittedAgentContext extends ImageMentionValue {
   references: OrderedReference[];
@@ -63,11 +63,6 @@ const uploadDefaults: Record<
   prop_reference: { x: 0.66, y: 0.58, w: 0.18, h: 0.22, zIndex: 20, semanticLayer: 'optional_prop', name: '道具参考' },
   material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground', name: '材质光照参考' },
 };
-
-const modelRouteOptions: Array<{ id: ModelRouteId; label: string }> = [
-  { id: 'gpt-image', label: 'GPT Image' },
-  { id: 'nano-banana-2', label: 'Nano Banana 2' },
-];
 
 export function CanvasWorkspace() {
   const project = useAppStore((state) => state.project);
@@ -101,7 +96,9 @@ export function CanvasWorkspace() {
   const [submittedAgentContext, setSubmittedAgentContext] = useState<SubmittedAgentContext | null>(null);
   const [referenceOrderPreview, setReferenceOrderPreview] = useState<string[] | null>(null);
   const [activeAgentTab, setActiveAgentTab] = useState<'conversation' | 'plan' | 'memory'>('conversation');
-  const [selectedModelRoute, setSelectedModelRoute] = useState<ModelRouteId>('gpt-image');
+  const [modelRouteOptions, setModelRouteOptions] = useState<ProviderBridgeProfile[]>([]);
+  const [selectedModelRoute, setSelectedModelRoute] = useState<string | undefined>(undefined);
+  const [modelRouteError, setModelRouteError] = useState<string | null>(null);
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const previewUrlsRef = useRef(new Map<string, string>());
@@ -224,6 +221,42 @@ export function CanvasWorkspace() {
     document.getElementById(`agent-tab-${activeAgentTab}`)?.focus();
   }, [activeAgentTab]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const provider = window.novusDesktop?.provider;
+    if (!provider) {
+      setModelRouteOptions([]);
+      setSelectedModelRoute(undefined);
+      setModelRouteError('Provider unavailable');
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    provider.listProfiles()
+      .then((profiles) => {
+        if (cancelled) return;
+        const imageProfiles = profiles.filter(isImageModelProfile);
+        setModelRouteOptions(imageProfiles);
+        setModelRouteError(imageProfiles.length === 0 ? 'No image model profile configured' : null);
+        setSelectedModelRoute((current) => (
+          current && imageProfiles.some((profile) => profile.modelRoute === current)
+            ? current
+            : imageProfiles[0]?.modelRoute
+        ));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setModelRouteOptions([]);
+        setSelectedModelRoute(undefined);
+        setModelRouteError('Provider profiles unavailable');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => () => {
     if (typeof URL.revokeObjectURL !== 'function') return;
     for (const previewUrl of previewUrlsRef.current.values()) {
@@ -306,7 +339,11 @@ export function CanvasWorkspace() {
   const submitAgentMessage = () => {
     const text = agentMessage.text.trim();
     if (text.length === 0) return;
-    draftAgentPlan(text, { modelRoute: selectedModelRoute });
+    const selectedProfile = modelRouteOptions.find((profile) => profile.modelRoute === selectedModelRoute);
+    draftAgentPlan(text, {
+      modelRoute: selectedProfile?.modelRoute,
+      modelRouteDisplayName: selectedProfile?.displayName,
+    });
     setSubmittedAgentContext({
       text,
       references: orderedReferences.map((reference) => ({ ...reference })),
@@ -513,16 +550,17 @@ export function CanvasWorkspace() {
             <div className="model-route-selector" role="group" aria-label="模型路线">
               {modelRouteOptions.map((route) => (
                 <button
-                  key={route.id}
+                  key={route.modelRoute}
                   type="button"
-                  data-testid={`model-route-${route.id}`}
-                  className={selectedModelRoute === route.id ? 'is-active' : ''}
-                  aria-pressed={selectedModelRoute === route.id}
-                  onClick={() => setSelectedModelRoute(route.id)}
+                  data-testid={`model-route-${modelRouteTestId(route.modelRoute)}`}
+                  className={selectedModelRoute === route.modelRoute ? 'is-active' : ''}
+                  aria-pressed={selectedModelRoute === route.modelRoute}
+                  onClick={() => setSelectedModelRoute(route.modelRoute)}
                 >
-                  {route.label}
+                  {route.displayName}
                 </button>
               ))}
+              {modelRouteError && <span className="model-route-error" role="status">{modelRouteError}</span>}
             </div>
             <div className="agent-composer__footer">
               <span>模型执行前需要确认</span>
@@ -544,6 +582,12 @@ export function CanvasWorkspace() {
 
 function referenceStatus(count: number, emptyLabel: string): string {
   return count > 0 ? `已添加 ${count} 张` : emptyLabel;
+}
+function isImageModelProfile(profile: ProviderBridgeProfile): boolean {
+  return profile.capabilities.includes('image_generation') || profile.capabilities.includes('image_edit');
+}
+function modelRouteTestId(route: string): string {
+  return route.replace(/[^A-Za-z0-9_-]/g, '-');
 }
 function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'read_only', errorCode: string | null): string {
   if (status === 'saved') return '本地稳定点已保存';

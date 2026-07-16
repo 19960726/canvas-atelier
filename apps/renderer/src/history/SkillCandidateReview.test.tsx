@@ -79,6 +79,42 @@ describe('SkillCandidateReview', () => {
     expect(screen.queryByText(/contradicting/i)).not.toBeInTheDocument();
   });
 
+  it('renders source, managed, and proposed rule bodies from review state, not version labels', () => {
+    const reviewable = {
+      ...candidate({
+        beforeRule: 'legacy summary should not replace the source body',
+        rule: 'Proposed rule body: keep the product centered with calmer liquid arcs.',
+      }),
+      managedRule: 'Managed rule body: preserve the current cool background lighting.',
+      sourceRule: 'Source rule body: lock the product logo before changing props.',
+    } as SkillPromotionCandidate;
+
+    render(<SkillCandidateReview
+      candidates={[reviewable]}
+      knowledgeBases={[knowledgeState()]}
+      onReview={async () => undefined}
+      projectId="project-1"
+    />);
+
+    expect(screen.getByTestId('skill-sync-source')).toHaveTextContent('Source rule body: lock the product logo before changing props.');
+    expect(screen.getByTestId('skill-sync-managed')).toHaveTextContent('Managed rule body: preserve the current cool background lighting.');
+    expect(screen.getByTestId('skill-sync-proposed')).toHaveTextContent('Proposed rule body: keep the product centered with calmer liquid arcs.');
+    expect(screen.getByTestId('skill-sync-managed')).not.toHaveTextContent(/Scene Skill v3|cccccccc/);
+  });
+
+  it('keeps pending candidates non-reviewable when source or managed rule text is missing', () => {
+    render(<SkillCandidateReview
+      candidates={[candidate({ sourceRule: undefined, managedRule: undefined })]}
+      knowledgeBases={[knowledgeState()]}
+      onReview={async () => undefined}
+      projectId="project-1"
+    />);
+
+    expect(screen.getByRole('button', { name: 'Approve candidate-1' })).toBeDisabled();
+    expect(screen.getByTestId('skill-review-unavailable')).toHaveTextContent(/source and managed rule text/i);
+    expect(screen.queryByTestId('skill-sync-confirmation')).not.toBeInTheDocument();
+  });
+
   it('omits evidence counts that are not present in the persisted candidate', () => {
     const persisted = skillPromotionCandidateSchema.parse(candidate({
       counts: { observationCount: 3 },
@@ -133,6 +169,8 @@ function candidate(overrides: Partial<SkillPromotionCandidate> = {}): SkillPromo
     title: 'Quieter liquid motion',
     rationale: 'Feedback asks for calmer liquid arcs.',
     beforeRule: 'Use energetic splashes.',
+    sourceRule: 'Source rule body: keep product identity from the local memory.',
+    managedRule: 'Managed rule body: keep the current scene skill wording.',
     rule: 'Use slower, heavier liquid arcs around the product.',
     targetKnowledgeBaseId: 'scene-skill',
     targetKnowledgeSection: 'reverse-prompt/liquid',

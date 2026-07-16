@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createStarterProject,
   replaceKnowledgeClientForTests,
@@ -14,6 +14,8 @@ import type { ProjectCommitRequest, ProjectCommitResult, ProjectPersistenceClien
 import { App, resetAppHydrationForTests } from './App';
 
 describe('App persistence hydration', () => {
+  afterEach(() => cleanup());
+
   beforeEach(() => {
     delete window.novusDesktop;
     localStorage.clear();

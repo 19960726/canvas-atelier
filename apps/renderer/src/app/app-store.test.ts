@@ -216,6 +216,7 @@ describe('project optimization memory', () => {
         .mockResolvedValueOnce({ status: 'completed' as const, result: { assetId: 'asset-live-job' } }),
       cancel: vi.fn(async () => {}),
     });
+    installProviderProfilesForModelJobTests();
     resetAppStoreForTests();
 
     useAppStore.getState().draftAgentPlan('生成并实时更新任务状态');
@@ -277,9 +278,9 @@ describe('project optimization memory', () => {
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-nano' }));
     const listProfiles = vi.fn(async () => [{
       provider: 'comfly',
-      modelRoute: 'nano-banana-2-route',
+      modelRoute: 'nano-banana-2-actual-route',
       displayName: 'Nano Banana 2',
-      modelId: 'provider-owned-nano-route',
+      modelId: 'nano-banana-2',
       capabilities: ['image_generation', 'async_tasks'],
     }]);
     window.novusDesktop = {
@@ -295,10 +296,9 @@ describe('project optimization memory', () => {
     } as unknown as typeof window.novusDesktop;
     resetAppStoreForTests();
 
-    useAppStore.getState().draftAgentPlan('Generate through Nano Banana 2 while keeping references');
-    useAppStore.setState((state) => ({
-      agentPlan: state.agentPlan ? { ...state.agentPlan, modelRoute: 'nano-banana-2-route' } : state.agentPlan,
-    }));
+    useAppStore.getState().draftAgentPlan('Generate through Nano Banana 2 while keeping references', {
+      modelRoute: 'nano-banana-2-actual-route',
+    });
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
@@ -306,24 +306,149 @@ describe('project optimization memory', () => {
     expect(submitImageJob).toHaveBeenCalledWith({
       jobId: expect.stringMatching(/^model-job-/),
       provider: 'comfly',
-      modelRoute: 'nano-banana-2-route',
+      modelRoute: 'nano-banana-2-actual-route',
       prompt: 'Generate through Nano Banana 2 while keeping references',
       conversationId: 'agent-conversation-shared',
       referenceAssetIds: ['starter-product'],
     });
     expect(useAppStore.getState().modelJobs[0]).toMatchObject({
       provider: 'comfly',
-      modelRoute: 'nano-banana-2-route',
+      modelRoute: 'nano-banana-2-actual-route',
       displayName: 'Nano Banana 2',
-      modelId: 'provider-owned-nano-route',
+      modelId: 'nano-banana-2',
       conversationId: 'agent-conversation-shared',
       referenceAssetIds: ['starter-product'],
     });
   });
 
+  it('validates the selected provider profile before committing an Agent model transaction', async () => {
+    const events: string[] = [];
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      events.push('commit');
+      return {
+        ok: true,
+        project: nextProject,
+        revision: 1,
+      };
+    });
+    const submitImageJob = vi.fn(async () => {
+      events.push('submit');
+      return { providerTaskId: 'provider-task-gpt-image' };
+    });
+    const listProfiles = vi.fn(async () => {
+      events.push('profiles');
+      return [{
+        provider: 'comfly',
+        modelRoute: 'image-generation',
+        displayName: 'GPT Image',
+        modelId: 'gpt-image-1',
+        capabilities: ['image_generation', 'image_edit', 'async_tasks'],
+      }];
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Generate through GPT Image profile', {
+      modelRoute: 'image-generation',
+    });
+    expect(useAppStore.getState().agentPlan?.modelRoute).toBe('image-generation');
+
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(events.slice(0, 2)).toEqual(['profiles', 'commit']);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(submitImageJob).toHaveBeenCalledWith({
+      jobId: expect.stringMatching(/^model-job-/),
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      prompt: 'Generate through GPT Image profile',
+      conversationId: 'agent-conversation-shared',
+      referenceAssetIds: ['starter-product'],
+    });
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      conversationId: 'agent-conversation-shared',
+      displayName: 'GPT Image',
+      modelId: 'gpt-image-1',
+      modelRoute: 'image-generation',
+      provider: 'comfly',
+    });
+  });
+
+  it('leaves project, undo, and jobs unchanged when the selected provider profile disappears', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-should-not-start' }));
+    const listProfiles = vi.fn(async () => [{
+      provider: 'comfly',
+      modelRoute: 'nano-banana-2-actual-route',
+      displayName: 'Nano Banana 2',
+      modelId: 'nano-banana-2',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Do not mutate on stale GPT Image profile', {
+      modelRoute: 'image-generation',
+    });
+    const beforeProject = cloneProjectForExpectation(useAppStore.getState().project);
+
+    await expect(useAppStore.getState().confirmAgentPlan({
+      models: true,
+      deleteNodes: false,
+      skillWriteback: false,
+    })).resolves.toBeUndefined();
+
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+    expect(submitImageJob).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project).toEqual(beforeProject);
+    expect(useAppStore.getState().project.projectMemory).toEqual([]);
+    expect(useAppStore.getState().undoStack).toEqual([]);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      modelRoute: 'image-generation',
+      state: 'waiting_for_confirmation',
+    });
+    expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/model profile/i);
+  });
+
   it('does not invent desktop provider defaults when the bridge reports no configured profiles', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-missing-profile' }));
     const listProfiles = vi.fn(async () => []);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
     window.novusDesktop = {
       provider: {
         submitImageJob,
@@ -341,10 +466,12 @@ describe('project optimization memory', () => {
 
     await expect(
       useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false }),
-    ).rejects.toThrow(/unconfigured/i);
+    ).resolves.toBeUndefined();
     expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
     expect(submitImageJob).not.toHaveBeenCalled();
     expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/model profile/i);
   });
 
   it('hydrates durable project before deferred model job recovery finishes', async () => {
@@ -356,6 +483,7 @@ describe('project optimization memory', () => {
         .mockReturnValue(finalPoll.promise),
       cancel: vi.fn(async () => {}),
     });
+    installProviderProfilesForModelJobTests();
     resetAppStoreForTests();
     useAppStore.getState().draftAgentPlan('start deferred recovery job');
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
@@ -463,6 +591,7 @@ describe('project optimization memory', () => {
         .mockReturnValue(finalPoll.promise),
       cancel: vi.fn(async () => {}),
     });
+    installProviderProfilesForModelJobTests();
     replaceProjectPersistenceClientForTests(createMockClient({ commit }));
     resetAppStoreForTests();
     useAppStore.getState().draftAgentPlan('start recoverable job');
@@ -509,6 +638,7 @@ describe('project optimization memory', () => {
         .mockReturnValue(finalPoll.promise),
       cancel: vi.fn(async () => {}),
     });
+    installProviderProfilesForModelJobTests();
     resetAppStoreForTests();
     useAppStore.getState().draftAgentPlan('recover with live progress');
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
@@ -553,6 +683,7 @@ describe('project optimization memory', () => {
       poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
       cancel,
     });
+    installProviderProfilesForModelJobTests();
     resetAppStoreForTests();
 
     useAppStore.getState().draftAgentPlan('生成后取消并显示安全错误');
@@ -1380,6 +1511,31 @@ async function waitForStore(predicate: () => boolean): Promise<void> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function cloneProjectForExpectation<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function installProviderProfilesForModelJobTests(profiles = [{
+  provider: 'comfly',
+  modelRoute: 'image-generation',
+  displayName: 'GPT Image',
+  modelId: 'gpt-image-1',
+  capabilities: ['image_generation', 'async_tasks'],
+}]): void {
+  window.novusDesktop = {
+    provider: {
+      ackImageJobTerminal: vi.fn(),
+      cancelImageJob: vi.fn(),
+      configure: vi.fn(),
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+      listProfiles: vi.fn(async () => profiles),
+      pollImageJob: vi.fn(),
+      submitImageJob: vi.fn(),
+      unlock: vi.fn(),
+    },
+  } as unknown as typeof window.novusDesktop;
 }
 
 function createDesktopProviderBridgeForCancel(options: {

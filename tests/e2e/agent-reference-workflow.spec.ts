@@ -40,7 +40,7 @@ test('reference placement and Agent plan require explicit canvas and model confi
   await page.locator('[data-testid="image-mention-item"][data-role="product_identity"]').click();
   await expect(page.getByTestId('agent-composer-input')).toHaveValue(/@/);
   await page.getByTestId('agent-composer-input').pressSequentially(' build a premium 4:5 product scene');
-  await page.getByTestId('model-route-gpt-image').click();
+  await page.getByTestId('model-route-image-generation').click();
   await page.getByTestId('agent-send').click();
 
   await expect(page.getByTestId('plan-preview')).toBeVisible();
@@ -69,6 +69,6 @@ test('reference placement and Agent plan require explicit canvas and model confi
   const state = await waitForModelSubmissions(page, 1);
   expect(state.modelSubmissions[0]).toMatchObject({
     conversationId: 'agent-conversation-shared',
-    modelRoute: 'gpt-image',
+    modelRoute: 'image-generation',
   });
 });

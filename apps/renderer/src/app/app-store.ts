@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { KnowledgeSyncStatusSummary } from '@agent-canvas/desktop-core';
+import type { KnowledgeSyncStatusSummary, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import {
   appendProjectMemoryEntry,
   applyProjectTransaction,
@@ -136,7 +136,7 @@ interface AppState {
   setActiveTool: (tool: AppState['activeTool']) => void;
   toggleAgentPanel: () => void;
   setProject: (project: CanvasProject, options?: SetProjectOptions) => void;
-  draftAgentPlan: (message: string, options?: { modelRoute?: string }) => void;
+  draftAgentPlan: (message: string, options?: { modelRoute?: string; modelRouteDisplayName?: string }) => void;
   confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => Promise<void>;
   cancelAgentPlan: () => void;
   undo: () => Promise<void>;
@@ -346,6 +346,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       confirmations: {},
       conflicts: [],
       modelRoute: options.modelRoute,
+      modelRouteDisplayName: options.modelRouteDisplayName,
       jobCount: 1,
     } };
   }),
@@ -354,7 +355,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!state.agentPlan) return;
 
     const now = new Date().toISOString();
-    const result = confirmDomainPlan(state.project, {
+    const requestedPlan = {
       ...state.agentPlan,
       confirmations: {
         ...state.agentPlan.confirmations,
@@ -363,8 +364,31 @@ export const useAppStore = create<AppState>((set, get) => ({
         deleteNodes: approvals.deleteNodes ? now : undefined,
         skillWriteback: approvals.skillWriteback ? now : undefined,
       },
+    };
+    const modelProfile = shouldExecuteModels(requestedPlan)
+      ? await resolveModelJobProfile(requestedPlan).catch((error) => {
+        set({
+          agentPlan: {
+            ...state.agentPlan!,
+            conflicts: upsertAgentConflict(state.agentPlan!.conflicts, modelProfileConflictMessage(error)),
+          },
+        });
+        return null;
+      })
+      : null;
+    if (shouldExecuteModels(requestedPlan) && modelProfile === null) return;
+    const confirmedPlan = modelProfile
+      ? {
+          ...requestedPlan,
+          conflicts: requestedPlan.conflicts.filter((conflict) => !isModelProfileConflict(conflict)),
+          modelRoute: modelProfile.modelRoute,
+          modelRouteDisplayName: modelProfile.displayName,
+        }
+      : requestedPlan;
+    const result = confirmDomainPlan(state.project, {
+      ...confirmedPlan,
     });
-    const memoryEntry = createOptimizationMemory(state.project, result.project, state.agentPlan, now);
+    const memoryEntry = createOptimizationMemory(state.project, result.project, confirmedPlan, now);
     const project = {
       ...result.project,
       projectMemory: appendProjectMemoryEntry(result.project.projectMemory, memoryEntry),
@@ -383,7 +407,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelJobs = await getModelJobStore().enqueueConfirmedJobs({
         conversationId: 'agent-conversation-shared',
         confirmedAt: now,
-        requests: await buildModelJobRequests(project, state.agentPlan),
+        requests: buildModelJobRequests(project, confirmedPlan, modelProfile!),
       });
       void getModelJobStore().run();
     }
@@ -773,9 +797,19 @@ function selectProductionModelJobExecutor(): ModelJobExecutor {
     : createUnavailableModelJobExecutor();
 }
 
-async function buildModelJobRequests(project: CanvasProject, plan: AgentCanvasPlan): Promise<ModelJobRequest[]> {
+interface ResolvedModelJobProfile {
+  provider: string;
+  modelRoute: string;
+  displayName: string;
+  modelId?: string;
+}
+
+function buildModelJobRequests(
+  project: CanvasProject,
+  plan: AgentCanvasPlan,
+  profile: ResolvedModelJobProfile,
+): ModelJobRequest[] {
   const promptNode = project.nodes.find((node) => node.type === 'prompt');
-  const profile = await resolveModelJobProfile(plan);
   const prompt = promptNode?.type === 'prompt' ? promptNode.data.prompt : plan.transaction.label;
   return Array.from({ length: Math.max(0, plan.jobCount) }, (_, index) => ({
     id: `model-job-${plan.id}-${index}`,
@@ -789,32 +823,13 @@ async function buildModelJobRequests(project: CanvasProject, plan: AgentCanvasPl
   }));
 }
 
-async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<{
-  provider: string;
-  modelRoute: string;
-  displayName: string;
-  modelId?: string;
-}> {
+async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<ResolvedModelJobProfile> {
   const bridge = globalThis.window?.novusDesktop?.provider;
-  if (modelJobExecutorOverride !== null) {
-    const route = plan.modelRoute ?? 'unconfigured';
-    return {
-      provider: 'local-e2e',
-      modelRoute: route,
-      displayName: modelRouteDisplayName(route),
-      modelId: route,
-    };
-  }
   if (bridge === undefined) {
-    return {
-      provider: 'unavailable',
-      modelRoute: plan.modelRoute ?? 'unconfigured',
-      displayName: 'Provider unavailable',
-      modelId: plan.modelRoute ?? 'unconfigured',
-    };
+    throw new Error('Provider image model profile is unavailable');
   }
   const profiles = await bridge.listProfiles();
-  const imageProfiles = profiles.filter((profile) => profile.capabilities.includes('image_generation'));
+  const imageProfiles = filterImageModelProfiles(profiles);
   const requestedRoute = normalizeLegacyPlanModelRoute(plan.modelRoute);
   const selected = requestedRoute === undefined
     ? imageProfiles[0]
@@ -830,10 +845,26 @@ async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<{
   };
 }
 
-function modelRouteDisplayName(route: string): string {
-  if (route === 'gpt-image') return 'GPT Image';
-  if (route === 'nano-banana-2') return 'Nano Banana 2';
-  return route === 'unconfigured' ? 'Provider unavailable' : route;
+function filterImageModelProfiles(profiles: ProviderBridgeProfile[]): ProviderBridgeProfile[] {
+  return profiles.filter((profile) => (
+    profile.capabilities.includes('image_generation') || profile.capabilities.includes('image_edit')
+  ));
+}
+
+function shouldExecuteModels(plan: AgentCanvasPlan): boolean {
+  return plan.requestedCapabilities.includes('model_execution') && Boolean(plan.confirmations.models);
+}
+
+function modelProfileConflictMessage(_error: unknown): string {
+  return 'model profile unavailable: selected provider profile is unavailable or changed';
+}
+
+function isModelProfileConflict(conflict: string): boolean {
+  return /^model profile unavailable:/i.test(conflict);
+}
+
+function upsertAgentConflict(conflicts: string[], nextConflict: string): string[] {
+  return [...conflicts.filter((conflict) => !isModelProfileConflict(conflict)), nextConflict];
 }
 
 function normalizeLegacyPlanModelRoute(route: string | undefined): string | undefined {

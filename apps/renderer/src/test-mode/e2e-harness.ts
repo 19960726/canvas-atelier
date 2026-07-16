@@ -1,4 +1,8 @@
-import type { KnowledgeSyncStatusSummary } from '@agent-canvas/desktop-core';
+import type {
+  KnowledgeSyncStatusSummary,
+  ProviderBridgeProfile,
+  SubmitImageJobBridgeRequest,
+} from '@agent-canvas/desktop-core';
 import {
   reviewSkillPromotionCandidate,
   rollbackSkillPromotionCandidate,
@@ -46,6 +50,7 @@ interface RuntimeState {
   knowledgeListeners: Set<(states: KnowledgeBaseStateSummary[]) => void>;
   knowledgeStates: KnowledgeBaseStateSummary[];
   modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
+  providerProfiles: ProviderBridgeProfile[];
   revision: number;
   skillSyncWrites: Array<{
     candidateId: string;
@@ -61,6 +66,7 @@ export function installRendererE2EHarness(): void {
   globalTarget[installedFlag] = true;
 
   const runtime = createRuntimeState();
+  window.novusDesktop = createE2EProviderBridge(runtime);
   replaceProjectPersistenceClientForTests(createPersistenceClient(runtime));
   replaceKnowledgeClientForTests(createKnowledgeClient(runtime));
   replaceModelJobExecutorForTests(createModelExecutor(runtime));
@@ -74,6 +80,7 @@ export function installRendererE2EHarness(): void {
       runtime.commitLog = [];
       runtime.knowledgeStates = [];
       runtime.modelSubmissions = [];
+      runtime.providerProfiles = createE2EProviderProfiles();
       runtime.skillSyncWrites = [];
       runtime.storage = createInMemoryModelJobStorage();
       replaceModelJobExecutorForTests(createModelExecutor(runtime));
@@ -116,10 +123,50 @@ function createRuntimeState(): RuntimeState {
     knowledgeListeners: new Set(),
     knowledgeStates: [],
     modelSubmissions: [],
+    providerProfiles: createE2EProviderProfiles(),
     revision: 0,
     skillSyncWrites: [],
     storage: createInMemoryModelJobStorage(),
   };
+}
+
+function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesktop {
+  return {
+    provider: {
+      ackImageJobTerminal: async () => ({ acknowledged: true as const }),
+      cancelImageJob: async () => ({ status: 'cancelled' as const }),
+      configure: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
+      getStatus: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
+      listProfiles: async () => runtime.providerProfiles.map((profile) => ({
+        ...profile,
+        capabilities: [...profile.capabilities],
+      })),
+      pollImageJob: async () => ({ status: 'running' as const, progress: 0.35 }),
+      submitImageJob: async (request: SubmitImageJobBridgeRequest) => ({
+        providerTaskId: `e2e-bridge-task-${request.jobId}`,
+      }),
+      unlock: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
+    },
+  } as unknown as typeof window.novusDesktop;
+}
+
+function createE2EProviderProfiles(): ProviderBridgeProfile[] {
+  return [
+    {
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      modelId: 'gpt-image-1',
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
+    },
+    {
+      provider: 'comfly',
+      modelRoute: 'nano-banana-2-actual-route',
+      displayName: 'Nano Banana 2',
+      modelId: 'nano-banana-2',
+      capabilities: ['image_generation', 'async_tasks'],
+    },
+  ];
 }
 
 function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClient {
@@ -285,7 +332,7 @@ function seedSkillSyncDivergence(runtime: RuntimeState): void {
     actor: 'agent',
     title: 'Guarded Skill divergence',
     changeSummary: 'Local source and managed Skill diverged before sync.',
-    rationale: 'source keeps product logo locked',
+    rationale: 'Source rule body: lock logo from local project memory.',
     snapshots: {
       beforeId: 'e2e-skill-before',
       afterId: 'e2e-skill-after',
@@ -299,7 +346,7 @@ function seedSkillSyncDivergence(runtime: RuntimeState): void {
       change: ['prop spacing'],
       never: ['sync before confirmation'],
     },
-    nextStep: 'proposed keeps product logo and prop spacing locked',
+    nextStep: 'Proposed rule body: lock logo and prop spacing together.',
   };
   const candidate: SkillPromotionCandidate = {
     schemaVersion: 1,
@@ -310,7 +357,13 @@ function seedSkillSyncDivergence(runtime: RuntimeState): void {
     title: memory.title,
     rationale: memory.rationale,
     rule: memory.nextStep,
-    beforeRule: 'source keeps product logo locked',
+    beforeRule: 'legacy source summary for audit only',
+    sourceRule: 'Source rule body: lock logo from local project memory.',
+    managedRule: 'Managed rule body: keep the existing cool background lighting.',
+    diffHunks: [
+      '- Managed rule body: keep the existing cool background lighting.',
+      '+ Proposed rule body: lock logo and prop spacing together.',
+    ],
     targetKnowledgeBaseId: 'scene-skill',
     targetKnowledgeSection: 'composition/placement',
     counts: {

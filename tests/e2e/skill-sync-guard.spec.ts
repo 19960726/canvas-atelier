@@ -7,9 +7,15 @@ test('Skill sync stays guarded until explicit Chinese confirmation', async ({ pa
 
   await page.getByTestId('agent-tab-memory').click();
   await expect(page.getByTestId('skill-candidate-review')).toBeVisible();
-  await expect(page.getByTestId('skill-sync-source')).toContainText('source keeps product logo locked');
-  await expect(page.getByTestId('skill-sync-managed')).toContainText('managed active v1');
-  await expect(page.getByTestId('skill-sync-proposed')).toContainText('proposed keeps product logo and prop spacing locked');
+  await expect(page.getByTestId('skill-sync-source')).toContainText('Source rule body: lock logo from local project memory.');
+  await expect(page.getByTestId('skill-sync-managed')).toContainText('Managed rule body: keep the existing cool background lighting.');
+  await expect(page.getByTestId('skill-sync-proposed')).toContainText('Proposed rule body: lock logo and prop spacing together.');
+  const diffTexts = await Promise.all([
+    page.getByTestId('skill-sync-source').innerText(),
+    page.getByTestId('skill-sync-managed').innerText(),
+    page.getByTestId('skill-sync-proposed').innerText(),
+  ]);
+  expect(new Set(diffTexts).size).toBe(3);
   expect((await e2eState(page)).skillSyncWrites).toHaveLength(0);
 
   await page.getByTestId('skill-approve').click();

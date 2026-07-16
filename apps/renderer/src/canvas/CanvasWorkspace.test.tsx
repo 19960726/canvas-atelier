@@ -448,7 +448,9 @@ describe('CanvasWorkspace', () => {
       poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.5 })),
       cancel: vi.fn(async () => {}),
     });
+    installProviderProfilesForModelJobTests();
     render(<CanvasWorkspace />);
+    await waitFor(() => expect(screen.getByTestId('model-route-image-generation')).toBeVisible());
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '制作一张高端产品海报' } });
     fireEvent.click(screen.getByLabelText('发送消息'));
 
@@ -591,6 +593,27 @@ function knowledgeState() {
     lastFailure: null,
     lastRollbackAt: null,
   };
+}
+
+function installProviderProfilesForModelJobTests(): void {
+  window.novusDesktop = {
+    provider: {
+      ackImageJobTerminal: vi.fn(),
+      cancelImageJob: vi.fn(),
+      configure: vi.fn(),
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+      listProfiles: vi.fn(async () => [{
+        provider: 'comfly',
+        modelRoute: 'image-generation',
+        displayName: 'GPT Image',
+        modelId: 'gpt-image-1',
+        capabilities: ['image_generation', 'async_tasks'],
+      }]),
+      pollImageJob: vi.fn(),
+      submitImageJob: vi.fn(),
+      unlock: vi.fn(),
+    },
+  } as unknown as typeof window.novusDesktop;
 }
 
 function createImmediateBrowserClient(

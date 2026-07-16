@@ -35,6 +35,7 @@ export interface AgentCanvasPlan {
   confirmations: AgentPlanConfirmations;
   conflicts: string[];
   modelRoute?: string;
+  modelRouteDisplayName?: string;
   jobCount: number;
 }
 

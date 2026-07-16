@@ -24,7 +24,7 @@ export function PlanPreview({ plan, onConfirm, onCancel }: PlanPreviewProps) {
         {plan.transaction.operations.map((operation, index) => <div className="plan-operation" data-testid="plan-operation" key={`${operation.kind}-${index}`}><Link2 size={13} /><span>{operationLabel(operation)}</span></div>)}
       </div>
       {plan.conflicts.length > 0 && <div className="plan-conflicts"><AlertTriangle size={14} />{plan.conflicts.join('；')}</div>}
-      <div className="plan-route"><span>模型路由<b data-testid="plan-model-route">{modelRouteLabel(plan.modelRoute)}</b></span><span>任务数量<b>{plan.jobCount} 个模型任务</b></span></div>
+      <div className="plan-route"><span>模型路由<b data-testid="plan-model-route">{modelRouteLabel(plan)}</b></span><span>任务数量<b>{plan.jobCount} 个模型任务</b></span></div>
       <div className="plan-approval-list">
         {plan.requestedCapabilities.includes('model_execution') && <Approval dataTestId="plan-approve-models" label="同时确认模型执行" ariaLabel="确认模型执行" checked={approvals.models} onChange={() => toggle('models')} />}
         {deletionRequired && <Approval label="允许删除方案中的节点" ariaLabel="确认删除节点" checked={approvals.deleteNodes} onChange={() => toggle('deleteNodes')} />}
@@ -42,10 +42,8 @@ function Approval({ dataTestId, label, ariaLabel, checked, onChange }: { dataTes
   return <label className="plan-model-confirm"><input data-testid={dataTestId} type="checkbox" aria-label={ariaLabel} checked={checked} onChange={onChange} /><span>{label}</span></label>;
 }
 
-function modelRouteLabel(route: string | undefined): string {
-  if (route === 'gpt-image') return 'GPT Image';
-  if (route === 'nano-banana-2') return 'Nano Banana 2';
-  return route ?? '未指定';
+function modelRouteLabel(plan: AgentCanvasPlan): string {
+  return plan.modelRouteDisplayName ?? plan.modelRoute ?? '未指定';
 }
 
 function operationLabel(operation: CanvasOperation): string {

@@ -16,14 +16,14 @@ export default defineConfig({
   },
   reporter: [
     ['list'],
-    ['html', { open: 'never', outputFolder: 'playwright-report' }],
+    ['./tests/e2e/helpers/safe-json-reporter.mjs', { outputFile: 'playwright-report/results.json' }],
   ],
   webServer: {
     command: `npm run dev -w @agent-canvas/renderer -- --host 127.0.0.1 --port ${port} --strictPort`,
     env: {
       VITE_NOVUS_E2E_MODE: '1',
     },
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 120_000,
     url: baseURL,
   },

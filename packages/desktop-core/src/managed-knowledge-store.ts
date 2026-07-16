@@ -713,16 +713,16 @@ export class ManagedKnowledgeStore {
 
   private async assertRealManagedWriteTarget(path: string): Promise<void> {
     const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
-    const realAppDataRoot = normalize(await realpath.call(this.fileSystem, this.appDataRoot));
-    const realKnowledgeRoot = normalize(resolve(realAppDataRoot, 'knowledge'));
-    const realParent = normalize(await realpath.call(this.fileSystem, dirname(path)));
-    const realTargetFromParent = normalize(resolve(realParent, basename(path)));
+    const realAppDataRoot = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, this.appDataRoot));
+    const realKnowledgeRoot = normalizeManagedPathForComparison(resolve(realAppDataRoot, 'knowledge'));
+    const realParent = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, dirname(path)));
+    const realTargetFromParent = normalizeManagedPathForComparison(resolve(realParent, basename(path)));
     if (!isWithinDirectory(realKnowledgeRoot, realTargetFromParent)) {
       throw new Error('Managed knowledge directory escaped its managed root');
     }
 
     try {
-      const realTarget = normalize(await realpath.call(this.fileSystem, path));
+      const realTarget = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, path));
       if (!isWithinDirectory(realKnowledgeRoot, realTarget)) {
         throw new Error('Managed knowledge directory escaped its managed root');
       }
@@ -736,9 +736,9 @@ export class ManagedKnowledgeStore {
 
   private async assertRealManagedPath(path: string): Promise<void> {
     const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
-    const realAppDataRoot = normalize(await realpath.call(this.fileSystem, this.appDataRoot));
-    const realKnowledgeRoot = normalize(resolve(realAppDataRoot, 'knowledge'));
-    const realTarget = normalize(await realpath.call(this.fileSystem, path));
+    const realAppDataRoot = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, this.appDataRoot));
+    const realKnowledgeRoot = normalizeManagedPathForComparison(resolve(realAppDataRoot, 'knowledge'));
+    const realTarget = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, path));
     if (!isWithinDirectory(realKnowledgeRoot, realTarget)) {
       throw new Error('Managed knowledge directory escaped its managed root');
     }
@@ -1651,6 +1651,11 @@ function confinedJoin(base: string, ...segments: string[]): string {
 
 function isWithinDirectory(base: string, target: string): boolean {
   return target === base || target.startsWith(`${base}${sep}`);
+}
+
+function normalizeManagedPathForComparison(path: string): string {
+  const normalized = normalize(path).replace(/^\\\\\?\\/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function isMissingFileError(error: unknown): boolean {
