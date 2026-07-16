@@ -53,6 +53,8 @@ let knowledgeClient = createKnowledgeClient();
 let modelJobExecutor = createUnavailableModelJobExecutor();
 let modelJobStore: ModelJobStore | null = null;
 let modelJobUnsubscribe: (() => void) | null = null;
+let modelJobStoreGeneration = 0;
+let modelJobRecoveryGeneration = 0;
 
 interface UndoEntry {
   transaction: CanvasTransaction;
@@ -154,6 +156,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   closePersistence: async () => {
     cancelPendingProjectSave();
+    invalidateModelJobStoreGeneration();
     modelJobStore?.stop();
     modelJobUnsubscribe?.();
     modelJobUnsubscribe = null;
@@ -236,9 +239,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   ),
   hydratePersistence: async () => {
     cancelPendingProjectSave();
+    const jobStore = getModelJobStore();
     const hydrated = await projectPersistenceClient.hydrate();
-    await getModelJobStore().recover();
-    const modelJobs = await getModelJobStore().listJobs();
+    const modelJobs = await jobStore.listJobs();
     set({
       availableSnapshotIds: hydrated.availableSnapshotIds,
       desktopRevision: hydrated.revision,
@@ -249,6 +252,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveErrorCode: null,
       saveStatus: hydrated.saveStatus,
     });
+    recoverModelJobsInBackground(jobStore);
   },
   initializeKnowledge: async () => {
     await knowledgeClient.start(
@@ -527,6 +531,7 @@ export function replaceKnowledgeClientForTests(client: KnowledgeClient): void {
 }
 
 export function replaceModelJobExecutorForTests(executor: ModelJobExecutor): void {
+  invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
   modelJobExecutor = executor;
   modelJobUnsubscribe?.();
@@ -549,6 +554,7 @@ function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise
 export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
   referenceOrderCommitTail = null;
+  invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
   modelJobUnsubscribe?.();
   modelJobUnsubscribe = null;
@@ -654,14 +660,19 @@ function countConfirmedModelJobs(jobs: ModelJob[]): number {
 
 function getModelJobStore(): ModelJobStore {
   if (!modelJobStore) {
+    const generation = modelJobStoreGeneration;
     modelJobStore = createModelJobStore({
       storage: isIndexedDbAvailable() ? undefined : createInMemoryModelJobStorage(),
       executor: modelJobExecutor,
-      commitProjectTransaction: (transaction) => useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' }),
+      commitProjectTransaction: (transaction) => {
+        if (generation !== modelJobStoreGeneration) return Promise.resolve(false);
+        return useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' });
+      },
       getProject: () => useAppStore.getState().project,
       pollIntervalMs: isIndexedDbAvailable() ? undefined : 0,
     });
     modelJobUnsubscribe = modelJobStore.subscribe((modelJobs) => {
+      if (generation !== modelJobStoreGeneration) return;
       useAppStore.setState({
         confirmedModelJobs: countConfirmedModelJobs(modelJobs),
         modelJobs,
@@ -669,6 +680,28 @@ function getModelJobStore(): ModelJobStore {
     });
   }
   return modelJobStore;
+}
+
+function recoverModelJobsInBackground(jobStore: ModelJobStore): void {
+  const generation = ++modelJobRecoveryGeneration;
+  void jobStore.recover()
+    .then(async () => {
+      if (generation !== modelJobRecoveryGeneration || jobStore !== modelJobStore) return;
+      const modelJobs = await jobStore.listJobs();
+      if (generation !== modelJobRecoveryGeneration || jobStore !== modelJobStore) return;
+      useAppStore.setState({
+        confirmedModelJobs: countConfirmedModelJobs(modelJobs),
+        modelJobs,
+      });
+    })
+    .catch(() => {
+      // Recovery is retried on the next hydrate/run; job-level failures are persisted by the job store.
+    });
+}
+
+function invalidateModelJobStoreGeneration(): void {
+  modelJobStoreGeneration += 1;
+  modelJobRecoveryGeneration += 1;
 }
 
 function createUnavailableModelJobExecutor(): ModelJobExecutor {

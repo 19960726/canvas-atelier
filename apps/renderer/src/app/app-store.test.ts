@@ -230,6 +230,143 @@ describe('project optimization memory', () => {
     });
   });
 
+  it('hydrates durable project before deferred model job recovery finishes', async () => {
+    const finalPoll = deferred<{ status: 'completed'; result: { assetId: string } }>();
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn()
+        .mockResolvedValueOnce({ status: 'running' as const, progress: 0.2 })
+        .mockReturnValue(finalPoll.promise),
+      cancel: vi.fn(async () => {}),
+    });
+    resetAppStoreForTests();
+    useAppStore.getState().draftAgentPlan('start deferred recovery job');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
+
+    const durableProject = { ...createStarterProject(), name: 'hydrated-before-recovery-finishes' };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: async () => ({
+        availableSnapshotIds: ['snapshot-hydrated'],
+        mode: 'desktop',
+        project: durableProject,
+        revision: 12,
+        saveStatus: 'saved',
+      }),
+    }));
+
+    const hydration = useAppStore.getState().hydratePersistence();
+    try {
+      const resolvedBeforeProvider = await Promise.race([
+        hydration.then(() => true),
+        delay(20).then(() => false),
+      ]);
+
+      expect(resolvedBeforeProvider).toBe(true);
+      expect(useAppStore.getState().project.name).toBe('hydrated-before-recovery-finishes');
+      expect(useAppStore.getState().desktopRevision).toBe(12);
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('running');
+    } finally {
+      finalPoll.resolve({ status: 'completed', result: { assetId: 'asset-after-hydrate' } });
+      await Promise.race([hydration.catch(() => undefined), delay(100)]);
+    }
+  });
+
+  it('commits recovered model result against hydrated project revision', async () => {
+    const finalPoll = deferred<{ status: 'completed'; result: { assetId: string } }>();
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: request.nextProject,
+      revision: request.baseRevision + 1,
+    }));
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn()
+        .mockResolvedValueOnce({ status: 'running' as const, progress: 0.25 })
+        .mockReturnValue(finalPoll.promise),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+    useAppStore.getState().draftAgentPlan('start recoverable job');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
+
+    const durableProject = { ...createStarterProject(), name: 'hydrated-result-target' };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        mode: 'desktop',
+        project: durableProject,
+        revision: 41,
+        saveStatus: 'saved',
+      }),
+    }));
+
+    const hydration = useAppStore.getState().hydratePersistence();
+    try {
+      await waitForStore(() => useAppStore.getState().project.name === 'hydrated-result-target');
+      finalPoll.resolve({ status: 'completed', result: { assetId: 'asset-hydrated-result' } });
+      await hydration;
+      await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+
+      const resultCommit = commit.mock.calls
+        .map(([request]) => request)
+        .find((request) => request.transaction.id.startsWith('model-job-result-'));
+      expect(resultCommit?.baseRevision).toBe(41);
+      expect(resultCommit?.previousProject.name).toBe('hydrated-result-target');
+    } finally {
+      finalPoll.resolve({ status: 'completed', result: { assetId: 'asset-hydrated-result' } });
+      await Promise.race([hydration.catch(() => undefined), delay(100)]);
+    }
+  });
+
+  it('streams recovered model job progress and terminal updates after hydration', async () => {
+    const finalPoll = deferred<{ status: 'completed'; progress: number; result: { assetId: string } }>();
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn()
+        .mockResolvedValueOnce({ status: 'running' as const, progress: 0.1 })
+        .mockResolvedValueOnce({ status: 'running' as const, progress: 0.65 })
+        .mockReturnValue(finalPoll.promise),
+      cancel: vi.fn(async () => {}),
+    });
+    resetAppStoreForTests();
+    useAppStore.getState().draftAgentPlan('recover with live progress');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
+
+    const durableProject = { ...createStarterProject(), name: 'hydrated-live-progress' };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        mode: 'desktop',
+        project: durableProject,
+        revision: 7,
+        saveStatus: 'saved',
+      }),
+    }));
+
+    const hydration = useAppStore.getState().hydratePersistence();
+    try {
+      await hydration;
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('running');
+      await waitForStore(() => useAppStore.getState().modelJobs[0]?.progress === 0.65);
+
+      finalPoll.resolve({ status: 'completed', progress: 1, result: { assetId: 'asset-live-recovered' } });
+      await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+
+      expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+        resultAssetId: 'asset-live-recovered',
+        status: 'completed',
+      });
+    } finally {
+      finalPoll.resolve({ status: 'completed', progress: 1, result: { assetId: 'asset-live-recovered' } });
+      await Promise.race([hydration.catch(() => undefined), delay(100)]);
+    }
+  });
+
   it('keeps cancel action errors sanitized in model job state', async () => {
     const cancel = vi.fn(async () => {
       throw new Error('Authorization: Bearer secret-token from C:\\Users\\private\\image.png');
@@ -966,6 +1103,10 @@ async function waitForStore(predicate: () => boolean): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createImmediateBrowserClient(): ProjectPersistenceClient {
