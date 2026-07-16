@@ -22,6 +22,12 @@ import type {
 } from './contracts.js';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
+  parseCloseFlushAck,
+  parseCloseFlushRequest,
+  type CloseFlushAck,
+  type CloseFlushRequest,
+} from './renderer-close-flush-contract.js';
+import {
   PROVIDER_BRIDGE_CHANNELS,
   normalizeProviderBridgeError,
   parseProviderBridgeEnvelope,
@@ -42,6 +48,8 @@ import {
 export const DESKTOP_BRIDGE_PRELOAD_KEY = 'novusDesktop';
 
 export const BRIDGE_CHANNELS = {
+  closeFlushAck: 'novus-desktop:close-flush-ack',
+  closeFlushRequest: 'novus-desktop:close-flush-request',
   closeProject: 'novus-desktop:close-project',
   commit: 'novus-desktop:commit',
   configureKnowledgeBase: 'novus-desktop:configure-knowledge-base',
@@ -78,7 +86,13 @@ export interface DesktopBridgeApi {
   reviewSkillCandidate(request: ReviewSkillCandidateBridgeRequest): Promise<ReviewSkillCandidateBridgeResult>;
   subscribeKnowledgeState(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
   subscribeKnowledgeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void;
+  lifecycle: DesktopLifecycleBridgeApi;
   provider: DesktopProviderBridgeApi;
+}
+
+export interface DesktopLifecycleBridgeApi {
+  ackCloseFlush(ack: CloseFlushAck): boolean;
+  subscribeCloseFlushRequest(listener: (request: CloseFlushRequest) => void | Promise<void>): () => void;
 }
 
 export interface DesktopProviderBridgeApi {
@@ -108,9 +122,15 @@ export type DesktopBridgeSubscribe = (
   listener: (payload: unknown) => void,
 ) => () => void;
 
+export type DesktopBridgeSend = (
+  channel: string,
+  payload?: unknown,
+) => void;
+
 export function createPreloadApi(
   invoke: DesktopBridgeInvoke,
   subscribe: DesktopBridgeSubscribe = () => () => undefined,
+  send: DesktopBridgeSend = () => undefined,
 ): DesktopBridgeApi {
   return {
     openProject(request) {
@@ -157,6 +177,21 @@ export function createPreloadApi(
           listener(cloneKnowledgeSyncStatus(status));
         }
       });
+    },
+    lifecycle: {
+      ackCloseFlush(ack) {
+        const parsed = parseCloseFlushAck(ack);
+        if (parsed === null) return false;
+        send(BRIDGE_CHANNELS.closeFlushAck, parsed);
+        return true;
+      },
+      subscribeCloseFlushRequest(listener) {
+        return subscribe(BRIDGE_CHANNELS.closeFlushRequest, (payload) => {
+          const request = parseCloseFlushRequest(payload);
+          if (request === null) return;
+          void listener(request);
+        });
+      },
     },
     provider: {
       getStatus() {

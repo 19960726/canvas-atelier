@@ -5,6 +5,8 @@
     "lib": ["ES2019", "DOM"],
     "types": ["node"],
     "paths": {
+      "@agent-canvas/desktop-bridge": ["../../packages/desktop-bridge/src/index.ts"],
+      "@agent-canvas/desktop-bridge/preload": ["../../packages/desktop-bridge/src/preload.ts"],
       "@agent-canvas/desktop-core": ["../../packages/desktop-core/src/index.ts"],
       "@agent-canvas/desktop-core/preload-api": ["../../packages/desktop-core/src/preload-api.ts"]
     },

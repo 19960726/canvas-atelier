@@ -11,6 +11,9 @@ import {
 } from '@agent-canvas/desktop-core/preload-api';
 
 const invoke = (channel: string, payload?: unknown) => ipcRenderer.invoke(channel, payload);
+const send = (channel: string, payload?: unknown) => {
+  ipcRenderer.send(channel, payload);
+};
 const subscribe = (channel: string, listener: (payload: unknown) => void) => {
   const wrapped = (_event: IpcRendererEvent, payload: unknown) => {
     listener(payload);
@@ -20,7 +23,7 @@ const subscribe = (channel: string, listener: (payload: unknown) => void) => {
     ipcRenderer.removeListener(channel, wrapped);
   };
 };
-const apis = createDesktopPreloadApis(invoke, subscribe);
+const apis = createDesktopPreloadApis(invoke, subscribe, send);
 
 contextBridge.exposeInMainWorld(DESKTOP_BRIDGE_PRELOAD_KEY, apis.novusDesktop);
 contextBridge.exposeInMainWorld(AGENT_CANVAS_PRELOAD_KEY, apis.agentCanvas);

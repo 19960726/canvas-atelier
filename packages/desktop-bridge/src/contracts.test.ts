@@ -37,6 +37,21 @@ describe('agentCanvas preload compatibility bridge', () => {
     expect(JSON.stringify(Object.keys(api))).not.toMatch(/fs|process|keychain|token|getToken|readFile|providerCredential/i);
   });
 
+  it('keeps close-flush lifecycle on novusDesktop only', () => {
+    const send = vi.fn();
+    const subscribe = vi.fn((_channel: string, _listener: (payload: unknown) => void) => () => undefined);
+    const { novusDesktop, agentCanvas } = createDesktopPreloadApis(
+      vi.fn(async () => undefined) as DesktopBridgeInvoke,
+      subscribe,
+      send,
+    );
+
+    expect(Object.keys(novusDesktop.lifecycle).sort()).toEqual(['ackCloseFlush', 'subscribeCloseFlushRequest']);
+    expect(agentCanvas).not.toHaveProperty('lifecycle');
+    expect(novusDesktop.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', ok: true })).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('maps modern namespaces to the same invoke and subscribe channels as novusDesktop', async () => {
     const invoke = vi.fn(async (channel: string) => {
       if (Object.values(AGENT_CANVAS_CHANNELS.provider).includes(channel as never)) {
@@ -129,6 +144,8 @@ describe('agentCanvas preload compatibility bridge', () => {
       expect(source).not.toContain('agentCanvas');
       expect(source).not.toContain('provider');
       expect(source).not.toContain('secrets');
+      expect(source).not.toContain('subscribeCloseFlushRequest');
+      expect(source).not.toContain('ackCloseFlush');
     }
   });
 });

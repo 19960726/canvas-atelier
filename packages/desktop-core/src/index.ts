@@ -71,6 +71,21 @@ export type {
 export { NodeFileSystem, writeAtomic } from './file-system.js';
 export { shutdownDesktopServices } from './desktop-shutdown.js';
 export type { DesktopShutdownServices } from './desktop-shutdown.js';
+export {
+  CLOSE_FLUSH_TIMEOUT_MS,
+  createCloseFlushRequestId,
+  createRendererCloseFlushCoordinator,
+  parseCloseFlushAck,
+  parseCloseFlushRequest,
+} from './renderer-close-flush.js';
+export type {
+  CloseAttemptEvent,
+  CloseFlushAck,
+  CloseFlushCompletionReason,
+  CloseFlushRequest,
+  RendererCloseFlushCoordinator,
+  RendererCloseFlushCoordinatorOptions,
+} from './renderer-close-flush.js';
 export { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 export type {
   ConfigureKnowledgeRoot,
@@ -179,6 +194,7 @@ export type {
 export type {
   DesktopBridgeApi,
   DesktopBridgeInvoke,
+  DesktopBridgeSend,
   DesktopBridgeSubscribe,
   SafeModeBridgeApi,
 } from './preload-api.js';

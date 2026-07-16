@@ -14,6 +14,7 @@ import {
   createDesktopBridgeHandlers,
   createElectronNetComflyFetch,
   createApprovedSnapshotSyncClientFromEnv,
+  createRendererCloseFlushCoordinator,
   createProviderBridgeHandlers,
   createSecureProviderCredentialStore,
   redactNovusPackDiagnostics,
@@ -25,6 +26,7 @@ import {
   type ApprovedSnapshotOutboxDrainHandle,
   type BridgeDialogAdapter,
   type DesktopBridgeHandlers,
+  type RendererCloseFlushCoordinator,
 } from '@agent-canvas/desktop-core';
 import { resolveRendererHtmlPath } from './renderer-path';
 
@@ -44,6 +46,10 @@ let approvedSnapshotPullCoordinator: ApprovedSnapshotPullCoordinator | null = nu
 let knowledgeRefreshServiceHandle: KnowledgeRefreshService | null = null;
 let unsubscribeKnowledgeState: (() => void) | null = null;
 let closeAllStarted = false;
+let closeCoordinator: RendererCloseFlushCoordinator | null = null;
+let allowCoordinatedClose = false;
+let closeFinalizeTarget: 'window' | 'app' = 'window';
+let rendererLoaded = false;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -103,6 +109,12 @@ app.whenReady().then(async () => {
     knowledgeStore,
     knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator,
   });
+  closeCoordinator = createRendererCloseFlushCoordinator({
+    canRequestRendererFlush: canRequestRendererCloseFlush,
+    closeAllProjects: runCoordinatedShutdown,
+    finalizeClose: finalizeCoordinatedClose,
+    sendCloseFlushRequest: sendRendererCloseFlushRequest,
+  });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
   registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createComflyProviderService({
     appDataRoot: app.getPath('userData'),
@@ -114,6 +126,10 @@ app.whenReady().then(async () => {
   })));
   ipcMain.on(diagnosticsChannel, (_event, message) => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
+  });
+  ipcMain.on(BRIDGE_CHANNELS.closeFlushAck, (event, payload) => {
+    if (mainWindow === null || event.sender !== mainWindow.webContents) return;
+    void closeCoordinator?.handleCloseFlushAck(payload);
   });
 
   const knowledgeBaseIds = await startConfiguredKnowledgeRefresh(knowledgeStore, knowledgeRefreshService);
@@ -140,14 +156,79 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', (event) => {
-  if (desktopHandlers === null || closeAllStarted) {
+  if (allowCoordinatedClose || desktopHandlers === null || closeCoordinator === null) {
     return;
   }
+  requestCoordinatedClose(event, 'app');
+});
 
-  event.preventDefault();
+async function createMainWindow(): Promise<void> {
+  const window = createDesktopWindow(preloadPath);
+  mainWindow = window;
+  rendererLoaded = false;
+
+  window.webContents.on('did-fail-load', () => {
+    rendererLoaded = false;
+    void closeCoordinator?.rendererUnavailable();
+    void loadSafeMode('Renderer failed to load. Safe mode is available.');
+  });
+  window.webContents.on('render-process-gone', () => {
+    rendererLoaded = false;
+    void closeCoordinator?.rendererUnavailable();
+    void loadSafeMode('Renderer process exited unexpectedly. Safe mode is available.');
+  });
+  window.on('close', (event) => {
+    requestCoordinatedClose(event, 'window');
+  });
+  window.on('closed', () => {
+    if (mainWindow === window) {
+      mainWindow = null;
+      safeModeLoaded = false;
+      rendererLoaded = false;
+    }
+  });
+
+  try {
+    await window.loadFile(rendererHtmlPath);
+    rendererLoaded = mainWindow === window && !safeModeLoaded;
+  } catch (error) {
+    rendererLoaded = false;
+    await loadSafeMode(
+      `Renderer startup failed: ${redactNovusPackDiagnostics(error instanceof Error ? error.message : String(error))}`,
+    );
+  }
+}
+
+function requestCoordinatedClose(event: { preventDefault(): void }, target: 'window' | 'app'): void {
+  if (allowCoordinatedClose || desktopHandlers === null || closeCoordinator === null) {
+    return;
+  }
+  if (target === 'app') {
+    closeFinalizeTarget = 'app';
+  }
+  void closeCoordinator.requestClose(event);
+}
+
+function canRequestRendererCloseFlush(): boolean {
+  const window = mainWindow;
+  return window !== null
+    && rendererLoaded
+    && !safeModeLoaded
+    && !window.isDestroyed()
+    && !window.webContents.isCrashed();
+}
+
+function sendRendererCloseFlushRequest(request: { readonly requestId: string }): boolean {
+  if (!canRequestRendererCloseFlush()) return false;
+  mainWindow?.webContents.send(BRIDGE_CHANNELS.closeFlushRequest, request);
+  return true;
+}
+
+async function runCoordinatedShutdown(): Promise<void> {
+  if (desktopHandlers === null || closeAllStarted) return;
   closeAllStarted = true;
   const handlers = desktopHandlers;
-  void shutdownDesktopServices({
+  await shutdownDesktopServices({
     closeAllProjects: () => handlers.closeAllProjects(),
     stopApprovedSnapshotDrain: () => approvedSnapshotDrainHandle?.stop() ?? Promise.resolve(),
     stopApprovedSnapshotPull: () => approvedSnapshotPullCoordinator?.stop() ?? Promise.resolve(),
@@ -162,33 +243,18 @@ app.on('before-quit', (event) => {
         unsubscribeKnowledgeState = null;
       }
     },
-    quit: () => app.quit(),
+    quit: () => undefined,
   });
-});
+}
 
-async function createMainWindow(): Promise<void> {
-  const window = createDesktopWindow(preloadPath);
-  mainWindow = window;
-
-  window.webContents.on('did-fail-load', () => {
-    void loadSafeMode('Renderer failed to load. Safe mode is available.');
-  });
-  window.webContents.on('render-process-gone', () => {
-    void loadSafeMode('Renderer process exited unexpectedly. Safe mode is available.');
-  });
-  window.on('closed', () => {
-    if (mainWindow === window) {
-      mainWindow = null;
-      safeModeLoaded = false;
-    }
-  });
-
-  try {
-    await window.loadFile(rendererHtmlPath);
-  } catch (error) {
-    await loadSafeMode(
-      `Renderer startup failed: ${redactNovusPackDiagnostics(error instanceof Error ? error.message : String(error))}`,
-    );
+function finalizeCoordinatedClose(): void {
+  allowCoordinatedClose = true;
+  if (closeFinalizeTarget === 'app') {
+    app.quit();
+    return;
+  }
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.destroy();
   }
 }
 
@@ -230,8 +296,12 @@ async function loadSafeMode(reason: string): Promise<void> {
 
   const previousWindow = mainWindow;
   safeModeLoaded = true;
+  rendererLoaded = false;
   const safeWindow = createDesktopWindow(safeModePreloadPath);
   mainWindow = safeWindow;
+  safeWindow.on('close', (event) => {
+    requestCoordinatedClose(event, 'window');
+  });
   safeWindow.on('closed', () => {
     if (mainWindow === safeWindow) {
       mainWindow = null;

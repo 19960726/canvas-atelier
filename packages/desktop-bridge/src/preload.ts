@@ -3,6 +3,7 @@ import {
   createPreloadApi,
   type DesktopBridgeApi,
   type DesktopBridgeInvoke,
+  type DesktopBridgeSend,
   type DesktopBridgeSubscribe,
 } from '@agent-canvas/desktop-core/preload-api';
 
@@ -54,9 +55,10 @@ export function createAgentCanvasApi(
 export function createDesktopPreloadApis(
   invoke: DesktopBridgeInvoke,
   subscribe?: DesktopBridgeSubscribe,
+  send?: DesktopBridgeSend,
 ): { readonly novusDesktop: DesktopBridgeApi; readonly agentCanvas: AgentCanvasApi } {
   return {
-    novusDesktop: createPreloadApi(invoke, subscribe),
+    novusDesktop: createPreloadApi(invoke, subscribe, send),
     agentCanvas: createAgentCanvasApi(invoke, subscribe),
   };
 }

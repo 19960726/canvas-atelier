@@ -1,4 +1,16 @@
+import { fileURLToPath } from 'node:url';
+
+const sourceAliases = {
+  '@agent-canvas/desktop-bridge/preload': fileURLToPath(new URL('./packages/desktop-bridge/src/preload.ts', import.meta.url)),
+  '@agent-canvas/desktop-bridge': fileURLToPath(new URL('./packages/desktop-bridge/src/index.ts', import.meta.url)),
+  '@agent-canvas/desktop-core/preload-api': fileURLToPath(new URL('./packages/desktop-core/src/preload-api.ts', import.meta.url)),
+  '@agent-canvas/desktop-core': fileURLToPath(new URL('./packages/desktop-core/src/index.ts', import.meta.url)),
+};
+
 export const domainTestProject = {
+  resolve: {
+    alias: sourceAliases,
+  },
   test: {
     name: '@agent-canvas/domain',
     environment: 'node',
@@ -7,6 +19,9 @@ export const domainTestProject = {
 };
 
 export const rendererTestProject = {
+  resolve: {
+    alias: sourceAliases,
+  },
   test: {
     name: '@agent-canvas/renderer',
     environment: 'jsdom',
@@ -16,6 +31,9 @@ export const rendererTestProject = {
 };
 
 export const skillStoreTestProject = {
+  resolve: {
+    alias: sourceAliases,
+  },
   test: {
     name: '@agent-canvas/skill-store',
     environment: 'node',
@@ -24,6 +42,9 @@ export const skillStoreTestProject = {
 };
 
 export const providerComflyTestProject = {
+  resolve: {
+    alias: sourceAliases,
+  },
   test: {
     name: '@agent-canvas/provider-comfly',
     environment: 'node',
@@ -32,6 +53,9 @@ export const providerComflyTestProject = {
 };
 
 export const desktopCoreTestProject = {
+  resolve: {
+    alias: sourceAliases,
+  },
   test: {
     name: '@agent-canvas/desktop-core',
     environment: 'node',
@@ -40,9 +64,23 @@ export const desktopCoreTestProject = {
 };
 
 export const desktopBridgeTestProject = {
+  resolve: {
+    alias: sourceAliases,
+  },
   test: {
     name: '@agent-canvas/desktop-bridge',
     environment: 'node',
     include: ['packages/desktop-bridge/src/**/*.test.ts'],
+  },
+};
+
+export const desktopShellTestProject = {
+  resolve: {
+    alias: sourceAliases,
+  },
+  test: {
+    name: '@agent-canvas/desktop-shells',
+    environment: 'node',
+    include: ['apps/desktop-modern/src/**/*.test.ts', 'apps/desktop-legacy/src/**/*.test.ts'],
   },
 };

@@ -55,6 +55,7 @@ describe('desktop bridge contract', () => {
       'getKnowledgeState',
       'getRecoveryPlan',
       'importPack',
+      'lifecycle',
       'openProject',
       'provider',
       'restore',
@@ -75,6 +76,10 @@ describe('desktop bridge contract', () => {
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('readFile');
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('watchPath');
     expect(createPreloadApi(mockInvoke).provider).not.toHaveProperty('fetch');
+    expect(Object.keys(createPreloadApi(mockInvoke).lifecycle).sort()).toEqual([
+      'ackCloseFlush',
+      'subscribeCloseFlushRequest',
+    ]);
   });
 
   it('unwraps provider IPC envelopes and preserves serializable locked errors in the renderer', async () => {
@@ -146,6 +151,27 @@ describe('desktop bridge contract', () => {
     expect(subscribe).toHaveBeenCalledWith(BRIDGE_CHANNELS.knowledgeSyncStatusChanged, expect.any(Function));
     expect(listener).toHaveBeenCalledWith(status);
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+  it('subscribes to close-flush requests and ACKs only strict matching lifecycle payloads', () => {
+    const send = vi.fn();
+    const subscribe = vi.fn((_channel, _listener) => () => undefined);
+    const api = createPreloadApi(vi.fn(async () => undefined) as DesktopBridgeInvoke, subscribe, send);
+    const listener = vi.fn();
+
+    api.lifecycle.subscribeCloseFlushRequest(listener);
+    const eventListener = subscribe.mock.calls[0]?.[1];
+    eventListener?.({ requestId: 'close-request-123456' });
+    eventListener?.({ requestId: 'close-request-123456', path: 'C:\\Users\\Private\\draft.json' });
+    eventListener?.({ requestId: '../project' });
+
+    expect(subscribe).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeFlushRequest, expect.any(Function));
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({ requestId: 'close-request-123456' });
+
+    expect(api.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', ok: true })).toBe(true);
+    expect(api.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', ok: true, token: 'secret' } as never)).toBe(false);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeFlushAck, { requestId: 'close-request-123456', ok: true });
   });
   it('drops protected values from sync lifecycle events at the preload boundary', () => {
     const subscribe = vi.fn((_channel, _listener) => () => undefined);

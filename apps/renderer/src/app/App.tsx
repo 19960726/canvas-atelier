@@ -3,6 +3,7 @@ import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
 import { useAppStore } from './app-store';
 
 let hydrationStarted = false;
+let closeFlushUnsubscribe: (() => void) | null = null;
 
 export function App() {
   const flushProjectSave = useAppStore((state) => state.flushProjectSave);
@@ -15,6 +16,22 @@ export function App() {
     void hydratePersistence();
     void initializeKnowledge();
   }, [hydratePersistence, initializeKnowledge]);
+
+  useEffect(() => {
+    if (closeFlushUnsubscribe !== null) return;
+    const lifecycle = window.novusDesktop?.lifecycle;
+    if (lifecycle === undefined) return;
+
+    closeFlushUnsubscribe = lifecycle.subscribeCloseFlushRequest(async (request) => {
+      let ok = false;
+      try {
+        ok = await useAppStore.getState().closePersistence();
+      } catch {
+        ok = false;
+      }
+      lifecycle.ackCloseFlush({ requestId: request.requestId, ok });
+    });
+  }, []);
 
   useEffect(() => {
     const handleBlur = () => {
@@ -38,4 +55,6 @@ export function App() {
 
 export function resetAppHydrationForTests(): void {
   hydrationStarted = false;
+  closeFlushUnsubscribe?.();
+  closeFlushUnsubscribe = null;
 }

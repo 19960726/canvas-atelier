@@ -10,7 +10,7 @@ import {
   useAppStore,
 } from './app-store';
 import type { KnowledgeClient } from './knowledge-client';
-import type { ProjectPersistenceClient } from './desktop-persistence';
+import type { ProjectCommitRequest, ProjectCommitResult, ProjectPersistenceClient } from './desktop-persistence';
 import { App, resetAppHydrationForTests } from './App';
 
 describe('App persistence hydration', () => {
@@ -83,6 +83,81 @@ describe('App persistence hydration', () => {
     expect(close).not.toHaveBeenCalled();
     expect(stop).not.toHaveBeenCalled();
     expect(useAppStore.getState().project.name).toBe('StrictMode Durable Project');
+  });
+
+  it('subscribes once to desktop close-flush requests in StrictMode and ACKs after durable close', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 21,
+    }));
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['strict-close-stable'],
+      project: { ...createStarterProject(), name: 'Strict close stable' },
+      revision: 21,
+    }));
+    const close = vi.fn(async () => {});
+    const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
+    const ackCloseFlush = vi.fn();
+    const unsubscribe = vi.fn();
+    window.novusDesktop = {
+      lifecycle: {
+        ackCloseFlush,
+        subscribeCloseFlushRequest: vi.fn((listener) => {
+          listeners.push(listener);
+          return unsubscribe;
+        }),
+      },
+    } as unknown as typeof window.novusDesktop;
+    replaceProjectPersistenceClientForTests(createHydrationClient({ close, commit, stablePoint }));
+
+    render(<StrictMode><App /></StrictMode>);
+    await waitFor(() => expect(window.novusDesktop?.lifecycle.subscribeCloseFlushRequest).toHaveBeenCalled());
+    useAppStore.getState().setProject({ ...createStarterProject(), name: 'Pending strict close draft' });
+
+    await listeners[listeners.length - 1]?.({ requestId: 'close-request-strict-1' });
+
+    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(1));
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(stablePoint).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-strict-1', ok: true });
+  });
+
+  it('ACKs close-flush false when the pending durable save fails', async () => {
+    const commit = vi.fn(async ({ previousProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      code: 'INVALID_REQUEST',
+      ok: false,
+      project: previousProject,
+      revision: 20,
+    }));
+    const stablePoint = vi.fn();
+    const close = vi.fn(async () => {});
+    const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
+    const ackCloseFlush = vi.fn();
+    window.novusDesktop = {
+      lifecycle: {
+        ackCloseFlush,
+        subscribeCloseFlushRequest: vi.fn((listener) => {
+          listeners.push(listener);
+          return vi.fn();
+        }),
+      },
+    } as unknown as typeof window.novusDesktop;
+    replaceProjectPersistenceClientForTests(createHydrationClient({ close, commit, stablePoint }));
+
+    render(<App />);
+    await waitFor(() => expect(window.novusDesktop?.lifecycle.subscribeCloseFlushRequest).toHaveBeenCalled());
+    useAppStore.getState().setProject({ ...createStarterProject(), name: 'Pending failed close draft' });
+
+    await listeners[listeners.length - 1]?.({ requestId: 'close-request-failed-1' });
+
+    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(1));
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(stablePoint).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    expect(useAppStore.getState().saveErrorCode).toBe('INVALID_REQUEST');
+    expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-failed-1', ok: false });
   });
 });
 

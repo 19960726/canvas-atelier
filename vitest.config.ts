@@ -3,6 +3,7 @@ import {
   desktopCoreTestProject,
   desktopBridgeTestProject,
   domainTestProject,
+  desktopShellTestProject,
   providerComflyTestProject,
   rendererTestProject,
   skillStoreTestProject,
@@ -10,6 +11,6 @@ import {
 
 export default defineConfig({
   test: {
-    projects: [domainTestProject, rendererTestProject, skillStoreTestProject, providerComflyTestProject, desktopCoreTestProject, desktopBridgeTestProject],
+    projects: [domainTestProject, rendererTestProject, skillStoreTestProject, providerComflyTestProject, desktopCoreTestProject, desktopBridgeTestProject, desktopShellTestProject],
   },
 });

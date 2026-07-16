@@ -120,7 +120,7 @@ interface AppState {
   confirmedModelJobs: number;
   modelJobs: ModelJob[];
   cancelModelJob: (jobId: string) => Promise<void>;
-  closePersistence: () => Promise<void>;
+  closePersistence: () => Promise<boolean>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
   commitReferenceOrder: (assetIds: string[]) => Promise<boolean>;
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
@@ -175,13 +175,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
   },
   closePersistence: async () => {
-    await flushPendingProjectSave(get, set, 'close');
+    const flushed = await flushPendingProjectSave(get, set, 'close');
+    if (!flushed) return false;
     invalidateModelJobStoreGeneration();
     modelJobStore?.stop();
     modelJobUnsubscribe?.();
     modelJobUnsubscribe = null;
     knowledgeClient.stop();
-    await projectPersistenceClient.close();
+    try {
+      await projectPersistenceClient.close();
+      return true;
+    } catch {
+      return false;
+    }
   },
   commitProjectTransaction: async (transaction, options = {}) => {
     cancelPendingProjectSave();
