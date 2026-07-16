@@ -5,13 +5,13 @@ import { createDesktopModelJobExecutor } from './desktop-model-executor';
 
 describe('desktop model job executor', () => {
   it('uses only the narrow window.novusDesktop provider bridge', async () => {
-    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'task-bridge' }));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-public-bridge' }));
     const pollImageJob = vi.fn(async () => ({
       status: 'completed' as const,
       progress: 1,
-      result: { assetId: 'provider:comfly:task-bridge:0', url: 'https://assets.example/result.png' },
+      result: { assetId: 'provider:comfly:provider-job-public-bridge:0', url: 'https://assets.example/result.png' },
     }));
-    const cancelImageJob = vi.fn(async () => {});
+    const cancelImageJob = vi.fn(async () => ({ status: 'local-only' as const, remoteCancelled: false, reason: 'unsupported' as const }));
     vi.stubGlobal('window', {
       novusDesktop: {
         provider: {
@@ -30,11 +30,11 @@ describe('desktop model job executor', () => {
     const polled = await executor.poll({ ...job(), providerTaskId: submitted.providerTaskId });
     await executor.cancel?.({ ...job(), providerTaskId: submitted.providerTaskId });
 
-    expect(submitted).toEqual({ providerTaskId: 'task-bridge' });
+    expect(submitted).toEqual({ providerTaskId: 'provider-job-public-bridge' });
     expect(polled).toEqual({
       status: 'completed',
       progress: 1,
-      result: { assetId: 'provider:comfly:task-bridge:0' },
+      result: { assetId: 'provider:comfly:provider-job-public-bridge:0' },
     });
     expect(submitImageJob).toHaveBeenCalledWith({
       jobId: 'job-1',

@@ -1,32 +1,64 @@
 import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback } from 'node:crypto';
-import { join, resolve, sep } from 'node:path';
+import { isIP } from 'node:net';
+import { dirname, join, normalize, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 import {
   ComflyClient,
   mergeComflyModelRegistries,
   type ComflyFetch,
-  type ComflyModelCapability,
   type ComflyModelRegistration,
 } from '@agent-canvas/provider-comfly';
 
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
+import {
+  PROVIDER_BRIDGE_CHANNELS,
+  createProviderBridgeError,
+  normalizeProviderBridgeError,
+  type CancelImageJobBridgeRequest,
+  type CancelImageJobBridgeResult,
+  type ConfigureProviderBridgeRequest,
+  type PollImageJobBridgeRequest,
+  type PollImageJobBridgeResult,
+  type ProviderBridgeCapability,
+  type ProviderBridgeError,
+  type ProviderBridgeException,
+  type ProviderBridgeProfile,
+  type ProviderConfigurationStatus,
+  type ProviderImageJobResult,
+  type SubmitImageJobBridgeRequest,
+  type SubmitImageJobBridgeResult,
+  type UnlockProviderBridgeRequest,
+} from './provider-contracts.js';
 
 export type { ComflyFetch } from '@agent-canvas/provider-comfly';
+export {
+  PROVIDER_BRIDGE_CHANNELS,
+  createProviderBridgeError,
+  normalizeProviderBridgeError,
+};
+export type {
+  CancelImageJobBridgeRequest,
+  CancelImageJobBridgeResult,
+  ConfigureProviderBridgeRequest,
+  PollImageJobBridgeRequest,
+  PollImageJobBridgeResult,
+  ProviderBridgeChannel,
+  ProviderBridgeCapability,
+  ProviderBridgeError,
+  ProviderBridgeErrorCode,
+  ProviderBridgeException,
+  ProviderBridgeProfile,
+  ProviderConfigurationStatus,
+  ProviderImageJobResult,
+  SubmitImageJobBridgeRequest,
+  SubmitImageJobBridgeResult,
+  UnlockProviderBridgeRequest,
+} from './provider-contracts.js';
 
 const scrypt = promisify(scryptCallback);
 const CREDENTIALS_FILE = 'provider-credentials.json';
 const DEFAULT_COMFLY_BASE_URL = 'https://api.comfly.chat';
-
-export const PROVIDER_BRIDGE_CHANNELS = {
-  getStatus: 'novus-desktop:provider:get-status',
-  configure: 'novus-desktop:provider:configure',
-  unlock: 'novus-desktop:provider:unlock',
-  listProfiles: 'novus-desktop:provider:list-profiles',
-  submitImageJob: 'novus-desktop:provider:submit-image-job',
-  pollImageJob: 'novus-desktop:provider:poll-image-job',
-  cancelImageJob: 'novus-desktop:provider:cancel-image-job',
-} as const;
 
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [
   {
@@ -42,87 +74,6 @@ export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [
     capabilities: ['image_generation', 'async_tasks'],
   },
 ];
-
-export type ProviderBridgeChannel = typeof PROVIDER_BRIDGE_CHANNELS[keyof typeof PROVIDER_BRIDGE_CHANNELS];
-
-export type ProviderBridgeErrorCode =
-  | 'INVALID_REQUEST'
-  | 'CREDENTIALS_LOCKED'
-  | 'PROVIDER_UNAVAILABLE'
-  | 'PROVIDER_INVALID_RESPONSE'
-  | 'PROTECTED_PAYLOAD'
-  | 'PROVIDER_ERROR';
-
-export interface ProviderBridgeError {
-  readonly code: ProviderBridgeErrorCode;
-  readonly message: string;
-  readonly retryable: boolean;
-}
-
-export interface ProviderBridgeException extends Error {
-  code: ProviderBridgeErrorCode;
-  retryable: boolean;
-}
-
-export interface ProviderBridgeProfile {
-  readonly provider: string;
-  readonly modelRoute: string;
-  readonly displayName: string;
-  readonly modelId?: string;
-  readonly capabilities: readonly ComflyModelCapability[];
-}
-
-export interface ProviderConfigurationStatus {
-  readonly configured: boolean;
-  readonly locked: boolean;
-  readonly encryption: 'safeStorage' | 'passphrase' | 'unavailable';
-}
-
-export interface ConfigureProviderBridgeRequest {
-  readonly token: string;
-  readonly passphrase?: string;
-  readonly baseUrl?: string;
-  readonly profiles?: readonly ProviderBridgeProfile[];
-}
-
-export interface UnlockProviderBridgeRequest {
-  readonly passphrase: string;
-}
-
-export interface SubmitImageJobBridgeRequest {
-  readonly jobId: string;
-  readonly provider: string;
-  readonly modelRoute: string;
-  readonly prompt: string;
-  readonly conversationId: string;
-  readonly referenceAssetIds: readonly string[];
-}
-
-export interface SubmitImageJobBridgeResult {
-  readonly providerTaskId: string;
-}
-
-export interface PollImageJobBridgeRequest {
-  readonly provider: string;
-  readonly providerTaskId: string;
-}
-
-export interface ProviderImageJobResult {
-  readonly assetId: string;
-  readonly url?: string;
-  readonly width?: number;
-  readonly height?: number;
-}
-
-export type PollImageJobBridgeResult =
-  | { readonly status: 'running'; readonly progress?: number }
-  | { readonly status: 'completed'; readonly progress?: number; readonly result: ProviderImageJobResult }
-  | { readonly status: 'failed'; readonly error: ProviderBridgeError };
-
-export interface CancelImageJobBridgeRequest {
-  readonly provider: string;
-  readonly providerTaskId: string;
-}
 
 export interface SafeStorageAdapter {
   isEncryptionAvailable(): boolean;
@@ -144,7 +95,7 @@ export interface ProviderService {
   listProfiles(): Promise<ProviderBridgeProfile[]>;
   submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
-  cancelImageJob(request: CancelImageJobBridgeRequest): Promise<void>;
+  cancelImageJob(request: CancelImageJobBridgeRequest): Promise<CancelImageJobBridgeResult>;
 }
 
 export interface ProviderBridgeHandlers {
@@ -154,7 +105,7 @@ export interface ProviderBridgeHandlers {
   listProfiles(event: unknown, request: unknown): Promise<ProviderBridgeProfile[]>;
   submitImageJob(event: unknown, request: unknown): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(event: unknown, request: unknown): Promise<PollImageJobBridgeResult>;
-  cancelImageJob(event: unknown, request: unknown): Promise<void>;
+  cancelImageJob(event: unknown, request: unknown): Promise<CancelImageJobBridgeResult>;
 }
 
 export interface ProviderIpcMainLike {
@@ -176,32 +127,6 @@ type ProviderCredentialEnvelope =
     readonly authTagHex: string;
     readonly ciphertextHex: string;
   };
-
-export function createProviderBridgeError(
-  code: ProviderBridgeErrorCode,
-  message: string,
-  retryable = false,
-): ProviderBridgeException {
-  const error = new Error(sanitizeProviderMessage(message)) as ProviderBridgeException;
-  error.code = code;
-  error.retryable = retryable;
-  return error;
-}
-
-export function normalizeProviderBridgeError(error: unknown): ProviderBridgeError {
-  if (isProviderBridgeError(error)) {
-    return {
-      code: error.code,
-      message: sanitizeProviderMessage(error.message),
-      retryable: error.retryable,
-    };
-  }
-  return {
-    code: 'PROVIDER_ERROR',
-    message: sanitizeProviderMessage(error instanceof Error ? error.message : String(error ?? 'Provider request failed')),
-    retryable: false,
-  };
-}
 
 export function parseProviderBridgeRequest(channel: string, request: unknown): unknown {
   switch (channel) {
@@ -233,45 +158,50 @@ export function createSecureProviderCredentialStore(options: {
   const safeStorage = options.safeStorage;
   const targetPath = confinedCredentialsPath(options.appDataRoot);
   let unlockedToken: string | null = null;
+  let operationTail: Promise<void> = Promise.resolve();
 
   return {
     async configure(request) {
-      const token = parseSecretString(request.token, 'token');
-      if (safeStorage?.isEncryptionAvailable() === true) {
-        await writeEnvelope({
-          version: 1,
-          kind: 'safeStorage',
-          ciphertextHex: Buffer.from(safeStorage.encryptString(token)).toString('hex'),
-        });
-        unlockedToken = token;
-        return;
-      }
-      if (request.passphrase === undefined || request.passphrase.length === 0) {
-        throw createProviderBridgeError(
-          'CREDENTIALS_LOCKED',
-          'Provider credentials require system encryption or a passphrase',
-        );
-      }
-      await writeEnvelope(await encryptWithPassphrase(token, request.passphrase));
-      unlockedToken = token;
-    },
-    async unlock(request) {
-      const envelope = await readEnvelope();
-      if (envelope === null) {
-        throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are not configured');
-      }
-      try {
-        if (envelope.kind === 'safeStorage') {
-          if (safeStorage?.isEncryptionAvailable() !== true) {
-            throw new Error('System encryption is unavailable');
-          }
-          unlockedToken = safeStorage.decryptString(Buffer.from(envelope.ciphertextHex, 'hex'));
+      await enqueueCredentialOperation(async () => {
+        const token = parseSecretString(request.token, 'token');
+        if (safeStorage?.isEncryptionAvailable() === true) {
+          await writeEnvelope({
+            version: 1,
+            kind: 'safeStorage',
+            ciphertextHex: Buffer.from(safeStorage.encryptString(token)).toString('hex'),
+          });
+          unlockedToken = token;
           return;
         }
-        unlockedToken = await decryptWithPassphrase(envelope, request.passphrase);
-      } catch {
-        throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are locked');
-      }
+        if (request.passphrase === undefined || request.passphrase.length === 0) {
+          throw createProviderBridgeError(
+            'CREDENTIALS_LOCKED',
+            'Provider credentials require system encryption or a passphrase',
+          );
+        }
+        await writeEnvelope(await encryptWithPassphrase(token, request.passphrase));
+        unlockedToken = token;
+      });
+    },
+    async unlock(request) {
+      await enqueueCredentialOperation(async () => {
+        const envelope = await readEnvelope();
+        if (envelope === null) {
+          throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are not configured');
+        }
+        try {
+          if (envelope.kind === 'safeStorage') {
+            if (safeStorage?.isEncryptionAvailable() !== true) {
+              throw new Error('System encryption is unavailable');
+            }
+            unlockedToken = safeStorage.decryptString(Buffer.from(envelope.ciphertextHex, 'hex'));
+            return;
+          }
+          unlockedToken = await decryptWithPassphrase(envelope, request.passphrase);
+        } catch {
+          throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are locked');
+        }
+      });
     },
     async getStatus() {
       const envelope = await readEnvelope();
@@ -301,8 +231,15 @@ export function createSecureProviderCredentialStore(options: {
     },
   };
 
+  function enqueueCredentialOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = operationTail.then(operation, operation);
+    operationTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
   async function readEnvelope(): Promise<ProviderCredentialEnvelope | null> {
     try {
+      await assertConfinedCredentialPathForRead();
       return parseCredentialEnvelope(JSON.parse(await fileSystem.readFile(targetPath, 'utf8')) as unknown);
     } catch (error) {
       if (isMissingFileError(error)) return null;
@@ -312,8 +249,30 @@ export function createSecureProviderCredentialStore(options: {
 
   async function writeEnvelope(envelope: ProviderCredentialEnvelope): Promise<void> {
     await fileSystem.mkdir(options.appDataRoot, { recursive: true });
-    await rejectSymlinkTarget(fileSystem, targetPath);
+    await assertConfinedCredentialPathForWrite();
     await writeAtomic(fileSystem, targetPath, `${JSON.stringify(envelope)}\n`);
+  }
+
+  async function assertConfinedCredentialPathForWrite(): Promise<void> {
+    await rejectSymlinkTarget(fileSystem, options.appDataRoot);
+    await rejectSymlinkTarget(fileSystem, targetPath);
+    if (fileSystem.realpath === undefined) return;
+    const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(options.appDataRoot)));
+    const realParent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
+    if (realParent !== realRoot) {
+      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata path is invalid');
+    }
+  }
+
+  async function assertConfinedCredentialPathForRead(): Promise<void> {
+    await rejectSymlinkTarget(fileSystem, options.appDataRoot);
+    await rejectSymlinkTarget(fileSystem, targetPath);
+    if (fileSystem.realpath === undefined) return;
+    const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(options.appDataRoot)));
+    const realTarget = normalizeRealPath(await fileSystem.realpath(targetPath));
+    if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${sep}`)) {
+      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata path is invalid');
+    }
   }
 }
 
@@ -327,6 +286,8 @@ export function createComflyProviderService(options: {
 }): ProviderService {
   let profiles = sanitizeProfiles(options.profiles ?? DEFAULT_PROVIDER_PROFILES);
   let baseUrl = options.baseUrl ?? DEFAULT_COMFLY_BASE_URL;
+  let configureTail: Promise<void> = Promise.resolve();
+  const providerTasks = new Map<string, { provider: string; rawTaskId: string }>();
 
   const getClient = () => new ComflyClient({
     baseUrl,
@@ -339,12 +300,14 @@ export function createComflyProviderService(options: {
     getStatus() {
       return options.credentialStore.getStatus();
     },
-    async configure(request) {
-      const validated = validateConfigureRequest(request);
-      await options.credentialStore.configure({ token: validated.token, passphrase: validated.passphrase });
-      if (validated.baseUrl !== undefined) baseUrl = validated.baseUrl;
-      if (validated.profiles !== undefined) profiles = sanitizeProfiles(validated.profiles);
-      return options.credentialStore.getStatus();
+    configure(request) {
+      return enqueueConfigure(async () => {
+        const validated = validateConfigureRequest(request);
+        await options.credentialStore.configure({ token: validated.token, passphrase: validated.passphrase });
+        if (validated.baseUrl !== undefined) baseUrl = validated.baseUrl;
+        if (validated.profiles !== undefined) profiles = sanitizeProfiles(validated.profiles);
+        return options.credentialStore.getStatus();
+      });
     },
     async unlock(request) {
       const validated = validateUnlockRequest(request);
@@ -367,19 +330,29 @@ export function createComflyProviderService(options: {
         async: true,
       }));
       const parsed = parseImageTaskResponse(response);
-      return { providerTaskId: parsed.taskId };
+      const publicTaskId = createPublicProviderTaskId();
+      providerTasks.set(publicTaskId, { provider: validated.provider, rawTaskId: parsed.taskId });
+      return { providerTaskId: publicTaskId };
     },
     async pollImageJob(request) {
       const validated = validatePollImageJobRequest(request);
       assertSupportedProvider(validated.provider);
-      const response = await translateProviderCall(() => getClient().getImageTask(validated.providerTaskId));
-      return mapImageTaskPollResult(validated.provider, response);
+      const task = resolveProviderTask(providerTasks, validated);
+      const response = await translateProviderCall(() => getClient().getImageTask(task.rawTaskId));
+      return mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
     },
     async cancelImageJob(request) {
       const validated = validateCancelImageJobRequest(request);
       assertSupportedProvider(validated.provider);
+      return { status: 'local-only', remoteCancelled: false, reason: 'unsupported' };
     },
   };
+
+  function enqueueConfigure<T>(operation: () => Promise<T>): Promise<T> {
+    const run = configureTail.then(operation, operation);
+    configureTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
 }
 
 export function createProviderBridgeHandlers(service: ProviderService): ProviderBridgeHandlers {
@@ -505,7 +478,7 @@ function expectStrictRecord(value: unknown, allowedKeys: readonly string[]): Rec
   const allowed = new Set(allowedKeys);
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) {
-      throw createProviderBridgeError('INVALID_REQUEST', `Request contains unknown key: ${key}`);
+      throw createProviderBridgeError('INVALID_REQUEST', 'Request contains unknown key');
     }
   }
   return value;
@@ -527,11 +500,11 @@ function parseProfiles(value: unknown): ProviderBridgeProfile[] {
   }));
 }
 
-function parseCapabilities(value: unknown): ComflyModelCapability[] {
+function parseCapabilities(value: unknown): ProviderBridgeCapability[] {
   if (!Array.isArray(value)) {
     throw createProviderBridgeError('INVALID_REQUEST', 'capabilities must be an array');
   }
-  const allowed = new Set<ComflyModelCapability>([
+  const allowed = new Set<ProviderBridgeCapability>([
     'chat',
     'vision',
     'image_generation',
@@ -541,10 +514,10 @@ function parseCapabilities(value: unknown): ComflyModelCapability[] {
     'async_tasks',
   ]);
   return value.map((item) => {
-    if (typeof item !== 'string' || !allowed.has(item as ComflyModelCapability)) {
+    if (typeof item !== 'string' || !allowed.has(item as ProviderBridgeCapability)) {
       throw createProviderBridgeError('INVALID_REQUEST', 'capabilities contains an unsupported value');
     }
-    return item as ComflyModelCapability;
+    return item as ProviderBridgeCapability;
   });
 }
 
@@ -582,6 +555,7 @@ function assertSupportedProvider(provider: string): void {
 }
 
 function parseImageTaskResponse(value: unknown): { taskId: string; status: string; data?: unknown } {
+  assertProviderResponsePayload(value);
   if (!isPlainRecord(value) || typeof value.taskId !== 'string' || value.taskId.length === 0 || typeof value.status !== 'string') {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task response');
   }
@@ -592,8 +566,16 @@ function parseImageTaskResponse(value: unknown): { taskId: string; status: strin
   };
 }
 
-function mapImageTaskPollResult(provider: string, value: unknown): PollImageJobBridgeResult {
+function mapImageTaskPollResult(
+  provider: string,
+  publicTaskId: string,
+  rawTaskId: string,
+  value: unknown,
+): PollImageJobBridgeResult {
   const task = parseImageTaskResponse(value);
+  if (task.taskId !== rawTaskId) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task response');
+  }
   const status = task.status.toLowerCase();
   if (status === 'queued' || status === 'pending' || status === 'running' || status === 'processing') {
     return { status: 'running', progress: undefined };
@@ -620,7 +602,7 @@ function mapImageTaskPollResult(provider: string, value: unknown): PollImageJobB
     status: 'completed',
     progress: 1,
     result: {
-      assetId: `provider:${provider}:${task.taskId}:0`,
+      assetId: `provider:${provider}:${publicTaskId}:0`,
       ...(url === undefined ? {} : { url }),
       ...(typeof first.width === 'number' ? { width: first.width } : {}),
       ...(typeof first.height === 'number' ? { height: first.height } : {}),
@@ -630,10 +612,78 @@ function mapImageTaskPollResult(provider: string, value: unknown): PollImageJobB
 
 function parseSafeResultUrl(value: unknown): string {
   const url = parseNonEmptyString(value, 'url');
-  if (!/^https:\/\//iu.test(url) || containsProtectedProviderText(url)) {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
     throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned an unsafe result URL');
   }
-  return url;
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username.length > 0
+    || parsed.password.length > 0
+    || containsProtectedProviderText(url)
+    || isPrivateResultHost(parsed.hostname)
+  ) {
+    throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned an unsafe result URL');
+  }
+  return parsed.toString();
+}
+
+function createPublicProviderTaskId(): string {
+  return `provider-job-${randomBytes(16).toString('hex')}`;
+}
+
+function resolveProviderTask(
+  providerTasks: ReadonlyMap<string, { provider: string; rawTaskId: string }>,
+  request: PollImageJobBridgeRequest,
+): { provider: string; rawTaskId: string } {
+  const task = providerTasks.get(request.providerTaskId);
+  if (task === undefined || task.provider !== request.provider) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+  }
+  return task;
+}
+
+function assertProviderResponsePayload(value: unknown): void {
+  for (const text of collectStrings(value)) {
+    if (containsProtectedProviderText(text)) {
+      throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned a protected payload');
+    }
+  }
+}
+
+function isPrivateResultHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[/u, '').replace(/\]$/u, '').toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  const ipVersion = isIP(host);
+  if (ipVersion === 4) return isPrivateIpv4(host);
+  if (ipVersion === 6) return isPrivateIpv6(host);
+  return false;
+}
+
+function isPrivateIpv4(host: string): boolean {
+  const octets = host.split('.').map((part) => Number.parseInt(part, 10));
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return true;
+  }
+  const [first, second] = octets as [number, number, number, number];
+  return first === 10
+    || first === 127
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 169 && second === 254)
+    || first === 0;
+}
+
+function isPrivateIpv6(host: string): boolean {
+  const normalizedHost = host.toLowerCase();
+  if (normalizedHost === '::1') return true;
+  const firstGroup = normalizedHost.split(':')[0] ?? '';
+  const first = Number.parseInt(firstGroup, 16);
+  if (!Number.isFinite(first)) return true;
+  return (first & 0xfe00) === 0xfc00
+    || (first & 0xffc0) === 0xfe80;
 }
 
 function parseCredentialEnvelope(value: unknown): ProviderCredentialEnvelope {
@@ -716,6 +766,10 @@ function confinedCredentialsPath(appDataRoot: string): string {
     throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential path is invalid');
   }
   return target;
+}
+
+function normalizeRealPath(path: string): string {
+  return normalize(resolve(path));
 }
 
 function parseNonEmptyString(value: unknown, fieldName: string): string {

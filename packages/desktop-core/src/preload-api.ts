@@ -33,7 +33,8 @@ import {
   type SubmitImageJobBridgeRequest,
   type SubmitImageJobBridgeResult,
   type UnlockProviderBridgeRequest,
-} from './provider-bridge.js';
+  type CancelImageJobBridgeResult,
+} from './provider-contracts.js';
 
 export const DESKTOP_BRIDGE_PRELOAD_KEY = 'novusDesktop';
 
@@ -84,7 +85,7 @@ export interface DesktopProviderBridgeApi {
   listProfiles(): Promise<ProviderBridgeProfile[]>;
   submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
-  cancelImageJob(request: CancelImageJobBridgeRequest): Promise<void>;
+  cancelImageJob(request: CancelImageJobBridgeRequest): Promise<CancelImageJobBridgeResult>;
 }
 
 export interface SafeModeBridgeApi {

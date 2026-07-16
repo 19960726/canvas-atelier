@@ -156,6 +156,21 @@ describe('desktop bridge contract', () => {
     ]);
   });
 
+  it('keeps preload contracts isolated from main-process provider dependencies', async () => {
+    const preloadApiSource = await readFile(join(process.cwd(), 'packages/desktop-core/src/preload-api.ts'), 'utf8');
+    expect(preloadApiSource).not.toMatch(/provider-bridge|node:crypto|node:fs|provider-comfly|ComflyClient|safeStorage/u);
+
+    for (const bundlePath of [
+      join(process.cwd(), 'apps/desktop-modern/dist/preload.js'),
+      join(process.cwd(), 'apps/desktop-modern/dist/safe-preload.js'),
+      join(process.cwd(), 'apps/desktop-legacy/dist/preload.js'),
+      join(process.cwd(), 'apps/desktop-legacy/dist/safe-preload.js'),
+    ]) {
+      const bundle = await readFile(bundlePath, 'utf8');
+      expect(bundle).not.toMatch(/node:crypto|node:fs|provider-comfly|ComflyClient|createCipheriv|safeStorage|createComflyProviderService/u);
+    }
+  });
+
   it('redacts Windows paths with spaces and non-user drive roots from bridge diagnostics', () => {
     expect(redactBridgeDiagnostics('Failed at C:\\Program Files\\Novus Atelier\\foo.txt')).not.toContain('Program Files');
     expect(redactBridgeDiagnostics('Failed at E:\\画布项目\\demo\\project.novus.json')).not.toContain('画布项目');

@@ -234,6 +234,12 @@ describe('project optimization memory', () => {
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-app-store' }));
     const pollImageJob = vi.fn(async () => ({ status: 'running' as const, progress: 0.42 }));
     const cancelImageJob = vi.fn(async () => {});
+    const listProfiles = vi.fn(async () => [{
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      displayName: 'GPT Image',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
     window.novusDesktop = {
       provider: {
         submitImageJob,
@@ -242,7 +248,7 @@ describe('project optimization memory', () => {
         getStatus: vi.fn(),
         configure: vi.fn(),
         unlock: vi.fn(),
-        listProfiles: vi.fn(),
+        listProfiles,
       },
     } as unknown as typeof window.novusDesktop;
     resetAppStoreForTests();
@@ -265,6 +271,54 @@ describe('project optimization memory', () => {
       providerTaskId: 'provider-task-app-store',
     });
     expect(cancelImageJob).not.toHaveBeenCalled();
+  });
+
+  it('resolves dynamic provider profiles for model plans without resetting conversation context', async () => {
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-nano' }));
+    const listProfiles = vi.fn(async () => [{
+      provider: 'comfly-enterprise',
+      modelRoute: 'nano-banana-2-route',
+      displayName: 'Nano Banana 2',
+      modelId: 'provider-owned-nano-route',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Generate through Nano Banana 2 while keeping references');
+    useAppStore.setState((state) => ({
+      agentPlan: state.agentPlan ? { ...state.agentPlan, modelRoute: 'nano-banana-2-route' } : state.agentPlan,
+    }));
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(submitImageJob).toHaveBeenCalledWith({
+      jobId: expect.stringMatching(/^model-job-/),
+      provider: 'comfly-enterprise',
+      modelRoute: 'nano-banana-2-route',
+      prompt: 'Generate through Nano Banana 2 while keeping references',
+      conversationId: 'agent-conversation-shared',
+      referenceAssetIds: ['starter-product'],
+    });
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      provider: 'comfly-enterprise',
+      modelRoute: 'nano-banana-2-route',
+      displayName: 'Nano Banana 2',
+      modelId: 'provider-owned-nano-route',
+      conversationId: 'agent-conversation-shared',
+      referenceAssetIds: ['starter-product'],
+    });
   });
 
   it('hydrates durable project before deferred model job recovery finishes', async () => {

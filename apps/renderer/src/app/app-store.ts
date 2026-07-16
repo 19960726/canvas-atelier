@@ -318,7 +318,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       requestedCapabilities: ['model_execution'],
       confirmations: {},
       conflicts: [],
-      modelRoute: 'Comfly 图像生成',
       jobCount: 1,
     } };
   }),
@@ -356,7 +355,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelJobs = await getModelJobStore().enqueueConfirmedJobs({
         conversationId: 'agent-conversation-shared',
         confirmedAt: now,
-        requests: buildModelJobRequests(project, state.agentPlan),
+        requests: await buildModelJobRequests(project, state.agentPlan),
       });
       void getModelJobStore().run();
     }
@@ -735,26 +734,56 @@ function selectProductionModelJobExecutor(): ModelJobExecutor {
     : createUnavailableModelJobExecutor();
 }
 
-function buildModelJobRequests(project: CanvasProject, plan: AgentCanvasPlan): ModelJobRequest[] {
+async function buildModelJobRequests(project: CanvasProject, plan: AgentCanvasPlan): Promise<ModelJobRequest[]> {
   const promptNode = project.nodes.find((node) => node.type === 'prompt');
-  const route = normalizeProviderModelRoute(plan.modelRoute);
+  const profile = await resolveModelJobProfile(plan);
   const prompt = promptNode?.type === 'prompt' ? promptNode.data.prompt : plan.transaction.label;
   return Array.from({ length: Math.max(0, plan.jobCount) }, (_, index) => ({
     id: `model-job-${plan.id}-${index}`,
     promptNodeId: promptNode?.id ?? 'prompt-start',
     prompt,
-    provider: 'comfly',
-    modelRoute: route,
-    displayName: route,
-    modelId: route,
+    provider: profile.provider,
+    modelRoute: profile.modelRoute,
+    displayName: profile.displayName,
+    modelId: profile.modelId ?? profile.modelRoute,
     referenceAssetIds: collectReferenceAssetIds(project),
   }));
 }
 
-function normalizeProviderModelRoute(route: string | undefined): string {
-  if (route === undefined || route === 'desktop-bridge' || route.startsWith('Comfly ')) {
-    return 'gpt-image';
+async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<{
+  provider: string;
+  modelRoute: string;
+  displayName: string;
+  modelId?: string;
+}> {
+  const bridge = globalThis.window?.novusDesktop?.provider;
+  if (bridge === undefined || modelJobExecutorOverride !== null) {
+    return {
+      provider: 'unavailable',
+      modelRoute: plan.modelRoute ?? 'unconfigured',
+      displayName: 'Provider unavailable',
+      modelId: plan.modelRoute ?? 'unconfigured',
+    };
   }
+  const profiles = await bridge.listProfiles();
+  const imageProfiles = profiles.filter((profile) => profile.capabilities.includes('image_generation'));
+  const requestedRoute = normalizeLegacyPlanModelRoute(plan.modelRoute);
+  const selected = requestedRoute === undefined
+    ? imageProfiles[0]
+    : imageProfiles.find((profile) => profile.modelRoute === requestedRoute || profile.modelId === requestedRoute);
+  if (selected === undefined) {
+    throw new Error('Provider image model profile is unconfigured');
+  }
+  return {
+    provider: selected.provider,
+    modelRoute: selected.modelRoute,
+    displayName: selected.displayName,
+    modelId: selected.modelId,
+  };
+}
+
+function normalizeLegacyPlanModelRoute(route: string | undefined): string | undefined {
+  if (route === undefined || route === 'desktop-bridge' || route.startsWith('Comfly ')) return undefined;
   return route;
 }
 
