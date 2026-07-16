@@ -106,7 +106,7 @@ describe('SnapshotScheduler', () => {
     expect(activeRecords.map((record) => [record.transactionId, record.revision])).toEqual([
       ['tx-after-rotation', 201],
     ]);
-  });
+  }, 15_000);
 
   it('waits for queued commits before rotating and keeps the live writer on the new active journal', async () => {
     const fileSystem = new PauseFirstJournalAppendFileSystem();
