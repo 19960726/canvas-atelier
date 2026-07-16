@@ -111,8 +111,31 @@ describe('SkillCandidateReview', () => {
     />);
 
     expect(screen.getByRole('button', { name: 'Approve candidate-1' })).toBeDisabled();
-    expect(screen.getByTestId('skill-review-unavailable')).toHaveTextContent(/source and managed rule text/i);
+    expect(screen.getByRole('button', { name: 'Reject candidate-1' })).toBeDisabled();
+    expect(screen.getByTestId('skill-review-unavailable')).toHaveTextContent(/source, managed, and diff rule text/i);
     expect(screen.queryByTestId('skill-sync-confirmation')).not.toBeInTheDocument();
+  });
+
+  it('disables approve and reject while the review preview is preparing', () => {
+    const onReview = vi.fn(async () => undefined);
+    const preparing = {
+      ...candidate({ sourceRule: undefined, managedRule: undefined }),
+      reviewPreparationStatus: 'preparing',
+      reviewPreparationStartedAt: '2026-07-16T05:00:00.000Z',
+    } as SkillPromotionCandidate;
+
+    render(<SkillCandidateReview
+      candidates={[preparing]}
+      knowledgeBases={[knowledgeState()]}
+      onReview={onReview}
+      projectId="project-1"
+    />);
+
+    expect(screen.getByRole('button', { name: 'Approve candidate-1' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reject candidate-1' })).toBeDisabled();
+    expect(screen.getByTestId('skill-review-unavailable')).toHaveTextContent(/preparing/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Reject candidate-1' }));
+    expect(onReview).not.toHaveBeenCalled();
   });
 
   it('omits evidence counts that are not present in the persisted candidate', () => {
@@ -171,6 +194,10 @@ function candidate(overrides: Partial<SkillPromotionCandidate> = {}): SkillPromo
     beforeRule: 'Use energetic splashes.',
     sourceRule: 'Source rule body: keep product identity from the local memory.',
     managedRule: 'Managed rule body: keep the current scene skill wording.',
+    diffHunks: [
+      '- Managed rule body: keep the current scene skill wording.',
+      '+ Use slower, heavier liquid arcs around the product.',
+    ],
     rule: 'Use slower, heavier liquid arcs around the product.',
     targetKnowledgeBaseId: 'scene-skill',
     targetKnowledgeSection: 'reverse-prompt/liquid',

@@ -3,6 +3,7 @@ import type { KnowledgeSyncStatusSummary, ProviderBridgeProfile } from '@agent-c
 import {
   appendProjectMemoryEntry,
   applyProjectTransaction,
+  createSkillPromotionCandidateFingerprint,
   createSkillPromotionCandidate,
   createUserFeedbackMemory,
   confirmAgentPlan as confirmDomainPlan,
@@ -151,6 +152,7 @@ interface AppState {
   confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => Promise<void>;
   cancelAgentPlan: () => void;
   undo: () => Promise<void>;
+  prepareSkillCandidateReview: (candidateId: string) => Promise<void>;
   promoteProjectMemory: (memoryId: string) => Promise<void>;
   recordUserFeedback: (input: RecordUserFeedbackInput) => Promise<boolean>;
   restoreProjectSnapshot: (snapshotId: string) => Promise<void>;
@@ -511,16 +513,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     clearPendingAgentConfirmation();
     set({ agentPlan: null });
   },
+  prepareSkillCandidateReview: async (candidateId) => {
+    await prepareSkillCandidateReviewForStore(get, set, candidateId, { markPreparing: true });
+  },
   promoteProjectMemory: async (memoryId) => {
     const state = get();
     if (state.project.skillPromotionCandidates.some((candidate) => candidate.sourceProjectMemoryId === memoryId)) return;
     const memory = state.project.projectMemory.find((entry) => entry.id === memoryId);
     if (!memory || !isPromotableMemory(state.project.projectMemory, memory)) return;
 
-    const candidate = withPromotionKnowledgeTarget(createSkillPromotionCandidate(memory, {
+    const candidate = markSkillCandidatePreparing(withPromotionKnowledgeTarget(createSkillPromotionCandidate(memory, {
       candidateId: `skill-candidate-${Date.now()}-${planSequence++}`,
       createdAt: new Date().toISOString(),
-    }), state.knowledgeBases);
+    }), state.knowledgeBases), new Date().toISOString());
     const candidates = [...state.project.skillPromotionCandidates, candidate];
     const project = { ...state.project, skillPromotionCandidates: candidates };
     const transaction: ProjectTransaction = {
@@ -530,24 +535,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     const committed = await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
     if (!committed) return;
-    try {
-      const prepared = await knowledgeClient.prepareSkillCandidateReview({
-        projectId: project.id,
-        candidateId: candidate.id,
-      });
-      set((current) => ({
-        desktopRevision: prepared.currentRevision,
-        knowledgeBases: prepared.knowledgeState
-          ? upsertKnowledgeSummary(current.knowledgeBases, prepared.knowledgeState)
-          : current.knowledgeBases,
-        project: {
-          ...current.project,
-          skillPromotionCandidates: [...prepared.candidates],
-        },
-      }));
-    } catch {
-      // Keep the pending candidate non-reviewable when desktop knowledge is unavailable.
-    }
+    await prepareSkillCandidateReviewForStore(get, set, candidate.id, { markPreparing: false });
   },
   retryModelJob: async (jobId) => {
     await getModelJobStore().retryJob(jobId);
@@ -1063,6 +1051,193 @@ async function retryCommittedAgentPlanJobs(
         : current
     ));
   }
+}
+
+async function prepareSkillCandidateReviewForStore(
+  get: () => AppState,
+  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState> | AppState)) => void,
+  candidateId: string,
+  options: { markPreparing: boolean },
+): Promise<void> {
+  if (options.markPreparing) {
+    const state = get();
+    const candidate = findPreparingCandidate(state.project.skillPromotionCandidates, candidateId);
+    if (candidate === null) return;
+    const preparing = markSkillCandidatePreparing(candidate, new Date().toISOString());
+    const candidates = replaceSkillCandidate(state.project.skillPromotionCandidates, preparing);
+    const project = { ...state.project, skillPromotionCandidates: candidates };
+    const committed = await get().commitProjectTransaction({
+      id: `prepare-skill-preview-${candidateId}-${Date.now()}`,
+      label: 'Prepare skill candidate preview',
+      operations: [{ kind: 'set_skill_candidates', candidates }],
+    }, { kind: 'system', nextProject: project });
+    if (!committed) return;
+  }
+
+  const state = get();
+  const candidate = findPreparingCandidate(state.project.skillPromotionCandidates, candidateId);
+  if (candidate === null) return;
+  const baseRevision = state.desktopRevision;
+  const candidateFingerprint = createSkillPromotionCandidateFingerprint(candidate);
+
+  try {
+    const prepared = await knowledgeClient.prepareSkillCandidateReview({
+      baseRevision,
+      candidateFingerprint,
+      projectId: state.project.id,
+      candidateId,
+    });
+    set((current) => {
+      if (!canApplyPreparedSkillCandidate(current, candidateId, baseRevision, candidateFingerprint)) return {};
+      const currentCandidate = current.project.skillPromotionCandidates.find((item) => item.id === candidateId);
+      const preparedCandidate = prepared.candidates.find((item) => item.id === candidateId) ?? prepared.candidate;
+      if (
+        currentCandidate === undefined ||
+        prepared.projectId !== current.project.id ||
+        preparedCandidate.id !== candidateId ||
+        preparedCandidate.reviewStatus !== 'pending_review' ||
+        preparedCandidate.reviewedAt !== undefined ||
+        preparedCandidate.reviewTransactionId !== undefined ||
+        !preparedCandidate.sourceRule ||
+        !preparedCandidate.managedRule ||
+        !preparedCandidate.diffHunks ||
+        preparedCandidate.diffHunks.length === 0
+      ) {
+        return {};
+      }
+      const ready = markSkillCandidateReady(preparedCandidate, currentCandidate);
+      return {
+        desktopRevision: prepared.currentRevision,
+        knowledgeBases: prepared.knowledgeState
+          ? upsertKnowledgeSummary(current.knowledgeBases, prepared.knowledgeState)
+          : current.knowledgeBases,
+        project: {
+          ...current.project,
+          skillPromotionCandidates: replaceSkillCandidate(current.project.skillPromotionCandidates, ready),
+        },
+      };
+    });
+  } catch (error) {
+    if (isStaleSkillPreparationError(error)) return;
+    await persistSkillCandidatePreparationFailure(
+      get,
+      candidateId,
+      baseRevision,
+      candidateFingerprint,
+      sanitizeSkillPreparationError(error),
+    );
+  }
+}
+
+async function persistSkillCandidatePreparationFailure(
+  get: () => AppState,
+  candidateId: string,
+  baseRevision: number,
+  candidateFingerprint: string,
+  error: string,
+): Promise<void> {
+  const state = get();
+  if (!canApplyPreparedSkillCandidate(state, candidateId, baseRevision, candidateFingerprint)) return;
+  const candidate = state.project.skillPromotionCandidates.find((item) => item.id === candidateId);
+  if (candidate === undefined) return;
+  const failed = markSkillCandidatePreparationFailed(candidate, error);
+  const candidates = replaceSkillCandidate(state.project.skillPromotionCandidates, failed);
+  const project = { ...state.project, skillPromotionCandidates: candidates };
+  await get().commitProjectTransaction({
+    id: `prepare-skill-preview-failed-${candidateId}-${Date.now()}`,
+    label: 'Record skill candidate preview failure',
+    operations: [{ kind: 'set_skill_candidates', candidates }],
+  }, { kind: 'system', nextProject: project });
+}
+
+function findPreparingCandidate(candidates: SkillPromotionCandidate[], candidateId: string): SkillPromotionCandidate | null {
+  const candidate = candidates.find((item) => item.id === candidateId);
+  if (
+    candidate === undefined ||
+    candidate.reviewStatus !== 'pending_review' ||
+    candidate.reviewedAt !== undefined ||
+    candidate.reviewTransactionId !== undefined
+  ) {
+    return null;
+  }
+  return candidate;
+}
+
+function canApplyPreparedSkillCandidate(
+  state: AppState,
+  candidateId: string,
+  baseRevision: number,
+  candidateFingerprint: string,
+): boolean {
+  if (state.desktopRevision !== baseRevision) return false;
+  const candidate = findPreparingCandidate(state.project.skillPromotionCandidates, candidateId);
+  return candidate !== null && createSkillPromotionCandidateFingerprint(candidate) === candidateFingerprint;
+}
+
+function markSkillCandidatePreparing(candidate: SkillPromotionCandidate, startedAt: string): SkillPromotionCandidate {
+  const {
+    diffHunks: _diffHunks,
+    managedRule: _managedRule,
+    reviewPreparationError: _reviewPreparationError,
+    sourceRule: _sourceRule,
+    ...rest
+  } = candidate;
+  return skillPromotionCandidateSchema.parse({
+    ...rest,
+    reviewPreparationStatus: 'preparing',
+    reviewPreparationStartedAt: startedAt,
+  });
+}
+
+function markSkillCandidateReady(
+  prepared: SkillPromotionCandidate,
+  current: SkillPromotionCandidate,
+): SkillPromotionCandidate {
+  const { reviewPreparationError: _reviewPreparationError, ...rest } = prepared;
+  return skillPromotionCandidateSchema.parse({
+    ...rest,
+    reviewPreparationStatus: 'ready',
+    reviewPreparationStartedAt: current.reviewPreparationStartedAt ?? prepared.reviewPreparationStartedAt,
+  });
+}
+
+function markSkillCandidatePreparationFailed(candidate: SkillPromotionCandidate, error: string): SkillPromotionCandidate {
+  const {
+    diffHunks: _diffHunks,
+    managedRule: _managedRule,
+    sourceRule: _sourceRule,
+    ...rest
+  } = candidate;
+  return skillPromotionCandidateSchema.parse({
+    ...rest,
+    reviewPreparationStatus: 'failed',
+    reviewPreparationError: error,
+  });
+}
+
+function replaceSkillCandidate(
+  candidates: SkillPromotionCandidate[],
+  nextCandidate: SkillPromotionCandidate,
+): SkillPromotionCandidate[] {
+  return candidates.map((candidate) => candidate.id === nextCandidate.id ? nextCandidate : candidate);
+}
+
+function isStaleSkillPreparationError(error: unknown): boolean {
+  return isRecord(error) && (error.code === 'REVISION_CONFLICT' || error.code === 'CONCURRENT_WRITER');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object';
+}
+
+function sanitizeSkillPreparationError(error: unknown): string {
+  const message = error instanceof Error && error.message.trim().length > 0
+    ? error.message
+    : 'Skill review preview is unavailable';
+  if (containsProtectedRendererPayload(message)) {
+    return 'Skill review preview is unavailable';
+  }
+  return message.slice(0, 500);
 }
 
 function resolveCommittedModelJobProfile(plan: AgentCanvasPlan): ResolvedModelJobProfile | null {

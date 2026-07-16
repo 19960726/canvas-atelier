@@ -4,9 +4,11 @@ import {
   buildProjectMemoryContext,
   createUserFeedbackMemory,
   createSkillPromotionCandidate,
+  createSkillPromotionCandidateFingerprint,
   parseProjectMemoryEntry,
   reviewSkillPromotionCandidate,
   rollbackSkillPromotionCandidate,
+  skillPromotionCandidateSchema,
   type ProjectMemoryEntry,
 } from './project-memory';
 import { createAgentKnowledgeLease, type OrderedReference } from './knowledge-context';
@@ -192,6 +194,48 @@ describe('project memory', () => {
       reviewStatus: 'pending_review',
       rule: optimization.nextStep,
     });
+  });
+
+  it('persists Skill review preparation state on pending candidates', () => {
+    const pending = createSkillPromotionCandidate(optimization, {
+      candidateId: 'skill-candidate-preparing',
+      createdAt: '2026-07-13T15:00:00.000Z',
+    });
+
+    const preparing = skillPromotionCandidateSchema.parse({
+      ...pending,
+      reviewPreparationStatus: 'preparing',
+      reviewPreparationStartedAt: '2026-07-16T05:00:00.000Z',
+    });
+
+    expect(preparing).toMatchObject({
+      id: 'skill-candidate-preparing',
+      reviewStatus: 'pending_review',
+      reviewPreparationStatus: 'preparing',
+      reviewPreparationStartedAt: '2026-07-16T05:00:00.000Z',
+    });
+  });
+
+  it('creates a stable fingerprint that changes when a candidate is reviewed', () => {
+    const pending = createSkillPromotionCandidate(optimization, {
+      candidateId: 'skill-candidate-fingerprint',
+      createdAt: '2026-07-13T15:00:00.000Z',
+    });
+    const preparing = skillPromotionCandidateSchema.parse({
+      ...pending,
+      reviewPreparationStatus: 'preparing',
+      reviewPreparationStartedAt: '2026-07-16T05:00:00.000Z',
+    });
+    const rejected = reviewSkillPromotionCandidate(preparing, {
+      decision: 'rejected',
+      reviewedAt: '2026-07-16T05:01:00.000Z',
+      transactionId: 'review-skill-candidate-fingerprint',
+    });
+
+    expect(createSkillPromotionCandidateFingerprint(preparing)).toBe(createSkillPromotionCandidateFingerprint({
+      ...preparing,
+    }));
+    expect(createSkillPromotionCandidateFingerprint(rejected)).not.toBe(createSkillPromotionCandidateFingerprint(preparing));
   });
 
   it('records feedback with lease and visual observations', () => {

@@ -3,6 +3,7 @@ import { basename, join } from 'node:path';
 import {
   parseCanvasProject,
   projectTransactionSchema,
+  createSkillPromotionCandidateFingerprint,
   reviewSkillPromotionCandidate,
   rollbackSkillPromotionCandidate,
   skillPromotionCandidateSchema,
@@ -478,15 +479,16 @@ export function createDesktopBridgeHandlers(
   ): Promise<PrepareSkillCandidateReviewBridgeResult> {
     const validated = validatePrepareSkillCandidateReviewBridgeRequest(request);
     const session = requireSingleWritableProjectSession(sessions, validated.projectId);
+    const baseRevision = await readCurrentRevision(repository, session.session);
+    if (baseRevision !== validated.baseRevision) {
+      throw staleSkillPreparation('Skill candidate preparation base revision is stale');
+    }
     const project = await repository.readCurrentProject(session.session);
     if (project.id !== validated.projectId) {
       throw invalidRequest('Project is not active');
     }
 
-    const candidate = project.skillPromotionCandidates.find((item) => item.id === validated.candidateId);
-    if (candidate === undefined) {
-      throw invalidRequest('Skill candidate is unavailable');
-    }
+    const candidate = requireCurrentPrepareCandidate(project, validated.candidateId, validated.candidateFingerprint);
     assertPublicBridgePayload(candidate);
     if (candidate.targetKnowledgeBaseId === undefined) {
       throw invalidRequest('Skill candidate preparation requires a target knowledge base');
@@ -500,14 +502,25 @@ export function createDesktopBridgeHandlers(
     if (reviewableCandidate === null || !reviewableCandidate.sourceRule || !reviewableCandidate.managedRule) {
       throw invalidRequest('Skill candidate source and managed rule text are unavailable');
     }
-    const reviewed = sanitizeSkillPromotionCandidate(reviewableCandidate);
-    const nextCandidates = project.skillPromotionCandidates.map((item) => (
+    const latestRevision = await readCurrentRevision(repository, session.session);
+    if (latestRevision !== validated.baseRevision) {
+      throw staleSkillPreparation('Skill candidate preparation revision changed before commit');
+    }
+    const latestProject = await repository.readCurrentProject(session.session);
+    if (latestProject.id !== validated.projectId) {
+      throw invalidRequest('Project is not active');
+    }
+    requireCurrentPrepareCandidate(latestProject, validated.candidateId, validated.candidateFingerprint);
+    const reviewed = sanitizeSkillPromotionCandidate({
+      ...reviewableCandidate,
+      reviewPreparationStatus: 'ready',
+    });
+    const nextCandidates = latestProject.skillPromotionCandidates.map((item) => (
       item.id === reviewed.id ? reviewed : item
     )).map(sanitizeSkillPromotionCandidate);
     const transactionId = `prepare-skill-${candidate.id}-${Date.now()}`;
-    const currentRevision = await readCurrentRevision(repository, session.session);
     const ack = await requireBridgeWriter(session).commit({
-      baseRevision: currentRevision,
+      baseRevision: validated.baseRevision,
       kind: 'system',
       projectId: validated.projectId,
       transaction: {
@@ -1449,10 +1462,34 @@ function isExactAcknowledgedReview(
   return durableCandidate.reviewedAt === expectedCandidate.reviewedAt;
 }
 
+function requireCurrentPrepareCandidate(
+  project: CanvasProject,
+  candidateId: string,
+  candidateFingerprint: string,
+): SkillPromotionCandidate {
+  const candidate = project.skillPromotionCandidates.find((item) => item.id === candidateId);
+  if (candidate === undefined) {
+    throw invalidRequest('Skill candidate is unavailable');
+  }
+  if (
+    candidate.reviewStatus !== 'pending_review' ||
+    candidate.reviewedAt !== undefined ||
+    candidate.reviewTransactionId !== undefined
+  ) {
+    throw staleSkillPreparation('Skill candidate preparation was superseded');
+  }
+  if (createSkillPromotionCandidateFingerprint(candidate) !== candidateFingerprint) {
+    throw staleSkillPreparation('Skill candidate preparation fingerprint is stale');
+  }
+  return candidate;
+}
+
 function validatePrepareSkillCandidateReviewBridgeRequest(value: unknown): PrepareSkillCandidateReviewBridgeRequest {
   const record = expectPlainRecord(value);
   return {
+    baseRevision: parseNonNegativeInteger(record.baseRevision, 'baseRevision'),
     candidateId: parseNonEmptyString(record.candidateId, 'candidateId'),
+    candidateFingerprint: parseNonEmptyString(record.candidateFingerprint, 'candidateFingerprint'),
     projectId: parseNonEmptyString(record.projectId, 'projectId'),
   };
 }
@@ -1630,6 +1667,9 @@ function sanitizeSkillPromotionCandidate(candidate: SkillPromotionCandidate): Sk
     ...(parsed.sourceRule === undefined ? {} : { sourceRule: parsed.sourceRule }),
     ...(parsed.managedRule === undefined ? {} : { managedRule: parsed.managedRule }),
     ...(parsed.diffHunks === undefined ? {} : { diffHunks: parsed.diffHunks }),
+    ...(parsed.reviewPreparationStatus === undefined ? {} : { reviewPreparationStatus: parsed.reviewPreparationStatus }),
+    ...(parsed.reviewPreparationStartedAt === undefined ? {} : { reviewPreparationStartedAt: parsed.reviewPreparationStartedAt }),
+    ...(parsed.reviewPreparationError === undefined ? {} : { reviewPreparationError: parsed.reviewPreparationError }),
     ...(parsed.targetKnowledgeBaseId === undefined ? {} : { targetKnowledgeBaseId: parsed.targetKnowledgeBaseId }),
     ...(parsed.targetKnowledgeSection === undefined ? {} : { targetKnowledgeSection: parsed.targetKnowledgeSection }),
     ...(parsed.counts === undefined ? {} : { counts: parsed.counts }),
@@ -1713,6 +1753,10 @@ function compareKnowledgeSummaries(left: KnowledgeBaseStateSummary, right: Knowl
 
 function invalidRequest(message: string): PersistenceError {
   return createPersistenceError('INVALID_REQUEST', false, message);
+}
+
+function staleSkillPreparation(message: string): PersistenceError {
+  return createPersistenceError('REVISION_CONFLICT', true, message);
 }
 
 function isPersistenceErrorCode(error: unknown, code: string): boolean {

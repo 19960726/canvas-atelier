@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommitAck } from '@agent-canvas/desktop-core';
-import { buildProjectMemoryContext, createAgentKnowledgeLease } from '@agent-canvas/domain';
+import { buildProjectMemoryContext, createAgentKnowledgeLease, createSkillPromotionCandidateFingerprint } from '@agent-canvas/domain';
 import type { ModelJob, OrderedReference, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
@@ -1452,10 +1452,10 @@ describe('project optimization memory', () => {
 
     await useAppStore.getState().promoteProjectMemory(memoryId);
 
-    expect(prepareSkillCandidateReview).toHaveBeenCalledWith({
+    expect(prepareSkillCandidateReview).toHaveBeenCalledWith(expect.objectContaining({
       projectId: 'local-project',
       candidateId: expect.stringMatching(/^skill-candidate-/),
-    });
+    }));
     expect(useAppStore.getState().project.skillPromotionCandidates).toMatchObject([{
       sourceProjectMemoryId: memoryId,
       reviewStatus: 'pending_review',
@@ -1466,6 +1466,285 @@ describe('project optimization memory', () => {
         expect.stringContaining('+ Source memory rule body'),
       ]),
     }]);
+  });
+
+  it('sends the current persisted candidate revision and fingerprint when preparing Skill review text', async () => {
+    let revision = 0;
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit: vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: nextProject,
+        revision: ++revision,
+      })),
+    }));
+    const prepareSkillCandidateReview = vi.fn(async (request: Parameters<KnowledgeClient['prepareSkillCandidateReview']>[0]) => {
+      const candidate = useAppStore.getState().project.skillPromotionCandidates.find((item) => item.id === request.candidateId);
+      if (candidate === undefined) throw new Error('missing candidate');
+      expect(request.baseRevision).toBe(2);
+      expect(request.candidateFingerprint).toBe(createSkillPromotionCandidateFingerprint(candidate));
+      expect(candidate.reviewPreparationStatus).toBe('preparing');
+      const reviewable = {
+        ...candidate,
+        reviewPreparationStatus: 'ready' as const,
+        sourceRule: 'Source memory rule body: lock the product logo before changing props.',
+        managedRule: 'Managed rule body: keep the current scene skill wording.',
+        diffHunks: [
+          '- Managed rule body: keep the current scene skill wording.',
+          '+ Source memory rule body: lock the product logo before changing props.',
+        ],
+      };
+      return {
+        projectId: 'local-project',
+        currentRevision: 3,
+        candidate: reviewable,
+        candidates: [reviewable],
+        knowledgeState: null,
+      };
+    });
+    replaceKnowledgeClientForTests({
+      configure: vi.fn(),
+      getLease: vi.fn(),
+      prepareSkillCandidateReview,
+      review: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as KnowledgeClient);
+    useAppStore.getState().draftAgentPlan('Promote with a guarded prepare request');
+    await useAppStore.getState().confirmAgentPlan({ models: false, deleteNodes: false, skillWriteback: false });
+    const memoryId = useAppStore.getState().project.projectMemory[0]!.id;
+
+    await useAppStore.getState().promoteProjectMemory(memoryId);
+
+    expect(prepareSkillCandidateReview).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]).toMatchObject({
+      reviewPreparationStatus: 'ready',
+      sourceRule: expect.stringContaining('Source memory rule body'),
+      managedRule: expect.stringContaining('Managed rule body'),
+    });
+  });
+
+  it('does not revive a candidate rejected while Skill review preparation is still in flight', async () => {
+    const prepared = deferred<Awaited<ReturnType<KnowledgeClient['prepareSkillCandidateReview']>>>();
+    const prepareSkillCandidateReview = vi.fn(() => prepared.promise);
+    const review = vi.fn(async ({ candidateId }: { candidateId: string }) => {
+      const candidate = useAppStore.getState().project.skillPromotionCandidates.find((item) => item.id === candidateId);
+      if (candidate === undefined) throw new Error('missing candidate');
+      const rejected = {
+        ...candidate,
+        reviewPreparationStatus: 'ready' as const,
+        reviewStatus: 'rejected' as const,
+        reviewedAt: '2026-07-16T05:01:00.000Z',
+        reviewTransactionId: 'review-skill-rejected',
+      };
+      return {
+        projectId: 'local-project',
+        currentRevision: 3,
+        candidate: rejected,
+        candidates: [rejected],
+        knowledgeState: null,
+      };
+    });
+    replaceKnowledgeClientForTests({
+      configure: vi.fn(),
+      getLease: vi.fn(),
+      prepareSkillCandidateReview,
+      review,
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as KnowledgeClient);
+    useAppStore.getState().draftAgentPlan('Promote then reject during prepare');
+    await useAppStore.getState().confirmAgentPlan({ models: false, deleteNodes: false, skillWriteback: false });
+    const memoryId = useAppStore.getState().project.projectMemory[0]!.id;
+
+    const promotion = useAppStore.getState().promoteProjectMemory(memoryId);
+    await waitForStore(() => prepareSkillCandidateReview.mock.calls.length === 1);
+    const candidate = useAppStore.getState().project.skillPromotionCandidates[0]!;
+
+    await useAppStore.getState().reviewSkillCandidate({
+      projectId: 'local-project',
+      candidateId: candidate.id,
+      decision: 'rejected',
+    });
+    prepared.resolve({
+      projectId: 'local-project',
+      currentRevision: 4,
+      candidate: {
+        ...candidate,
+        reviewPreparationStatus: 'ready',
+        sourceRule: 'Stale source rule must not revive the candidate.',
+        managedRule: 'Stale managed rule must not revive the candidate.',
+        diffHunks: ['- old', '+ stale'],
+      } as SkillPromotionCandidate,
+      candidates: [{
+        ...candidate,
+        reviewPreparationStatus: 'ready',
+        sourceRule: 'Stale source rule must not revive the candidate.',
+        managedRule: 'Stale managed rule must not revive the candidate.',
+        diffHunks: ['- old', '+ stale'],
+      } as SkillPromotionCandidate],
+      knowledgeState: null,
+    });
+    await promotion;
+
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]).toMatchObject({
+      id: candidate.id,
+      reviewStatus: 'rejected',
+      reviewedAt: '2026-07-16T05:01:00.000Z',
+    });
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]?.sourceRule).toBeUndefined();
+  });
+
+  it('does not revive a candidate superseded while Skill review preparation is still in flight', async () => {
+    const prepared = deferred<Awaited<ReturnType<KnowledgeClient['prepareSkillCandidateReview']>>>();
+    const prepareSkillCandidateReview = vi.fn(() => prepared.promise);
+    const review = vi.fn(async ({ candidateId }: { candidateId: string }) => {
+      const candidate = useAppStore.getState().project.skillPromotionCandidates.find((item) => item.id === candidateId);
+      if (candidate === undefined) throw new Error('missing candidate');
+      const superseded = {
+        ...candidate,
+        reviewStatus: 'superseded' as const,
+        reviewedAt: '2026-07-16T05:02:00.000Z',
+        reviewTransactionId: 'review-skill-superseded',
+      };
+      return {
+        projectId: 'local-project',
+        currentRevision: 3,
+        candidate: superseded,
+        candidates: [superseded],
+        knowledgeState: null,
+      };
+    });
+    replaceKnowledgeClientForTests({
+      configure: vi.fn(),
+      getLease: vi.fn(),
+      prepareSkillCandidateReview,
+      review,
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as KnowledgeClient);
+    useAppStore.getState().draftAgentPlan('Promote then supersede during prepare');
+    await useAppStore.getState().confirmAgentPlan({ models: false, deleteNodes: false, skillWriteback: false });
+    const memoryId = useAppStore.getState().project.projectMemory[0]!.id;
+
+    const promotion = useAppStore.getState().promoteProjectMemory(memoryId);
+    await waitForStore(() => prepareSkillCandidateReview.mock.calls.length === 1);
+    const candidate = useAppStore.getState().project.skillPromotionCandidates[0]!;
+
+    await useAppStore.getState().reviewSkillCandidate({
+      projectId: 'local-project',
+      candidateId: candidate.id,
+      decision: 'superseded',
+    });
+    prepared.resolve({
+      projectId: 'local-project',
+      currentRevision: 4,
+      candidate: {
+        ...candidate,
+        reviewPreparationStatus: 'ready',
+        sourceRule: 'Stale source rule must not revive superseded candidate.',
+        managedRule: 'Stale managed rule must not revive superseded candidate.',
+        diffHunks: ['- old', '+ stale'],
+      } as SkillPromotionCandidate,
+      candidates: [{
+        ...candidate,
+        reviewPreparationStatus: 'ready',
+        sourceRule: 'Stale source rule must not revive superseded candidate.',
+        managedRule: 'Stale managed rule must not revive superseded candidate.',
+        diffHunks: ['- old', '+ stale'],
+      } as SkillPromotionCandidate],
+      knowledgeState: null,
+    });
+    await promotion;
+
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]).toMatchObject({
+      id: candidate.id,
+      reviewStatus: 'superseded',
+      reviewedAt: '2026-07-16T05:02:00.000Z',
+    });
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]?.sourceRule).toBeUndefined();
+  });
+
+  it('discards stale Skill review preparation after the project revision changes', async () => {
+    const prepared = deferred<Awaited<ReturnType<KnowledgeClient['prepareSkillCandidateReview']>>>();
+    const prepareSkillCandidateReview = vi.fn(() => prepared.promise);
+    replaceKnowledgeClientForTests({
+      configure: vi.fn(),
+      getLease: vi.fn(),
+      prepareSkillCandidateReview,
+      review: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as KnowledgeClient);
+    useAppStore.getState().draftAgentPlan('Promote then move the project revision');
+    await useAppStore.getState().confirmAgentPlan({ models: false, deleteNodes: false, skillWriteback: false });
+    const memoryId = useAppStore.getState().project.projectMemory[0]!.id;
+
+    const promotion = useAppStore.getState().promoteProjectMemory(memoryId);
+    await waitForStore(() => prepareSkillCandidateReview.mock.calls.length === 1);
+    const candidate = useAppStore.getState().project.skillPromotionCandidates[0]!;
+    useAppStore.setState((state) => ({
+      desktopRevision: state.desktopRevision + 1,
+      project: {
+        ...state.project,
+        name: 'revision changed before prepare returned',
+      },
+    }));
+    const revisionAfterLocalChange = useAppStore.getState().desktopRevision;
+
+    prepared.resolve({
+      projectId: 'local-project',
+      currentRevision: 99,
+      candidate: {
+        ...candidate,
+        reviewPreparationStatus: 'ready',
+        sourceRule: 'Stale source rule from old project revision.',
+        managedRule: 'Stale managed rule from old project revision.',
+        diffHunks: ['- old', '+ stale'],
+      } as SkillPromotionCandidate,
+      candidates: [{
+        ...candidate,
+        reviewPreparationStatus: 'ready',
+        sourceRule: 'Stale source rule from old project revision.',
+        managedRule: 'Stale managed rule from old project revision.',
+        diffHunks: ['- old', '+ stale'],
+      } as SkillPromotionCandidate],
+      knowledgeState: null,
+    });
+    await promotion;
+
+    expect(useAppStore.getState().desktopRevision).toBe(revisionAfterLocalChange);
+    expect(useAppStore.getState().project.name).toBe('revision changed before prepare returned');
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]).toMatchObject({
+      id: candidate.id,
+      reviewPreparationStatus: 'preparing',
+    });
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]?.sourceRule).toBeUndefined();
+  });
+
+  it('keeps failed Skill review preparation visible and non-reviewable', async () => {
+    replaceKnowledgeClientForTests({
+      configure: vi.fn(),
+      getLease: vi.fn(),
+      prepareSkillCandidateReview: vi.fn(async () => {
+        throw new Error('Active knowledge snapshot is unavailable');
+      }),
+      review: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as KnowledgeClient);
+    useAppStore.getState().draftAgentPlan('Promote with missing managed knowledge');
+    await useAppStore.getState().confirmAgentPlan({ models: false, deleteNodes: false, skillWriteback: false });
+    const memoryId = useAppStore.getState().project.projectMemory[0]!.id;
+
+    await useAppStore.getState().promoteProjectMemory(memoryId);
+
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]).toMatchObject({
+      reviewStatus: 'pending_review',
+      reviewPreparationStatus: 'failed',
+      reviewPreparationError: expect.stringContaining('Active knowledge snapshot is unavailable'),
+    });
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]?.sourceRule).toBeUndefined();
+    expect(useAppStore.getState().project.skillPromotionCandidates[0]?.managedRule).toBeUndefined();
   });
 
   it('restores a durable snapshot while retaining the audit timeline', async () => {

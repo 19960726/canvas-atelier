@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import {
   applyProjectTransaction,
   createAgentKnowledgeLease,
+  createSkillPromotionCandidateFingerprint,
   createUserFeedbackMemory,
   type CanvasProject,
   type SkillPromotionCandidate,
@@ -731,7 +732,9 @@ describe('desktop bridge contract', () => {
 
     await handlers.openProject({}, { mode: 'write' });
     const result = await handlers.prepareSkillCandidateReview({}, {
+      baseRevision: 5,
       candidateId: pendingCandidate.id,
+      candidateFingerprint: createSkillPromotionCandidateFingerprint(pendingCandidate),
       projectId: starterProject.id,
     });
 
@@ -748,6 +751,70 @@ describe('desktop bridge contract', () => {
     ]);
     expect(stageApprovedSnapshot).not.toHaveBeenCalled();
     expect(commit).toHaveBeenCalledOnce();
+  });
+
+  it('rejects stale Skill candidate preparation when the candidate changed before commit', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    const sourceMemory = {
+      ...createBridgeFeedbackMemory('memory-feedback', 1),
+      nextStep: 'Source memory rule body: keep the product logo locked before changing props.',
+    };
+    const project: CanvasProject = {
+      ...starterProject,
+      projectMemory: [sourceMemory],
+      skillPromotionCandidates: [pendingCandidate],
+    };
+    const rejectedCandidate: SkillPromotionCandidate = {
+      ...pendingCandidate,
+      reviewStatus: 'rejected',
+      reviewedAt: '2026-07-16T05:01:00.000Z',
+      reviewTransactionId: 'review-skill-rejected',
+    };
+    const projectAfterReject: CanvasProject = {
+      ...project,
+      skillPromotionCandidates: [rejectedCandidate],
+    };
+    const active = createKnowledgeSnapshot('Managed rule body: keep the existing cool background lighting.', 1);
+    const commit = vi.fn(async (_request: CommitRequest) => ({
+      committedAt: '2026-07-16T05:00:00.000Z',
+      projectId: starterProject.id,
+      revision: 6,
+      sequence: 6,
+      transactionId: 'prepare-skill-candidate-1',
+    }));
+    const readCurrentProject = vi.fn(async () => (
+      readCurrentProject.mock.calls.length <= 2 ? project : projectAfterReject
+    ));
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        configure: vi.fn(),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(1, 1)]),
+        readActive: vi.fn(async () => active),
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject,
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    await expect(handlers.prepareSkillCandidateReview({}, {
+      baseRevision: 5,
+      candidateId: pendingCandidate.id,
+      candidateFingerprint: createSkillPromotionCandidateFingerprint(pendingCandidate),
+      projectId: starterProject.id,
+    })).rejects.toMatchObject({
+      code: 'REVISION_CONFLICT',
+      retryable: true,
+    });
+
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it('rejects skill approval without source memory content instead of fabricating review text', async () => {

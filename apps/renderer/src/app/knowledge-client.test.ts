@@ -423,19 +423,21 @@ describe('KnowledgeClient', () => {
       getKnowledgeState: async () => ({ states: [] }),
       prepareSkillCandidateReview,
     } as Partial<typeof window.novusDesktop>);
-    const client = createKnowledgeClient() as ReturnType<typeof createKnowledgeClient> & {
-      prepareSkillCandidateReview(request: { projectId: string; candidateId: string }): Promise<SkillCandidateReviewResult>;
-    };
+    const client = createKnowledgeClient();
 
     await client.start(() => undefined);
     const result = await client.prepareSkillCandidateReview({
+      baseRevision: 3,
       projectId: 'project-1',
       candidateId: 'candidate-preview',
+      candidateFingerprint: 'candidate-fingerprint-preview',
     });
 
     expect(prepareSkillCandidateReview).toHaveBeenCalledWith({
+      baseRevision: 3,
       projectId: 'project-1',
       candidateId: 'candidate-preview',
+      candidateFingerprint: 'candidate-fingerprint-preview',
     });
     expect(result.candidate.sourceRule).toContain('Source memory body');
     expect(result.candidate.managedRule).toContain('Managed active body');

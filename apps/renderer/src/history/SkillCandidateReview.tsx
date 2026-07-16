@@ -8,6 +8,7 @@ interface SkillCandidateReviewProps {
   candidates: SkillPromotionCandidate[];
   knowledgeBases: KnowledgeBaseStateSummary[];
   onReview: (request: SkillCandidateReviewRequest) => Promise<unknown>;
+  onPrepareReview?: (candidateId: string) => Promise<unknown>;
   projectId: string;
 }
 
@@ -15,6 +16,7 @@ export function SkillCandidateReview({
   candidates,
   knowledgeBases,
   onReview,
+  onPrepareReview,
   projectId,
 }: SkillCandidateReviewProps) {
   const [confirmingCandidateId, setConfirmingCandidateId] = useState<string | null>(null);
@@ -69,9 +71,21 @@ export function SkillCandidateReview({
                     >
                       <Check size={14} />Approve
                     </button>
-                    <button type="button" aria-label={`Reject ${candidate.id}`} onClick={() => void onReview({ projectId, candidateId: candidate.id, decision: 'rejected' })}>
+                    <button
+                      type="button"
+                      aria-label={`Reject ${candidate.id}`}
+                      disabled={!reviewability.canReview}
+                      onClick={() => {
+                        if (reviewability.canReview) void onReview({ projectId, candidateId: candidate.id, decision: 'rejected' });
+                      }}
+                    >
                       <X size={14} />Reject
                     </button>
+                    {candidate.reviewPreparationStatus === 'failed' && onPrepareReview !== undefined && (
+                      <button type="button" aria-label={`Prepare ${candidate.id}`} onClick={() => void onPrepareReview(candidate.id)}>
+                        <RotateCcw size={14} />Prepare
+                      </button>
+                    )}
                   </>
                 )}
                 {candidate.reviewStatus === 'approved' && (
@@ -121,12 +135,26 @@ export function SkillCandidateReview({
 }
 
 function getReviewability(candidate: SkillPromotionCandidate): { canReview: boolean; reason: string } {
-  if (candidate.sourceRule && candidate.managedRule) {
+  if (candidate.reviewPreparationStatus === 'preparing') {
+    return {
+      canReview: false,
+      reason: 'Review preview is preparing.',
+    };
+  }
+  if (candidate.reviewPreparationStatus === 'failed') {
+    return {
+      canReview: false,
+      reason: candidate.reviewPreparationError
+        ? `Review preview is unavailable: ${candidate.reviewPreparationError}`
+        : 'Review preview is unavailable.',
+    };
+  }
+  if (candidate.sourceRule && candidate.managedRule && candidate.diffHunks && candidate.diffHunks.length > 0) {
     return { canReview: true, reason: '' };
   }
   return {
     canReview: false,
-    reason: 'Cannot review until source and managed rule text are available.',
+    reason: 'Cannot review until source, managed, and diff rule text are available.',
   };
 }
 

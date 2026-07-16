@@ -87,6 +87,7 @@ export function CanvasWorkspace() {
   const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
   const undo = useAppStore((state) => state.undo);
   const promoteProjectMemory = useAppStore((state) => state.promoteProjectMemory);
+  const prepareSkillCandidateReview = useAppStore((state) => state.prepareSkillCandidateReview);
   const recordUserFeedback = useAppStore((state) => state.recordUserFeedback);
   const reviewSkillCandidate = useAppStore((state) => state.reviewSkillCandidate);
   const restoreProjectSnapshot = useAppStore((state) => state.restoreProjectSnapshot);
@@ -535,6 +536,7 @@ export function CanvasWorkspace() {
               knowledgeBases={knowledgeBases}
               onRestore={restoreProjectSnapshot}
               onPromote={promoteProjectMemory}
+              onPrepareSkillCandidateReview={prepareSkillCandidateReview}
               onReviewSkillCandidate={reviewSkillCandidate}
             />
           </div>

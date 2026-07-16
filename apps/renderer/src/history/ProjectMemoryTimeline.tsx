@@ -16,6 +16,7 @@ interface ProjectMemoryTimelineProps {
   knowledgeBases?: KnowledgeBaseStateSummary[];
   onRestore: (snapshotId: string) => void;
   onPromote: (memoryId: string) => void;
+  onPrepareSkillCandidateReview?: (candidateId: string) => Promise<unknown>;
   onReviewSkillCandidate?: (request: SkillCandidateReviewRequest) => Promise<unknown>;
 }
 
@@ -36,6 +37,7 @@ export function ProjectMemoryTimeline({
   knowledgeBases = [],
   onRestore,
   onPromote,
+  onPrepareSkillCandidateReview,
   onReviewSkillCandidate,
 }: ProjectMemoryTimelineProps) {
   const [filter, setFilter] = useState<MemoryFilter>('all');
@@ -129,6 +131,7 @@ export function ProjectMemoryTimeline({
         <SkillCandidateReview
           candidates={promotionCandidates}
           knowledgeBases={knowledgeBases}
+          onPrepareReview={onPrepareSkillCandidateReview}
           onReview={onReviewSkillCandidate}
           projectId={entries[0]?.projectId ?? promotionCandidates[0]?.sourceProjectId ?? 'local-project'}
         />

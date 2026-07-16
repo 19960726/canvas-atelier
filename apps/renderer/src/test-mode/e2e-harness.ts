@@ -4,8 +4,10 @@ import type {
   SubmitImageJobBridgeRequest,
 } from '@agent-canvas/desktop-core';
 import {
+  createSkillPromotionCandidateFingerprint,
   reviewSkillPromotionCandidate,
   rollbackSkillPromotionCandidate,
+  skillPromotionCandidateSchema,
   type CanvasProject,
   type ModelJob,
   type ProjectMemoryEntry,
@@ -257,8 +259,19 @@ function createKnowledgeClient(runtime: RuntimeState): KnowledgeClient {
     },
     async configure() {},
     async prepareSkillCandidateReview(request) {
+      if (request.baseRevision !== runtime.revision) {
+        throw createE2EStalePrepareError('E2E skill candidate preparation base revision is stale');
+      }
       const candidate = runtime.currentProject.skillPromotionCandidates.find((item) => item.id === request.candidateId);
       if (!candidate) throw new Error(`Unknown e2e skill candidate: ${request.candidateId}`);
+      if (
+        candidate.reviewStatus !== 'pending_review' ||
+        candidate.reviewedAt !== undefined ||
+        candidate.reviewTransactionId !== undefined ||
+        createSkillPromotionCandidateFingerprint(candidate) !== request.candidateFingerprint
+      ) {
+        throw createE2EStalePrepareError('E2E skill candidate preparation fingerprint is stale');
+      }
       const targetKnowledgeBaseId = candidate.targetKnowledgeBaseId ?? 'scene-skill';
       const targetKnowledgeSection = candidate.targetKnowledgeSection ?? 'composition/placement';
       const sourceIds = candidate.sourceProjectMemoryIds ?? [candidate.sourceProjectMemoryId];
@@ -278,8 +291,13 @@ function createKnowledgeClient(runtime: RuntimeState): KnowledgeClient {
         targetKnowledgeBaseId,
         targetSection: targetKnowledgeSection,
       });
+      const prepared = skillPromotionCandidateSchema.parse({
+        ...reviewable,
+        reviewPreparationStatus: 'ready',
+        reviewPreparationStartedAt: candidate.reviewPreparationStartedAt,
+      });
       const candidates = runtime.currentProject.skillPromotionCandidates.map((item) => (
-        item.id === reviewable.id ? reviewable : item
+        item.id === prepared.id ? prepared : item
       ));
       runtime.currentProject = {
         ...runtime.currentProject,
@@ -289,7 +307,7 @@ function createKnowledgeClient(runtime: RuntimeState): KnowledgeClient {
       return {
         projectId: request.projectId,
         currentRevision: runtime.revision,
-        candidate: reviewable,
+        candidate: prepared,
         candidates,
         knowledgeState: runtime.knowledgeStates.find((state) => state.knowledgeBaseId === targetKnowledgeBaseId) ?? null,
       };
@@ -488,6 +506,13 @@ function cloneKnowledgeStates(states: KnowledgeBaseStateSummary[]): KnowledgeBas
     versions: state.versions.map((version) => ({ ...version })),
     lastFailure: state.lastFailure ? { ...state.lastFailure } : null,
   }));
+}
+
+function createE2EStalePrepareError(message: string): Error & { code: string; retryable: boolean } {
+  const error = new Error(message) as Error & { code: string; retryable: boolean };
+  error.code = 'REVISION_CONFLICT';
+  error.retryable = true;
+  return error;
 }
 
 declare global {

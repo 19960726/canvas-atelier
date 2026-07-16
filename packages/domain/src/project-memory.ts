@@ -136,6 +136,12 @@ export const skillCandidateReviewStatusSchema = z.enum([
   'rolled_back',
 ]);
 
+export const skillCandidateReviewPreparationStatusSchema = z.enum([
+  'preparing',
+  'ready',
+  'failed',
+]);
+
 const skillCandidateCountsSchema = z.object({
   supportingMemoryCount: z.number().int().positive().optional(),
   referenceCount: z.number().int().nonnegative().optional(),
@@ -157,6 +163,9 @@ export const skillPromotionCandidateSchema = z.object({
   sourceRule: z.string().min(1).optional(),
   managedRule: z.string().min(1).optional(),
   diffHunks: z.array(z.string().min(1)).optional(),
+  reviewPreparationStatus: skillCandidateReviewPreparationStatusSchema.optional(),
+  reviewPreparationStartedAt: z.string().datetime().optional(),
+  reviewPreparationError: z.string().min(1).max(500).optional(),
   targetKnowledgeBaseId: idSchema.optional(),
   targetKnowledgeSection: z.string().min(1).optional(),
   counts: skillCandidateCountsSchema.optional(),
@@ -190,6 +199,30 @@ export const skillPromotionCandidateSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['reviewStatus'],
         message: 'Pending review candidates cannot include review lifecycle metadata',
+      });
+    }
+    if (
+      candidate.reviewPreparationStatus === 'ready' &&
+      (!candidate.sourceRule || !candidate.managedRule || !candidate.diffHunks || candidate.diffHunks.length === 0)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reviewPreparationStatus'],
+        message: 'Ready review preparation requires source, managed, and diff rule text',
+      });
+    }
+    if (candidate.reviewPreparationStatus === 'failed' && !candidate.reviewPreparationError) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reviewPreparationError'],
+        message: 'Failed review preparation requires an error reason',
+      });
+    }
+    if (candidate.reviewPreparationStatus !== 'failed' && candidate.reviewPreparationError) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reviewPreparationError'],
+        message: 'Only failed review preparation can include an error reason',
       });
     }
     return;
@@ -250,6 +283,7 @@ export const skillPromotionCandidateSchema = z.object({
 
 export type FeedbackObservations = z.infer<typeof feedbackObservationsSchema>;
 export type ProjectMemoryEntry = z.infer<typeof projectMemoryEntrySchema>;
+export type SkillCandidateReviewPreparationStatus = z.infer<typeof skillCandidateReviewPreparationStatusSchema>;
 export type SkillCandidateReviewStatus = z.infer<typeof skillCandidateReviewStatusSchema>;
 export type SkillPromotionCandidate = z.infer<typeof skillPromotionCandidateSchema>;
 
@@ -410,6 +444,10 @@ export function reviewSkillPromotionCandidate(
   });
 }
 
+export function createSkillPromotionCandidateFingerprint(candidate: SkillPromotionCandidate): string {
+  return JSON.stringify(sortFingerprintValue(parseSkillPromotionCandidate(candidate)));
+}
+
 export function rollbackSkillPromotionCandidate(
   candidate: SkillPromotionCandidate,
   rolledBackAt: string,
@@ -445,6 +483,20 @@ function stripUndefinedProperties<T>(value: T): T {
       }
     }
     return compact as T;
+  }
+  return value;
+}
+
+function sortFingerprintValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortFingerprintValue);
+  }
+  if (value !== null && typeof value === 'object') {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      sorted[key] = sortFingerprintValue((value as Record<string, unknown>)[key]);
+    }
+    return sorted;
   }
   return value;
 }

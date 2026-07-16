@@ -235,6 +235,8 @@ export interface ReviewSkillCandidateBridgeRequest {
 export interface PrepareSkillCandidateReviewBridgeRequest {
   readonly projectId: string;
   readonly candidateId: string;
+  readonly baseRevision: number;
+  readonly candidateFingerprint: string;
 }
 
 export interface ReviewSkillCandidateBridgeResult {
