@@ -29,6 +29,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
+import { runtimeProfile } from '../app/runtime-profile';
 import { ImageMentionComposer, type ImageMentionValue } from '../agent/ImageMentionComposer';
 import { PlanPreview } from '../agent/PlanPreview';
 import { ReversePromptAgent } from '../agent/ReversePromptAgent';
@@ -158,6 +159,7 @@ export function CanvasWorkspace() {
       prop: objects.filter((object) => object.role === 'prop_reference').length,
     };
   }, [placementNode]);
+  const resolveReferenceThumbnailUrl = (assetId: string) => previewUrlsRef.current.get(assetId) ?? assetId;
   const tools = useMemo(() => [
     { id: 'select' as const, label: '选择工具', icon: MousePointer2 },
     { id: 'hand' as const, label: '平移工具', icon: Hand },
@@ -364,6 +366,8 @@ export function CanvasWorkspace() {
             <div className="placement-workbench__body">
               <div className="placement-board-stage">
                 <PlacementBoard
+                  disableShadowsWhileInteracting={runtimeProfile.disableShadowsWhileInteracting}
+                  targetFps={runtimeProfile.targetFps}
                   value={placementNode.data}
                   selectedObjectId={selectedPlacementObjectId}
                   onChange={(nextPlacement) => updatePlacement(nextPlacement, { schedulePersist: false })}
@@ -402,8 +406,10 @@ export function CanvasWorkspace() {
           <div id="agent-panel-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden={activeAgentTab !== 'conversation'}>
             <ReferenceOrderList
               references={orderedReferences}
+              thumbnailEdge={runtimeProfile.thumbnailEdge}
               onPreviewOrder={previewAgentReferenceOrder}
               onCommitOrder={commitAgentReferenceOrder}
+              resolveThumbnailUrl={resolveReferenceThumbnailUrl}
             />
             <ReversePromptAgent
               projectId={project.id}

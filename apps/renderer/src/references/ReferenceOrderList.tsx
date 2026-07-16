@@ -1,18 +1,28 @@
+import type { CSSProperties } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, GripVertical } from 'lucide-react';
 import { reorderReferences, type OrderedReference } from '@agent-canvas/domain';
 
 interface ReferenceOrderListProps {
   references: OrderedReference[];
+  thumbnailEdge?: number;
   onPreviewOrder: (assetIds: string[]) => void;
   onCommitOrder: (assetIds: string[]) => void;
+  resolveThumbnailUrl?: (assetId: string) => string;
 }
 
-export function ReferenceOrderList({ references, onPreviewOrder, onCommitOrder }: ReferenceOrderListProps) {
+export function ReferenceOrderList({
+  references,
+  thumbnailEdge = 96,
+  onPreviewOrder,
+  onCommitOrder,
+  resolveThumbnailUrl,
+}: ReferenceOrderListProps) {
   const [previewReferences, setPreviewReferences] = useState(references);
   const previewRef = useRef(references);
   const draggingAssetIdRef = useRef<string | null>(null);
   const dragBaselineRef = useRef<OrderedReference[] | null>(null);
+  const thumbnailStyle: CSSProperties = { width: thumbnailEdge, height: thumbnailEdge };
 
   const cancelDrag = () => {
     const baseline = dragBaselineRef.current;
@@ -85,6 +95,9 @@ export function ReferenceOrderList({ references, onPreviewOrder, onCommitOrder }
             onDragEnd={cancelDrag}
           >
             <GripVertical size={13} aria-hidden="true" />
+            <div className="reference-order__thumb" aria-hidden="true" style={thumbnailStyle}>
+              {renderThumbnail(resolveThumbnailUrl?.(reference.assetId), reference.label)}
+            </div>
             <span className="reference-order__label">{reference.label}<small>{roleLabel(reference.role)}</small></span>
             <span className="reference-order__actions">
               <button type="button" aria-label={`Move ${reference.label} up`} title={`Move ${reference.label} up`}
@@ -120,4 +133,11 @@ function roleLabel(role: OrderedReference['role']): string {
   if (role === 'prop_reference') return 'prop';
   if (role === 'material_lighting') return 'material';
   return 'placement';
+}
+
+function renderThumbnail(url: string | undefined, label: string) {
+  if (url && /^(blob:|data:|https?:)/.test(url)) {
+    return <img src={url} alt="" draggable={false} />;
+  }
+  return <span>{label.slice(0, 1).toUpperCase()}</span>;
 }

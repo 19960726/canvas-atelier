@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { Image as ImageIcon, RotateCw } from 'lucide-react';
 import type { PlacementBoard as PlacementBoardValue, PlacementObject } from '@agent-canvas/domain';
@@ -9,6 +9,8 @@ const minimumPlacementSize = 0.02;
 interface PlacementBoardProps {
   value: PlacementBoardValue;
   selectedObjectId?: string;
+  targetFps?: number;
+  disableShadowsWhileInteracting?: boolean;
   onChange: (value: PlacementBoardValue) => void;
   onCommit?: (value: PlacementBoardValue) => void;
   onSelect: (objectId: string) => void;
@@ -23,11 +25,23 @@ type Interaction =
 
 const resizeDirections: ResizeDirection[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 
-export function PlacementBoard({ value, selectedObjectId, onChange, onCommit, onSelect, resolveAssetUrl }: PlacementBoardProps) {
+export function PlacementBoard({
+  value,
+  selectedObjectId,
+  targetFps = 60,
+  disableShadowsWhileInteracting = false,
+  onChange,
+  onCommit,
+  onSelect,
+  resolveAssetUrl,
+}: PlacementBoardProps) {
   const boardRef = useRef<HTMLDivElement>(null);
   const interactionRef = useRef<Interaction | null>(null);
   const pendingValueRef = useRef<PlacementBoardValue | null>(null);
+  const lastFrameAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const [isInteracting, setIsInteracting] = useState(false);
   const aspectRatio = `${value.board.width} / ${value.board.height}`;
+  const interactionFrameMs = Math.max(1, Math.floor(1000 / Math.max(1, targetFps)));
 
   const beginMove = (event: ReactPointerEvent, object: PlacementObject) => {
     event.stopPropagation();
@@ -35,6 +49,8 @@ export function PlacementBoard({ value, selectedObjectId, onChange, onCommit, on
     if (object.locked) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     interactionRef.current = { mode: 'move', object, startX: event.clientX, startY: event.clientY };
+    lastFrameAtRef.current = Number.NEGATIVE_INFINITY;
+    setIsInteracting(true);
   };
 
   const beginResize = (event: ReactPointerEvent, object: PlacementObject, direction: ResizeDirection) => {
@@ -42,6 +58,8 @@ export function PlacementBoard({ value, selectedObjectId, onChange, onCommit, on
     if (object.locked) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     interactionRef.current = { mode: 'resize', direction, object, startX: event.clientX, startY: event.clientY };
+    lastFrameAtRef.current = Number.NEGATIVE_INFINITY;
+    setIsInteracting(true);
   };
 
   const beginRotate = (event: ReactPointerEvent, object: PlacementObject) => {
@@ -49,6 +67,8 @@ export function PlacementBoard({ value, selectedObjectId, onChange, onCommit, on
     if (object.locked) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     interactionRef.current = { mode: 'rotate', object };
+    lastFrameAtRef.current = Number.NEGATIVE_INFINITY;
+    setIsInteracting(true);
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -75,6 +95,11 @@ export function PlacementBoard({ value, selectedObjectId, onChange, onCommit, on
       objects: value.objects.map((object) => object.id === nextObject.id ? nextObject : object),
     };
     pendingValueRef.current = nextValue;
+    const frameNow = globalThis.performance?.now?.() ?? Date.now();
+    if (frameNow - lastFrameAtRef.current < interactionFrameMs) {
+      return;
+    }
+    lastFrameAtRef.current = frameNow;
     onChange(nextValue);
   };
 
@@ -83,13 +108,18 @@ export function PlacementBoard({ value, selectedObjectId, onChange, onCommit, on
     interactionRef.current = null;
     const committedValue = pendingValueRef.current;
     pendingValueRef.current = null;
-    if (committedValue) onCommit?.(committedValue);
+    lastFrameAtRef.current = Number.NEGATIVE_INFINITY;
+    setIsInteracting(false);
+    if (committedValue) {
+      onChange(committedValue);
+      onCommit?.(committedValue);
+    }
   };
 
   return (
     <div
       ref={boardRef}
-      className="placement-board nodrag"
+      className={`placement-board nodrag${disableShadowsWhileInteracting && isInteracting ? ' is-no-shadow' : ''}`}
       data-testid="placement-board"
       style={{ aspectRatio }}
       onPointerMove={handlePointerMove}

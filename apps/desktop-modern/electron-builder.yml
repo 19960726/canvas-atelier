@@ -1,0 +1,7 @@
+appId: com.novus.atelier.modern
+productName: Novus Atelier
+directories:
+  output: dist-builder/desktop-modern
+files:
+  - dist/**
+artifactName: AgentCanvas-Win10-11-x64-${version}.exe

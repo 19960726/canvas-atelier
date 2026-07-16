@@ -7,8 +7,8 @@ import {
   transitionModelJob,
 } from '@agent-canvas/domain';
 
-const POLL_CONCURRENCY = 4;
-const MATERIALIZE_CONCURRENCY = 2;
+const DEFAULT_POLL_CONCURRENCY = 4;
+const DEFAULT_MATERIALIZE_CONCURRENCY = 2;
 
 export interface ModelJobRequest {
   id: string;
@@ -63,6 +63,8 @@ export interface ModelJobStoreOptions {
   executor: ModelJobExecutor;
   commitProjectTransaction: (transaction: ProjectTransaction) => Promise<boolean>;
   getProject?: () => CanvasProject;
+  pollConcurrency?: number;
+  decodeConcurrency?: number;
   now?: () => string;
   pollIntervalMs?: number;
 }
@@ -117,9 +119,11 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
   const storage = options.storage ?? createDexieModelJobStorage();
   const now = options.now ?? (() => new Date().toISOString());
   const pollIntervalMs = options.pollIntervalMs ?? 750;
+  const pollConcurrency = Math.max(1, options.pollConcurrency ?? DEFAULT_POLL_CONCURRENCY);
+  const decodeConcurrency = Math.max(1, options.decodeConcurrency ?? DEFAULT_MATERIALIZE_CONCURRENCY);
   const listeners = new Set<(jobs: ModelJob[]) => void>();
-  const providerQueue = new AsyncQueue(POLL_CONCURRENCY);
-  const resultDecodeQueue = new AsyncQueue(MATERIALIZE_CONCURRENCY);
+  const providerQueue = new AsyncQueue(pollConcurrency);
+  const resultDecodeQueue = new AsyncQueue(decodeConcurrency);
   const submittingJobs = new Set<string>();
   const pollingJobs = new Set<string>();
   const materializingJobs = new Set<string>();

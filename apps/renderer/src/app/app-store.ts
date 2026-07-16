@@ -45,6 +45,7 @@ import {
   type ModelJobStore,
 } from '../jobs/job-store';
 import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
+import { runtimeProfile } from './runtime-profile';
 
 let planSequence = 0;
 let pendingSave: ReturnType<typeof setTimeout> | undefined;
@@ -666,6 +667,7 @@ function getModelJobStore(): ModelJobStore {
   if (!modelJobStore) {
     const generation = modelJobStoreGeneration;
     modelJobStore = createModelJobStore({
+      decodeConcurrency: runtimeProfile.imageDecodeConcurrency,
       storage: isIndexedDbAvailable() ? undefined : createInMemoryModelJobStorage(),
       executor: modelJobExecutorOverride ?? createDefaultModelJobExecutor(),
       commitProjectTransaction: (transaction) => {
@@ -673,6 +675,7 @@ function getModelJobStore(): ModelJobStore {
         return useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' });
       },
       getProject: () => useAppStore.getState().project,
+      pollConcurrency: runtimeProfile.providerPollConcurrency,
       pollIntervalMs: isIndexedDbAvailable() ? undefined : 0,
     });
     modelJobUnsubscribe = modelJobStore.subscribe((modelJobs) => {

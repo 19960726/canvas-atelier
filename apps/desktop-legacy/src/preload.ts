@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { getRuntimeProfile } from '@agent-canvas/domain';
 
 import {
   AGENT_CANVAS_PRELOAD_KEY,
@@ -23,6 +24,7 @@ const apis = createDesktopPreloadApis(invoke, subscribe);
 
 contextBridge.exposeInMainWorld(DESKTOP_BRIDGE_PRELOAD_KEY, apis.novusDesktop);
 contextBridge.exposeInMainWorld(AGENT_CANVAS_PRELOAD_KEY, apis.agentCanvas);
+contextBridge.exposeInMainWorld('agentCanvasRuntimeProfile', getRuntimeProfile('legacy-win7'));
 
 const reportSafeModeFailure = (value: unknown) => {
   const message = value instanceof Error ? value.stack ?? value.message : String(value);

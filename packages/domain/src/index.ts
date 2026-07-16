@@ -28,6 +28,7 @@ export { MAX_GENERATION_REFERENCES, parseGenerationRequest } from './generation-
 export type { GenerationReference, GenerationRequest } from './generation-request';
 export { cancelAgentPlan, confirmAgentPlan, validateAgentPlan } from './agent-plan';
 export { applyTransaction, canvasOperationSchema, revertTransaction } from './canvas-transaction';
+export { RUNTIME_PROFILES, getRuntimeProfile } from './runtime-profile';
 export {
   assertPublicModelJobPayload,
   containsProtectedRendererPayload,
@@ -66,3 +67,4 @@ export type {
 export type { ConfirmedModelJobInput, ModelJobStatus } from './model-job';
 
 export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation } from './agent-plan';
+export type { RuntimeProfile, RuntimeProfileId } from './runtime-profile';
