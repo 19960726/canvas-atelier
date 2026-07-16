@@ -62,16 +62,20 @@ export interface ModelJobStoreOptions {
   commitProjectTransaction: (transaction: ProjectTransaction) => Promise<boolean>;
   getProject?: () => CanvasProject;
   now?: () => string;
+  pollIntervalMs?: number;
 }
 
 export interface ModelJobStore {
   enqueueConfirmedJobs(input: EnqueueConfirmedJobsInput): Promise<ModelJob[]>;
   recover(): Promise<void>;
+  run(): Promise<void>;
+  stop(): void;
   processQueue(): Promise<void>;
   pollActiveJobs(): Promise<void>;
   retryJob(id: string): Promise<void>;
   cancelQueuedJob(id: string): Promise<void>;
   listJobs(): Promise<ModelJob[]>;
+  subscribe(listener: (jobs: ModelJob[]) => void): () => void;
 }
 
 class ModelJobDexie extends Dexie {
@@ -110,6 +114,64 @@ export function createInMemoryModelJobStorage(seed: ModelJob[] = []): ModelJobSt
 export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStore {
   const storage = options.storage ?? createDexieModelJobStorage();
   const now = options.now ?? (() => new Date().toISOString());
+  const pollIntervalMs = options.pollIntervalMs ?? 750;
+  const listeners = new Set<(jobs: ModelJob[]) => void>();
+  const providerQueue = new AsyncQueue(POLL_CONCURRENCY);
+  const resultDecodeQueue = new AsyncQueue(MATERIALIZE_CONCURRENCY);
+  const submittingJobs = new Set<string>();
+  const pollingJobs = new Set<string>();
+  const materializingJobs = new Set<string>();
+  let activeRun: Promise<void> | null = null;
+  let stopped = false;
+
+  const emit = async () => {
+    if (listeners.size === 0) return;
+    const jobs = await storage.list();
+    const cloned = jobs.map(cloneRequiredJob);
+    for (const listener of listeners) listener(cloned.map(cloneRequiredJob));
+  };
+  const putJob = async (job: ModelJob) => {
+    await storage.put(job);
+    await emit();
+  };
+  const bulkPutJobs = async (jobs: ModelJob[]) => {
+    await storage.bulkPut(jobs);
+    await emit();
+  };
+
+  const runOnce = async (optionsForRun: { poll: 'once' | 'until-terminal'; submitQueued: boolean }) => {
+    if (optionsForRun.submitQueued) {
+      const queued = (await storage.list()).filter((job) => job.status === 'queued');
+      await runLimited(queued, queued.length, async (job) => {
+        await submitJob(job.id, storage, putJob, options.executor, providerQueue, now, submittingJobs);
+      });
+    }
+
+    const running = (await storage.list()).filter((job) => job.status === 'running');
+    await runLimited(running, running.length, async (job) => {
+      await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, now, pollingJobs, materializingJobs);
+    });
+  };
+
+  const runUntilTerminal = async () => {
+    stopped = false;
+    while (!stopped) {
+      await runOnce({ poll: 'once', submitQueued: true });
+      if (stopped) return;
+      const jobs = await storage.list();
+      if (!jobs.some((job) => job.status === 'queued' || job.status === 'submitting' || job.status === 'running')) return;
+      await delay(pollIntervalMs);
+    }
+  };
+
+  const coalescedRun = () => {
+    if (!activeRun) {
+      activeRun = runUntilTerminal().finally(() => {
+        activeRun = null;
+      });
+    }
+    return activeRun;
+  };
 
   return {
     enqueueConfirmedJobs: async (input) => {
@@ -122,7 +184,7 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
         createdAt: now(),
         queueIndex,
       }));
-      await storage.bulkPut(jobs);
+      await bulkPutJobs(jobs);
       return jobs.map(cloneRequiredJob);
     },
     recover: async () => {
@@ -136,52 +198,25 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
           error: undefined,
         };
       });
-      await storage.bulkPut(recovered);
+      await bulkPutJobs(recovered);
+      await coalescedRun();
+    },
+    run: () => coalescedRun(),
+    stop: () => {
+      stopped = true;
     },
     processQueue: async () => {
+      if (activeRun) return activeRun;
       const queued = (await storage.list()).filter((job) => job.status === 'queued');
-      await runLimited(queued, POLL_CONCURRENCY, async (job) => {
-        let current = transitionModelJob(job, 'submitting', { updatedAt: now(), error: undefined });
-        await storage.put(current);
-        try {
-          const submitted = await options.executor.submit(current);
-          current = transitionModelJob(current, 'running', {
-            providerTaskId: submitted.providerTaskId,
-            startedAt: now(),
-            updatedAt: now(),
-          });
-          await storage.put(current);
-        } catch (error) {
-          await storage.put(transitionModelJob(current, 'failed', {
-            error: sanitizeModelJobError(error),
-            updatedAt: now(),
-          }));
-        }
+      await runLimited(queued, queued.length, async (job) => {
+        await submitJob(job.id, storage, putJob, options.executor, providerQueue, now, submittingJobs);
       });
     },
     pollActiveJobs: async () => {
+      if (activeRun) return activeRun;
       const running = (await storage.list()).filter((job) => job.status === 'running');
-      await runLimited(running, POLL_CONCURRENCY, async (job) => {
-        try {
-          const result = await options.executor.poll(job);
-          if (result.status === 'running') {
-            await storage.put({ ...job, progress: result.progress, updatedAt: now() });
-            return;
-          }
-          if (result.status === 'failed') {
-            await storage.put(transitionModelJob(job, 'failed', {
-              error: sanitizeModelJobError(result.error),
-              updatedAt: now(),
-            }));
-            return;
-          }
-          await materializeResult(job, result.result, options, storage, now);
-        } catch (error) {
-          await storage.put(transitionModelJob(job, 'failed', {
-            error: sanitizeModelJobError(error),
-            updatedAt: now(),
-          }));
-        }
+      await runLimited(running, running.length, async (job) => {
+        await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, now, pollingJobs, materializingJobs);
       });
     },
     retryJob: async (id) => {
@@ -189,23 +224,128 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       if (job.status !== 'failed' && job.status !== 'cancelled') {
         throw new Error(`model job cannot be retried from ${job.status}`);
       }
-      await storage.put(transitionModelJob(job, 'queued', { updatedAt: now(), progress: undefined }));
+      await putJob(transitionModelJob(job, 'queued', { updatedAt: now(), progress: undefined }));
     },
     cancelQueuedJob: async (id) => {
       const job = await requireJob(storage, id);
       if (job.status === 'queued') {
-        await storage.put(transitionModelJob(job, 'cancelled', { updatedAt: now() }));
+        await putJob(transitionModelJob(job, 'cancelled', { updatedAt: now() }));
         return;
       }
       if ((job.status === 'submitting' || job.status === 'running') && options.executor.cancel) {
-        await options.executor.cancel(job);
-        await storage.put(transitionModelJob(job, 'cancelled', { updatedAt: now() }));
+        try {
+          await options.executor.cancel(job);
+          const latest = await storage.get(id);
+          if (latest && (latest.status === 'submitting' || latest.status === 'running')) {
+            await putJob(transitionModelJob(latest, 'cancelled', { updatedAt: now() }));
+          }
+        } catch (error) {
+          const latest = await storage.get(id);
+          if (latest) {
+            const errorPatch = { error: sanitizeModelJobError(error), updatedAt: now() };
+            if (latest.status === 'running' || latest.status === 'submitting') {
+              await putJob(transitionModelJob(latest, 'failed', errorPatch));
+            } else {
+              await putJob({ ...latest, ...errorPatch });
+            }
+          }
+        }
         return;
       }
       throw new Error(`model job cannot be cancelled from ${job.status}`);
     },
     listJobs: async () => storage.list(),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      void storage.list().then((jobs) => listener(jobs.map(cloneRequiredJob)));
+      return () => {
+        listeners.delete(listener);
+      };
+    },
   };
+}
+
+async function submitJob(
+  id: string,
+  storage: ModelJobStorage,
+  putJob: (job: ModelJob) => Promise<void>,
+  executor: ModelJobExecutor,
+  providerQueue: AsyncQueue,
+  now: () => string,
+  submittingJobs: Set<string>,
+): Promise<void> {
+  if (submittingJobs.has(id)) return;
+  submittingJobs.add(id);
+  try {
+    const queued = await storage.get(id);
+    if (!queued || queued.status !== 'queued') return;
+    const submitting = transitionModelJob(queued, 'submitting', { updatedAt: now(), error: undefined });
+    await putJob(submitting);
+    try {
+      const submitted = await providerQueue.run(() => executor.submit(submitting));
+      const latest = await storage.get(id);
+      if (!latest || latest.status !== 'submitting' || latest.retryCount !== submitting.retryCount) return;
+      await putJob(transitionModelJob(latest, 'running', {
+        providerTaskId: submitted.providerTaskId,
+        startedAt: latest.startedAt ?? now(),
+        updatedAt: now(),
+      }));
+    } catch (error) {
+      const latest = await storage.get(id);
+      if (!latest || latest.status !== 'submitting' || latest.retryCount !== submitting.retryCount) return;
+      await putJob(transitionModelJob(latest, 'failed', {
+        error: sanitizeModelJobError(error),
+        updatedAt: now(),
+      }));
+    }
+  } finally {
+    submittingJobs.delete(id);
+  }
+}
+
+async function pollJob(
+  id: string,
+  storage: ModelJobStorage,
+  putJob: (job: ModelJob) => Promise<void>,
+  options: ModelJobStoreOptions,
+  providerQueue: AsyncQueue,
+  resultDecodeQueue: AsyncQueue,
+  now: () => string,
+  pollingJobs: Set<string>,
+  materializingJobs: Set<string>,
+): Promise<void> {
+  if (pollingJobs.has(id)) return;
+  pollingJobs.add(id);
+  try {
+    const job = await storage.get(id);
+    if (!job || job.status !== 'running') return;
+    try {
+      const result = await providerQueue.run(() => options.executor.poll(job));
+      const latest = await storage.get(id);
+      if (!isSameRunningJob(latest, job)) return;
+      if (result.status === 'running') {
+        await putJob({ ...latest, progress: result.progress, updatedAt: now() });
+        return;
+      }
+      if (result.status === 'failed') {
+        await putJob(transitionModelJob(latest, 'failed', {
+          error: sanitizeModelJobError(result.error),
+          updatedAt: now(),
+        }));
+        return;
+      }
+      await materializeResult(latest, result.result, options, storage, putJob, resultDecodeQueue, now, materializingJobs);
+    } catch (error) {
+      const latest = await storage.get(id);
+      if (!isSameRunningJob(latest, job)) return;
+      await putJob(transitionModelJob(latest, 'failed', {
+        error: sanitizeModelJobError(error),
+        updatedAt: now(),
+      }));
+    }
+  } finally {
+    pollingJobs.delete(id);
+  }
 }
 
 async function materializeResult(
@@ -213,54 +353,79 @@ async function materializeResult(
   result: ModelJobResult,
   options: ModelJobStoreOptions,
   storage: ModelJobStorage,
+  putJob: (job: ModelJob) => Promise<void>,
+  resultDecodeQueue: AsyncQueue,
   now: () => string,
+  materializingJobs: Set<string>,
 ): Promise<void> {
-  await resultDecodeQueue.run(async () => {
-    await result.decode?.();
-  });
-  const resultNodeId = job.resultNodeId ?? `image-result-${job.id}`;
-  const node: CanvasNode = {
-    id: resultNodeId,
-    type: 'image_result',
-    position: resolveResultPosition(options.getProject?.(), job.promptNodeId),
-    data: {
-      assetId: result.assetId,
-      modelId: job.modelId,
-      providerTaskId: job.providerTaskId,
-      parentNodeIds: [job.promptNodeId],
-      provider: job.provider,
-      modelRoute: job.modelRoute,
-      displayName: job.displayName,
-      promptNodeId: job.promptNodeId,
-      referenceAssetIds: job.referenceAssetIds,
-      jobId: job.id,
-      width: result.width,
-      height: result.height,
-    },
-  };
-  const transaction: ProjectTransaction = {
-    id: `model-job-result-${job.id}`,
-    label: `Materialize model result ${job.id}`,
-    operations: [
-      { kind: 'canvas', operation: { kind: 'create_node', node } },
-      {
-        kind: 'canvas',
-        operation: {
-          kind: 'create_edge',
-          edge: { id: `edge-${job.promptNodeId}-${resultNodeId}`, source: job.promptNodeId, target: resultNodeId, label: 'model-result' },
-        },
+  if (materializingJobs.has(job.id)) return;
+  materializingJobs.add(job.id);
+  try {
+    const existingBeforeDecode = findExistingResult(options.getProject?.(), job, result);
+    if (existingBeforeDecode) {
+      await completeFromExistingResult(job, existingBeforeDecode, storage, putJob, now);
+      return;
+    }
+    const beforeDecode = await storage.get(job.id);
+    if (!isSameRunningJob(beforeDecode, job)) return;
+    await resultDecodeQueue.run(async () => {
+      await result.decode?.();
+    });
+    const latest = await storage.get(job.id);
+    if (!isSameRunningJob(latest, job)) return;
+    const existingAfterDecode = findExistingResult(options.getProject?.(), latest, result);
+    if (existingAfterDecode) {
+      await completeFromExistingResult(latest, existingAfterDecode, storage, putJob, now);
+      return;
+    }
+    const resultNodeId = job.resultNodeId ?? `image-result-${job.id}`;
+    const node: CanvasNode = {
+      id: resultNodeId,
+      type: 'image_result',
+      position: resolveResultPosition(options.getProject?.(), job.promptNodeId),
+      data: {
+        assetId: result.assetId,
+        modelId: job.modelId,
+        providerTaskId: job.providerTaskId,
+        parentNodeIds: [job.promptNodeId],
+        provider: job.provider,
+        modelRoute: job.modelRoute,
+        displayName: job.displayName,
+        promptNodeId: job.promptNodeId,
+        referenceAssetIds: job.referenceAssetIds,
+        jobId: job.id,
+        width: result.width,
+        height: result.height,
       },
-    ],
-  };
-  const committed = await options.commitProjectTransaction(transaction);
-  if (!committed) return;
-  await storage.put(transitionModelJob(job, 'completed', {
-    completedAt: now(),
-    progress: 1,
-    resultAssetId: result.assetId,
-    resultNodeId,
-    updatedAt: now(),
-  }));
+    };
+    const transaction: ProjectTransaction = {
+      id: `model-job-result-${job.id}`,
+      label: `Materialize model result ${job.id}`,
+      operations: [
+        { kind: 'canvas', operation: { kind: 'create_node', node } },
+        {
+          kind: 'canvas',
+          operation: {
+            kind: 'create_edge',
+            edge: { id: `edge-${job.promptNodeId}-${resultNodeId}`, source: job.promptNodeId, target: resultNodeId, label: 'model-result' },
+          },
+        },
+      ],
+    };
+    const committed = await options.commitProjectTransaction(transaction);
+    const afterCommit = await storage.get(job.id);
+    if (!isSameRunningJob(afterCommit, latest)) return;
+    if (!committed) return;
+    await putJob(transitionModelJob(afterCommit, 'completed', {
+      completedAt: now(),
+      progress: 1,
+      resultAssetId: result.assetId,
+      resultNodeId,
+      updatedAt: now(),
+    }));
+  } finally {
+    materializingJobs.delete(job.id);
+  }
 }
 
 class AsyncQueue {
@@ -298,8 +463,6 @@ class AsyncQueue {
   }
 }
 
-const resultDecodeQueue = new AsyncQueue(MATERIALIZE_CONCURRENCY);
-
 async function runLimited<T>(
   items: T[],
   concurrency: number,
@@ -314,6 +477,43 @@ async function runLimited<T>(
     }
   });
   await Promise.all(workers);
+}
+
+function isSameRunningJob(candidate: ModelJob | undefined, expected: ModelJob): candidate is ModelJob {
+  return candidate !== undefined
+    && candidate.status === 'running'
+    && candidate.retryCount === expected.retryCount
+    && candidate.providerTaskId === expected.providerTaskId;
+}
+
+function findExistingResult(project: CanvasProject | undefined, job: ModelJob, result: ModelJobResult): CanvasNode | undefined {
+  return project?.nodes.find((node) => (
+    node.type === 'image_result'
+    && (node.id === (job.resultNodeId ?? `image-result-${job.id}`) || node.data.jobId === job.id)
+    && node.data.assetId === result.assetId
+  ));
+}
+
+async function completeFromExistingResult(
+  job: ModelJob,
+  node: CanvasNode,
+  storage: ModelJobStorage,
+  putJob: (job: ModelJob) => Promise<void>,
+  now: () => string,
+): Promise<void> {
+  const latest = await storage.get(job.id);
+  if (!isSameRunningJob(latest, job)) return;
+  await putJob(transitionModelJob(latest, 'completed', {
+    completedAt: now(),
+    progress: 1,
+    resultAssetId: node.type === 'image_result' ? node.data.assetId : undefined,
+    resultNodeId: node.id,
+    updatedAt: now(),
+  }));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
 async function requireJob(storage: ModelJobStorage, id: string): Promise<ModelJob> {

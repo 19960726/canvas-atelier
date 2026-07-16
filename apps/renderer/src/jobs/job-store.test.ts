@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ProjectTransaction } from '@agent-canvas/domain';
+import type { ModelJob, ProjectTransaction } from '@agent-canvas/domain';
 import { applyProjectTransaction } from '@agent-canvas/domain';
 import { createStarterProject } from '../app/app-store';
 import {
@@ -12,7 +12,7 @@ import {
 const confirmedAt = '2026-07-16T08:00:00.000Z';
 
 describe('persistent model job store', () => {
-  it('persists queued jobs and resumes them after restart', async () => {
+  it('persists queued jobs across store instances before execution', async () => {
     const storage = createInMemoryModelJobStorage();
     const executor = createExecutor();
     const first = createModelJobStore({ storage, executor, commitProjectTransaction: vi.fn(), now: fixedNow });
@@ -24,10 +24,95 @@ describe('persistent model job store', () => {
     });
 
     const restarted = createModelJobStore({ storage, executor, commitProjectTransaction: vi.fn(), now: fixedNow });
-    await restarted.recover();
 
     expect(await restarted.listJobs()).toMatchObject([
       { id: 'job-restart', status: 'queued', conversationId: 'agent-conversation-shared' },
+    ]);
+  });
+
+  it('polls running jobs repeatedly until a terminal result', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const executor = createExecutor({
+      poll: vi.fn()
+        .mockResolvedValueOnce({ status: 'running' as const, progress: 0.25 })
+        .mockResolvedValueOnce({ status: 'running' as const, progress: 0.75 })
+        .mockResolvedValueOnce({
+          status: 'completed' as const,
+          progress: 1,
+          result: { assetId: 'asset-job-repeat' },
+        }),
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-repeat' })],
+    });
+    await store.run();
+
+    expect(executor.poll).toHaveBeenCalledTimes(3);
+    expect(await storage.get('job-repeat')).toMatchObject({
+      status: 'completed',
+      progress: 1,
+      resultAssetId: 'asset-job-repeat',
+    });
+  });
+
+  it('restart recovery submits queued jobs and continues polling running jobs', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const executor = createExecutor({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn(async (job) => ({
+        status: 'completed' as const,
+        result: { assetId: `asset-${job.id}` },
+      })),
+    });
+    const first = createModelJobStore({ storage, executor, commitProjectTransaction: vi.fn(), now: fixedNow });
+    await first.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-queued' }), request({ id: 'job-running' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-running'))!,
+      status: 'running',
+      providerTaskId: 'task-job-running',
+    });
+
+    const restarted = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await restarted.recover();
+
+    expect(executor.submit).toHaveBeenCalledTimes(1);
+    expect(executor.submit).toHaveBeenCalledWith(expect.objectContaining({ id: 'job-queued' }));
+    expect(executor.poll).toHaveBeenCalledTimes(2);
+    expect(await restarted.listJobs()).toMatchObject([
+      { id: 'job-queued', status: 'completed' },
+      { id: 'job-running', status: 'completed' },
     ]);
   });
 
@@ -116,6 +201,193 @@ describe('persistent model job store', () => {
         referenceAssetIds: ['starter-product'],
       },
     });
+  });
+
+  it('coalesces overlapping run calls and keeps submit and decode concurrency bounded', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const submitGate = createGate();
+    const decodeGate = createGate();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const executor = createExecutor({
+      submit: vi.fn(async (job) => {
+        submitGate.enter(job.id);
+        await submitGate.wait();
+        return { providerTaskId: `task-${job.id}` };
+      }),
+      poll: vi.fn(async (job) => ({
+        status: 'completed' as const,
+        result: {
+          assetId: `asset-${job.id}`,
+          decode: async () => {
+            decodeGate.enter(job.id);
+            await decodeGate.wait();
+          },
+        },
+      })),
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: Array.from({ length: 6 }, (_, index) => request({ id: `job-overlap-${index}` })),
+    });
+
+    const runs = [store.run(), store.run(), store.processQueue(), store.pollActiveJobs()];
+    await submitGate.untilEntered(4);
+    expect(submitGate.activeCount()).toBe(4);
+    submitGate.releaseAll();
+    await decodeGate.untilEntered(2);
+    expect(decodeGate.activeCount()).toBe(2);
+    decodeGate.releaseAll();
+    await Promise.all(runs);
+
+    expect(executor.submit).toHaveBeenCalledTimes(6);
+    expect(commitProjectTransaction).toHaveBeenCalledTimes(6);
+    expect(project.nodes.filter((node) => node.type === 'image_result')).toHaveLength(6);
+  });
+
+  it('keeps cancellation during submit or poll from being overwritten by stale workers', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const submitGate = createGate();
+    const pollGate = createGate();
+    const executor = createExecutor({
+      submit: vi.fn(async (job) => {
+        submitGate.enter(job.id);
+        await submitGate.wait();
+        return { providerTaskId: `task-${job.id}` };
+      }),
+      poll: vi.fn(async (job) => {
+        pollGate.enter(job.id);
+        await pollGate.wait();
+        return { status: 'completed' as const, result: { assetId: `asset-${job.id}` } };
+      }),
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction: vi.fn(async () => true),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-submit-cancel' }), request({ id: 'job-poll-cancel' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-poll-cancel'))!,
+      status: 'running',
+      providerTaskId: 'task-job-poll-cancel',
+    });
+
+    const running = store.run();
+    await submitGate.untilEntered(1);
+    await store.cancelQueuedJob('job-submit-cancel');
+    submitGate.releaseAll();
+    await pollGate.untilEntered(1);
+    await store.cancelQueuedJob('job-poll-cancel');
+    pollGate.releaseAll();
+    await running;
+
+    expect(await storage.get('job-submit-cancel')).toMatchObject({ status: 'cancelled' });
+    expect(await storage.get('job-poll-cancel')).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('does not duplicate materialization after commit false, retry, or existing result', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      if (commitProjectTransaction.mock.calls.length === 1) return false;
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const executor = createExecutor({
+      poll: vi.fn(async (job) => ({
+        status: 'completed' as const,
+        result: { assetId: `asset-${job.id}` },
+      })),
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-idempotent' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-idempotent'))!,
+      status: 'running',
+      providerTaskId: 'task-job-idempotent',
+    });
+
+    await store.pollActiveJobs();
+    expect(await storage.get('job-idempotent')).toMatchObject({ status: 'running' });
+
+    await store.pollActiveJobs();
+    await store.pollActiveJobs();
+
+    expect(commitProjectTransaction).toHaveBeenCalledTimes(2);
+    expect(project.nodes.filter((node) => node.id === 'image-result-job-idempotent')).toHaveLength(1);
+    expect(await storage.get('job-idempotent')).toMatchObject({ status: 'completed' });
+  });
+
+  it('notifies subscribers with sanitized clones for live progress and action errors', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const snapshots: ModelJob[][] = [];
+    const executor = createExecutor({
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.4 })),
+      cancel: vi.fn(async () => {
+        throw new Error('Authorization: Bearer secret-token from C:\\Users\\private\\image.png');
+      }),
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    const unsubscribe = store.subscribe((jobs) => {
+      snapshots.push(jobs);
+      jobs[0]?.referenceAssetIds.push('mutated-subscriber-copy');
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-subscribe' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-subscribe'))!,
+      status: 'running',
+      providerTaskId: 'task-job-subscribe',
+    });
+    await store.pollActiveJobs();
+    await expect(store.cancelQueuedJob('job-subscribe')).resolves.toBeUndefined();
+    unsubscribe();
+
+    expect(snapshots.some((jobs) => jobs[0]?.status === 'queued')).toBe(true);
+    expect(snapshots.some((jobs) => jobs[0]?.progress === 0.4)).toBe(true);
+    const current = (await store.listJobs())[0]!;
+    expect(current.referenceAssetIds).toEqual(['starter-product']);
+    expect(current.error).toContain('[redacted]');
+    expect(JSON.stringify(snapshots)).not.toMatch(/Authorization|secret-token|C:\\\\Users/i);
   });
 
   it('retries failed jobs, cancels queued jobs, and stores compact sanitized errors', async () => {

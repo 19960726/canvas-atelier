@@ -6,6 +6,7 @@ import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   createStarterProject,
   replaceKnowledgeClientForTests,
+  replaceModelJobExecutorForTests,
   replaceProjectPersistenceClientForTests,
   resetAppStoreForTests,
   useAppStore,
@@ -205,6 +206,49 @@ describe('project optimization memory', () => {
     vi.advanceTimersByTime(600);
 
     expect(loadPersistedProjectBundle()?.current.projectMemory).toHaveLength(1);
+  });
+
+  it('streams model job submit and progress transitions into app state', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn()
+        .mockResolvedValueOnce({ status: 'running' as const, progress: 0.35 })
+        .mockResolvedValueOnce({ status: 'completed' as const, result: { assetId: 'asset-live-job' } }),
+      cancel: vi.fn(async () => {}),
+    });
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('生成并实时更新任务状态');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.progress === 0.35);
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      resultAssetId: 'asset-live-job',
+      status: 'completed',
+    });
+  });
+
+  it('keeps cancel action errors sanitized in model job state', async () => {
+    const cancel = vi.fn(async () => {
+      throw new Error('Authorization: Bearer secret-token from C:\\Users\\private\\image.png');
+    });
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel,
+    });
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('生成后取消并显示安全错误');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
+
+    await expect(useAppStore.getState().cancelModelJob(useAppStore.getState().modelJobs[0]!.id)).resolves.toBeUndefined();
+
+    expect(useAppStore.getState().modelJobs[0]?.error).toContain('[redacted]');
+    expect(JSON.stringify(useAppStore.getState().modelJobs)).not.toMatch(/Authorization|secret-token|C:\\\\Users/i);
   });
 
   it('persists a project-memory promotion as pending review without writing Skill knowledge', async () => {
@@ -912,6 +956,16 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, reject, resolve };
+}
+
+async function waitForStore(predicate: () => boolean): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > 1000) {
+      throw new Error('Timed out waiting for app store state');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 function createImmediateBrowserClient(): ProjectPersistenceClient {

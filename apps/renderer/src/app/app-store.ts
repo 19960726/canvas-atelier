@@ -52,6 +52,7 @@ let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
 let modelJobExecutor = createUnavailableModelJobExecutor();
 let modelJobStore: ModelJobStore | null = null;
+let modelJobUnsubscribe: (() => void) | null = null;
 
 interface UndoEntry {
   transaction: CanvasTransaction;
@@ -153,6 +154,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   closePersistence: async () => {
     cancelPendingProjectSave();
+    modelJobStore?.stop();
+    modelJobUnsubscribe?.();
+    modelJobUnsubscribe = null;
     knowledgeClient.stop();
     await projectPersistenceClient.close();
   },
@@ -348,11 +352,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         confirmedAt: now,
         requests: buildModelJobRequests(project, state.agentPlan),
       });
-      void getModelJobStore().processQueue()
-        .then(() => getModelJobStore().pollActiveJobs())
-        .finally(() => {
-          void get().refreshModelJobs();
-        });
+      void getModelJobStore().run();
     }
 
     set((current) => ({
@@ -386,11 +386,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     await getModelJobStore().retryJob(jobId);
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
-    void getModelJobStore().processQueue()
-      .then(() => getModelJobStore().pollActiveJobs())
-      .finally(() => {
-        void get().refreshModelJobs();
-      });
+    void getModelJobStore().run();
   },
   recordUserFeedback: async (input) => {
     if (containsProtectedRendererPayload(input)) return false;
@@ -531,7 +527,10 @@ export function replaceKnowledgeClientForTests(client: KnowledgeClient): void {
 }
 
 export function replaceModelJobExecutorForTests(executor: ModelJobExecutor): void {
+  modelJobStore?.stop();
   modelJobExecutor = executor;
+  modelJobUnsubscribe?.();
+  modelJobUnsubscribe = null;
   modelJobStore = null;
 }
 
@@ -550,6 +549,9 @@ function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise
 export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
   referenceOrderCommitTail = null;
+  modelJobStore?.stop();
+  modelJobUnsubscribe?.();
+  modelJobUnsubscribe = null;
   modelJobStore = null;
   knowledgeClient.stop();
   useAppStore.setState(createInitialState());
@@ -657,6 +659,13 @@ function getModelJobStore(): ModelJobStore {
       executor: modelJobExecutor,
       commitProjectTransaction: (transaction) => useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' }),
       getProject: () => useAppStore.getState().project,
+      pollIntervalMs: isIndexedDbAvailable() ? undefined : 0,
+    });
+    modelJobUnsubscribe = modelJobStore.subscribe((modelJobs) => {
+      useAppStore.setState({
+        confirmedModelJobs: countConfirmedModelJobs(modelJobs),
+        modelJobs,
+      });
     });
   }
   return modelJobStore;
