@@ -104,6 +104,7 @@ export function createComflyProviderService(options: {
     baseUrl: options.baseUrl ?? DEFAULT_COMFLY_BASE_URL,
   };
   let configureTail: Promise<void> = Promise.resolve();
+  let configurationOverride: ConfigurationSnapshot | null = null;
   const nowMs = options.now ?? Date.now;
   const terminalTombstoneTtlMs = options.terminalTombstoneTtlMs ?? DEFAULT_TERMINAL_TOMBSTONE_TTL_MS;
   const providerTaskMappings = createProviderTaskMappingStore({
@@ -130,14 +131,31 @@ export function createComflyProviderService(options: {
     configure(request) {
       return enqueueConfigure(async () => {
         const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.configure, request) as ConfigureProviderBridgeRequest;
-        const currentConfiguration = await providerConfiguration.read(configurationCache);
+        const persistedConfiguration = await providerConfiguration.readPersisted();
+        const currentConfiguration = persistedConfiguration.exists
+          ? cloneConfiguration(persistedConfiguration.snapshot)
+          : cloneConfiguration(configurationCache);
         const nextProfiles = validated.profiles === undefined ? undefined : parseProviderBridgeProfiles(validated.profiles);
-        const nextConfiguration = {
+        const nextConfiguration: ConfigurationSnapshot = {
           baseUrl: validated.baseUrl ?? currentConfiguration.baseUrl,
           profiles: nextProfiles ?? currentConfiguration.profiles,
         };
-        await options.credentialStore.configure({ token: validated.token, passphrase: validated.passphrase });
         await providerConfiguration.write(nextConfiguration);
+        try {
+          await options.credentialStore.configure({ token: validated.token, passphrase: validated.passphrase });
+        } catch (error) {
+          try {
+            await providerConfiguration.replace(persistedConfiguration.exists ? persistedConfiguration.snapshot : null);
+            configurationOverride = null;
+            configurationCache = cloneConfiguration(currentConfiguration);
+          } catch (rollbackError) {
+            configurationOverride = cloneConfiguration(currentConfiguration);
+            configurationCache = cloneConfiguration(currentConfiguration);
+            throw normalizeConfigurationRollbackFailure(rollbackError);
+          }
+          throw error;
+        }
+        configurationOverride = null;
         configurationCache = cloneConfiguration(nextConfiguration);
         await gcTerminalTombstones();
         return options.credentialStore.getStatus();
@@ -253,6 +271,9 @@ export function createComflyProviderService(options: {
 
   async function captureConfigurationSnapshot(): Promise<ConfigurationSnapshot> {
     await configureTail.catch(() => undefined);
+    if (configurationOverride !== null) {
+      return cloneConfiguration(configurationOverride);
+    }
     configurationCache = await providerConfiguration.read(configurationCache);
     return cloneConfiguration(configurationCache);
   }
@@ -524,6 +545,15 @@ function cloneConfiguration(snapshot: ConfigurationSnapshot): ConfigurationSnaps
       capabilities: [...profile.capabilities],
     })),
   };
+}
+
+function normalizeConfigurationRollbackFailure(error: unknown): ProviderBridgeException {
+  const normalized = normalizeProviderBridgeError(error);
+  return createProviderBridgeError(
+    normalized.code === 'PROVIDER_ERROR' ? 'PROVIDER_UNAVAILABLE' : normalized.code,
+    normalized.message,
+    normalized.retryable,
+  );
 }
 
 function containsProtectedProviderText(value: string): boolean {

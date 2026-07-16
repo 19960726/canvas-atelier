@@ -21,9 +21,15 @@ export interface ProviderConfigurationSnapshot {
   readonly profiles: readonly ProviderBridgeProfile[];
 }
 
+export type PersistedProviderConfigurationState =
+  | { readonly exists: false }
+  | { readonly exists: true; readonly snapshot: ProviderConfigurationSnapshot };
+
 export interface ProviderConfigurationStore {
   read(fallback: ProviderConfigurationSnapshot): Promise<ProviderConfigurationSnapshot>;
+  readPersisted(): Promise<PersistedProviderConfigurationState>;
   write(snapshot: ProviderConfigurationSnapshot): Promise<void>;
+  replace(snapshot: ProviderConfigurationSnapshot | null): Promise<void>;
 }
 
 export function createProviderConfigurationStore(options: {
@@ -36,41 +42,64 @@ export function createProviderConfigurationStore(options: {
 
   return {
     async read(fallback) {
-      return withConfigurationLock(async () => {
-        try {
-          await assertConfigurationPathForRead(targetPath);
-          const parsed = parseProviderConfigurationSnapshot(JSON.parse(await fileSystem.readFile(targetPath, 'utf8')) as unknown);
-          return cloneConfiguration(parsed);
-        } catch (error) {
-          if (isMissingFileError(error)) return cloneConfiguration(fallback);
-          throw error;
-        }
-      });
+      const persisted = await readPersisted();
+      return persisted.exists ? cloneConfiguration(persisted.snapshot) : cloneConfiguration(fallback);
     },
+    readPersisted,
     async write(snapshot) {
-      const sanitized = parseProviderConfigurationSnapshot({
-        version: 1,
-        baseUrl: snapshot.baseUrl,
-        profiles: snapshot.profiles,
-      });
+      await replace(snapshot);
+    },
+    replace,
+  };
+
+  async function readPersisted(): Promise<PersistedProviderConfigurationState> {
+    return withConfigurationLock(async () => {
+      try {
+        await assertConfigurationPathForRead(targetPath);
+        const parsed = parseProviderConfigurationSnapshot(JSON.parse(await fileSystem.readFile(targetPath, 'utf8')) as unknown);
+        return {
+          exists: true,
+          snapshot: cloneConfiguration(parsed),
+        };
+      } catch (error) {
+        if (isMissingFileError(error)) return { exists: false };
+        throw error;
+      }
+    });
+  }
+
+  async function replace(snapshot: ProviderConfigurationSnapshot | null): Promise<void> {
+    if (snapshot === null) {
       await withConfigurationLock(async () => {
         await fileSystem.mkdir(options.appDataRoot, { recursive: true });
-        await writeConfinedAtomicUpdate(fileSystem, {
-          appDataRoot: options.appDataRoot,
-          targetPath,
-          data: `${JSON.stringify({
-            version: 1,
-            baseUrl: sanitized.baseUrl,
-            profiles: sanitized.profiles,
-          })}\n`,
-          assertPathForRead: () => assertConfigurationPathForRead(targetPath),
-          assertPathForWrite: () => assertConfigurationPathForWrite(targetPath),
-          errorCode: 'PROVIDER_UNAVAILABLE',
-          errorMessage: 'Provider configuration path is invalid',
-        });
+        await assertConfigurationPathForWrite(targetPath);
+        await fileSystem.rm(targetPath, { force: true });
       });
-    },
-  };
+      return;
+    }
+
+    const sanitized = parseProviderConfigurationSnapshot({
+      version: 1,
+      baseUrl: snapshot.baseUrl,
+      profiles: snapshot.profiles,
+    });
+    await withConfigurationLock(async () => {
+      await fileSystem.mkdir(options.appDataRoot, { recursive: true });
+      await writeConfinedAtomicUpdate(fileSystem, {
+        appDataRoot: options.appDataRoot,
+        targetPath,
+        data: `${JSON.stringify({
+          version: 1,
+          baseUrl: sanitized.baseUrl,
+          profiles: sanitized.profiles,
+        })}\n`,
+        assertPathForRead: () => assertConfigurationPathForRead(targetPath),
+        assertPathForWrite: () => assertConfigurationPathForWrite(targetPath),
+        errorCode: 'PROVIDER_UNAVAILABLE',
+        errorMessage: 'Provider configuration path is invalid',
+      });
+    });
+  }
 
   async function withConfigurationLock<T>(operation: () => Promise<T>): Promise<T> {
     await fileSystem.mkdir(options.appDataRoot, { recursive: true });

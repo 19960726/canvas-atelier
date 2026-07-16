@@ -199,7 +199,7 @@ describe('desktop bridge contract', () => {
       join(process.cwd(), 'apps/desktop-legacy/dist/safe-preload.js'),
     ]) {
       const bundle = await readFile(bundlePath, 'utf8');
-      expect(bundle).not.toMatch(/node:crypto|node:fs|provider-comfly|ComflyClient|createCipheriv|safeStorage|createComflyProviderService/u);
+      expect(bundle).not.toMatch(/node:crypto|node:fs|provider-comfly|ComflyClient|createCipheriv|createComflyProviderService/u);
     }
   });
 

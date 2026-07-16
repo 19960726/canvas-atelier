@@ -1387,7 +1387,7 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
-  it('does not keep unwritten base URL and profiles in memory after configuration persistence fails', async () => {
+  it('keeps credentials unconfigured when the first configure fails before configuration persistence completes', async () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();
     const fileSystem = new FailingAtomicWriteFileSystem('provider-configuration.json', 'rename');
@@ -1411,28 +1411,254 @@ describe('Comfly provider service', () => {
     })).rejects.toBeTruthy();
 
     await expect(service.getStatus()).resolves.toMatchObject({
-      configured: true,
-      locked: false,
+      configured: false,
+      locked: true,
       encryption: 'safeStorage',
     });
     await expect(service.listProfiles()).resolves.toEqual([]);
-    await expect(service.submitImageJob({
-      jobId: 'job-config-write-failure',
-      provider: 'comfly',
-      modelRoute: 'broken-route',
-      prompt: 'draw from unwritten config',
-      conversationId: 'conversation-1',
-      referenceAssetIds: [],
-    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    await expect(readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(appDataRoot, 'provider-configuration.json'), 'utf8')).rejects.toThrow();
 
     const restarted = createComflyProviderService({
       appDataRoot,
       credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
       fetch: vi.fn(),
     });
+    await expect(restarted.getStatus()).resolves.toMatchObject({
+      configured: false,
+      locked: true,
+      encryption: 'safeStorage',
+    });
     await expect(restarted.listProfiles()).resolves.toEqual([]);
     const serialized = await readAllFiles(appDataRoot);
-    expect(serialized).not.toMatch(/broken\.example|Broken Route|broken-route/i);
+    expect(serialized).not.toMatch(/sk-config-write-failure-token|broken\.example|Broken Route|broken-route/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('keeps the previous token, mapping state, and configuration when rotation fails before configuration persistence completes', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const firstFetch = vi.fn().mockResolvedValueOnce(jsonResponse({ taskId: 'raw-before-config-failure', status: 'queued' }));
+    const initial = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: firstFetch,
+    });
+    await initial.configure({
+      token: 'sk-old-config-token',
+      baseUrl: 'https://stable-before.example',
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'stable-route',
+        displayName: 'Stable Route',
+        capabilities: ['image_generation', 'async_tasks'],
+      }],
+    });
+    const submitted = await initial.submitImageJob({
+      jobId: 'job-before-config-failure',
+      provider: 'comfly',
+      modelRoute: 'stable-route',
+      prompt: 'draw from stable config',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+
+    const fileSystem = new FailingAtomicWriteFileSystem('provider-configuration.json', 'rename');
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        taskId: 'raw-before-config-failure',
+        status: 'succeeded',
+        data: [{ width: 256, height: 256 }],
+      }))
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-after-config-failure', status: 'queued' }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage, fileSystem }),
+      fetch,
+      fileSystem,
+    });
+
+    await expect(service.configure({
+      token: 'sk-new-config-token',
+      baseUrl: 'https://unstable-after.example',
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'unstable-route',
+        displayName: 'Unstable Route',
+        capabilities: ['image_generation', 'async_tasks'],
+      }],
+    })).rejects.toBeTruthy();
+
+    await expect(service.listProfiles()).resolves.toEqual([{
+      provider: 'comfly',
+      modelRoute: 'stable-route',
+      displayName: 'Stable Route',
+      capabilities: ['async_tasks', 'image_generation'],
+    }]);
+    await expect(service.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).resolves.toEqual({
+      status: 'completed',
+      progress: 1,
+      result: {
+        assetId: `provider-result-${submitted.providerTaskId}`,
+        width: 256,
+        height: 256,
+      },
+    });
+    await service.submitImageJob({
+      jobId: 'job-after-config-failure',
+      provider: 'comfly',
+      modelRoute: 'stable-route',
+      prompt: 'still uses stable token',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    expect(fetch.mock.calls[0]?.[0]).toBe('https://stable-before.example/v1/images/tasks/raw-before-config-failure');
+    expect(fetch.mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({ authorization: 'Bearer sk-old-config-token' }));
+    expect(fetch.mock.calls[1]?.[0]).toBe('https://stable-before.example/v1/images/generations?async=true');
+    expect(fetch.mock.calls[1]?.[1]?.headers).toEqual(expect.objectContaining({ authorization: 'Bearer sk-old-config-token' }));
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toMatch(/sk-new-config-token|unstable-after\.example|Unstable Route|unstable-route/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rolls back a first configure when credentials fail after configuration persistence succeeds', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const fileSystem = new RecordingFailingCredentialFileSystem('rename');
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage, fileSystem }),
+      fetch: vi.fn(),
+      fileSystem,
+    });
+
+    await expect(service.configure({
+      token: 'sk-credential-write-failure-token',
+      baseUrl: 'https://credential-failure.example',
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'credential-failure-route',
+        displayName: 'Credential Failure Route',
+        capabilities: ['image_generation', 'async_tasks'],
+      }],
+    })).rejects.toBeTruthy();
+
+    expect(fileSystem.configurationRenameCount).toBeGreaterThan(0);
+    await expect(service.getStatus()).resolves.toMatchObject({
+      configured: false,
+      locked: true,
+      encryption: 'safeStorage',
+    });
+    await expect(service.listProfiles()).resolves.toEqual([]);
+    await expect(readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(appDataRoot, 'provider-configuration.json'), 'utf8')).rejects.toThrow();
+
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn(),
+    });
+    await expect(restarted.getStatus()).resolves.toMatchObject({
+      configured: false,
+      locked: true,
+      encryption: 'safeStorage',
+    });
+    await expect(restarted.listProfiles()).resolves.toEqual([]);
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toMatch(/sk-credential-write-failure-token|credential-failure\.example|Credential Failure Route|credential-failure-route/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('restores the previous token, mapping state, and configuration when credential rotation fails after configuration persistence succeeds', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const firstFetch = vi.fn().mockResolvedValueOnce(jsonResponse({ taskId: 'raw-before-credential-failure', status: 'queued' }));
+    const initial = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: firstFetch,
+    });
+    await initial.configure({
+      token: 'sk-old-credential-token',
+      baseUrl: 'https://stable-credential.example',
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'stable-credential-route',
+        displayName: 'Stable Credential Route',
+        capabilities: ['image_generation', 'async_tasks'],
+      }],
+    });
+    const submitted = await initial.submitImageJob({
+      jobId: 'job-before-credential-failure',
+      provider: 'comfly',
+      modelRoute: 'stable-credential-route',
+      prompt: 'draw before credential failure',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+
+    const fileSystem = new RecordingFailingCredentialFileSystem('rename');
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        taskId: 'raw-before-credential-failure',
+        status: 'succeeded',
+        data: [{ width: 384, height: 384 }],
+      }))
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-after-credential-failure', status: 'queued' }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage, fileSystem }),
+      fetch,
+      fileSystem,
+    });
+
+    await expect(service.configure({
+      token: 'sk-new-credential-token',
+      baseUrl: 'https://unstable-credential.example',
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'unstable-credential-route',
+        displayName: 'Unstable Credential Route',
+        capabilities: ['image_generation', 'async_tasks'],
+      }],
+    })).rejects.toBeTruthy();
+
+    expect(fileSystem.configurationRenameCount).toBeGreaterThan(0);
+    await expect(service.listProfiles()).resolves.toEqual([{
+      provider: 'comfly',
+      modelRoute: 'stable-credential-route',
+      displayName: 'Stable Credential Route',
+      capabilities: ['async_tasks', 'image_generation'],
+    }]);
+    await expect(service.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).resolves.toEqual({
+      status: 'completed',
+      progress: 1,
+      result: {
+        assetId: `provider-result-${submitted.providerTaskId}`,
+        width: 384,
+        height: 384,
+      },
+    });
+    await service.submitImageJob({
+      jobId: 'job-after-credential-failure',
+      provider: 'comfly',
+      modelRoute: 'stable-credential-route',
+      prompt: 'still uses stable credential',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    expect(fetch.mock.calls[0]?.[0]).toBe('https://stable-credential.example/v1/images/tasks/raw-before-credential-failure');
+    expect(fetch.mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({ authorization: 'Bearer sk-old-credential-token' }));
+    expect(fetch.mock.calls[1]?.[0]).toBe('https://stable-credential.example/v1/images/generations?async=true');
+    expect(fetch.mock.calls[1]?.[1]?.headers).toEqual(expect.objectContaining({ authorization: 'Bearer sk-old-credential-token' }));
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toMatch(/sk-new-credential-token|unstable-credential\.example|Unstable Credential Route|unstable-credential-route/i);
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -2026,6 +2252,21 @@ class FailingAtomicWriteFileSystem extends NodeFileSystem {
     if (!this.failed && this.phase === 'rename' && destination.endsWith(this.targetFileName)) {
       this.failed = true;
       throw new Error(`injected ${this.targetFileName} rename failure`);
+    }
+    await super.rename(source, destination);
+  }
+}
+
+class RecordingFailingCredentialFileSystem extends FailingAtomicWriteFileSystem {
+  configurationRenameCount = 0;
+
+  constructor(phase: AtomicFailurePhase) {
+    super('provider-credentials.json', phase);
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    if (destination.endsWith('provider-configuration.json')) {
+      this.configurationRenameCount += 1;
     }
     await super.rename(source, destination);
   }
