@@ -471,6 +471,31 @@ describe('CanvasWorkspace', () => {
     const prompt = useAppStore.getState().project.nodes.find((node) => node.type === 'prompt');
     expect(prompt?.type === 'prompt' ? prompt.data.prompt : '').toBe('等待确认后执行模型任务');
   });
+
+  it('hides edit-only provider profiles from the image generation route selector', async () => {
+    installProviderProfilesForModelJobTests([
+      {
+        provider: 'comfly',
+        modelRoute: 'image-edit-only-route',
+        displayName: 'Image Edit Only',
+        modelId: 'edit-only-model',
+        capabilities: ['image_edit', 'async_tasks'],
+      },
+      {
+        provider: 'comfly',
+        modelRoute: 'image-generation',
+        displayName: 'GPT Image',
+        modelId: 'gpt-image-1',
+        capabilities: ['image_generation', 'async_tasks'],
+      },
+    ]);
+
+    render(<CanvasWorkspace />);
+
+    await waitFor(() => expect(screen.getByTestId('model-route-image-generation')).toBeVisible());
+    expect(screen.queryByTestId('model-route-image-edit-only-route')).not.toBeInTheDocument();
+  });
+
   it('cancels an Agent plan without showing it as applied', () => {
     render(<CanvasWorkspace />);
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '先预览，不要执行' } });
@@ -595,20 +620,20 @@ function knowledgeState() {
   };
 }
 
-function installProviderProfilesForModelJobTests(): void {
+function installProviderProfilesForModelJobTests(profiles = [{
+  provider: 'comfly',
+  modelRoute: 'image-generation',
+  displayName: 'GPT Image',
+  modelId: 'gpt-image-1',
+  capabilities: ['image_generation', 'async_tasks'],
+}]): void {
   window.novusDesktop = {
     provider: {
       ackImageJobTerminal: vi.fn(),
       cancelImageJob: vi.fn(),
       configure: vi.fn(),
       getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
-      listProfiles: vi.fn(async () => [{
-        provider: 'comfly',
-        modelRoute: 'image-generation',
-        displayName: 'GPT Image',
-        modelId: 'gpt-image-1',
-        capabilities: ['image_generation', 'async_tasks'],
-      }]),
+      listProfiles: vi.fn(async () => profiles),
       pollImageJob: vi.fn(),
       submitImageJob: vi.fn(),
       unlock: vi.fn(),

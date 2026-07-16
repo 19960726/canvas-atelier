@@ -10,6 +10,7 @@ import {
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import {
+  buildSkillPromotionCandidate,
   KnowledgeSnapshotRegistry,
   SkillKnowledgePromotionService,
   SkillWritebackService,
@@ -488,7 +489,7 @@ export function createDesktopBridgeHandlers(
     const transactionId = `review-skill-${candidate.id}-${Date.now()}`;
     const preparedReview = validated.decision === 'rolled_back'
       ? await prepareRollbackSkillCandidatesForBridge(project.skillPromotionCandidates, candidate, validated, transactionId)
-      : await prepareSkillCandidateReviewForBridge(project.skillPromotionCandidates, candidate, validated, transactionId);
+      : await prepareSkillCandidateReviewForBridge(project, candidate, validated, transactionId);
     const reviewed = sanitizeSkillPromotionCandidate(preparedReview.candidate);
     const nextCandidates = preparedReview.candidates.map(sanitizeSkillPromotionCandidate);
     const currentRevision = await readCurrentRevision(repository, session.session);
@@ -663,7 +664,7 @@ export function createDesktopBridgeHandlers(
   }
 
   async function prepareSkillCandidateReviewForBridge(
-    candidates: readonly SkillPromotionCandidate[],
+    project: CanvasProject,
     candidate: SkillPromotionCandidate,
     request: ReviewSkillCandidateBridgeRequest,
     transactionId: string,
@@ -680,7 +681,7 @@ export function createDesktopBridgeHandlers(
       });
       return {
         candidate: reviewed,
-        candidates: candidates.map((item) => item.id === reviewed.id ? reviewed : item),
+        candidates: project.skillPromotionCandidates.map((item) => item.id === reviewed.id ? reviewed : item),
         activateAfterAck: async () => ({ knowledgeState: null }),
       };
     }
@@ -692,17 +693,21 @@ export function createDesktopBridgeHandlers(
     if (active === null) {
       throw invalidRequest('Active knowledge snapshot is unavailable');
     }
+    const reviewableCandidate = buildReviewableSkillCandidate(project, candidate, active);
+    if (reviewableCandidate === null || !reviewableCandidate.sourceRule || !reviewableCandidate.managedRule) {
+      throw invalidRequest('Skill candidate source and managed rule text are unavailable');
+    }
 
     try {
       const states = await knowledgeStore.listStates();
-      const targetSnapshot = await prepareApprovedKnowledgeSnapshotCandidate(candidate, active, states);
+      const targetSnapshot = await prepareApprovedKnowledgeSnapshotCandidate(reviewableCandidate, active, states);
       const stagedAt = new Date().toISOString();
       const staged = knowledgeStore.stageApprovedSnapshot === undefined
         ? null
         : await knowledgeStore.stageApprovedSnapshot(targetSnapshot, {
           stageId: `knowledge-${transactionId}`,
           projectId: request.projectId,
-          candidateId: candidate.id,
+          candidateId: reviewableCandidate.id,
           transactionId,
           expectedActiveVersion: active.version,
           expectedActiveContentHash: active.contentHash,
@@ -715,7 +720,7 @@ export function createDesktopBridgeHandlers(
         states,
         stagedAt,
       );
-      const reviewed = reviewSkillPromotionCandidate(candidate, {
+      const reviewed = reviewSkillPromotionCandidate(reviewableCandidate, {
         decision: 'approved',
         reviewedAt: snapshot.publishedAt,
         publishedKnowledgeVersion: snapshot.version,
@@ -723,7 +728,7 @@ export function createDesktopBridgeHandlers(
       });
       return {
         candidate: reviewed,
-        candidates: candidates.map((item) => item.id === reviewed.id ? reviewed : item),
+        candidates: project.skillPromotionCandidates.map((item) => item.id === reviewed.id ? reviewed : item),
         ...(staged === null ? {} : { stagedTransitionId: staged.stageId }),
         activateAfterAck: async () => {
           const knowledgeState = staged === null
@@ -742,6 +747,60 @@ export function createDesktopBridgeHandlers(
       }
       throw invalidRequest('Skill candidate approval is unavailable');
     }
+  }
+
+  function buildReviewableSkillCandidate(
+    project: CanvasProject,
+    candidate: SkillPromotionCandidate,
+    active: KnowledgeSnapshot,
+  ): SkillPromotionCandidate | null {
+    if (!candidate.targetKnowledgeBaseId || !candidate.targetKnowledgeSection) return null;
+    const sourceIds = candidate.sourceProjectMemoryIds ?? [candidate.sourceProjectMemoryId];
+    const sourceEntries = sourceIds.map((sourceId) => (
+      project.projectMemory.find((memory) => memory.id === sourceId)
+    ));
+    if (sourceEntries.some((entry) => entry === undefined)) return null;
+    const managedRule = extractManagedRule(active, candidate);
+    if (managedRule === undefined) return null;
+
+    try {
+      return buildSkillPromotionCandidate(sourceEntries.filter((entry): entry is NonNullable<typeof entry> => entry !== undefined), {
+        affectedCapabilities: candidate.affectedCapabilities,
+        candidateId: candidate.id,
+        createdAt: candidate.createdAt,
+        managedRule,
+        proposedRule: candidate.rule,
+        targetKnowledgeBaseId: candidate.targetKnowledgeBaseId,
+        targetSection: candidate.targetKnowledgeSection,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  function extractManagedRule(active: KnowledgeSnapshot, candidate: SkillPromotionCandidate): string | undefined {
+    const targetPath = candidate.targetKnowledgeSection === undefined
+      ? undefined
+      : promotionDocumentPathForBridge(candidate.targetKnowledgeSection);
+    const exactDocument = targetPath === undefined
+      ? undefined
+      : active.documents.find((document) => document.relativePath === targetPath);
+    const content = exactDocument?.content
+      ?? (active.documents.length === 1
+        ? active.documents[0]?.content
+        : active.documents
+          .map((document) => document.content)
+          .join('\n\n'));
+    const trimmed = content?.trim();
+    return trimmed ? trimmed : undefined;
+  }
+
+  function promotionDocumentPathForBridge(section: string): string {
+    const normalized = section.replace(/\\/g, '/').split('/')
+      .map((part) => part.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''))
+      .filter(Boolean)
+      .join('/');
+    return `memory/promotions/${normalized}.md`;
   }
 
   async function prepareApprovedKnowledgeSnapshotCandidate(
@@ -1498,6 +1557,9 @@ function sanitizeSkillPromotionCandidate(candidate: SkillPromotionCandidate): Sk
     reviewStatus: parsed.reviewStatus,
     ...(parsed.sourceProjectMemoryIds === undefined ? {} : { sourceProjectMemoryIds: parsed.sourceProjectMemoryIds }),
     ...(parsed.beforeRule === undefined ? {} : { beforeRule: parsed.beforeRule }),
+    ...(parsed.sourceRule === undefined ? {} : { sourceRule: parsed.sourceRule }),
+    ...(parsed.managedRule === undefined ? {} : { managedRule: parsed.managedRule }),
+    ...(parsed.diffHunks === undefined ? {} : { diffHunks: parsed.diffHunks }),
     ...(parsed.targetKnowledgeBaseId === undefined ? {} : { targetKnowledgeBaseId: parsed.targetKnowledgeBaseId }),
     ...(parsed.targetKnowledgeSection === undefined ? {} : { targetKnowledgeSection: parsed.targetKnowledgeSection }),
     ...(parsed.counts === undefined ? {} : { counts: parsed.counts }),

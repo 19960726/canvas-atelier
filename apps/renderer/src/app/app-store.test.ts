@@ -440,6 +440,280 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/model profile/i);
   });
 
+  it('ignores delayed model confirmation after the Agent plan is cancelled', async () => {
+    const profileResolution = deferred<Array<{
+      provider: string;
+      modelRoute: string;
+      displayName: string;
+      modelId: string;
+      capabilities: string[];
+    }>>();
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-stale-cancel' }));
+    const listProfiles = vi.fn(() => profileResolution.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Cancel while provider profiles are loading', {
+      modelRoute: 'image-generation',
+    });
+    const beforeProject = cloneProjectForExpectation(useAppStore.getState().project);
+    const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => listProfiles.mock.calls.length === 1);
+
+    useAppStore.getState().cancelAgentPlan();
+    profileResolution.resolve([{
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      modelId: 'gpt-image-1',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    await confirmation;
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(submitImageJob).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project).toEqual(beforeProject);
+    expect(useAppStore.getState().project.projectMemory).toEqual([]);
+    expect(useAppStore.getState().undoStack).toEqual([]);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().agentPlan).toBeNull();
+  });
+
+  it('ignores delayed model confirmation after the Agent plan is replaced', async () => {
+    const profileResolution = deferred<Array<{
+      provider: string;
+      modelRoute: string;
+      displayName: string;
+      modelId: string;
+      capabilities: string[];
+    }>>();
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-stale-replace' }));
+    const listProfiles = vi.fn(() => profileResolution.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Old plan waiting on provider profiles', {
+      modelRoute: 'image-generation',
+    });
+    const beforeProject = cloneProjectForExpectation(useAppStore.getState().project);
+    const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => listProfiles.mock.calls.length === 1);
+
+    useAppStore.getState().draftAgentPlan('Replacement plan must stay waiting', {
+      modelRoute: 'nano-banana-2-actual-route',
+    });
+    const replacementPlanId = useAppStore.getState().agentPlan?.id;
+    profileResolution.resolve([{
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      modelId: 'gpt-image-1',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    await confirmation;
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(submitImageJob).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project).toEqual(beforeProject);
+    expect(useAppStore.getState().project.projectMemory).toEqual([]);
+    expect(useAppStore.getState().undoStack).toEqual([]);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      id: replacementPlanId,
+      modelRoute: 'nano-banana-2-actual-route',
+      state: 'waiting_for_confirmation',
+    });
+  });
+
+  it('ignores delayed model confirmation after the project revision fingerprint changes', async () => {
+    const profileResolution = deferred<Array<{
+      provider: string;
+      modelRoute: string;
+      displayName: string;
+      modelId: string;
+      capabilities: string[];
+    }>>();
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-stale-project' }));
+    const listProfiles = vi.fn(() => profileResolution.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Project changes while profiles are loading', {
+      modelRoute: 'image-generation',
+    });
+    const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => listProfiles.mock.calls.length === 1);
+
+    useAppStore.getState().setProject({
+      ...useAppStore.getState().project,
+      name: 'changed while validating model profile',
+    }, { schedulePersist: false });
+    profileResolution.resolve([{
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      modelId: 'gpt-image-1',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    await confirmation;
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(submitImageJob).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.name).toBe('changed while validating model profile');
+    expect(useAppStore.getState().project.projectMemory).toEqual([]);
+    expect(useAppStore.getState().undoStack).toEqual([]);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      modelRoute: 'image-generation',
+      state: 'waiting_for_confirmation',
+    });
+  });
+
+  it('commits and queues only once when the same Agent plan is confirmed twice during profile loading', async () => {
+    const profileResolution = deferred<Array<{
+      provider: string;
+      modelRoute: string;
+      displayName: string;
+      modelId: string;
+      capabilities: string[];
+    }>>();
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-single-commit' }));
+    const listProfiles = vi.fn(() => profileResolution.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Double click confirm must be idempotent', {
+      modelRoute: 'image-generation',
+    });
+    const firstConfirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    const secondConfirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+
+    profileResolution.resolve([{
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      modelId: 'gpt-image-1',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    await Promise.all([firstConfirmation, secondConfirmation]);
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(submitImageJob).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().modelJobs).toHaveLength(1);
+  });
+
+  it('does not select or confirm edit-only provider profiles for image generation plans', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-edit-only' }));
+    const listProfiles = vi.fn(async () => [{
+      provider: 'comfly',
+      modelRoute: 'image-edit-only-route',
+      displayName: 'Image Edit Only',
+      modelId: 'edit-only-model',
+      capabilities: ['image_edit', 'async_tasks'],
+    }]);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Edit-only profile must not run generation', {
+      modelRoute: 'image-edit-only-route',
+    });
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+    expect(submitImageJob).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.projectMemory).toEqual([]);
+    expect(useAppStore.getState().undoStack).toEqual([]);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/model profile/i);
+  });
+
   it('does not invent desktop provider defaults when the bridge reports no configured profiles', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,

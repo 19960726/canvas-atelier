@@ -15,6 +15,8 @@ export interface CandidateMetadata {
   targetSection: string;
   createdAt: string;
   affectedCapabilities?: AgentKnowledgeCapability[];
+  managedRule?: string;
+  proposedRule?: string;
 }
 
 export type AggregatedSkillPromotionCandidate = SkillPromotionCandidate;
@@ -43,6 +45,10 @@ export function buildSkillPromotionCandidate(
   const contradictingEvidenceCount = ordered.filter((entry) => entry.feedback.never.some((item) => supportingChanges.has(item))).length;
   const totalEvidence = supportingEvidenceCount + contradictingEvidenceCount;
   const first = ordered[0]!;
+  const proposedRule = metadata.proposedRule?.trim() || selectCandidateRule(ordered);
+  const sourceRule = buildSourceRule(ordered);
+  const managedRule = metadata.managedRule?.trim();
+  const diffHunks = managedRule ? buildDiffHunks(managedRule, proposedRule) : undefined;
   return skillPromotionCandidateSchema.parse({
     schemaVersion: 1,
     id: metadata.candidateId,
@@ -52,7 +58,10 @@ export function buildSkillPromotionCandidate(
     createdAt: metadata.createdAt,
     title: first.title,
     rationale: ordered.map((entry) => entry.rationale).join('\n'),
-    rule: selectCandidateRule(ordered),
+    rule: proposedRule,
+    ...(sourceRule === undefined ? {} : { sourceRule }),
+    ...(managedRule === undefined ? {} : { managedRule }),
+    ...(diffHunks === undefined || diffHunks.length === 0 ? {} : { diffHunks }),
     targetKnowledgeBaseId: metadata.targetKnowledgeBaseId,
     targetKnowledgeSection: metadata.targetSection,
     counts: {
@@ -62,7 +71,7 @@ export function buildSkillPromotionCandidate(
       observationCount: ordered.reduce((sum, entry) => sum + countObservations(entry), 0),
     },
     confidence: totalEvidence === 0 ? 0 : supportingEvidenceCount / totalEvidence,
-    affectedCapabilities: metadata.affectedCapabilities,
+    ...(metadata.affectedCapabilities === undefined ? {} : { affectedCapabilities: metadata.affectedCapabilities }),
     evidence: mergeFeedback(ordered),
     reviewStatus: 'pending_review',
   });
@@ -83,6 +92,19 @@ function selectCandidateRule(entries: ProjectMemoryEntry[]): string {
   return changed?.nextStep ?? entries[0]!.nextStep;
 }
 
+function buildSourceRule(entries: ProjectMemoryEntry[]): string | undefined {
+  const sourceText = unique(entries.map((entry) => entry.nextStep.trim()).filter(Boolean)).join('\n');
+  return sourceText.length === 0 ? undefined : sourceText;
+}
+
+function buildDiffHunks(managedRule: string, proposedRule: string): string[] {
+  if (managedRule === proposedRule) return [];
+  return [
+    ...managedRule.split(/\r?\n/u).map((line) => `- ${line}`),
+    ...proposedRule.split(/\r?\n/u).map((line) => `+ ${line}`),
+  ];
+}
+
 function mergeFeedback(entries: ProjectMemoryEntry[]): Feedback {
   const keep = unique(entries.flatMap((entry) => entry.feedback.keep));
   const change = unique(entries.flatMap((entry) => entry.feedback.change));
@@ -92,7 +114,7 @@ function mergeFeedback(entries: ProjectMemoryEntry[]): Feedback {
     keep,
     change,
     never,
-    score: scores.length === 0 ? undefined : Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length),
+    ...(scores.length === 0 ? {} : { score: Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) }),
   };
 }
 

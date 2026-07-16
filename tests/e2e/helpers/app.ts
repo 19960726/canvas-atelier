@@ -27,7 +27,7 @@ type E2EState = {
 
 export async function openApp(page: Page): Promise<void> {
   await page.goto('/');
-  await page.waitForFunction(() => Boolean(window.__NOVUS_E2E__));
+  await page.waitForFunction((nonce) => window.__NOVUS_E2E__?.nonce === nonce, process.env.NOVUS_E2E_NONCE);
   await page.evaluate(() => window.__NOVUS_E2E__!.reset());
   await expect(page.getByTestId('workspace')).toBeVisible();
 }
@@ -135,6 +135,7 @@ declare global {
   interface Window {
     __NOVUS_E2E__?: {
       getState(): E2EState;
+      nonce: string;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
     };

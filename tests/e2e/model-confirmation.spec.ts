@@ -7,6 +7,7 @@ test('Agent conversation keeps one model conversation while switching GPT Image 
   await expect(page.getByTestId('model-route-image-generation')).toContainText('GPT Image');
   await expect(page.getByTestId('model-route-nano-banana-2-actual-route')).toContainText('Nano Banana 2');
   await expect(page.getByTestId('model-route-gpt-image')).toHaveCount(0);
+  await expect(page.getByTestId('model-route-image-edit-only-route')).toHaveCount(0);
 
   await page.getByTestId('model-route-image-generation').click();
   await page.getByTestId('agent-composer-input').fill('Draft route check without model execution');

@@ -493,7 +493,7 @@ describe('desktop bridge contract', () => {
       ...starterProject,
       skillPromotionCandidates: [approvedCandidate],
     };
-    const commit = vi.fn(async () => ({
+    const commit = vi.fn(async (_request: CommitRequest) => ({
       committedAt: '2026-07-15T10:00:00.000Z',
       projectId: starterProject.id,
       revision: 6,
@@ -567,10 +567,7 @@ describe('desktop bridge contract', () => {
 
   it('does not activate approved knowledge before the project review commit is acknowledged', async () => {
     const pendingCandidate = createPendingSkillCandidate();
-    const project: CanvasProject = {
-      ...starterProject,
-      skillPromotionCandidates: [pendingCandidate],
-    };
+    const project = createProjectWithPendingSkillCandidate(pendingCandidate);
     const commit = vi.fn(async () => {
       throw new Error('injected project commit failure');
     });
@@ -610,6 +607,125 @@ describe('desktop bridge contract', () => {
 
     expect(commit).toHaveBeenCalledOnce();
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('commits approved skill candidates with production source, managed, and proposed review text', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    const sourceMemory = {
+      ...createBridgeFeedbackMemory('memory-feedback', 1),
+      nextStep: 'Source memory rule body: keep the product logo locked before changing props.',
+    };
+    const project: CanvasProject = {
+      ...starterProject,
+      projectMemory: [sourceMemory],
+      skillPromotionCandidates: [pendingCandidate],
+    };
+    const active = createKnowledgeSnapshot('Managed rule body: keep the existing cool background lighting.', 1);
+    const approvedSnapshot = createKnowledgeSnapshot('# approved version 2', 2);
+    const commit = vi.fn(async (_request: CommitRequest) => ({
+      committedAt: '2026-07-16T05:00:00.000Z',
+      projectId: starterProject.id,
+      revision: 6,
+      sequence: 6,
+      transactionId: 'review-skill-candidate-1',
+    }));
+    const stageApprovedSnapshot = vi.fn(async (_candidate, metadata: { stageId: string }) => ({
+      stageId: metadata.stageId,
+      snapshot: approvedSnapshot,
+    }));
+    const handlers = createDesktopBridgeHandlers({
+      approvedSnapshotOutbox: { enqueueApprovedSnapshot: vi.fn(async () => undefined) },
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition: vi.fn(async () => knowledgeStateAtVersion(2, 2)),
+        configure: vi.fn(),
+        finalizeStagedTransition: vi.fn(async () => undefined),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(1, 1)]),
+        readActive: vi.fn(async () => active),
+        recordStagedTransitionOutboxIntent: vi.fn(async () => undefined),
+        stageApprovedSnapshot,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    await expect(handlers.reviewSkillCandidate({}, {
+      candidateId: pendingCandidate.id,
+      decision: 'approved',
+      projectId: starterProject.id,
+    })).resolves.toMatchObject({
+      candidate: {
+        reviewStatus: 'approved',
+        sourceRule: expect.stringContaining('Source memory rule body: keep the product logo locked before changing props.'),
+        managedRule: 'Managed rule body: keep the existing cool background lighting.',
+        rule: 'Use slower, heavier liquid arcs.',
+      },
+    });
+
+    const operation = commit.mock.calls[0]![0].transaction.operations[0];
+    if (operation === undefined || operation.kind !== 'set_skill_candidates') {
+      throw new Error('Expected set_skill_candidates operation');
+    }
+    const reviewedCandidate = operation.candidates[0]!;
+    expect(reviewedCandidate.sourceRule).toContain('Source memory rule body: keep the product logo locked before changing props.');
+    expect(reviewedCandidate.managedRule).toBe('Managed rule body: keep the existing cool background lighting.');
+    expect(reviewedCandidate.rule).toBe('Use slower, heavier liquid arcs.');
+    expect(reviewedCandidate.diffHunks).toEqual([
+      '- Managed rule body: keep the existing cool background lighting.',
+      '+ Use slower, heavier liquid arcs.',
+    ]);
+    expect(stageApprovedSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('rejects skill approval without source memory content instead of fabricating review text', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    const project: CanvasProject = {
+      ...starterProject,
+      projectMemory: [],
+      skillPromotionCandidates: [pendingCandidate],
+    };
+    const commit = vi.fn();
+    const stageApprovedSnapshot = vi.fn();
+    const handlers = createDesktopBridgeHandlers({
+      approvedSnapshotOutbox: { enqueueApprovedSnapshot: vi.fn(async () => undefined) },
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition: vi.fn(),
+        configure: vi.fn(),
+        finalizeStagedTransition: vi.fn(),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(1, 1)]),
+        readActive: vi.fn(async () => createKnowledgeSnapshot('Managed rule body: keep stable lighting.', 1)),
+        recordStagedTransitionOutboxIntent: vi.fn(),
+        stageApprovedSnapshot,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    await expect(handlers.reviewSkillCandidate({}, {
+      candidateId: pendingCandidate.id,
+      decision: 'approved',
+      projectId: starterProject.id,
+    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(stageApprovedSnapshot).not.toHaveBeenCalled();
   });
 
   it('does not activate rollback knowledge before the project review commit is acknowledged', async () => {
@@ -662,7 +778,7 @@ describe('desktop bridge contract', () => {
 
   it('discards a staged approval when commit rejects before append so the next approval can proceed without reopen', async () => {
     const pendingCandidate = createPendingSkillCandidate();
-    const project: CanvasProject = { ...starterProject, skillPromotionCandidates: [pendingCandidate] };
+    const project = createProjectWithPendingSkillCandidate(pendingCandidate);
     const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
     let reserved = false;
     const discardStagedTransition = vi.fn(async () => { reserved = false; });
@@ -721,7 +837,7 @@ describe('desktop bridge contract', () => {
 
   it('preserves the staged reservation and original commit error when durable read-back is ambiguous', async () => {
     const pendingCandidate = createPendingSkillCandidate();
-    const project: CanvasProject = { ...starterProject, skillPromotionCandidates: [pendingCandidate] };
+    const project = createProjectWithPendingSkillCandidate(pendingCandidate);
     const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
     const commitError = new Error('injected commit rejection');
     const discardStagedTransition = vi.fn(async () => undefined);
@@ -767,7 +883,7 @@ describe('desktop bridge contract', () => {
   });
   it('preserves the original commit error and stage when exact-project revision readback is ambiguous', async () => {
     const pendingCandidate = createPendingSkillCandidate();
-    let persistedProject: CanvasProject = { ...starterProject, skillPromotionCandidates: [pendingCandidate] };
+    let persistedProject = createProjectWithPendingSkillCandidate(pendingCandidate);
     const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
     const commitError = new Error('response lost after durable append');
     const discardStagedTransition = vi.fn(async () => undefined);
@@ -820,7 +936,7 @@ describe('desktop bridge contract', () => {
   });
   it('preserves a response-lost acknowledged stage through transient readback failure for startup recovery', async () => {
     const pendingCandidate = createPendingSkillCandidate();
-    let persistedProject: CanvasProject = { ...starterProject, skillPromotionCandidates: [pendingCandidate] };
+    let persistedProject = createProjectWithPendingSkillCandidate(pendingCandidate);
     const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
     let stagedSummary: {
       stageId: string;
@@ -936,7 +1052,7 @@ describe('desktop bridge contract', () => {
   });
   it('completes an exact durable approval when commit appended but its response was lost', async () => {
     const pendingCandidate = createPendingSkillCandidate();
-    let persistedProject: CanvasProject = { ...starterProject, skillPromotionCandidates: [pendingCandidate] };
+    let persistedProject = createProjectWithPendingSkillCandidate(pendingCandidate);
     let revision = 5;
     const snapshot = createKnowledgeSnapshot('# approved version 2', 2);
     const activateStagedTransition = vi.fn(async () => knowledgeStateAtVersion(2, 2));
@@ -994,10 +1110,7 @@ describe('desktop bridge contract', () => {
   });
   it('allocates approval versions after rollback from every retained version, not only the active snapshot', async () => {
     const pendingCandidate = createPendingSkillCandidate();
-    const project: CanvasProject = {
-      ...starterProject,
-      skillPromotionCandidates: [pendingCandidate],
-    };
+    const project = createProjectWithPendingSkillCandidate(pendingCandidate);
     const commit = vi.fn(async () => ({
       committedAt: '2026-07-15T10:00:00.000Z',
       projectId: starterProject.id,
@@ -1297,10 +1410,7 @@ describe('desktop bridge contract', () => {
         close: vi.fn(async () => undefined),
         open: vi.fn(async () => createOpenedSession()),
         openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
-        readCurrentProject: vi.fn(async () => ({
-          ...starterProject,
-          skillPromotionCandidates: [pendingCandidate],
-        })),
+        readCurrentProject: vi.fn(async () => createProjectWithPendingSkillCandidate(pendingCandidate)),
       },
     });
 
@@ -1871,6 +1981,22 @@ function createPendingSkillCandidate(): SkillPromotionCandidate {
     affectedCapabilities: ['reverse_prompt'],
     evidence: { keep: ['product'], change: ['liquid'], never: [] },
     reviewStatus: 'pending_review',
+  };
+}
+
+function createProjectWithPendingSkillCandidate(candidate = createPendingSkillCandidate()): CanvasProject {
+  return {
+    ...{
+      version: 1,
+      id: 'project-1',
+      name: 'Bridge Project',
+      nodes: [],
+      edges: [],
+      projectMemory: [],
+      skillPromotionCandidates: [],
+    },
+    projectMemory: [createBridgeFeedbackMemory(candidate.sourceProjectMemoryId, 1)],
+    skillPromotionCandidates: [candidate],
   };
 }
 

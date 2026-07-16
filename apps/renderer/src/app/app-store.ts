@@ -64,6 +64,7 @@ let modelJobStore: ModelJobStore | null = null;
 let modelJobUnsubscribe: (() => void) | null = null;
 let modelJobStoreGeneration = 0;
 let modelJobRecoveryGeneration = 0;
+let pendingAgentConfirmation: PendingAgentConfirmation | null = null;
 const projectAutosave = createAutosaveController<CanvasProject>({
   commit: async (draft) => {
     const state = useAppStore.getState();
@@ -80,6 +81,13 @@ let pendingProjectFlushBoundary: Promise<boolean> | null = null;
 interface UndoEntry {
   transaction: CanvasTransaction;
   memoryId: string;
+}
+
+interface PendingAgentConfirmation {
+  fingerprint: string;
+  planId: string;
+  token: string;
+  transactionId: string;
 }
 
 interface SetProjectOptions {
@@ -325,101 +333,132 @@ export const useAppStore = create<AppState>((set, get) => ({
       scheduleProjectSave(get);
     }
   },
-  draftAgentPlan: (message, options = {}) => set((state) => {
-    const promptNode = state.project.nodes.find((node) => node.type === 'prompt');
-    if (!promptNode || promptNode.type !== 'prompt' || message.trim().length === 0 || containsProtectedRendererPayload(message)) return state;
-    const suffix = `${Date.now()}-${planSequence++}`;
-    const reviewId = `agent-review-${suffix}`;
-    return { agentPlan: {
-      id: `agent-plan-${suffix}`,
-      state: 'waiting_for_confirmation',
-      transaction: {
-        id: `agent-tx-${suffix}`,
-        label: 'Agent 创建画布方案',
-        operations: [
-          { kind: 'update_node', node: { ...promptNode, data: { ...promptNode.data, prompt: message.trim() } } },
-          { kind: 'create_node', node: { id: reviewId, type: 'review', position: { x: promptNode.position.x + 320, y: promptNode.position.y + 80 }, data: { keep: ['产品身份与 Logo'], change: ['场景、光线与道具'], never: ['未经确认执行模型'] } } },
-          { kind: 'create_edge', edge: { id: `agent-edge-${suffix}`, source: promptNode.id, target: reviewId } },
-        ],
-      },
-      requestedCapabilities: ['model_execution'],
-      confirmations: {},
-      conflicts: [],
-      modelRoute: options.modelRoute,
-      modelRouteDisplayName: options.modelRouteDisplayName,
-      jobCount: 1,
-    } };
-  }),
+  draftAgentPlan: (message, options = {}) => {
+    clearPendingAgentConfirmation();
+    set((state) => {
+      const promptNode = state.project.nodes.find((node) => node.type === 'prompt');
+      if (!promptNode || promptNode.type !== 'prompt' || message.trim().length === 0 || containsProtectedRendererPayload(message)) return state;
+      const suffix = `${Date.now()}-${planSequence++}`;
+      const reviewId = `agent-review-${suffix}`;
+      return { agentPlan: {
+        id: `agent-plan-${suffix}`,
+        state: 'waiting_for_confirmation',
+        transaction: {
+          id: `agent-tx-${suffix}`,
+          label: 'Agent 创建画布方案',
+          operations: [
+            { kind: 'update_node', node: { ...promptNode, data: { ...promptNode.data, prompt: message.trim() } } },
+            { kind: 'create_node', node: { id: reviewId, type: 'review', position: { x: promptNode.position.x + 320, y: promptNode.position.y + 80 }, data: { keep: ['产品身份与 Logo'], change: ['场景、光线与道具'], never: ['未经确认执行模型'] } } },
+            { kind: 'create_edge', edge: { id: `agent-edge-${suffix}`, source: promptNode.id, target: reviewId } },
+          ],
+        },
+        requestedCapabilities: ['model_execution'],
+        confirmations: {},
+        conflicts: [],
+        modelRoute: options.modelRoute,
+        modelRouteDisplayName: options.modelRouteDisplayName,
+        jobCount: 1,
+      } };
+    });
+  },
   confirmAgentPlan: async (approvals) => {
     const state = get();
-    if (!state.agentPlan) return;
+    if (!state.agentPlan || state.agentPlan.state !== 'waiting_for_confirmation') return;
+    if (pendingAgentConfirmation !== null) return;
+
+    const initialPlan = state.agentPlan;
+    const confirmation: PendingAgentConfirmation = {
+      fingerprint: createAgentConfirmationFingerprint(state, initialPlan),
+      planId: initialPlan.id,
+      token: `agent-confirm-${Date.now()}-${planSequence++}`,
+      transactionId: initialPlan.transaction.id,
+    };
+    pendingAgentConfirmation = confirmation;
 
     const now = new Date().toISOString();
     const requestedPlan = {
-      ...state.agentPlan,
+      ...initialPlan,
       confirmations: {
-        ...state.agentPlan.confirmations,
+        ...initialPlan.confirmations,
         canvas: now,
         models: approvals.models ? now : undefined,
         deleteNodes: approvals.deleteNodes ? now : undefined,
         skillWriteback: approvals.skillWriteback ? now : undefined,
       },
     };
-    const modelProfile = shouldExecuteModels(requestedPlan)
-      ? await resolveModelJobProfile(requestedPlan).catch((error) => {
-        set({
-          agentPlan: {
-            ...state.agentPlan!,
-            conflicts: upsertAgentConflict(state.agentPlan!.conflicts, modelProfileConflictMessage(error)),
-          },
-        });
-        return null;
-      })
-      : null;
-    if (shouldExecuteModels(requestedPlan) && modelProfile === null) return;
-    const confirmedPlan = modelProfile
-      ? {
-          ...requestedPlan,
-          conflicts: requestedPlan.conflicts.filter((conflict) => !isModelProfileConflict(conflict)),
-          modelRoute: modelProfile.modelRoute,
-          modelRouteDisplayName: modelProfile.displayName,
+    try {
+      let modelProfile: ResolvedModelJobProfile | null = null;
+      if (shouldExecuteModels(requestedPlan)) {
+        try {
+          modelProfile = await resolveModelJobProfile(requestedPlan);
+        } catch (error) {
+          if (isActiveAgentConfirmation(get(), confirmation)) {
+            set((current) => {
+              if (!current.agentPlan || current.agentPlan.id !== confirmation.planId) return current;
+              return {
+                agentPlan: {
+                  ...current.agentPlan,
+                  conflicts: upsertAgentConflict(current.agentPlan.conflicts, modelProfileConflictMessage(error)),
+                },
+              };
+            });
+          }
+          return;
         }
-      : requestedPlan;
-    const result = confirmDomainPlan(state.project, {
-      ...confirmedPlan,
-    });
-    const memoryEntry = createOptimizationMemory(state.project, result.project, confirmedPlan, now);
-    const project = {
-      ...result.project,
-      projectMemory: appendProjectMemoryEntry(result.project.projectMemory, memoryEntry),
-    };
-    const transaction = buildProjectTransaction({
-      canvasTransaction: state.agentPlan.transaction,
-      label: state.agentPlan.transaction.label,
-      memoryEntry,
-      transactionId: state.agentPlan.transaction.id,
-    });
-    const saved = await get().commitProjectTransaction(transaction, { kind: 'agent', nextProject: project });
-    if (!saved) return;
+      }
+      if (!isActiveAgentConfirmation(get(), confirmation)) return;
 
-    let modelJobs = get().modelJobs;
-    if (result.executeModels) {
-      modelJobs = await getModelJobStore().enqueueConfirmedJobs({
-        conversationId: 'agent-conversation-shared',
-        confirmedAt: now,
-        requests: buildModelJobRequests(project, confirmedPlan, modelProfile!),
+      const latestState = get();
+      const activePlan = latestState.agentPlan!;
+      const confirmedPlan = modelProfile
+        ? {
+            ...requestedPlan,
+            conflicts: requestedPlan.conflicts.filter((conflict) => !isModelProfileConflict(conflict)),
+            modelRoute: modelProfile.modelRoute,
+            modelRouteDisplayName: modelProfile.displayName,
+          }
+        : requestedPlan;
+      const result = confirmDomainPlan(latestState.project, {
+        ...confirmedPlan,
       });
-      void getModelJobStore().run();
-    }
+      const memoryEntry = createOptimizationMemory(latestState.project, result.project, confirmedPlan, now);
+      const project = {
+        ...result.project,
+        projectMemory: appendProjectMemoryEntry(result.project.projectMemory, memoryEntry),
+      };
+      const transaction = buildProjectTransaction({
+        canvasTransaction: activePlan.transaction,
+        label: activePlan.transaction.label,
+        memoryEntry,
+        transactionId: activePlan.transaction.id,
+      });
+      const saved = await get().commitProjectTransaction(transaction, { kind: 'agent', nextProject: project });
+      if (!saved) return;
 
-    set((current) => ({
-      agentPlan: result.plan,
-      confirmedModelJobs: countConfirmedModelJobs(modelJobs),
-      modelJobs,
-      undoStack: [...current.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }],
-    }));
+      let modelJobs = get().modelJobs;
+      if (result.executeModels) {
+        modelJobs = await getModelJobStore().enqueueConfirmedJobs({
+          conversationId: 'agent-conversation-shared',
+          confirmedAt: now,
+          requests: buildModelJobRequests(project, confirmedPlan, modelProfile!),
+        });
+        void getModelJobStore().run();
+      }
+
+      set((current) => ({
+        agentPlan: result.plan,
+        confirmedModelJobs: countConfirmedModelJobs(modelJobs),
+        modelJobs,
+        undoStack: [...current.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }],
+      }));
+    } finally {
+      if (pendingAgentConfirmation?.token === confirmation.token) pendingAgentConfirmation = null;
+    }
   },
-  cancelAgentPlan: () => set({ agentPlan: null }),
+  cancelAgentPlan: () => {
+    clearPendingAgentConfirmation();
+    set({ agentPlan: null });
+  },
   promoteProjectMemory: async (memoryId) => {
     const state = get();
     if (state.project.skillPromotionCandidates.some((candidate) => candidate.sourceProjectMemoryId === memoryId)) return;
@@ -617,6 +656,7 @@ function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise
 export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
   pendingProjectFlushBoundary = null;
+  clearPendingAgentConfirmation();
   referenceOrderCommitTail = null;
   invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
@@ -847,7 +887,7 @@ async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<ResolvedMo
 
 function filterImageModelProfiles(profiles: ProviderBridgeProfile[]): ProviderBridgeProfile[] {
   return profiles.filter((profile) => (
-    profile.capabilities.includes('image_generation') || profile.capabilities.includes('image_edit')
+    profile.capabilities.includes('image_generation')
   ));
 }
 
@@ -870,6 +910,28 @@ function upsertAgentConflict(conflicts: string[], nextConflict: string): string[
 function normalizeLegacyPlanModelRoute(route: string | undefined): string | undefined {
   if (route === undefined || route === 'desktop-bridge' || route.startsWith('Comfly ')) return undefined;
   return route;
+}
+
+function clearPendingAgentConfirmation(): void {
+  pendingAgentConfirmation = null;
+}
+
+function isActiveAgentConfirmation(state: AppState, confirmation: PendingAgentConfirmation): boolean {
+  const plan = state.agentPlan;
+  return pendingAgentConfirmation?.token === confirmation.token
+    && plan !== null
+    && plan.state === 'waiting_for_confirmation'
+    && plan.id === confirmation.planId
+    && plan.transaction.id === confirmation.transactionId
+    && createAgentConfirmationFingerprint(state, plan) === confirmation.fingerprint;
+}
+
+function createAgentConfirmationFingerprint(state: AppState, plan: AgentCanvasPlan): string {
+  return JSON.stringify({
+    desktopRevision: state.desktopRevision,
+    project: state.project,
+    transactionId: plan.transaction.id,
+  });
 }
 
 function isIndexedDbAvailable(): boolean {

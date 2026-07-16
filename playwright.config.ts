@@ -2,6 +2,8 @@ import { defineConfig } from '@playwright/test';
 
 const port = Number(process.env.NOVUS_E2E_PORT ?? 43127);
 const baseURL = `http://127.0.0.1:${port}`;
+const e2eNonce = process.env.NOVUS_E2E_NONCE ?? `novus-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+process.env.NOVUS_E2E_NONCE = e2eNonce;
 const edgeExecutablePath = process.env.PLAYWRIGHT_EDGE_EXECUTABLE_PATH
   ?? 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 
@@ -22,6 +24,7 @@ export default defineConfig({
     command: `npm run dev -w @agent-canvas/renderer -- --host 127.0.0.1 --port ${port} --strictPort`,
     env: {
       VITE_NOVUS_E2E_MODE: '1',
+      VITE_NOVUS_E2E_NONCE: e2eNonce,
     },
     reuseExistingServer: false,
     timeout: 120_000,

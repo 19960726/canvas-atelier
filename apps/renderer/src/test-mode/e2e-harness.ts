@@ -13,6 +13,7 @@ import {
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
+import { buildSkillPromotionCandidate } from '../../../../packages/skill-store/src/candidate-builder';
 import {
   createStarterProject,
   replaceKnowledgeClientForTests,
@@ -43,6 +44,7 @@ import {
 
 const installedFlag = '__NOVUS_E2E_INSTALLED__';
 const fixedNow = '2026-07-16T09:00:00.000Z';
+const e2eNonce = import.meta.env.VITE_NOVUS_E2E_NONCE ?? 'novus-e2e-local';
 
 interface RuntimeState {
   commitLog: ProjectTransaction[];
@@ -74,6 +76,7 @@ export function installRendererE2EHarness(): void {
   resetAppStoreForTests();
 
   window.__NOVUS_E2E__ = {
+    nonce: e2eNonce,
     async reset() {
       runtime.currentProject = createStarterProject();
       runtime.revision = 0;
@@ -165,6 +168,13 @@ function createE2EProviderProfiles(): ProviderBridgeProfile[] {
       displayName: 'Nano Banana 2',
       modelId: 'nano-banana-2',
       capabilities: ['image_generation', 'async_tasks'],
+    },
+    {
+      provider: 'comfly',
+      modelRoute: 'image-edit-only-route',
+      displayName: 'Image Edit Only',
+      modelId: 'edit-only-model',
+      capabilities: ['image_edit', 'async_tasks'],
     },
   ];
 }
@@ -322,6 +332,7 @@ function reviewCandidate(
 }
 
 function seedSkillSyncDivergence(runtime: RuntimeState): void {
+  const proposedRule = 'Proposed rule body: lock logo and prop spacing together.';
   const memory: ProjectMemoryEntry = {
     schemaVersion: 1,
     id: 'project-memory-e2e-divergence',
@@ -346,37 +357,17 @@ function seedSkillSyncDivergence(runtime: RuntimeState): void {
       change: ['prop spacing'],
       never: ['sync before confirmation'],
     },
-    nextStep: 'Proposed rule body: lock logo and prop spacing together.',
+    nextStep: 'Source rule body: lock logo from local project memory.',
   };
-  const candidate: SkillPromotionCandidate = {
-    schemaVersion: 1,
-    id: 'skill-candidate-e2e-divergence',
-    sourceProjectId: 'local-project',
-    sourceProjectMemoryId: memory.id,
-    createdAt: fixedNow,
-    title: memory.title,
-    rationale: memory.rationale,
-    rule: memory.nextStep,
-    beforeRule: 'legacy source summary for audit only',
-    sourceRule: 'Source rule body: lock logo from local project memory.',
-    managedRule: 'Managed rule body: keep the existing cool background lighting.',
-    diffHunks: [
-      '- Managed rule body: keep the existing cool background lighting.',
-      '+ Proposed rule body: lock logo and prop spacing together.',
-    ],
-    targetKnowledgeBaseId: 'scene-skill',
-    targetKnowledgeSection: 'composition/placement',
-    counts: {
-      citationCount: 0,
-      observationCount: 1,
-      referenceCount: 0,
-      supportingMemoryCount: 1,
-    },
-    confidence: 0.93,
+  const candidate: SkillPromotionCandidate = buildSkillPromotionCandidate([memory], {
     affectedCapabilities: ['image_generation'],
-    evidence: memory.feedback,
-    reviewStatus: 'pending_review',
-  };
+    candidateId: 'skill-candidate-e2e-divergence',
+    createdAt: fixedNow,
+    managedRule: 'Managed rule body: keep the existing cool background lighting.',
+    proposedRule,
+    targetKnowledgeBaseId: 'scene-skill',
+    targetSection: 'composition/placement',
+  });
 
   runtime.currentProject = {
     ...createStarterProject(),
@@ -451,6 +442,7 @@ declare global {
           projectId: string;
         }>;
       };
+      nonce: string;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
     };

@@ -355,6 +355,7 @@ describe('project memory', () => {
     expect(approved.reviewedAt).toBe(reviewedAt);
     expect(approved.publishedKnowledgeVersion).toBe(5);
     expect(approved.reviewTransactionId).toBe('review-transaction-1');
+    expect(approved).not.toHaveProperty('rolledBackAt');
 
     const rolledBack = rollbackSkillPromotionCandidate(approved, rolledBackAt, {
       transactionId: 'rollback-transaction-1',
@@ -367,4 +368,41 @@ describe('project memory', () => {
     expect(rolledBack.reviewTransactionId).toBe('rollback-transaction-1');
     expect(() => rollbackSkillPromotionCandidate(candidate, rolledBackAt)).toThrow(/approved/i);
   });
+
+  it('omits undefined optional fields from review lifecycle objects', () => {
+    const candidate = createSkillPromotionCandidate(optimization, {
+      candidateId: 'skill-candidate-json-safe',
+      createdAt: '2026-07-15T10:03:00.000Z',
+    });
+
+    const rejected = reviewSkillPromotionCandidate(candidate, {
+      decision: 'rejected',
+      reviewedAt: '2026-07-15T10:04:00.000Z',
+    });
+    const approved = reviewSkillPromotionCandidate(candidate, {
+      decision: 'approved',
+      reviewedAt: '2026-07-15T10:04:00.000Z',
+      publishedKnowledgeVersion: 5,
+    });
+
+    expectNoUndefinedValues(rejected);
+    expectNoUndefinedValues(approved);
+    expect(rejected).not.toHaveProperty('reviewTransactionId');
+    expect(rejected).not.toHaveProperty('publishedKnowledgeVersion');
+    expect(rejected).not.toHaveProperty('rolledBackAt');
+    expect(approved).not.toHaveProperty('rolledBackAt');
+  });
 });
+
+function expectNoUndefinedValues(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) expectNoUndefinedValues(item);
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      expect(child, `unexpected undefined at ${key}`).not.toBeUndefined();
+      expectNoUndefinedValues(child);
+    }
+  }
+}

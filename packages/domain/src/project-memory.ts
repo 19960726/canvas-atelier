@@ -283,7 +283,7 @@ interface ReviewSkillPromotionCandidateInput {
 }
 
 export function parseProjectMemoryEntry(input: unknown): ProjectMemoryEntry {
-  return projectMemoryEntrySchema.parse(input);
+  return stripUndefinedProperties(projectMemoryEntrySchema.parse(input));
 }
 
 export function appendProjectMemoryEntry(
@@ -340,7 +340,7 @@ export function createSkillPromotionCandidate(
   metadata: { candidateId: string; createdAt: string },
 ): SkillPromotionCandidate {
   const entry = parseProjectMemoryEntry(input);
-  return skillPromotionCandidateSchema.parse({
+  return parseSkillPromotionCandidate({
     schemaVersion: 1,
     id: metadata.candidateId,
     sourceProjectId: entry.projectId,
@@ -390,7 +390,7 @@ export function reviewSkillPromotionCandidate(
   candidate: SkillPromotionCandidate,
   input: ReviewSkillPromotionCandidateInput,
 ): SkillPromotionCandidate {
-  const current = skillPromotionCandidateSchema.parse(candidate);
+  const current = parseSkillPromotionCandidate(candidate);
   if (current.reviewStatus !== 'pending_review') {
     throw new Error('Only pending_review candidates can be reviewed');
   }
@@ -401,13 +401,12 @@ export function reviewSkillPromotionCandidate(
     throw new Error('Only approved candidates can include publishedKnowledgeVersion');
   }
 
-  return skillPromotionCandidateSchema.parse({
+  return parseSkillPromotionCandidate({
     ...current,
     reviewStatus: input.decision,
     reviewedAt: input.reviewedAt,
-    reviewTransactionId: input.transactionId,
-    publishedKnowledgeVersion: input.decision === 'approved' ? input.publishedKnowledgeVersion : undefined,
-    rolledBackAt: undefined,
+    ...(input.transactionId === undefined ? {} : { reviewTransactionId: input.transactionId }),
+    ...(input.decision === 'approved' ? { publishedKnowledgeVersion: input.publishedKnowledgeVersion } : {}),
   });
 }
 
@@ -416,17 +415,38 @@ export function rollbackSkillPromotionCandidate(
   rolledBackAt: string,
   metadata: { transactionId?: string } = {},
 ): SkillPromotionCandidate {
-  const current = skillPromotionCandidateSchema.parse(candidate);
+  const current = parseSkillPromotionCandidate(candidate);
   if (current.reviewStatus !== 'approved') {
     throw new Error('Only approved candidates can be rolled back');
   }
 
-  return skillPromotionCandidateSchema.parse({
+  const reviewTransactionId = metadata.transactionId ?? current.reviewTransactionId;
+  return parseSkillPromotionCandidate({
     ...current,
     reviewStatus: 'rolled_back',
-    reviewTransactionId: metadata.transactionId ?? current.reviewTransactionId,
+    ...(reviewTransactionId === undefined ? {} : { reviewTransactionId }),
     rolledBackAt,
   });
+}
+
+function parseSkillPromotionCandidate(input: unknown): SkillPromotionCandidate {
+  return stripUndefinedProperties(skillPromotionCandidateSchema.parse(input));
+}
+
+function stripUndefinedProperties<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefinedProperties(item)) as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const compact: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (child !== undefined) {
+        compact[key] = stripUndefinedProperties(child);
+      }
+    }
+    return compact as T;
+  }
+  return value;
 }
 
 function orderedReferencesMatch(left: OrderedReference[], right: OrderedReference[]): boolean {

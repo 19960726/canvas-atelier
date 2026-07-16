@@ -584,7 +584,7 @@ function referenceStatus(count: number, emptyLabel: string): string {
   return count > 0 ? `已添加 ${count} 张` : emptyLabel;
 }
 function isImageModelProfile(profile: ProviderBridgeProfile): boolean {
-  return profile.capabilities.includes('image_generation') || profile.capabilities.includes('image_edit');
+  return profile.capabilities.includes('image_generation');
 }
 function modelRouteTestId(route: string): string {
   return route.replace(/[^A-Za-z0-9_-]/g, '-');

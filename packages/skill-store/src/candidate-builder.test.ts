@@ -36,6 +36,62 @@ describe('buildSkillPromotionCandidate', () => {
     expect(candidate).not.toHaveProperty('publishedKnowledgeVersion');
   });
 
+  it('builds review text from source memory, managed rule, and proposed rule content', () => {
+    const source = feedback('feedback-source', {
+      change: [],
+      nextStep: 'Source memory rule body: keep the product logo locked before changing props.',
+    });
+    const proposed = feedback('feedback-proposed', {
+      projectRevision: 2,
+      change: ['lock logo and prop spacing together'],
+      nextStep: 'Proposed rule body: lock logo and prop spacing together.',
+    });
+    const reviewMetadata = {
+      ...metadata(),
+      managedRule: 'Managed rule body: keep the existing cool background lighting.',
+    };
+
+    const candidate = buildSkillPromotionCandidate([source, proposed], reviewMetadata);
+
+    expect(candidate.sourceRule ?? '').toContain('Source memory rule body: keep the product logo locked before changing props.');
+    expect(candidate.sourceRule ?? '').toContain('Proposed rule body: lock logo and prop spacing together.');
+    expect(candidate.managedRule).toBe('Managed rule body: keep the existing cool background lighting.');
+    expect(candidate.rule).toBe('Proposed rule body: lock logo and prop spacing together.');
+    expect(candidate.diffHunks).toEqual([
+      '- Managed rule body: keep the existing cool background lighting.',
+      '+ Proposed rule body: lock logo and prop spacing together.',
+    ]);
+  });
+
+  it('keeps candidates non-reviewable instead of inventing managed text when active content is missing', () => {
+    const source = feedback('feedback-source', {
+      nextStep: 'Source memory rule body: preserve the local material note.',
+    });
+
+    const candidate = buildSkillPromotionCandidate([source], metadata());
+
+    expect(candidate.sourceRule ?? '').toContain('Source memory rule body: preserve the local material note.');
+    expect(candidate.managedRule).toBeUndefined();
+    expect(candidate.diffHunks).toBeUndefined();
+  });
+
+  it('omits undefined optional fields from generated candidates', () => {
+    const candidate = buildSkillPromotionCandidate([
+      feedback('feedback-source', {
+        feedback: { keep: ['product identity'], change: ['lock logo'], never: [] },
+        nextStep: 'Proposed rule body: lock the logo before changing props.',
+      }),
+    ], {
+      ...metadata(),
+      managedRule: 'Managed rule body: keep the current prop spacing.',
+    });
+
+    expectNoUndefinedValues(candidate);
+    expect(candidate.evidence).not.toHaveProperty('score');
+    expect(candidate).not.toHaveProperty('affectedCapabilities');
+    expect(candidate).not.toHaveProperty('reviewedAt');
+  });
+
   it('persists the builder inclusive aggregate source list through the project schema', () => {
     const first = feedback('feedback-a', { projectRevision: 1, change: ['add heavy liquid'] });
     const second = feedback('feedback-b', { projectRevision: 2, change: ['keep camera locked'] });
@@ -179,4 +235,17 @@ function feedback(id: string, patch: Partial<ProjectMemoryEntry> & { change?: st
     supersedesMemoryId: patch.supersedesMemoryId,
     supersedesMemoryIds: patch.supersedesMemoryIds,
   };
+}
+
+function expectNoUndefinedValues(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) expectNoUndefinedValues(item);
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      expect(child, `unexpected undefined at ${key}`).not.toBeUndefined();
+      expectNoUndefinedValues(child);
+    }
+  }
 }
