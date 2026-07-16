@@ -722,9 +722,7 @@ function createDefaultModelJobExecutor(): ModelJobExecutor {
   return {
     submit: async (job) => selectProductionModelJobExecutor().submit(job),
     poll: async (job) => selectProductionModelJobExecutor().poll(job),
-    cancel: async (job) => {
-      await selectProductionModelJobExecutor().cancel?.(job);
-    },
+    cancel: async (job) => await selectProductionModelJobExecutor().cancel?.(job),
     ackTerminal: async (job) => {
       await selectProductionModelJobExecutor().ackTerminal?.(job);
     },

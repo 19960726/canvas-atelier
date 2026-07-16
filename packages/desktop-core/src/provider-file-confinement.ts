@@ -10,6 +10,10 @@ const CREDENTIALS_LOCK_FILE = `${CREDENTIALS_FILE}.lock`;
 const TASK_MAPPINGS_LOCK_FILE = `${TASK_MAPPINGS_FILE}.lock`;
 
 type ConfinementErrorCode = Extract<ProviderBridgeErrorCode, 'CREDENTIALS_LOCKED' | 'PROVIDER_UNAVAILABLE'>;
+interface ConfinementRootIdentity {
+  readonly realRoot: string;
+  readonly resolvedRoot: string;
+}
 
 export function confinedCredentialsPath(appDataRoot: string): string {
   return confinedAppDataPath(appDataRoot, CREDENTIALS_FILE, 'CREDENTIALS_LOCKED', 'Provider credential path is invalid');
@@ -101,14 +105,10 @@ export async function rollbackConfirmedInRootFile(
   fileSystem: FileSystem,
   appDataRoot: string,
   targetPath: string,
+  rootIdentity?: ConfinementRootIdentity,
 ): Promise<void> {
   try {
-    if (fileSystem.lstat === undefined || fileSystem.realpath === undefined) return;
-    const root = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
-    const parent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
-    if (parent !== root) return;
-    const stat = await fileSystem.lstat(targetPath);
-    if (!stat.isFile() || stat.isSymbolicLink?.()) return;
+    if (!await canTouchConfirmedInRootFile(fileSystem, appDataRoot, targetPath, rootIdentity)) return;
     await fileSystem.rm(targetPath, { force: true });
   } catch {
     // Rollback is best-effort after the provider-domain error is already known.
@@ -128,6 +128,7 @@ export async function writeConfinedAtomicUpdate(
   },
 ): Promise<void> {
   await options.assertPathForWrite();
+  const rootIdentity = await captureConfinementRootIdentity(fileSystem, options.appDataRoot);
   const previous = await readExistingTarget(fileSystem, options);
   const tempPath = join(
     dirname(options.targetPath),
@@ -145,7 +146,7 @@ export async function writeConfinedAtomicUpdate(
     closed = true;
     await fileSystem.rename(tempPath, options.targetPath);
     replaced = true;
-    await options.assertPathForRead();
+    await assertOriginalRootPostWriteState(fileSystem, options, rootIdentity);
   } catch (error) {
     if (handle !== null && !closed) {
       try {
@@ -156,7 +157,7 @@ export async function writeConfinedAtomicUpdate(
     }
     await fileSystem.rm(tempPath, { force: true });
     if (replaced) {
-      await restoreConfirmedInRootTarget(fileSystem, options, previous);
+      await restoreConfirmedInRootTarget(fileSystem, options, previous, rootIdentity);
     }
     if (isProviderDomainError(error)) throw error;
     throw createProviderBridgeError(options.errorCode, options.errorMessage);
@@ -191,9 +192,10 @@ async function restoreConfirmedInRootTarget(
     readonly targetPath: string;
   },
   previous: { readonly existed: false } | { readonly existed: true; readonly data: string | Uint8Array },
+  rootIdentity: ConfinementRootIdentity,
 ): Promise<void> {
   try {
-    if (!await canTouchConfirmedInRootFile(fileSystem, options.appDataRoot, options.targetPath)) return;
+    if (!await canTouchConfirmedInRootFile(fileSystem, options.appDataRoot, options.targetPath, rootIdentity)) return;
     if (previous.existed) {
       const handle = await fileSystem.open(options.targetPath, 'w');
       try {
@@ -214,15 +216,66 @@ async function canTouchConfirmedInRootFile(
   fileSystem: FileSystem,
   appDataRoot: string,
   targetPath: string,
+  rootIdentity?: ConfinementRootIdentity,
 ): Promise<boolean> {
   if (fileSystem.lstat === undefined || fileSystem.realpath === undefined) return false;
-  const root = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
+  if (await isSymlinkTarget(fileSystem, appDataRoot)) return false;
+  const expectedRoot = rootIdentity?.realRoot ?? normalizeRealPath(resolve(appDataRoot));
+  const currentRoot = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
+  if (currentRoot !== expectedRoot) return false;
   const parent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
-  if (parent !== root) return false;
+  if (parent !== expectedRoot) return false;
   const target = normalizeRealPath(await fileSystem.realpath(targetPath));
-  if (target !== root && !target.startsWith(`${root}${sep}`)) return false;
+  if (target === expectedRoot || !target.startsWith(`${expectedRoot}${sep}`)) return false;
   const stat = await fileSystem.lstat(targetPath);
   return stat.isFile() && stat.isSymbolicLink?.() !== true;
+}
+
+async function assertOriginalRootPostWriteState(
+  fileSystem: FileSystem,
+  options: {
+    readonly appDataRoot: string;
+    readonly targetPath: string;
+    readonly assertPathForRead: () => Promise<void>;
+    readonly errorCode: ConfinementErrorCode;
+    readonly errorMessage: string;
+  },
+  rootIdentity: ConfinementRootIdentity,
+): Promise<void> {
+  await options.assertPathForRead();
+  if (fileSystem.lstat === undefined || fileSystem.realpath === undefined) return;
+  if (await isSymlinkTarget(fileSystem, options.appDataRoot)) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const currentRoot = normalizeRealPath(await fileSystem.realpath(resolve(options.appDataRoot)));
+  if (currentRoot !== rootIdentity.realRoot) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const currentParent = normalizeRealPath(await fileSystem.realpath(dirname(options.targetPath)));
+  if (currentParent !== rootIdentity.realRoot) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const currentTarget = normalizeRealPath(await fileSystem.realpath(options.targetPath));
+  if (currentTarget === rootIdentity.realRoot || !currentTarget.startsWith(`${rootIdentity.realRoot}${sep}`)) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const stat = await fileSystem.lstat(options.targetPath);
+  if (!stat.isFile() || stat.isSymbolicLink?.() === true) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+}
+
+async function captureConfinementRootIdentity(
+  fileSystem: FileSystem,
+  appDataRoot: string,
+): Promise<ConfinementRootIdentity> {
+  const resolvedRoot = normalizeRealPath(resolve(appDataRoot));
+  return {
+    realRoot: fileSystem.realpath === undefined
+      ? resolvedRoot
+      : normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot))),
+    resolvedRoot,
+  };
 }
 
 function confinedAppDataPath(
@@ -253,6 +306,20 @@ async function rejectSymlinkTarget(
     }
   } catch (error) {
     if (isMissingFileError(error)) return;
+    throw error;
+  }
+}
+
+async function isSymlinkTarget(
+  fileSystem: FileSystem,
+  targetPath: string,
+): Promise<boolean> {
+  if (fileSystem.lstat === undefined) return false;
+  try {
+    const stat = await fileSystem.lstat(targetPath);
+    return stat.isSymbolicLink?.() === true;
+  } catch (error) {
+    if (isMissingFileError(error)) return false;
     throw error;
   }
 }

@@ -565,6 +565,102 @@ describe('project optimization memory', () => {
     expect(JSON.stringify(useAppStore.getState().modelJobs)).not.toMatch(/Authorization|secret-token|C:\\\\Users/i);
   });
 
+  it('keeps provider-completed cancel results as the first terminal state', async () => {
+    const providerTaskId = 'provider-job-app-cancel-completed';
+    const ackImageJobTerminal = vi.fn(async () => ({ acknowledged: true as const }));
+    window.novusDesktop = createDesktopProviderBridgeForCancel({
+      ackImageJobTerminal,
+      cancelImageJob: vi.fn(async () => ({
+        status: 'completed' as const,
+        progress: 1,
+        result: { assetId: 'provider:comfly:provider-job-app-cancel-completed:0' },
+      })),
+      pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      providerTaskId,
+    });
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('cancel should keep the completed provider terminal');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
+
+    await useAppStore.getState().cancelModelJob(useAppStore.getState().modelJobs[0]!.id);
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      providerTaskId,
+      resultAssetId: 'provider:comfly:provider-job-app-cancel-completed:0',
+      status: 'completed',
+    });
+    expect(ackImageJobTerminal).toHaveBeenCalledWith({
+      provider: 'comfly',
+      providerTaskId,
+      status: 'completed',
+    });
+  });
+
+  it('keeps provider-failed cancel results as the first terminal state', async () => {
+    const providerTaskId = 'provider-job-app-cancel-failed';
+    const ackImageJobTerminal = vi.fn(async () => ({ acknowledged: true as const }));
+    window.novusDesktop = createDesktopProviderBridgeForCancel({
+      ackImageJobTerminal,
+      cancelImageJob: vi.fn(async () => ({
+        status: 'failed' as const,
+        error: { code: 'PROVIDER_ERROR' as const, message: 'remote cancel failed terminal', retryable: false },
+      })),
+      pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      providerTaskId,
+    });
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('cancel should keep the failed provider terminal');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
+
+    await useAppStore.getState().cancelModelJob(useAppStore.getState().modelJobs[0]!.id);
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'failed');
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      providerTaskId,
+      status: 'failed',
+    });
+    expect(useAppStore.getState().modelJobs[0]?.error).toBeTruthy();
+    expect(ackImageJobTerminal).toHaveBeenCalledWith({
+      provider: 'comfly',
+      providerTaskId,
+      status: 'failed',
+    });
+  });
+
+  it('allows provider-cancelled cancel results to stay cancelled', async () => {
+    const providerTaskId = 'provider-job-app-cancel-cancelled';
+    const ackImageJobTerminal = vi.fn(async () => ({ acknowledged: true as const }));
+    window.novusDesktop = createDesktopProviderBridgeForCancel({
+      ackImageJobTerminal,
+      cancelImageJob: vi.fn(async () => ({ status: 'cancelled' as const })),
+      pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      providerTaskId,
+    });
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('cancel should keep the cancelled provider terminal');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
+
+    await useAppStore.getState().cancelModelJob(useAppStore.getState().modelJobs[0]!.id);
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'cancelled');
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      providerTaskId,
+      status: 'cancelled',
+    });
+    expect(ackImageJobTerminal).toHaveBeenCalledWith({
+      provider: 'comfly',
+      providerTaskId,
+      status: 'cancelled',
+    });
+  });
+
   it('persists a project-memory promotion as pending review without writing Skill knowledge', async () => {
     useAppStore.getState().draftAgentPlan('沉淀一条可复用经验');
     await useAppStore.getState().confirmAgentPlan({ models: false, deleteNodes: false, skillWriteback: false });
@@ -1284,6 +1380,31 @@ async function waitForStore(predicate: () => boolean): Promise<void> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createDesktopProviderBridgeForCancel(options: {
+  ackImageJobTerminal: NonNullable<NonNullable<typeof window.novusDesktop>['provider']>['ackImageJobTerminal'];
+  cancelImageJob: NonNullable<NonNullable<typeof window.novusDesktop>['provider']>['cancelImageJob'];
+  pollImageJob: NonNullable<NonNullable<typeof window.novusDesktop>['provider']>['pollImageJob'];
+  providerTaskId: string;
+}): typeof window.novusDesktop {
+  return {
+    provider: {
+      ackImageJobTerminal: options.ackImageJobTerminal,
+      cancelImageJob: options.cancelImageJob,
+      configure: vi.fn(),
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+      listProfiles: vi.fn(async () => [{
+        provider: 'comfly',
+        modelRoute: 'gpt-image',
+        displayName: 'GPT Image',
+        capabilities: ['image_generation', 'async_tasks'],
+      }]),
+      pollImageJob: options.pollImageJob,
+      submitImageJob: vi.fn(async () => ({ providerTaskId: options.providerTaskId })),
+      unlock: vi.fn(),
+    },
+  } as unknown as typeof window.novusDesktop;
 }
 
 function createImmediateBrowserClient(): ProjectPersistenceClient {
