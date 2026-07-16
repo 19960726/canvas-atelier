@@ -348,6 +348,106 @@ describe('persistent model job store', () => {
     expect(await storage.get('job-idempotent')).toMatchObject({ status: 'completed' });
   });
 
+  it('acks completed provider terminals only after project result and terminal job are durable', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const ackTerminal = vi.fn(async (job: ModelJob) => {
+      expect(await storage.get(job.id)).toMatchObject({
+        status: 'completed',
+        resultAssetId: `asset-${job.id}`,
+      });
+      expect(project.nodes.some((node) => node.type === 'image_result' && node.data.jobId === job.id)).toBe(true);
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async (job) => ({
+          status: 'completed' as const,
+          result: {
+            assetId: `asset-${job.id}`,
+            url: 'https://assets.example/generated.png?redirect=http://169.254.169.254/latest/meta-data',
+          },
+        })),
+        ackTerminal,
+      } as Partial<ModelJobExecutor>),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-ack-complete' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-ack-complete'))!,
+      status: 'running',
+      providerTaskId: 'provider-job-ack-complete',
+    });
+
+    await store.pollActiveJobs();
+
+    expect(ackTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'job-ack-complete',
+      providerTaskId: 'provider-job-ack-complete',
+      status: 'completed',
+    }));
+    expect(JSON.stringify(project)).not.toMatch(/https?:\/\/|169\.254|redirect|generated\.png/i);
+    expect(JSON.stringify(await storage.get('job-ack-complete'))).not.toMatch(/https?:\/\/|169\.254|redirect|generated\.png/i);
+  });
+
+  it('keeps locked jobs running and acks failed/cancelled terminals after durable terminal writes', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const ackedStatuses: string[] = [];
+    const ackTerminal = vi.fn(async (job: ModelJob) => {
+      expect(await storage.get(job.id)).toMatchObject({ status: job.status });
+      ackedStatuses.push(job.status);
+    });
+    const executor = createExecutor({
+      poll: vi.fn()
+        .mockResolvedValueOnce({ status: 'running' as const, blockedReason: 'credentials_locked' })
+        .mockResolvedValueOnce({ status: 'failed' as const, error: { code: 'PROVIDER_ERROR', message: 'failed', retryable: false } })
+        .mockResolvedValue({ status: 'running' as const, progress: 0.2 }),
+      cancel: vi.fn(async () => {}),
+      ackTerminal,
+    } as Partial<ModelJobExecutor>);
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction: vi.fn(async () => true),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [
+        request({ id: 'job-locked-running' }),
+        request({ id: 'job-failed-ack' }),
+        request({ id: 'job-cancelled-ack' }),
+      ],
+    });
+    await storage.put({ ...(await storage.get('job-locked-running'))!, status: 'running', providerTaskId: 'provider-job-locked-running' });
+    await storage.put({ ...(await storage.get('job-failed-ack'))!, status: 'running', providerTaskId: 'provider-job-failed-ack' });
+    await storage.put({ ...(await storage.get('job-cancelled-ack'))!, status: 'running', providerTaskId: 'provider-job-cancelled-ack' });
+
+    await store.pollActiveJobs();
+    await store.pollActiveJobs();
+    await store.cancelQueuedJob('job-cancelled-ack');
+
+    const lockedJob = await storage.get('job-locked-running');
+    expect(lockedJob?.status).toBe('running');
+    expect(lockedJob).not.toHaveProperty('error');
+    expect(await storage.get('job-failed-ack')).toMatchObject({ status: 'failed' });
+    expect(await storage.get('job-cancelled-ack')).toMatchObject({ status: 'cancelled' });
+    expect(ackedStatuses.sort()).toEqual(['cancelled', 'failed']);
+  });
+
   it('notifies subscribers with sanitized clones for live progress and action errors', async () => {
     const storage = createInMemoryModelJobStorage();
     const snapshots: ModelJob[][] = [];
@@ -493,6 +593,7 @@ function createExecutor(overrides: Partial<ModelJobExecutor> = {}): ModelJobExec
     submit: overrides.submit ?? vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
     poll: overrides.poll ?? vi.fn(async () => ({ status: 'running' as const, progress: 0.5 })),
     cancel: overrides.cancel ?? vi.fn(async () => {}),
+    ackTerminal: overrides.ackTerminal,
   };
 }
 

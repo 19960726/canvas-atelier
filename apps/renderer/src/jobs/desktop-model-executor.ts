@@ -10,17 +10,35 @@ export function createDesktopModelJobExecutor(): ModelJobExecutor {
       if (!job.providerTaskId) {
         throw new Error('Provider task id is required before polling');
       }
-      const result = await getProviderBridge().pollImageJob({
-        provider: requireJobField(job.provider, 'provider'),
-        providerTaskId: job.providerTaskId,
-      });
+      let result: Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['pollImageJob']>>;
+      try {
+        result = await getProviderBridge().pollImageJob({
+          provider: requireProviderField(job.provider),
+          providerTaskId: job.providerTaskId,
+        });
+      } catch (error) {
+        if (isCredentialsLocked(error)) {
+          return { status: 'running', blockedReason: 'credentials_locked', progress: undefined };
+        }
+        throw error;
+      }
       return sanitizePollResult(result);
     },
     async cancel(job) {
       if (!job.providerTaskId) return;
       await getProviderBridge().cancelImageJob({
-        provider: requireJobField(job.provider, 'provider'),
+        provider: requireProviderField(job.provider),
         providerTaskId: job.providerTaskId,
+      });
+    },
+    async ackTerminal(job) {
+      if (!job.providerTaskId || (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled')) {
+        return;
+      }
+      await getProviderBridge().ackImageJobTerminal({
+        provider: requireProviderField(job.provider),
+        providerTaskId: job.providerTaskId,
+        status: job.status,
       });
     },
   };
@@ -37,7 +55,7 @@ function getProviderBridge() {
 function toSubmitRequest(job: ModelJob) {
   return {
     jobId: job.id,
-    provider: requireJobField(job.provider, 'provider'),
+    provider: requireProviderField(job.provider),
     modelRoute: requireJobField(job.modelRoute, 'modelRoute'),
     prompt: requireJobField(job.prompt, 'prompt'),
     conversationId: requireJobField(job.conversationId, 'conversationId'),
@@ -47,7 +65,11 @@ function toSubmitRequest(job: ModelJob) {
 
 function sanitizePollResult(result: Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['pollImageJob']>>): ModelJobPollResult {
   if (result.status === 'running') {
-    return { status: 'running', progress: result.progress };
+    return {
+      status: 'running',
+      progress: result.progress,
+      blockedReason: result.blockedReason,
+    };
   }
   if (result.status === 'failed') {
     return { status: 'failed', error: result.error };
@@ -63,9 +85,24 @@ function sanitizePollResult(result: Awaited<ReturnType<NonNullable<Window['novus
   };
 }
 
+function isCredentialsLocked(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'CREDENTIALS_LOCKED';
+}
+
 function requireJobField(value: string | undefined, fieldName: string): string {
   if (value === undefined || value.length === 0) {
     throw new Error(`${fieldName} is required for provider job execution`);
   }
   return value;
+}
+
+function requireProviderField(value: string | undefined): 'comfly' {
+  const provider = requireJobField(value, 'provider');
+  if (provider !== 'comfly') {
+    throw new Error('provider is required for provider job execution');
+  }
+  return provider;
 }

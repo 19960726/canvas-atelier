@@ -1,5 +1,4 @@
 import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback } from 'node:crypto';
-import { isIP } from 'node:net';
 import { dirname, join, normalize, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -11,13 +10,18 @@ import {
 } from '@agent-canvas/provider-comfly';
 
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
+import { acquireConfinedFileLock, releaseConfinedFileLock } from './confined-file-lock.js';
 import {
   PROVIDER_BRIDGE_CHANNELS,
   createProviderBridgeError,
+  isProviderBridgeErrorCode,
   normalizeProviderBridgeError,
+  type AckImageJobTerminalBridgeRequest,
+  type AckImageJobTerminalBridgeResult,
   type CancelImageJobBridgeRequest,
   type CancelImageJobBridgeResult,
   type ConfigureProviderBridgeRequest,
+  type ProviderBridgeBlockedReason,
   type PollImageJobBridgeRequest,
   type PollImageJobBridgeResult,
   type ProviderBridgeCapability,
@@ -38,11 +42,14 @@ export {
   normalizeProviderBridgeError,
 };
 export type {
+  AckImageJobTerminalBridgeRequest,
+  AckImageJobTerminalBridgeResult,
   CancelImageJobBridgeRequest,
   CancelImageJobBridgeResult,
   ConfigureProviderBridgeRequest,
   PollImageJobBridgeRequest,
   PollImageJobBridgeResult,
+  ProviderBridgeBlockedReason,
   ProviderBridgeChannel,
   ProviderBridgeCapability,
   ProviderBridgeError,
@@ -59,7 +66,10 @@ export type {
 const scrypt = promisify(scryptCallback);
 const CREDENTIALS_FILE = 'provider-credentials.json';
 const TASK_MAPPINGS_FILE = 'provider-task-mappings.json';
+const CREDENTIALS_LOCK_FILE = `${CREDENTIALS_FILE}.lock`;
+const TASK_MAPPINGS_LOCK_FILE = `${TASK_MAPPINGS_FILE}.lock`;
 const DEFAULT_COMFLY_BASE_URL = 'https://api.comfly.chat';
+const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
 
@@ -74,6 +84,7 @@ export interface ProviderCredentialStore {
   unlock(request: { passphrase: string }): Promise<void>;
   getStatus(): Promise<ProviderConfigurationStatus>;
   getToken(): Promise<string>;
+  getMappingKey(): Promise<string>;
 }
 
 export interface ProviderService {
@@ -84,6 +95,7 @@ export interface ProviderService {
   submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
   cancelImageJob(request: CancelImageJobBridgeRequest): Promise<CancelImageJobBridgeResult>;
+  ackImageJobTerminal(request: AckImageJobTerminalBridgeRequest): Promise<AckImageJobTerminalBridgeResult>;
 }
 
 export interface ProviderBridgeHandlers {
@@ -94,6 +106,7 @@ export interface ProviderBridgeHandlers {
   submitImageJob(event: unknown, request: unknown): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(event: unknown, request: unknown): Promise<PollImageJobBridgeResult>;
   cancelImageJob(event: unknown, request: unknown): Promise<CancelImageJobBridgeResult>;
+  ackImageJobTerminal(event: unknown, request: unknown): Promise<AckImageJobTerminalBridgeResult>;
 }
 
 export interface ProviderIpcMainLike {
@@ -102,12 +115,12 @@ export interface ProviderIpcMainLike {
 
 type ProviderCredentialEnvelope =
   | {
-    readonly version: 1;
+    readonly version: 1 | 2;
     readonly kind: 'safeStorage';
     readonly ciphertextHex: string;
   }
   | {
-    readonly version: 1;
+    readonly version: 1 | 2;
     readonly kind: 'passphrase';
     readonly kdf: 'scrypt';
     readonly saltHex: string;
@@ -115,6 +128,11 @@ type ProviderCredentialEnvelope =
     readonly authTagHex: string;
     readonly ciphertextHex: string;
   };
+
+interface ProviderCredentialPayload {
+  readonly token: string;
+  readonly mappingKey: string;
+}
 
 interface ProviderTaskMappingEnvelope {
   readonly version: 1;
@@ -128,12 +146,20 @@ interface ProviderTaskMappingRecord {
   readonly provider: 'comfly';
   readonly publicTaskId: string;
   readonly rawTaskId: string;
+  readonly state: 'running' | 'completed' | 'failed' | 'cancelled';
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly terminalAt?: string;
+  readonly result?: ProviderImageJobResult;
+  readonly error?: ProviderBridgeError;
 }
 
 interface ProviderTaskMappingStore {
-  clear(): Promise<void>;
-  delete(publicTaskId: string): Promise<void>;
+  ackTerminal(publicTaskId: string, status: ProviderTaskMappingRecord['state']): Promise<void>;
+  gcTerminalTombstones(expireBeforeMs: number): Promise<void>;
   get(publicTaskId: string): Promise<ProviderTaskMappingRecord | undefined>;
+  markCancelled(publicTaskId: string, now: string): Promise<void>;
+  markTerminal(publicTaskId: string, result: Extract<PollImageJobBridgeResult, { status: 'completed' | 'failed' }>, now: string): Promise<void>;
   set(record: ProviderTaskMappingRecord): Promise<void>;
 }
 
@@ -153,6 +179,8 @@ export function parseProviderBridgeRequest(channel: string, request: unknown): u
       return validatePollImageJobRequest(request);
     case PROVIDER_BRIDGE_CHANNELS.cancelImageJob:
       return validateCancelImageJobRequest(request);
+    case PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal:
+      return validateAckImageJobTerminalRequest(request);
     default:
       throw createProviderBridgeError('INVALID_REQUEST', 'Unknown provider channel');
   }
@@ -166,77 +194,63 @@ export function createSecureProviderCredentialStore(options: {
   const fileSystem = options.fileSystem ?? new NodeFileSystem();
   const safeStorage = options.safeStorage;
   const targetPath = confinedCredentialsPath(options.appDataRoot);
-  let unlockedToken: string | null = null;
+  const lockPath = confinedCredentialsLockPath(options.appDataRoot);
+  let unlockedCredentials: ProviderCredentialPayload | null = null;
   let operationTail: Promise<void> = Promise.resolve();
 
   return {
     async configure(request) {
       await enqueueCredentialOperation(async () => {
         const token = parseSecretString(request.token, 'token');
-        if (safeStorage?.isEncryptionAvailable() === true) {
-          await writeEnvelope({
-            version: 1,
-            kind: 'safeStorage',
-            ciphertextHex: Buffer.from(safeStorage.encryptString(token)).toString('hex'),
-          });
-          unlockedToken = token;
-          return;
-        }
-        if (request.passphrase === undefined || request.passphrase.length === 0) {
-          throw createProviderBridgeError(
-            'CREDENTIALS_LOCKED',
-            'Provider credentials require system encryption or a passphrase',
-          );
-        }
-        await writeEnvelope(await encryptWithPassphrase(token, request.passphrase));
-        unlockedToken = token;
+        await withCredentialLock(async () => {
+          const existing = await readEnvelopeUnlocked();
+          const existingPayload = await readExistingCredentialPayloadForRotation(existing, request.passphrase);
+          const nextPayload = {
+            token,
+            mappingKey: existingPayload?.mappingKey ?? createMappingKey(),
+          };
+          await writeEnvelopeUnlocked(await encryptCredentialPayload(nextPayload, request.passphrase));
+          unlockedCredentials = nextPayload;
+        });
       });
     },
     async unlock(request) {
       await enqueueCredentialOperation(async () => {
-        const envelope = await readEnvelope();
-        if (envelope === null) {
-          throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are not configured');
-        }
-        try {
-          if (envelope.kind === 'safeStorage') {
-            if (safeStorage?.isEncryptionAvailable() !== true) {
-              throw new Error('System encryption is unavailable');
-            }
-            unlockedToken = safeStorage.decryptString(Buffer.from(envelope.ciphertextHex, 'hex'));
-            return;
+        await withCredentialLock(async () => {
+          const envelope = await readEnvelopeUnlocked();
+          if (envelope === null) {
+            throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are not configured');
           }
-          unlockedToken = await decryptWithPassphrase(envelope, request.passphrase);
-        } catch {
-          throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are locked');
-        }
+          const decoded = await decryptCredentialEnvelope(envelope, request.passphrase);
+          unlockedCredentials = decoded.payload;
+          if (decoded.needsMigration) {
+            await writeEnvelopeUnlocked(await encryptCredentialPayload(decoded.payload, request.passphrase));
+          }
+        });
       });
     },
     async getStatus() {
-      const envelope = await readEnvelope();
-      if (envelope === null) {
+      return enqueueCredentialOperation(async () => withCredentialLock(async () => {
+        const envelope = await readEnvelopeUnlocked();
+        if (envelope === null) {
+          return {
+            configured: false,
+            locked: true,
+            encryption: safeStorage?.isEncryptionAvailable() === true ? 'safeStorage' : 'unavailable',
+          };
+        }
         return {
-          configured: false,
-          locked: true,
-          encryption: safeStorage?.isEncryptionAvailable() === true ? 'safeStorage' : 'unavailable',
+          configured: true,
+          locked: unlockedCredentials === null,
+          encryption: envelope.kind === 'safeStorage' ? 'safeStorage' : 'passphrase',
         };
-      }
-      return {
-        configured: true,
-        locked: unlockedToken === null,
-        encryption: envelope.kind === 'safeStorage' ? 'safeStorage' : 'passphrase',
-      };
+      }));
     },
     async getToken() {
-      if (unlockedToken !== null) {
-        return unlockedToken;
-      }
-      const status = await this.getStatus();
-      if (status.configured && status.encryption === 'safeStorage') {
-        await this.unlock({ passphrase: '' });
-        if (unlockedToken !== null) return unlockedToken;
-      }
-      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are locked');
+      return (await getUnlockedCredentials()).token;
+    },
+    async getMappingKey() {
+      return (await getUnlockedCredentials()).mappingKey;
     },
   };
 
@@ -246,7 +260,42 @@ export function createSecureProviderCredentialStore(options: {
     return run;
   }
 
-  async function readEnvelope(): Promise<ProviderCredentialEnvelope | null> {
+  async function getUnlockedCredentials(): Promise<ProviderCredentialPayload> {
+    if (unlockedCredentials !== null) return unlockedCredentials;
+    await enqueueCredentialOperation(async () => {
+      if (unlockedCredentials !== null) return;
+      await withCredentialLock(async () => {
+        const envelope = await readEnvelopeUnlocked();
+        if (envelope?.kind !== 'safeStorage' || safeStorage?.isEncryptionAvailable() !== true) {
+          throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are locked', true);
+        }
+        const decoded = await decryptCredentialEnvelope(envelope, '');
+        unlockedCredentials = decoded.payload;
+        if (decoded.needsMigration) {
+          await writeEnvelopeUnlocked(await encryptCredentialPayload(decoded.payload, ''));
+        }
+      });
+    });
+    if (unlockedCredentials !== null) return unlockedCredentials;
+    throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are locked', true);
+  }
+
+  async function readExistingCredentialPayloadForRotation(
+    envelope: ProviderCredentialEnvelope | null,
+    passphrase: string | undefined,
+  ): Promise<ProviderCredentialPayload | null> {
+    if (envelope === null) return null;
+    if (unlockedCredentials !== null && envelope.kind === 'passphrase' && passphrase === undefined) {
+      return unlockedCredentials;
+    }
+    const decoded = await decryptCredentialEnvelope(envelope, passphrase ?? '');
+    if (decoded.needsMigration) {
+      await writeEnvelopeUnlocked(await encryptCredentialPayload(decoded.payload, passphrase));
+    }
+    return decoded.payload;
+  }
+
+  async function readEnvelopeUnlocked(): Promise<ProviderCredentialEnvelope | null> {
     try {
       await assertConfinedCredentialPathForRead();
       return parseCredentialEnvelope(JSON.parse(await fileSystem.readFile(targetPath, 'utf8')) as unknown);
@@ -256,32 +305,100 @@ export function createSecureProviderCredentialStore(options: {
     }
   }
 
-  async function writeEnvelope(envelope: ProviderCredentialEnvelope): Promise<void> {
+  async function writeEnvelopeUnlocked(envelope: ProviderCredentialEnvelope): Promise<void> {
     await fileSystem.mkdir(options.appDataRoot, { recursive: true });
     await assertConfinedCredentialPathForWrite();
     await writeAtomic(fileSystem, targetPath, `${JSON.stringify(envelope)}\n`);
   }
 
-  async function assertConfinedCredentialPathForWrite(): Promise<void> {
-    await rejectSymlinkTarget(fileSystem, options.appDataRoot);
-    await rejectSymlinkTarget(fileSystem, targetPath);
-    if (fileSystem.realpath === undefined) return;
-    const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(options.appDataRoot)));
-    const realParent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
-    if (realParent !== realRoot) {
-      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata path is invalid');
+  async function withCredentialLock<T>(operation: () => Promise<T>): Promise<T> {
+    await fileSystem.mkdir(options.appDataRoot, { recursive: true });
+    const lock = await acquireConfinedFileLock(lockPath, {
+      fileSystem,
+      assertPathForRead: (path) => assertConfinedAppDataPathForRead(
+        fileSystem,
+        options.appDataRoot,
+        path,
+        'CREDENTIALS_LOCKED',
+        'Provider credential metadata path is invalid',
+      ),
+      assertPathForWrite: (path) => assertConfinedAppDataPathForWrite(
+        fileSystem,
+        options.appDataRoot,
+        path,
+        'CREDENTIALS_LOCKED',
+        'Provider credential metadata path is invalid',
+      ),
+      timeoutMessage: 'Timed out waiting for provider credential lock',
+    });
+    try {
+      return await operation();
+    } finally {
+      await releaseConfinedFileLock(lock);
     }
   }
 
-  async function assertConfinedCredentialPathForRead(): Promise<void> {
-    await rejectSymlinkTarget(fileSystem, options.appDataRoot);
-    await rejectSymlinkTarget(fileSystem, targetPath);
-    if (fileSystem.realpath === undefined) return;
-    const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(options.appDataRoot)));
-    const realTarget = normalizeRealPath(await fileSystem.realpath(targetPath));
-    if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${sep}`)) {
-      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata path is invalid');
+  async function encryptCredentialPayload(
+    payload: ProviderCredentialPayload,
+    passphrase: string | undefined,
+  ): Promise<ProviderCredentialEnvelope> {
+    const serialized = JSON.stringify({ schemaVersion: 2, ...payload });
+    if (safeStorage?.isEncryptionAvailable() === true) {
+      return {
+        version: 2,
+        kind: 'safeStorage',
+        ciphertextHex: Buffer.from(safeStorage.encryptString(serialized)).toString('hex'),
+      };
     }
+    if (passphrase === undefined || passphrase.length === 0) {
+      throw createProviderBridgeError(
+        'CREDENTIALS_LOCKED',
+        'Provider credentials require system encryption or a passphrase',
+      );
+    }
+    return encryptWithPassphrase(serialized, passphrase);
+  }
+
+  async function decryptCredentialEnvelope(
+    envelope: ProviderCredentialEnvelope,
+    passphrase: string,
+  ): Promise<{ payload: ProviderCredentialPayload; needsMigration: boolean }> {
+    try {
+      const plaintext = envelope.kind === 'safeStorage'
+        ? decryptSafeStorageEnvelope(envelope)
+        : await decryptWithPassphrase(envelope, passphrase);
+      return parseCredentialPayload(plaintext, envelope.version);
+    } catch (error) {
+      if (isProviderBridgeError(error)) throw error;
+      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are locked', true);
+    }
+  }
+
+  function decryptSafeStorageEnvelope(envelope: Extract<ProviderCredentialEnvelope, { kind: 'safeStorage' }>): string {
+    if (safeStorage?.isEncryptionAvailable() !== true) {
+      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credentials are locked', true);
+    }
+    return safeStorage.decryptString(Buffer.from(envelope.ciphertextHex, 'hex'));
+  }
+
+  async function assertConfinedCredentialPathForWrite(): Promise<void> {
+    await assertConfinedAppDataPathForWrite(
+      fileSystem,
+      options.appDataRoot,
+      targetPath,
+      'CREDENTIALS_LOCKED',
+      'Provider credential metadata path is invalid',
+    );
+  }
+
+  async function assertConfinedCredentialPathForRead(): Promise<void> {
+    await assertConfinedAppDataPathForRead(
+      fileSystem,
+      options.appDataRoot,
+      targetPath,
+      'CREDENTIALS_LOCKED',
+      'Provider credential metadata path is invalid',
+    );
   }
 }
 
@@ -293,16 +410,20 @@ export function createComflyProviderService(options: {
   readonly profiles?: readonly ProviderBridgeProfile[];
   readonly providerModels?: readonly ProviderBridgeProfile[];
   readonly baseUrl?: string;
+  readonly now?: () => number;
+  readonly terminalTombstoneTtlMs?: number;
   readonly timeoutMs?: number;
 }): ProviderService {
   const fileSystem = options.fileSystem ?? new NodeFileSystem();
   let profiles = sanitizeProfiles(options.profiles ?? DEFAULT_PROVIDER_PROFILES);
   let baseUrl = options.baseUrl ?? DEFAULT_COMFLY_BASE_URL;
-  let configureTail: Promise<void> = Promise.resolve();
+  let serviceTail: Promise<void> = Promise.resolve();
+  const nowMs = options.now ?? Date.now;
+  const terminalTombstoneTtlMs = options.terminalTombstoneTtlMs ?? DEFAULT_TERMINAL_TOMBSTONE_TTL_MS;
   const providerTaskMappings = createProviderTaskMappingStore({
     appDataRoot: options.appDataRoot,
     fileSystem,
-    secretSupplier: () => options.credentialStore.getToken(),
+    secretSupplier: () => options.credentialStore.getMappingKey(),
   });
 
   const getClient = () => new ComflyClient({
@@ -314,72 +435,130 @@ export function createComflyProviderService(options: {
 
   return {
     getStatus() {
-      return options.credentialStore.getStatus();
+      return enqueueServiceOperation(() => options.credentialStore.getStatus());
     },
     configure(request) {
-      return enqueueConfigure(async () => {
+      return enqueueServiceOperation(async () => {
         const validated = validateConfigureRequest(request);
+        const nextProfiles = validated.profiles === undefined ? undefined : validateConfiguredProfiles(validated.profiles);
         await options.credentialStore.configure({ token: validated.token, passphrase: validated.passphrase });
-        await providerTaskMappings.clear();
         if (validated.baseUrl !== undefined) baseUrl = validated.baseUrl;
-        if (validated.profiles !== undefined) profiles = validateConfiguredProfiles(validated.profiles);
+        if (nextProfiles !== undefined) profiles = nextProfiles;
+        await gcTerminalTombstones();
         return options.credentialStore.getStatus();
       });
     },
     async unlock(request) {
-      const validated = validateUnlockRequest(request);
-      await options.credentialStore.unlock(validated);
-      return options.credentialStore.getStatus();
+      return enqueueServiceOperation(async () => {
+        const validated = validateUnlockRequest(request);
+        await options.credentialStore.unlock(validated);
+        await gcTerminalTombstones();
+        return options.credentialStore.getStatus();
+      });
     },
     async listProfiles() {
-      return sanitizeProfiles(mergeComflyModelRegistries({
-        providerModels: options.providerModels ?? [],
-        profileModels: profiles,
-      }));
+      return enqueueServiceOperation(async () => {
+        await gcTerminalTombstones();
+        return sanitizeProfiles(mergeComflyModelRegistries({
+          providerModels: options.providerModels ?? [],
+          profileModels: profiles,
+        }));
+      });
     },
     async submitImageJob(request) {
-      const validated = validateSubmitImageJobRequest(request);
-      const profile = selectProfile(profiles, validated.provider, validated.modelRoute);
-      const response = await translateProviderCall(() => getClient().generateImage({
-        model: profile.modelId ?? profile.modelRoute,
-        prompt: validated.prompt,
-        async: true,
-      }));
-      const parsed = parseImageTaskResponse(response);
-      const publicTaskId = createPublicProviderTaskId();
-      await providerTaskMappings.set({
-        provider: 'comfly',
-        publicTaskId,
-        rawTaskId: parsed.taskId,
+      return enqueueServiceOperation(async () => {
+        await gcTerminalTombstones();
+        const validated = validateSubmitImageJobRequest(request);
+        const profile = selectProfile(profiles, validated.provider, validated.modelRoute);
+        const response = await translateProviderCall(() => getClient().generateImage({
+          model: profile.modelId ?? profile.modelRoute,
+          prompt: validated.prompt,
+          async: true,
+        }));
+        const parsed = parseImageTaskResponse(response);
+        const publicTaskId = createPublicProviderTaskId();
+        const timestamp = nowIso();
+        await providerTaskMappings.set({
+          provider: 'comfly',
+          publicTaskId,
+          rawTaskId: parsed.taskId,
+          state: 'running',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        return { providerTaskId: publicTaskId };
       });
-      return { providerTaskId: publicTaskId };
     },
     async pollImageJob(request) {
-      const validated = validatePollImageJobRequest(request);
-      assertSupportedProvider(validated.provider);
-      const task = await resolveProviderTask(providerTaskMappings, validated);
-      const response = await translateProviderCall(
-        () => getClient().getImageTask(task.rawTaskId),
-        { publicTaskId: validated.providerTaskId, rawTaskId: task.rawTaskId, request: 'poll' },
-      );
-      const result = mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
-      if (result.status === 'completed' || result.status === 'failed') {
-        await providerTaskMappings.delete(validated.providerTaskId);
-      }
-      return result;
+      return enqueueServiceOperation(async () => {
+        await gcTerminalTombstones();
+        const validated = validatePollImageJobRequest(request);
+        assertSupportedProvider(validated.provider);
+        let task: ProviderTaskMappingRecord | undefined;
+        try {
+          task = await providerTaskMappings.get(validated.providerTaskId);
+        } catch (error) {
+          if (isCredentialsLocked(error)) return blockedCredentialsPollResult();
+          throw error;
+        }
+        if (task === undefined || task.provider !== validated.provider) {
+          throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+        }
+        if (task.state !== 'running') {
+          return terminalMappingToPollResult(task);
+        }
+        let response: unknown;
+        try {
+          response = await translateProviderCall(
+            () => getClient().getImageTask(task.rawTaskId),
+            { publicTaskId: validated.providerTaskId, rawTaskId: task.rawTaskId, request: 'poll' },
+          );
+        } catch (error) {
+          if (isCredentialsLocked(error)) return blockedCredentialsPollResult();
+          throw error;
+        }
+        const result = mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
+        if (result.status === 'completed' || result.status === 'failed') {
+          await providerTaskMappings.markTerminal(validated.providerTaskId, result, nowIso());
+        }
+        return result;
+      });
     },
     async cancelImageJob(request) {
-      const validated = validateCancelImageJobRequest(request);
-      assertSupportedProvider(validated.provider);
-      await providerTaskMappings.delete(validated.providerTaskId);
-      return { status: 'local-only', remoteCancelled: false, reason: 'unsupported' };
+      return enqueueServiceOperation(async () => {
+        await gcTerminalTombstones();
+        const validated = validateCancelImageJobRequest(request);
+        assertSupportedProvider(validated.provider);
+        await providerTaskMappings.markCancelled(validated.providerTaskId, nowIso());
+        return { status: 'local-only', remoteCancelled: false, reason: 'unsupported' };
+      });
+    },
+    async ackImageJobTerminal(request) {
+      return enqueueServiceOperation(async () => {
+        const validated = validateAckImageJobTerminalRequest(request);
+        assertSupportedProvider(validated.provider);
+        await providerTaskMappings.ackTerminal(validated.providerTaskId, validated.status);
+        return { acknowledged: true };
+      });
     },
   };
 
-  function enqueueConfigure<T>(operation: () => Promise<T>): Promise<T> {
-    const run = configureTail.then(operation, operation);
-    configureTail = run.then(() => undefined, () => undefined);
+  function enqueueServiceOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = serviceTail.then(operation, operation);
+    serviceTail = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  async function gcTerminalTombstones(): Promise<void> {
+    try {
+      await providerTaskMappings.gcTerminalTombstones(nowMs() - terminalTombstoneTtlMs);
+    } catch (error) {
+      if (!isCredentialsLocked(error)) throw error;
+    }
+  }
+
+  function nowIso(): string {
+    return new Date(nowMs()).toISOString();
   }
 }
 
@@ -408,6 +587,9 @@ export function createProviderBridgeHandlers(service: ProviderService): Provider
     cancelImageJob: async (_event, request) => validateCancelImageJobResult(await service.cancelImageJob(
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request) as CancelImageJobBridgeRequest,
     )),
+    ackImageJobTerminal: async (_event, request) => validateAckImageJobTerminalResult(await service.ackImageJobTerminal(
+      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, request) as AckImageJobTerminalBridgeRequest,
+    )),
   };
 }
 
@@ -422,6 +604,7 @@ export function registerProviderBridgeHandlers(
   ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.submitImageJob, handlers.submitImageJob);
   ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.pollImageJob, handlers.pollImageJob);
   ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, handlers.cancelImageJob);
+  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, handlers.ackImageJobTerminal);
 }
 
 async function translateProviderCall<T>(
@@ -504,6 +687,21 @@ function validatePollImageJobRequest(value: unknown): PollImageJobBridgeRequest 
 
 function validateCancelImageJobRequest(value: unknown): CancelImageJobBridgeRequest {
   return validatePollImageJobRequest(value);
+}
+
+function validateAckImageJobTerminalRequest(value: unknown): AckImageJobTerminalBridgeRequest {
+  const record = expectStrictRecord(value, ['provider', 'providerTaskId', 'status']);
+  const status = parseNonEmptyString(record.status, 'status');
+  if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') {
+    throw createProviderBridgeError('INVALID_REQUEST', 'status must be a terminal provider job state');
+  }
+  const request = {
+    provider: parseProvider(record.provider),
+    providerTaskId: parseNonEmptyString(record.providerTaskId, 'providerTaskId'),
+    status: status as AckImageJobTerminalBridgeRequest['status'],
+  };
+  assertPublicProviderPayload(request);
+  return request;
 }
 
 function expectNoPayload(value: unknown): void {
@@ -650,13 +848,12 @@ function validatePollImageJobResult(value: unknown): PollImageJobBridgeResult {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job result');
   }
   if (value.status === 'running') {
-    const record = expectStrictRecord(value, ['status', 'progress']);
-    if (record.progress !== undefined && typeof record.progress !== 'number') {
-      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job result');
-    }
+    const record = expectStrictRecord(value, ['status', 'progress', 'blockedReason']);
+    const blockedReason = record.blockedReason === undefined ? undefined : parseBlockedReason(record.blockedReason);
     return {
       status: 'running',
-      ...(record.progress === undefined ? {} : { progress: record.progress }),
+      ...(record.progress === undefined ? {} : { progress: parseProgress(record.progress) }),
+      ...(blockedReason === undefined ? {} : { blockedReason }),
     };
   }
   if (value.status === 'failed') {
@@ -668,12 +865,9 @@ function validatePollImageJobResult(value: unknown): PollImageJobBridgeResult {
   }
   if (value.status === 'completed') {
     const record = expectStrictRecord(value, ['status', 'progress', 'result']);
-    if (record.progress !== undefined && typeof record.progress !== 'number') {
-      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job result');
-    }
     return {
       status: 'completed',
-      ...(record.progress === undefined ? {} : { progress: record.progress }),
+      ...(record.progress === undefined ? {} : { progress: parseProgress(record.progress) }),
       result: validateProviderImageJobResult(record.result),
     };
   }
@@ -692,9 +886,17 @@ function validateCancelImageJobResult(value: unknown): CancelImageJobBridgeResul
   };
 }
 
+function validateAckImageJobTerminalResult(value: unknown): AckImageJobTerminalBridgeResult {
+  const record = expectStrictRecord(value, ['acknowledged']);
+  if (record.acknowledged !== true) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid ACK result');
+  }
+  return { acknowledged: true };
+}
+
 function validateProviderError(value: unknown): ProviderBridgeError {
   const record = expectStrictRecord(value, ['code', 'message', 'retryable']);
-  if (typeof record.code !== 'string' || typeof record.retryable !== 'boolean') {
+  if (!isProviderBridgeErrorCode(record.code) || typeof record.retryable !== 'boolean') {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job error');
   }
   const normalized = normalizeProviderBridgeError({
@@ -709,11 +911,10 @@ function validateProviderError(value: unknown): ProviderBridgeError {
 }
 
 function validateProviderImageJobResult(value: unknown): ProviderImageJobResult {
-  const record = expectStrictRecord(value, ['assetId', 'url', 'width', 'height']);
+  const record = expectStrictRecord(value, ['assetId', 'width', 'height']);
   const assetId = parseNonEmptyString(record.assetId, 'assetId');
   const result = {
     assetId,
-    ...(record.url === undefined ? {} : { url: parseSafeResultUrl(record.url) }),
     ...(record.width === undefined ? {} : { width: parseFiniteNumber(record.width, 'width') }),
     ...(record.height === undefined ? {} : { height: parseFiniteNumber(record.height, 'height') }),
   };
@@ -783,52 +984,50 @@ function mapImageTaskPollResult(
   if (typeof first.b64_json === 'string') {
     throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned a protected image payload');
   }
-  const url = first.url === undefined ? undefined : parseSafeResultUrl(first.url);
   return {
     status: 'completed',
     progress: 1,
     result: {
       assetId: `provider:${provider}:${publicTaskId}:0`,
-      ...(url === undefined ? {} : { url }),
-      ...(typeof first.width === 'number' ? { width: first.width } : {}),
-      ...(typeof first.height === 'number' ? { height: first.height } : {}),
+      ...(first.width === undefined ? {} : { width: parseFiniteNumber(first.width, 'width') }),
+      ...(first.height === undefined ? {} : { height: parseFiniteNumber(first.height, 'height') }),
     },
   };
-}
-
-function parseSafeResultUrl(value: unknown): string {
-  const url = parseNonEmptyString(value, 'url');
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned an unsafe result URL');
-  }
-  if (
-    parsed.protocol !== 'https:'
-    || parsed.username.length > 0
-    || parsed.password.length > 0
-    || containsProtectedProviderText(url)
-    || isPrivateResultHost(parsed.hostname)
-  ) {
-    throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned an unsafe result URL');
-  }
-  return parsed.toString();
 }
 
 function createPublicProviderTaskId(): string {
   return `provider-job-${randomBytes(16).toString('hex')}`;
 }
 
-async function resolveProviderTask(
-  providerTasks: ProviderTaskMappingStore,
-  request: PollImageJobBridgeRequest,
-): Promise<{ provider: 'comfly'; rawTaskId: string }> {
-  const task = await providerTasks.get(request.providerTaskId);
-  if (task === undefined || task.provider !== request.provider) {
-    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+function blockedCredentialsPollResult(): PollImageJobBridgeResult {
+  return {
+    status: 'running',
+    blockedReason: 'credentials_locked',
+    progress: undefined,
+  };
+}
+
+function terminalMappingToPollResult(record: ProviderTaskMappingRecord): PollImageJobBridgeResult {
+  if (record.state === 'completed' && record.result !== undefined) {
+    return {
+      status: 'completed',
+      progress: 1,
+      result: record.result,
+    };
   }
-  return task;
+  if (record.state === 'failed' && record.error !== undefined) {
+    return {
+      status: 'failed',
+      error: record.error,
+    };
+  }
+  if (record.state === 'cancelled') {
+    return {
+      status: 'failed',
+      error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_ERROR', 'Provider image task cancelled')),
+    };
+  }
+  throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
 }
 
 function createProviderTaskMappingStore(options: {
@@ -837,28 +1036,76 @@ function createProviderTaskMappingStore(options: {
   readonly secretSupplier: () => Promise<string>;
 }): ProviderTaskMappingStore {
   const targetPath = confinedProviderTaskMappingsPath(options.appDataRoot);
-  let cache: Map<string, ProviderTaskMappingRecord> | null = null;
+  const lockPath = confinedProviderTaskMappingsLockPath(options.appDataRoot);
   let operationTail: Promise<void> = Promise.resolve();
 
   return {
-    clear: () => enqueue(async () => {
-      const mappings = await readMappings();
-      mappings.clear();
-      await writeMappings(mappings);
+    ackTerminal: (publicTaskId, status) => enqueue(async () => {
+      await withMappingLock(async () => {
+        const mappings = await readMappingsUnlocked();
+        const record = mappings.get(publicTaskId);
+        if (record === undefined) return;
+        if (record.state === status || (status === 'cancelled' && record.state === 'cancelled')) {
+          mappings.delete(publicTaskId);
+          await writeMappingsUnlocked(mappings);
+        }
+      });
     }),
-    delete: (publicTaskId) => enqueue(async () => {
-      const mappings = await readMappings();
-      mappings.delete(publicTaskId);
-      await writeMappings(mappings);
+    gcTerminalTombstones: (expireBeforeMs) => enqueue(async () => {
+      await withMappingLock(async () => {
+        const mappings = await readMappingsUnlocked();
+        let changed = false;
+        for (const [publicTaskId, record] of mappings) {
+          if (record.state === 'running' || record.terminalAt === undefined) continue;
+          const terminalAt = Date.parse(record.terminalAt);
+          if (Number.isFinite(terminalAt) && terminalAt < expireBeforeMs) {
+            mappings.delete(publicTaskId);
+            changed = true;
+          }
+        }
+        if (changed) await writeMappingsUnlocked(mappings);
+      });
     }),
     get: async (publicTaskId) => {
-      const mappings = await readMappings();
+      const mappings = await readMappingsUnlocked();
       return mappings.get(publicTaskId);
     },
+    markCancelled: (publicTaskId, now) => enqueue(async () => {
+      await withMappingLock(async () => {
+        const mappings = await readMappingsUnlocked();
+        const record = mappings.get(publicTaskId);
+        if (record === undefined) return;
+        if (record.state !== 'running') return;
+        mappings.set(publicTaskId, {
+          ...record,
+          state: 'cancelled',
+          updatedAt: now,
+          terminalAt: now,
+        });
+        await writeMappingsUnlocked(mappings);
+      });
+    }),
+    markTerminal: (publicTaskId, result, now) => enqueue(async () => {
+      await withMappingLock(async () => {
+        const mappings = await readMappingsUnlocked();
+        const record = mappings.get(publicTaskId);
+        if (record === undefined || record.state !== 'running') return;
+        mappings.set(publicTaskId, {
+          ...record,
+          state: result.status,
+          updatedAt: now,
+          terminalAt: now,
+          ...(result.status === 'completed' ? { result: result.result } : { error: result.error }),
+        });
+        await writeMappingsUnlocked(mappings);
+      });
+    }),
     set: (record) => enqueue(async () => {
-      const mappings = await readMappings();
-      mappings.set(record.publicTaskId, record);
-      await writeMappings(mappings);
+      await withMappingLock(async () => {
+        const mappings = await readMappingsUnlocked();
+        mappings.set(record.publicTaskId, record);
+        await writeMappingsUnlocked(mappings);
+      });
     }),
   };
 
@@ -868,8 +1115,34 @@ function createProviderTaskMappingStore(options: {
     return run;
   }
 
-  async function readMappings(): Promise<Map<string, ProviderTaskMappingRecord>> {
-    if (cache !== null) return cache;
+  async function withMappingLock<T>(operation: () => Promise<T>): Promise<T> {
+    await options.fileSystem.mkdir(options.appDataRoot, { recursive: true });
+    const lock = await acquireConfinedFileLock(lockPath, {
+      fileSystem: options.fileSystem,
+      assertPathForRead: (path) => assertConfinedAppDataPathForRead(
+        options.fileSystem,
+        options.appDataRoot,
+        path,
+        'PROVIDER_UNAVAILABLE',
+        'Provider task mapping path is invalid',
+      ),
+      assertPathForWrite: (path) => assertConfinedAppDataPathForWrite(
+        options.fileSystem,
+        options.appDataRoot,
+        path,
+        'PROVIDER_UNAVAILABLE',
+        'Provider task mapping path is invalid',
+      ),
+      timeoutMessage: 'Timed out waiting for provider task mapping lock',
+    });
+    try {
+      return await operation();
+    } finally {
+      await releaseConfinedFileLock(lock);
+    }
+  }
+
+  async function readMappingsUnlocked(): Promise<Map<string, ProviderTaskMappingRecord>> {
     try {
       await assertConfinedProviderTaskPathForRead(options.fileSystem, options.appDataRoot, targetPath);
       const serialized = await options.fileSystem.readFile(targetPath, 'utf8');
@@ -877,12 +1150,10 @@ function createProviderTaskMappingStore(options: {
       const secret = await options.secretSupplier();
       const plaintext = await decryptSerializedPayload(envelope, secret);
       const parsed = parseTaskMappingPayload(JSON.parse(plaintext) as unknown);
-      cache = new Map(parsed.map((record) => [record.publicTaskId, record]));
-      return cache;
+      return new Map(parsed.map((record) => [record.publicTaskId, record]));
     } catch (error) {
       if (isMissingFileError(error)) {
-        cache = new Map();
-        return cache;
+        return new Map();
       }
       if (isProviderBridgeError(error)) {
         throw error;
@@ -891,16 +1162,15 @@ function createProviderTaskMappingStore(options: {
     }
   }
 
-  async function writeMappings(mappings: Map<string, ProviderTaskMappingRecord>): Promise<void> {
+  async function writeMappingsUnlocked(mappings: Map<string, ProviderTaskMappingRecord>): Promise<void> {
     await options.fileSystem.mkdir(options.appDataRoot, { recursive: true });
     await assertConfinedProviderTaskPathForWrite(options.fileSystem, options.appDataRoot, targetPath);
     const secret = await options.secretSupplier();
     const envelope = await encryptSerializedPayload(JSON.stringify({
-      version: 1,
+      version: 2,
       mappings: [...mappings.values()],
     }), secret);
     await writeAtomic(options.fileSystem, targetPath, `${JSON.stringify(envelope)}\n`);
-    cache = new Map(mappings);
   }
 }
 
@@ -910,39 +1180,6 @@ function assertProviderResponsePayload(value: unknown): void {
       throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned a protected payload');
     }
   }
-}
-
-function isPrivateResultHost(hostname: string): boolean {
-  const host = hostname.replace(/^\[/u, '').replace(/\]$/u, '').toLowerCase();
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  const ipVersion = isIP(host);
-  if (ipVersion === 4) return isPrivateIpv4(host);
-  if (ipVersion === 6) return isPrivateIpv6(host);
-  return false;
-}
-
-function isPrivateIpv4(host: string): boolean {
-  const octets = host.split('.').map((part) => Number.parseInt(part, 10));
-  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return true;
-  }
-  const [first, second] = octets as [number, number, number, number];
-  return first === 10
-    || first === 127
-    || (first === 172 && second >= 16 && second <= 31)
-    || (first === 192 && second === 168)
-    || (first === 169 && second === 254)
-    || first === 0;
-}
-
-function isPrivateIpv6(host: string): boolean {
-  const normalizedHost = host.toLowerCase();
-  if (normalizedHost === '::1') return true;
-  const firstGroup = normalizedHost.split(':')[0] ?? '';
-  const first = Number.parseInt(firstGroup, 16);
-  if (!Number.isFinite(first)) return true;
-  return (first & 0xfe00) === 0xfc00
-    || (first & 0xffc0) === 0xfe80;
 }
 
 function parseTaskMappingEnvelope(value: unknown): ProviderTaskMappingEnvelope {
@@ -967,25 +1204,60 @@ function parseTaskMappingEnvelope(value: unknown): ProviderTaskMappingEnvelope {
 
 function parseTaskMappingPayload(value: unknown): ProviderTaskMappingRecord[] {
   const record = expectStrictRecord(value, ['version', 'mappings']);
-  if (record.version !== 1 || !Array.isArray(record.mappings)) {
+  if ((record.version !== 1 && record.version !== 2) || !Array.isArray(record.mappings)) {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
   }
   return record.mappings.map((entry) => {
-    const item = expectStrictRecord(entry, ['provider', 'publicTaskId', 'rawTaskId']);
+    const item = expectStrictRecord(entry, [
+      'provider',
+      'publicTaskId',
+      'rawTaskId',
+      'state',
+      'createdAt',
+      'updatedAt',
+      'terminalAt',
+      'result',
+      'error',
+    ]);
+    const state = item.state === undefined ? 'running' : parseMappingState(item.state);
+    const createdAt = item.createdAt === undefined ? new Date(0).toISOString() : parseIsoTimestamp(item.createdAt, 'createdAt');
+    const updatedAt = item.updatedAt === undefined ? createdAt : parseIsoTimestamp(item.updatedAt, 'updatedAt');
+    const terminalAt = item.terminalAt === undefined ? undefined : parseIsoTimestamp(item.terminalAt, 'terminalAt');
     return {
       provider: parseProvider(item.provider),
       publicTaskId: parseNonEmptyString(item.publicTaskId, 'publicTaskId'),
       rawTaskId: parseNonEmptyString(item.rawTaskId, 'rawTaskId'),
+      state,
+      createdAt,
+      updatedAt,
+      ...(terminalAt === undefined ? {} : { terminalAt }),
+      ...(item.result === undefined ? {} : { result: validateProviderImageJobResult(item.result) }),
+      ...(item.error === undefined ? {} : { error: validateProviderError(item.error) }),
     };
   });
 }
 
+function parseMappingState(value: unknown): ProviderTaskMappingRecord['state'] {
+  if (value === 'running' || value === 'completed' || value === 'failed' || value === 'cancelled') {
+    return value;
+  }
+  throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+}
+
+function parseIsoTimestamp(value: unknown, fieldName: string): string {
+  const timestamp = parseNonEmptyString(value, fieldName);
+  if (!Number.isFinite(Date.parse(timestamp))) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+  }
+  return timestamp;
+}
+
 function parseCredentialEnvelope(value: unknown): ProviderCredentialEnvelope {
-  if (!isPlainRecord(value) || value.version !== 1) {
+  if (!isPlainRecord(value) || (value.version !== 1 && value.version !== 2)) {
     throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata is invalid');
   }
   if (value.kind === 'safeStorage' && typeof value.ciphertextHex === 'string') {
-    return { version: 1, kind: 'safeStorage', ciphertextHex: value.ciphertextHex };
+    return { version: value.version, kind: 'safeStorage', ciphertextHex: value.ciphertextHex };
   }
   if (
     value.kind === 'passphrase' &&
@@ -996,7 +1268,7 @@ function parseCredentialEnvelope(value: unknown): ProviderCredentialEnvelope {
     typeof value.ciphertextHex === 'string'
   ) {
     return {
-      version: 1,
+      version: value.version,
       kind: 'passphrase',
       kdf: 'scrypt',
       saltHex: value.saltHex,
@@ -1008,15 +1280,44 @@ function parseCredentialEnvelope(value: unknown): ProviderCredentialEnvelope {
   throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata is invalid');
 }
 
-async function encryptWithPassphrase(token: string, passphrase: string): Promise<ProviderCredentialEnvelope> {
+function parseCredentialPayload(plaintext: string, envelopeVersion: 1 | 2): { payload: ProviderCredentialPayload; needsMigration: boolean } {
+  try {
+    const value = JSON.parse(plaintext) as unknown;
+    if (isPlainRecord(value) && value.schemaVersion === 2) {
+      return {
+        payload: {
+          token: parseSecretString(value.token, 'token'),
+          mappingKey: parseSecretString(value.mappingKey, 'mappingKey'),
+        },
+        needsMigration: envelopeVersion !== 2,
+      };
+    }
+  } catch {
+    // Version 1 envelopes stored only the provider token string.
+  }
+  const legacyToken = parseSecretString(plaintext, 'token');
+  return {
+    payload: {
+      token: legacyToken,
+      mappingKey: createMappingKey(),
+    },
+    needsMigration: true,
+  };
+}
+
+function createMappingKey(): string {
+  return randomBytes(32).toString('hex');
+}
+
+async function encryptWithPassphrase(plaintext: string, passphrase: string): Promise<ProviderCredentialEnvelope> {
   const salt = randomBytes(16);
   const iv = randomBytes(12);
   const key = await deriveKey(passphrase, salt);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
-  const ciphertext = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return {
-    version: 1,
+    version: 2,
     kind: 'passphrase',
     kdf: 'scrypt',
     saltHex: salt.toString('hex'),
@@ -1070,12 +1371,17 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<Buffer> 
   return await scrypt(passphrase, salt, 32) as Buffer;
 }
 
-async function rejectSymlinkTarget(fileSystem: FileSystem, targetPath: string): Promise<void> {
+async function rejectSymlinkTarget(
+  fileSystem: FileSystem,
+  targetPath: string,
+  errorCode: 'CREDENTIALS_LOCKED' | 'PROVIDER_UNAVAILABLE',
+  errorMessage: string,
+): Promise<void> {
   if (fileSystem.lstat === undefined) return;
   try {
     const stat = await fileSystem.lstat(targetPath);
     if (stat.isSymbolicLink?.() === true) {
-      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata path is invalid');
+      throw createProviderBridgeError(errorCode, errorMessage);
     }
   } catch (error) {
     if (isMissingFileError(error)) return;
@@ -1088,14 +1394,13 @@ async function assertConfinedProviderTaskPathForWrite(
   appDataRoot: string,
   targetPath: string,
 ): Promise<void> {
-  await rejectSymlinkTarget(fileSystem, appDataRoot);
-  await rejectSymlinkTarget(fileSystem, targetPath);
-  if (fileSystem.realpath === undefined) return;
-  const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
-  const realParent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
-  if (realParent !== realRoot) {
-    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping path is invalid');
-  }
+  await assertConfinedAppDataPathForWrite(
+    fileSystem,
+    appDataRoot,
+    targetPath,
+    'PROVIDER_UNAVAILABLE',
+    'Provider task mapping path is invalid',
+  );
 }
 
 async function assertConfinedProviderTaskPathForRead(
@@ -1103,13 +1408,54 @@ async function assertConfinedProviderTaskPathForRead(
   appDataRoot: string,
   targetPath: string,
 ): Promise<void> {
-  await rejectSymlinkTarget(fileSystem, appDataRoot);
-  await rejectSymlinkTarget(fileSystem, targetPath);
+  await assertConfinedAppDataPathForRead(
+    fileSystem,
+    appDataRoot,
+    targetPath,
+    'PROVIDER_UNAVAILABLE',
+    'Provider task mapping path is invalid',
+  );
+}
+
+async function assertConfinedAppDataPathForWrite(
+  fileSystem: FileSystem,
+  appDataRoot: string,
+  targetPath: string,
+  errorCode: 'CREDENTIALS_LOCKED' | 'PROVIDER_UNAVAILABLE',
+  errorMessage: string,
+): Promise<void> {
+  await rejectSymlinkTarget(fileSystem, appDataRoot, errorCode, errorMessage);
+  await rejectSymlinkTarget(fileSystem, targetPath, errorCode, errorMessage);
   if (fileSystem.realpath === undefined) return;
   const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
-  const realTarget = normalizeRealPath(await fileSystem.realpath(targetPath));
-  if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${sep}`)) {
-    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping path is invalid');
+  const realParent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
+  if (realParent !== realRoot) {
+    throw createProviderBridgeError(errorCode, errorMessage);
+  }
+}
+
+async function assertConfinedAppDataPathForRead(
+  fileSystem: FileSystem,
+  appDataRoot: string,
+  targetPath: string,
+  errorCode: 'CREDENTIALS_LOCKED' | 'PROVIDER_UNAVAILABLE',
+  errorMessage: string,
+): Promise<void> {
+  await rejectSymlinkTarget(fileSystem, appDataRoot, errorCode, errorMessage);
+  await rejectSymlinkTarget(fileSystem, targetPath, errorCode, errorMessage);
+  if (fileSystem.realpath === undefined) return;
+  const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
+  try {
+    const realTarget = normalizeRealPath(await fileSystem.realpath(targetPath));
+    if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${sep}`)) {
+      throw createProviderBridgeError(errorCode, errorMessage);
+    }
+  } catch (error) {
+    if (!isMissingFileError(error)) throw error;
+    const realParent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
+    if (realParent !== realRoot) {
+      throw createProviderBridgeError(errorCode, errorMessage);
+    }
   }
 }
 
@@ -1117,8 +1463,16 @@ function confinedCredentialsPath(appDataRoot: string): string {
   return confinedAppDataPath(appDataRoot, CREDENTIALS_FILE, 'CREDENTIALS_LOCKED', 'Provider credential path is invalid');
 }
 
+function confinedCredentialsLockPath(appDataRoot: string): string {
+  return confinedAppDataPath(appDataRoot, CREDENTIALS_LOCK_FILE, 'CREDENTIALS_LOCKED', 'Provider credential path is invalid');
+}
+
 function confinedProviderTaskMappingsPath(appDataRoot: string): string {
   return confinedAppDataPath(appDataRoot, TASK_MAPPINGS_FILE, 'PROVIDER_UNAVAILABLE', 'Provider task mapping path is invalid');
+}
+
+function confinedProviderTaskMappingsLockPath(appDataRoot: string): string {
+  return confinedAppDataPath(appDataRoot, TASK_MAPPINGS_LOCK_FILE, 'PROVIDER_UNAVAILABLE', 'Provider task mapping path is invalid');
 }
 
 function confinedAppDataPath(
@@ -1151,6 +1505,19 @@ function parseFiniteNumber(value: unknown, fieldName: string): number {
     return value;
   }
   throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', `${fieldName} must be a finite number`);
+}
+
+function parseProgress(value: unknown): number {
+  const progress = parseFiniteNumber(value, 'progress');
+  if (progress < 0 || progress > 1) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'progress must be between 0 and 1');
+  }
+  return progress;
+}
+
+function parseBlockedReason(value: unknown): ProviderBridgeBlockedReason {
+  if (value === 'credentials_locked') return value;
+  throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid blocked reason');
 }
 
 function parseSecretString(value: unknown, fieldName: string): string {
@@ -1219,6 +1586,10 @@ function isProviderBridgeError(error: unknown): error is ProviderBridgeException
     && typeof error.code === 'string'
     && typeof error.message === 'string'
     && typeof error.retryable === 'boolean';
+}
+
+function isCredentialsLocked(error: unknown): boolean {
+  return isProviderBridgeError(error) && error.code === 'CREDENTIALS_LOCKED';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

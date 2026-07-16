@@ -153,11 +153,14 @@ export {
   registerProviderBridgeHandlers,
 } from './provider-bridge.js';
 export type {
+  AckImageJobTerminalBridgeRequest,
+  AckImageJobTerminalBridgeResult,
   ComflyFetch,
   CancelImageJobBridgeRequest,
   ConfigureProviderBridgeRequest,
   PollImageJobBridgeRequest,
   PollImageJobBridgeResult,
+  ProviderBridgeBlockedReason,
   ProviderBridgeError,
   ProviderBridgeException,
   ProviderBridgeHandlers,

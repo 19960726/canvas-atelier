@@ -24,6 +24,8 @@ import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   PROVIDER_BRIDGE_CHANNELS,
   normalizeProviderBridgeError,
+  type AckImageJobTerminalBridgeRequest,
+  type AckImageJobTerminalBridgeResult,
   type CancelImageJobBridgeRequest,
   type ConfigureProviderBridgeRequest,
   type PollImageJobBridgeRequest,
@@ -86,6 +88,7 @@ export interface DesktopProviderBridgeApi {
   submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
   cancelImageJob(request: CancelImageJobBridgeRequest): Promise<CancelImageJobBridgeResult>;
+  ackImageJobTerminal(request: AckImageJobTerminalBridgeRequest): Promise<AckImageJobTerminalBridgeResult>;
 }
 
 export interface SafeModeBridgeApi {
@@ -175,6 +178,9 @@ export function createPreloadApi(
       },
       cancelImageJob(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request);
+      },
+      ackImageJobTerminal(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, request);
       },
     },
   };

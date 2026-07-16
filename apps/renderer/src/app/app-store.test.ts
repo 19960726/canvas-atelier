@@ -389,6 +389,66 @@ describe('project optimization memory', () => {
     }
   });
 
+  it('keeps desktop provider jobs running while credentials are locked and completes after unlock', async () => {
+    let unlocked = false;
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-app-locked' }));
+    const pollImageJob = vi.fn(async () => {
+      if (!unlocked) {
+        throw { code: 'CREDENTIALS_LOCKED', message: 'locked', retryable: true };
+      }
+      return {
+        status: 'completed' as const,
+        progress: 1,
+        result: { assetId: 'provider:comfly:provider-job-app-locked:0' },
+      };
+    });
+    const unlock = vi.fn(async () => {
+      unlocked = true;
+      return { configured: true, locked: false, encryption: 'passphrase' as const };
+    });
+    window.novusDesktop = {
+      provider: {
+        ackImageJobTerminal: vi.fn(async () => ({ acknowledged: true as const })),
+        cancelImageJob: vi.fn(),
+        configure: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: !unlocked, encryption: 'passphrase' as const })),
+        listProfiles: vi.fn(async () => [{
+          provider: 'comfly',
+          modelRoute: 'gpt-image',
+          displayName: 'GPT Image',
+          capabilities: ['image_generation', 'async_tasks'],
+        }]),
+        pollImageJob,
+        submitImageJob,
+        unlock,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('resume after credentials unlock');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => pollImageJob.mock.calls.length > 0);
+    await delay(20);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      providerTaskId: 'provider-job-app-locked',
+      status: 'running',
+    });
+
+    await window.novusDesktop!.provider.unlock({ passphrase: 'correct horse battery staple' });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      resultAssetId: 'provider:comfly:provider-job-app-locked:0',
+      status: 'completed',
+    });
+    expect(window.novusDesktop!.provider.ackImageJobTerminal).toHaveBeenCalledWith({
+      provider: 'comfly',
+      providerTaskId: 'provider-job-app-locked',
+      status: 'completed',
+    });
+  });
+
   it('commits recovered model result against hydrated project revision', async () => {
     const finalPoll = deferred<{ status: 'completed'; result: { assetId: string } }>();
     const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({

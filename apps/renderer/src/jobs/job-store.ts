@@ -39,7 +39,7 @@ export interface ModelJobResult {
 }
 
 export type ModelJobPollResult =
-  | { status: 'running'; progress?: number }
+  | { status: 'running'; progress?: number; blockedReason?: 'credentials_locked' }
   | { status: 'completed'; progress?: number; result: ModelJobResult }
   | { status: 'failed'; error: unknown };
 
@@ -47,6 +47,7 @@ export interface ModelJobExecutor {
   submit(job: ModelJob): Promise<ModelJobSubmission>;
   poll(job: ModelJob): Promise<ModelJobPollResult>;
   cancel?(job: ModelJob): Promise<void>;
+  ackTerminal?(job: ModelJob): Promise<void>;
 }
 
 export interface ModelJobStorage {
@@ -237,7 +238,9 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
           await options.executor.cancel(job);
           const latest = await storage.get(id);
           if (latest && (latest.status === 'submitting' || latest.status === 'running')) {
-            await putJob(transitionModelJob(latest, 'cancelled', { updatedAt: now() }));
+            const cancelled = transitionModelJob(latest, 'cancelled', { updatedAt: now() });
+            await putJob(cancelled);
+            await acknowledgeTerminal(options.executor, cancelled);
           }
         } catch (error) {
           const latest = await storage.get(id);
@@ -328,10 +331,12 @@ async function pollJob(
         return;
       }
       if (result.status === 'failed') {
-        await putJob(transitionModelJob(latest, 'failed', {
+        const failed = transitionModelJob(latest, 'failed', {
           error: sanitizeModelJobError(result.error),
           updatedAt: now(),
-        }));
+        });
+        await putJob(failed);
+        await acknowledgeTerminal(options.executor, failed);
         return;
       }
       await materializeResult(latest, result.result, options, storage, putJob, resultDecodeQueue, now, materializingJobs);
@@ -363,7 +368,7 @@ async function materializeResult(
   try {
     const existingBeforeDecode = findExistingResult(options.getProject?.(), job, result);
     if (existingBeforeDecode) {
-      await completeFromExistingResult(job, existingBeforeDecode, storage, putJob, now);
+      await completeFromExistingResult(job, existingBeforeDecode, storage, putJob, options.executor, now);
       return;
     }
     const beforeDecode = await storage.get(job.id);
@@ -375,7 +380,7 @@ async function materializeResult(
     if (!isSameRunningJob(latest, job)) return;
     const existingAfterDecode = findExistingResult(options.getProject?.(), latest, result);
     if (existingAfterDecode) {
-      await completeFromExistingResult(latest, existingAfterDecode, storage, putJob, now);
+      await completeFromExistingResult(latest, existingAfterDecode, storage, putJob, options.executor, now);
       return;
     }
     const resultNodeId = job.resultNodeId ?? `image-result-${job.id}`;
@@ -416,15 +421,28 @@ async function materializeResult(
     const afterCommit = await storage.get(job.id);
     if (!isSameRunningJob(afterCommit, latest)) return;
     if (!committed) return;
-    await putJob(transitionModelJob(afterCommit, 'completed', {
+    const completed = transitionModelJob(afterCommit, 'completed', {
       completedAt: now(),
       progress: 1,
       resultAssetId: result.assetId,
       resultNodeId,
       updatedAt: now(),
-    }));
+    });
+    await putJob(completed);
+    await acknowledgeTerminal(options.executor, completed);
   } finally {
     materializingJobs.delete(job.id);
+  }
+}
+
+async function acknowledgeTerminal(executor: ModelJobExecutor, job: ModelJob): Promise<void> {
+  if (!executor.ackTerminal || (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled')) {
+    return;
+  }
+  try {
+    await executor.ackTerminal(job);
+  } catch {
+    // Provider tombstones are TTL-garbage-collected if renderer ACK is lost.
   }
 }
 
@@ -499,17 +517,20 @@ async function completeFromExistingResult(
   node: CanvasNode,
   storage: ModelJobStorage,
   putJob: (job: ModelJob) => Promise<void>,
+  executor: ModelJobExecutor,
   now: () => string,
 ): Promise<void> {
   const latest = await storage.get(job.id);
   if (!isSameRunningJob(latest, job)) return;
-  await putJob(transitionModelJob(latest, 'completed', {
+  const completed = transitionModelJob(latest, 'completed', {
     completedAt: now(),
     progress: 1,
     resultAssetId: node.type === 'image_result' ? node.data.assetId : undefined,
     resultNodeId: node.id,
     updatedAt: now(),
-  }));
+  });
+  await putJob(completed);
+  await acknowledgeTerminal(executor, completed);
 }
 
 function delay(ms: number): Promise<void> {

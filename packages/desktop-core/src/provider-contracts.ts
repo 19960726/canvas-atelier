@@ -6,6 +6,7 @@ export const PROVIDER_BRIDGE_CHANNELS = {
   submitImageJob: 'novus-desktop:provider:submit-image-job',
   pollImageJob: 'novus-desktop:provider:poll-image-job',
   cancelImageJob: 'novus-desktop:provider:cancel-image-job',
+  ackImageJobTerminal: 'novus-desktop:provider:ack-image-job-terminal',
 } as const;
 
 export type ProviderBridgeChannel = typeof PROVIDER_BRIDGE_CHANNELS[keyof typeof PROVIDER_BRIDGE_CHANNELS];
@@ -27,6 +28,9 @@ export type ProviderBridgeErrorCode =
   | 'PROVIDER_INVALID_RESPONSE'
   | 'PROTECTED_PAYLOAD'
   | 'PROVIDER_ERROR';
+
+export type ProviderBridgeBlockedReason = 'credentials_locked';
+export type ProviderImageJobTerminalStatus = 'completed' | 'failed' | 'cancelled';
 
 export interface ProviderBridgeError {
   readonly code: ProviderBridgeErrorCode;
@@ -84,13 +88,12 @@ export interface PollImageJobBridgeRequest {
 
 export interface ProviderImageJobResult {
   readonly assetId: string;
-  readonly url?: string;
   readonly width?: number;
   readonly height?: number;
 }
 
 export type PollImageJobBridgeResult =
-  | { readonly status: 'running'; readonly progress?: number }
+  | { readonly status: 'running'; readonly progress?: number; readonly blockedReason?: ProviderBridgeBlockedReason }
   | { readonly status: 'completed'; readonly progress?: number; readonly result: ProviderImageJobResult }
   | { readonly status: 'failed'; readonly error: ProviderBridgeError };
 
@@ -103,6 +106,16 @@ export interface CancelImageJobBridgeResult {
   readonly status: 'local-only';
   readonly remoteCancelled: false;
   readonly reason: 'unsupported';
+}
+
+export interface AckImageJobTerminalBridgeRequest {
+  readonly provider: ProviderBridgeProvider;
+  readonly providerTaskId: string;
+  readonly status: ProviderImageJobTerminalStatus;
+}
+
+export interface AckImageJobTerminalBridgeResult {
+  readonly acknowledged: true;
 }
 
 export function createProviderBridgeError(
@@ -119,7 +132,7 @@ export function createProviderBridgeError(
 export function normalizeProviderBridgeError(error: unknown): ProviderBridgeError {
   if (isProviderBridgeError(error)) {
     return {
-      code: error.code,
+      code: isProviderBridgeErrorCode(error.code) ? error.code : 'PROVIDER_ERROR',
       message: sanitizeProviderMessage(error.message),
       retryable: error.retryable,
     };
@@ -151,6 +164,15 @@ function isProviderBridgeError(error: unknown): error is ProviderBridgeException
     && typeof error.code === 'string'
     && typeof error.message === 'string'
     && typeof error.retryable === 'boolean';
+}
+
+export function isProviderBridgeErrorCode(value: unknown): value is ProviderBridgeErrorCode {
+  return value === 'INVALID_REQUEST'
+    || value === 'CREDENTIALS_LOCKED'
+    || value === 'PROVIDER_UNAVAILABLE'
+    || value === 'PROVIDER_INVALID_RESPONSE'
+    || value === 'PROTECTED_PAYLOAD'
+    || value === 'PROVIDER_ERROR';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

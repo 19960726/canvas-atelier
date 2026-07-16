@@ -63,6 +63,7 @@ describe('desktop bridge contract', () => {
       'subscribeKnowledgeSyncStatus',
     ]);
     expect(Object.keys(createPreloadApi(mockInvoke).provider).sort()).toEqual([
+      'ackImageJobTerminal',
       'cancelImageJob',
       'configure',
       'getStatus',

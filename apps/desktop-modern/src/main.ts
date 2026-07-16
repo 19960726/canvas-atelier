@@ -44,7 +44,21 @@ let knowledgeRefreshServiceHandle: KnowledgeRefreshService | null = null;
 let unsubscribeKnowledgeState: (() => void) | null = null;
 let closeAllStarted = false;
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
+
+app.on('second-instance', () => {
+  if (mainWindow === null) return;
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.focus();
+});
+
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   const knowledgeStore = new ManagedKnowledgeStore({
     appDataRoot: app.getPath('userData'),
   });

@@ -12,9 +12,11 @@ describe('desktop model job executor', () => {
       result: { assetId: 'provider:comfly:provider-job-public-bridge:0', url: 'https://assets.example/result.png' },
     }));
     const cancelImageJob = vi.fn(async () => ({ status: 'local-only' as const, remoteCancelled: false, reason: 'unsupported' as const }));
+    const ackImageJobTerminal = vi.fn(async () => ({ acknowledged: true as const }));
     vi.stubGlobal('window', {
       novusDesktop: {
         provider: {
+          ackImageJobTerminal,
           submitImageJob,
           pollImageJob,
           cancelImageJob,
@@ -29,6 +31,10 @@ describe('desktop model job executor', () => {
     const submitted = await executor.submit(job());
     const polled = await executor.poll({ ...job(), providerTaskId: submitted.providerTaskId });
     await executor.cancel?.({ ...job(), providerTaskId: submitted.providerTaskId });
+    await (executor as unknown as { ackTerminal(job: ModelJob): Promise<void> }).ackTerminal({
+      ...job({ status: 'completed' }),
+      providerTaskId: submitted.providerTaskId,
+    });
 
     expect(submitted).toEqual({ providerTaskId: 'provider-job-public-bridge' });
     expect(polled).toEqual({
@@ -45,7 +51,36 @@ describe('desktop model job executor', () => {
       referenceAssetIds: ['asset-reference'],
     });
     expect(fetch).not.toHaveBeenCalled();
+    expect(ackImageJobTerminal).toHaveBeenCalledWith({
+      provider: 'comfly',
+      providerTaskId: 'provider-job-public-bridge',
+      status: 'completed',
+    });
     expect(JSON.stringify({ submitted, polled })).not.toMatch(/Authorization|Bearer|token|base64/i);
+  });
+
+  it('turns locked credentials into a retryable running poll state', async () => {
+    const pollImageJob = vi.fn(async () => {
+      throw { code: 'CREDENTIALS_LOCKED', message: 'locked', retryable: true };
+    });
+    vi.stubGlobal('window', {
+      novusDesktop: {
+        provider: {
+          submitImageJob: vi.fn(),
+          pollImageJob,
+          cancelImageJob: vi.fn(),
+          ackImageJobTerminal: vi.fn(),
+        },
+      },
+    });
+
+    const executor = createDesktopModelJobExecutor();
+
+    await expect(executor.poll({ ...job({ status: 'running' }), providerTaskId: 'provider-job-locked' })).resolves.toEqual({
+      status: 'running',
+      blockedReason: 'credentials_locked',
+      progress: undefined,
+    });
   });
 
   it('keeps browser mode unavailable with sanitized failures', async () => {
