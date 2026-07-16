@@ -28,6 +28,16 @@ export { MAX_GENERATION_REFERENCES, parseGenerationRequest } from './generation-
 export type { GenerationReference, GenerationRequest } from './generation-request';
 export { cancelAgentPlan, confirmAgentPlan, validateAgentPlan } from './agent-plan';
 export { applyTransaction, canvasOperationSchema, revertTransaction } from './canvas-transaction';
+export {
+  assertPublicModelJobPayload,
+  containsProtectedRendererPayload,
+  createConfirmedModelJob,
+  getLegalModelJobTransitions,
+  modelJobSchema,
+  modelJobStatusSchema,
+  sanitizeModelJobError,
+  transitionModelJob,
+} from './model-job';
 export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
@@ -53,5 +63,6 @@ export type {
   PlacementObject,
   ReferenceRole,
 } from './project-schema';
+export type { ConfirmedModelJobInput, ModelJobStatus } from './model-job';
 
 export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation } from './agent-plan';

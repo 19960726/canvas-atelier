@@ -17,6 +17,7 @@ import {
   type CanvasTransaction,
   type FeedbackObservations,
   type ImageCitation,
+  type ModelJob,
   type OrderedReference,
   type ProjectOperation,
   type ProjectMemoryEntry,
@@ -36,12 +37,21 @@ import {
   type KnowledgeClient,
 } from './knowledge-client';
 import { loadPersistedProjectBundle } from './project-persistence';
+import {
+  createInMemoryModelJobStorage,
+  createModelJobStore,
+  type ModelJobExecutor,
+  type ModelJobRequest,
+  type ModelJobStore,
+} from '../jobs/job-store';
 
 let planSequence = 0;
 let pendingSave: ReturnType<typeof setTimeout> | undefined;
 let referenceOrderCommitTail: Promise<void> | null = null;
 let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
+let modelJobExecutor = createUnavailableModelJobExecutor();
+let modelJobStore: ModelJobStore | null = null;
 
 interface UndoEntry {
   transaction: CanvasTransaction;
@@ -86,6 +96,8 @@ interface AppState {
   agentPlan: AgentCanvasPlan | null;
   undoStack: UndoEntry[];
   confirmedModelJobs: number;
+  modelJobs: ModelJob[];
+  cancelModelJob: (jobId: string) => Promise<void>;
   closePersistence: () => Promise<void>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
   commitReferenceOrder: (assetIds: string[]) => Promise<boolean>;
@@ -93,6 +105,8 @@ interface AppState {
   getKnowledgeLease: KnowledgeClient['getLease'];
   hydratePersistence: () => Promise<void>;
   initializeKnowledge: () => Promise<void>;
+  refreshModelJobs: () => Promise<void>;
+  retryModelJob: (jobId: string) => Promise<void>;
   reviewSkillCandidate: KnowledgeClient['review'];
   setActiveTool: (tool: AppState['activeTool']) => void;
   toggleAgentPanel: () => void;
@@ -132,6 +146,11 @@ const initialState = createInitialState();
 
 export const useAppStore = create<AppState>((set, get) => ({
   ...initialState,
+  cancelModelJob: async (jobId) => {
+    await getModelJobStore().cancelQueuedJob(jobId);
+    const modelJobs = await getModelJobStore().listJobs();
+    set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
+  },
   closePersistence: async () => {
     cancelPendingProjectSave();
     knowledgeClient.stop();
@@ -214,11 +233,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   hydratePersistence: async () => {
     cancelPendingProjectSave();
     const hydrated = await projectPersistenceClient.hydrate();
+    await getModelJobStore().recover();
+    const modelJobs = await getModelJobStore().listJobs();
     set({
       availableSnapshotIds: hydrated.availableSnapshotIds,
       desktopRevision: hydrated.revision,
       persistenceMode: hydrated.mode,
       project: hydrated.project,
+      confirmedModelJobs: countConfirmedModelJobs(modelJobs),
+      modelJobs,
       saveErrorCode: null,
       saveStatus: hydrated.saveStatus,
     });
@@ -230,6 +253,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         knowledgeSyncStatuses: upsertKnowledgeSyncStatus(state.knowledgeSyncStatuses, syncStatus),
       })),
     );
+  },
+  refreshModelJobs: async () => {
+    const modelJobs = await getModelJobStore().listJobs();
+    set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
   },
   reviewSkillCandidate: async (request) => {
     const result = await knowledgeClient.review(request);
@@ -314,9 +341,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     const saved = await get().commitProjectTransaction(transaction, { kind: 'agent', nextProject: project });
     if (!saved) return;
 
+    let modelJobs = get().modelJobs;
+    if (result.executeModels) {
+      modelJobs = await getModelJobStore().enqueueConfirmedJobs({
+        conversationId: 'agent-conversation-shared',
+        confirmedAt: now,
+        requests: buildModelJobRequests(project, state.agentPlan),
+      });
+      void getModelJobStore().processQueue()
+        .then(() => getModelJobStore().pollActiveJobs())
+        .finally(() => {
+          void get().refreshModelJobs();
+        });
+    }
+
     set((current) => ({
       agentPlan: result.plan,
-      confirmedModelJobs: current.confirmedModelJobs + (result.executeModels ? state.agentPlan!.jobCount : 0),
+      confirmedModelJobs: countConfirmedModelJobs(modelJobs),
+      modelJobs,
       undoStack: [...current.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }],
     }));
   },
@@ -339,6 +381,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       operations: [{ kind: 'set_skill_candidates', candidates }],
     };
     await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
+  },
+  retryModelJob: async (jobId) => {
+    await getModelJobStore().retryJob(jobId);
+    const modelJobs = await getModelJobStore().listJobs();
+    set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
+    void getModelJobStore().processQueue()
+      .then(() => getModelJobStore().pollActiveJobs())
+      .finally(() => {
+        void get().refreshModelJobs();
+      });
   },
   recordUserFeedback: async (input) => {
     if (containsProtectedRendererPayload(input)) return false;
@@ -478,6 +530,11 @@ export function replaceKnowledgeClientForTests(client: KnowledgeClient): void {
   knowledgeClient = client;
 }
 
+export function replaceModelJobExecutorForTests(executor: ModelJobExecutor): void {
+  modelJobExecutor = executor;
+  modelJobStore = null;
+}
+
 function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise<boolean> {
   const result = referenceOrderCommitTail === null
     ? operation()
@@ -493,6 +550,7 @@ function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise
 export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
   referenceOrderCommitTail = null;
+  modelJobStore = null;
   knowledgeClient.stop();
   useAppStore.setState(createInitialState());
 }
@@ -567,7 +625,7 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   const restoredProject = desktopMode ? null : loadPersistedProjectBundle()?.current;
   return {
@@ -579,12 +637,59 @@ function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'd
     desktopRevision: 0,
     knowledgeBases: [],
     knowledgeSyncStatuses: [],
+    modelJobs: [],
     persistenceMode: desktopMode ? 'desktop' : 'browser',
     project: restoredProject ?? createStarterProject(),
     saveErrorCode: null,
     saveStatus: restoredProject ? 'saved' : 'pending',
     undoStack: [],
   };
+}
+
+function countConfirmedModelJobs(jobs: ModelJob[]): number {
+  return jobs.filter((job) => job.status === 'queued' || job.status === 'submitting' || job.status === 'running').length;
+}
+
+function getModelJobStore(): ModelJobStore {
+  if (!modelJobStore) {
+    modelJobStore = createModelJobStore({
+      storage: isIndexedDbAvailable() ? undefined : createInMemoryModelJobStorage(),
+      executor: modelJobExecutor,
+      commitProjectTransaction: (transaction) => useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' }),
+      getProject: () => useAppStore.getState().project,
+    });
+  }
+  return modelJobStore;
+}
+
+function createUnavailableModelJobExecutor(): ModelJobExecutor {
+  return {
+    submit: async () => {
+      throw new Error('模型执行桥尚未连接');
+    },
+    poll: async () => ({ status: 'failed', error: '模型执行桥尚未连接' }),
+    cancel: async () => {},
+  };
+}
+
+function buildModelJobRequests(project: CanvasProject, plan: AgentCanvasPlan): ModelJobRequest[] {
+  const promptNode = project.nodes.find((node) => node.type === 'prompt');
+  const route = plan.modelRoute ?? 'desktop-bridge';
+  const prompt = promptNode?.type === 'prompt' ? promptNode.data.prompt : plan.transaction.label;
+  return Array.from({ length: Math.max(0, plan.jobCount) }, (_, index) => ({
+    id: `model-job-${plan.id}-${index}`,
+    promptNodeId: promptNode?.id ?? 'prompt-start',
+    prompt,
+    provider: 'desktop-bridge',
+    modelRoute: route,
+    displayName: route,
+    modelId: route,
+    referenceAssetIds: collectReferenceAssetIds(project),
+  }));
+}
+
+function isIndexedDbAvailable(): boolean {
+  return typeof globalThis.indexedDB !== 'undefined';
 }
 
 function isDesktopBridgeAvailable(): boolean {

@@ -2,10 +2,12 @@ import { memo } from 'react';
 import type { Edge, Node, NodeProps, NodeTypes } from '@xyflow/react';
 import { Handle, Position } from '@xyflow/react';
 import type { CanvasEdge, CanvasNode, ReferenceRole } from '@agent-canvas/domain';
+import { ImageResultNode } from '../jobs/ImageResultNode';
 
 export interface CanvasNodeData extends Record<string, unknown> {
   title: string;
   subtitle: string;
+  resultAssetId?: string;
 }
 
 const referenceTitles: Record<ReferenceRole, string> = {
@@ -27,7 +29,11 @@ function getViewData(node: CanvasNode): CanvasNodeData {
     case 'model_job':
       return { title: '模型任务', subtitle: `${node.data.job.modelId} · ${node.data.job.status}` };
     case 'image_result':
-      return { title: '生成结果', subtitle: node.data.modelId };
+      return {
+        title: '生成结果',
+        subtitle: node.data.displayName ?? node.data.modelRoute ?? node.data.modelId,
+        resultAssetId: node.data.assetId,
+      };
     case 'review':
       return { title: 'KEEP / CHANGE / NEVER', subtitle: `${node.data.keep.length + node.data.change.length + node.data.never.length} 条要求` };
     case 'memory_diff':
@@ -54,7 +60,7 @@ export const nodeTypes: NodeTypes = {
   prompt: BaseNode,
   placement_preview: BaseNode,
   model_job: BaseNode,
-  image_result: BaseNode,
+  image_result: ImageResultNode,
   review: BaseNode,
   memory_diff: BaseNode,
   agent_plan: BaseNode,

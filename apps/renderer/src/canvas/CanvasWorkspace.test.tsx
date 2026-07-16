@@ -5,6 +5,7 @@ import { createAgentKnowledgeLease, type PlacementObject, type ProjectMemoryEntr
 import {
   createStarterProject,
   replaceKnowledgeClientForTests,
+  replaceModelJobExecutorForTests,
   replaceProjectPersistenceClientForTests,
   resetAppStoreForTests,
   useAppStore,
@@ -401,6 +402,11 @@ describe('CanvasWorkspace', () => {
   });
 
   it('previews, confirms, and undoes an Agent canvas plan as one transaction', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.5 })),
+      cancel: vi.fn(async () => {}),
+    });
     render(<CanvasWorkspace />);
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '制作一张高端产品海报' } });
     fireEvent.click(screen.getByLabelText('发送消息'));
@@ -413,7 +419,7 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(useAppStore.getState().project.nodes.some((node) => node.type === 'review')).toBe(true));
     expect(useAppStore.getState().project.edges.find((edge) => edge.id.startsWith('agent-edge-'))?.label).toBeUndefined();
     expect(useAppStore.getState().confirmedModelJobs).toBe(1);
-    expect(screen.getByText('1 个已确认任务待排队')).toBeInTheDocument();
+    expect(screen.getByText('1 个任务运行中')).toBeInTheDocument();
     expect(useAppStore.getState().agentPlan?.state).toBe('reviewing_results');
 
     fireEvent.click(screen.getByLabelText('撤销'));

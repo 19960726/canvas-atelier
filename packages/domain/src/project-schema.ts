@@ -1,4 +1,5 @@
 import { MAX_GENERATION_REFERENCES, referenceRoleSchema } from './agent-knowledge-contract';
+import { modelJobSchema } from './model-job';
 import { projectMemoryEntrySchema, selectActiveProjectMemoryEntries, skillPromotionCandidateSchema } from './project-memory';
 import { z } from 'zod';
 
@@ -55,16 +56,6 @@ export const placementBoardSchema = z.object({
       context.addIssue({ code: z.ZodIssueCode.too_big, type: 'array', maximum: MAX_GENERATION_REFERENCES, inclusive: true, message: '鍙傝€冨浘鏈€澶?20 寮?' });
     }
   }),
-}).strict();
-
-export const modelJobSchema = z.object({
-  id: idSchema,
-  modelId: idSchema,
-  status: z.enum(['queued', 'submitting', 'running', 'completed', 'failed', 'cancelled']),
-  promptNodeId: idSchema,
-  providerTaskId: idSchema.optional(),
-  confirmedAt: z.string().datetime().optional(),
-  retryCount: z.number().int().nonnegative().default(0),
 }).strict();
 
 export const agentPlanSchema = z.object({
@@ -127,6 +118,14 @@ const imageResultNodeSchema = z.object({
     modelId: idSchema,
     providerTaskId: idSchema.optional(),
     parentNodeIds: z.array(idSchema).default([]),
+    provider: z.string().min(1).optional(),
+    modelRoute: z.string().min(1).optional(),
+    displayName: z.string().min(1).optional(),
+    promptNodeId: idSchema.optional(),
+    referenceAssetIds: z.array(idSchema).default([]),
+    jobId: idSchema.optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
   }).strict(),
 }).strict();
 

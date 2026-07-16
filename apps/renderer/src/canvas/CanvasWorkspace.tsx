@@ -33,6 +33,7 @@ import { ImageMentionComposer, type ImageMentionValue } from '../agent/ImageMent
 import { PlanPreview } from '../agent/PlanPreview';
 import { ReversePromptAgent } from '../agent/ReversePromptAgent';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
+import { JobStrip } from '../jobs/JobStrip';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
 import { ReferenceOrderList } from '../references/ReferenceOrderList';
@@ -67,7 +68,7 @@ export function CanvasWorkspace() {
   const setProject = useAppStore((state) => state.setProject);
   const agentPlan = useAppStore((state) => state.agentPlan);
   const undoStack = useAppStore((state) => state.undoStack);
-  const confirmedModelJobs = useAppStore((state) => state.confirmedModelJobs);
+  const modelJobs = useAppStore((state) => state.modelJobs);
   const saveStatus = useAppStore((state) => state.saveStatus);
   const saveErrorCode = useAppStore((state) => state.saveErrorCode);
   const availableSnapshotIds = useAppStore((state) => state.availableSnapshotIds);
@@ -84,6 +85,8 @@ export function CanvasWorkspace() {
   const restoreProjectSnapshot = useAppStore((state) => state.restoreProjectSnapshot);
   const commitProjectTransaction = useAppStore((state) => state.commitProjectTransaction);
   const commitReferenceOrder = useAppStore((state) => state.commitReferenceOrder);
+  const retryModelJob = useAppStore((state) => state.retryModelJob);
+  const cancelModelJob = useAppStore((state) => state.cancelModelJob);
   const [agentMessage, setAgentMessage] = useState<ImageMentionValue>({ text: '', citations: [] });
   const [submittedAgentContext, setSubmittedAgentContext] = useState<SubmittedAgentContext | null>(null);
   const [referenceOrderPreview, setReferenceOrderPreview] = useState<string[] | null>(null);
@@ -464,12 +467,12 @@ export function CanvasWorkspace() {
         )}
       </aside>
 
-      <footer className="job-strip" aria-label="任务队列">
-        <span className="job-strip__label"><span className="status-dot is-idle" />任务队列</span>
-        <span>{confirmedModelJobs > 0 ? `${confirmedModelJobs} 个已确认任务待排队` : '0 个任务运行中'}</span>
-        <span className="job-strip__spacer" />
-        <span>{saveStatusLabel(saveStatus, saveErrorCode)}</span>
-      </footer>
+      <JobStrip
+        jobs={modelJobs}
+        saveLabel={saveStatusLabel(saveStatus, saveErrorCode)}
+        onRetry={(jobId) => { void retryModelJob(jobId); }}
+        onCancel={(jobId) => { void cancelModelJob(jobId); }}
+      />
     </div>
   );
 }
