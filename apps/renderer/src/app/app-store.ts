@@ -73,6 +73,7 @@ const projectAutosave = createAutosaveController<CanvasProject>({
   delayMs: AUTOSAVE_IDLE_MS,
   isReadOnly: () => useAppStore.getState().saveStatus === 'read_only',
 });
+let pendingProjectFlushBoundary: Promise<boolean> | null = null;
 
 interface UndoEntry {
   transaction: CanvasTransaction;
@@ -573,6 +574,7 @@ function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise
 
 export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
+  pendingProjectFlushBoundary = null;
   referenceOrderCommitTail = null;
   invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
@@ -1059,17 +1061,28 @@ async function flushPendingProjectSave(
   set: (partial: Partial<AppState>) => void,
   reason: Exclude<AutosaveFlushReason, 'idle'>,
 ): Promise<boolean> {
-  const saved = await projectAutosave.flush(reason);
-  if (get().saveStatus === 'read_only') return saved;
+  if (pendingProjectFlushBoundary !== null) return pendingProjectFlushBoundary;
 
-  const stablePoint = await projectPersistenceClient.stablePoint();
-  const state = get();
-  set({
-    availableSnapshotIds: stablePoint.availableSnapshotIds,
-    desktopRevision: stablePoint.revision,
-    project: saved ? stablePoint.project : state.project,
-    saveErrorCode: null,
-    saveStatus: saved || state.saveStatus === 'saved' ? 'saved' : state.saveStatus,
+  const hadDraft = projectAutosave.hasPending() || projectAutosave.hasInFlight();
+  const flushBoundary = (async () => {
+    const saved = hadDraft ? await projectAutosave.flush(reason) : false;
+    if (get().saveStatus === 'read_only') return saved;
+    if (hadDraft && !saved) return false;
+
+    const stablePoint = await projectPersistenceClient.stablePoint();
+    const state = get();
+    set({
+      availableSnapshotIds: stablePoint.availableSnapshotIds,
+      desktopRevision: stablePoint.revision,
+      project: saved ? stablePoint.project : state.project,
+      saveErrorCode: null,
+      saveStatus: saved || state.saveStatus === 'saved' ? 'saved' : state.saveStatus,
+    });
+    return true;
+  })();
+  const trackedFlushBoundary = flushBoundary.finally(() => {
+    if (pendingProjectFlushBoundary === trackedFlushBoundary) pendingProjectFlushBoundary = null;
   });
-  return saved || true;
+  pendingProjectFlushBoundary = trackedFlushBoundary;
+  return trackedFlushBoundary;
 }

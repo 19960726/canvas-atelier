@@ -5,7 +5,6 @@ import { useAppStore } from './app-store';
 let hydrationStarted = false;
 
 export function App() {
-  const closePersistence = useAppStore((state) => state.closePersistence);
   const flushProjectSave = useAppStore((state) => state.flushProjectSave);
   const hydratePersistence = useAppStore((state) => state.hydratePersistence);
   const initializeKnowledge = useAppStore((state) => state.initializeKnowledge);
@@ -33,10 +32,6 @@ export function App() {
       window.removeEventListener('pagehide', handleClose);
     };
   }, [flushProjectSave]);
-
-  useEffect(() => () => {
-    void closePersistence();
-  }, [closePersistence]);
 
   return <CanvasWorkspace />;
 }

@@ -6,7 +6,12 @@ import {
   resetAppStoreForTests,
   useAppStore,
 } from './app-store';
-import { AUTOSAVE_IDLE_MS } from './autosave';
+import {
+  AUTOSAVE_IDLE_MS,
+  createAutosaveController,
+  type AutosaveDraft,
+  type AutosaveFlushReason,
+} from './autosave';
 import type {
   ProjectCommitRequest,
   ProjectCommitResult,
@@ -68,6 +73,50 @@ describe('renderer autosave', () => {
     expect(commit.mock.calls[0]?.[0].nextProject.name).toBe('newest-draft');
   });
 
+  it('shares one in-flight controller flush promise across concurrent close boundaries', async () => {
+    const ack = deferred<boolean>();
+    const commit = vi.fn((_draft: AutosaveDraft<CanvasProject>, _reason: AutosaveFlushReason) => ack.promise);
+    const controller = createAutosaveController<CanvasProject>({ commit });
+
+    controller.schedule({ project: namedProject('shared-in-flight'), revision: 2 });
+    const blurFlush = controller.flush('blur');
+    const closeFlush = controller.flush('close');
+
+    expect(closeFlush).toBe(blurFlush);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0]![0].project.name).toBe('shared-in-flight');
+
+    ack.resolve(true);
+    await expect(blurFlush).resolves.toBe(true);
+    await expect(closeFlush).resolves.toBe(true);
+  });
+
+  it('dedupes concurrent blur/pagehide/close flushes through one commit and one stable point', async () => {
+    const ack = deferred<ProjectCommitResult>();
+    const commit = vi.fn(() => ack.promise);
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['stable-concurrent'],
+      project: namedProject('concurrent-draft'),
+      revision: 12,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, stablePoint }));
+    resetAppStoreForTests();
+
+    useAppStore.getState().setProject(namedProject('concurrent-draft'));
+    const blurFlush = useAppStore.getState().flushProjectSave('blur');
+    const closeFlush = useAppStore.getState().flushProjectSave('close');
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(stablePoint).not.toHaveBeenCalled();
+
+    ack.resolve({ ok: true, project: namedProject('concurrent-draft'), revision: 12 });
+    await expect(Promise.all([blurFlush, closeFlush])).resolves.toEqual([true, true]);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(stablePoint).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().availableSnapshotIds).toEqual(['stable-concurrent']);
+  });
+
   it('flushes blur and close boundaries through the existing commit and stablePoint bridge', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -92,6 +141,51 @@ describe('renderer autosave', () => {
     expect(stablePoint).toHaveBeenCalledTimes(2);
     expect(close).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().availableSnapshotIds).toEqual(['stable-8']);
+  });
+
+  it('returns false and preserves the save error when a pending autosave ACK fails', async () => {
+    const commit = vi.fn(async ({ previousProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      code: 'INVALID_REQUEST',
+      ok: false,
+      project: previousProject,
+      revision: 4,
+    }));
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['should-not-read'],
+      project: namedProject('stable-should-not-apply'),
+      revision: 4,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, stablePoint }));
+    resetAppStoreForTests();
+
+    useAppStore.getState().setProject(namedProject('will-fail-ack'));
+    const flushed = await useAppStore.getState().flushProjectSave('blur');
+
+    expect(flushed).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(stablePoint).not.toHaveBeenCalled();
+    expect(useAppStore.getState().saveStatus).toBe('error');
+    expect(useAppStore.getState().saveErrorCode).toBe('INVALID_REQUEST');
+  });
+
+  it('creates a stable point and succeeds when close flush has no pending or in-flight draft', async () => {
+    const commit = vi.fn();
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['stable-no-pending'],
+      project: namedProject('already-durable'),
+      revision: 9,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, stablePoint }));
+    resetAppStoreForTests();
+    useAppStore.setState({ saveStatus: 'saved' });
+
+    const flushed = await useAppStore.getState().flushProjectSave('close');
+
+    expect(flushed).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+    expect(stablePoint).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+    expect(useAppStore.getState().availableSnapshotIds).toEqual(['stable-no-pending']);
   });
 });
 

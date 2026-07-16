@@ -57,6 +57,47 @@ describe('CanvasWorkspace', () => {
     expect(canvas.queryByText('产品身份参考')).not.toBeInTheDocument();
   });
 
+  it('mounts far-from-origin nodes before the first React Flow viewport initializes fitView', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 600,
+      height: 600,
+      left: 0,
+      right: 800,
+      toJSON: () => ({}),
+      top: 0,
+      width: 800,
+      x: 0,
+      y: 0,
+    } as DOMRect);
+    useAppStore.getState().setProject({
+      version: 1,
+      id: 'project-far-from-origin',
+      name: 'Far Initial FitView Project',
+      nodes: [
+        {
+          id: 'far-reference',
+          type: 'reference',
+          position: { x: 5200, y: 4800 },
+          data: { assetId: 'asset-far-reference', role: 'product_identity' },
+        },
+        {
+          id: 'far-prompt',
+          type: 'prompt',
+          position: { x: 5600, y: 4800 },
+          data: { prompt: 'fitView should see this far prompt', requirementIds: [] },
+        },
+      ],
+      edges: [{ id: 'far-edge', source: 'far-reference', target: 'far-prompt' }],
+      projectMemory: [],
+      skillPromotionCandidates: [],
+    });
+
+    render(<CanvasWorkspace />);
+
+    expect(screen.getByText(/asset-far-reference/)).toBeInTheDocument();
+    expect(screen.getByText('fitView should see this far prompt')).toBeInTheDocument();
+  });
+
   it('opens the placement workbench with separate reference uploads', () => {
     render(<CanvasWorkspace />);
     fireEvent.click(screen.getByLabelText('摆放预览'));

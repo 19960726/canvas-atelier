@@ -364,6 +364,7 @@ export function CanvasWorkspace() {
           fitView
           minZoom={0.08}
           maxZoom={2.5}
+          onInit={viewportCulling.handleViewportInitialized}
           onMove={handleViewportInteraction}
           onMoveStart={handleViewportInteraction}
           onMoveEnd={handleViewportInteraction}

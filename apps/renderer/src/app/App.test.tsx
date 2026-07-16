@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -52,6 +53,36 @@ describe('App persistence hydration', () => {
     render(<App />);
 
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not close persistence during StrictMode mount cleanup replay', async () => {
+    const hydratedProject = { ...createStarterProject(), name: 'StrictMode Durable Project' };
+    const close = vi.fn(async () => {});
+    const hydrate = vi.fn(async () => ({
+      availableSnapshotIds: ['strict-snapshot'],
+      mode: 'desktop' as const,
+      project: hydratedProject,
+      revision: 15,
+      saveStatus: 'saved' as const,
+    }));
+    const start = vi.fn(async () => {});
+    const stop = vi.fn();
+    replaceProjectPersistenceClientForTests(createHydrationClient({ close, hydrate }));
+    replaceKnowledgeClientForTests(createKnowledgeClient({ start, stop }));
+
+    const view = render(<StrictMode><App /></StrictMode>);
+
+    await waitFor(() => expect(hydrate).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(close).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.name).toBe('StrictMode Durable Project');
+
+    view.unmount();
+
+    expect(close).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.name).toBe('StrictMode Durable Project');
   });
 });
 

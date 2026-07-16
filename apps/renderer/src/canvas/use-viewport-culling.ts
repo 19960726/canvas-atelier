@@ -40,6 +40,10 @@ export interface ViewportCullingResult<
   nodes: TNode[];
 }
 
+interface ViewportInitializer {
+  getViewport: () => Viewport;
+}
+
 export function selectViewportCulledElements<
   TNode extends Node = Node,
   TEdge extends Edge = Edge,
@@ -114,6 +118,7 @@ export function useViewportCulling<
   TEdge extends Edge = Edge,
 >(input: Omit<ViewportCullingInput<TNode, TEdge>, 'viewport' | 'viewportSize'>) {
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const [isViewportInitialized, setIsViewportInitialized] = useState(false);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [viewportSize, setViewportSize] = useState<ViewportSize | null>(null);
 
@@ -144,19 +149,31 @@ export function useViewportCulling<
     resizeObserverRef.current = null;
   }, []);
 
-  const handleViewportChange = useCallback((_event: MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
+  const publishViewport = useCallback((nextViewport: Viewport) => {
     setViewport(nextViewport);
+    setIsViewportInitialized(true);
   }, []);
+
+  const handleViewportChange = useCallback((_event: MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
+    publishViewport(nextViewport);
+  }, [publishViewport]);
+
+  const handleViewportInitialized = useCallback((instance: ViewportInitializer) => {
+    publishViewport(instance.getViewport());
+  }, [publishViewport]);
+
+  const cullingEnabled = input.enabled !== false && isViewportInitialized;
 
   const culled = useMemo(() => selectViewportCulledElements({
     ...input,
+    enabled: cullingEnabled,
     viewport,
     viewportSize,
   }), [
+    cullingEnabled,
     input.activeEdgeIds,
     input.activeNodeIds,
     input.edges,
-    input.enabled,
     input.ghostEdgeIds,
     input.ghostNodeIds,
     input.nodeSize,
@@ -171,6 +188,8 @@ export function useViewportCulling<
     ...culled,
     containerRef,
     handleViewportChange,
+    handleViewportInitialized,
+    isViewportInitialized,
     viewport,
     viewportSize,
   };

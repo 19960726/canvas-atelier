@@ -1,6 +1,7 @@
 import type { Edge, Node, Viewport } from '@xyflow/react';
-import { describe, expect, it } from 'vitest';
-import { selectViewportCulledElements } from './use-viewport-culling';
+import { act, cleanup, renderHook } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { selectViewportCulledElements, useViewportCulling } from './use-viewport-culling';
 
 interface TestNodeData extends Record<string, unknown> {
   title: string;
@@ -9,6 +10,11 @@ interface TestNodeData extends Record<string, unknown> {
 
 const viewport: Viewport = { x: 0, y: 0, zoom: 1 };
 const viewportSize = { width: 800, height: 600 };
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('selectViewportCulledElements', () => {
   it('keeps viewport, selected-connected, active-edge, and ghost nodes without reordering or mutating inputs', () => {
@@ -71,6 +77,40 @@ describe('selectViewportCulledElements', () => {
     expect(result.nodes.map((node) => node.id)).toEqual(
       nodes.filter((node) => result.nodes.some((visible) => visible.id === node.id)).map((node) => node.id),
     );
+  });
+});
+
+describe('useViewportCulling', () => {
+  it('keeps all nodes for fitView until React Flow reports the first real viewport', () => {
+    const nodes = [
+      testNode('far-a', 4800, 5200),
+      testNode('far-b', 5200, 5200),
+    ];
+    const { result } = renderHook(() => useViewportCulling({
+      edges: [],
+      nodes,
+      overscan: 80,
+    }));
+    const container = document.createElement('main');
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      bottom: 600,
+      height: 600,
+      left: 0,
+      right: 800,
+      toJSON: () => ({}),
+      top: 0,
+      width: 800,
+      x: 0,
+      y: 0,
+    } as DOMRect);
+
+    act(() => result.current.containerRef(container));
+
+    expect(result.current.nodes.map((node) => node.id)).toEqual(['far-a', 'far-b']);
+
+    act(() => result.current.handleViewportChange(null, viewport));
+
+    expect(result.current.nodes).toHaveLength(0);
   });
 });
 
