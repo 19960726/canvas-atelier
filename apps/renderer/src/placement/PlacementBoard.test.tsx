@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { useState } from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PlacementBoard as PlacementBoardValue } from '@agent-canvas/domain';
 import { PlacementBoard } from './PlacementBoard';
 import { PlacementInspector } from './PlacementInspector';
@@ -44,6 +44,40 @@ function BoardHarness({ rotation = 0 }: { rotation?: number }) {
     <>
       <PlacementBoard value={value} selectedObjectId="product-1" onChange={setValue} onSelect={() => {}} />
       <output data-testid="board-state">{JSON.stringify(value)}</output>
+    </>
+  );
+}
+
+function ThrottledBoardHarness({
+  disableShadowsWhileInteracting = true,
+  targetFps = 30,
+}: {
+  disableShadowsWhileInteracting?: boolean;
+  targetFps?: number;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const [changeCount, setChangeCount] = useState(0);
+  const [commitCount, setCommitCount] = useState(0);
+
+  return (
+    <>
+      <PlacementBoard
+        disableShadowsWhileInteracting={disableShadowsWhileInteracting}
+        onChange={(next) => {
+          setChangeCount((count) => count + 1);
+          setValue(next);
+        }}
+        onCommit={() => {
+          setCommitCount((count) => count + 1);
+        }}
+        onSelect={() => {}}
+        selectedObjectId="product-1"
+        targetFps={targetFps}
+        value={value}
+      />
+      <output data-testid="board-state">{JSON.stringify(value)}</output>
+      <output data-testid="change-count">{changeCount}</output>
+      <output data-testid="commit-count">{commitCount}</output>
     </>
   );
 }
@@ -113,6 +147,54 @@ describe('PlacementBoard', () => {
     fireEvent.pointerDown(screen.getByTestId('placement-object-product-1'), { clientX: 100, clientY: 100, pointerId: 1 });
     fireEvent.pointerMove(board, { clientX: 200, clientY: 200, pointerId: 1 });
     fireEvent.pointerUp(board, { pointerId: 1 });
+  });
+
+  it('commits the final throttled pointerup state once and clears the no-shadow interaction class', () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    render(<ThrottledBoardHarness />);
+    const board = screen.getByTestId('placement-board');
+    const object = screen.getByTestId('placement-object-product-1');
+    setBoardRect(board);
+
+    fireEvent.pointerDown(object, { clientX: 100, clientY: 100, pointerId: 5 });
+    expect(board.className).toContain('is-no-shadow');
+
+    now = 10;
+    fireEvent.pointerMove(board, { clientX: 130, clientY: 120, pointerId: 5 });
+    now = 20;
+    fireEvent.pointerMove(board, { clientX: 170, clientY: 145, pointerId: 5 });
+    fireEvent.pointerUp(board, { pointerId: 5 });
+
+    const state = JSON.parse(screen.getByTestId('board-state').textContent ?? '{}') as PlacementBoardValue;
+    expect(state.objects[0]?.x).toBeCloseTo(0.48);
+    expect(state.objects[0]?.y).toBeCloseTo(0.51);
+    expect(screen.getByTestId('change-count')).toHaveTextContent('2');
+    expect(screen.getByTestId('commit-count')).toHaveTextContent('1');
+    expect(board.className).not.toContain('is-no-shadow');
+  });
+
+  it('keeps the last throttled state on pointercancel and exits the interaction shadow state', () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    render(<ThrottledBoardHarness />);
+    const board = screen.getByTestId('placement-board');
+    const object = screen.getByTestId('placement-object-product-1');
+    setBoardRect(board);
+
+    fireEvent.pointerDown(object, { clientX: 100, clientY: 100, pointerId: 6 });
+    now = 10;
+    fireEvent.pointerMove(board, { clientX: 125, clientY: 120, pointerId: 6 });
+    now = 18;
+    fireEvent.pointerMove(board, { clientX: 160, clientY: 150, pointerId: 6 });
+    fireEvent.pointerCancel(board, { pointerId: 6 });
+
+    const state = JSON.parse(screen.getByTestId('board-state').textContent ?? '{}') as PlacementBoardValue;
+    expect(state.objects[0]?.x).toBeCloseTo(0.46);
+    expect(state.objects[0]?.y).toBeCloseTo(0.52);
+    expect(screen.getByTestId('change-count')).toHaveTextContent('2');
+    expect(screen.getByTestId('commit-count')).toHaveTextContent('1');
+    expect(board.className).not.toContain('is-no-shadow');
   });
 });
 

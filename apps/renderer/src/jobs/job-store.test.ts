@@ -257,6 +257,57 @@ describe('persistent model job store', () => {
     expect(project.nodes.filter((node) => node.type === 'image_result')).toHaveLength(6);
   });
 
+  it('accepts runtime-profile poll and decode concurrency overrides instead of hard-coding 4 and 2', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const submitGate = createGate();
+    const decodeGate = createGate();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const executor = createExecutor({
+      submit: vi.fn(async (job) => {
+        submitGate.enter(job.id);
+        await submitGate.wait();
+        return { providerTaskId: `task-${job.id}` };
+      }),
+      poll: vi.fn(async (job) => ({
+        status: 'completed' as const,
+        result: {
+          assetId: `asset-${job.id}`,
+          decode: async () => {
+            decodeGate.enter(job.id);
+            await decodeGate.wait();
+          },
+        },
+      })),
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollConcurrency: 2,
+      decodeConcurrency: 1,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: Array.from({ length: 3 }, (_, index) => request({ id: `job-profile-${index}` })),
+    });
+
+    const running = store.run();
+    await submitGate.untilEntered(2);
+    expect(submitGate.activeCount()).toBe(2);
+    submitGate.releaseAll();
+    await decodeGate.untilEntered(1);
+    expect(decodeGate.activeCount()).toBe(1);
+    decodeGate.releaseAll();
+    await running;
+  });
+
   it('keeps cancellation during submit or poll from being overwritten by stale workers', async () => {
     const storage = createInMemoryModelJobStorage();
     const submitGate = createGate();

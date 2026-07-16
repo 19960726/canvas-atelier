@@ -4,4 +4,7 @@ directories:
   output: dist-builder/desktop-modern
 files:
   - dist/**
+extraResources:
+  from: ../renderer/dist
+  to: renderer/dist
 artifactName: AgentCanvas-Win10-11-x64-${version}.exe

@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@agent-canvas/desktop-bridge": "file:../../packages/desktop-bridge",
-    "@agent-canvas/desktop-core": "file:../../packages/desktop-core"
+    "@agent-canvas/desktop-core": "file:../../packages/desktop-core",
+    "@agent-canvas/domain": "file:../../packages/domain"
   },
   "devDependencies": {
     "electron": "22.3.27"

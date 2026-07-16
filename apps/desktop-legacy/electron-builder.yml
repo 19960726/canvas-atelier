@@ -4,4 +4,7 @@ directories:
   output: dist-builder/desktop-legacy
 files:
   - dist/**
+extraResources:
+  from: ../renderer/dist
+  to: renderer/dist
 artifactName: AgentCanvas-Win7-x64-${version}.exe

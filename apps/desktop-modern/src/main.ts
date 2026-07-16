@@ -1,5 +1,5 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { app, BrowserWindow, dialog, ipcMain, net, safeStorage, shell } from 'electron';
@@ -26,10 +26,11 @@ import {
   type BridgeDialogAdapter,
   type DesktopBridgeHandlers,
 } from '@agent-canvas/desktop-core';
+import { resolveRendererHtmlPath } from './renderer-path';
 
 const runtimeChannel = 'modern' as const;
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const rendererHtmlPath = resolve(currentDir, '../../renderer/dist/index.html');
+const rendererHtmlPath = resolveRendererHtmlPath(currentDir);
 const preloadPath = join(currentDir, 'preload.js');
 const safeModePreloadPath = join(currentDir, 'safe-preload.js');
 const safeModeHtmlPath = join(currentDir, 'safe-mode.html');
