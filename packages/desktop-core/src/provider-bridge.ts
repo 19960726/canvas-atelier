@@ -58,22 +58,10 @@ export type {
 
 const scrypt = promisify(scryptCallback);
 const CREDENTIALS_FILE = 'provider-credentials.json';
+const TASK_MAPPINGS_FILE = 'provider-task-mappings.json';
 const DEFAULT_COMFLY_BASE_URL = 'https://api.comfly.chat';
 
-export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [
-  {
-    provider: 'comfly',
-    modelRoute: 'gpt-image',
-    displayName: 'GPT Image',
-    capabilities: ['image_generation', 'async_tasks'],
-  },
-  {
-    provider: 'comfly',
-    modelRoute: 'nano-banana-2',
-    displayName: 'Nano Banana 2',
-    capabilities: ['image_generation', 'async_tasks'],
-  },
-];
+export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
 
 export interface SafeStorageAdapter {
   isEncryptionAvailable(): boolean;
@@ -127,6 +115,27 @@ type ProviderCredentialEnvelope =
     readonly authTagHex: string;
     readonly ciphertextHex: string;
   };
+
+interface ProviderTaskMappingEnvelope {
+  readonly version: 1;
+  readonly saltHex: string;
+  readonly ivHex: string;
+  readonly authTagHex: string;
+  readonly ciphertextHex: string;
+}
+
+interface ProviderTaskMappingRecord {
+  readonly provider: 'comfly';
+  readonly publicTaskId: string;
+  readonly rawTaskId: string;
+}
+
+interface ProviderTaskMappingStore {
+  clear(): Promise<void>;
+  delete(publicTaskId: string): Promise<void>;
+  get(publicTaskId: string): Promise<ProviderTaskMappingRecord | undefined>;
+  set(record: ProviderTaskMappingRecord): Promise<void>;
+}
 
 export function parseProviderBridgeRequest(channel: string, request: unknown): unknown {
   switch (channel) {
@@ -277,17 +286,24 @@ export function createSecureProviderCredentialStore(options: {
 }
 
 export function createComflyProviderService(options: {
+  readonly appDataRoot: string;
   readonly credentialStore: ProviderCredentialStore;
   readonly fetch: ComflyFetch;
+  readonly fileSystem?: FileSystem;
   readonly profiles?: readonly ProviderBridgeProfile[];
   readonly providerModels?: readonly ProviderBridgeProfile[];
   readonly baseUrl?: string;
   readonly timeoutMs?: number;
 }): ProviderService {
+  const fileSystem = options.fileSystem ?? new NodeFileSystem();
   let profiles = sanitizeProfiles(options.profiles ?? DEFAULT_PROVIDER_PROFILES);
   let baseUrl = options.baseUrl ?? DEFAULT_COMFLY_BASE_URL;
   let configureTail: Promise<void> = Promise.resolve();
-  const providerTasks = new Map<string, { provider: string; rawTaskId: string }>();
+  const providerTaskMappings = createProviderTaskMappingStore({
+    appDataRoot: options.appDataRoot,
+    fileSystem,
+    secretSupplier: () => options.credentialStore.getToken(),
+  });
 
   const getClient = () => new ComflyClient({
     baseUrl,
@@ -304,8 +320,9 @@ export function createComflyProviderService(options: {
       return enqueueConfigure(async () => {
         const validated = validateConfigureRequest(request);
         await options.credentialStore.configure({ token: validated.token, passphrase: validated.passphrase });
+        await providerTaskMappings.clear();
         if (validated.baseUrl !== undefined) baseUrl = validated.baseUrl;
-        if (validated.profiles !== undefined) profiles = sanitizeProfiles(validated.profiles);
+        if (validated.profiles !== undefined) profiles = validateConfiguredProfiles(validated.profiles);
         return options.credentialStore.getStatus();
       });
     },
@@ -315,7 +332,6 @@ export function createComflyProviderService(options: {
       return options.credentialStore.getStatus();
     },
     async listProfiles() {
-      await options.credentialStore.getToken();
       return sanitizeProfiles(mergeComflyModelRegistries({
         providerModels: options.providerModels ?? [],
         profileModels: profiles,
@@ -331,19 +347,31 @@ export function createComflyProviderService(options: {
       }));
       const parsed = parseImageTaskResponse(response);
       const publicTaskId = createPublicProviderTaskId();
-      providerTasks.set(publicTaskId, { provider: validated.provider, rawTaskId: parsed.taskId });
+      await providerTaskMappings.set({
+        provider: 'comfly',
+        publicTaskId,
+        rawTaskId: parsed.taskId,
+      });
       return { providerTaskId: publicTaskId };
     },
     async pollImageJob(request) {
       const validated = validatePollImageJobRequest(request);
       assertSupportedProvider(validated.provider);
-      const task = resolveProviderTask(providerTasks, validated);
-      const response = await translateProviderCall(() => getClient().getImageTask(task.rawTaskId));
-      return mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
+      const task = await resolveProviderTask(providerTaskMappings, validated);
+      const response = await translateProviderCall(
+        () => getClient().getImageTask(task.rawTaskId),
+        { publicTaskId: validated.providerTaskId, rawTaskId: task.rawTaskId, request: 'poll' },
+      );
+      const result = mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
+      if (result.status === 'completed' || result.status === 'failed') {
+        await providerTaskMappings.delete(validated.providerTaskId);
+      }
+      return result;
     },
     async cancelImageJob(request) {
       const validated = validateCancelImageJobRequest(request);
       assertSupportedProvider(validated.provider);
+      await providerTaskMappings.delete(validated.providerTaskId);
       return { status: 'local-only', remoteCancelled: false, reason: 'unsupported' };
     },
   };
@@ -359,27 +387,27 @@ export function createProviderBridgeHandlers(service: ProviderService): Provider
   return {
     getStatus: async (_event, request) => {
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.getStatus, request);
-      return service.getStatus();
+      return validateProviderConfigurationStatus(await service.getStatus());
     },
-    configure: async (_event, request) => service.configure(
+    configure: async (_event, request) => validateProviderConfigurationStatus(await service.configure(
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.configure, request) as ConfigureProviderBridgeRequest,
-    ),
-    unlock: async (_event, request) => service.unlock(
+    )),
+    unlock: async (_event, request) => validateProviderConfigurationStatus(await service.unlock(
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.unlock, request) as UnlockProviderBridgeRequest,
-    ),
+    )),
     listProfiles: async (_event, request) => {
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.listProfiles, request);
-      return service.listProfiles();
+      return validateProviderProfiles(await service.listProfiles());
     },
-    submitImageJob: async (_event, request) => service.submitImageJob(
+    submitImageJob: async (_event, request) => validateSubmitImageJobResult(await service.submitImageJob(
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest,
-    ),
-    pollImageJob: async (_event, request) => service.pollImageJob(
+    )),
+    pollImageJob: async (_event, request) => validatePollImageJobResult(await service.pollImageJob(
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.pollImageJob, request) as PollImageJobBridgeRequest,
-    ),
-    cancelImageJob: async (_event, request) => service.cancelImageJob(
+    )),
+    cancelImageJob: async (_event, request) => validateCancelImageJobResult(await service.cancelImageJob(
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request) as CancelImageJobBridgeRequest,
-    ),
+    )),
   };
 }
 
@@ -396,7 +424,10 @@ export function registerProviderBridgeHandlers(
   ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, handlers.cancelImageJob);
 }
 
-async function translateProviderCall<T>(call: () => Promise<T>): Promise<T> {
+async function translateProviderCall<T>(
+  call: () => Promise<T>,
+  context?: { readonly publicTaskId: string; readonly rawTaskId: string; readonly request: 'poll' },
+): Promise<T> {
   try {
     return await call();
   } catch (error) {
@@ -405,7 +436,19 @@ async function translateProviderCall<T>(call: () => Promise<T>): Promise<T> {
     }
     const message = error instanceof Error ? error.message : String(error ?? 'Provider request failed');
     if (/invalid comfly response/i.test(message)) {
-      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid response');
+      throw createProviderBridgeError(
+        'PROVIDER_INVALID_RESPONSE',
+        context === undefined ? 'Provider returned an invalid response' : 'Provider returned an invalid image task response',
+      );
+    }
+    if (context !== undefined && /request failed with status/i.test(message)) {
+      throw createProviderBridgeError('PROVIDER_ERROR', 'Provider image task request failed', /network|fetch/i.test(message));
+    }
+    if (context !== undefined && /timed out|timeout/i.test(message)) {
+      throw createProviderBridgeError('PROVIDER_ERROR', 'Provider image task request timed out', true);
+    }
+    if (context !== undefined) {
+      throw createProviderBridgeError('PROVIDER_ERROR', 'Provider image task request failed', /network|fetch/i.test(message));
     }
     throw createProviderBridgeError('PROVIDER_ERROR', message, /timed out|timeout|network|fetch/i.test(message));
   }
@@ -439,7 +482,7 @@ function validateSubmitImageJobRequest(value: unknown): SubmitImageJobBridgeRequ
   ]);
   const request = {
     jobId: parseNonEmptyString(record.jobId, 'jobId'),
-    provider: parseNonEmptyString(record.provider, 'provider'),
+    provider: parseProvider(record.provider),
     modelRoute: parseNonEmptyString(record.modelRoute, 'modelRoute'),
     prompt: parseNonEmptyString(record.prompt, 'prompt'),
     conversationId: parseNonEmptyString(record.conversationId, 'conversationId'),
@@ -452,7 +495,7 @@ function validateSubmitImageJobRequest(value: unknown): SubmitImageJobBridgeRequ
 function validatePollImageJobRequest(value: unknown): PollImageJobBridgeRequest {
   const record = expectStrictRecord(value, ['provider', 'providerTaskId']);
   const request = {
-    provider: parseNonEmptyString(record.provider, 'provider'),
+    provider: parseProvider(record.provider),
     providerTaskId: parseNonEmptyString(record.providerTaskId, 'providerTaskId'),
   };
   assertPublicProviderPayload(request);
@@ -488,10 +531,10 @@ function parseProfiles(value: unknown): ProviderBridgeProfile[] {
   if (!Array.isArray(value)) {
     throw createProviderBridgeError('INVALID_REQUEST', 'profiles must be an array');
   }
-  return sanitizeProfiles(value.map((item) => {
+  return validateConfiguredProfiles(value.map((item) => {
     const record = expectStrictRecord(item, ['provider', 'modelRoute', 'displayName', 'modelId', 'capabilities']);
     return {
-      provider: parseNonEmptyString(record.provider, 'provider'),
+      provider: parseProvider(record.provider),
       modelRoute: parseNonEmptyString(record.modelRoute, 'modelRoute'),
       displayName: parseNonEmptyString(record.displayName, 'displayName'),
       ...(record.modelId === undefined ? {} : { modelId: parseNonEmptyString(record.modelId, 'modelId') }),
@@ -521,23 +564,166 @@ function parseCapabilities(value: unknown): ProviderBridgeCapability[] {
   });
 }
 
-function sanitizeProfiles(value: readonly ComflyModelRegistration[]): ProviderBridgeProfile[] {
+function parseProvider(value: unknown): 'comfly' {
+  const provider = parseNonEmptyString(value, 'provider');
+  assertSupportedProvider(provider);
+  return provider;
+}
+
+function validateConfiguredProfiles(value: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
   return value.map((profile) => {
     const sanitized = {
-      provider: parseNonEmptyString(profile.provider, 'provider'),
+      provider: parseProvider(profile.provider),
       modelRoute: parseNonEmptyString(profile.modelRoute, 'modelRoute'),
       displayName: parseNonEmptyString(profile.displayName, 'displayName'),
       ...(profile.modelId === undefined ? {} : { modelId: parseNonEmptyString(profile.modelId, 'modelId') }),
-      capabilities: [...profile.capabilities],
+      capabilities: parseCapabilities(profile.capabilities),
     };
     assertPublicProviderPayload(sanitized);
     return sanitized;
   });
 }
 
+function sanitizeProfiles(value: readonly ComflyModelRegistration[]): ProviderBridgeProfile[] {
+  return value.flatMap((profile) => {
+    if (profile.provider !== 'comfly') return [];
+    const sanitized = {
+      provider: parseProvider(profile.provider),
+      modelRoute: parseNonEmptyString(profile.modelRoute, 'modelRoute'),
+      displayName: parseNonEmptyString(profile.displayName, 'displayName'),
+      ...(profile.modelId === undefined ? {} : { modelId: parseNonEmptyString(profile.modelId, 'modelId') }),
+      capabilities: parseCapabilities(profile.capabilities),
+    };
+    assertPublicProviderPayload(sanitized);
+    return [sanitized];
+  });
+}
+
+function validateProviderConfigurationStatus(value: unknown): ProviderConfigurationStatus {
+  const record = expectStrictRecord(value, ['configured', 'locked', 'encryption']);
+  if (typeof record.configured !== 'boolean' || typeof record.locked !== 'boolean') {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid status response');
+  }
+  if (record.encryption !== 'safeStorage' && record.encryption !== 'passphrase' && record.encryption !== 'unavailable') {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid status response');
+  }
+  return {
+    configured: record.configured,
+    locked: record.locked,
+    encryption: record.encryption,
+  };
+}
+
+function validateProviderProfiles(value: unknown): ProviderBridgeProfile[] {
+  if (!Array.isArray(value)) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid profile inventory');
+  }
+  return value.map((profile) => {
+    const record = expectStrictRecord(profile, ['provider', 'modelRoute', 'displayName', 'modelId', 'capabilities']);
+    if (parseNonEmptyString(record.provider, 'provider') !== 'comfly') {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid profile inventory');
+    }
+    const sanitized = {
+      provider: 'comfly' as const,
+      modelRoute: parseNonEmptyString(record.modelRoute, 'modelRoute'),
+      displayName: parseNonEmptyString(record.displayName, 'displayName'),
+      ...(record.modelId === undefined ? {} : { modelId: parseNonEmptyString(record.modelId, 'modelId') }),
+      capabilities: parseCapabilities(record.capabilities),
+    };
+    assertPublicProviderPayload(sanitized);
+    return sanitized;
+  });
+}
+
+function validateSubmitImageJobResult(value: unknown): SubmitImageJobBridgeResult {
+  const record = expectStrictRecord(value, ['providerTaskId']);
+  const providerTaskId = parseNonEmptyString(record.providerTaskId, 'providerTaskId');
+  if (!providerTaskId.startsWith('provider-job-')) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job handle');
+  }
+  assertPublicProviderPayload({ providerTaskId });
+  return { providerTaskId };
+}
+
+function validatePollImageJobResult(value: unknown): PollImageJobBridgeResult {
+  if (!isPlainRecord(value) || typeof value.status !== 'string') {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job result');
+  }
+  if (value.status === 'running') {
+    const record = expectStrictRecord(value, ['status', 'progress']);
+    if (record.progress !== undefined && typeof record.progress !== 'number') {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job result');
+    }
+    return {
+      status: 'running',
+      ...(record.progress === undefined ? {} : { progress: record.progress }),
+    };
+  }
+  if (value.status === 'failed') {
+    const record = expectStrictRecord(value, ['status', 'error']);
+    return {
+      status: 'failed',
+      error: validateProviderError(record.error),
+    };
+  }
+  if (value.status === 'completed') {
+    const record = expectStrictRecord(value, ['status', 'progress', 'result']);
+    if (record.progress !== undefined && typeof record.progress !== 'number') {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job result');
+    }
+    return {
+      status: 'completed',
+      ...(record.progress === undefined ? {} : { progress: record.progress }),
+      result: validateProviderImageJobResult(record.result),
+    };
+  }
+  throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job result');
+}
+
+function validateCancelImageJobResult(value: unknown): CancelImageJobBridgeResult {
+  const record = expectStrictRecord(value, ['status', 'remoteCancelled', 'reason']);
+  if (record.status !== 'local-only' || record.remoteCancelled !== false || record.reason !== 'unsupported') {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid cancel result');
+  }
+  return {
+    status: 'local-only',
+    remoteCancelled: false,
+    reason: 'unsupported',
+  };
+}
+
+function validateProviderError(value: unknown): ProviderBridgeError {
+  const record = expectStrictRecord(value, ['code', 'message', 'retryable']);
+  if (typeof record.code !== 'string' || typeof record.retryable !== 'boolean') {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job error');
+  }
+  const normalized = normalizeProviderBridgeError({
+    code: record.code,
+    message: parseNonEmptyString(record.message, 'message'),
+    retryable: record.retryable,
+  });
+  if (containsRawProviderTaskIdentifier(normalized.message)) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job error');
+  }
+  return normalized;
+}
+
+function validateProviderImageJobResult(value: unknown): ProviderImageJobResult {
+  const record = expectStrictRecord(value, ['assetId', 'url', 'width', 'height']);
+  const assetId = parseNonEmptyString(record.assetId, 'assetId');
+  const result = {
+    assetId,
+    ...(record.url === undefined ? {} : { url: parseSafeResultUrl(record.url) }),
+    ...(record.width === undefined ? {} : { width: parseFiniteNumber(record.width, 'width') }),
+    ...(record.height === undefined ? {} : { height: parseFiniteNumber(record.height, 'height') }),
+  };
+  assertPublicProviderPayload(result);
+  return result;
+}
+
 function selectProfile(
   profiles: readonly ProviderBridgeProfile[],
-  provider: string,
+  provider: 'comfly',
   modelRoute: string,
 ): ProviderBridgeProfile {
   assertSupportedProvider(provider);
@@ -548,7 +734,7 @@ function selectProfile(
   return profile;
 }
 
-function assertSupportedProvider(provider: string): void {
+function assertSupportedProvider(provider: string): asserts provider is 'comfly' {
   if (provider !== 'comfly') {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider is unavailable');
   }
@@ -634,15 +820,88 @@ function createPublicProviderTaskId(): string {
   return `provider-job-${randomBytes(16).toString('hex')}`;
 }
 
-function resolveProviderTask(
-  providerTasks: ReadonlyMap<string, { provider: string; rawTaskId: string }>,
+async function resolveProviderTask(
+  providerTasks: ProviderTaskMappingStore,
   request: PollImageJobBridgeRequest,
-): { provider: string; rawTaskId: string } {
-  const task = providerTasks.get(request.providerTaskId);
+): Promise<{ provider: 'comfly'; rawTaskId: string }> {
+  const task = await providerTasks.get(request.providerTaskId);
   if (task === undefined || task.provider !== request.provider) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
   }
   return task;
+}
+
+function createProviderTaskMappingStore(options: {
+  readonly appDataRoot: string;
+  readonly fileSystem: FileSystem;
+  readonly secretSupplier: () => Promise<string>;
+}): ProviderTaskMappingStore {
+  const targetPath = confinedProviderTaskMappingsPath(options.appDataRoot);
+  let cache: Map<string, ProviderTaskMappingRecord> | null = null;
+  let operationTail: Promise<void> = Promise.resolve();
+
+  return {
+    clear: () => enqueue(async () => {
+      const mappings = await readMappings();
+      mappings.clear();
+      await writeMappings(mappings);
+    }),
+    delete: (publicTaskId) => enqueue(async () => {
+      const mappings = await readMappings();
+      mappings.delete(publicTaskId);
+      await writeMappings(mappings);
+    }),
+    get: async (publicTaskId) => {
+      const mappings = await readMappings();
+      return mappings.get(publicTaskId);
+    },
+    set: (record) => enqueue(async () => {
+      const mappings = await readMappings();
+      mappings.set(record.publicTaskId, record);
+      await writeMappings(mappings);
+    }),
+  };
+
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const run = operationTail.then(operation, operation);
+    operationTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  async function readMappings(): Promise<Map<string, ProviderTaskMappingRecord>> {
+    if (cache !== null) return cache;
+    try {
+      await assertConfinedProviderTaskPathForRead(options.fileSystem, options.appDataRoot, targetPath);
+      const serialized = await options.fileSystem.readFile(targetPath, 'utf8');
+      const envelope = parseTaskMappingEnvelope(JSON.parse(serialized) as unknown);
+      const secret = await options.secretSupplier();
+      const plaintext = await decryptSerializedPayload(envelope, secret);
+      const parsed = parseTaskMappingPayload(JSON.parse(plaintext) as unknown);
+      cache = new Map(parsed.map((record) => [record.publicTaskId, record]));
+      return cache;
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        cache = new Map();
+        return cache;
+      }
+      if (isProviderBridgeError(error)) {
+        throw error;
+      }
+      throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+    }
+  }
+
+  async function writeMappings(mappings: Map<string, ProviderTaskMappingRecord>): Promise<void> {
+    await options.fileSystem.mkdir(options.appDataRoot, { recursive: true });
+    await assertConfinedProviderTaskPathForWrite(options.fileSystem, options.appDataRoot, targetPath);
+    const secret = await options.secretSupplier();
+    const envelope = await encryptSerializedPayload(JSON.stringify({
+      version: 1,
+      mappings: [...mappings.values()],
+    }), secret);
+    await writeAtomic(options.fileSystem, targetPath, `${JSON.stringify(envelope)}\n`);
+    cache = new Map(mappings);
+  }
 }
 
 function assertProviderResponsePayload(value: unknown): void {
@@ -684,6 +943,41 @@ function isPrivateIpv6(host: string): boolean {
   if (!Number.isFinite(first)) return true;
   return (first & 0xfe00) === 0xfc00
     || (first & 0xffc0) === 0xfe80;
+}
+
+function parseTaskMappingEnvelope(value: unknown): ProviderTaskMappingEnvelope {
+  if (
+    !isPlainRecord(value)
+    || value.version !== 1
+    || typeof value.saltHex !== 'string'
+    || typeof value.ivHex !== 'string'
+    || typeof value.authTagHex !== 'string'
+    || typeof value.ciphertextHex !== 'string'
+  ) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+  }
+  return {
+    version: 1,
+    saltHex: value.saltHex,
+    ivHex: value.ivHex,
+    authTagHex: value.authTagHex,
+    ciphertextHex: value.ciphertextHex,
+  };
+}
+
+function parseTaskMappingPayload(value: unknown): ProviderTaskMappingRecord[] {
+  const record = expectStrictRecord(value, ['version', 'mappings']);
+  if (record.version !== 1 || !Array.isArray(record.mappings)) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+  }
+  return record.mappings.map((entry) => {
+    const item = expectStrictRecord(entry, ['provider', 'publicTaskId', 'rawTaskId']);
+    return {
+      provider: parseProvider(item.provider),
+      publicTaskId: parseNonEmptyString(item.publicTaskId, 'publicTaskId'),
+      rawTaskId: parseNonEmptyString(item.rawTaskId, 'rawTaskId'),
+    };
+  });
 }
 
 function parseCredentialEnvelope(value: unknown): ProviderCredentialEnvelope {
@@ -742,6 +1036,36 @@ async function decryptWithPassphrase(envelope: Extract<ProviderCredentialEnvelop
   ]).toString('utf8');
 }
 
+async function encryptSerializedPayload(value: string, secret: string): Promise<ProviderTaskMappingEnvelope> {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = await deriveKey(secret, salt);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return {
+    version: 1,
+    saltHex: salt.toString('hex'),
+    ivHex: iv.toString('hex'),
+    authTagHex: authTag.toString('hex'),
+    ciphertextHex: ciphertext.toString('hex'),
+  };
+}
+
+async function decryptSerializedPayload(envelope: ProviderTaskMappingEnvelope, secret: string): Promise<string> {
+  try {
+    const key = await deriveKey(secret, Buffer.from(envelope.saltHex, 'hex'));
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(envelope.authTagHex, 'hex'));
+    return Buffer.concat([
+      decipher.update(Buffer.from(envelope.ciphertextHex, 'hex')),
+      decipher.final(),
+    ]).toString('utf8');
+  } catch {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+  }
+}
+
 async function deriveKey(passphrase: string, salt: Uint8Array): Promise<Buffer> {
   return await scrypt(passphrase, salt, 32) as Buffer;
 }
@@ -759,11 +1083,54 @@ async function rejectSymlinkTarget(fileSystem: FileSystem, targetPath: string): 
   }
 }
 
+async function assertConfinedProviderTaskPathForWrite(
+  fileSystem: FileSystem,
+  appDataRoot: string,
+  targetPath: string,
+): Promise<void> {
+  await rejectSymlinkTarget(fileSystem, appDataRoot);
+  await rejectSymlinkTarget(fileSystem, targetPath);
+  if (fileSystem.realpath === undefined) return;
+  const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
+  const realParent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
+  if (realParent !== realRoot) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping path is invalid');
+  }
+}
+
+async function assertConfinedProviderTaskPathForRead(
+  fileSystem: FileSystem,
+  appDataRoot: string,
+  targetPath: string,
+): Promise<void> {
+  await rejectSymlinkTarget(fileSystem, appDataRoot);
+  await rejectSymlinkTarget(fileSystem, targetPath);
+  if (fileSystem.realpath === undefined) return;
+  const realRoot = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
+  const realTarget = normalizeRealPath(await fileSystem.realpath(targetPath));
+  if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${sep}`)) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping path is invalid');
+  }
+}
+
 function confinedCredentialsPath(appDataRoot: string): string {
+  return confinedAppDataPath(appDataRoot, CREDENTIALS_FILE, 'CREDENTIALS_LOCKED', 'Provider credential path is invalid');
+}
+
+function confinedProviderTaskMappingsPath(appDataRoot: string): string {
+  return confinedAppDataPath(appDataRoot, TASK_MAPPINGS_FILE, 'PROVIDER_UNAVAILABLE', 'Provider task mapping path is invalid');
+}
+
+function confinedAppDataPath(
+  appDataRoot: string,
+  fileName: string,
+  errorCode: 'CREDENTIALS_LOCKED' | 'PROVIDER_UNAVAILABLE',
+  errorMessage: string,
+): string {
   const root = resolve(appDataRoot);
-  const target = resolve(root, CREDENTIALS_FILE);
+  const target = resolve(root, fileName);
   if (target !== root && !target.startsWith(`${root}${sep}`)) {
-    throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential path is invalid');
+    throw createProviderBridgeError(errorCode, errorMessage);
   }
   return target;
 }
@@ -777,6 +1144,13 @@ function parseNonEmptyString(value: unknown, fieldName: string): string {
     return value;
   }
   throw createProviderBridgeError('INVALID_REQUEST', `${fieldName} must be a non-empty string`);
+}
+
+function parseFiniteNumber(value: unknown, fieldName: string): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', `${fieldName} must be a finite number`);
 }
 
 function parseSecretString(value: unknown, fieldName: string): string {
@@ -811,6 +1185,11 @@ function containsProtectedProviderText(value: string): boolean {
     || /[A-Za-z]:\\/u.test(value)
     || /\\\\[^\\\s]+\\/u.test(value)
     || /(?:^|\s)\/(?:Users|home|var|etc|opt|tmp|private)\//u.test(value);
+}
+
+function containsRawProviderTaskIdentifier(value: string): boolean {
+  return /\braw-[a-z0-9._:-]+\b/iu.test(value)
+    || /\/v1\/images\/tasks\//iu.test(value);
 }
 
 function sanitizeProviderMessage(value: string): string {

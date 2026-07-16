@@ -9,6 +9,7 @@ export const PROVIDER_BRIDGE_CHANNELS = {
 } as const;
 
 export type ProviderBridgeChannel = typeof PROVIDER_BRIDGE_CHANNELS[keyof typeof PROVIDER_BRIDGE_CHANNELS];
+export type ProviderBridgeProvider = 'comfly';
 
 export type ProviderBridgeCapability =
   | 'chat'
@@ -39,7 +40,7 @@ export interface ProviderBridgeException extends Error {
 }
 
 export interface ProviderBridgeProfile {
-  readonly provider: string;
+  readonly provider: ProviderBridgeProvider;
   readonly modelRoute: string;
   readonly displayName: string;
   readonly modelId?: string;
@@ -65,7 +66,7 @@ export interface UnlockProviderBridgeRequest {
 
 export interface SubmitImageJobBridgeRequest {
   readonly jobId: string;
-  readonly provider: string;
+  readonly provider: ProviderBridgeProvider;
   readonly modelRoute: string;
   readonly prompt: string;
   readonly conversationId: string;
@@ -77,7 +78,7 @@ export interface SubmitImageJobBridgeResult {
 }
 
 export interface PollImageJobBridgeRequest {
-  readonly provider: string;
+  readonly provider: ProviderBridgeProvider;
   readonly providerTaskId: string;
 }
 
@@ -94,7 +95,7 @@ export type PollImageJobBridgeResult =
   | { readonly status: 'failed'; readonly error: ProviderBridgeError };
 
 export interface CancelImageJobBridgeRequest {
-  readonly provider: string;
+  readonly provider: ProviderBridgeProvider;
   readonly providerTaskId: string;
 }
 

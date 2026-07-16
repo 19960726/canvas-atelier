@@ -276,7 +276,7 @@ describe('project optimization memory', () => {
   it('resolves dynamic provider profiles for model plans without resetting conversation context', async () => {
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-nano' }));
     const listProfiles = vi.fn(async () => [{
-      provider: 'comfly-enterprise',
+      provider: 'comfly',
       modelRoute: 'nano-banana-2-route',
       displayName: 'Nano Banana 2',
       modelId: 'provider-owned-nano-route',
@@ -305,20 +305,46 @@ describe('project optimization memory', () => {
     expect(listProfiles).toHaveBeenCalledTimes(1);
     expect(submitImageJob).toHaveBeenCalledWith({
       jobId: expect.stringMatching(/^model-job-/),
-      provider: 'comfly-enterprise',
+      provider: 'comfly',
       modelRoute: 'nano-banana-2-route',
       prompt: 'Generate through Nano Banana 2 while keeping references',
       conversationId: 'agent-conversation-shared',
       referenceAssetIds: ['starter-product'],
     });
     expect(useAppStore.getState().modelJobs[0]).toMatchObject({
-      provider: 'comfly-enterprise',
+      provider: 'comfly',
       modelRoute: 'nano-banana-2-route',
       displayName: 'Nano Banana 2',
       modelId: 'provider-owned-nano-route',
       conversationId: 'agent-conversation-shared',
       referenceAssetIds: ['starter-product'],
     });
+  });
+
+  it('does not invent desktop provider defaults when the bridge reports no configured profiles', async () => {
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-missing-profile' }));
+    const listProfiles = vi.fn(async () => []);
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: false, locked: true, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Do not fabricate GPT Image defaults');
+
+    await expect(
+      useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false }),
+    ).rejects.toThrow(/unconfigured/i);
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(submitImageJob).not.toHaveBeenCalled();
+    expect(useAppStore.getState().modelJobs).toEqual([]);
   });
 
   it('hydrates durable project before deferred model job recovery finishes', async () => {

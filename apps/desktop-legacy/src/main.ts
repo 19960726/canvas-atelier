@@ -90,6 +90,7 @@ app.whenReady().then(async () => {
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
   registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createComflyProviderService({
+    appDataRoot: app.getPath('userData'),
     credentialStore: createSecureProviderCredentialStore({
       appDataRoot: app.getPath('userData'),
       safeStorage,

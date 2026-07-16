@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -63,6 +63,18 @@ describe('provider bridge contracts', () => {
     })).toThrow(/protected payload/i);
   });
 
+  it('accepts only the stable comfly provider identifier in configured profiles', () => {
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.configure, {
+      token,
+      profiles: [{
+        provider: 'comfly-enterprise',
+        modelRoute: 'nano-banana-2-route',
+        displayName: 'Nano Banana 2',
+        capabilities: ['image_generation', 'async_tasks'],
+      }],
+    })).toThrow(/provider unavailable|provider is unavailable/i);
+  });
+
   it('normalizes errors without leaking token-like details', () => {
     const normalized = normalizeProviderBridgeError(
       new Error(`Authorization: Bearer ${token} failed from C:\\Users\\Private\\image.png`),
@@ -125,19 +137,31 @@ describe('secure provider credential storage', () => {
 });
 
 describe('Comfly provider service', () => {
+  it('returns an empty profile inventory when no profiles are configured', async () => {
+    const appDataRoot = await makeTempRoot();
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch: vi.fn() });
+
+    await expect(service.listProfiles()).resolves.toEqual([]);
+    await service.configure({ token });
+    await expect(service.listProfiles()).resolves.toEqual([]);
+    await cleanupTempRoot(appDataRoot);
+  });
   it('lists sanitized dynamic profiles only when credentials are unlocked', async () => {
     const appDataRoot = await makeTempRoot();
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
     const service = createComflyProviderService({
+      appDataRoot,
       credentialStore,
       fetch: vi.fn(),
       profiles,
     });
 
     expect(await service.getStatus()).toMatchObject({ configured: false, locked: true });
+    const listedBeforeConfigure = await service.listProfiles();
     await service.configure({ token });
-
     const listed = await service.listProfiles();
+    expect(listedBeforeConfigure).toEqual(listed);
     expect(listed).toMatchObject([
       { provider: 'comfly', modelRoute: 'gpt-image', displayName: 'GPT Image' },
       { provider: 'comfly', modelRoute: 'nano-banana-2', displayName: 'Nano Banana 2' },
@@ -156,9 +180,10 @@ describe('Comfly provider service', () => {
         status: 'succeeded',
         data: [{ url: 'https://assets.example/generated.png' }],
       }))
-      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-123', status: 'failed' }));
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-456', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-456', status: 'failed' }));
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
-    const service = createComflyProviderService({ credentialStore, fetch, profiles });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, profiles });
     await service.configure({ token });
 
     const submitted = await service.submitImageJob({
@@ -171,7 +196,15 @@ describe('Comfly provider service', () => {
     });
     const running = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
     const completed = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
-    const failed = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
+    const failedSubmission = await service.submitImageJob({
+      jobId: 'job-2',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'draw a lamp',
+      conversationId: 'conversation-1',
+      referenceAssetIds: ['asset-reference'],
+    });
+    const failed = await service.pollImageJob({ provider: 'comfly', providerTaskId: failedSubmission.providerTaskId });
 
     expect(submitted.providerTaskId).toMatch(/^provider-job-/);
     expect(submitted.providerTaskId).not.toContain('raw-provider-task-123');
@@ -190,7 +223,204 @@ describe('Comfly provider service', () => {
     });
     expect(fetch.mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({ authorization: `Bearer ${token}` }));
     expect(fetch.mock.calls.map((call) => call[0])).toContain('https://api.comfly.chat/v1/images/tasks/raw-provider-task-123');
-    expect(JSON.stringify({ submitted, running, completed })).not.toMatch(/raw-provider-task-123|sk-task|Authorization|base64/i);
+    expect(fetch.mock.calls.map((call) => call[0])).toContain('https://api.comfly.chat/v1/images/tasks/raw-provider-task-456');
+    expect(JSON.stringify({ submitted, running, completed, failedSubmission, failed })).not.toMatch(/raw-provider-task-(123|456)|sk-task|Authorization|base64/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('recovers opaque task mappings after a main-process restart without writing plaintext ids to disk', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const firstFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-restart', status: 'queued' }));
+    const firstCredentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    const first = createComflyProviderService({ appDataRoot, credentialStore: firstCredentialStore, fetch: firstFetch, profiles });
+    await first.configure({ token });
+
+    const submitted = await first.submitImageJob({
+      jobId: 'job-restart',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'recover after restart',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+
+    const secondFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        taskId: 'raw-provider-task-restart',
+        status: 'succeeded',
+        data: [{ url: 'https://assets.example/restart.png' }],
+      }));
+    const restartedCredentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: restartedCredentialStore,
+      fetch: secondFetch,
+      profiles,
+    });
+
+    await expect(restarted.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).resolves.toEqual({
+      status: 'completed',
+      progress: 1,
+      result: {
+        assetId: `provider:comfly:${submitted.providerTaskId}:0`,
+        url: 'https://assets.example/restart.png',
+      },
+    });
+
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toContain('raw-provider-task-restart');
+    expect(serialized).not.toContain(submitted.providerTaskId);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('serializes concurrent durable mapping writes so restart recovery does not lose submitted jobs', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const firstCredentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    const first = createComflyProviderService({
+      appDataRoot,
+      credentialStore: firstCredentialStore,
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-a', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-b', status: 'queued' })),
+      profiles,
+    });
+    await first.configure({ token });
+
+    const [submittedA, submittedB] = await Promise.all([
+      first.submitImageJob({
+        jobId: 'job-a',
+        provider: 'comfly',
+        modelRoute: 'gpt-image',
+        prompt: 'A',
+        conversationId: 'conversation-1',
+        referenceAssetIds: [],
+      }),
+      first.submitImageJob({
+        jobId: 'job-b',
+        provider: 'comfly',
+        modelRoute: 'nano-banana-2',
+        prompt: 'B',
+        conversationId: 'conversation-1',
+        referenceAssetIds: [],
+      }),
+    ]);
+
+    const restartedCredentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: restartedCredentialStore,
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse({
+          taskId: 'raw-provider-task-a',
+          status: 'succeeded',
+          data: [{ url: 'https://assets.example/a.png' }],
+        }))
+        .mockResolvedValueOnce(jsonResponse({
+          taskId: 'raw-provider-task-b',
+          status: 'succeeded',
+          data: [{ url: 'https://assets.example/b.png' }],
+        })),
+      profiles,
+    });
+
+    await expect(restarted.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submittedA.providerTaskId,
+    })).resolves.toMatchObject({ status: 'completed' });
+    await expect(restarted.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submittedB.providerTaskId,
+    })).resolves.toMatchObject({ status: 'completed' });
+
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toContain('raw-provider-task-a');
+    expect(serialized).not.toContain('raw-provider-task-b');
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('garbage collects durable mappings after success, failure, and local cancel', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-success', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-failure', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-cancel', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({
+          taskId: 'raw-provider-task-success',
+          status: 'succeeded',
+          data: [{ url: 'https://assets.example/success.png' }],
+        }))
+        .mockResolvedValueOnce(jsonResponse({
+          taskId: 'raw-provider-task-failure',
+          status: 'failed',
+        })),
+      profiles,
+    });
+    await service.configure({ token });
+
+    const success = await service.submitImageJob({
+      jobId: 'job-success',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'success',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    const failure = await service.submitImageJob({
+      jobId: 'job-failure',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'failure',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    const cancelled = await service.submitImageJob({
+      jobId: 'job-cancel',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'cancel',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: success.providerTaskId })).resolves.toMatchObject({ status: 'completed' });
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: failure.providerTaskId })).resolves.toEqual({
+      status: 'failed',
+      error: { code: 'PROVIDER_ERROR', message: 'Provider image task failed', retryable: true },
+    });
+    await expect(service.cancelImageJob({ provider: 'comfly', providerTaskId: cancelled.providerTaskId })).resolves.toEqual({
+      status: 'local-only',
+      remoteCancelled: false,
+      reason: 'unsupported',
+    });
+
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toContain('raw-provider-task-success');
+    expect(serialized).not.toContain('raw-provider-task-failure');
+    expect(serialized).not.toContain('raw-provider-task-cancel');
+    expect(serialized).not.toContain(success.providerTaskId);
+    expect(serialized).not.toContain(failure.providerTaskId);
+    expect(serialized).not.toContain(cancelled.providerTaskId);
+
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn(),
+      profiles,
+    });
+    await expect(restarted.pollImageJob({ provider: 'comfly', providerTaskId: success.providerTaskId })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    await expect(restarted.pollImageJob({ provider: 'comfly', providerTaskId: failure.providerTaskId })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    await expect(restarted.pollImageJob({ provider: 'comfly', providerTaskId: cancelled.providerTaskId })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -211,6 +441,7 @@ describe('Comfly provider service', () => {
       const appDataRoot = await makeTempRoot();
       const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
       const service = createComflyProviderService({
+        appDataRoot,
         credentialStore,
         fetch: vi.fn().mockResolvedValue(jsonResponse({
           taskId: 'raw-task-url',
@@ -239,6 +470,7 @@ describe('Comfly provider service', () => {
     const appDataRoot = await makeTempRoot();
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
     const service = createComflyProviderService({
+      appDataRoot,
       credentialStore,
       fetch: vi.fn().mockResolvedValue(jsonResponse({ taskId: `Authorization: Bearer ${token}`, status: 'queued' })),
       profiles,
@@ -261,7 +493,7 @@ describe('Comfly provider service', () => {
   it('models cancel as local-only unsupported when the provider has no remote cancel API', async () => {
     const appDataRoot = await makeTempRoot();
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
-    const service = createComflyProviderService({ credentialStore, fetch: vi.fn(), profiles });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch: vi.fn(), profiles });
     await service.configure({ token });
 
     await expect(service.cancelImageJob({
@@ -276,6 +508,7 @@ describe('Comfly provider service', () => {
   });
 
   it('serializes configure so credentials, base URL, and profiles stay atomically consistent', async () => {
+    const appDataRoot = await makeTempRoot();
     const gates = [deferred<void>(), deferred<void>()];
     const configuredTokens: string[] = [];
     let activeToken = '';
@@ -292,7 +525,7 @@ describe('Comfly provider service', () => {
     };
     const fetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-second-task', status: 'queued' }));
-    const service = createComflyProviderService({ credentialStore, fetch });
+    const service = createComflyProviderService({ credentialStore, fetch, appDataRoot });
     const first = service.configure({
       token: 'sk-first-token-value',
       baseUrl: 'https://first.example',
@@ -338,6 +571,7 @@ describe('Comfly provider service', () => {
     });
     expect(fetch.mock.calls[0]?.[0]).toBe('https://second.example/v1/images/generations?async=true');
     expect(fetch.mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({ authorization: 'Bearer sk-second-token-value' }));
+    await cleanupTempRoot(appDataRoot);
   });
 
   it('rejects invalid provider responses and raw base64 results with sanitized errors', async () => {
@@ -348,7 +582,7 @@ describe('Comfly provider service', () => {
       .mockResolvedValueOnce(jsonResponse({ taskId: 'task-invalid', status: 'queued' }))
       .mockResolvedValueOnce(jsonResponse({ taskId: '', status: '???' }));
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
-    const service = createComflyProviderService({ credentialStore, fetch, profiles });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, profiles });
     await service.configure({ token });
 
     const unsafeSubmitted = await service.submitImageJob({
@@ -376,6 +610,87 @@ describe('Comfly provider service', () => {
     });
     await cleanupTempRoot(appDataRoot);
   });
+
+  it('replaces raw Comfly task ids in poll API, fetch, timeout, and invalid-response errors before IPC exposure', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const submitCredentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    const submitService = createComflyProviderService({
+      appDataRoot,
+      credentialStore: submitCredentialStore,
+      fetch: vi.fn().mockResolvedValue(jsonResponse({ taskId: 'raw-provider-task-error', status: 'queued' })),
+      profiles,
+    });
+    await submitService.configure({ token });
+    const submitted = await submitService.submitImageJob({
+      jobId: 'job-error',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'error path',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+
+    const apiRestarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn().mockResolvedValue(jsonResponse({
+        message: 'upstream failed',
+      }, { ok: false, status: 500 })),
+      profiles,
+    });
+    await expect(apiRestarted.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).rejects.toMatchObject({
+      message: expect.not.stringMatching(/raw-provider-task-error|\/v1\/images\/tasks\//i),
+    });
+
+    const fetchRestarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn().mockRejectedValue(new Error('fetch failed for /v1/images/tasks/raw-provider-task-error')),
+      profiles,
+    });
+    await expect(fetchRestarted.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: expect.not.stringMatching(/raw-provider-task-error|\/v1\/images\/tasks\//i),
+    });
+
+    const invalidRestarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn().mockResolvedValue(jsonResponse({ taskId: '', status: '???' })),
+      profiles,
+    });
+    await expect(invalidRestarted.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+      message: expect.not.stringMatching(/raw-provider-task-error|\/v1\/images\/tasks\//i),
+    });
+
+    const timeoutRestarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn().mockRejectedValue(new Error('Comfly request timed out after 50ms for /v1/images/tasks/raw-provider-task-error')),
+      profiles,
+      timeoutMs: 50,
+    });
+    await expect(timeoutRestarted.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: expect.not.stringMatching(/raw-provider-task-error|\/v1\/images\/tasks\//i),
+    });
+
+    await cleanupTempRoot(appDataRoot);
+  });
 });
 
 describe('provider IPC handlers', () => {
@@ -396,6 +711,87 @@ describe('provider IPC handlers', () => {
 
     expect(registered).toEqual(Object.values(PROVIDER_BRIDGE_CHANNELS));
     expect(registered).not.toContain('novus-desktop:provider:fetch');
+  });
+
+  it('strictly validates and sanitizes service responses at the IPC boundary', async () => {
+    const malformedHandlers = createProviderBridgeHandlers({
+      cancelImageJob: vi.fn(async () => ({ status: 'ok' })),
+      configure: vi.fn(),
+      getStatus: vi.fn(async () => ({ configured: 'yes', locked: false, encryption: 'safeStorage' })),
+      listProfiles: vi.fn(async () => [{
+        provider: 'comfly-enterprise',
+        modelRoute: 'nano-banana-2-route',
+        displayName: 'Nano Banana 2',
+        capabilities: ['image_generation', 'async_tasks'],
+      }]),
+      pollImageJob: vi.fn(async () => ({
+        status: 'failed',
+        error: {
+          code: 'PROVIDER_ERROR',
+          message: `Authorization: Bearer ${token} raw-provider-task-123`,
+          retryable: false,
+        },
+      })),
+      submitImageJob: vi.fn(async () => ({ providerTaskId: 'raw-provider-task-123' })),
+      unlock: vi.fn(),
+    } as never);
+
+    await expect(malformedHandlers.getStatus({}, undefined)).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    await expect(malformedHandlers.listProfiles({}, undefined)).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    await expect(malformedHandlers.submitImageJob({}, {
+      jobId: 'job-malformed',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'draw a chair',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    await expect(malformedHandlers.cancelImageJob({}, {
+      provider: 'comfly',
+      providerTaskId: 'provider-job-1',
+    })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+
+    await expect(malformedHandlers.pollImageJob({}, {
+      provider: 'comfly',
+      providerTaskId: 'provider-job-1',
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+    });
+
+    const sanitizedHandlers = createProviderBridgeHandlers({
+      cancelImageJob: vi.fn(async () => ({ status: 'local-only', remoteCancelled: false, reason: 'unsupported' })),
+      configure: vi.fn(),
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+      listProfiles: vi.fn(async () => [{
+        provider: 'comfly',
+        modelRoute: 'nano-banana-2-route',
+        displayName: 'Nano Banana 2',
+        modelId: 'provider-owned-nano-route',
+        capabilities: ['image_generation', 'async_tasks'],
+      }]),
+      pollImageJob: vi.fn(async () => ({
+        status: 'failed',
+        error: {
+          code: 'PROVIDER_ERROR',
+          message: `Authorization: Bearer ${token}`,
+          retryable: false,
+        },
+      })),
+      submitImageJob: vi.fn(async () => ({ providerTaskId: 'provider-job-public-1' })),
+      unlock: vi.fn(),
+    } as never);
+
+    await expect(sanitizedHandlers.pollImageJob({}, {
+      provider: 'comfly',
+      providerTaskId: 'provider-job-public-1',
+    })).resolves.toEqual({
+      status: 'failed',
+      error: {
+        code: 'PROVIDER_ERROR',
+        message: '[redacted]',
+        retryable: false,
+      },
+    });
   });
 });
 
@@ -468,10 +864,10 @@ function unavailableSafeStorage(): SafeStorageAdapter {
   };
 }
 
-function jsonResponse(body: unknown) {
+function jsonResponse(body: unknown, options: { ok?: boolean; status?: number } = {}) {
   return {
-    ok: true,
-    status: 200,
+    ok: options.ok ?? true,
+    status: options.status ?? 200,
     json: async () => body,
   };
 }
@@ -482,4 +878,16 @@ async function makeTempRoot(): Promise<string> {
 
 async function cleanupTempRoot(path: string): Promise<void> {
   await rm(path, { force: true, recursive: true });
+}
+
+async function readAllFiles(root: string): Promise<string> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const contents = await Promise.all(entries.map(async (entry) => {
+    const nextPath = join(root, entry.name);
+    if (entry.isDirectory()) {
+      return readAllFiles(nextPath);
+    }
+    return readFile(nextPath, 'utf8');
+  }));
+  return contents.join('\n');
 }
