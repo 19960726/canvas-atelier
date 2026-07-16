@@ -50,6 +50,7 @@ describe('validateAgentPlan', () => {
 
   it('allows transaction and models after their explicit confirmations', () => {
     expect(validateAgentPlan(createPlan({
+      state: 'committing',
       confirmations: {
         canvas: '2026-07-13T10:00:00.000Z',
         models: '2026-07-13T10:00:00.000Z',
@@ -102,6 +103,7 @@ describe('validateAgentPlan', () => {
 describe('confirmAgentPlan', () => {
   it('applies one transaction, returns one inverse, and cannot be confirmed twice', () => {
     const confirmed = createPlan({
+      state: 'committing',
       confirmations: { canvas: '2026-07-13T10:00:00.000Z' },
     });
     const result = confirmAgentPlan(project, confirmed);
@@ -109,7 +111,7 @@ describe('confirmAgentPlan', () => {
     expect(result.project.nodes).toHaveLength(1);
     expect(result.inverse.operations).toHaveLength(1);
     expect(result.plan.state).toBe('reviewing_results');
-    expect(() => confirmAgentPlan(result.project, result.plan)).toThrow(/waiting_for_confirmation/);
+    expect(() => confirmAgentPlan(result.project, result.plan)).toThrow(/committing/);
   });
 
   it('cancels back to idle without applying operations', () => {
@@ -117,6 +119,7 @@ describe('confirmAgentPlan', () => {
   });
   it('records model approval without claiming models are already running', () => {
     const confirmed = createPlan({
+      state: 'committing',
       confirmations: {
         canvas: '2026-07-13T10:00:00.000Z',
         models: '2026-07-13T10:00:00.000Z',

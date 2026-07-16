@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as publicApi from './index';
 import { createAgentKnowledgeLease } from './knowledge-context';
 import { createSkillPromotionCandidate, createUserFeedbackMemory, reviewSkillPromotionCandidate } from './project-memory';
-import { parseCanvasProject } from './project-schema';
+import { agentPlanSchema, parseCanvasProject } from './project-schema';
 
 describe('parseCanvasProject', () => {
   it('migrates an older project to an empty project-memory timeline', () => {
@@ -471,6 +471,19 @@ describe('parseCanvasProject', () => {
     });
 
     expect(project.nodes[0]?.type).toBe('placement_preview');
+  });
+});
+
+describe('agentPlanSchema', () => {
+  it('accepts transient confirmation states for persisted agent plan nodes', () => {
+    const basePlan = {
+      id: 'agent-plan-node-1',
+      proposedOperationIds: [],
+      requiresModelConfirmation: true,
+    };
+
+    expect(agentPlanSchema.parse({ ...basePlan, state: 'confirming' }).state).toBe('confirming');
+    expect(agentPlanSchema.parse({ ...basePlan, state: 'committing' }).state).toBe('committing');
   });
 });
 

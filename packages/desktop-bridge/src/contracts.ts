@@ -11,6 +11,8 @@ import type {
   KnowledgeSyncStatusSummary,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
+  PrepareSkillCandidateReviewBridgeRequest,
+  PrepareSkillCandidateReviewBridgeResult,
   RecoveryPlanBridgeRequest,
   RecoveryPlanBridgeResult,
   ReviewSkillCandidateBridgeRequest,
@@ -57,6 +59,7 @@ export interface AgentCanvasApi {
   readonly skill: {
     getKnowledgeState(): Promise<KnowledgeStateBridgeResult>;
     configureKnowledgeBase(request: ConfigureKnowledgeBaseBridgeRequest): Promise<KnowledgeBaseStateSummary | null>;
+    prepareSkillCandidateReview(request: PrepareSkillCandidateReviewBridgeRequest): Promise<PrepareSkillCandidateReviewBridgeResult>;
     reviewSkillCandidate(request: ReviewSkillCandidateBridgeRequest): Promise<ReviewSkillCandidateBridgeResult>;
     subscribeKnowledgeState(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
     subscribeKnowledgeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void;

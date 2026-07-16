@@ -29,6 +29,7 @@ describe('agentCanvas preload compatibility bridge', () => {
     expect(Object.keys(api.skill).sort()).toEqual([
       'configureKnowledgeBase',
       'getKnowledgeState',
+      'prepareSkillCandidateReview',
       'reviewSkillCandidate',
       'subscribeKnowledgeState',
       'subscribeKnowledgeSyncStatus',

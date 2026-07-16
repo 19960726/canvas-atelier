@@ -6,10 +6,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 const root = process.cwd();
 const artifactFinding = join(root, 'playwright-report', 'secret-scan-red.txt');
 const distFinding = join(root, 'packages', 'domain', 'dist', 'secret-scan-red.map');
+const distBase64Finding = join(root, 'apps', 'renderer', 'dist', 'secret-scan-base64-red.js');
 
 afterEach(() => {
   rmSync(artifactFinding, { force: true });
   rmSync(distFinding, { force: true });
+  rmSync(distBase64Finding, { force: true });
 });
 
 describe('secret/path scan coverage', () => {
@@ -58,5 +60,23 @@ describe('secret/path scan coverage', () => {
 
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain('packages/domain/dist');
+  });
+
+  it('fails when generated dist contains a real data image base64 payload', () => {
+    mkdirSync(join(root, 'apps', 'renderer', 'dist'), { recursive: true });
+    writeFileSync(
+      distBase64Finding,
+      'const leaked = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA";\n',
+      'utf8',
+    );
+
+    const result = spawnSync(process.execPath, ['tests/e2e/helpers/secret-path-scan.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('apps/renderer/dist');
+    expect(`${result.stdout}\n${result.stderr}`).toContain('raw base64 image payload');
   });
 });

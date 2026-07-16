@@ -40,6 +40,7 @@ export function createAgentCanvasApi(
     skill: {
       getKnowledgeState: () => legacy.getKnowledgeState(),
       configureKnowledgeBase: (request) => legacy.configureKnowledgeBase(request),
+      prepareSkillCandidateReview: (request) => legacy.prepareSkillCandidateReview(request),
       reviewSkillCandidate: (request) => legacy.reviewSkillCandidate(request),
       subscribeKnowledgeState: (listener) => legacy.subscribeKnowledgeState(listener),
       subscribeKnowledgeSyncStatus: (listener) => legacy.subscribeKnowledgeSyncStatus(listener),

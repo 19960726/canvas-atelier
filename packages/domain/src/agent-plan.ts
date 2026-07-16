@@ -6,6 +6,8 @@ export type AgentPlanState =
   | 'reading_canvas'
   | 'drafting_plan'
   | 'waiting_for_confirmation'
+  | 'confirming'
+  | 'committing'
   | 'applying_transaction'
   | 'running_models'
   | 'reviewing_results'
@@ -60,7 +62,7 @@ export function validateAgentPlan(plan: AgentCanvasPlan): AgentPlanValidation {
 
   const canDeleteNodes = !needsDeletionApproval || Boolean(plan.confirmations.deleteNodes);
   const canWritebackSkill = !needsSkillApproval || Boolean(plan.confirmations.skillWriteback);
-  const canApplyTransaction = plan.state === 'waiting_for_confirmation'
+  const canApplyTransaction = (plan.state === 'waiting_for_confirmation' || plan.state === 'committing')
     && Boolean(plan.confirmations.canvas)
     && canDeleteNodes;
   const canExecuteModels = canApplyTransaction
@@ -78,8 +80,8 @@ export function validateAgentPlan(plan: AgentCanvasPlan): AgentPlanValidation {
 }
 
 export function confirmAgentPlan(project: CanvasProject, plan: AgentCanvasPlan) {
-  if (plan.state !== 'waiting_for_confirmation') {
-    throw new Error('agent plan must be waiting_for_confirmation');
+  if (plan.state !== 'committing') {
+    throw new Error('agent plan must be committing');
   }
   const validation = validateAgentPlan(plan);
   if (!validation.canApplyTransaction) {

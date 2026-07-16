@@ -50,6 +50,20 @@ describe('PlanPreview', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消方案' }));
     expect(onCancel).toHaveBeenCalledOnce();
   });
+  it('disables plan actions and shows processing state while confirmation is in flight', () => {
+    const onCancel = vi.fn();
+    const onConfirm = vi.fn();
+    render(<PlanPreview plan={{ ...plan, state: 'committing' }} onConfirm={onConfirm} onCancel={onCancel} />);
+
+    expect(screen.getByTestId('plan-processing-state')).toHaveTextContent(/processing|处理中|提交中/i);
+    expect(screen.getByTestId('plan-cancel')).toBeDisabled();
+    expect(screen.getByTestId('plan-confirm')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('plan-cancel'));
+    fireEvent.click(screen.getByTestId('plan-confirm'));
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
   it('shows separate approvals for deletion and Skill writeback', () => {
     const onConfirm = vi.fn();
     render(<PlanPreview plan={{ ...plan, requestedCapabilities: ['delete_nodes', 'skill_writeback'] }} onConfirm={onConfirm} onCancel={() => {}} />);

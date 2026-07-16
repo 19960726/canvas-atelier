@@ -392,6 +392,55 @@ describe('KnowledgeClient', () => {
     expect(result).toBe(reviewResult);
     expect(states[states.length - 1]?.map((state) => `${state.knowledgeBaseId}:${state.activeVersion}`)).toEqual(['scene-skill:2']);
   });
+
+  it('prepares a Skill candidate for preview through the desktop bridge before approval', async () => {
+    const reviewableCandidate = {
+      schemaVersion: 1 as const,
+      id: 'candidate-preview',
+      sourceProjectId: 'project-1',
+      sourceProjectMemoryId: 'memory-1',
+      sourceProjectMemoryIds: ['memory-1'],
+      createdAt: '2026-07-16T00:00:00.000Z',
+      title: 'Prepared rule',
+      rationale: 'Prepared from source memory',
+      rule: 'Proposed rule body',
+      sourceRule: 'Source memory body',
+      managedRule: 'Managed active body',
+      diffHunks: ['- Managed active body', '+ Proposed rule body'],
+      targetKnowledgeBaseId: 'scene-skill',
+      targetKnowledgeSection: 'scene',
+      evidence: { keep: [], change: ['Proposed rule body'], never: [] },
+      reviewStatus: 'pending_review' as const,
+    };
+    const prepareSkillCandidateReview = vi.fn(async () => ({
+      projectId: 'project-1',
+      currentRevision: 4,
+      candidate: reviewableCandidate,
+      candidates: [reviewableCandidate],
+      knowledgeState: null,
+    }));
+    window.novusDesktop = createBridge({
+      getKnowledgeState: async () => ({ states: [] }),
+      prepareSkillCandidateReview,
+    } as Partial<typeof window.novusDesktop>);
+    const client = createKnowledgeClient() as ReturnType<typeof createKnowledgeClient> & {
+      prepareSkillCandidateReview(request: { projectId: string; candidateId: string }): Promise<SkillCandidateReviewResult>;
+    };
+
+    await client.start(() => undefined);
+    const result = await client.prepareSkillCandidateReview({
+      projectId: 'project-1',
+      candidateId: 'candidate-preview',
+    });
+
+    expect(prepareSkillCandidateReview).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      candidateId: 'candidate-preview',
+    });
+    expect(result.candidate.sourceRule).toContain('Source memory body');
+    expect(result.candidate.managedRule).toContain('Managed active body');
+    expect(result.candidate.diffHunks).toEqual(['- Managed active body', '+ Proposed rule body']);
+  });
 });
 
 function createBridge(overrides: Partial<typeof window.novusDesktop>): typeof window.novusDesktop {

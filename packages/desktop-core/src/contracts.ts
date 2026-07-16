@@ -232,6 +232,11 @@ export interface ReviewSkillCandidateBridgeRequest {
   readonly targetVersion?: number;
 }
 
+export interface PrepareSkillCandidateReviewBridgeRequest {
+  readonly projectId: string;
+  readonly candidateId: string;
+}
+
 export interface ReviewSkillCandidateBridgeResult {
   readonly projectId: string;
   readonly currentRevision: number;
@@ -239,3 +244,5 @@ export interface ReviewSkillCandidateBridgeResult {
   readonly candidates: readonly SkillPromotionCandidate[];
   readonly knowledgeState: KnowledgeBaseStateSummary | null;
 }
+
+export interface PrepareSkillCandidateReviewBridgeResult extends ReviewSkillCandidateBridgeResult {}

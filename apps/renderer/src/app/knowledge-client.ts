@@ -8,6 +8,8 @@ import {
 } from '@agent-canvas/domain';
 import type {
   KnowledgeSyncStatusSummary,
+  PrepareSkillCandidateReviewBridgeRequest,
+  PrepareSkillCandidateReviewBridgeResult,
   ReviewSkillCandidateBridgeRequest,
   ReviewSkillCandidateBridgeResult,
 } from '@agent-canvas/desktop-core';
@@ -18,7 +20,11 @@ export type SkillCandidateReviewRequest = Omit<ReviewSkillCandidateBridgeRequest
   decision: ReviewSkillCandidateBridgeRequest['decision'] | 'rolled_back';
   targetVersion?: number;
 };
+export type SkillCandidatePrepareRequest = PrepareSkillCandidateReviewBridgeRequest;
 export type SkillCandidateReviewResult = ReviewSkillCandidateBridgeResult & {
+  candidates: readonly SkillPromotionCandidate[];
+};
+export type SkillCandidatePrepareResult = PrepareSkillCandidateReviewBridgeResult & {
   candidates: readonly SkillPromotionCandidate[];
 };
 
@@ -29,6 +35,7 @@ export interface KnowledgeClient {
   ): Promise<void>;
   stop(): void;
   configure(knowledgeBaseId: string, displayName: string): Promise<void>;
+  prepareSkillCandidateReview(request: SkillCandidatePrepareRequest): Promise<SkillCandidatePrepareResult>;
   review(request: SkillCandidateReviewRequest): Promise<SkillCandidateReviewResult>;
   getLease(
     runId: string,
@@ -144,6 +151,13 @@ export function createKnowledgeClient(): KnowledgeClient {
       const bridge = window.novusDesktop;
       if (!bridge) return;
       upsert(await bridge.configureKnowledgeBase({ knowledgeBaseId, displayName }));
+    },
+    async prepareSkillCandidateReview(request) {
+      const bridge = window.novusDesktop;
+      if (!bridge) throw new Error('Knowledge review is unavailable outside desktop mode');
+      const result = await bridge.prepareSkillCandidateReview(request) as SkillCandidatePrepareResult;
+      upsert(result.knowledgeState);
+      return result;
     },
     async review(request) {
       const bridge = window.novusDesktop;

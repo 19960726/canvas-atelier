@@ -26,7 +26,7 @@ test('Skill sync stays guarded until explicit Chinese confirmation', async ({ pa
   await page.waitForFunction(() => window.__NOVUS_E2E__!.getState().skillSyncWrites.length === 1);
   const writes = (await e2eState(page)).skillSyncWrites;
   expect(writes[0]).toMatchObject({
-    candidateId: 'skill-candidate-e2e-divergence',
+    candidateId: expect.stringMatching(/^skill-candidate-/),
     decision: 'approved',
     projectId: 'local-project',
   });

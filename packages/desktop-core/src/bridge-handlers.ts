@@ -36,6 +36,8 @@ import {
   type KnowledgeSyncStatusSummary,
   type OpenProjectBridgeRequest,
   type OpenProjectBridgeResult,
+  type PrepareSkillCandidateReviewBridgeRequest,
+  type PrepareSkillCandidateReviewBridgeResult,
   type PersistenceChannel,
   type PersistenceError,
   type ProjectManifest,
@@ -208,6 +210,7 @@ export interface DesktopBridgeHandlers {
   getRecoveryPlan(event: unknown, request: unknown): Promise<RecoveryPlanBridgeResult>;
   importPack(event: unknown, request: unknown): Promise<ImportPackBridgeResult | null>;
   openProject(event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null>;
+  prepareSkillCandidateReview(event: unknown, request: unknown): Promise<PrepareSkillCandidateReviewBridgeResult>;
   reviewSkillCandidate(event: unknown, request: unknown): Promise<ReviewSkillCandidateBridgeResult>;
   restore(event: unknown, request: unknown): Promise<RestoreBridgeResult>;
 }
@@ -469,6 +472,62 @@ export function createDesktopBridgeHandlers(
     };
   }
 
+  async function prepareSkillCandidateReview(
+    _event: unknown,
+    request: unknown,
+  ): Promise<PrepareSkillCandidateReviewBridgeResult> {
+    const validated = validatePrepareSkillCandidateReviewBridgeRequest(request);
+    const session = requireSingleWritableProjectSession(sessions, validated.projectId);
+    const project = await repository.readCurrentProject(session.session);
+    if (project.id !== validated.projectId) {
+      throw invalidRequest('Project is not active');
+    }
+
+    const candidate = project.skillPromotionCandidates.find((item) => item.id === validated.candidateId);
+    if (candidate === undefined) {
+      throw invalidRequest('Skill candidate is unavailable');
+    }
+    assertPublicBridgePayload(candidate);
+    if (candidate.targetKnowledgeBaseId === undefined) {
+      throw invalidRequest('Skill candidate preparation requires a target knowledge base');
+    }
+
+    const active = await knowledgeStore.readActive(candidate.targetKnowledgeBaseId);
+    if (active === null) {
+      throw invalidRequest('Active knowledge snapshot is unavailable');
+    }
+    const reviewableCandidate = buildReviewableSkillCandidate(project, candidate, active);
+    if (reviewableCandidate === null || !reviewableCandidate.sourceRule || !reviewableCandidate.managedRule) {
+      throw invalidRequest('Skill candidate source and managed rule text are unavailable');
+    }
+    const reviewed = sanitizeSkillPromotionCandidate(reviewableCandidate);
+    const nextCandidates = project.skillPromotionCandidates.map((item) => (
+      item.id === reviewed.id ? reviewed : item
+    )).map(sanitizeSkillPromotionCandidate);
+    const transactionId = `prepare-skill-${candidate.id}-${Date.now()}`;
+    const currentRevision = await readCurrentRevision(repository, session.session);
+    const ack = await requireBridgeWriter(session).commit({
+      baseRevision: currentRevision,
+      kind: 'system',
+      projectId: validated.projectId,
+      transaction: {
+        id: transactionId,
+        label: `Prepare skill candidate ${reviewed.id}`,
+        operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
+      },
+    });
+    await flushScheduledSnapshotAfterCommit(session, ack, 'system');
+    const knowledgeState = sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
+      .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null;
+    return {
+      candidate: reviewed,
+      candidates: nextCandidates,
+      currentRevision: ack.revision,
+      knowledgeState,
+      projectId: validated.projectId,
+    };
+  }
+
   async function reviewSkillCandidate(
     _event: unknown,
     request: unknown,
@@ -602,6 +661,7 @@ export function createDesktopBridgeHandlers(
     getRecoveryPlan,
     importPack,
     openProject,
+    prepareSkillCandidateReview,
     reviewSkillCandidate,
     restore,
   };
@@ -1057,6 +1117,7 @@ export function registerDesktopBridgeHandlers(
   ipcMain.handle(BRIDGE_CHANNELS.getRecoveryPlan, handlers.getRecoveryPlan);
   ipcMain.handle(BRIDGE_CHANNELS.configureKnowledgeBase, handlers.configureKnowledgeBase);
   ipcMain.handle(BRIDGE_CHANNELS.getKnowledgeState, handlers.getKnowledgeState);
+  ipcMain.handle(BRIDGE_CHANNELS.prepareSkillCandidateReview, handlers.prepareSkillCandidateReview);
   ipcMain.handle(BRIDGE_CHANNELS.reviewSkillCandidate, handlers.reviewSkillCandidate);
 }
 
@@ -1387,6 +1448,15 @@ function isExactAcknowledgedReview(
   }
   return durableCandidate.reviewedAt === expectedCandidate.reviewedAt;
 }
+
+function validatePrepareSkillCandidateReviewBridgeRequest(value: unknown): PrepareSkillCandidateReviewBridgeRequest {
+  const record = expectPlainRecord(value);
+  return {
+    candidateId: parseNonEmptyString(record.candidateId, 'candidateId'),
+    projectId: parseNonEmptyString(record.projectId, 'projectId'),
+  };
+}
+
 function validateReviewSkillCandidateBridgeRequest(value: unknown): ReviewSkillCandidateBridgeRequest {
   const record = expectPlainRecord(value);
   const decision = record.decision;

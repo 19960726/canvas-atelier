@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommitAck } from '@agent-canvas/desktop-core';
 import { buildProjectMemoryContext, createAgentKnowledgeLease } from '@agent-canvas/domain';
-import type { OrderedReference, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
+import type { ModelJob, OrderedReference, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   createStarterProject,
   replaceKnowledgeClientForTests,
   replaceModelJobExecutorForTests,
+  replaceModelJobStorageForTests,
   replaceProjectPersistenceClientForTests,
   resetAppStoreForTests,
   useAppStore,
@@ -26,6 +27,7 @@ describe('project optimization memory', () => {
     delete window.novusDesktop;
     localStorage.clear();
     replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
+    replaceModelJobStorageForTests(createTestModelJobStorage());
     resetAppStoreForTests();
   });
 
@@ -472,11 +474,11 @@ describe('project optimization memory', () => {
     useAppStore.getState().draftAgentPlan('Cancel while provider profiles are loading', {
       modelRoute: 'image-generation',
     });
-    const beforeProject = cloneProjectForExpectation(useAppStore.getState().project);
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => listProfiles.mock.calls.length === 1);
 
     useAppStore.getState().cancelAgentPlan();
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'confirming' });
     profileResolution.resolve([{
       provider: 'comfly',
       modelRoute: 'image-generation',
@@ -485,14 +487,14 @@ describe('project optimization memory', () => {
       capabilities: ['image_generation', 'async_tasks'],
     }]);
     await confirmation;
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
-    expect(commit).not.toHaveBeenCalled();
-    expect(submitImageJob).not.toHaveBeenCalled();
-    expect(useAppStore.getState().project).toEqual(beforeProject);
-    expect(useAppStore.getState().project.projectMemory).toEqual([]);
-    expect(useAppStore.getState().undoStack).toEqual([]);
-    expect(useAppStore.getState().modelJobs).toEqual([]);
-    expect(useAppStore.getState().agentPlan).toBeNull();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(submitImageJob).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().modelJobs).toHaveLength(1);
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'reviewing_results' });
   });
 
   it('ignores delayed model confirmation after the Agent plan is replaced', async () => {
@@ -527,14 +529,18 @@ describe('project optimization memory', () => {
     useAppStore.getState().draftAgentPlan('Old plan waiting on provider profiles', {
       modelRoute: 'image-generation',
     });
-    const beforeProject = cloneProjectForExpectation(useAppStore.getState().project);
+    const originalPlanId = useAppStore.getState().agentPlan?.id;
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => listProfiles.mock.calls.length === 1);
 
     useAppStore.getState().draftAgentPlan('Replacement plan must stay waiting', {
       modelRoute: 'nano-banana-2-actual-route',
     });
-    const replacementPlanId = useAppStore.getState().agentPlan?.id;
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      id: originalPlanId,
+      modelRoute: 'image-generation',
+      state: 'confirming',
+    });
     profileResolution.resolve([{
       provider: 'comfly',
       modelRoute: 'image-generation',
@@ -543,17 +549,17 @@ describe('project optimization memory', () => {
       capabilities: ['image_generation', 'async_tasks'],
     }]);
     await confirmation;
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
-    expect(commit).not.toHaveBeenCalled();
-    expect(submitImageJob).not.toHaveBeenCalled();
-    expect(useAppStore.getState().project).toEqual(beforeProject);
-    expect(useAppStore.getState().project.projectMemory).toEqual([]);
-    expect(useAppStore.getState().undoStack).toEqual([]);
-    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(submitImageJob).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().modelJobs).toHaveLength(1);
     expect(useAppStore.getState().agentPlan).toMatchObject({
-      id: replacementPlanId,
-      modelRoute: 'nano-banana-2-actual-route',
-      state: 'waiting_for_confirmation',
+      id: originalPlanId,
+      modelRoute: 'image-generation',
+      state: 'reviewing_results',
     });
   });
 
@@ -670,6 +676,208 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
     expect(useAppStore.getState().undoStack).toHaveLength(1);
     expect(useAppStore.getState().modelJobs).toHaveLength(1);
+  });
+
+  it('rejects cancel after profiles resolve while the Agent commit is still pending', async () => {
+    const profileResolution = deferred<Array<{
+      provider: string;
+      modelRoute: string;
+      displayName: string;
+      modelId: string;
+      capabilities: string[];
+    }>>();
+    const commitResolution = deferred<void>();
+    const commit = vi.fn(({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => (
+      commitResolution.promise.then(() => ({ ok: true, project: nextProject, revision: 1 }))
+    ));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-commit-cancel' }));
+    const listProfiles = vi.fn(() => profileResolution.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Cancel while commit is pending', {
+      modelRoute: 'image-generation',
+    });
+    const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    profileResolution.resolve([{
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      modelId: 'gpt-image-1',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    await waitForStore(() => commit.mock.calls.length === 1);
+
+    useAppStore.getState().cancelAgentPlan();
+
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'committing' });
+    commitResolution.resolve();
+    await confirmation;
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(submitImageJob).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'reviewing_results' });
+  });
+
+  it('rejects replacement after profiles resolve while the Agent commit is still pending', async () => {
+    const profileResolution = deferred<Array<{
+      provider: string;
+      modelRoute: string;
+      displayName: string;
+      modelId: string;
+      capabilities: string[];
+    }>>();
+    const commitResolution = deferred<void>();
+    const commit = vi.fn(({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => (
+      commitResolution.promise.then(() => ({ ok: true, project: nextProject, revision: 1 }))
+    ));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-commit-replace' }));
+    const listProfiles = vi.fn(() => profileResolution.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+        cancelImageJob: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Commit should reject replacement', {
+      modelRoute: 'image-generation',
+    });
+    const originalPlanId = useAppStore.getState().agentPlan?.id;
+    const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    profileResolution.resolve([{
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      modelId: 'gpt-image-1',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    await waitForStore(() => commit.mock.calls.length === 1);
+
+    useAppStore.getState().draftAgentPlan('Replacement must not overwrite committed plan', {
+      modelRoute: 'nano-banana-2-actual-route',
+    });
+
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      id: originalPlanId,
+      modelRoute: 'image-generation',
+      state: 'committing',
+    });
+    commitResolution.resolve();
+    await confirmation;
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(submitImageJob).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      id: originalPlanId,
+      state: 'reviewing_results',
+    });
+  });
+
+  it('rejects cancel after commit ack while model jobs are still enqueueing', async () => {
+    const enqueueResolution = deferred<void>();
+    const queuedJobs: ModelJob[] = [];
+    const bulkPut = vi.fn(async (jobs) => {
+      await enqueueResolution.promise;
+      queuedJobs.splice(0, queuedJobs.length, ...jobs);
+    });
+    replaceModelJobStorageForTests({
+      get: async (id) => queuedJobs.find((job) => job.id === id),
+      list: async () => queuedJobs,
+      put: async (job) => {
+        const index = queuedJobs.findIndex((item) => item.id === job.id);
+        if (index >= 0) queuedJobs[index] = job;
+        else queuedJobs.push(job);
+      },
+      bulkPut,
+    });
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit: vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: nextProject,
+        revision: 1,
+      })),
+    }));
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Cancel during model queue enqueue', {
+      modelRoute: 'image-generation',
+    });
+    const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => bulkPut.mock.calls.length === 1);
+
+    useAppStore.getState().cancelAgentPlan();
+
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'committing' });
+    enqueueResolution.resolve();
+    await confirmation;
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'reviewing_results' });
+  });
+
+  it('keeps a committed Agent plan retryable when queueing model jobs fails', async () => {
+    replaceModelJobStorageForTests({
+      get: vi.fn(),
+      list: vi.fn(async () => []),
+      put: vi.fn(),
+      bulkPut: vi.fn(async () => {
+        throw new Error('queue storage unavailable');
+      }),
+    });
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit: vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: nextProject,
+        revision: 1,
+      })),
+    }));
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Queue failure should not look cancelled', {
+      modelRoute: 'image-generation',
+    });
+
+    await expect(
+      useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false }),
+    ).resolves.toBeUndefined();
+
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'committing' });
+    expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/queue|model/i);
   });
 
   it('does not select or confirm edit-only provider profiles for image generation plans', async () => {
@@ -1078,6 +1286,57 @@ describe('project optimization memory', () => {
       reviewStatus: 'pending_review',
     }]);
     expect(loadPersistedProjectBundle()?.current.skillPromotionCandidates).toHaveLength(1);
+  });
+
+  it('enriches promoted project memory through the knowledge bridge before rendering review', async () => {
+    const prepareSkillCandidateReview = vi.fn(async ({ candidateId }: { candidateId: string }) => {
+      const candidate = useAppStore.getState().project.skillPromotionCandidates.find((item) => item.id === candidateId);
+      if (candidate === undefined) throw new Error('missing candidate');
+      const reviewable = {
+        ...candidate,
+        sourceRule: 'Source memory rule body: lock the product logo before changing props.',
+        managedRule: 'Managed rule body: keep the current scene skill wording.',
+        diffHunks: [
+          '- Managed rule body: keep the current scene skill wording.',
+          '+ Source memory rule body: lock the product logo before changing props.',
+        ],
+      };
+      return {
+        projectId: 'local-project',
+        currentRevision: 2,
+        candidate: reviewable,
+        candidates: [reviewable],
+        knowledgeState: null,
+      };
+    });
+    replaceKnowledgeClientForTests({
+      configure: vi.fn(),
+      getLease: vi.fn(),
+      prepareSkillCandidateReview,
+      review: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as KnowledgeClient);
+    useAppStore.getState().draftAgentPlan('Promote with prepared review text');
+    await useAppStore.getState().confirmAgentPlan({ models: false, deleteNodes: false, skillWriteback: false });
+    const memoryId = useAppStore.getState().project.projectMemory[0]!.id;
+
+    await useAppStore.getState().promoteProjectMemory(memoryId);
+
+    expect(prepareSkillCandidateReview).toHaveBeenCalledWith({
+      projectId: 'local-project',
+      candidateId: expect.stringMatching(/^skill-candidate-/),
+    });
+    expect(useAppStore.getState().project.skillPromotionCandidates).toMatchObject([{
+      sourceProjectMemoryId: memoryId,
+      reviewStatus: 'pending_review',
+      sourceRule: expect.stringContaining('Source memory rule body'),
+      managedRule: expect.stringContaining('Managed rule body'),
+      diffHunks: expect.arrayContaining([
+        expect.stringContaining('- Managed rule body'),
+        expect.stringContaining('+ Source memory rule body'),
+      ]),
+    }]);
   });
 
   it('restores a durable snapshot while retaining the audit timeline', async () => {
@@ -1791,6 +2050,25 @@ function cloneProjectForExpectation<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function createTestModelJobStorage(seed: ModelJob[] = []) {
+  const jobs = new Map(seed.map((job) => [job.id, { ...job, referenceAssetIds: [...job.referenceAssetIds] }]));
+  return {
+    get: async (id: string) => {
+      const job = jobs.get(id);
+      return job === undefined ? undefined : { ...job, referenceAssetIds: [...job.referenceAssetIds] };
+    },
+    list: async () => [...jobs.values()].map((job) => ({ ...job, referenceAssetIds: [...job.referenceAssetIds] })),
+    put: async (job: ModelJob) => {
+      jobs.set(job.id, { ...job, referenceAssetIds: [...job.referenceAssetIds] });
+    },
+    bulkPut: async (nextJobs: ModelJob[]) => {
+      for (const job of nextJobs) {
+        jobs.set(job.id, { ...job, referenceAssetIds: [...job.referenceAssetIds] });
+      }
+    },
+  };
+}
+
 function installProviderProfilesForModelJobTests(profiles = [{
   provider: 'comfly',
   modelRoute: 'image-generation',
@@ -1900,6 +2178,7 @@ function createMockKnowledgeClient(options: {
   };
 }): KnowledgeClient & {
   configure: ReturnType<typeof vi.fn<KnowledgeClient['configure']>>;
+  prepareSkillCandidateReview: ReturnType<typeof vi.fn<KnowledgeClient['prepareSkillCandidateReview']>>;
   review: ReturnType<typeof vi.fn<KnowledgeClient['review']>>;
   start: ReturnType<typeof vi.fn<KnowledgeClient['start']>>;
 } {
@@ -1912,6 +2191,12 @@ function createMockKnowledgeClient(options: {
     stop: vi.fn(),
     configure: vi.fn(async (_knowledgeBaseId: string, _displayName: string) => {
       listener?.(options.initialStates);
+    }),
+    prepareSkillCandidateReview: vi.fn(async (_request) => {
+      return {
+        ...options.reviewResult,
+        candidates: options.reviewResult.candidates ?? [options.reviewResult.candidate],
+      };
     }),
     review: vi.fn(async (_request) => {
       if (options.reviewResult.knowledgeState) {

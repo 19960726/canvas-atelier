@@ -65,6 +65,8 @@ export const agentPlanSchema = z.object({
     'reading_canvas',
     'drafting_plan',
     'waiting_for_confirmation',
+    'confirming',
+    'committing',
     'applying_transaction',
     'running_models',
     'reviewing_results',

@@ -26,6 +26,8 @@ export type {
   KnowledgeSyncStatusSummary,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
+  PrepareSkillCandidateReviewBridgeRequest,
+  PrepareSkillCandidateReviewBridgeResult,
   PersistenceChannel,
   PersistenceError,
   PersistenceErrorCode,

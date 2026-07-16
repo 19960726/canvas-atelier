@@ -229,7 +229,9 @@ function scan(path) {
   if (relativePath === 'tests/e2e/helpers/secret-path-scan.mjs') return;
   if (extension === '.map' && scanSourceMap(path, relativePath)) return;
 
-  scanText(relativePath, readFileSync(path, 'utf8'));
+  const content = readFileSync(path, 'utf8');
+  scanDistDataImagePayload(relativePath, content);
+  scanText(relativePath, content);
 }
 
 function scanSourceMap(path, relativePath) {
@@ -299,6 +301,17 @@ function scanText(relativePath, text) {
   }
 }
 
+function scanDistDataImagePayload(relativePath, text) {
+  if (!isDistPath(relativePath)) return;
+  const cleaned = allowlistedTexts.reduce((value, allowed) => value.replaceAll(allowed, ''), text);
+  for (const match of cleaned.matchAll(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]{16,}/gi)) {
+    const evidence = match[0].trim();
+    if (!isGeneratedBundleLiteral('raw base64 image payload', evidence)) {
+      findings.push({ file: relativePath, name: 'raw base64 image payload', evidence });
+    }
+  }
+}
+
 function isAllowedFinding(relativePath, name, evidence) {
   return allowedFindings.some((entry) => (
     entry.file === relativePath
@@ -331,7 +344,7 @@ function isKnownTestFixtureFinding(relativePath, evidence) {
 
 function isRedactionImplementationFinding(relativePath, name, evidence) {
   const sourcePath = sourceIdentityPath(relativePath);
-  if (sourcePath.includes('/dist/') && isGeneratedBundleLiteral(name, evidence)) return true;
+  if (sourcePath.includes('/dist/')) return isGeneratedBundleLiteral(name, evidence);
   if (!isRedactionImplementationPath(sourcePath)) return false;
   if (/\[REDACTED(?:_[A-Z]+)?\]|\[redacted(?:-[a-z]+)?\]/u.test(evidence)) return true;
   if (/authorization/i.test(evidence)) {
@@ -344,7 +357,7 @@ function isRedactionImplementationFinding(relativePath, name, evidence) {
     return /eyJ\[|eyJ[a-z0-9_-]\+/iu.test(evidence);
   }
   if (name === 'raw base64 image payload') {
-    return /(?:data:image\\\/|data:\[\^|base64,)/u.test(evidence);
+    return /(?:data:image\\\/\[\^|data:image\\\/[a-z0-9.+-]\+;base64,\[|data:\[\^|base64,\[[^\]]+\]\{)/u.test(evidence);
   }
   if (name === 'private absolute path') {
     return /(?:\\s|\\S|\\r|\\n|\[\^|\\\/|\/u|\/i|file:\\\/|e:\\\/|[A-Za-z]:\\\[|\\\\\\|\(\?:)/u.test(evidence);
@@ -364,13 +377,17 @@ function isGeneratedBundleLiteral(name, evidence) {
     return /eyJ\[|eyJ[a-z0-9_-]\+/iu.test(evidence);
   }
   if (name === 'raw base64 image payload') {
-    return /(?:data:image\\\/|data:\[\^|base64,)/u.test(evidence);
+    return /(?:data:image\\\/\[\^|data:image\\\/[a-z0-9.+-]\+;base64,\[|data:\[\^|base64,\[[^\]]+\]\{)/u.test(evidence);
   }
   if (name === 'private absolute path') {
     return /(?:\\s|\\S|\\d|\\p|\\u|\\x|\[\^|\(\?:|\\\/|\/[gimuys]*[,;)]|file:\\\/|e:\\\/|escSlash|escClose|\$&|\\\.|\\[{}()])/u.test(evidence)
       || /^[a-z]:\\n$/u.test(evidence);
   }
   return false;
+}
+
+function isDistPath(relativePath) {
+  return relativePath.includes('/dist/');
 }
 
 function isRedactionImplementationPath(sourcePath) {

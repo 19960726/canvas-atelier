@@ -169,6 +169,9 @@ function createKnowledgeClient(overrides: Partial<KnowledgeClient> = {}): Knowle
     getLease: overrides.getLease ?? (() => {
       throw new Error('getLease not expected');
     }),
+    prepareSkillCandidateReview: overrides.prepareSkillCandidateReview ?? (async () => {
+      throw new Error('prepareSkillCandidateReview not expected');
+    }),
     review: overrides.review ?? (async () => {
       throw new Error('review not expected');
     }),

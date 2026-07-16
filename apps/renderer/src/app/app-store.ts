@@ -334,6 +334,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   draftAgentPlan: (message, options = {}) => {
+    if (isAgentPlanBusy(get().agentPlan)) {
+      rejectAgentPlanMutationDuringProcessing(set);
+      return;
+    }
     clearPendingAgentConfirmation();
     set((state) => {
       const promptNode = state.project.nodes.find((node) => node.type === 'prompt');
@@ -378,6 +382,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const now = new Date().toISOString();
     const requestedPlan = {
       ...initialPlan,
+      state: 'confirming' as const,
       confirmations: {
         ...initialPlan.confirmations,
         canvas: now,
@@ -386,18 +391,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         skillWriteback: approvals.skillWriteback ? now : undefined,
       },
     };
+    set((current) => (
+      current.agentPlan?.id === confirmation.planId && current.agentPlan.state === 'waiting_for_confirmation'
+        ? { agentPlan: requestedPlan }
+        : current
+    ));
     try {
       let modelProfile: ResolvedModelJobProfile | null = null;
       if (shouldExecuteModels(requestedPlan)) {
         try {
           modelProfile = await resolveModelJobProfile(requestedPlan);
         } catch (error) {
-          if (isActiveAgentConfirmation(get(), confirmation)) {
+          if (isActiveAgentConfirmation(get(), confirmation, ['confirming'])) {
             set((current) => {
               if (!current.agentPlan || current.agentPlan.id !== confirmation.planId) return current;
               return {
                 agentPlan: {
                   ...current.agentPlan,
+                  state: 'waiting_for_confirmation',
                   conflicts: upsertAgentConflict(current.agentPlan.conflicts, modelProfileConflictMessage(error)),
                 },
               };
@@ -406,10 +417,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           return;
         }
       }
-      if (!isActiveAgentConfirmation(get(), confirmation)) return;
+      if (!isActiveAgentConfirmation(get(), confirmation, ['confirming'])) {
+        restoreWaitingPlanAfterStaleConfirmation(set, confirmation, requestedPlan);
+        return;
+      }
 
       const latestState = get();
-      const activePlan = latestState.agentPlan!;
       const confirmedPlan = modelProfile
         ? {
             ...requestedPlan,
@@ -418,30 +431,58 @@ export const useAppStore = create<AppState>((set, get) => ({
             modelRouteDisplayName: modelProfile.displayName,
           }
         : requestedPlan;
-      const result = confirmDomainPlan(latestState.project, {
+      const committingPlan = {
         ...confirmedPlan,
+        state: 'committing' as const,
+      };
+      set((current) => (
+        current.agentPlan?.id === confirmation.planId && current.agentPlan.state === 'confirming'
+          ? { agentPlan: committingPlan }
+          : current
+      ));
+      if (!isActiveAgentConfirmation(get(), confirmation, ['committing'])) return;
+      const result = confirmDomainPlan(latestState.project, {
+        ...committingPlan,
       });
-      const memoryEntry = createOptimizationMemory(latestState.project, result.project, confirmedPlan, now);
+      const memoryEntry = createOptimizationMemory(latestState.project, result.project, committingPlan, now);
       const project = {
         ...result.project,
         projectMemory: appendProjectMemoryEntry(result.project.projectMemory, memoryEntry),
       };
       const transaction = buildProjectTransaction({
-        canvasTransaction: activePlan.transaction,
-        label: activePlan.transaction.label,
+        canvasTransaction: committingPlan.transaction,
+        label: committingPlan.transaction.label,
         memoryEntry,
-        transactionId: activePlan.transaction.id,
+        transactionId: committingPlan.transaction.id,
       });
       const saved = await get().commitProjectTransaction(transaction, { kind: 'agent', nextProject: project });
-      if (!saved) return;
+      if (!saved) {
+        restoreWaitingPlanAfterCommitFailure(set, confirmation, committingPlan);
+        return;
+      }
+      if (!isActiveCommittedAgentConfirmation(get(), confirmation, committingPlan, project)) return;
 
       let modelJobs = get().modelJobs;
       if (result.executeModels) {
-        modelJobs = await getModelJobStore().enqueueConfirmedJobs({
-          conversationId: 'agent-conversation-shared',
-          confirmedAt: now,
-          requests: buildModelJobRequests(project, confirmedPlan, modelProfile!),
-        });
+        try {
+          modelJobs = await getModelJobStore().enqueueConfirmedJobs({
+            conversationId: 'agent-conversation-shared',
+            confirmedAt: now,
+            requests: buildModelJobRequests(project, committingPlan, modelProfile!),
+          });
+        } catch {
+          if (isActiveCommittedAgentConfirmation(get(), confirmation, committingPlan, project)) {
+            set((current) => ({
+              agentPlan: {
+                ...committingPlan,
+                conflicts: upsertAgentConflict(committingPlan.conflicts, modelQueueConflictMessage()),
+              },
+              undoStack: appendUndoEntry(current.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }),
+            }));
+          }
+          return;
+        }
+        if (!isActiveCommittedAgentConfirmation(get(), confirmation, committingPlan, project)) return;
         void getModelJobStore().run();
       }
 
@@ -449,13 +490,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         agentPlan: result.plan,
         confirmedModelJobs: countConfirmedModelJobs(modelJobs),
         modelJobs,
-        undoStack: [...current.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }],
+        undoStack: appendUndoEntry(current.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }),
       }));
     } finally {
       if (pendingAgentConfirmation?.token === confirmation.token) pendingAgentConfirmation = null;
     }
   },
   cancelAgentPlan: () => {
+    if (isAgentPlanBusy(get().agentPlan)) {
+      rejectAgentPlanMutationDuringProcessing(set);
+      return;
+    }
     clearPendingAgentConfirmation();
     set({ agentPlan: null });
   },
@@ -465,10 +510,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const memory = state.project.projectMemory.find((entry) => entry.id === memoryId);
     if (!memory || !isPromotableMemory(state.project.projectMemory, memory)) return;
 
-    const candidate = createSkillPromotionCandidate(memory, {
+    const candidate = withPromotionKnowledgeTarget(createSkillPromotionCandidate(memory, {
       candidateId: `skill-candidate-${Date.now()}-${planSequence++}`,
       createdAt: new Date().toISOString(),
-    });
+    }), state.knowledgeBases);
     const candidates = [...state.project.skillPromotionCandidates, candidate];
     const project = { ...state.project, skillPromotionCandidates: candidates };
     const transaction: ProjectTransaction = {
@@ -476,7 +521,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       label: 'Promote project memory candidate',
       operations: [{ kind: 'set_skill_candidates', candidates }],
     };
-    await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
+    const committed = await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
+    if (!committed) return;
+    try {
+      const prepared = await knowledgeClient.prepareSkillCandidateReview({
+        projectId: project.id,
+        candidateId: candidate.id,
+      });
+      set((current) => ({
+        desktopRevision: prepared.currentRevision,
+        knowledgeBases: prepared.knowledgeState
+          ? upsertKnowledgeSummary(current.knowledgeBases, prepared.knowledgeState)
+          : current.knowledgeBases,
+        project: {
+          ...current.project,
+          skillPromotionCandidates: [...prepared.candidates],
+        },
+      }));
+    } catch {
+      // Keep the pending candidate non-reviewable when desktop knowledge is unavailable.
+    }
   },
   retryModelJob: async (jobId) => {
     await getModelJobStore().retryJob(jobId);
@@ -899,6 +963,10 @@ function modelProfileConflictMessage(_error: unknown): string {
   return 'model profile unavailable: selected provider profile is unavailable or changed';
 }
 
+function modelQueueConflictMessage(): string {
+  return 'model queue unavailable: retry model enqueue after the current commit settles';
+}
+
 function isModelProfileConflict(conflict: string): boolean {
   return /^model profile unavailable:/i.test(conflict);
 }
@@ -916,14 +984,85 @@ function clearPendingAgentConfirmation(): void {
   pendingAgentConfirmation = null;
 }
 
-function isActiveAgentConfirmation(state: AppState, confirmation: PendingAgentConfirmation): boolean {
+function isAgentPlanBusy(plan: AgentCanvasPlan | null): boolean {
+  return plan?.state === 'confirming' || plan?.state === 'committing';
+}
+
+function rejectAgentPlanMutationDuringProcessing(set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState> | AppState)) => void): void {
+  set((state) => {
+    const plan = state.agentPlan;
+    if (!isAgentPlanBusy(plan) || plan === null) return state;
+    return {
+      agentPlan: {
+        ...plan,
+        conflicts: upsertAgentConflict(plan.conflicts, 'agent plan is already processing'),
+      },
+    };
+  });
+}
+
+function restoreWaitingPlanAfterCommitFailure(
+  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState> | AppState)) => void,
+  confirmation: PendingAgentConfirmation,
+  plan: AgentCanvasPlan,
+): void {
+  set((state) => {
+    if (pendingAgentConfirmation?.token !== confirmation.token || state.agentPlan?.id !== confirmation.planId) return state;
+    return {
+      agentPlan: {
+        ...plan,
+        state: 'waiting_for_confirmation',
+        conflicts: upsertAgentConflict(plan.conflicts, 'agent commit unavailable: retry confirmation'),
+      },
+    };
+  });
+}
+
+function restoreWaitingPlanAfterStaleConfirmation(
+  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState> | AppState)) => void,
+  confirmation: PendingAgentConfirmation,
+  plan: AgentCanvasPlan,
+): void {
+  set((state) => {
+    if (pendingAgentConfirmation?.token !== confirmation.token || state.agentPlan?.id !== confirmation.planId) return state;
+    if (state.agentPlan.state !== 'confirming') return state;
+    return {
+      agentPlan: {
+        ...plan,
+        state: 'waiting_for_confirmation',
+        conflicts: upsertAgentConflict(plan.conflicts, 'agent confirmation is stale: refresh and retry'),
+      },
+    };
+  });
+}
+
+function isActiveAgentConfirmation(
+  state: AppState,
+  confirmation: PendingAgentConfirmation,
+  allowedStates: AgentCanvasPlan['state'][],
+): boolean {
   const plan = state.agentPlan;
   return pendingAgentConfirmation?.token === confirmation.token
     && plan !== null
-    && plan.state === 'waiting_for_confirmation'
+    && allowedStates.includes(plan.state)
     && plan.id === confirmation.planId
     && plan.transaction.id === confirmation.transactionId
     && createAgentConfirmationFingerprint(state, plan) === confirmation.fingerprint;
+}
+
+function isActiveCommittedAgentConfirmation(
+  state: AppState,
+  confirmation: PendingAgentConfirmation,
+  plan: AgentCanvasPlan,
+  expectedProject: CanvasProject,
+): boolean {
+  const activePlan = state.agentPlan;
+  return pendingAgentConfirmation?.token === confirmation.token
+    && activePlan !== null
+    && activePlan.state === 'committing'
+    && activePlan.id === confirmation.planId
+    && activePlan.transaction.id === confirmation.transactionId
+    && createAgentCommittedFingerprint(state.project, activePlan) === createAgentCommittedFingerprint(expectedProject, plan);
 }
 
 function createAgentConfirmationFingerprint(state: AppState, plan: AgentCanvasPlan): string {
@@ -932,6 +1071,20 @@ function createAgentConfirmationFingerprint(state: AppState, plan: AgentCanvasPl
     project: state.project,
     transactionId: plan.transaction.id,
   });
+}
+
+function createAgentCommittedFingerprint(project: CanvasProject, plan: AgentCanvasPlan): string {
+  return JSON.stringify({
+    project,
+    transactionId: plan.transaction.id,
+  });
+}
+
+function appendUndoEntry(undoStack: UndoEntry[], entry: UndoEntry): UndoEntry[] {
+  if (undoStack.some((item) => item.transaction.id === entry.transaction.id && item.memoryId === entry.memoryId)) {
+    return undoStack;
+  }
+  return [...undoStack, entry];
 }
 
 function isIndexedDbAvailable(): boolean {
@@ -1100,6 +1253,21 @@ function createFeedbackSkillPromotionCandidate(
     },
     confidence: 1,
     affectedCapabilities: [input.knowledgeLease.capability],
+  });
+}
+
+function withPromotionKnowledgeTarget(
+  candidate: SkillPromotionCandidate,
+  knowledgeBases: KnowledgeBaseStateSummary[],
+): SkillPromotionCandidate {
+  if (candidate.targetKnowledgeBaseId !== undefined) return candidate;
+  const target = knowledgeBases.find((state) => state.status === 'active' && state.activeVersion !== null)
+    ?? knowledgeBases.find((state) => state.status !== 'empty');
+  if (target === undefined) return candidate;
+  return skillPromotionCandidateSchema.parse({
+    ...candidate,
+    targetKnowledgeBaseId: target.knowledgeBaseId,
+    targetKnowledgeSection: 'composition/placement',
   });
 }
 

@@ -11,6 +11,8 @@ import type {
   KnowledgeSyncStatusSummary,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
+  PrepareSkillCandidateReviewBridgeRequest,
+  PrepareSkillCandidateReviewBridgeResult,
   RecoveryPlanBridgeRequest,
   RecoveryPlanBridgeResult,
   ReviewSkillCandidateBridgeRequest,
@@ -61,6 +63,7 @@ export const BRIDGE_CHANNELS = {
   knowledgeStateChanged: 'novus-desktop:knowledge-state-changed',
   knowledgeSyncStatusChanged: 'novus-desktop:knowledge-sync-status-changed',
   openProject: 'novus-desktop:open-project',
+  prepareSkillCandidateReview: 'novus-desktop:prepare-skill-candidate-review',
   reviewSkillCandidate: 'novus-desktop:review-skill-candidate',
   restore: 'novus-desktop:restore',
   provider: PROVIDER_BRIDGE_CHANNELS,
@@ -83,6 +86,7 @@ export interface DesktopBridgeApi {
   getRecoveryPlan(request: RecoveryPlanBridgeRequest): Promise<RecoveryPlanBridgeResult>;
   configureKnowledgeBase(request: ConfigureKnowledgeBaseBridgeRequest): Promise<KnowledgeBaseStateSummary | null>;
   getKnowledgeState(): Promise<KnowledgeStateBridgeResult>;
+  prepareSkillCandidateReview(request: PrepareSkillCandidateReviewBridgeRequest): Promise<PrepareSkillCandidateReviewBridgeResult>;
   reviewSkillCandidate(request: ReviewSkillCandidateBridgeRequest): Promise<ReviewSkillCandidateBridgeResult>;
   subscribeKnowledgeState(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
   subscribeKnowledgeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void;
@@ -162,6 +166,9 @@ export function createPreloadApi(
     },
     getKnowledgeState() {
       return invoke<KnowledgeStateBridgeResult>(BRIDGE_CHANNELS.getKnowledgeState);
+    },
+    prepareSkillCandidateReview(request) {
+      return invoke<PrepareSkillCandidateReviewBridgeResult>(BRIDGE_CHANNELS.prepareSkillCandidateReview, request);
     },
     reviewSkillCandidate(request) {
       return invoke<ReviewSkillCandidateBridgeResult>(BRIDGE_CHANNELS.reviewSkillCandidate, request);

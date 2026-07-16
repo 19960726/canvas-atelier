@@ -51,6 +51,7 @@ interface RuntimeState {
   currentProject: CanvasProject;
   knowledgeListeners: Set<(states: KnowledgeBaseStateSummary[]) => void>;
   knowledgeStates: KnowledgeBaseStateSummary[];
+  managedRules: Map<string, string>;
   modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
   providerProfiles: ProviderBridgeProfile[];
   revision: number;
@@ -82,6 +83,7 @@ export function installRendererE2EHarness(): void {
       runtime.revision = 0;
       runtime.commitLog = [];
       runtime.knowledgeStates = [];
+      runtime.managedRules = new Map();
       runtime.modelSubmissions = [];
       runtime.providerProfiles = createE2EProviderProfiles();
       runtime.skillSyncWrites = [];
@@ -93,7 +95,7 @@ export function installRendererE2EHarness(): void {
       await useAppStore.getState().initializeKnowledge();
     },
     async seedSkillSyncDivergence() {
-      seedSkillSyncDivergence(runtime);
+      await seedSkillSyncDivergence(runtime);
       useAppStore.setState({
         project: runtime.currentProject,
         knowledgeBases: cloneKnowledgeStates(runtime.knowledgeStates),
@@ -125,6 +127,7 @@ function createRuntimeState(): RuntimeState {
     currentProject: createStarterProject(),
     knowledgeListeners: new Set(),
     knowledgeStates: [],
+    managedRules: new Map(),
     modelSubmissions: [],
     providerProfiles: createE2EProviderProfiles(),
     revision: 0,
@@ -229,6 +232,44 @@ function createKnowledgeClient(runtime: RuntimeState): KnowledgeClient {
       runtime.knowledgeListeners.clear();
     },
     async configure() {},
+    async prepareSkillCandidateReview(request) {
+      const candidate = runtime.currentProject.skillPromotionCandidates.find((item) => item.id === request.candidateId);
+      if (!candidate) throw new Error(`Unknown e2e skill candidate: ${request.candidateId}`);
+      const targetKnowledgeBaseId = candidate.targetKnowledgeBaseId ?? 'scene-skill';
+      const targetKnowledgeSection = candidate.targetKnowledgeSection ?? 'composition/placement';
+      const sourceIds = candidate.sourceProjectMemoryIds ?? [candidate.sourceProjectMemoryId];
+      const sourceEntries = sourceIds.map((sourceId) => runtime.currentProject.projectMemory.find((entry) => entry.id === sourceId));
+      if (sourceEntries.some((entry) => entry === undefined)) throw new Error('E2E source memory unavailable');
+      const managedRule = runtime.managedRules.get(targetKnowledgeBaseId);
+      if (!managedRule) throw new Error('E2E managed rule unavailable');
+      const builderEntries = sourceEntries
+        .filter((entry): entry is ProjectMemoryEntry => entry !== undefined)
+        .map((entry) => ({ ...entry, nextStep: entry.rationale.trim() || entry.nextStep }));
+      const reviewable = buildSkillPromotionCandidate(builderEntries, {
+        affectedCapabilities: candidate.affectedCapabilities,
+        candidateId: candidate.id,
+        createdAt: candidate.createdAt,
+        managedRule,
+        proposedRule: candidate.rule,
+        targetKnowledgeBaseId,
+        targetSection: targetKnowledgeSection,
+      });
+      const candidates = runtime.currentProject.skillPromotionCandidates.map((item) => (
+        item.id === reviewable.id ? reviewable : item
+      ));
+      runtime.currentProject = {
+        ...runtime.currentProject,
+        skillPromotionCandidates: candidates,
+      };
+      runtime.revision += 1;
+      return {
+        projectId: request.projectId,
+        currentRevision: runtime.revision,
+        candidate: reviewable,
+        candidates,
+        knowledgeState: runtime.knowledgeStates.find((state) => state.knowledgeBaseId === targetKnowledgeBaseId) ?? null,
+      };
+    },
     async review(request: SkillCandidateReviewRequest): Promise<SkillCandidateReviewResult> {
       const candidate = runtime.currentProject.skillPromotionCandidates.find((item) => item.id === request.candidateId);
       if (!candidate) throw new Error(`Unknown e2e skill candidate: ${request.candidateId}`);
@@ -331,7 +372,7 @@ function reviewCandidate(
   });
 }
 
-function seedSkillSyncDivergence(runtime: RuntimeState): void {
+async function seedSkillSyncDivergence(runtime: RuntimeState): Promise<void> {
   const proposedRule = 'Proposed rule body: lock logo and prop spacing together.';
   const memory: ProjectMemoryEntry = {
     schemaVersion: 1,
@@ -357,24 +398,21 @@ function seedSkillSyncDivergence(runtime: RuntimeState): void {
       change: ['prop spacing'],
       never: ['sync before confirmation'],
     },
-    nextStep: 'Source rule body: lock logo from local project memory.',
+    nextStep: proposedRule,
   };
-  const candidate: SkillPromotionCandidate = buildSkillPromotionCandidate([memory], {
-    affectedCapabilities: ['image_generation'],
-    candidateId: 'skill-candidate-e2e-divergence',
-    createdAt: fixedNow,
-    managedRule: 'Managed rule body: keep the existing cool background lighting.',
-    proposedRule,
-    targetKnowledgeBaseId: 'scene-skill',
-    targetSection: 'composition/placement',
-  });
-
   runtime.currentProject = {
     ...createStarterProject(),
     projectMemory: [memory],
-    skillPromotionCandidates: [candidate],
+    skillPromotionCandidates: [],
   };
   runtime.knowledgeStates = [createManagedDivergenceState(1, 'a'.repeat(64), 'managed active v1')];
+  runtime.managedRules.set('scene-skill', 'Managed rule body: keep the existing cool background lighting.');
+  useAppStore.setState({
+    project: runtime.currentProject,
+    knowledgeBases: cloneKnowledgeStates(runtime.knowledgeStates),
+  });
+  await useAppStore.getState().promoteProjectMemory(memory.id);
+  runtime.currentProject = useAppStore.getState().project;
 }
 
 function promoteKnowledgeState(runtime: RuntimeState, candidate: SkillPromotionCandidate): KnowledgeBaseStateSummary {

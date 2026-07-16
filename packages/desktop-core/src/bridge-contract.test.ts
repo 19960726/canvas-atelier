@@ -57,6 +57,7 @@ describe('desktop bridge contract', () => {
       'importPack',
       'lifecycle',
       'openProject',
+      'prepareSkillCandidateReview',
       'provider',
       'restore',
       'reviewSkillCandidate',
@@ -683,6 +684,70 @@ describe('desktop bridge contract', () => {
       '+ Use slower, heavier liquid arcs.',
     ]);
     expect(stageApprovedSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('prepares reviewable Skill candidate preview without writing source knowledge', async () => {
+    const pendingCandidate = createPendingSkillCandidate();
+    const sourceMemory = {
+      ...createBridgeFeedbackMemory('memory-feedback', 1),
+      nextStep: 'Source memory rule body: keep the product logo locked before changing props.',
+    };
+    const project: CanvasProject = {
+      ...starterProject,
+      projectMemory: [sourceMemory],
+      skillPromotionCandidates: [pendingCandidate],
+    };
+    const active = createKnowledgeSnapshot('Managed rule body: keep the existing cool background lighting.', 1);
+    const commit = vi.fn(async (_request: CommitRequest) => ({
+      committedAt: '2026-07-16T05:00:00.000Z',
+      projectId: starterProject.id,
+      revision: 6,
+      sequence: 6,
+      transactionId: 'prepare-skill-candidate-1',
+    }));
+    const stageApprovedSnapshot = vi.fn();
+    const handlers = createDesktopBridgeHandlers({
+      approvedSnapshotOutbox: { enqueueApprovedSnapshot: vi.fn(async () => undefined) },
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'C:\\redacted\\Demo.novus-project') },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition: vi.fn(),
+        configure: vi.fn(),
+        finalizeStagedTransition: vi.fn(),
+        listStates: vi.fn(async () => [knowledgeStateAtVersion(1, 1)]),
+        readActive: vi.fn(async () => active),
+        recordStagedTransitionOutboxIntent: vi.fn(),
+        stageApprovedSnapshot,
+      } as never,
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => createOpenedSession()),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    const result = await handlers.prepareSkillCandidateReview({}, {
+      candidateId: pendingCandidate.id,
+      projectId: starterProject.id,
+    });
+
+    expect(result.candidate).toMatchObject({
+      id: pendingCandidate.id,
+      reviewStatus: 'pending_review',
+      sourceRule: expect.stringContaining('Source memory rule body: keep the product logo locked before changing props.'),
+      managedRule: 'Managed rule body: keep the existing cool background lighting.',
+      rule: 'Use slower, heavier liquid arcs.',
+    });
+    expect(result.candidate.diffHunks).toEqual([
+      '- Managed rule body: keep the existing cool background lighting.',
+      '+ Use slower, heavier liquid arcs.',
+    ]);
+    expect(stageApprovedSnapshot).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledOnce();
   });
 
   it('rejects skill approval without source memory content instead of fabricating review text', async () => {
@@ -1560,6 +1625,7 @@ describe('desktop bridge contract', () => {
     expect(channels).toEqual(expect.arrayContaining([
       BRIDGE_CHANNELS.configureKnowledgeBase,
       BRIDGE_CHANNELS.getKnowledgeState,
+      BRIDGE_CHANNELS.prepareSkillCandidateReview,
       BRIDGE_CHANNELS.reviewSkillCandidate,
     ]));
   });

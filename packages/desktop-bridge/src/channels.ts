@@ -23,6 +23,7 @@ export const AGENT_CANVAS_CHANNELS = {
   skill: {
     configureKnowledgeBase: BRIDGE_CHANNELS.configureKnowledgeBase,
     getKnowledgeState: BRIDGE_CHANNELS.getKnowledgeState,
+    prepareSkillCandidateReview: BRIDGE_CHANNELS.prepareSkillCandidateReview,
     reviewSkillCandidate: BRIDGE_CHANNELS.reviewSkillCandidate,
     knowledgeStateChanged: BRIDGE_CHANNELS.knowledgeStateChanged,
     knowledgeSyncStatusChanged: BRIDGE_CHANNELS.knowledgeSyncStatusChanged,

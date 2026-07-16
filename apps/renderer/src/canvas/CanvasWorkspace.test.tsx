@@ -591,6 +591,9 @@ function createKnowledgeClient(overrides: Partial<KnowledgeClient> = {}): Knowle
       leaseId: 'fallback-lease',
       createdAt: '2026-07-15T08:00:00.000Z',
     })),
+    prepareSkillCandidateReview: overrides.prepareSkillCandidateReview ?? (async () => {
+      throw new Error('prepareSkillCandidateReview not expected');
+    }),
     review: overrides.review ?? (async () => {
       throw new Error('review not expected');
     }),
