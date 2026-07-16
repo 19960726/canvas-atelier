@@ -11,7 +11,7 @@ describe('desktop model job executor', () => {
       progress: 1,
       result: { assetId: 'provider:comfly:provider-job-public-bridge:0', url: 'https://assets.example/result.png' },
     }));
-    const cancelImageJob = vi.fn(async () => ({ status: 'local-only' as const, remoteCancelled: false, reason: 'unsupported' as const }));
+    const cancelImageJob = vi.fn(async () => ({ status: 'cancelled' as const }));
     const ackImageJobTerminal = vi.fn(async () => ({ acknowledged: true as const }));
     vi.stubGlobal('window', {
       novusDesktop: {
@@ -57,6 +57,29 @@ describe('desktop model job executor', () => {
       status: 'completed',
     });
     expect(JSON.stringify({ submitted, polled })).not.toMatch(/Authorization|Bearer|token|base64/i);
+  });
+
+  it('passes through cancelled provider terminals from poll and cancel', async () => {
+    const pollImageJob = vi.fn(async () => ({ status: 'cancelled' as const }));
+    const cancelImageJob = vi.fn(async () => ({ status: 'cancelled' as const }));
+    vi.stubGlobal('window', {
+      novusDesktop: {
+        provider: {
+          submitImageJob: vi.fn(),
+          pollImageJob,
+          cancelImageJob,
+          ackImageJobTerminal: vi.fn(),
+        },
+      },
+    });
+    const executor = createDesktopModelJobExecutor();
+
+    await expect(executor.poll({ ...job({ status: 'running' }), providerTaskId: 'provider-job-cancelled' })).resolves.toEqual({
+      status: 'cancelled',
+    });
+    await expect(executor.cancel?.({ ...job({ status: 'running' }), providerTaskId: 'provider-job-cancelled' })).resolves.toEqual({
+      status: 'cancelled',
+    });
   });
 
   it('turns locked credentials into a retryable running poll state', async () => {

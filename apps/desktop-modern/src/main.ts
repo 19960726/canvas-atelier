@@ -12,6 +12,7 @@ import {
   ManagedKnowledgeStore,
   createComflyProviderService,
   createDesktopBridgeHandlers,
+  createElectronNetComflyFetch,
   createApprovedSnapshotSyncClientFromEnv,
   createProviderBridgeHandlers,
   createSecureProviderCredentialStore,
@@ -23,7 +24,6 @@ import {
   shutdownDesktopServices,
   type ApprovedSnapshotOutboxDrainHandle,
   type BridgeDialogAdapter,
-  type ComflyFetch,
   type DesktopBridgeHandlers,
 } from '@agent-canvas/desktop-core';
 
@@ -109,7 +109,7 @@ app.whenReady().then(async () => {
       appDataRoot: app.getPath('userData'),
       safeStorage,
     }),
-    fetch: createProviderFetch(),
+    fetch: createElectronNetComflyFetch(net),
   })));
   ipcMain.on(diagnosticsChannel, (_event, message) => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
@@ -278,22 +278,6 @@ async function handleSafeModeCommand(command: string): Promise<void> {
     default:
       return;
   }
-}
-
-function createProviderFetch(): ComflyFetch {
-  return async (url, init) => {
-    const response = await globalThis.fetch(url, {
-      method: init?.method,
-      headers: init?.headers,
-      body: init?.body,
-      signal: init?.signal,
-    });
-    return {
-      ok: response.ok,
-      status: response.status,
-      json: () => response.json() as Promise<unknown>,
-    };
-  };
 }
 
 function createDialogAdapter(): BridgeDialogAdapter {

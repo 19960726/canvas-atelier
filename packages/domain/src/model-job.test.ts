@@ -81,6 +81,22 @@ describe('model job domain contract', () => {
     });
   });
 
+  it('persists provider terminal ACK state for crash recovery', () => {
+    expect(modelJobSchema.parse({
+      id: 'terminal-job',
+      modelId: 'dynamic-model',
+      status: 'completed',
+      promptNodeId: 'prompt-1',
+      providerTaskId: 'provider-job-terminal',
+      retryCount: 0,
+      providerAckPending: true,
+      terminalStatus: 'completed',
+    })).toMatchObject({
+      providerAckPending: true,
+      terminalStatus: 'completed',
+    });
+  });
+
   it('stores compact public errors without secrets, base64, or private paths', () => {
     const sanitized = sanitizeModelJobError(
       'Authorization: Bearer sk-secret-token-value failed for C:\\Users\\private\\source.png data:image/png;base64,AAAAAAAAAAAAAAAAAAAA',

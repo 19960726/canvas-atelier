@@ -1,6 +1,9 @@
 import { sanitizeModelJobError, type ModelJob } from '@agent-canvas/domain';
 import type { ModelJobExecutor, ModelJobPollResult, ModelJobSubmission } from './job-store';
 
+type ProviderPollResult = Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['pollImageJob']>>;
+type ProviderCancelResult = Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['cancelImageJob']>>;
+
 export function createDesktopModelJobExecutor(): ModelJobExecutor {
   return {
     async submit(job) {
@@ -10,7 +13,7 @@ export function createDesktopModelJobExecutor(): ModelJobExecutor {
       if (!job.providerTaskId) {
         throw new Error('Provider task id is required before polling');
       }
-      let result: Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['pollImageJob']>>;
+      let result: ProviderPollResult;
       try {
         result = await getProviderBridge().pollImageJob({
           provider: requireProviderField(job.provider),
@@ -26,10 +29,11 @@ export function createDesktopModelJobExecutor(): ModelJobExecutor {
     },
     async cancel(job) {
       if (!job.providerTaskId) return;
-      await getProviderBridge().cancelImageJob({
+      const result = await getProviderBridge().cancelImageJob({
         provider: requireProviderField(job.provider),
         providerTaskId: job.providerTaskId,
       });
+      return sanitizePollResult(result);
     },
     async ackTerminal(job) {
       if (!job.providerTaskId || (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled')) {
@@ -63,7 +67,7 @@ function toSubmitRequest(job: ModelJob) {
   };
 }
 
-function sanitizePollResult(result: Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['pollImageJob']>>): ModelJobPollResult {
+function sanitizePollResult(result: ProviderPollResult | ProviderCancelResult): ModelJobPollResult {
   if (result.status === 'running') {
     return {
       status: 'running',
@@ -73,6 +77,9 @@ function sanitizePollResult(result: Awaited<ReturnType<NonNullable<Window['novus
   }
   if (result.status === 'failed') {
     return { status: 'failed', error: result.error };
+  }
+  if (result.status === 'cancelled') {
+    return { status: 'cancelled' };
   }
   return {
     status: 'completed',

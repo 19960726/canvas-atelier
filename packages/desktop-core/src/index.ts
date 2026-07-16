@@ -145,6 +145,7 @@ export {
   DEFAULT_PROVIDER_PROFILES,
   PROVIDER_BRIDGE_CHANNELS,
   createComflyProviderService,
+  createElectronNetComflyFetch,
   createProviderBridgeError,
   createProviderBridgeHandlers,
   createSecureProviderCredentialStore,

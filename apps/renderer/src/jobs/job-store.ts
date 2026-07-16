@@ -41,12 +41,13 @@ export interface ModelJobResult {
 export type ModelJobPollResult =
   | { status: 'running'; progress?: number; blockedReason?: 'credentials_locked' }
   | { status: 'completed'; progress?: number; result: ModelJobResult }
-  | { status: 'failed'; error: unknown };
+  | { status: 'failed'; error: unknown }
+  | { status: 'cancelled' };
 
 export interface ModelJobExecutor {
   submit(job: ModelJob): Promise<ModelJobSubmission>;
   poll(job: ModelJob): Promise<ModelJobPollResult>;
-  cancel?(job: ModelJob): Promise<void>;
+  cancel?(job: ModelJob): Promise<ModelJobPollResult | void>;
   ackTerminal?(job: ModelJob): Promise<void>;
 }
 
@@ -141,6 +142,8 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
   };
 
   const runOnce = async (optionsForRun: { poll: 'once' | 'until-terminal'; submitQueued: boolean }) => {
+    await ackPendingTerminalJobs(storage, putJob, options.executor, now);
+
     if (optionsForRun.submitQueued) {
       const queued = (await storage.list()).filter((job) => job.status === 'queued');
       await runLimited(queued, queued.length, async (job) => {
@@ -200,6 +203,7 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
         };
       });
       await bulkPutJobs(recovered);
+      await ackPendingTerminalJobs(storage, putJob, options.executor, now);
       await coalescedRun();
     },
     run: () => coalescedRun(),
@@ -235,12 +239,21 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       }
       if ((job.status === 'submitting' || job.status === 'running') && options.executor.cancel) {
         try {
-          await options.executor.cancel(job);
+          const cancelResult = await options.executor.cancel(job);
           const latest = await storage.get(id);
           if (latest && (latest.status === 'submitting' || latest.status === 'running')) {
-            const cancelled = transitionModelJob(latest, 'cancelled', { updatedAt: now() });
-            await putJob(cancelled);
-            await acknowledgeTerminal(options.executor, cancelled);
+            if (cancelResult?.status === 'completed' && latest.status === 'running') {
+              await materializeResult(latest, cancelResult.result, options, storage, putJob, resultDecodeQueue, now, materializingJobs);
+              return;
+            }
+            if (cancelResult?.status === 'failed') {
+              await putTerminalJob(storage, putJob, options.executor, latest, 'failed', {
+                error: sanitizeModelJobError(cancelResult.error),
+                updatedAt: now(),
+              }, now);
+              return;
+            }
+            await putTerminalJob(storage, putJob, options.executor, latest, 'cancelled', { updatedAt: now() }, now);
           }
         } catch (error) {
           const latest = await storage.get(id);
@@ -331,12 +344,16 @@ async function pollJob(
         return;
       }
       if (result.status === 'failed') {
-        const failed = transitionModelJob(latest, 'failed', {
+        await putTerminalJob(storage, putJob, options.executor, latest, 'failed', {
           error: sanitizeModelJobError(result.error),
           updatedAt: now(),
-        });
-        await putJob(failed);
-        await acknowledgeTerminal(options.executor, failed);
+        }, now);
+        return;
+      }
+      if (result.status === 'cancelled') {
+        await putTerminalJob(storage, putJob, options.executor, latest, 'cancelled', {
+          updatedAt: now(),
+        }, now);
         return;
       }
       await materializeResult(latest, result.result, options, storage, putJob, resultDecodeQueue, now, materializingJobs);
@@ -421,28 +438,82 @@ async function materializeResult(
     const afterCommit = await storage.get(job.id);
     if (!isSameRunningJob(afterCommit, latest)) return;
     if (!committed) return;
-    const completed = transitionModelJob(afterCommit, 'completed', {
+    await putTerminalJob(storage, putJob, options.executor, afterCommit, 'completed', {
       completedAt: now(),
       progress: 1,
       resultAssetId: result.assetId,
       resultNodeId,
       updatedAt: now(),
-    });
-    await putJob(completed);
-    await acknowledgeTerminal(options.executor, completed);
+    }, now);
   } finally {
     materializingJobs.delete(job.id);
   }
 }
 
-async function acknowledgeTerminal(executor: ModelJobExecutor, job: ModelJob): Promise<void> {
-  if (!executor.ackTerminal || (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled')) {
+async function putTerminalJob(
+  storage: ModelJobStorage,
+  putJob: (job: ModelJob) => Promise<void>,
+  executor: ModelJobExecutor,
+  job: ModelJob,
+  status: 'completed' | 'failed' | 'cancelled',
+  patch: Partial<ModelJob>,
+  now: () => string,
+): Promise<void> {
+  const terminal = transitionModelJob(job, status, {
+    ...patch,
+    providerAckPending: true,
+    terminalStatus: status,
+  });
+  await putJob(terminal);
+  await acknowledgeTerminal(storage, putJob, executor, terminal, now);
+}
+
+async function ackPendingTerminalJobs(
+  storage: ModelJobStorage,
+  putJob: (job: ModelJob) => Promise<void>,
+  executor: ModelJobExecutor,
+  now: () => string,
+): Promise<void> {
+  const jobs = await storage.list();
+  const pending = jobs.filter((job) => (
+    isTerminalJob(job)
+    && job.providerAckPending === true
+    && job.terminalStatus === job.status
+  ));
+  await runLimited(pending, pending.length, async (job) => {
+    await acknowledgeTerminal(storage, putJob, executor, job, now);
+  });
+}
+
+async function acknowledgeTerminal(
+  storage: ModelJobStorage,
+  putJob: (job: ModelJob) => Promise<void>,
+  executor: ModelJobExecutor,
+  job: ModelJob,
+  now: () => string,
+): Promise<void> {
+  if (!executor.ackTerminal || !isTerminalJob(job)) {
     return;
   }
   try {
     await executor.ackTerminal(job);
+    const latest = await storage.get(job.id);
+    if (!isSameTerminalJob(latest, job)) return;
+    await putJob({
+      ...latest,
+      providerAckPending: false,
+      terminalStatus: undefined,
+      updatedAt: now(),
+    });
   } catch {
-    // Provider tombstones are TTL-garbage-collected if renderer ACK is lost.
+    const latest = await storage.get(job.id);
+    if (!isSameTerminalJob(latest, job)) return;
+    await putJob({
+      ...latest,
+      providerAckPending: true,
+      terminalStatus: job.status,
+      updatedAt: now(),
+    });
   }
 }
 
@@ -504,6 +575,18 @@ function isSameRunningJob(candidate: ModelJob | undefined, expected: ModelJob): 
     && candidate.providerTaskId === expected.providerTaskId;
 }
 
+function isTerminalJob(job: ModelJob): job is ModelJob & { status: 'completed' | 'failed' | 'cancelled' } {
+  return job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled';
+}
+
+function isSameTerminalJob(candidate: ModelJob | undefined, expected: ModelJob): candidate is ModelJob {
+  return candidate !== undefined
+    && isTerminalJob(candidate)
+    && candidate.status === expected.status
+    && candidate.retryCount === expected.retryCount
+    && candidate.providerTaskId === expected.providerTaskId;
+}
+
 function findExistingResult(project: CanvasProject | undefined, job: ModelJob, result: ModelJobResult): CanvasNode | undefined {
   return project?.nodes.find((node) => (
     node.type === 'image_result'
@@ -522,15 +605,13 @@ async function completeFromExistingResult(
 ): Promise<void> {
   const latest = await storage.get(job.id);
   if (!isSameRunningJob(latest, job)) return;
-  const completed = transitionModelJob(latest, 'completed', {
+  await putTerminalJob(storage, putJob, executor, latest, 'completed', {
     completedAt: now(),
     progress: 1,
     resultAssetId: node.type === 'image_result' ? node.data.assetId : undefined,
     resultNodeId: node.id,
     updatedAt: now(),
-  });
-  await putJob(completed);
-  await acknowledgeTerminal(executor, completed);
+  }, now);
 }
 
 function delay(ms: number): Promise<void> {

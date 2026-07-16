@@ -448,6 +448,114 @@ describe('persistent model job store', () => {
     expect(ackedStatuses.sort()).toEqual(['cancelled', 'failed']);
   });
 
+  it('keeps provider ACK pending after failures and replays it on recovery', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const ackTerminal = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary ACK outage'))
+      .mockResolvedValueOnce(undefined);
+    const executor = createExecutor({
+      poll: vi.fn(async (job) => ({
+        status: 'completed' as const,
+        result: { assetId: `asset-${job.id}` },
+      })),
+      ackTerminal,
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-ack-replay' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-ack-replay'))!,
+      status: 'running',
+      providerTaskId: 'provider-job-ack-replay',
+    });
+
+    await store.pollActiveJobs();
+    expect(await storage.get('job-ack-replay')).toMatchObject({
+      status: 'completed',
+      providerAckPending: true,
+      terminalStatus: 'completed',
+    });
+
+    const restarted = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await restarted.recover();
+
+    expect(ackTerminal).toHaveBeenCalledTimes(2);
+    expect(await storage.get('job-ack-replay')).toMatchObject({
+      status: 'completed',
+      providerAckPending: false,
+    });
+  });
+
+  it('honors provider terminal returned from cancel instead of overwriting first terminal', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const ackTerminal = vi.fn(async () => undefined);
+    const executor = createExecutor({
+      cancel: vi.fn(async (job) => ({
+        status: 'completed' as const,
+        progress: 1,
+        result: { assetId: `asset-${job.id}` },
+      })),
+      ackTerminal,
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-cancel-completed-race' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-cancel-completed-race'))!,
+      status: 'running',
+      providerTaskId: 'provider-job-cancel-completed-race',
+    });
+
+    await store.cancelQueuedJob('job-cancel-completed-race');
+
+    expect(await storage.get('job-cancel-completed-race')).toMatchObject({
+      status: 'completed',
+      resultAssetId: 'asset-job-cancel-completed-race',
+    });
+    expect(project.nodes.some((node) => node.type === 'image_result' && node.data.jobId === 'job-cancel-completed-race')).toBe(true);
+    expect(ackTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'completed',
+      providerTaskId: 'provider-job-cancel-completed-race',
+    }));
+  });
+
   it('notifies subscribers with sanitized clones for live progress and action errors', async () => {
     const storage = createInMemoryModelJobStorage();
     const snapshots: ModelJob[][] = [];

@@ -1,11 +1,15 @@
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { createCipheriv, randomBytes, scrypt as scryptCallback } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   PROVIDER_BRIDGE_CHANNELS,
+  createElectronNetComflyFetch,
   createComflyProviderService,
   createProviderBridgeHandlers,
   createSecureProviderCredentialStore,
@@ -19,6 +23,7 @@ import { NodeFileSystem, type FileSystem } from './file-system.js';
 
 const token = 'sk-task-9-secret-token';
 const passphrase = 'correct horse battery staple';
+const scrypt = promisify(scryptCallback);
 const profiles: ProviderBridgeProfile[] = [
   {
     provider: 'comfly',
@@ -229,6 +234,79 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('submits and polls through the Electron net.request adapter without global fetch', async () => {
+    vi.stubGlobal('fetch', undefined);
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const net = createFakeElectronNet([
+      { statusCode: 200, body: { taskId: 'raw-provider-task-electron-22', status: 'queued' } },
+      {
+        statusCode: 200,
+        body: {
+          taskId: 'raw-provider-task-electron-22',
+          status: 'succeeded',
+          data: [{ url: 'https://assets.example/electron-22.png', width: 512, height: 512 }],
+        },
+      },
+    ]);
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: createElectronNetComflyFetch(net),
+      profiles,
+    });
+    await service.configure({ token });
+
+    const submitted = await service.submitImageJob({
+      jobId: 'job-electron-22',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'prove legacy adapter works',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    const completed = await service.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    });
+
+    expect(completed).toEqual({
+      status: 'completed',
+      progress: 1,
+      result: {
+        assetId: `provider:comfly:${submitted.providerTaskId}:0`,
+        width: 512,
+        height: 512,
+      },
+    });
+    expect(net.requests.map((request) => request.url)).toEqual([
+      'https://api.comfly.chat/v1/images/generations?async=true',
+      'https://api.comfly.chat/v1/images/tasks/raw-provider-task-electron-22',
+    ]);
+    expect(net.requests[0]?.method).toBe('POST');
+    expect(net.requests[1]?.method).toBe('GET');
+    expect(net.requests[0]?.headers).toEqual(expect.objectContaining({
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    }));
+    expect(net.requests[0]?.body).toContain('prove legacy adapter works');
+    expect(JSON.stringify({ completed, requests: net.requests })).not.toMatch(/globalThis\.fetch|electron-22\.png|base64/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects non-HTTPS Electron net adapter requests and cleans transport errors', async () => {
+    const net = createFakeElectronNet([]);
+    const fetch = createElectronNetComflyFetch(net, { timeoutMs: 25 });
+
+    await expect(fetch('http://api.comfly.chat/v1/images/generations', { method: 'POST' })).rejects.toThrow(/https/i);
+    await expect(fetch('https://api.comfly.chat/v1/images/generations', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      body: `{"apiKey":"${token}","path":"C:\\Users\\Private\\source.png"}`,
+      signal: AbortSignal.timeout(1),
+    })).rejects.not.toThrow(/Bearer|sk-task-9|apiKey|Users|source\.png/i);
+  });
+
   it('preserves durable task mappings across token rotation and service restart', async () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();
@@ -274,6 +352,53 @@ describe('Comfly provider service', () => {
     expect(restartedFetch.mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({
       authorization: 'Bearer sk-second-rotation-token',
     }));
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('migrates v1 token-encrypted task mappings through protected fallback keys and survives rotation', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const legacyToken = 'sk-legacy-mapping-token';
+    const publicTaskId = 'provider-job-legacy-fallback';
+    await writeLegacySafeStorageCredential(appDataRoot, safeStorage, legacyToken);
+    await writeEncryptedTaskMappingsForTest(appDataRoot, legacyToken, [{
+      provider: 'comfly',
+      publicTaskId,
+      rawTaskId: 'raw-provider-task-legacy-fallback',
+      state: 'running',
+      createdAt: '2026-07-16T08:00:00.000Z',
+      updatedAt: '2026-07-16T08:00:00.000Z',
+    }]);
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn().mockResolvedValueOnce(jsonResponse({
+        taskId: 'raw-provider-task-legacy-fallback',
+        status: 'succeeded',
+        data: [{ url: 'https://assets.example/legacy-fallback.png' }],
+      })),
+      profiles,
+    });
+
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: publicTaskId })).resolves.toEqual({
+      status: 'completed',
+      progress: 1,
+      result: { assetId: `provider:comfly:${publicTaskId}:0` },
+    });
+    await service.configure({ token: 'sk-rotated-after-legacy-migration', profiles });
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn(),
+      profiles,
+    });
+
+    await expect(restarted.pollImageJob({ provider: 'comfly', providerTaskId: publicTaskId })).resolves.toMatchObject({ status: 'completed' });
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toContain(legacyToken);
+    expect(serialized).not.toContain('sk-rotated-after-legacy-migration');
+    expect(serialized).not.toContain('raw-provider-task-legacy-fallback');
+    expect(serialized).not.toContain(publicTaskId);
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -516,6 +641,34 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('rolls back in-root mapping writes when post-write confinement verification fails', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const fileSystem = new PostWriteEscapeMappingFileSystem(appDataRoot);
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn().mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-escape', status: 'queued' })),
+      fileSystem,
+      profiles,
+    });
+    await service.configure({ token });
+
+    await expect(service.submitImageJob({
+      jobId: 'job-post-write-escape',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'escape after write',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: expect.stringMatching(/mapping path/i),
+    });
+    await expect(readFile(join(appDataRoot, 'provider-task-mappings.json'), 'utf8')).rejects.toThrow();
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('keeps terminal tombstones replayable until renderer ACK and then cleans them up', async () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();
@@ -581,9 +734,10 @@ describe('Comfly provider service', () => {
       error: { code: 'PROVIDER_ERROR', message: 'Provider image task failed', retryable: true },
     });
     await expect(service.cancelImageJob({ provider: 'comfly', providerTaskId: cancelled.providerTaskId })).resolves.toEqual({
-      status: 'local-only',
-      remoteCancelled: false,
-      reason: 'unsupported',
+      status: 'cancelled',
+    });
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: cancelled.providerTaskId })).resolves.toEqual({
+      status: 'cancelled',
     });
 
     const serialized = await readAllFiles(appDataRoot);
@@ -592,6 +746,13 @@ describe('Comfly provider service', () => {
     expect(serialized).not.toContain('raw-provider-task-cancel');
 
     const restarted = createComflyProviderService({ appDataRoot, credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }), fetch: vi.fn(), profiles });
+    await expect((restarted as unknown as ProviderServiceWithAck).ackImageJobTerminal({
+      provider: 'comfly',
+      providerTaskId: success.providerTaskId,
+      status: 'failed',
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+    });
     await (restarted as unknown as ProviderServiceWithAck).ackImageJobTerminal({
       provider: 'comfly',
       providerTaskId: success.providerTaskId,
@@ -613,7 +774,7 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
-  it('garbage collects expired terminal tombstones without removing active running mappings', async () => {
+  it('does not garbage collect unACKed terminal tombstones or active running mappings', async () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();
     let now = Date.parse('2026-07-16T08:00:00.000Z');
@@ -651,7 +812,7 @@ describe('Comfly provider service', () => {
     });
 
     await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: terminal.providerTaskId })).resolves.toMatchObject({ status: 'completed' });
-    now += 1_500;
+    now += 8 * 24 * 60 * 60 * 1000;
     await service.listProfiles();
 
     const restarted = createComflyProviderService({
@@ -662,7 +823,7 @@ describe('Comfly provider service', () => {
       now: () => now,
       terminalTombstoneTtlMs: 1_000,
     } as never);
-    await expect(restarted.pollImageJob({ provider: 'comfly', providerTaskId: terminal.providerTaskId })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    await expect(restarted.pollImageJob({ provider: 'comfly', providerTaskId: terminal.providerTaskId })).resolves.toMatchObject({ status: 'completed' });
     await expect(restarted.pollImageJob({ provider: 'comfly', providerTaskId: active.providerTaskId })).resolves.toMatchObject({ status: 'running' });
     await cleanupTempRoot(appDataRoot);
   });
@@ -738,20 +899,102 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
-  it('models cancel as local-only unsupported when the provider has no remote cancel API', async () => {
+  it('models cancel as a replayable terminal where first terminal wins', async () => {
     const appDataRoot = await makeTempRoot();
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
-    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch: vi.fn(), profiles });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-cancel-first', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-complete-first', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({
+          taskId: 'raw-provider-task-complete-first',
+          status: 'succeeded',
+          data: [{ url: 'https://assets.example/complete-first.png' }],
+        })),
+      profiles,
+    });
     await service.configure({ token });
+    const cancelFirst = await service.submitImageJob({
+      jobId: 'job-cancel-first',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'cancel first',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    const completeFirst = await service.submitImageJob({
+      jobId: 'job-complete-first',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'complete first',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
 
     await expect(service.cancelImageJob({
       provider: 'comfly',
-      providerTaskId: 'provider-job-public-1',
+      providerTaskId: cancelFirst.providerTaskId,
     })).resolves.toEqual({
-      status: 'local-only',
-      remoteCancelled: false,
-      reason: 'unsupported',
+      status: 'cancelled',
     });
+    await expect(service.cancelImageJob({ provider: 'comfly', providerTaskId: cancelFirst.providerTaskId })).resolves.toEqual({ status: 'cancelled' });
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: cancelFirst.providerTaskId })).resolves.toEqual({ status: 'cancelled' });
+
+    const completed = await service.pollImageJob({ provider: 'comfly', providerTaskId: completeFirst.providerTaskId });
+    await expect(service.cancelImageJob({ provider: 'comfly', providerTaskId: completeFirst.providerTaskId })).resolves.toEqual(completed);
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: completeFirst.providerTaskId })).resolves.toEqual(completed);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('does not hold the configuration mutex while provider network requests are in flight', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const slowPoll = deferred<ReturnType<typeof jsonResponse>>();
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-slow', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-fast', status: 'queued' }))
+      .mockReturnValueOnce(slowPoll.promise)
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-fast', status: 'running' }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch,
+      profiles,
+    });
+    await service.configure({ token });
+    const slow = await service.submitImageJob({
+      jobId: 'job-slow-poll',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'slow poll',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    const fast = await service.submitImageJob({
+      jobId: 'job-fast-poll',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'fast poll',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+
+    const pendingSlowPoll = service.pollImageJob({ provider: 'comfly', providerTaskId: slow.providerTaskId });
+    await waitFor(() => fetch.mock.calls.length === 3);
+    await expect(Promise.race([
+      service.getStatus().then(() => 'status-resolved'),
+      delay(25).then(() => 'status-blocked'),
+    ])).resolves.toBe('status-resolved');
+    await expect(Promise.race([
+      service.pollImageJob({ provider: 'comfly', providerTaskId: fast.providerTaskId }).then((result) => result.status),
+      delay(500).then(() => 'poll-blocked'),
+    ])).resolves.toBe('running');
+    await expect(service.cancelImageJob({ provider: 'comfly', providerTaskId: fast.providerTaskId })).resolves.toEqual({ status: 'cancelled' });
+
+    slowPoll.resolve(jsonResponse({ taskId: 'raw-provider-task-slow', status: 'running' }));
+    await expect(pendingSlowPoll).resolves.toMatchObject({ status: 'running' });
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -771,6 +1014,7 @@ describe('Comfly provider service', () => {
       getStatus: vi.fn(async () => ({ configured: Boolean(activeToken), locked: !activeToken, encryption: 'safeStorage' as const })),
       getToken: vi.fn(async () => activeToken),
       getMappingKey: vi.fn(async () => 'stable-test-mapping-key'),
+      getMappingSecrets: vi.fn(async () => ({ primary: 'stable-test-mapping-key', fallback: [] })),
     };
     const fetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-second-task', status: 'queued' }));
@@ -1012,7 +1256,7 @@ describe('provider IPC handlers', () => {
     });
 
     const sanitizedHandlers = createProviderBridgeHandlers({
-      cancelImageJob: vi.fn(async () => ({ status: 'local-only', remoteCancelled: false, reason: 'unsupported' })),
+      cancelImageJob: vi.fn(async () => ({ status: 'cancelled' })),
       configure: vi.fn(),
       getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' })),
       listProfiles: vi.fn(async () => [{
@@ -1098,6 +1342,25 @@ describe('provider IPC handlers', () => {
       providerTaskId: 'provider-job-error',
     })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
 
+    const cancelled = createProviderBridgeHandlers({
+      cancelImageJob: vi.fn(async () => ({ status: 'cancelled' })),
+      configure: vi.fn(),
+      getStatus: vi.fn(),
+      listProfiles: vi.fn(),
+      pollImageJob: vi.fn(async () => ({ status: 'cancelled' })),
+      submitImageJob: vi.fn(),
+      unlock: vi.fn(),
+      ackImageJobTerminal: vi.fn(),
+    } as never);
+    await expect(cancelled.pollImageJob({}, {
+      provider: 'comfly',
+      providerTaskId: 'provider-job-cancelled',
+    })).resolves.toEqual({ status: 'cancelled' });
+    await expect(cancelled.cancelImageJob({}, {
+      provider: 'comfly',
+      providerTaskId: 'provider-job-cancelled',
+    })).resolves.toEqual({ status: 'cancelled' });
+
     const ack = vi.fn(async () => ({ acknowledged: true }));
     const handlers = createProviderBridgeHandlers({
       cancelImageJob: vi.fn(),
@@ -1130,6 +1393,13 @@ describe('provider IPC handlers', () => {
 });
 
 describe('desktop shell provider wiring', () => {
+  it('keeps provider bridge orchestration separate from vault, ledger, and transport internals', async () => {
+    const source = await readFile(join(process.cwd(), 'packages/desktop-core/src/provider-bridge.ts'), 'utf8');
+
+    expect(source).not.toMatch(/createCipheriv|createDecipheriv|scrypt|acquireConfinedFileLock|writeAtomic|provider-task-mappings\.json|provider-credentials\.json/u);
+    expect(source.split(/\r?\n/u).length).toBeLessThan(900);
+  });
+
   it('wires Modern and Legacy provider services after app readiness with safeStorage', async () => {
     for (const mainPath of [
       join(process.cwd(), 'apps/desktop-modern/src/main.ts'),
@@ -1149,6 +1419,8 @@ describe('desktop shell provider wiring', () => {
       expect(source).toContain('nodeIntegration: false');
       expect(source).toContain('app.requestSingleInstanceLock()');
       expect(source).toContain("app.on('second-instance'");
+      expect(source).toContain('createElectronNetComflyFetch(net)');
+      expect(source).not.toContain('globalThis.fetch');
     }
   });
 });
@@ -1218,6 +1490,98 @@ function createMappingSymlinkFileSystem(appDataRoot: string): FileSystem {
   };
 }
 
+class PostWriteEscapeMappingFileSystem extends NodeFileSystem {
+  private readonly mappingPath: string;
+  private readonly escapedMappingPath: string;
+  private escaped = false;
+
+  constructor(appDataRoot: string) {
+    super();
+    this.mappingPath = join(appDataRoot, 'provider-task-mappings.json');
+    this.escapedMappingPath = join(appDataRoot, '..', 'escaped-provider-task-mappings.json');
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    await super.rename(source, destination);
+    if (destination === this.mappingPath) {
+      this.escaped = true;
+    }
+  }
+
+  override async realpath(path: string): Promise<string> {
+    if (this.escaped && path === this.mappingPath) {
+      return this.escapedMappingPath;
+    }
+    return super.realpath(path);
+  }
+}
+
+type FakeElectronResponse = {
+  readonly statusCode: number;
+  readonly body: unknown;
+};
+
+type FakeElectronRequestRecord = {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: Record<string, string>;
+  readonly body: string;
+};
+
+function createFakeElectronNet(responses: FakeElectronResponse[]) {
+  const pending = [...responses];
+  const requests: FakeElectronRequestRecord[] = [];
+  return {
+    requests,
+    request(options: { readonly url?: string; readonly method?: string }) {
+      return new FakeElectronClientRequest(options, pending, requests);
+    },
+  };
+}
+
+class FakeElectronClientRequest extends EventEmitter {
+  private readonly headers: Record<string, string> = {};
+  private body = '';
+
+  constructor(
+    private readonly options: { readonly url?: string; readonly method?: string },
+    private readonly responses: FakeElectronResponse[],
+    private readonly requests: FakeElectronRequestRecord[],
+  ) {
+    super();
+  }
+
+  setHeader(name: string, value: string): void {
+    this.headers[name.toLowerCase()] = value;
+  }
+
+  write(chunk: string | Uint8Array): void {
+    this.body += Buffer.from(chunk).toString('utf8');
+  }
+
+  end(): void {
+    this.requests.push({
+      url: this.options.url ?? '',
+      method: this.options.method ?? 'GET',
+      headers: { ...this.headers },
+      body: this.body,
+    });
+    const response = this.responses.shift();
+    if (response === undefined) return;
+    const incoming = new EventEmitter() as EventEmitter & { statusCode: number };
+    incoming.statusCode = response.statusCode;
+    queueMicrotask(() => {
+      this.emit('response', incoming);
+      incoming.emit('data', Buffer.from(JSON.stringify(response.body), 'utf8'));
+      incoming.emit('end');
+    });
+  }
+
+  abort(): void {
+    this.emit('error', new Error(`Authorization: Bearer ${token} from C:\\Users\\Private\\source.png`));
+  }
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -1271,6 +1635,40 @@ function jsonResponse(body: unknown, options: { ok?: boolean; status?: number } 
     status: options.status ?? 200,
     json: async () => body,
   };
+}
+
+async function writeLegacySafeStorageCredential(
+  appDataRoot: string,
+  safeStorage: SafeStorageAdapter,
+  legacyToken: string,
+): Promise<void> {
+  await writeFile(join(appDataRoot, 'provider-credentials.json'), `${JSON.stringify({
+    version: 1,
+    kind: 'safeStorage',
+    ciphertextHex: Buffer.from(safeStorage.encryptString(legacyToken)).toString('hex'),
+  })}\n`, 'utf8');
+}
+
+async function writeEncryptedTaskMappingsForTest(
+  appDataRoot: string,
+  secret: string,
+  mappings: unknown[],
+): Promise<void> {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = await scrypt(secret, salt, 32) as Buffer;
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify({ version: 1, mappings }), 'utf8'),
+    cipher.final(),
+  ]);
+  await writeFile(join(appDataRoot, 'provider-task-mappings.json'), `${JSON.stringify({
+    version: 1,
+    saltHex: salt.toString('hex'),
+    ivHex: iv.toString('hex'),
+    authTagHex: cipher.getAuthTag().toString('hex'),
+    ciphertextHex: ciphertext.toString('hex'),
+  })}\n`, 'utf8');
 }
 
 async function makeTempRoot(): Promise<string> {

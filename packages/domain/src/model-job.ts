@@ -3,6 +3,7 @@ import { z } from 'zod';
 const idSchema = z.string().min(1);
 
 export const modelJobStatusSchema = z.enum(['queued', 'submitting', 'running', 'completed', 'failed', 'cancelled']);
+export const modelJobTerminalStatusSchema = z.enum(['completed', 'failed', 'cancelled']);
 
 export const modelJobSchema = z.object({
   id: idSchema,
@@ -27,6 +28,8 @@ export const modelJobSchema = z.object({
   error: z.string().max(160).optional(),
   resultNodeId: idSchema.optional(),
   resultAssetId: idSchema.optional(),
+  providerAckPending: z.boolean().optional(),
+  terminalStatus: modelJobTerminalStatusSchema.optional(),
 }).strict();
 
 export type ModelJobStatus = z.infer<typeof modelJobStatusSchema>;
@@ -92,6 +95,7 @@ export function transitionModelJob(
     status: nextStatus,
     retryCount,
     error,
+    ...(nextStatus === 'queued' ? { providerAckPending: undefined, terminalStatus: undefined } : {}),
   });
 }
 

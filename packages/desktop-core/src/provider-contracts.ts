@@ -95,18 +95,18 @@ export interface ProviderImageJobResult {
 export type PollImageJobBridgeResult =
   | { readonly status: 'running'; readonly progress?: number; readonly blockedReason?: ProviderBridgeBlockedReason }
   | { readonly status: 'completed'; readonly progress?: number; readonly result: ProviderImageJobResult }
-  | { readonly status: 'failed'; readonly error: ProviderBridgeError };
+  | { readonly status: 'failed'; readonly error: ProviderBridgeError }
+  | { readonly status: 'cancelled' };
 
 export interface CancelImageJobBridgeRequest {
   readonly provider: ProviderBridgeProvider;
   readonly providerTaskId: string;
 }
 
-export interface CancelImageJobBridgeResult {
-  readonly status: 'local-only';
-  readonly remoteCancelled: false;
-  readonly reason: 'unsupported';
-}
+export type CancelImageJobBridgeResult =
+  | { readonly status: 'completed'; readonly progress?: number; readonly result: ProviderImageJobResult }
+  | { readonly status: 'failed'; readonly error: ProviderBridgeError }
+  | { readonly status: 'cancelled' };
 
 export interface AckImageJobTerminalBridgeRequest {
   readonly provider: ProviderBridgeProvider;
