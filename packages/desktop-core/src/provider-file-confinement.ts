@@ -15,6 +15,16 @@ interface ConfinementRootIdentity {
   readonly resolvedRoot: string;
 }
 
+interface ConfinedAtomicUpdateOptions {
+  readonly appDataRoot: string;
+  readonly targetPath: string;
+  readonly data: string | Uint8Array;
+  readonly assertPathForRead: () => Promise<void>;
+  readonly assertPathForWrite: () => Promise<void>;
+  readonly errorCode: ConfinementErrorCode;
+  readonly errorMessage: string;
+}
+
 export function confinedCredentialsPath(appDataRoot: string): string {
   return confinedAppDataPath(appDataRoot, CREDENTIALS_FILE, 'CREDENTIALS_LOCKED', 'Provider credential path is invalid');
 }
@@ -117,15 +127,7 @@ export async function rollbackConfirmedInRootFile(
 
 export async function writeConfinedAtomicUpdate(
   fileSystem: FileSystem,
-  options: {
-    readonly appDataRoot: string;
-    readonly targetPath: string;
-    readonly data: string | Uint8Array;
-    readonly assertPathForRead: () => Promise<void>;
-    readonly assertPathForWrite: () => Promise<void>;
-    readonly errorCode: ConfinementErrorCode;
-    readonly errorMessage: string;
-  },
+  options: ConfinedAtomicUpdateOptions,
 ): Promise<void> {
   await options.assertPathForWrite();
   const rootIdentity = await captureConfinementRootIdentity(fileSystem, options.appDataRoot);
@@ -137,13 +139,17 @@ export async function writeConfinedAtomicUpdate(
   let handle: FileHandleLike | null = null;
   let closed = false;
   let replaced = false;
+  let tempCreated = false;
 
   try {
+    await assertOriginalRootWritePhase(fileSystem, options, rootIdentity, tempPath);
     handle = await fileSystem.open(tempPath, 'wx');
+    tempCreated = true;
     await handle.writeFile(options.data);
     await handle.sync();
     await handle.close();
     closed = true;
+    await assertOriginalRootWritePhase(fileSystem, options, rootIdentity, tempPath);
     await fileSystem.rename(tempPath, options.targetPath);
     replaced = true;
     await assertOriginalRootPostWriteState(fileSystem, options, rootIdentity);
@@ -155,7 +161,9 @@ export async function writeConfinedAtomicUpdate(
         // Preserve the original failure.
       }
     }
-    await fileSystem.rm(tempPath, { force: true });
+    if (tempCreated) {
+      await removeConfirmedOriginalRootSibling(fileSystem, tempPath, rootIdentity);
+    }
     if (replaced) {
       await restoreConfirmedInRootTarget(fileSystem, options, previous, rootIdentity);
     }
@@ -195,9 +203,10 @@ async function restoreConfirmedInRootTarget(
   rootIdentity: ConfinementRootIdentity,
 ): Promise<void> {
   try {
-    if (!await canTouchConfirmedInRootFile(fileSystem, options.appDataRoot, options.targetPath, rootIdentity)) return;
+    const originalTargetPath = originalRootSiblingPath(options.targetPath, rootIdentity);
+    if (!await canTouchConfirmedOriginalRootSibling(fileSystem, originalTargetPath, rootIdentity)) return;
     if (previous.existed) {
-      const handle = await fileSystem.open(options.targetPath, 'w');
+      const handle = await fileSystem.open(originalTargetPath, 'w');
       try {
         await handle.writeFile(previous.data);
         await handle.sync();
@@ -205,7 +214,7 @@ async function restoreConfirmedInRootTarget(
         await handle.close();
       }
     } else {
-      await fileSystem.rm(options.targetPath, { force: true });
+      await fileSystem.rm(originalTargetPath, { force: true });
     }
   } catch {
     // Do not touch uncertain paths further after the provider-domain failure.
@@ -229,6 +238,30 @@ async function canTouchConfirmedInRootFile(
   if (target === expectedRoot || !target.startsWith(`${expectedRoot}${sep}`)) return false;
   const stat = await fileSystem.lstat(targetPath);
   return stat.isFile() && stat.isSymbolicLink?.() !== true;
+}
+
+async function assertOriginalRootWritePhase(
+  fileSystem: FileSystem,
+  options: ConfinedAtomicUpdateOptions,
+  rootIdentity: ConfinementRootIdentity,
+  tempPath: string,
+): Promise<void> {
+  await options.assertPathForWrite();
+  if (fileSystem.lstat === undefined || fileSystem.realpath === undefined) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  if (await isSymlinkTarget(fileSystem, options.appDataRoot) || await isSymlinkTarget(fileSystem, tempPath)) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const currentRoot = normalizeRealPath(await fileSystem.realpath(resolve(options.appDataRoot)));
+  if (currentRoot !== rootIdentity.realRoot) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const targetParent = normalizeRealPath(await fileSystem.realpath(dirname(options.targetPath)));
+  const tempParent = normalizeRealPath(await fileSystem.realpath(dirname(tempPath)));
+  if (targetParent !== rootIdentity.realRoot || tempParent !== rootIdentity.realRoot) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
 }
 
 async function assertOriginalRootPostWriteState(
@@ -263,6 +296,42 @@ async function assertOriginalRootPostWriteState(
   if (!stat.isFile() || stat.isSymbolicLink?.() === true) {
     throw createProviderBridgeError(options.errorCode, options.errorMessage);
   }
+}
+
+async function removeConfirmedOriginalRootSibling(
+  fileSystem: FileSystem,
+  path: string,
+  rootIdentity: ConfinementRootIdentity,
+): Promise<void> {
+  try {
+    const originalPath = originalRootSiblingPath(path, rootIdentity);
+    if (!await canTouchConfirmedOriginalRootSibling(fileSystem, originalPath, rootIdentity)) return;
+    await fileSystem.rm(originalPath, { force: true });
+  } catch {
+    // Cleanup is best-effort after the provider-domain error is already known.
+  }
+}
+
+async function canTouchConfirmedOriginalRootSibling(
+  fileSystem: FileSystem,
+  path: string,
+  rootIdentity: ConfinementRootIdentity,
+): Promise<boolean> {
+  if (fileSystem.lstat === undefined || fileSystem.realpath === undefined) return false;
+  const parent = normalizeRealPath(dirname(path));
+  if (parent !== rootIdentity.realRoot) return false;
+  const currentRoot = normalizeRealPath(await fileSystem.realpath(rootIdentity.realRoot));
+  if (currentRoot !== rootIdentity.realRoot) return false;
+  const target = normalizeRealPath(await fileSystem.realpath(path));
+  if (target === rootIdentity.realRoot || !target.startsWith(`${rootIdentity.realRoot}${sep}`)) return false;
+  const rootStat = await fileSystem.lstat(rootIdentity.realRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink?.() === true) return false;
+  const stat = await fileSystem.lstat(path);
+  return stat.isFile() && stat.isSymbolicLink?.() !== true;
+}
+
+function originalRootSiblingPath(path: string, rootIdentity: ConfinementRootIdentity): string {
+  return join(rootIdentity.realRoot, basename(path));
 }
 
 async function captureConfinementRootIdentity(
