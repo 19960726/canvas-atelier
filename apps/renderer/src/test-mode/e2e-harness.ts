@@ -49,6 +49,7 @@ const e2eNonce = import.meta.env.VITE_NOVUS_E2E_NONCE ?? 'novus-e2e-local';
 interface RuntimeState {
   commitLog: ProjectTransaction[];
   currentProject: CanvasProject;
+  failNextModelJobEnqueue: boolean;
   knowledgeListeners: Set<(states: KnowledgeBaseStateSummary[]) => void>;
   knowledgeStates: KnowledgeBaseStateSummary[];
   managedRules: Map<string, string>;
@@ -82,17 +83,21 @@ export function installRendererE2EHarness(): void {
       runtime.currentProject = createStarterProject();
       runtime.revision = 0;
       runtime.commitLog = [];
+      runtime.failNextModelJobEnqueue = false;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
       runtime.modelSubmissions = [];
       runtime.providerProfiles = createE2EProviderProfiles();
       runtime.skillSyncWrites = [];
-      runtime.storage = createInMemoryModelJobStorage();
+      runtime.storage = createE2EModelJobStorage(runtime);
       replaceModelJobExecutorForTests(createModelExecutor(runtime));
       replaceModelJobStorageForTests(runtime.storage);
       resetAppStoreForTests();
       await useAppStore.getState().hydratePersistence();
       await useAppStore.getState().initializeKnowledge();
+    },
+    failNextModelJobEnqueue() {
+      runtime.failNextModelJobEnqueue = true;
     },
     async seedSkillSyncDivergence() {
       await seedSkillSyncDivergence(runtime);
@@ -122,9 +127,10 @@ export function installRendererE2EHarness(): void {
 }
 
 function createRuntimeState(): RuntimeState {
-  return {
+  const runtime: RuntimeState = {
     commitLog: [],
     currentProject: createStarterProject(),
+    failNextModelJobEnqueue: false,
     knowledgeListeners: new Set(),
     knowledgeStates: [],
     managedRules: new Map(),
@@ -134,6 +140,8 @@ function createRuntimeState(): RuntimeState {
     skillSyncWrites: [],
     storage: createInMemoryModelJobStorage(),
   };
+  runtime.storage = createE2EModelJobStorage(runtime);
+  return runtime;
 }
 
 function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesktop {
@@ -180,6 +188,22 @@ function createE2EProviderProfiles(): ProviderBridgeProfile[] {
       capabilities: ['image_edit', 'async_tasks'],
     },
   ];
+}
+
+function createE2EModelJobStorage(runtime: RuntimeState): ModelJobStorage {
+  const inner = createInMemoryModelJobStorage();
+  return {
+    get: (id) => inner.get(id),
+    list: () => inner.list(),
+    put: (job) => inner.put(job),
+    bulkPut: async (jobs) => {
+      if (runtime.failNextModelJobEnqueue) {
+        runtime.failNextModelJobEnqueue = false;
+        throw new Error('E2E model enqueue unavailable');
+      }
+      await inner.bulkPut(jobs);
+    },
+  };
 }
 
 function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClient {
@@ -480,6 +504,7 @@ declare global {
           projectId: string;
         }>;
       };
+      failNextModelJobEnqueue(): void;
       nonce: string;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;

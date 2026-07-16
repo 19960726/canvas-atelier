@@ -8,6 +8,7 @@ export type AgentPlanState =
   | 'waiting_for_confirmation'
   | 'confirming'
   | 'committing'
+  | 'waiting_for_job_retry'
   | 'applying_transaction'
   | 'running_models'
   | 'reviewing_results'
@@ -36,8 +37,11 @@ export interface AgentCanvasPlan {
   requestedCapabilities: AgentCapability[];
   confirmations: AgentPlanConfirmations;
   conflicts: string[];
+  modelProvider?: string;
   modelRoute?: string;
   modelRouteDisplayName?: string;
+  modelId?: string;
+  modelConversationId?: string;
   jobCount: number;
 }
 

@@ -64,6 +64,29 @@ describe('PlanPreview', () => {
     expect(onCancel).not.toHaveBeenCalled();
     expect(onConfirm).not.toHaveBeenCalled();
   });
+  it('shows a post-commit retry action without re-confirming the canvas transaction', () => {
+    const onCancel = vi.fn();
+    const onConfirm = vi.fn();
+    const onRetryJobs = vi.fn();
+    render(
+      <PlanPreview
+        plan={{ ...plan, state: 'waiting_for_job_retry', confirmations: { canvas: '2026-07-16T09:00:00.000Z', models: '2026-07-16T09:00:00.000Z' } }}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+        onRetryJobs={onRetryJobs}
+      />,
+    );
+
+    expect(screen.getByTestId('plan-job-retry-state')).toHaveTextContent(/Canvas committed|画布已提交/i);
+    expect(screen.queryByTestId('plan-confirm')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('plan-retry-jobs'));
+    expect(onRetryJobs).toHaveBeenCalledOnce();
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('plan-cancel'));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
   it('shows separate approvals for deletion and Skill writeback', () => {
     const onConfirm = vi.fn();
     render(<PlanPreview plan={{ ...plan, requestedCapabilities: ['delete_nodes', 'skill_writeback'] }} onConfirm={onConfirm} onCancel={() => {}} />);

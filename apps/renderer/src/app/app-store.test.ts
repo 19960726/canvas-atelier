@@ -876,8 +876,137 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
     expect(useAppStore.getState().undoStack).toHaveLength(1);
     expect(useAppStore.getState().modelJobs).toEqual([]);
-    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'committing' });
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      modelRoute: 'image-generation',
+      modelRouteDisplayName: 'GPT Image',
+      state: 'waiting_for_job_retry',
+    });
     expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/queue|model/i);
+  });
+
+  it('retries model job enqueue after a committed Agent plan without duplicating canvas, undo, or memory', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    const storedJobs: ModelJob[] = [];
+    const bulkPut = vi.fn(async (jobs: ModelJob[]) => {
+      if (bulkPut.mock.calls.length === 1) throw new Error('first enqueue unavailable');
+      storedJobs.splice(0, storedJobs.length, ...jobs);
+    });
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(),
+    });
+    replaceModelJobStorageForTests(createMutableModelJobStorage(storedJobs, bulkPut));
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Retry just the model queue after commit', {
+      modelRoute: 'image-generation',
+    });
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+
+    const committedProject = cloneProjectForExpectation(useAppStore.getState().project);
+    const memoryIds = useAppStore.getState().project.projectMemory.map((memory) => memory.id);
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'waiting_for_job_retry' });
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(bulkPut).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(memoryIds).toHaveLength(1);
+
+    await useAppStore.getState().retryAgentPlanJobs();
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(bulkPut).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().project).toEqual(committedProject);
+    expect(useAppStore.getState().project.projectMemory.map((memory) => memory.id)).toEqual(memoryIds);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().modelJobs).toHaveLength(1);
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      conversationId: 'agent-conversation-shared',
+      modelRoute: 'image-generation',
+      provider: 'comfly',
+    });
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'reviewing_results' });
+  });
+
+  it('dedupes concurrent Agent job retries so they cannot double-enqueue', async () => {
+    const enqueueRetry = deferred<void>();
+    const storedJobs: ModelJob[] = [];
+    const bulkPut = vi.fn(async (jobs: ModelJob[]) => {
+      if (bulkPut.mock.calls.length === 1) throw new Error('first enqueue unavailable');
+      await enqueueRetry.promise;
+      storedJobs.splice(0, storedJobs.length, ...jobs);
+    });
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(),
+    });
+    replaceModelJobStorageForTests(createMutableModelJobStorage(storedJobs, bulkPut));
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Deduplicate retry clicks', {
+      modelRoute: 'image-generation',
+    });
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'waiting_for_job_retry' });
+
+    const firstRetry = useAppStore.getState().retryAgentPlanJobs();
+    await waitForStore(() => bulkPut.mock.calls.length === 2);
+    const secondRetry = useAppStore.getState().retryAgentPlanJobs();
+
+    expect(bulkPut).toHaveBeenCalledTimes(2);
+    enqueueRetry.resolve();
+    await Promise.all([firstRetry, secondRetry]);
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(bulkPut).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+  });
+
+  it('keeps Agent job retry visible and retryable when the retry enqueue also fails', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    const bulkPut = vi.fn(async () => {
+      throw new Error('enqueue still unavailable');
+    });
+    replaceModelJobStorageForTests(createMutableModelJobStorage([], bulkPut));
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Retry failure remains visible', {
+      modelRoute: 'image-generation',
+    });
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await useAppStore.getState().retryAgentPlanJobs();
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(bulkPut).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'waiting_for_job_retry' });
+    expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/retry|queue|model/i);
   });
 
   it('does not select or confirm edit-only provider profiles for image generation plans', async () => {
@@ -2066,6 +2195,25 @@ function createTestModelJobStorage(seed: ModelJob[] = []) {
         jobs.set(job.id, { ...job, referenceAssetIds: [...job.referenceAssetIds] });
       }
     },
+  };
+}
+
+function createMutableModelJobStorage(
+  jobs: ModelJob[],
+  bulkPut: (jobs: ModelJob[]) => Promise<void>,
+) {
+  return {
+    get: async (id: string) => {
+      const job = jobs.find((item) => item.id === id);
+      return job === undefined ? undefined : { ...job, referenceAssetIds: [...job.referenceAssetIds] };
+    },
+    list: async () => jobs.map((job) => ({ ...job, referenceAssetIds: [...job.referenceAssetIds] })),
+    put: async (job: ModelJob) => {
+      const index = jobs.findIndex((item) => item.id === job.id);
+      if (index >= 0) jobs[index] = { ...job, referenceAssetIds: [...job.referenceAssetIds] };
+      else jobs.push({ ...job, referenceAssetIds: [...job.referenceAssetIds] });
+    },
+    bulkPut,
   };
 }
 

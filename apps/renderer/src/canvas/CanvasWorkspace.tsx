@@ -3,6 +3,7 @@ import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xy
 import type { Viewport } from '@xyflow/react';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type {
+  AgentPlanState,
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
   PlacementObject,
@@ -82,6 +83,7 @@ export function CanvasWorkspace() {
   const getKnowledgeLease = useAppStore((state) => state.getKnowledgeLease);
   const draftAgentPlan = useAppStore((state) => state.draftAgentPlan);
   const confirmAgentPlan = useAppStore((state) => state.confirmAgentPlan);
+  const retryAgentPlanJobs = useAppStore((state) => state.retryAgentPlanJobs);
   const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
   const undo = useAppStore((state) => state.undo);
   const promoteProjectMemory = useAppStore((state) => state.promoteProjectMemory);
@@ -521,8 +523,8 @@ export function CanvasWorkspace() {
             </section>
           </div>
           <div id="agent-panel-plan" role="tabpanel" aria-labelledby="agent-tab-plan" hidden={activeAgentTab !== 'plan'}>
-            {agentPlan?.state === 'waiting_for_confirmation'
-              ? <PlanPreview plan={agentPlan} onConfirm={confirmAgentPlan} onCancel={cancelAgentPlan} />
+            {agentPlan !== null && isPlanPreviewVisible(agentPlan.state)
+              ? <PlanPreview plan={agentPlan} onConfirm={confirmAgentPlan} onCancel={cancelAgentPlan} onRetryJobs={() => { void retryAgentPlanJobs(); }} />
               : <section className="agent-empty-view" aria-label="Agent 计划"><strong>暂无待确认计划</strong><p>从对话页提交需求后，Agent 计划会在这里等待确认。</p></section>}
           </div>
           <div id="agent-panel-memory" role="tabpanel" aria-labelledby="agent-tab-memory" hidden={activeAgentTab !== 'memory'}>
@@ -585,6 +587,12 @@ function referenceStatus(count: number, emptyLabel: string): string {
 }
 function isImageModelProfile(profile: ProviderBridgeProfile): boolean {
   return profile.capabilities.includes('image_generation');
+}
+function isPlanPreviewVisible(state: AgentPlanState): boolean {
+  return state === 'waiting_for_confirmation'
+    || state === 'confirming'
+    || state === 'committing'
+    || state === 'waiting_for_job_retry';
 }
 function modelRouteTestId(route: string): string {
   return route.replace(/[^A-Za-z0-9_-]/g, '-');

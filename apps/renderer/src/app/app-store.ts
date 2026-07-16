@@ -65,6 +65,8 @@ let modelJobUnsubscribe: (() => void) | null = null;
 let modelJobStoreGeneration = 0;
 let modelJobRecoveryGeneration = 0;
 let pendingAgentConfirmation: PendingAgentConfirmation | null = null;
+let pendingAgentJobRetry: Promise<void> | null = null;
+const AGENT_MODEL_CONVERSATION_ID = 'agent-conversation-shared';
 const projectAutosave = createAutosaveController<CanvasProject>({
   commit: async (draft) => {
     const state = useAppStore.getState();
@@ -140,6 +142,7 @@ interface AppState {
   flushProjectSave: (reason: Exclude<AutosaveFlushReason, 'idle'>) => Promise<boolean>;
   refreshModelJobs: () => Promise<void>;
   retryModelJob: (jobId: string) => Promise<void>;
+  retryAgentPlanJobs: () => Promise<void>;
   reviewSkillCandidate: KnowledgeClient['review'];
   setActiveTool: (tool: AppState['activeTool']) => void;
   toggleAgentPanel: () => void;
@@ -427,8 +430,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? {
             ...requestedPlan,
             conflicts: requestedPlan.conflicts.filter((conflict) => !isModelProfileConflict(conflict)),
+            modelProvider: modelProfile.provider,
             modelRoute: modelProfile.modelRoute,
             modelRouteDisplayName: modelProfile.displayName,
+            modelId: modelProfile.modelId,
+            modelConversationId: AGENT_MODEL_CONVERSATION_ID,
           }
         : requestedPlan;
       const committingPlan = {
@@ -466,7 +472,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (result.executeModels) {
         try {
           modelJobs = await getModelJobStore().enqueueConfirmedJobs({
-            conversationId: 'agent-conversation-shared',
+            conversationId: committingPlan.modelConversationId ?? AGENT_MODEL_CONVERSATION_ID,
             confirmedAt: now,
             requests: buildModelJobRequests(project, committingPlan, modelProfile!),
           });
@@ -475,6 +481,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             set((current) => ({
               agentPlan: {
                 ...committingPlan,
+                state: 'waiting_for_job_retry',
                 conflicts: upsertAgentConflict(committingPlan.conflicts, modelQueueConflictMessage()),
               },
               undoStack: appendUndoEntry(current.undoStack, { transaction: result.inverse, memoryId: memoryEntry.id }),
@@ -547,6 +554,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
     void getModelJobStore().run();
+  },
+  retryAgentPlanJobs: async () => {
+    if (pendingAgentJobRetry !== null) return pendingAgentJobRetry;
+    const retry = retryCommittedAgentPlanJobs(get, set);
+    pendingAgentJobRetry = retry.finally(() => {
+      if (pendingAgentJobRetry === retry) pendingAgentJobRetry = null;
+    });
+    return pendingAgentJobRetry;
   },
   recordUserFeedback: async (input) => {
     if (containsProtectedRendererPayload(input)) return false;
@@ -721,6 +736,7 @@ export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
   pendingProjectFlushBoundary = null;
   clearPendingAgentConfirmation();
+  pendingAgentJobRetry = null;
   referenceOrderCommitTail = null;
   invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
@@ -967,17 +983,96 @@ function modelQueueConflictMessage(): string {
   return 'model queue unavailable: retry model enqueue after the current commit settles';
 }
 
+function modelQueueRetryConflictMessage(): string {
+  return 'model queue retry unavailable: retry model tasks again';
+}
+
 function isModelProfileConflict(conflict: string): boolean {
   return /^model profile unavailable:/i.test(conflict);
 }
 
+function isModelQueueConflict(conflict: string): boolean {
+  return /^model queue (?:retry )?unavailable:/i.test(conflict);
+}
+
 function upsertAgentConflict(conflicts: string[], nextConflict: string): string[] {
-  return [...conflicts.filter((conflict) => !isModelProfileConflict(conflict)), nextConflict];
+  return [
+    ...conflicts.filter((conflict) => {
+      if (isModelProfileConflict(nextConflict)) return !isModelProfileConflict(conflict);
+      if (isModelQueueConflict(nextConflict)) return !isModelQueueConflict(conflict);
+      return conflict !== nextConflict;
+    }),
+    nextConflict,
+  ];
 }
 
 function normalizeLegacyPlanModelRoute(route: string | undefined): string | undefined {
   if (route === undefined || route === 'desktop-bridge' || route.startsWith('Comfly ')) return undefined;
   return route;
+}
+
+async function retryCommittedAgentPlanJobs(
+  get: () => AppState,
+  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState> | AppState)) => void,
+): Promise<void> {
+  const state = get();
+  const plan = state.agentPlan;
+  if (plan === null || plan.state !== 'waiting_for_job_retry') return;
+  const profile = resolveCommittedModelJobProfile(plan);
+  if (profile === null) {
+    set((current) => (
+      current.agentPlan?.id === plan.id && current.agentPlan.state === 'waiting_for_job_retry'
+        ? {
+            agentPlan: {
+              ...current.agentPlan,
+              conflicts: upsertAgentConflict(current.agentPlan.conflicts, modelProfileConflictMessage(null)),
+            },
+          }
+        : current
+    ));
+    return;
+  }
+
+  try {
+    const modelJobs = await getModelJobStore().enqueueConfirmedJobs({
+      conversationId: plan.modelConversationId ?? AGENT_MODEL_CONVERSATION_ID,
+      confirmedAt: plan.confirmations.models ?? plan.confirmations.canvas ?? new Date().toISOString(),
+      requests: buildModelJobRequests(state.project, plan, profile),
+    });
+    const latest = get();
+    if (latest.agentPlan?.id !== plan.id || latest.agentPlan.state !== 'waiting_for_job_retry') return;
+    set({
+      agentPlan: {
+        ...latest.agentPlan,
+        state: 'reviewing_results',
+        conflicts: latest.agentPlan.conflicts.filter((conflict) => !isModelQueueConflict(conflict)),
+      },
+      confirmedModelJobs: countConfirmedModelJobs(modelJobs),
+      modelJobs,
+    });
+    void getModelJobStore().run();
+  } catch {
+    set((current) => (
+      current.agentPlan?.id === plan.id && current.agentPlan.state === 'waiting_for_job_retry'
+        ? {
+            agentPlan: {
+              ...current.agentPlan,
+              conflicts: upsertAgentConflict(current.agentPlan.conflicts, modelQueueRetryConflictMessage()),
+            },
+          }
+        : current
+    ));
+  }
+}
+
+function resolveCommittedModelJobProfile(plan: AgentCanvasPlan): ResolvedModelJobProfile | null {
+  if (plan.modelProvider === undefined || plan.modelRoute === undefined) return null;
+  return {
+    provider: plan.modelProvider,
+    modelRoute: plan.modelRoute,
+    displayName: plan.modelRouteDisplayName ?? plan.modelRoute,
+    modelId: plan.modelId ?? plan.modelRoute,
+  };
 }
 
 function clearPendingAgentConfirmation(): void {

@@ -67,6 +67,7 @@ export const agentPlanSchema = z.object({
     'waiting_for_confirmation',
     'confirming',
     'committing',
+    'waiting_for_job_retry',
     'applying_transaction',
     'running_models',
     'reviewing_results',

@@ -48,6 +48,10 @@ export async function seedSkillSyncDivergence(page: Page): Promise<void> {
   await page.evaluate(() => window.__NOVUS_E2E__!.seedSkillSyncDivergence());
 }
 
+export async function failNextModelJobEnqueue(page: Page): Promise<void> {
+  await page.evaluate(() => window.__NOVUS_E2E__!.failNextModelJobEnqueue());
+}
+
 export async function waitForModelSubmissions(page: Page, count: number): Promise<E2EState> {
   await page.waitForFunction((expected) => window.__NOVUS_E2E__!.getState().modelSubmissions.length >= expected, count);
   return e2eState(page);
@@ -136,6 +140,7 @@ declare global {
     __NOVUS_E2E__?: {
       getState(): E2EState;
       nonce: string;
+      failNextModelJobEnqueue(): void;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
     };

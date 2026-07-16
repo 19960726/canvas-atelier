@@ -506,6 +506,43 @@ describe('CanvasWorkspace', () => {
     expect(screen.queryByText('方案已应用')).not.toBeInTheDocument();
   });
 
+  it('keeps a post-commit model queue retry visible in the plan tab', () => {
+    useAppStore.setState({
+      agentPlan: {
+        id: 'agent-plan-retry-visible',
+        state: 'waiting_for_job_retry',
+        transaction: {
+          id: 'agent-tx-retry-visible',
+          label: 'Committed canvas, retry models',
+          operations: [{
+            kind: 'create_node',
+            node: {
+              id: 'review-retry-visible',
+              type: 'review',
+              position: { x: 320, y: 220 },
+              data: { keep: ['product'], change: ['scene'], never: [] },
+            },
+          }],
+        },
+        requestedCapabilities: ['model_execution'],
+        confirmations: {
+          canvas: '2026-07-16T09:00:00.000Z',
+          models: '2026-07-16T09:00:00.000Z',
+        },
+        conflicts: ['model queue unavailable: retry model enqueue after the current commit settles'],
+        jobCount: 1,
+        modelRoute: 'image-generation',
+        modelRouteDisplayName: 'GPT Image',
+      },
+    });
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByTestId('agent-tab-plan'));
+
+    expect(screen.getByTestId('plan-job-retry-state')).toBeVisible();
+    expect(screen.getByTestId('plan-retry-jobs')).toHaveTextContent(/重试模型任务|Retry model tasks/i);
+  });
+
   it('blocks image 21 before allocating a preview URL', () => {
     const project = createStarterProject();
     const objects: PlacementObject[] = Array.from({ length: 20 }, (_, index) => ({

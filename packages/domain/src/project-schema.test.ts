@@ -484,6 +484,7 @@ describe('agentPlanSchema', () => {
 
     expect(agentPlanSchema.parse({ ...basePlan, state: 'confirming' }).state).toBe('confirming');
     expect(agentPlanSchema.parse({ ...basePlan, state: 'committing' }).state).toBe('committing');
+    expect(agentPlanSchema.parse({ ...basePlan, state: 'waiting_for_job_retry' }).state).toBe('waiting_for_job_retry');
   });
 });
 

@@ -62,6 +62,21 @@ describe('validateAgentPlan', () => {
     });
   });
 
+  it('treats post-commit job retry as already canvas-confirmed but not re-applicable', () => {
+    expect(validateAgentPlan(createPlan({
+      state: 'waiting_for_job_retry',
+      confirmations: {
+        canvas: '2026-07-13T10:00:00.000Z',
+        models: '2026-07-13T10:00:00.000Z',
+      },
+    }))).toMatchObject({
+      canPreview: false,
+      canApplyTransaction: false,
+      canExecuteModels: false,
+      blockedCapabilities: [],
+    });
+  });
+
   it('blocks deletion without separate confirmation', () => {
     const guardedPlan = createPlan({
       transaction: {
