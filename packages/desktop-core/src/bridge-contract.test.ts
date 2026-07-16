@@ -56,13 +56,24 @@ describe('desktop bridge contract', () => {
       'getRecoveryPlan',
       'importPack',
       'openProject',
+      'provider',
       'restore',
       'reviewSkillCandidate',
       'subscribeKnowledgeState',
       'subscribeKnowledgeSyncStatus',
     ]);
+    expect(Object.keys(createPreloadApi(mockInvoke).provider).sort()).toEqual([
+      'cancelImageJob',
+      'configure',
+      'getStatus',
+      'listProfiles',
+      'pollImageJob',
+      'submitImageJob',
+      'unlock',
+    ]);
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('readFile');
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('watchPath');
+    expect(createPreloadApi(mockInvoke).provider).not.toHaveProperty('fetch');
   });
 
   it('subscribes and unsubscribes knowledge state listeners through the event channel', () => {

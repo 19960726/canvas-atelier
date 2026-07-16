@@ -21,6 +21,19 @@ import type {
   StablePointBridgeResult,
 } from './contracts.js';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
+import {
+  PROVIDER_BRIDGE_CHANNELS,
+  normalizeProviderBridgeError,
+  type CancelImageJobBridgeRequest,
+  type ConfigureProviderBridgeRequest,
+  type PollImageJobBridgeRequest,
+  type PollImageJobBridgeResult,
+  type ProviderBridgeProfile,
+  type ProviderConfigurationStatus,
+  type SubmitImageJobBridgeRequest,
+  type SubmitImageJobBridgeResult,
+  type UnlockProviderBridgeRequest,
+} from './provider-bridge.js';
 
 export const DESKTOP_BRIDGE_PRELOAD_KEY = 'novusDesktop';
 
@@ -38,6 +51,7 @@ export const BRIDGE_CHANNELS = {
   openProject: 'novus-desktop:open-project',
   reviewSkillCandidate: 'novus-desktop:review-skill-candidate',
   restore: 'novus-desktop:restore',
+  provider: PROVIDER_BRIDGE_CHANNELS,
 } as const;
 
 const SAFE_MODE_BRIDGE_CHANNELS = {
@@ -60,6 +74,17 @@ export interface DesktopBridgeApi {
   reviewSkillCandidate(request: ReviewSkillCandidateBridgeRequest): Promise<ReviewSkillCandidateBridgeResult>;
   subscribeKnowledgeState(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
   subscribeKnowledgeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void;
+  provider: DesktopProviderBridgeApi;
+}
+
+export interface DesktopProviderBridgeApi {
+  getStatus(): Promise<ProviderConfigurationStatus>;
+  configure(request: ConfigureProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
+  unlock(request: UnlockProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
+  listProfiles(): Promise<ProviderBridgeProfile[]>;
+  submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
+  pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
+  cancelImageJob(request: CancelImageJobBridgeRequest): Promise<void>;
 }
 
 export interface SafeModeBridgeApi {
@@ -128,7 +153,42 @@ export function createPreloadApi(
         }
       });
     },
+    provider: {
+      getStatus() {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.getStatus);
+      },
+      configure(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.configure, request);
+      },
+      unlock(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.unlock, request);
+      },
+      listProfiles() {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.listProfiles);
+      },
+      submitImageJob(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.submitImageJob, request);
+      },
+      pollImageJob(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.pollImageJob, request);
+      },
+      cancelImageJob(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request);
+      },
+    },
   };
+}
+
+async function invokeProvider<TResponse>(
+  invoke: DesktopBridgeInvoke,
+  channel: string,
+  payload?: unknown,
+): Promise<TResponse> {
+  try {
+    return await invoke<TResponse>(channel, payload);
+  } catch (error) {
+    throw normalizeProviderBridgeError(error);
+  }
 }
 
 export function createSafeModePreloadApi(invoke: DesktopBridgeInvoke): SafeModeBridgeApi {

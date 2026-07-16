@@ -141,6 +141,36 @@ export {
   createSafeModePreloadApi,
   redactBridgeDiagnostics,
 } from './preload-api.js';
+export {
+  DEFAULT_PROVIDER_PROFILES,
+  PROVIDER_BRIDGE_CHANNELS,
+  createComflyProviderService,
+  createProviderBridgeError,
+  createProviderBridgeHandlers,
+  createSecureProviderCredentialStore,
+  normalizeProviderBridgeError,
+  parseProviderBridgeRequest,
+  registerProviderBridgeHandlers,
+} from './provider-bridge.js';
+export type {
+  ComflyFetch,
+  CancelImageJobBridgeRequest,
+  ConfigureProviderBridgeRequest,
+  PollImageJobBridgeRequest,
+  PollImageJobBridgeResult,
+  ProviderBridgeError,
+  ProviderBridgeException,
+  ProviderBridgeHandlers,
+  ProviderBridgeProfile,
+  ProviderConfigurationStatus,
+  ProviderCredentialStore,
+  ProviderImageJobResult,
+  ProviderService,
+  SafeStorageAdapter,
+  SubmitImageJobBridgeRequest,
+  SubmitImageJobBridgeResult,
+  UnlockProviderBridgeRequest,
+} from './provider-bridge.js';
 export type {
   DesktopBridgeApi,
   DesktopBridgeInvoke,

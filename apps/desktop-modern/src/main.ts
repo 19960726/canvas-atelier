@@ -2,7 +2,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { app, BrowserWindow, dialog, ipcMain, net, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, safeStorage, shell } from 'electron';
 
 import {
   BRIDGE_CHANNELS,
@@ -10,15 +10,20 @@ import {
   ApprovedSnapshotPullCoordinator,
   KnowledgeRefreshService,
   ManagedKnowledgeStore,
+  createComflyProviderService,
   createDesktopBridgeHandlers,
   createApprovedSnapshotSyncClientFromEnv,
+  createProviderBridgeHandlers,
+  createSecureProviderCredentialStore,
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
+  registerProviderBridgeHandlers,
   startApprovedSnapshotOutboxDrain,
   startConfiguredKnowledgeRefresh,
   shutdownDesktopServices,
   type ApprovedSnapshotOutboxDrainHandle,
   type BridgeDialogAdapter,
+  type ComflyFetch,
   type DesktopBridgeHandlers,
 } from '@agent-canvas/desktop-core';
 
@@ -84,6 +89,13 @@ app.whenReady().then(async () => {
     knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
+  registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createComflyProviderService({
+    credentialStore: createSecureProviderCredentialStore({
+      appDataRoot: app.getPath('userData'),
+      safeStorage,
+    }),
+    fetch: createProviderFetch(),
+  })));
   ipcMain.on(diagnosticsChannel, (_event, message) => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
   });
@@ -251,6 +263,22 @@ async function handleSafeModeCommand(command: string): Promise<void> {
     default:
       return;
   }
+}
+
+function createProviderFetch(): ComflyFetch {
+  return async (url, init) => {
+    const response = await globalThis.fetch(url, {
+      method: init?.method,
+      headers: init?.headers,
+      body: init?.body,
+      signal: init?.signal,
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: () => response.json() as Promise<unknown>,
+    };
+  };
 }
 
 function createDialogAdapter(): BridgeDialogAdapter {

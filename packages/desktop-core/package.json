@@ -11,6 +11,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@agent-canvas/domain": "file:../domain",
+    "@agent-canvas/provider-comfly": "file:../provider-comfly",
     "@agent-canvas/skill-store": "file:../skill-store",
     "archiver": "7.0.1",
     "yauzl": "3.2.0"
