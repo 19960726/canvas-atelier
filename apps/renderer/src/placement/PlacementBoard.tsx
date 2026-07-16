@@ -148,6 +148,10 @@ export function PlacementBoard({
             key={object.id}
             className={`placement-object role-${object.role}${selected ? ' is-selected' : ''}${object.locked ? ' is-locked' : ''}`}
             data-testid={`placement-object-${object.id}`}
+            data-asset-id={object.assetId}
+            data-object-id={object.id}
+            data-role={object.role}
+            data-user-reference={object.assetId.startsWith('starter-') ? 'false' : 'true'}
             style={{
               left: `${object.x * 100}%`,
               top: `${object.y * 100}%`,

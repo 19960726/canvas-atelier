@@ -47,6 +47,7 @@ import {
   createModelJobStore,
   type ModelJobExecutor,
   type ModelJobRequest,
+  type ModelJobStorage,
   type ModelJobStore,
 } from '../jobs/job-store';
 import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
@@ -58,6 +59,7 @@ let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
 let modelJobExecutorOverride: ModelJobExecutor | null = null;
 let pendingModelJobExecutorOverride: ModelJobExecutor | null = null;
+let modelJobStorageOverride: ModelJobStorage | null = null;
 let modelJobStore: ModelJobStore | null = null;
 let modelJobUnsubscribe: (() => void) | null = null;
 let modelJobStoreGeneration = 0;
@@ -134,7 +136,7 @@ interface AppState {
   setActiveTool: (tool: AppState['activeTool']) => void;
   toggleAgentPanel: () => void;
   setProject: (project: CanvasProject, options?: SetProjectOptions) => void;
-  draftAgentPlan: (message: string) => void;
+  draftAgentPlan: (message: string, options?: { modelRoute?: string }) => void;
   confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => Promise<void>;
   cancelAgentPlan: () => void;
   undo: () => Promise<void>;
@@ -323,7 +325,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       scheduleProjectSave(get);
     }
   },
-  draftAgentPlan: (message) => set((state) => {
+  draftAgentPlan: (message, options = {}) => set((state) => {
     const promptNode = state.project.nodes.find((node) => node.type === 'prompt');
     if (!promptNode || promptNode.type !== 'prompt' || message.trim().length === 0 || containsProtectedRendererPayload(message)) return state;
     const suffix = `${Date.now()}-${planSequence++}`;
@@ -343,6 +345,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       requestedCapabilities: ['model_execution'],
       confirmations: {},
       conflicts: [],
+      modelRoute: options.modelRoute,
       jobCount: 1,
     } };
   }),
@@ -566,6 +569,15 @@ export function replaceModelJobExecutorForTests(executor: ModelJobExecutor): voi
   modelJobStore = null;
 }
 
+export function replaceModelJobStorageForTests(storage: ModelJobStorage): void {
+  invalidateModelJobStoreGeneration();
+  modelJobStore?.stop();
+  modelJobStorageOverride = storage;
+  modelJobUnsubscribe?.();
+  modelJobUnsubscribe = null;
+  modelJobStore = null;
+}
+
 function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise<boolean> {
   const result = referenceOrderCommitTail === null
     ? operation()
@@ -691,7 +703,7 @@ function getModelJobStore(): ModelJobStore {
     const generation = modelJobStoreGeneration;
     modelJobStore = createModelJobStore({
       decodeConcurrency: runtimeProfile.imageDecodeConcurrency,
-      storage: isIndexedDbAvailable() ? undefined : createInMemoryModelJobStorage(),
+      storage: modelJobStorageOverride ?? (isIndexedDbAvailable() ? undefined : createInMemoryModelJobStorage()),
       executor: modelJobExecutorOverride ?? createDefaultModelJobExecutor(),
       commitProjectTransaction: (transaction) => {
         if (generation !== modelJobStoreGeneration) return Promise.resolve(false);
@@ -784,7 +796,16 @@ async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<{
   modelId?: string;
 }> {
   const bridge = globalThis.window?.novusDesktop?.provider;
-  if (bridge === undefined || modelJobExecutorOverride !== null) {
+  if (modelJobExecutorOverride !== null) {
+    const route = plan.modelRoute ?? 'unconfigured';
+    return {
+      provider: 'local-e2e',
+      modelRoute: route,
+      displayName: modelRouteDisplayName(route),
+      modelId: route,
+    };
+  }
+  if (bridge === undefined) {
     return {
       provider: 'unavailable',
       modelRoute: plan.modelRoute ?? 'unconfigured',
@@ -807,6 +828,12 @@ async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<{
     displayName: selected.displayName,
     modelId: selected.modelId,
   };
+}
+
+function modelRouteDisplayName(route: string): string {
+  if (route === 'gpt-image') return 'GPT Image';
+  if (route === 'nano-banana-2') return 'Nano Banana 2';
+  return route === 'unconfigured' ? 'Provider unavailable' : route;
 }
 
 function normalizeLegacyPlanModelRoute(route: string | undefined): string | undefined {

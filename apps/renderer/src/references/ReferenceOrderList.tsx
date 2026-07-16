@@ -75,11 +75,11 @@ export function ReferenceOrderList({
   };
 
   return (
-    <section className="reference-order" aria-label="Agent reference order">
+    <section className="reference-order" aria-label="Agent reference order" data-testid="reference-order">
       <header><span>Reference order</span><b>{previewReferences.length}</b></header>
       <ol>
         {previewReferences.map((reference, index) => (
-          <li key={reference.assetId} draggable
+          <li key={reference.assetId} data-testid="reference-order-item" data-role={reference.role} data-asset-id={reference.assetId} data-position={index} draggable
             onDragStart={() => {
               dragBaselineRef.current = references.map((item) => ({ ...item }));
               draggingAssetIdRef.current = reference.assetId;

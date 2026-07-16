@@ -10,8 +10,17 @@ if (!root) {
   throw new Error('root element not found');
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+async function bootstrap() {
+  if (import.meta.env.VITE_NOVUS_E2E_MODE === '1') {
+    const { installRendererE2EHarness } = await import('./test-mode/e2e-harness');
+    installRendererE2EHarness();
+  }
+
+  createRoot(root!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
+
+void bootstrap();

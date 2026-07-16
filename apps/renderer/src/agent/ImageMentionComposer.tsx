@@ -52,10 +52,10 @@ export function ImageMentionComposer({
 
   return (
     <div className="image-mention-composer">
-      <textarea aria-label={textareaLabel} placeholder={placeholder} rows={rows} value={value.text}
+      <textarea data-testid="agent-composer-input" aria-label={textareaLabel} placeholder={placeholder} rows={rows} value={value.text}
         onChange={(event) => updateText(event.target.value)} />
       <div className="image-mention-composer__control">
-        <button type="button" aria-label="Mention image" title="Mention image" disabled={references.length === 0}
+        <button data-testid="image-mention-toggle" type="button" aria-label="Mention image" title="Mention image" disabled={references.length === 0}
           aria-expanded={mentionOpen} onClick={() => setMentionOpen((open) => !open)}><ImagePlus size={15} /></button>
         {mentionOpen && (
           <div className="image-mention-menu" role="menu" aria-label="Reference images">
@@ -64,7 +64,7 @@ export function ImageMentionComposer({
                 ? `${reference.label} (${roleLabel(reference.role)})`
                 : reference.label;
               return (
-                <button key={reference.assetId} type="button" role="menuitem" aria-label={`Mention ${displayLabel}`}
+                <button key={reference.assetId} data-testid="image-mention-item" data-role={reference.role} data-asset-id={reference.assetId} type="button" role="menuitem" aria-label={`Mention ${displayLabel}`}
                   onClick={() => mention(reference)}><span>{displayLabel}</span><small>{reference.position + 1}</small></button>
               );
             })}

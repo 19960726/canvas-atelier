@@ -18,7 +18,7 @@ export function JobStrip({ jobs, saveLabel, onRetry, onCancel }: JobStripProps) 
     .slice(0, 4);
 
   return (
-    <footer className="job-strip" aria-label="任务队列">
+    <footer className="job-strip" aria-label="任务队列" data-testid="job-strip">
       <span className="job-strip__label">
         <span className={`status-dot ${activeJobs.length === 0 ? 'is-idle' : ''}`} />
         任务队列
@@ -32,7 +32,7 @@ export function JobStrip({ jobs, saveLabel, onRetry, onCancel }: JobStripProps) 
       </span>
       <div className="job-strip__jobs" aria-live="polite">
         {visibleJobs.map((job) => (
-          <div className={`job-chip is-${job.status}`} key={job.id}>
+          <div className={`job-chip is-${job.status}`} data-testid="job-chip" data-job-id={job.id} data-status={job.status} key={job.id}>
             {activeStatuses.has(job.status) && <Loader2 className="job-chip__spin" size={13} />}
             <span className="job-chip__model">{job.displayName ?? job.modelRoute ?? job.modelId}</span>
             <span>{statusLabel(job)}</span>
@@ -40,12 +40,12 @@ export function JobStrip({ jobs, saveLabel, onRetry, onCancel }: JobStripProps) 
             {job.retryCount > 0 && <span>{job.retryCount} 次重试</span>}
             {job.error && <span className="job-chip__error" title={job.error}>{job.error}</span>}
             {(job.status === 'failed' || job.status === 'cancelled') && (
-              <button type="button" aria-label={`重试 ${job.displayName ?? job.id}`} title="重试" onClick={() => onRetry(job.id)}>
+              <button data-testid="job-retry" type="button" aria-label={`重试 ${job.displayName ?? job.id}`} title="重试" onClick={() => onRetry(job.id)}>
                 <RotateCcw size={13} />
               </button>
             )}
             {activeStatuses.has(job.status) && (
-              <button type="button" aria-label={`取消 ${job.displayName ?? job.id}`} title="取消" onClick={() => onCancel(job.id)}>
+              <button data-testid="job-cancel" type="button" aria-label={`取消 ${job.displayName ?? job.id}`} title="取消" onClick={() => onCancel(job.id)}>
                 <XCircle size={13} />
               </button>
             )}

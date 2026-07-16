@@ -18,10 +18,16 @@ describe('SkillCandidateReview', () => {
     />);
 
     expect(screen.getByLabelText('Skill candidate review')).toBeVisible();
-    expect(screen.getByText('Current rule')).toBeVisible();
+    expect(screen.getByText('Source rule')).toBeVisible();
+    expect(screen.getByText('Managed rule')).toBeVisible();
+    expect(screen.getByText('Proposed rule')).toBeVisible();
     expect(onReview).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve candidate-1' }));
+    expect(screen.getByTestId('skill-sync-confirmation')).toBeVisible();
+    expect(onReview).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '确认同步' }));
     await waitFor(() => expect(onReview).toHaveBeenCalledWith({
       candidateId: 'candidate-1',
       decision: 'approved',

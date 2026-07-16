@@ -143,6 +143,9 @@
 .agent-composer__footer { display: flex; align-items: center; padding: 6px 7px 7px 10px; border-top: 1px solid #edf0f2; }
 .agent-composer__footer span { color: var(--muted); font-size: 9px; }
 .agent-composer__footer button { width: 27px; height: 27px; display: grid; place-items: center; margin-left: auto; color: white; background: var(--accent); border: 0; border-radius: 5px; cursor: pointer; }
+.model-route-selector { padding: 0 8px 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.model-route-selector button { min-width: 0; height: 28px; padding: 0 8px; color: #53616c; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 5px; font-size: 10px; font-weight: 600; cursor: pointer; }
+.model-route-selector button.is-active { color: var(--accent); background: var(--accent-soft); border-color: #a7d9d1; }
 
 .job-strip { grid-area: jobs; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 0 12px; color: var(--muted); background: #f8fafb; border-top: 1px solid var(--border); font-size: 10px; z-index: 20; }
 .job-strip__label { display: flex; align-items: center; gap: 7px; color: #46515a; font-weight: 600; }
@@ -549,6 +552,22 @@
   cursor: not-allowed;
   opacity: 0.45;
 }
+
+.skill-sync-confirmation {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid #2d7d68;
+  border-radius: 6px;
+  background: #172b28;
+  font-size: 10px;
+}
+
+.skill-sync-confirmation strong { color: #8ee2c5; }
+.skill-sync-confirmation p { margin: 0; color: #94a3b8; }
+.skill-sync-confirmation__actions { display: flex; justify-content: flex-end; gap: 6px; }
+.skill-sync-confirmation__actions button { min-height: 26px; padding: 0 8px; border: 1px solid #48505c; border-radius: 5px; color: #d1d5db; background: #202630; cursor: pointer; font-size: 10px; }
+.skill-sync-confirmation__actions button:last-child { border-color: #2d7d68; color: #061411; background: #8ee2c5; }
 
 .reverse-result__feedback {
   display: grid;

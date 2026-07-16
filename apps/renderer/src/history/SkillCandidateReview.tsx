@@ -1,4 +1,5 @@
 import { Check, RotateCcw, X } from 'lucide-react';
+import { useState } from 'react';
 import type { SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import type { SkillCandidateReviewRequest } from '../app/knowledge-client';
@@ -16,10 +17,12 @@ export function SkillCandidateReview({
   onReview,
   projectId,
 }: SkillCandidateReviewProps) {
+  const [confirmingCandidateId, setConfirmingCandidateId] = useState<string | null>(null);
+
   if (candidates.length === 0) return null;
 
   return (
-    <section className="skill-candidate-review" aria-label="Skill candidate review">
+    <section className="skill-candidate-review" aria-label="Skill candidate review" data-testid="skill-candidate-review">
       <header className="skill-candidate-review__header">
         <strong>Skill Review</strong>
         <span>{candidates.length} candidates</span>
@@ -34,11 +37,12 @@ export function SkillCandidateReview({
             <article className="skill-candidate" key={candidate.id}>
               <header>
                 <strong>{candidate.id}</strong>
-                <span className={`skill-candidate__status is-${candidate.reviewStatus}`}>{candidate.reviewStatus}</span>
+                <span data-testid="skill-candidate-status" className={`skill-candidate__status is-${candidate.reviewStatus}`}>{candidate.reviewStatus}</span>
               </header>
               <dl>
-                <div><dt>Current rule</dt><dd>{candidate.beforeRule ?? 'No published rule shown'}</dd></div>
-                <div><dt>Proposed rule</dt><dd>{candidate.rule}</dd></div>
+                <div><dt>Source rule</dt><dd data-testid="skill-sync-source">{candidate.beforeRule ?? 'No source rule shown'}</dd></div>
+                <div><dt>Managed rule</dt><dd data-testid="skill-sync-managed">{managedRuleLabel(state)}</dd></div>
+                <div><dt>Proposed rule</dt><dd data-testid="skill-sync-proposed">{candidate.rule}</dd></div>
                 <div><dt>Source memory</dt><dd>{[candidate.sourceProjectMemoryId, ...(candidate.sourceProjectMemoryIds ?? [])].filter(unique).join(', ')}</dd></div>
                 <div><dt>Evidence</dt><dd>{formatEvidence(candidate)}</dd></div>
                 <div><dt>Confidence</dt><dd>{candidate.confidence === undefined ? 'n/a' : `${Math.round(candidate.confidence * 100)}%`}</dd></div>
@@ -50,7 +54,7 @@ export function SkillCandidateReview({
               <div className="skill-candidate__actions">
                 {candidate.reviewStatus === 'pending_review' && (
                   <>
-                    <button type="button" aria-label={`Approve ${candidate.id}`} onClick={() => void onReview({ projectId, candidateId: candidate.id, decision: 'approved' })}>
+                    <button data-testid="skill-approve" type="button" aria-label={`Approve ${candidate.id}`} onClick={() => setConfirmingCandidateId(candidate.id)}>
                       <Check size={14} />Approve
                     </button>
                     <button type="button" aria-label={`Reject ${candidate.id}`} onClick={() => void onReview({ projectId, candidateId: candidate.id, decision: 'rejected' })}>
@@ -74,12 +78,39 @@ export function SkillCandidateReview({
                   </button>
                 )}
               </div>
+              {candidate.reviewStatus === 'pending_review' && confirmingCandidateId === candidate.id && (
+                <div className="skill-sync-confirmation" data-testid="skill-sync-confirmation" role="group" aria-label="Skill 同步确认">
+                  <strong>Skill 同步确认</strong>
+                  <p>{candidate.targetKnowledgeBaseId ?? 'local-skill'} / {candidate.targetKnowledgeSection ?? 'default'}</p>
+                  <div className="skill-sync-confirmation__actions">
+                    <button type="button" onClick={() => setConfirmingCandidateId(null)}>取消</button>
+                    <button
+                      data-testid="skill-confirm-sync"
+                      type="button"
+                      onClick={() => {
+                        setConfirmingCandidateId(null);
+                        void onReview({ projectId, candidateId: candidate.id, decision: 'approved' });
+                      }}
+                    >
+                      确认同步
+                    </button>
+                  </div>
+                </div>
+              )}
             </article>
           );
         })}
       </div>
     </section>
   );
+}
+
+function managedRuleLabel(state: KnowledgeBaseStateSummary | undefined): string {
+  if (!state || state.activeVersion === null) return 'managed empty';
+  const active = state.versions.find((version) => version.version === state.activeVersion);
+  const label = active?.displayName ?? 'managed active';
+  const hash = state.activeContentHash ? ` ${state.activeContentHash.slice(0, 8)}` : '';
+  return `${label} v${state.activeVersion}${hash}`;
 }
 
 function unique(value: string, index: number, values: string[]): boolean {

@@ -44,6 +44,7 @@ import { useInteractionQuality } from './use-interaction-quality';
 import { useViewportCulling } from './use-viewport-culling';
 
 type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
+type ModelRouteId = 'gpt-image' | 'nano-banana-2';
 
 interface SubmittedAgentContext extends ImageMentionValue {
   references: OrderedReference[];
@@ -62,6 +63,11 @@ const uploadDefaults: Record<
   prop_reference: { x: 0.66, y: 0.58, w: 0.18, h: 0.22, zIndex: 20, semanticLayer: 'optional_prop', name: '道具参考' },
   material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground', name: '材质光照参考' },
 };
+
+const modelRouteOptions: Array<{ id: ModelRouteId; label: string }> = [
+  { id: 'gpt-image', label: 'GPT Image' },
+  { id: 'nano-banana-2', label: 'Nano Banana 2' },
+];
 
 export function CanvasWorkspace() {
   const project = useAppStore((state) => state.project);
@@ -95,6 +101,7 @@ export function CanvasWorkspace() {
   const [submittedAgentContext, setSubmittedAgentContext] = useState<SubmittedAgentContext | null>(null);
   const [referenceOrderPreview, setReferenceOrderPreview] = useState<string[] | null>(null);
   const [activeAgentTab, setActiveAgentTab] = useState<'conversation' | 'plan' | 'memory'>('conversation');
+  const [selectedModelRoute, setSelectedModelRoute] = useState<ModelRouteId>('gpt-image');
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const previewUrlsRef = useRef(new Map<string, string>());
@@ -135,6 +142,7 @@ export function CanvasWorkspace() {
     selectedNodeIds: selectedFlowNodeIds,
   });
   const handleViewportInteraction = useCallback((event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+    globalThis.performance?.mark?.('novus-pan-zoom-frame');
     viewportCulling.handleViewportChange(event, viewport);
     interactionQuality.markInteraction();
   }, [interactionQuality, viewportCulling]);
@@ -298,7 +306,7 @@ export function CanvasWorkspace() {
   const submitAgentMessage = () => {
     const text = agentMessage.text.trim();
     if (text.length === 0) return;
-    draftAgentPlan(text);
+    draftAgentPlan(text, { modelRoute: selectedModelRoute });
     setSubmittedAgentContext({
       text,
       references: orderedReferences.map((reference) => ({ ...reference })),
@@ -309,8 +317,8 @@ export function CanvasWorkspace() {
   };
 
   return (
-    <div className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
-      <header className="topbar">
+    <div data-testid="workspace" className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
+      <header className="topbar" data-testid="topbar">
         <div className="product-mark" aria-label="Novus Atelier">
           <span className="product-mark__icon"><Box size={17} /></span>
           <strong>Novus Atelier</strong>
@@ -321,7 +329,7 @@ export function CanvasWorkspace() {
           <ChevronRight size={14} />
         </button>
         <div className="topbar__center">
-          <button className="icon-button" type="button" aria-label="撤销" title="撤销" disabled={undoStack.length === 0} onClick={undo}><Undo2 size={16} /></button>
+          <button data-testid="toolbar-undo" className="icon-button" type="button" aria-label="撤销" title="撤销" disabled={undoStack.length === 0} onClick={undo}><Undo2 size={16} /></button>
           <button className="icon-button" type="button" aria-label="重做" title="重做"><Redo2 size={16} /></button>
           <button className="icon-button" type="button" aria-label="适合画布" title="适合画布"><Maximize2 size={16} /></button>
         </div>
@@ -331,11 +339,12 @@ export function CanvasWorkspace() {
         </div>
       </header>
 
-      <nav className="toolrail" aria-label="画布工具">
+      <nav className="toolrail" aria-label="画布工具" data-testid="toolrail">
         {tools.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
+            data-testid={`tool-${id}`}
             className={`tool-button${activeTool === id ? ' is-active' : ''}`}
             aria-label={label}
             title={label}
@@ -356,7 +365,7 @@ export function CanvasWorkspace() {
         </button>
       </nav>
 
-      <main ref={viewportCulling.containerRef} className="canvas-stage" role="application" aria-label="无限画布">
+      <main ref={viewportCulling.containerRef} className="canvas-stage" role="application" aria-label="无限画布" data-testid="canvas-stage">
         <ReactFlow
           nodes={viewportCulling.nodes}
           edges={viewportCulling.edges}
@@ -388,7 +397,7 @@ export function CanvasWorkspace() {
           <span>100%</span>
         </div>
         {activeTool === 'placement' && placementNode && (
-          <section className="placement-workbench" aria-label="摆放工作台">
+          <section className="placement-workbench" aria-label="摆放工作台" data-testid="placement-workbench">
             <header className="placement-workbench__header">
               <div>
                 <LayoutTemplate size={17} />
@@ -423,7 +432,7 @@ export function CanvasWorkspace() {
         )}
       </main>
 
-      <aside className="agent-panel" aria-label="Agent 面板">
+      <aside className="agent-panel" aria-label="Agent 面板" data-testid="agent-panel">
         <div className="agent-panel__header">
           <div>
             <strong>Novus Agent</strong>
@@ -434,9 +443,9 @@ export function CanvasWorkspace() {
           </button>
         </div>
         <div className="agent-tabs" role="tablist" aria-label="Agent 视图">
-          <button id="agent-tab-conversation" aria-controls="agent-panel-conversation" tabIndex={activeAgentTab === 'conversation' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'conversation' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'conversation'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'conversation')} onClick={() => activateAgentTab('conversation')}>对话</button>
-          <button id="agent-tab-plan" aria-controls="agent-panel-plan" tabIndex={activeAgentTab === 'plan' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'plan' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'plan'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'plan')} onClick={() => activateAgentTab('plan')}>计划</button>
-          <button id="agent-tab-memory" aria-controls="agent-panel-memory" tabIndex={activeAgentTab === 'memory' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'memory' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'memory'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'memory')} onClick={() => activateAgentTab('memory')}>记忆</button>
+          <button data-testid="agent-tab-conversation" id="agent-tab-conversation" aria-controls="agent-panel-conversation" tabIndex={activeAgentTab === 'conversation' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'conversation' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'conversation'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'conversation')} onClick={() => activateAgentTab('conversation')}>对话</button>
+          <button data-testid="agent-tab-plan" id="agent-tab-plan" aria-controls="agent-panel-plan" tabIndex={activeAgentTab === 'plan' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'plan' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'plan'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'plan')} onClick={() => activateAgentTab('plan')}>计划</button>
+          <button data-testid="agent-tab-memory" id="agent-tab-memory" aria-controls="agent-panel-memory" tabIndex={activeAgentTab === 'memory' ? 0 : -1} className={`agent-tab ${activeAgentTab === 'memory' ? 'is-active' : ''}`} type="button" role="tab" aria-selected={activeAgentTab === 'memory'} onKeyDown={(event) => handleAgentTabKeyDown(event, 'memory')} onClick={() => activateAgentTab('memory')}>记忆</button>
         </div>
         <div className="agent-thread">
           <div id="agent-panel-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden={activeAgentTab !== 'conversation'}>
@@ -501,9 +510,23 @@ export function CanvasWorkspace() {
               placeholder="描述你想制作的产品场景…"
               rows={3}
             />
+            <div className="model-route-selector" role="group" aria-label="模型路线">
+              {modelRouteOptions.map((route) => (
+                <button
+                  key={route.id}
+                  type="button"
+                  data-testid={`model-route-${route.id}`}
+                  className={selectedModelRoute === route.id ? 'is-active' : ''}
+                  aria-pressed={selectedModelRoute === route.id}
+                  onClick={() => setSelectedModelRoute(route.id)}
+                >
+                  {route.label}
+                </button>
+              ))}
+            </div>
             <div className="agent-composer__footer">
               <span>模型执行前需要确认</span>
-              <button type="button" aria-label="发送消息" disabled={agentMessage.text.trim().length === 0} onClick={submitAgentMessage}><ChevronRight size={17} /></button>
+              <button data-testid="agent-send" type="button" aria-label="发送消息" disabled={agentMessage.text.trim().length === 0} onClick={submitAgentMessage}><ChevronRight size={17} /></button>
             </div>
           </div>
         )}
