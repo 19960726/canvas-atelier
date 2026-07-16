@@ -5,6 +5,7 @@ import { NodeFileSystem, type FileSystem } from './file-system.js';
 import {
   assertConfinedAppDataPathForRead,
   assertConfinedAppDataPathForWrite,
+  deleteConfinedAppDataFile,
   writeConfinedAtomicUpdate,
 } from './provider-file-confinement.js';
 import {
@@ -72,8 +73,12 @@ export function createProviderConfigurationStore(options: {
     if (snapshot === null) {
       await withConfigurationLock(async () => {
         await fileSystem.mkdir(options.appDataRoot, { recursive: true });
-        await assertConfigurationPathForWrite(targetPath);
-        await fileSystem.rm(targetPath, { force: true });
+        await deleteConfinedAppDataFile(fileSystem, {
+          appDataRoot: options.appDataRoot,
+          targetPath,
+          errorCode: 'PROVIDER_UNAVAILABLE',
+          errorMessage: 'Provider configuration path is invalid',
+        });
       });
       return;
     }

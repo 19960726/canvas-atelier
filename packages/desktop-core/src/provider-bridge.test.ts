@@ -1,7 +1,7 @@
 import { createCipheriv, randomBytes, scrypt as scryptCallback } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 
@@ -1572,6 +1572,41 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('does not delete an outside sentinel during first-configure rollback when configuration delete sees a swapped target', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const outsideRoot = join(appDataRoot, '..', 'outside-config-delete');
+    const outsideTargetPath = join(outsideRoot, 'provider-configuration.json');
+    await new NodeFileSystem().mkdir(outsideRoot, { recursive: true });
+    await writeFile(outsideTargetPath, 'outside-sentinel\n', 'utf8');
+    const fileSystem = new RollbackDeleteSwapCredentialFileSystem({
+      appDataRoot,
+      outsideRoot,
+      outsideTargetPath,
+      phase: 'rename',
+    });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage, fileSystem }),
+      fetch: vi.fn(),
+      fileSystem,
+    });
+
+    await expect(service.configure({
+      token: 'sk-rollback-delete-target',
+      baseUrl: 'https://rollback-delete.example',
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'rollback-delete-route',
+        displayName: 'Rollback Delete Route',
+        capabilities: ['image_generation', 'async_tasks'],
+      }],
+    })).rejects.toBeTruthy();
+
+    await expect(readFile(outsideTargetPath, 'utf8')).resolves.toBe('outside-sentinel\n');
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('restores the previous token, mapping state, and configuration when credential rotation fails after configuration persistence succeeds', async () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();
@@ -2269,6 +2304,56 @@ class RecordingFailingCredentialFileSystem extends FailingAtomicWriteFileSystem 
       this.configurationRenameCount += 1;
     }
     await super.rename(source, destination);
+  }
+}
+
+class RollbackDeleteSwapCredentialFileSystem extends RecordingFailingCredentialFileSystem {
+  private deleteSwapActivated = false;
+  private configurationTargetPath: string;
+  private readonly appDataRoot: string;
+  private readonly outsideRoot: string;
+  private readonly outsideTargetPath: string;
+
+  constructor(options: {
+    readonly appDataRoot: string;
+    readonly outsideRoot: string;
+    readonly outsideTargetPath: string;
+    readonly phase: AtomicFailurePhase;
+  }) {
+    super(options.phase);
+    this.appDataRoot = options.appDataRoot;
+    this.outsideRoot = options.outsideRoot;
+    this.outsideTargetPath = options.outsideTargetPath;
+    this.configurationTargetPath = join(options.appDataRoot, 'provider-configuration.json');
+  }
+
+  override async realpath(path: string): Promise<string> {
+    if (!this.deleteSwapActivated && path === dirname(this.configurationTargetPath)) {
+      const resolved = await super.realpath(path);
+      this.deleteSwapActivated = true;
+      return resolved;
+    }
+    if (this.deleteSwapActivated && path === this.configurationTargetPath) {
+      return this.outsideTargetPath;
+    }
+    if (this.deleteSwapActivated && path === this.appDataRoot) {
+      return this.outsideRoot;
+    }
+    return super.realpath(this.translatePath(path));
+  }
+
+  override async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+    return super.readFile(this.translatePath(path), encoding);
+  }
+
+  override async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    await super.rm(this.translatePath(path), options);
+  }
+
+  private translatePath(path: string): string {
+    if (!this.deleteSwapActivated) return path;
+    if (path === this.configurationTargetPath) return this.outsideTargetPath;
+    return path;
   }
 }
 

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 
 import { describe, expect, it } from 'vitest';
 
+import { createProviderConfigurationStore } from './provider-configuration-store.js';
 import { NodeFileSystem } from './file-system.js';
 import {
   assertConfinedAppDataPathForRead,
@@ -243,10 +244,116 @@ describe('provider file confinement rollback', () => {
       await cleanupHarness(harness);
     }
   });
+
+  it('does not delete an outside sentinel when configuration rollback sees the root identity swap after its check', async () => {
+    const harness = await createConfinementHarness('provider-configuration.json');
+    try {
+      await writeFile(harness.targetPath, '{"version":1,"baseUrl":"https://safe.example","profiles":[]}\n', 'utf8');
+      await writeFile(harness.outsideTargetPath, 'outside-sentinel\n', 'utf8');
+      const fileSystem = new DeleteSwapConfigurationFileSystem({
+        appDataRoot: harness.appDataRoot,
+        outsideRoot: harness.outsideRoot,
+        outsideTargetPath: harness.outsideTargetPath,
+        targetPath: harness.targetPath,
+        mode: 'root_parent_swap',
+      });
+      const store = createProviderConfigurationStore({
+        appDataRoot: harness.appDataRoot,
+        fileSystem,
+      });
+
+      await expect(store.replace(null)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+      await expect(readFile(harness.outsideTargetPath, 'utf8')).resolves.toBe('outside-sentinel\n');
+      await expect(readFile(harness.targetPath, 'utf8')).resolves.toContain('"baseUrl":"https://safe.example"');
+    } finally {
+      await cleanupHarness(harness);
+    }
+  });
+
+  it('does not delete an outside sentinel when configuration rollback sees the target identity swap after its check', async () => {
+    const harness = await createConfinementHarness('provider-configuration.json');
+    try {
+      await writeFile(harness.targetPath, '{"version":1,"baseUrl":"https://safe.example","profiles":[]}\n', 'utf8');
+      await writeFile(harness.outsideTargetPath, 'outside-sentinel\n', 'utf8');
+      const fileSystem = new DeleteSwapConfigurationFileSystem({
+        appDataRoot: harness.appDataRoot,
+        outsideRoot: harness.outsideRoot,
+        outsideTargetPath: harness.outsideTargetPath,
+        targetPath: harness.targetPath,
+        mode: 'target_swap',
+      });
+      const store = createProviderConfigurationStore({
+        appDataRoot: harness.appDataRoot,
+        fileSystem,
+      });
+
+      await expect(store.replace(null)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+      await expect(readFile(harness.outsideTargetPath, 'utf8')).resolves.toBe('outside-sentinel\n');
+      await expect(readFile(harness.targetPath, 'utf8')).resolves.toContain('"baseUrl":"https://safe.example"');
+    } finally {
+      await cleanupHarness(harness);
+    }
+  });
 });
 
 type SwapMode = 'root_symlink' | 'root_reparse' | 'target_swap';
 type PhaseBoundarySwap = 'before_open' | 'before_rename';
+type DeleteSwapMode = 'root_parent_swap' | 'target_swap';
+
+class DeleteSwapConfigurationFileSystem extends NodeFileSystem {
+  private swapped = false;
+  private parentRealpathCount = 0;
+
+  constructor(
+    private readonly options: {
+      readonly appDataRoot: string;
+      readonly outsideRoot: string;
+      readonly outsideTargetPath: string;
+      readonly targetPath: string;
+      readonly mode: DeleteSwapMode;
+    },
+  ) {
+    super();
+  }
+
+  override async lstat(path: string) {
+    return super.lstat(this.translatePath(path));
+  }
+
+  override async readFile(path: string, encoding: BufferEncoding) {
+    return super.readFile(this.translatePath(path), encoding);
+  }
+
+  override async realpath(path: string) {
+    if (!this.swapped && path === dirname(this.options.targetPath)) {
+      const resolved = await super.realpath(path);
+      this.parentRealpathCount += 1;
+      if (this.parentRealpathCount >= 1) {
+        this.swapped = true;
+      }
+      return resolved;
+    }
+    if (this.swapped && this.options.mode === 'root_parent_swap' && (path === this.options.appDataRoot || path === dirname(this.options.targetPath))) {
+      return this.options.outsideRoot;
+    }
+    if (this.swapped && path === this.options.targetPath) {
+      return this.options.outsideTargetPath;
+    }
+    return super.realpath(this.translatePath(path));
+  }
+
+  override async rm(path: string, options?: { force?: boolean; recursive?: boolean }) {
+    await super.rm(this.translatePath(path), options);
+  }
+
+  private translatePath(path: string): string {
+    if (!this.swapped) return path;
+    if (path === this.options.targetPath) return this.options.outsideTargetPath;
+    return path;
+  }
+}
 
 class PhaseBoundarySwapFileSystem extends NodeFileSystem {
   private swapped = false;

@@ -25,6 +25,13 @@ interface ConfinedAtomicUpdateOptions {
   readonly errorMessage: string;
 }
 
+interface ConfinedDeleteOptions {
+  readonly appDataRoot: string;
+  readonly targetPath: string;
+  readonly errorCode: ConfinementErrorCode;
+  readonly errorMessage: string;
+}
+
 export function confinedCredentialsPath(appDataRoot: string): string {
   return confinedAppDataPath(appDataRoot, CREDENTIALS_FILE, 'CREDENTIALS_LOCKED', 'Provider credential path is invalid');
 }
@@ -122,6 +129,30 @@ export async function rollbackConfirmedInRootFile(
     await fileSystem.rm(targetPath, { force: true });
   } catch {
     // Rollback is best-effort after the provider-domain error is already known.
+  }
+}
+
+export async function deleteConfinedAppDataFile(
+  fileSystem: FileSystem,
+  options: ConfinedDeleteOptions,
+): Promise<void> {
+  await assertConfinedAppDataPathForWrite(
+    fileSystem,
+    options.appDataRoot,
+    options.targetPath,
+    options.errorCode,
+    options.errorMessage,
+  );
+  const rootIdentity = await captureConfinementRootIdentity(fileSystem, options.appDataRoot);
+  try {
+    if (!await canDeleteConfirmedOriginalRootTarget(fileSystem, options, rootIdentity)) {
+      return;
+    }
+    await fileSystem.rm(options.targetPath, { force: true });
+  } catch (error) {
+    if (isMissingFileError(error)) return;
+    if (isProviderDomainError(error)) throw error;
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
   }
 }
 
@@ -238,6 +269,46 @@ async function canTouchConfirmedInRootFile(
   if (target === expectedRoot || !target.startsWith(`${expectedRoot}${sep}`)) return false;
   const stat = await fileSystem.lstat(targetPath);
   return stat.isFile() && stat.isSymbolicLink?.() !== true;
+}
+
+async function canDeleteConfirmedOriginalRootTarget(
+  fileSystem: FileSystem,
+  options: ConfinedDeleteOptions,
+  rootIdentity: ConfinementRootIdentity,
+): Promise<boolean> {
+  if (fileSystem.lstat === undefined || fileSystem.realpath === undefined) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  if (await isSymlinkTarget(fileSystem, options.appDataRoot) || await isSymlinkTarget(fileSystem, options.targetPath)) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const rootStat = await fileSystem.lstat(options.appDataRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink?.() === true) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const currentRoot = normalizeRealPath(await fileSystem.realpath(resolve(options.appDataRoot)));
+  if (currentRoot !== rootIdentity.realRoot) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const currentParent = normalizeRealPath(await fileSystem.realpath(dirname(options.targetPath)));
+  if (currentParent !== rootIdentity.realRoot) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  let currentTarget: string;
+  try {
+    currentTarget = normalizeRealPath(await fileSystem.realpath(options.targetPath));
+  } catch (error) {
+    if (isMissingFileError(error)) return false;
+    throw error;
+  }
+  if (currentTarget === rootIdentity.realRoot || !currentTarget.startsWith(`${rootIdentity.realRoot}${sep}`)) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  const targetStat = await fileSystem.lstat(options.targetPath);
+  if (!targetStat.isFile() || targetStat.isSymbolicLink?.() === true) {
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+  return true;
 }
 
 async function assertOriginalRootWritePhase(
