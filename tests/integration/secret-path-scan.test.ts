@@ -7,11 +7,17 @@ const root = process.cwd();
 const artifactFinding = join(root, 'playwright-report', 'secret-scan-red.txt');
 const distFinding = join(root, 'packages', 'domain', 'dist', 'secret-scan-red.map');
 const distBase64Finding = join(root, 'apps', 'renderer', 'dist', 'secret-scan-base64-red.js');
+const testPrivatePathFinding = join(root, 'tests', 'secret-scan-private-red.test.ts');
+const testBase64Finding = join(root, 'tests', 'secret-scan-base64-red.test.ts');
+const testTokenFinding = join(root, 'tests', 'secret-scan-token-red.test.ts');
 
 afterEach(() => {
   rmSync(artifactFinding, { force: true });
   rmSync(distFinding, { force: true });
   rmSync(distBase64Finding, { force: true });
+  rmSync(testPrivatePathFinding, { force: true });
+  rmSync(testBase64Finding, { force: true });
+  rmSync(testTokenFinding, { force: true });
 });
 
 describe('secret/path scan coverage', () => {
@@ -64,9 +70,10 @@ describe('secret/path scan coverage', () => {
 
   it('fails when generated dist contains a real data image base64 payload', () => {
     mkdirSync(join(root, 'apps', 'renderer', 'dist'), { recursive: true });
+    const payload = [`data:image/png;base${'64'}`, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA'].join(',');
     writeFileSync(
       distBase64Finding,
-      'const leaked = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA";\n',
+      `const leaked = ${JSON.stringify(payload)};\n`,
       'utf8',
     );
 
@@ -78,5 +85,53 @@ describe('secret/path scan coverage', () => {
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain('apps/renderer/dist');
     expect(`${result.stdout}\n${result.stderr}`).toContain('raw base64 image payload');
+  });
+
+  it('fails when an unlisted test file contains a private absolute path', () => {
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    writeFileSync(
+      testPrivatePathFinding,
+      `const leaked = ${JSON.stringify(['C:', 'Users', 'Alice', 'secret.png'].join(String.fromCharCode(92)))};\n`,
+      'utf8',
+    );
+
+    const result = spawnSync(process.execPath, ['tests/e2e/helpers/secret-path-scan.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('tests/secret-scan-private-red.test.ts');
+    expect(`${result.stdout}\n${result.stderr}`).toContain('private absolute path');
+  });
+
+  it('fails when an unlisted test file contains a raw base64 data image', () => {
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    const payload = [`data:image/png;base${'64'}`, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA'].join(',');
+    writeFileSync(testBase64Finding, `const leaked = ${JSON.stringify(payload)};\n`, 'utf8');
+
+    const result = spawnSync(process.execPath, ['tests/e2e/helpers/secret-path-scan.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('tests/secret-scan-base64-red.test.ts');
+    expect(`${result.stdout}\n${result.stderr}`).toContain('raw base64 image payload');
+  });
+
+  it('fails when an unlisted test file contains an API key token', () => {
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    const token = ['sk', 'scannerNegativeToken1234567890'].join('-');
+    writeFileSync(testTokenFinding, `const leaked = ${JSON.stringify(token)};\n`, 'utf8');
+
+    const result = spawnSync(process.execPath, ['tests/e2e/helpers/secret-path-scan.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('tests/secret-scan-token-red.test.ts');
+    expect(`${result.stdout}\n${result.stderr}`).toContain('API key');
   });
 });

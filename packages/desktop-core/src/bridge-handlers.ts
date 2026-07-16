@@ -49,6 +49,7 @@ import {
   type ReviewSkillCandidateBridgeResult,
   type RestoreBridgeRequest,
   type RestoreBridgeResult,
+  type SkillCandidatePreparedManagedSnapshot,
   type SnapshotEnvelope,
   type StablePointBridgeRequest,
   type StablePointBridgeResult,
@@ -236,6 +237,13 @@ interface PreparedBridgeSkillReview {
     readonly stagedTransitionId?: string;
     readonly knowledgeState: KnowledgeBaseStateSummary | null;
   }>;
+}
+
+interface BoundSkillReviewState {
+  readonly active: KnowledgeSnapshot;
+  readonly candidate: SkillPromotionCandidate;
+  readonly project: CanvasProject;
+  readonly revision: number;
 }
 
 interface RecoveryCandidateMirror {
@@ -513,6 +521,7 @@ export function createDesktopBridgeHandlers(
     requireCurrentPrepareCandidate(latestProject, validated.candidateId, validated.candidateFingerprint);
     const reviewed = sanitizeSkillPromotionCandidate({
       ...reviewableCandidate,
+      preparedManagedSnapshot: createPreparedManagedSnapshot(active),
       reviewPreparationStatus: 'ready',
     });
     const nextCandidates = latestProject.skillPromotionCandidates.map((item) => (
@@ -547,24 +556,30 @@ export function createDesktopBridgeHandlers(
   ): Promise<ReviewSkillCandidateBridgeResult> {
     const validated = validateReviewSkillCandidateBridgeRequest(request);
     const session = requireSingleWritableProjectSession(sessions, validated.projectId);
-    const project = await repository.readCurrentProject(session.session);
+    const initialState = validated.decision === 'rolled_back'
+      ? null
+      : await readBoundSkillReviewState(session, validated);
+    const project = initialState?.project ?? await repository.readCurrentProject(session.session);
     if (project.id !== validated.projectId) {
       throw invalidRequest('Project is not active');
     }
 
-    const candidate = project.skillPromotionCandidates.find((item) => item.id === validated.candidateId);
+    const candidate = initialState?.candidate ?? project.skillPromotionCandidates.find((item) => item.id === validated.candidateId);
     if (candidate === undefined) {
       throw invalidRequest('Skill candidate is unavailable');
     }
     assertPublicBridgePayload(candidate);
 
     const transactionId = `review-skill-${candidate.id}-${Date.now()}`;
+    const latestState = validated.decision === 'rolled_back'
+      ? null
+      : await readBoundSkillReviewState(session, validated);
     const preparedReview = validated.decision === 'rolled_back'
       ? await prepareRollbackSkillCandidatesForBridge(project.skillPromotionCandidates, candidate, validated, transactionId)
-      : await prepareSkillCandidateReviewForBridge(project, candidate, validated, transactionId);
+      : await prepareSkillCandidateReviewForBridge(latestState!.project, latestState!.candidate, validated, transactionId, latestState!.active);
     const reviewed = sanitizeSkillPromotionCandidate(preparedReview.candidate);
     const nextCandidates = preparedReview.candidates.map(sanitizeSkillPromotionCandidate);
-    const currentRevision = await readCurrentRevision(repository, session.session);
+    const currentRevision = latestState?.revision ?? await readCurrentRevision(repository, session.session);
     let committedRevision: number;
     try {
       const ack = await requireBridgeWriter(session).commit({
@@ -741,6 +756,7 @@ export function createDesktopBridgeHandlers(
     candidate: SkillPromotionCandidate,
     request: ReviewSkillCandidateBridgeRequest,
     transactionId: string,
+    preparedActive?: KnowledgeSnapshot,
   ): Promise<PreparedBridgeSkillReview> {
     if (request.decision === 'rolled_back') {
       throw invalidRequest('Rollback must use the managed rollback flow');
@@ -762,7 +778,7 @@ export function createDesktopBridgeHandlers(
     if (candidate.targetKnowledgeBaseId === undefined) {
       throw invalidRequest('Approved skill candidates require a target knowledge base');
     }
-    const active = await knowledgeStore.readActive(candidate.targetKnowledgeBaseId);
+    const active = preparedActive ?? await knowledgeStore.readActive(candidate.targetKnowledgeBaseId);
     if (active === null) {
       throw invalidRequest('Active knowledge snapshot is unavailable');
     }
@@ -820,6 +836,45 @@ export function createDesktopBridgeHandlers(
       }
       throw invalidRequest('Skill candidate approval is unavailable');
     }
+  }
+
+  async function readBoundSkillReviewState(
+    session: BridgeSessionContext,
+    request: ReviewSkillCandidateBridgeRequest,
+  ): Promise<BoundSkillReviewState> {
+    const project = await repository.readCurrentProject(session.session);
+    if (project.id !== request.projectId) {
+      throw invalidRequest('Project is not active');
+    }
+    if (!project.skillPromotionCandidates.some((item) => item.id === request.candidateId)) {
+      throw invalidRequest('Skill candidate is unavailable');
+    }
+
+    if (
+      request.baseRevision === undefined ||
+      request.candidateFingerprint === undefined ||
+      request.preparedManagedSnapshot === undefined
+    ) {
+      throw staleSkillPreparation('Skill candidate review preview must be prepared again');
+    }
+
+    const revision = await readCurrentRevision(repository, session.session);
+    if (revision !== request.baseRevision) {
+      throw staleSkillPreparation('Skill candidate review base revision is stale');
+    }
+
+    const candidate = requireCurrentReviewCandidate(project, request.candidateId, request.candidateFingerprint);
+    assertPublicBridgePayload(candidate);
+    if (candidate.targetKnowledgeBaseId === undefined) {
+      throw invalidRequest('Skill candidate review requires a target knowledge base');
+    }
+    const active = await knowledgeStore.readActive(candidate.targetKnowledgeBaseId);
+    if (active === null) {
+      throw invalidRequest('Active knowledge snapshot is unavailable');
+    }
+    assertPreparedManagedSnapshotMatches(candidate, request.preparedManagedSnapshot, active);
+
+    return { active, candidate, project, revision };
   }
 
   function buildReviewableSkillCandidate(
@@ -1484,6 +1539,66 @@ function requireCurrentPrepareCandidate(
   return candidate;
 }
 
+function requireCurrentReviewCandidate(
+  project: CanvasProject,
+  candidateId: string,
+  candidateFingerprint: string,
+): SkillPromotionCandidate {
+  const candidate = project.skillPromotionCandidates.find((item) => item.id === candidateId);
+  if (candidate === undefined) {
+    throw invalidRequest('Skill candidate is unavailable');
+  }
+  if (
+    candidate.reviewStatus !== 'pending_review' ||
+    candidate.reviewPreparationStatus !== 'ready' ||
+    candidate.reviewedAt !== undefined ||
+    candidate.reviewTransactionId !== undefined ||
+    candidate.sourceRule === undefined ||
+    candidate.managedRule === undefined ||
+    candidate.diffHunks === undefined ||
+    candidate.diffHunks.length === 0 ||
+    candidate.preparedManagedSnapshot === undefined
+  ) {
+    throw staleSkillPreparation('Skill candidate review preview must be prepared again');
+  }
+  if (createSkillPromotionCandidateFingerprint(candidate) !== candidateFingerprint) {
+    throw staleSkillPreparation('Skill candidate review fingerprint is stale');
+  }
+  return candidate;
+}
+
+function createPreparedManagedSnapshot(snapshot: KnowledgeSnapshot): SkillCandidatePreparedManagedSnapshot {
+  return {
+    knowledgeBaseId: snapshot.knowledgeBaseId,
+    version: snapshot.version,
+    contentHash: snapshot.contentHash,
+  };
+}
+
+function assertPreparedManagedSnapshotMatches(
+  candidate: SkillPromotionCandidate,
+  requestSnapshot: SkillCandidatePreparedManagedSnapshot,
+  active: KnowledgeSnapshot,
+): void {
+  const activeSnapshot = createPreparedManagedSnapshot(active);
+  if (
+    candidate.preparedManagedSnapshot === undefined ||
+    !preparedManagedSnapshotsMatch(candidate.preparedManagedSnapshot, requestSnapshot) ||
+    !preparedManagedSnapshotsMatch(requestSnapshot, activeSnapshot)
+  ) {
+    throw staleSkillPreparation('Skill candidate managed snapshot changed after preview');
+  }
+}
+
+function preparedManagedSnapshotsMatch(
+  left: SkillCandidatePreparedManagedSnapshot,
+  right: SkillCandidatePreparedManagedSnapshot,
+): boolean {
+  return left.knowledgeBaseId === right.knowledgeBaseId
+    && left.version === right.version
+    && left.contentHash === right.contentHash;
+}
+
 function validatePrepareSkillCandidateReviewBridgeRequest(value: unknown): PrepareSkillCandidateReviewBridgeRequest {
   const record = expectPlainRecord(value);
   return {
@@ -1501,12 +1616,34 @@ function validateReviewSkillCandidateBridgeRequest(value: unknown): ReviewSkillC
     throw invalidRequest('Skill candidate review decision is invalid');
   }
   return {
+    baseRevision: record.baseRevision === undefined
+      ? undefined
+      : parseNonNegativeInteger(record.baseRevision, 'baseRevision'),
     candidateId: parseNonEmptyString(record.candidateId, 'candidateId'),
+    candidateFingerprint: record.candidateFingerprint === undefined
+      ? undefined
+      : parseNonEmptyString(record.candidateFingerprint, 'candidateFingerprint'),
     decision,
+    preparedManagedSnapshot: record.preparedManagedSnapshot === undefined
+      ? undefined
+      : parsePreparedManagedSnapshot(record.preparedManagedSnapshot),
     projectId: parseNonEmptyString(record.projectId, 'projectId'),
     targetVersion: record.targetVersion === undefined
       ? undefined
       : parsePositiveInteger(record.targetVersion, 'targetVersion'),
+  };
+}
+
+function parsePreparedManagedSnapshot(value: unknown): SkillCandidatePreparedManagedSnapshot {
+  const record = expectPlainRecord(value);
+  const contentHash = parseNonEmptyString(record.contentHash, 'preparedManagedSnapshot.contentHash');
+  if (!/^[a-f0-9]{64}$/i.test(contentHash)) {
+    throw invalidRequest('preparedManagedSnapshot.contentHash must be a content hash');
+  }
+  return {
+    knowledgeBaseId: parseNonEmptyString(record.knowledgeBaseId, 'preparedManagedSnapshot.knowledgeBaseId'),
+    version: parsePositiveInteger(record.version, 'preparedManagedSnapshot.version'),
+    contentHash,
   };
 }
 
@@ -1670,6 +1807,7 @@ function sanitizeSkillPromotionCandidate(candidate: SkillPromotionCandidate): Sk
     ...(parsed.reviewPreparationStatus === undefined ? {} : { reviewPreparationStatus: parsed.reviewPreparationStatus }),
     ...(parsed.reviewPreparationStartedAt === undefined ? {} : { reviewPreparationStartedAt: parsed.reviewPreparationStartedAt }),
     ...(parsed.reviewPreparationError === undefined ? {} : { reviewPreparationError: parsed.reviewPreparationError }),
+    ...(parsed.preparedManagedSnapshot === undefined ? {} : { preparedManagedSnapshot: parsed.preparedManagedSnapshot }),
     ...(parsed.targetKnowledgeBaseId === undefined ? {} : { targetKnowledgeBaseId: parsed.targetKnowledgeBaseId }),
     ...(parsed.targetKnowledgeSection === undefined ? {} : { targetKnowledgeSection: parsed.targetKnowledgeSection }),
     ...(parsed.counts === undefined ? {} : { counts: parsed.counts }),

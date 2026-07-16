@@ -713,8 +713,7 @@ export class ManagedKnowledgeStore {
 
   private async assertRealManagedWriteTarget(path: string): Promise<void> {
     const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
-    const realAppDataRoot = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, this.appDataRoot));
-    const realKnowledgeRoot = normalizeManagedPathForComparison(resolve(realAppDataRoot, 'knowledge'));
+    const realKnowledgeRoot = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, this.knowledgeRoot));
     const realParent = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, dirname(path)));
     const realTargetFromParent = normalizeManagedPathForComparison(resolve(realParent, basename(path)));
     if (!isWithinDirectory(realKnowledgeRoot, realTargetFromParent)) {
@@ -736,11 +735,24 @@ export class ManagedKnowledgeStore {
 
   private async assertRealManagedPath(path: string): Promise<void> {
     const realpath = this.requireFileSystemMethod('realpath', this.fileSystem.realpath);
-    const realAppDataRoot = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, this.appDataRoot));
-    const realKnowledgeRoot = normalizeManagedPathForComparison(resolve(realAppDataRoot, 'knowledge'));
+    const realKnowledgeRoot = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, this.knowledgeRoot));
     const realTarget = normalizeManagedPathForComparison(await realpath.call(this.fileSystem, path));
     if (!isWithinDirectory(realKnowledgeRoot, realTarget)) {
+      if (await this.didManagedPathVanish(path)) {
+        throw Object.assign(new Error('Managed knowledge path vanished'), { code: 'ENOENT' });
+      }
       throw new Error('Managed knowledge directory escaped its managed root');
+    }
+  }
+
+  private async didManagedPathVanish(path: string): Promise<boolean> {
+    const lstat = this.fileSystem.lstat;
+    if (lstat === undefined) return false;
+    try {
+      await lstat.call(this.fileSystem, path);
+      return false;
+    } catch (error) {
+      return isMissingFileError(error);
     }
   }
 

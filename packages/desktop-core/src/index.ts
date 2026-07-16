@@ -42,6 +42,7 @@ export type {
   ReviewSkillCandidateBridgeResult,
   RestoreBridgeRequest,
   RestoreBridgeResult,
+  SkillCandidatePreparedManagedSnapshot,
   SnapshotEnvelope,
   StablePointBridgeRequest,
   StablePointBridgeResult,

@@ -225,10 +225,19 @@ export interface KnowledgeStateBridgeResult {
   readonly syncStatuses?: readonly KnowledgeSyncStatusSummary[];
 }
 
+export interface SkillCandidatePreparedManagedSnapshot {
+  readonly knowledgeBaseId: string;
+  readonly version: number;
+  readonly contentHash: string;
+}
+
 export interface ReviewSkillCandidateBridgeRequest {
   readonly projectId: string;
   readonly candidateId: string;
   readonly decision: 'approved' | 'rejected' | 'superseded' | 'rolled_back';
+  readonly baseRevision?: number;
+  readonly candidateFingerprint?: string;
+  readonly preparedManagedSnapshot?: SkillCandidatePreparedManagedSnapshot;
   readonly targetVersion?: number;
 }
 

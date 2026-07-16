@@ -309,7 +309,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
   },
   reviewSkillCandidate: async (request) => {
-    const result = await knowledgeClient.review(request);
+    const result = await knowledgeClient.review(bindSkillCandidateReviewRequest(get(), request));
     set((state) => ({
       desktopRevision: result.currentRevision,
       knowledgeBases: result.knowledgeState
@@ -1051,6 +1051,31 @@ async function retryCommittedAgentPlanJobs(
         : current
     ));
   }
+}
+
+function bindSkillCandidateReviewRequest(
+  state: AppState,
+  request: Parameters<KnowledgeClient['review']>[0],
+): Parameters<KnowledgeClient['review']>[0] {
+  const candidate = state.project.skillPromotionCandidates.find((item) => item.id === request.candidateId);
+  if (
+    candidate === undefined ||
+    candidate.reviewStatus !== 'pending_review' ||
+    candidate.reviewPreparationStatus !== 'ready' ||
+    candidate.sourceRule === undefined ||
+    candidate.managedRule === undefined ||
+    candidate.diffHunks === undefined ||
+    candidate.diffHunks.length === 0 ||
+    candidate.preparedManagedSnapshot === undefined
+  ) {
+    return request;
+  }
+  return {
+    ...request,
+    baseRevision: state.desktopRevision,
+    candidateFingerprint: createSkillPromotionCandidateFingerprint(candidate),
+    preparedManagedSnapshot: candidate.preparedManagedSnapshot,
+  };
 }
 
 async function prepareSkillCandidateReviewForStore(

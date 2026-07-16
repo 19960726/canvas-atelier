@@ -1863,6 +1863,62 @@ describe('project optimization memory', () => {
     expect(JSON.stringify(useAppStore.getState().knowledgeBases)).not.toContain('E:\\');
   });
 
+  it('binds Skill approval to the ready preview metadata the user saw', async () => {
+    const preview = {
+      knowledgeBaseId: 'scene-skill',
+      version: 1,
+      contentHash: 'a'.repeat(64),
+    };
+    const readyCandidate = {
+      ...createSkillCandidate('candidate-ready-preview', 'pending_review'),
+      targetKnowledgeBaseId: 'scene-skill',
+      reviewPreparationStatus: 'ready',
+      sourceRule: 'Source rule shown in the preview.',
+      managedRule: 'Managed rule shown in the preview.',
+      diffHunks: ['- Managed rule shown in the preview.', '+ Source rule shown in the preview.'],
+      preparedManagedSnapshot: preview,
+    } as SkillPromotionCandidate;
+    const approvedCandidate = {
+      ...readyCandidate,
+      reviewStatus: 'approved' as const,
+      reviewedAt: '2026-07-16T05:30:00.000Z',
+      publishedKnowledgeVersion: 2,
+    };
+    const client = createMockKnowledgeClient({
+      initialStates: [knowledgeState({ version: 1, hashPrefix: 'a' })],
+      reviewResult: {
+        projectId: 'local-project',
+        currentRevision: 8,
+        candidate: approvedCandidate,
+        knowledgeState: knowledgeState({ version: 2, hashPrefix: 'b' }),
+      },
+    });
+    replaceKnowledgeClientForTests(client);
+    resetAppStoreForTests();
+    useAppStore.setState((state) => ({
+      desktopRevision: 7,
+      project: {
+        ...state.project,
+        skillPromotionCandidates: [readyCandidate],
+      },
+    }));
+
+    await useAppStore.getState().reviewSkillCandidate({
+      projectId: 'local-project',
+      candidateId: 'candidate-ready-preview',
+      decision: 'approved',
+    });
+
+    expect(client.review).toHaveBeenCalledWith({
+      projectId: 'local-project',
+      candidateId: 'candidate-ready-preview',
+      decision: 'approved',
+      baseRevision: 7,
+      candidateFingerprint: expect.any(String),
+      preparedManagedSnapshot: preview,
+    });
+  });
+
   it('stores sync lifecycle separately and replaces conflict with updated for the same knowledge base', async () => {
     const client = createMockKnowledgeClient({
       initialStates: [knowledgeState({ version: 2, hashPrefix: 'a' })],

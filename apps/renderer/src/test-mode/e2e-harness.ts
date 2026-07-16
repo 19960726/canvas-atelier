@@ -279,6 +279,10 @@ function createKnowledgeClient(runtime: RuntimeState): KnowledgeClient {
       if (sourceEntries.some((entry) => entry === undefined)) throw new Error('E2E source memory unavailable');
       const managedRule = runtime.managedRules.get(targetKnowledgeBaseId);
       if (!managedRule) throw new Error('E2E managed rule unavailable');
+      const managedState = runtime.knowledgeStates.find((state) => state.knowledgeBaseId === targetKnowledgeBaseId);
+      if (managedState === undefined || managedState.activeVersion === null || managedState.activeContentHash === null) {
+        throw new Error('E2E managed snapshot unavailable');
+      }
       const builderEntries = sourceEntries
         .filter((entry): entry is ProjectMemoryEntry => entry !== undefined)
         .map((entry) => ({ ...entry, nextStep: entry.rationale.trim() || entry.nextStep }));
@@ -293,6 +297,11 @@ function createKnowledgeClient(runtime: RuntimeState): KnowledgeClient {
       });
       const prepared = skillPromotionCandidateSchema.parse({
         ...reviewable,
+        preparedManagedSnapshot: {
+          knowledgeBaseId: managedState.knowledgeBaseId,
+          version: managedState.activeVersion,
+          contentHash: managedState.activeContentHash,
+        },
         reviewPreparationStatus: 'ready',
         reviewPreparationStartedAt: candidate.reviewPreparationStartedAt,
       });
@@ -315,6 +324,9 @@ function createKnowledgeClient(runtime: RuntimeState): KnowledgeClient {
     async review(request: SkillCandidateReviewRequest): Promise<SkillCandidateReviewResult> {
       const candidate = runtime.currentProject.skillPromotionCandidates.find((item) => item.id === request.candidateId);
       if (!candidate) throw new Error(`Unknown e2e skill candidate: ${request.candidateId}`);
+      if (request.decision !== 'rolled_back') {
+        assertE2EReviewBinding(runtime, candidate, request);
+      }
 
       const reviewed = reviewCandidate(runtime, candidate, request);
       const candidates = runtime.currentProject.skillPromotionCandidates.map((item) => (
@@ -412,6 +424,48 @@ function reviewCandidate(
     reviewedAt: fixedNow,
     transactionId: `e2e-skill-review-${request.candidateId}`,
   });
+}
+
+function assertE2EReviewBinding(
+  runtime: RuntimeState,
+  candidate: SkillPromotionCandidate,
+  request: SkillCandidateReviewRequest,
+): void {
+  if (
+    request.baseRevision !== runtime.revision ||
+    request.candidateFingerprint === undefined ||
+    request.preparedManagedSnapshot === undefined ||
+    candidate.reviewStatus !== 'pending_review' ||
+    candidate.reviewPreparationStatus !== 'ready' ||
+    candidate.reviewedAt !== undefined ||
+    candidate.reviewTransactionId !== undefined ||
+    candidate.sourceRule === undefined ||
+    candidate.managedRule === undefined ||
+    candidate.diffHunks === undefined ||
+    candidate.diffHunks.length === 0 ||
+    candidate.preparedManagedSnapshot === undefined ||
+    createSkillPromotionCandidateFingerprint(candidate) !== request.candidateFingerprint ||
+    !preparedManagedSnapshotMatches(candidate.preparedManagedSnapshot, request.preparedManagedSnapshot)
+  ) {
+    throw createE2EStalePrepareError('E2E skill candidate review preview is stale');
+  }
+  const state = runtime.knowledgeStates.find((item) => item.knowledgeBaseId === request.preparedManagedSnapshot!.knowledgeBaseId);
+  if (
+    state === undefined ||
+    state.activeVersion !== request.preparedManagedSnapshot.version ||
+    state.activeContentHash !== request.preparedManagedSnapshot.contentHash
+  ) {
+    throw createE2EStalePrepareError('E2E skill candidate managed snapshot changed after preview');
+  }
+}
+
+function preparedManagedSnapshotMatches(
+  left: NonNullable<SkillPromotionCandidate['preparedManagedSnapshot']>,
+  right: NonNullable<SkillPromotionCandidate['preparedManagedSnapshot']>,
+): boolean {
+  return left.knowledgeBaseId === right.knowledgeBaseId
+    && left.version === right.version
+    && left.contentHash === right.contentHash;
 }
 
 async function seedSkillSyncDivergence(runtime: RuntimeState): Promise<void> {

@@ -13,7 +13,7 @@ import {
   createDesktopBridgeHandlers,
   type DesktopBridgeHandlers,
 } from '@agent-canvas/desktop-core';
-import { createAgentKnowledgeLease, type OrderedReference } from '@agent-canvas/domain';
+import { createAgentKnowledgeLease, createSkillPromotionCandidateFingerprint, type OrderedReference } from '@agent-canvas/domain';
 import {
   createStarterProject,
   replaceProjectPersistenceClientForTests,
@@ -140,15 +140,36 @@ describe('feedback approval integration', () => {
       }),
     });
 
-    await handlers.openProject({}, { mode: 'write' });
-    const approved = await handlers.reviewSkillCandidate({}, {
+    const opened = await handlers.openProject({}, { mode: 'write' });
+    if (opened === null) throw new Error('Expected feedback project to open');
+    const prepared = await handlers.prepareSkillCandidateReview({}, {
+      baseRevision: opened.currentRevision,
       candidateId: pending.id,
+      candidateFingerprint: createSkillPromotionCandidateFingerprint(pending),
+      projectId: savedProject.id,
+    });
+    if (prepared.candidate.preparedManagedSnapshot === undefined) {
+      throw new Error('Expected prepared Skill preview metadata');
+    }
+    expect(prepared.candidate).toMatchObject({
+      id: pending.id,
+      reviewPreparationStatus: 'ready',
+      sourceRule: expect.any(String),
+      managedRule: expect.any(String),
+      diffHunks: expect.any(Array),
+    });
+
+    const approved = await handlers.reviewSkillCandidate({}, {
+      baseRevision: prepared.currentRevision,
+      candidateId: prepared.candidate.id,
+      candidateFingerprint: createSkillPromotionCandidateFingerprint(prepared.candidate),
       decision: 'approved',
+      preparedManagedSnapshot: prepared.candidate.preparedManagedSnapshot,
       projectId: savedProject.id,
     });
 
     expect(approved).toMatchObject({
-      currentRevision: 1,
+      currentRevision: 2,
       candidate: {
         id: pending.id,
         reviewStatus: 'approved',

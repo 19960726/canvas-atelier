@@ -8,10 +8,11 @@ export {
   reviewSkillPromotionCandidate,
   rollbackSkillPromotionCandidate,
   selectActiveProjectMemoryEntries,
+  skillCandidatePreparedManagedSnapshotSchema,
   skillCandidateReviewPreparationStatusSchema,
   skillPromotionCandidateSchema,
 } from './project-memory';
-export type { FeedbackObservations, ProjectMemoryEntry, SkillCandidateReviewPreparationStatus, SkillCandidateReviewStatus, SkillPromotionCandidate } from './project-memory';
+export type { FeedbackObservations, ProjectMemoryEntry, SkillCandidatePreparedManagedSnapshot, SkillCandidateReviewPreparationStatus, SkillCandidateReviewStatus, SkillPromotionCandidate } from './project-memory';
 export {
   UNCONFIGURED_KNOWLEDGE_VERSION_KEY,
   createAgentKnowledgeLease,

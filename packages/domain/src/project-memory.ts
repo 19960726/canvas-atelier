@@ -142,6 +142,12 @@ export const skillCandidateReviewPreparationStatusSchema = z.enum([
   'failed',
 ]);
 
+export const skillCandidatePreparedManagedSnapshotSchema = z.object({
+  knowledgeBaseId: idSchema,
+  version: z.number().int().positive(),
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/i),
+}).strict();
+
 const skillCandidateCountsSchema = z.object({
   supportingMemoryCount: z.number().int().positive().optional(),
   referenceCount: z.number().int().nonnegative().optional(),
@@ -166,6 +172,7 @@ export const skillPromotionCandidateSchema = z.object({
   reviewPreparationStatus: skillCandidateReviewPreparationStatusSchema.optional(),
   reviewPreparationStartedAt: z.string().datetime().optional(),
   reviewPreparationError: z.string().min(1).max(500).optional(),
+  preparedManagedSnapshot: skillCandidatePreparedManagedSnapshotSchema.optional(),
   targetKnowledgeBaseId: idSchema.optional(),
   targetKnowledgeSection: z.string().min(1).optional(),
   counts: skillCandidateCountsSchema.optional(),
@@ -283,6 +290,7 @@ export const skillPromotionCandidateSchema = z.object({
 
 export type FeedbackObservations = z.infer<typeof feedbackObservationsSchema>;
 export type ProjectMemoryEntry = z.infer<typeof projectMemoryEntrySchema>;
+export type SkillCandidatePreparedManagedSnapshot = z.infer<typeof skillCandidatePreparedManagedSnapshotSchema>;
 export type SkillCandidateReviewPreparationStatus = z.infer<typeof skillCandidateReviewPreparationStatusSchema>;
 export type SkillCandidateReviewStatus = z.infer<typeof skillCandidateReviewStatusSchema>;
 export type SkillPromotionCandidate = z.infer<typeof skillPromotionCandidateSchema>;

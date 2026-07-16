@@ -166,6 +166,240 @@ const allowedFindings = [
       'Authorization: Bearer scanner-should-detect-dist-token',
     ],
   },
+  {
+    file: 'packages/domain/src/model-job.test.ts',
+    name: 'Authorization header',
+    snippets: ['Authorization: Bearer sk-secret-token-value'],
+  },
+  {
+    file: 'packages/domain/src/model-job.test.ts',
+    name: 'API key',
+    snippets: ['sk-secret-token-value'],
+  },
+  {
+    file: 'packages/domain/src/model-job.test.ts',
+    name: 'raw base64 image payload',
+    snippets: ['data:image/png;base64,'],
+  },
+  {
+    file: 'packages/domain/src/model-job.test.ts',
+    name: 'private absolute path',
+    snippets: ['C:\\\\Users\\\\private\\\\source.png', 'C:\\\\Users|data:image|base64/i);'],
+  },
+  {
+    file: 'packages/domain/src/project-memory.test.ts',
+    name: 'Authorization header',
+    snippets: ['Authorization: Bearer secret-token-value', 'Authorization: Basic Zm9vOmJhcg=='],
+  },
+  {
+    file: 'packages/domain/src/project-memory.test.ts',
+    name: 'API key',
+    snippets: ['sk-project-secret1234', 'ghp_1234567890abcdefghijklmnop'],
+  },
+  {
+    file: 'packages/domain/src/project-memory.test.ts',
+    name: 'private absolute path',
+    snippets: ['D:\\\\private\\\\asset.png', '\\\\private\\\\key.txt', 'C:\\\\private\\\\asset.png'],
+  },
+  {
+    file: 'packages/desktop-core/src/approved-snapshot-outbox.test.ts',
+    name: 'Authorization header',
+    snippets: ["authorization: 'Bearer"],
+  },
+  {
+    file: 'packages/desktop-core/src/bridge-contract.test.ts',
+    name: 'Authorization header',
+    snippets: ['Authorization: Bearer secret'],
+  },
+  {
+    file: 'packages/desktop-core/src/bridge-contract.test.ts',
+    name: 'private absolute path',
+    snippets: [
+      'C:\\\\Users\\\\Private\\\\draft.json',
+      'C:\\\\Users\\\\Private\\\\sync.json',
+      'C:\\\\Program Files\\\\Novus Atelier\\\\foo.txt',
+      'E:\\\\画布项目\\\\demo\\\\project.novus.json',
+      'file:///E:/画布项目/demo/project.novus.json',
+      'file:///E:/canvas',
+      '\\\\server\\\\share\\\\Folder With Spaces\\\\image.png',
+      'C:\\\\redacted\\\\Demo.novus-project',
+      'C:\\\\Users\\\\Private\\\\Documents',
+      'C:\\redacted\\knowledge',
+      'C:\\\\Users\\\\Private\\\\Knowledge',
+      'C:\\\\redacted\\\\One.novus-project',
+      'C:\\\\redacted\\\\Two.novus-project',
+      'C:\\\\redacted\\\\AppData',
+    ],
+  },
+  {
+    file: 'packages/desktop-core/src/confined-file-lock.test.ts',
+    name: 'private absolute path',
+    snippets: ['C:\\\\app-data\\\\sync\\\\state.lock', 'C:\\\\app-data/u);'],
+  },
+  {
+    file: 'packages/desktop-core/src/crash-recovery.integration.test.ts',
+    name: 'private absolute path',
+    snippets: ['file:///E:/private/workspace/crash-child.ts:10:2'],
+  },
+  {
+    file: 'packages/desktop-core/src/knowledge-refresh-service.test.ts',
+    name: 'Authorization header',
+    snippets: ['Authorization: Bearer secret-token-value', 'Authorization: Bearer protected-value'],
+  },
+  {
+    file: 'packages/desktop-core/src/knowledge-refresh-service.test.ts',
+    name: 'raw base64 image payload',
+    snippets: ['data:image/png;base64,'],
+  },
+  {
+    file: 'packages/desktop-core/src/knowledge-startup.test.ts',
+    name: 'private absolute path',
+    snippets: ['\\\\|\\\\\\\\/u);'],
+  },
+  {
+    file: 'packages/desktop-core/src/managed-knowledge-store.test.ts',
+    name: 'Authorization header',
+    snippets: ['Authorization: Bearer secret'],
+  },
+  {
+    file: 'packages/desktop-core/src/managed-knowledge-store.test.ts',
+    name: 'JWT-like token',
+    snippets: ['eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signature'],
+  },
+  {
+    file: 'packages/desktop-core/src/managed-knowledge-store.test.ts',
+    name: 'raw base64 image payload',
+    snippets: ['data:image/png;base64,'],
+  },
+  {
+    file: 'packages/desktop-core/src/managed-knowledge-store.test.ts',
+    name: 'private absolute path',
+    snippets: ['C:\\\\Users\\\\Private\\\\skill', 'D:\\\\buildkite\\\\secret'],
+  },
+  {
+    file: 'packages/desktop-core/src/novus-pack.test.ts',
+    name: 'Authorization header',
+    snippets: ['Authorization: Bearer sk-live-secret'],
+  },
+  {
+    file: 'packages/desktop-core/src/novus-pack.test.ts',
+    name: 'API key',
+    snippets: ['sk-live-secret'],
+  },
+  {
+    file: 'packages/desktop-core/src/novus-pack.test.ts',
+    name: 'private absolute path',
+    snippets: [
+      'C:\\\\Users\\\\Administrator\\\\secret\\\\image.png',
+      'C:\\\\Program Files\\\\Novus Atelier\\\\image.png',
+      'E:\\\\画布项目\\\\demo\\\\project.novus.json',
+      'file:///E:/画布项目/demo/project.novus.json',
+      'file:///E:/canvas',
+      '\\\\server\\\\share\\\\Folder With Spaces\\\\image.png',
+    ],
+  },
+  {
+    file: 'packages/desktop-core/src/provider-bridge.test.ts',
+    name: 'Authorization header',
+    snippets: [
+      'authorization: `Bearer',
+      'Authorization: Bearer ${token}',
+      "authorization: 'Bearer",
+      'authorization: [`Bearer',
+    ],
+  },
+  {
+    file: 'packages/desktop-core/src/provider-bridge.test.ts',
+    name: 'API key',
+    snippets: [
+      'sk-task-9-secret-token',
+      'sk-original-credential-token',
+      'sk-rotated-credential-token',
+      'sk-original-post-verify-token',
+      'sk-rotated-post-verify-token',
+      'sk-legacy-migration-token',
+      'sk-first-rotation-token',
+      'sk-second-rotation-token',
+      'sk-legacy-mapping-token',
+      'sk-rotated-after-legacy-migration',
+      'sk-first-token-value',
+      'sk-second-token-value',
+      'sk-safe-config-token',
+      'sk-passphrase-config-token',
+      'sk-config-write-failure-token',
+      'sk-old-config-token',
+      'sk-new-config-token',
+      'sk-credential-write-failure-token',
+      'sk-rollback-delete-target',
+      'sk-old-credential-token',
+      'sk-new-credential-token',
+    ],
+  },
+  {
+    file: 'packages/desktop-core/src/provider-bridge.test.ts',
+    name: 'raw base64 image payload',
+    snippets: ['data:image/png;base64,'],
+  },
+  {
+    file: 'packages/desktop-core/src/provider-bridge.test.ts',
+    name: 'private absolute path',
+    snippets: [
+      'C:\\\\Users\\\\Private\\\\image.png',
+      'C:\\\\\\\\Users/i);',
+      's:\\/\\/assets\\.example|generated\\.png/i);',
+      'C:\\\\Users\\\\Private\\\\source.png',
+      'C:\\\\Users|mappingKey/i);',
+      'C:\\\\Users\\\\Private\\\\generated.png',
+    ],
+  },
+  {
+    file: 'packages/desktop-core/src/renderer-close-flush.test.ts',
+    name: 'Authorization header',
+    snippets: ["Authorization: 'Bearer"],
+  },
+  {
+    file: 'packages/desktop-core/src/renderer-close-flush.test.ts',
+    name: 'private absolute path',
+    snippets: ['C:\\\\Users\\\\Private\\\\draft.json'],
+  },
+  {
+    file: 'packages/skill-store/src/candidate-builder.test.ts',
+    name: 'private absolute path',
+    snippets: ['C:\\\\private\\\\notes.md'],
+  },
+  {
+    file: 'packages/skill-store/src/generation-memory.test.ts',
+    name: 'Authorization header',
+    snippets: ["authorization: 'Bearer"],
+  },
+  {
+    file: 'packages/skill-store/src/import-skill.test.ts',
+    name: 'private absolute path',
+    snippets: ['C:\\\\managed'],
+  },
+  {
+    file: 'packages/skill-store/src/memory-sync-client.test.ts',
+    name: 'Authorization header',
+    snippets: ["authorization: 'Bearer"],
+  },
+  {
+    file: 'packages/skill-store/src/offline-outbox.test.ts',
+    name: 'Authorization header',
+    snippets: ['authorization: true,'],
+  },
+  {
+    file: 'packages/skill-store/src/offline-outbox.test.ts',
+    name: 'private absolute path',
+    snippets: [
+      'C:\\\\private\\\\agent\\\\memory\\\\writeback-history.log',
+      'C:\\\\managed\\\\source',
+      'C:\\\\private\\\\agent',
+      'C:\\\\managed',
+      'C:\\\\private\\\\agent\\\\memory\\\\main-memory.md QWxhZGRpbjpvcGVuIHNlc2FtZQ==',
+      'C:\\\\managed\\\\base',
+      'C:\\\\managed\\\\app',
+    ],
+  },
 ];
 
 const checks = [
@@ -318,28 +552,7 @@ function isAllowedFinding(relativePath, name, evidence) {
     && entry.name === name
     && entry.snippets.some((snippet) => evidence.includes(snippet))
   ))
-    || isKnownTestFixtureFinding(relativePath, evidence)
     || isRedactionImplementationFinding(relativePath, name, evidence);
-}
-
-function isKnownTestFixtureFinding(relativePath, evidence) {
-  const sourcePath = sourceIdentityPath(relativePath);
-  if (!/(?:^|\/)(?:tests\/.*|[^/]+(?:\.integration)?\.test\.tsx?)$/u.test(sourcePath)) {
-    return false;
-  }
-  return [
-    /scanner-should-detect/i,
-    /secret/i,
-    /private/i,
-    /redacted/i,
-    /\$\{token\}/,
-    /authorization\s*:\s*(?:basic|bearer|token|'|`|\[|true|false)/i,
-    /\b(?:sk-[a-z0-9_-]{8,}|AIza[0-9a-z_-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[a-z0-9]{20,})\b/i,
-    /\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/i,
-    /data:image\/[^;]+;base64,/i,
-    /(?:[A-Za-z]:\\|file:\/\/|\\\\|\/(?:Users|home|var|etc|tmp|private)\/)/i,
-    /\\[A-Za-z]+|\\s|\[\^|\/i\)|\/u\)/,
-  ].some((pattern) => pattern.test(evidence));
 }
 
 function isRedactionImplementationFinding(relativePath, name, evidence) {

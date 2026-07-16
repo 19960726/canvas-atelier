@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createAgentKnowledgeLease,
   createSkillPromotionCandidate,
+  createSkillPromotionCandidateFingerprint,
   createUserFeedbackMemory,
   skillPromotionCandidateSchema,
   type CanvasProject,
@@ -129,13 +130,36 @@ describe('knowledge security integration', () => {
       if (opened === null) throw new Error('Expected the durable project to open');
       expect(opened.currentRevision).toBe(0);
 
+      const pendingCandidate = project.skillPromotionCandidates[0]!;
+      const prepared = await handlers.prepareSkillCandidateReview({}, {
+        baseRevision: opened.currentRevision,
+        candidateId: pendingCandidate.id,
+        candidateFingerprint: createSkillPromotionCandidateFingerprint(pendingCandidate),
+        projectId: project.id,
+      });
+      if (prepared.candidate.preparedManagedSnapshot === undefined) {
+        throw new Error('Expected prepared Skill preview metadata');
+      }
+      expect(prepared).toMatchObject({
+        currentRevision: 1,
+        candidate: {
+          reviewPreparationStatus: 'ready',
+          sourceRule: expect.any(String),
+          managedRule: expect.any(String),
+          diffHunks: expect.any(Array),
+        },
+      });
+
       const review = await handlers.reviewSkillCandidate({}, {
-        candidateId: project.skillPromotionCandidates[0]!.id,
+        baseRevision: prepared.currentRevision,
+        candidateId: prepared.candidate.id,
+        candidateFingerprint: createSkillPromotionCandidateFingerprint(prepared.candidate),
         decision: 'approved',
+        preparedManagedSnapshot: prepared.candidate.preparedManagedSnapshot,
         projectId: project.id,
       });
       expect(review).toMatchObject({
-        currentRevision: 1,
+        currentRevision: 2,
         projectId: project.id,
         candidate: {
           reviewStatus: 'approved',
@@ -150,11 +174,13 @@ describe('knowledge security integration', () => {
       });
 
       const journalBeforeStablePoint = await readFile(join(projectRoot, 'journal', 'active.ndjson'), 'utf8');
+      expect(journalBeforeStablePoint).toContain('Prepare skill candidate candidate-feedback');
       expect(journalBeforeStablePoint).toContain('Review skill candidate candidate-feedback');
       expect(journalBeforeStablePoint).toContain('"revision":1');
+      expect(journalBeforeStablePoint).toContain('"revision":2');
 
       const stablePoint = await handlers.createStablePoint({}, { sessionId: opened.sessionId });
-      expect(stablePoint).toMatchObject({ reason: 'stable_point', revision: 1 });
+      expect(stablePoint).toMatchObject({ reason: 'stable_point', revision: 2 });
 
       const readOnlySession = await repository.open(projectRoot, { mode: 'read_only' });
       const durableProject = await repository.readCurrentProject(readOnlySession);

@@ -529,6 +529,7 @@ describe('public domain API', () => {
       'rollbackSkillPromotionCandidate',
       'sanitizeModelJobError',
       'selectActiveProjectMemoryEntries',
+      'skillCandidatePreparedManagedSnapshotSchema',
       'skillCandidateReviewPreparationStatusSchema',
       'skillPromotionCandidateSchema',
       'transitionModelJob',
