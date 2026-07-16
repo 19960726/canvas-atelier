@@ -24,6 +24,7 @@ import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   PROVIDER_BRIDGE_CHANNELS,
   normalizeProviderBridgeError,
+  parseProviderBridgeEnvelope,
   type AckImageJobTerminalBridgeRequest,
   type AckImageJobTerminalBridgeResult,
   type CancelImageJobBridgeRequest,
@@ -192,7 +193,7 @@ async function invokeProvider<TResponse>(
   payload?: unknown,
 ): Promise<TResponse> {
   try {
-    return await invoke<TResponse>(channel, payload);
+    return parseProviderBridgeEnvelope<TResponse>(channel, await invoke<unknown>(channel, payload));
   } catch (error) {
     throw normalizeProviderBridgeError(error);
   }

@@ -508,6 +508,80 @@ describe('persistent model job store', () => {
     });
   });
 
+  it('does not mark terminal jobs ACK pending when the executor has no ACK channel', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
+      project = applyProjectTransaction(project, transaction);
+      return true;
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async (job) => ({
+          status: 'completed' as const,
+          result: { assetId: `asset-${job.id}` },
+        })),
+      }),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-no-ack-channel' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-no-ack-channel'))!,
+      status: 'running',
+      providerTaskId: 'provider-job-no-ack-channel',
+    });
+
+    await store.pollActiveJobs();
+
+    expect(await storage.get('job-no-ack-channel')).toMatchObject({
+      status: 'completed',
+      resultAssetId: 'asset-job-no-ack-channel',
+    });
+    expect(await storage.get('job-no-ack-channel')).not.toMatchObject({
+      providerAckPending: true,
+      terminalStatus: 'completed',
+    });
+  });
+
+  it('clears stale ACK-pending terminal markers during recovery when no ACK channel is available', async () => {
+    const storage = createInMemoryModelJobStorage([{
+      ...request({ id: 'job-stale-ack-pending' }),
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'completed',
+      retryCount: 0,
+      providerTaskId: 'provider-job-stale-ack-pending',
+      resultAssetId: 'asset-job-stale-ack-pending',
+      providerAckPending: true,
+      terminalStatus: 'completed',
+    } as ModelJob]);
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({ ackTerminal: undefined }),
+      commitProjectTransaction: vi.fn(async () => true),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.recover();
+
+    expect(await storage.get('job-stale-ack-pending')).toMatchObject({
+      status: 'completed',
+      providerAckPending: false,
+      terminalStatus: undefined,
+    });
+  });
+
   it('honors provider terminal returned from cancel instead of overwriting first terminal', async () => {
     const storage = createInMemoryModelJobStorage();
     let project = createStarterProject();

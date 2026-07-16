@@ -41,6 +41,17 @@ const profiles: ProviderBridgeProfile[] = [
 ];
 
 describe('provider bridge contracts', () => {
+  it('keeps provider IPC request and response contracts backed by strict Zod schemas', async () => {
+    const contractsSource = await readFile(join(process.cwd(), 'packages/desktop-core/src/provider-contracts.ts'), 'utf8');
+    const bridgeSource = await readFile(join(process.cwd(), 'packages/desktop-core/src/provider-bridge.ts'), 'utf8');
+
+    expect(contractsSource).toMatch(/from 'zod'/u);
+    expect(contractsSource).toMatch(/ProviderBridgeRequestSchemas/u);
+    expect(contractsSource).toMatch(/ProviderBridgeResponseSchemas/u);
+    expect(contractsSource).toMatch(/\.strict\(\)/u);
+    expect(bridgeSource).not.toMatch(/function validateConfigureRequest|function expectStrictRecord/u);
+  });
+
   it('rejects unknown provider channels and unknown request fields', () => {
     expect(() => parseProviderBridgeRequest('novus-desktop:provider:fetch', {})).toThrow(/unknown provider channel/i);
     expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.getStatus, { extra: true })).toThrow(/unknown key/i);
@@ -78,7 +89,7 @@ describe('provider bridge contracts', () => {
         displayName: 'Nano Banana 2',
         capabilities: ['image_generation', 'async_tasks'],
       }],
-    })).toThrow(/provider unavailable|provider is unavailable/i);
+    })).toThrow(/provider request is invalid/i);
   });
 
   it('normalizes errors without leaking token-like details', () => {
@@ -1276,6 +1287,155 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('restores safeStorage-backed custom base URL and profiles after service restart without constructor defaults', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const configuredProfiles: ProviderBridgeProfile[] = [{
+      provider: 'comfly',
+      modelRoute: 'persisted-route',
+      displayName: 'Persisted Route',
+      modelId: 'provider-persisted-route',
+      capabilities: ['image_generation', 'async_tasks'],
+    }];
+    const first = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn(),
+    });
+    await first.configure({
+      token: 'sk-safe-config-token',
+      baseUrl: 'https://persisted.example',
+      profiles: configuredProfiles,
+    });
+
+    const restartedFetch = vi.fn().mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-persisted-safe', status: 'queued' }));
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: restartedFetch,
+    });
+
+    await expect(restarted.listProfiles()).resolves.toEqual([
+      { ...configuredProfiles[0]!, capabilities: ['async_tasks', 'image_generation'] },
+    ]);
+    await restarted.submitImageJob({
+      jobId: 'job-persisted-safe',
+      provider: 'comfly',
+      modelRoute: 'persisted-route',
+      prompt: 'draw persisted safe storage config',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    expect(restartedFetch.mock.calls[0]?.[0]).toBe('https://persisted.example/v1/images/generations?async=true');
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toMatch(/sk-safe-config-token|Authorization|Bearer|base64|C:\\Users|mappingKey/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('restores passphrase-backed custom base URL and profiles after unlock without writing secrets to disk', async () => {
+    const appDataRoot = await makeTempRoot();
+    const configuredProfiles: ProviderBridgeProfile[] = [{
+      provider: 'comfly',
+      modelRoute: 'passphrase-route',
+      displayName: 'Passphrase Route',
+      capabilities: ['image_generation', 'async_tasks'],
+    }];
+    const first = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: unavailableSafeStorage() }),
+      fetch: vi.fn(),
+    });
+    await first.configure({
+      token: 'sk-passphrase-config-token',
+      passphrase,
+      baseUrl: 'https://passphrase.example',
+      profiles: configuredProfiles,
+    });
+
+    const restartedFetch = vi.fn().mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-persisted-passphrase', status: 'queued' }));
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: unavailableSafeStorage() }),
+      fetch: restartedFetch,
+    });
+
+    await expect(restarted.getStatus()).resolves.toMatchObject({ configured: true, locked: true, encryption: 'passphrase' });
+    await expect(restarted.listProfiles()).resolves.toEqual([
+      { ...configuredProfiles[0]!, capabilities: ['async_tasks', 'image_generation'] },
+    ]);
+    await expect(restarted.submitImageJob({
+      jobId: 'job-passphrase-before-unlock',
+      provider: 'comfly',
+      modelRoute: 'passphrase-route',
+      prompt: 'blocked until unlock',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    })).rejects.toMatchObject({ code: 'CREDENTIALS_LOCKED' });
+
+    await restarted.unlock({ passphrase });
+    await restarted.submitImageJob({
+      jobId: 'job-passphrase-after-unlock',
+      provider: 'comfly',
+      modelRoute: 'passphrase-route',
+      prompt: 'draw persisted passphrase config',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    expect(restartedFetch.mock.calls[0]?.[0]).toBe('https://passphrase.example/v1/images/generations?async=true');
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toMatch(/sk-passphrase-config-token|correct horse|Authorization|Bearer|base64|C:\\Users|mappingKey/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('does not keep unwritten base URL and profiles in memory after configuration persistence fails', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const fileSystem = new FailingAtomicWriteFileSystem('provider-configuration.json', 'rename');
+    const configuredProfiles: ProviderBridgeProfile[] = [{
+      provider: 'comfly',
+      modelRoute: 'broken-route',
+      displayName: 'Broken Route',
+      capabilities: ['image_generation', 'async_tasks'],
+    }];
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage, fileSystem }),
+      fetch: vi.fn(),
+      fileSystem,
+    });
+
+    await expect(service.configure({
+      token: 'sk-config-write-failure-token',
+      baseUrl: 'https://broken.example',
+      profiles: configuredProfiles,
+    })).rejects.toBeTruthy();
+
+    await expect(service.getStatus()).resolves.toMatchObject({
+      configured: true,
+      locked: false,
+      encryption: 'safeStorage',
+    });
+    await expect(service.listProfiles()).resolves.toEqual([]);
+    await expect(service.submitImageJob({
+      jobId: 'job-config-write-failure',
+      provider: 'comfly',
+      modelRoute: 'broken-route',
+      prompt: 'draw from unwritten config',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn(),
+    });
+    await expect(restarted.listProfiles()).resolves.toEqual([]);
+    const serialized = await readAllFiles(appDataRoot);
+    expect(serialized).not.toMatch(/broken\.example|Broken Route|broken-route/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('rejects invalid provider responses and raw base64 results with sanitized errors', async () => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn()
@@ -1494,6 +1654,46 @@ describe('provider IPC handlers', () => {
         code: 'PROVIDER_ERROR',
         message: '[redacted]',
         retryable: false,
+      },
+    });
+  });
+
+  it('registers serializable provider envelopes so locked errors survive an invoke round trip', async () => {
+    const service = {
+      ackImageJobTerminal: vi.fn(),
+      cancelImageJob: vi.fn(),
+      configure: vi.fn(),
+      getStatus: vi.fn(),
+      listProfiles: vi.fn(),
+      pollImageJob: vi.fn(async () => {
+        const error = new Error('Provider credentials are locked') as Error & { code: string; retryable: boolean };
+        error.code = 'CREDENTIALS_LOCKED';
+        error.retryable = true;
+        throw error;
+      }),
+      submitImageJob: vi.fn(),
+      unlock: vi.fn(),
+    };
+    const handlers = createProviderBridgeHandlers(service as never);
+    const registered = new Map<string, (event: unknown, request: unknown) => Promise<unknown>>();
+    registerProviderBridgeHandlers({
+      handle: (channel, listener) => {
+        registered.set(channel, listener);
+      },
+    }, handlers);
+
+    const envelope = await registered.get(PROVIDER_BRIDGE_CHANNELS.pollImageJob)?.({}, {
+      provider: 'comfly',
+      providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef',
+    });
+    const roundTripped = JSON.parse(JSON.stringify(envelope));
+
+    expect(roundTripped).toEqual({
+      ok: false,
+      error: {
+        code: 'CREDENTIALS_LOCKED',
+        message: 'Provider credentials are locked',
+        retryable: true,
       },
     });
   });

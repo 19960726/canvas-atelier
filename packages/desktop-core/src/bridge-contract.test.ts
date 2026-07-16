@@ -77,6 +77,37 @@ describe('desktop bridge contract', () => {
     expect(createPreloadApi(mockInvoke).provider).not.toHaveProperty('fetch');
   });
 
+  it('unwraps provider IPC envelopes and preserves serializable locked errors in the renderer', async () => {
+    const invoke = vi.fn(async () => JSON.parse(JSON.stringify({
+      ok: false,
+      error: {
+        code: 'CREDENTIALS_LOCKED',
+        message: 'Provider credentials are locked',
+        retryable: true,
+      },
+    }))) as DesktopBridgeInvoke;
+    const api = createPreloadApi(invoke);
+
+    await expect(api.provider.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef',
+    })).rejects.toMatchObject({
+      code: 'CREDENTIALS_LOCKED',
+      message: 'Provider credentials are locked',
+      retryable: true,
+    });
+  });
+
+  it('rejects malformed provider IPC envelopes before exposing values to renderer code', async () => {
+    const invoke = vi.fn(async () => ({ ok: true, value: { status: 'running', extra: true } })) as DesktopBridgeInvoke;
+    const api = createPreloadApi(invoke);
+
+    await expect(api.provider.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef',
+    })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+  });
+
   it('subscribes and unsubscribes knowledge state listeners through the event channel', () => {
     const mockInvoke = vi.fn(async () => undefined) as DesktopBridgeInvoke;
     const unsubscribe = vi.fn();

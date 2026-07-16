@@ -34,6 +34,7 @@ export function createAgentCanvasApi(
       submitImageJob: (request) => legacy.provider.submitImageJob(request),
       pollImageJob: (request) => legacy.provider.pollImageJob(request),
       cancelImageJob: (request) => legacy.provider.cancelImageJob(request),
+      ackImageJobTerminal: (request) => legacy.provider.ackImageJobTerminal(request),
     },
     skill: {
       getKnowledgeState: () => legacy.getKnowledgeState(),

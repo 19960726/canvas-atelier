@@ -19,7 +19,13 @@ describe('agentCanvas preload compatibility bridge', () => {
     expect(Object.keys(api).sort()).toEqual(['assets', 'project', 'provider', 'secrets', 'skill']);
     expect(Object.keys(api.project).sort()).toEqual(['close', 'commit', 'open', 'recovery', 'restore', 'stable']);
     expect(Object.keys(api.assets).sort()).toEqual(['exportPack', 'importPack']);
-    expect(Object.keys(api.provider).sort()).toEqual(['cancelImageJob', 'listProfiles', 'pollImageJob', 'submitImageJob']);
+    expect(Object.keys(api.provider).sort()).toEqual([
+      'ackImageJobTerminal',
+      'cancelImageJob',
+      'listProfiles',
+      'pollImageJob',
+      'submitImageJob',
+    ]);
     expect(Object.keys(api.skill).sort()).toEqual([
       'configureKnowledgeBase',
       'getKnowledgeState',
@@ -32,7 +38,21 @@ describe('agentCanvas preload compatibility bridge', () => {
   });
 
   it('maps modern namespaces to the same invoke and subscribe channels as novusDesktop', async () => {
-    const invoke = vi.fn(async (channel: string) => ({ channel })) as DesktopBridgeInvoke & ReturnType<typeof vi.fn>;
+    const invoke = vi.fn(async (channel: string) => {
+      if (Object.values(AGENT_CANVAS_CHANNELS.provider).includes(channel as never)) {
+        if (channel === AGENT_CANVAS_CHANNELS.provider.listProfiles) return { ok: true, value: [] };
+        if (channel === AGENT_CANVAS_CHANNELS.provider.submitImageJob) {
+          return { ok: true, value: { providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef' } };
+        }
+        if (channel === AGENT_CANVAS_CHANNELS.provider.pollImageJob) return { ok: true, value: { status: 'running' } };
+        if (channel === AGENT_CANVAS_CHANNELS.provider.cancelImageJob) return { ok: true, value: { status: 'cancelled' } };
+        if (channel === AGENT_CANVAS_CHANNELS.provider.ackImageJobTerminal) return { ok: true, value: { acknowledged: true } };
+      }
+      if (Object.values(AGENT_CANVAS_CHANNELS.secrets).includes(channel as never)) {
+        return { ok: true, value: { configured: true, locked: false, encryption: 'safeStorage' } };
+      }
+      return { channel };
+    }) as DesktopBridgeInvoke & ReturnType<typeof vi.fn>;
     const unsubscribe = vi.fn();
     const subscribe = vi.fn((_channel: string, _listener: (payload: unknown) => void) => unsubscribe);
     const { novusDesktop, agentCanvas } = createDesktopPreloadApis(invoke, subscribe);
@@ -51,6 +71,11 @@ describe('agentCanvas preload compatibility bridge', () => {
       conversationId: 'conversation-1',
       referenceAssetIds: [],
     });
+    await agentCanvas.provider.ackImageJobTerminal({
+      provider: 'comfly',
+      providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef',
+      status: 'completed',
+    });
     await agentCanvas.secrets.configureProvider({ token: 'sk-redacted' });
 
     const stopSkill = agentCanvas.skill.subscribeKnowledgeState(vi.fn());
@@ -66,6 +91,7 @@ describe('agentCanvas preload compatibility bridge', () => {
       AGENT_CANVAS_CHANNELS.assets.importPack,
       AGENT_CANVAS_CHANNELS.assets.exportPack,
       AGENT_CANVAS_CHANNELS.provider.submitImageJob,
+      AGENT_CANVAS_CHANNELS.provider.ackImageJobTerminal,
       AGENT_CANVAS_CHANNELS.secrets.configureProvider,
     ]);
     expect(subscribe).toHaveBeenCalledWith(AGENT_CANVAS_CHANNELS.skill.knowledgeStateChanged, expect.any(Function));

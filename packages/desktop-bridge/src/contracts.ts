@@ -28,6 +28,8 @@ import type {
   PollImageJobBridgeResult,
   CancelImageJobBridgeRequest,
   CancelImageJobBridgeResult,
+  AckImageJobTerminalBridgeRequest,
+  AckImageJobTerminalBridgeResult,
   UnlockProviderBridgeRequest,
 } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
@@ -50,6 +52,7 @@ export interface AgentCanvasApi {
     submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
     pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
     cancelImageJob(request: CancelImageJobBridgeRequest): Promise<CancelImageJobBridgeResult>;
+    ackImageJobTerminal(request: AckImageJobTerminalBridgeRequest): Promise<AckImageJobTerminalBridgeResult>;
   };
   readonly skill: {
     getKnowledgeState(): Promise<KnowledgeStateBridgeResult>;
@@ -68,6 +71,8 @@ export interface AgentCanvasApi {
 export type {
   CancelImageJobBridgeRequest,
   CancelImageJobBridgeResult,
+  AckImageJobTerminalBridgeRequest,
+  AckImageJobTerminalBridgeResult,
   ConfigureProviderBridgeRequest,
   PollImageJobBridgeRequest,
   PollImageJobBridgeResult,

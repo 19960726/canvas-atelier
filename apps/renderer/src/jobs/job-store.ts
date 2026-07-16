@@ -459,10 +459,11 @@ async function putTerminalJob(
   patch: Partial<ModelJob>,
   now: () => string,
 ): Promise<void> {
+  const shouldAckProviderTerminal = Boolean(executor.ackTerminal && job.providerTaskId);
   const terminal = transitionModelJob(job, status, {
     ...patch,
-    providerAckPending: true,
-    terminalStatus: status,
+    providerAckPending: shouldAckProviderTerminal,
+    terminalStatus: shouldAckProviderTerminal ? status : undefined,
   });
   await putJob(terminal);
   await acknowledgeTerminal(storage, putJob, executor, terminal, now);
@@ -492,7 +493,19 @@ async function acknowledgeTerminal(
   job: ModelJob,
   now: () => string,
 ): Promise<void> {
-  if (!executor.ackTerminal || !isTerminalJob(job)) {
+  if (!isTerminalJob(job)) {
+    return;
+  }
+  if (!executor.ackTerminal || !job.providerTaskId) {
+    if (job.providerAckPending !== true && job.terminalStatus === undefined) return;
+    const latest = await storage.get(job.id);
+    if (!isSameTerminalJob(latest, job)) return;
+    await putJob({
+      ...latest,
+      providerAckPending: false,
+      terminalStatus: undefined,
+      updatedAt: now(),
+    });
     return;
   }
   try {

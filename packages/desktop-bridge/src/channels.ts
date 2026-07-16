@@ -18,6 +18,7 @@ export const AGENT_CANVAS_CHANNELS = {
     submitImageJob: BRIDGE_CHANNELS.provider.submitImageJob,
     pollImageJob: BRIDGE_CHANNELS.provider.pollImageJob,
     cancelImageJob: BRIDGE_CHANNELS.provider.cancelImageJob,
+    ackImageJobTerminal: BRIDGE_CHANNELS.provider.ackImageJobTerminal,
   },
   skill: {
     configureKnowledgeBase: BRIDGE_CHANNELS.configureKnowledgeBase,
