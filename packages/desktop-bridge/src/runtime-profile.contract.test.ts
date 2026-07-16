@@ -98,6 +98,24 @@ describe('runtime profile shell and config contract', () => {
       packageDir: join(process.cwd(), 'apps/desktop-modern'),
     });
   });
+
+  it('requires the renderer production build to use a relative asset base for Electron file loading', async () => {
+    const viteConfigPath = join(process.cwd(), 'apps/renderer/vite.config.ts');
+    expect(await fileExists(viteConfigPath)).toBe(true);
+    if (!(await fileExists(viteConfigPath))) return;
+
+    const viteConfigModule = await import(pathToFileURL(viteConfigPath).href) as {
+      default?: unknown;
+    };
+    const viteConfig = readViteConfig(viteConfigModule.default);
+    expect(viteConfig.base).toBe('./');
+
+    const builtHtmlPath = join(process.cwd(), 'apps/renderer/dist/index.html');
+    if (!(await fileExists(builtHtmlPath))) return;
+
+    const builtHtml = await readFile(builtHtmlPath, 'utf8');
+    expect(builtHtml).not.toMatch(/(?:src|href)=["']\/assets\//u);
+  });
 });
 
 async function fileExists(path: string): Promise<boolean> {
@@ -208,4 +226,10 @@ function readYamlStringArray(
   const value = record[key];
   expect(Array.isArray(value)).toBe(true);
   return value as string[];
+}
+
+function readViteConfig(config: unknown): { base?: string } {
+  expect(config).toBeTruthy();
+  expect(typeof config).toBe('object');
+  return config as { base?: string };
 }
