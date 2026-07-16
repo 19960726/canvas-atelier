@@ -23,6 +23,14 @@ export const skillStoreTestProject = {
   },
 };
 
+export const providerComflyTestProject = {
+  test: {
+    name: '@agent-canvas/provider-comfly',
+    environment: 'node',
+    include: ['packages/provider-comfly/src/**/*.test.ts'],
+  },
+};
+
 export const desktopCoreTestProject = {
   test: {
     name: '@agent-canvas/desktop-core',
