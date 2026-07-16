@@ -10,7 +10,7 @@ export const rendererTestProject = {
   test: {
     name: '@agent-canvas/renderer',
     environment: 'jsdom',
-    include: ['apps/renderer/src/**/*.test.ts', 'apps/renderer/src/**/*.test.tsx'],
+    include: ['apps/renderer/src/**/*.test.ts', 'apps/renderer/src/**/*.test.tsx', 'tests/integration/**/*.test.ts'],
     setupFiles: ['apps/renderer/src/test/setup.ts'],
   },
 };

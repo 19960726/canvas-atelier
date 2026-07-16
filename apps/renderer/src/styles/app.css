@@ -55,6 +55,9 @@
 .canvas-stage .react-flow__minimap { border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); background: rgba(255, 255, 255, 0.94); }
 .canvas-context { position: absolute; right: 12px; bottom: 10px; display: flex; gap: 10px; padding: 4px 7px; color: var(--muted); background: rgba(255, 255, 255, 0.9); border: 1px solid var(--border); border-radius: 5px; font-size: 10px; pointer-events: none; }
 .canvas-node { width: 220px; min-height: 74px; padding: 13px 14px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 7px; box-shadow: var(--shadow); }
+.workspace.is-interaction-low-quality .canvas-node,
+.workspace.is-interaction-low-quality .canvas-stage .react-flow__controls,
+.workspace.is-interaction-low-quality .canvas-stage .react-flow__minimap { box-shadow: none; }
 .canvas-node.is-selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.12); }
 .canvas-node__title { font-size: 12px; font-weight: 650; }
 .canvas-node__meta { margin-top: 7px; color: var(--muted); font-size: 10px; line-height: 1.45; }

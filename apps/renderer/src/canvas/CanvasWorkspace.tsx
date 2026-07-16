@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
+import type { Viewport } from '@xyflow/react';
 import type {
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
@@ -39,6 +40,8 @@ import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
 import { ReferenceOrderList } from '../references/ReferenceOrderList';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
+import { useInteractionQuality } from './use-interaction-quality';
+import { useViewportCulling } from './use-viewport-culling';
 
 type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
 
@@ -98,24 +101,44 @@ export function CanvasWorkspace() {
   const uploadSequenceRef = useRef(0);
   const focusAgentTabOnChangeRef = useRef(false);
 
-  const flowNodes = useMemo(() => {
+  const flowNodeState = useMemo(() => {
     const nodes = toFlowNodes(project.nodes);
-    if (agentPlan?.state !== 'waiting_for_confirmation') return nodes;
+    if (agentPlan?.state !== 'waiting_for_confirmation') return { ghostNodeIds: [] as string[], nodes };
     const existingNodeIds = new Set(project.nodes.map((node) => node.id));
     const ghosts = agentPlan.transaction.operations.flatMap((operation) => (
       operation.kind === 'create_node' && !existingNodeIds.has(operation.node.id) ? [operation.node] : []
     ));
-    return [...nodes, ...toFlowNodes(ghosts).map((node) => ({ ...node, className: 'agent-ghost-node' }))];
+    const ghostNodes = toFlowNodes(ghosts).map((node) => ({ ...node, className: 'agent-ghost-node' }));
+    return { ghostNodeIds: ghostNodes.map((node) => node.id), nodes: [...nodes, ...ghostNodes] };
   }, [project.nodes, agentPlan]);
-  const flowEdges = useMemo(() => {
+  const flowEdgeState = useMemo(() => {
     const edges = toFlowEdges(project.edges);
-    if (agentPlan?.state !== 'waiting_for_confirmation') return edges;
+    if (agentPlan?.state !== 'waiting_for_confirmation') return { edges, ghostEdgeIds: [] as string[] };
     const existingEdgeIds = new Set(project.edges.map((edge) => edge.id));
     const ghosts = agentPlan.transaction.operations.flatMap((operation) => (
       operation.kind === 'create_edge' && !existingEdgeIds.has(operation.edge.id) ? [operation.edge] : []
     ));
-    return [...edges, ...toFlowEdges(ghosts).map((edge) => ({ ...edge, className: 'agent-ghost-edge', animated: true }))];
+    const ghostEdges = toFlowEdges(ghosts).map((edge) => ({ ...edge, className: 'agent-ghost-edge', animated: true }));
+    return { edges: [...edges, ...ghostEdges], ghostEdgeIds: ghostEdges.map((edge) => edge.id) };
   }, [project.edges, agentPlan]);
+  const flowNodes = flowNodeState.nodes;
+  const flowEdges = flowEdgeState.edges;
+  const [selectedFlowNodeIds, setSelectedFlowNodeIds] = useState<string[]>([]);
+  const [activeFlowEdgeIds, setActiveFlowEdgeIds] = useState<string[]>([]);
+  const interactionQuality = useInteractionQuality(runtimeProfile);
+  const viewportCulling = useViewportCulling({
+    activeEdgeIds: activeFlowEdgeIds,
+    edges: flowEdges,
+    ghostEdgeIds: flowEdgeState.ghostEdgeIds,
+    ghostNodeIds: flowNodeState.ghostNodeIds,
+    nodes: flowNodes,
+    selectedNodeIds: selectedFlowNodeIds,
+  });
+  const handleViewportInteraction = useCallback((event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+    viewportCulling.handleViewportChange(event, viewport);
+    interactionQuality.markInteraction();
+  }, [interactionQuality, viewportCulling]);
+  const markInteraction = interactionQuality.markInteraction;
   const placementNode = useMemo(() => project.nodes.find(isPlacementNode), [project.nodes]);
   const persistedOrderedReferences = useMemo<OrderedReference[]>(
     () => placementNode?.data.objects
@@ -286,7 +309,7 @@ export function CanvasWorkspace() {
   };
 
   return (
-    <div className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}`}>
+    <div className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
       <header className="topbar">
         <div className="product-mark" aria-label="Novus Atelier">
           <span className="product-mark__icon"><Box size={17} /></span>
@@ -333,14 +356,26 @@ export function CanvasWorkspace() {
         </button>
       </nav>
 
-      <main className="canvas-stage" role="application" aria-label="无限画布">
+      <main ref={viewportCulling.containerRef} className="canvas-stage" role="application" aria-label="无限画布">
         <ReactFlow
-          nodes={flowNodes}
-          edges={flowEdges}
+          nodes={viewportCulling.nodes}
+          edges={viewportCulling.edges}
           nodeTypes={nodeTypes}
           fitView
           minZoom={0.08}
           maxZoom={2.5}
+          onMove={handleViewportInteraction}
+          onMoveStart={handleViewportInteraction}
+          onMoveEnd={handleViewportInteraction}
+          onNodeDrag={markInteraction}
+          onNodeDragStart={markInteraction}
+          onNodeDragStop={markInteraction}
+          onSelectionChange={({ nodes, edges }) => {
+            const nextNodeIds = nodes.map((node) => node.id);
+            const nextEdgeIds = edges.map((edge) => edge.id);
+            setSelectedFlowNodeIds((current) => sameStringList(current, nextNodeIds) ? current : nextNodeIds);
+            setActiveFlowEdgeIds((current) => sameStringList(current, nextEdgeIds) ? current : nextEdgeIds);
+          }}
           proOptions={{ hideAttribution: true }}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#c8d0d7" />
@@ -366,8 +401,8 @@ export function CanvasWorkspace() {
             <div className="placement-workbench__body">
               <div className="placement-board-stage">
                 <PlacementBoard
-                  disableShadowsWhileInteracting={runtimeProfile.disableShadowsWhileInteracting}
-                  targetFps={runtimeProfile.targetFps}
+                  disableShadowsWhileInteracting={runtimeProfile.disableShadowsWhileInteracting || interactionQuality.disableExpensiveShadows}
+                  targetFps={interactionQuality.targetFps}
                   value={placementNode.data}
                   selectedObjectId={selectedPlacementObjectId}
                   onChange={(nextPlacement) => updatePlacement(nextPlacement, { schedulePersist: false })}
@@ -406,7 +441,7 @@ export function CanvasWorkspace() {
           <div id="agent-panel-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden={activeAgentTab !== 'conversation'}>
             <ReferenceOrderList
               references={orderedReferences}
-              thumbnailEdge={runtimeProfile.thumbnailEdge}
+              thumbnailEdge={interactionQuality.thumbnailEdge}
               onPreviewOrder={previewAgentReferenceOrder}
               onCommitOrder={commitAgentReferenceOrder}
               resolveThumbnailUrl={resolveReferenceThumbnailUrl}
@@ -492,6 +527,9 @@ function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'rea
   if (status === 'read_only') return '只读模式，等待当前写入者释放';
   if (status === 'error') return '本地保存失败';
   return '等待本地稳定点保存';
+}
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 async function analyzeReversePromptDraft(run: ReversePromptRun): Promise<ReversePromptResult> {
   const freshKeyword = `会话新词-${run.nonce.slice(0, 8)}`;

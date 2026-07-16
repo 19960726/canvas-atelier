@@ -32,6 +32,11 @@ import {
   type ProjectSaveStatus,
 } from './desktop-persistence';
 import {
+  AUTOSAVE_IDLE_MS,
+  createAutosaveController,
+  type AutosaveFlushReason,
+} from './autosave';
+import {
   createKnowledgeClient,
   type KnowledgeBaseStateSummary,
   type KnowledgeClient,
@@ -48,7 +53,6 @@ import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
 import { runtimeProfile } from './runtime-profile';
 
 let planSequence = 0;
-let pendingSave: ReturnType<typeof setTimeout> | undefined;
 let referenceOrderCommitTail: Promise<void> | null = null;
 let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
@@ -58,6 +62,17 @@ let modelJobStore: ModelJobStore | null = null;
 let modelJobUnsubscribe: (() => void) | null = null;
 let modelJobStoreGeneration = 0;
 let modelJobRecoveryGeneration = 0;
+const projectAutosave = createAutosaveController<CanvasProject>({
+  commit: async (draft) => {
+    const state = useAppStore.getState();
+    return state.commitProjectTransaction(createIdleSyncTransaction(draft.project), {
+      kind: 'system',
+      nextProject: draft.project,
+    });
+  },
+  delayMs: AUTOSAVE_IDLE_MS,
+  isReadOnly: () => useAppStore.getState().saveStatus === 'read_only',
+});
 
 interface UndoEntry {
   transaction: CanvasTransaction;
@@ -111,6 +126,7 @@ interface AppState {
   getKnowledgeLease: KnowledgeClient['getLease'];
   hydratePersistence: () => Promise<void>;
   initializeKnowledge: () => Promise<void>;
+  flushProjectSave: (reason: Exclude<AutosaveFlushReason, 'idle'>) => Promise<boolean>;
   refreshModelJobs: () => Promise<void>;
   retryModelJob: (jobId: string) => Promise<void>;
   reviewSkillCandidate: KnowledgeClient['review'];
@@ -158,7 +174,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
   },
   closePersistence: async () => {
-    cancelPendingProjectSave();
+    await flushPendingProjectSave(get, set, 'close');
     invalidateModelJobStoreGeneration();
     modelJobStore?.stop();
     modelJobUnsubscribe?.();
@@ -265,6 +281,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       })),
     );
   },
+  flushProjectSave: (reason) => flushPendingProjectSave(get, set, reason),
   refreshModelJobs: async () => {
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
@@ -622,9 +639,7 @@ function buildProjectTransaction(options: {
 }
 
 function cancelPendingProjectSave(): void {
-  if (!pendingSave) return;
-  clearTimeout(pendingSave);
-  pendingSave = undefined;
+  projectAutosave.cancel();
 }
 
 function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
@@ -1032,11 +1047,29 @@ function sanitizeProjectSkillPromotionCandidates(project: CanvasProject): Canvas
 }
 
 function scheduleProjectSave(get: () => AppState): void {
-  cancelPendingProjectSave();
-  pendingSave = setTimeout(() => {
-    pendingSave = undefined;
-    const state = get();
-    if (state.saveStatus === 'read_only') return;
-    void state.commitProjectTransaction(createIdleSyncTransaction(state.project), { kind: 'system', nextProject: state.project });
-  }, 500);
+  const state = get();
+  projectAutosave.schedule({
+    project: state.project,
+    revision: state.desktopRevision,
+  });
+}
+
+async function flushPendingProjectSave(
+  get: () => AppState,
+  set: (partial: Partial<AppState>) => void,
+  reason: Exclude<AutosaveFlushReason, 'idle'>,
+): Promise<boolean> {
+  const saved = await projectAutosave.flush(reason);
+  if (get().saveStatus === 'read_only') return saved;
+
+  const stablePoint = await projectPersistenceClient.stablePoint();
+  const state = get();
+  set({
+    availableSnapshotIds: stablePoint.availableSnapshotIds,
+    desktopRevision: stablePoint.revision,
+    project: saved ? stablePoint.project : state.project,
+    saveErrorCode: null,
+    saveStatus: saved || state.saveStatus === 'saved' ? 'saved' : state.saveStatus,
+  });
+  return saved || true;
 }

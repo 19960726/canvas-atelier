@@ -11,6 +11,11 @@ import {
   persistProjectTransition,
   type PersistedProjectBundle,
 } from './project-persistence';
+import {
+  findDurableRecoveryCandidate,
+  selectDurableRecoverySnapshotIds,
+  validateRecoveredProject,
+} from './recovery';
 
 export type PersistenceMode = 'browser' | 'desktop';
 export type ProjectSaveStatus = 'pending' | 'saving' | 'saved' | 'error' | 'read_only';
@@ -184,23 +189,6 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     async hydrate() {
       await ensureSession();
 
-      const legacyBundle = loadPersistedProjectBundle();
-      if (legacyBundle !== null && mode === 'write') {
-        currentProject = normalizeLegacyProject(legacyBundle.current, projectId ?? legacyBundle.current.id);
-      }
-
-      if (legacyBundle !== null && mode === 'write' && sessionId !== null) {
-        await migrateLegacyProject(importClient);
-        availableSnapshotIds = await readDesktopRecoverySnapshotIds();
-        return {
-          availableSnapshotIds,
-          mode: 'desktop',
-          project: currentProject,
-          revision,
-          saveStatus: 'saved',
-        };
-      }
-
       availableSnapshotIds = await readDesktopRecoverySnapshotIds();
       return {
         availableSnapshotIds,
@@ -213,13 +201,17 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     async restore(snapshotId) {
       if (sessionId !== null && mode === 'write') {
         const plan = await bridge.getRecoveryPlan({ sessionId });
-        const candidate = plan.candidates.find((entry) => entry.snapshotId === snapshotId);
+        const candidate = findDurableRecoveryCandidate(plan, snapshotId);
         if (candidate === undefined) {
           throw createImportError('INVALID_REQUEST');
         }
+        const previousProject = currentProject;
+        const previousRevision = revision;
         const result = await bridge.restore({ candidateId: candidate.candidateId, sessionId });
-        currentProject = result.project;
-        revision = result.restoredRevision;
+        currentProject = validateRecoveredProject(result.project, previousProject);
+        revision = currentProject === previousProject && result.project !== previousProject
+          ? previousRevision
+          : result.restoredRevision;
         availableSnapshotIds = await readDesktopRecoverySnapshotIds();
       }
       return {
@@ -269,7 +261,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         sessionId,
         transaction: request.transaction,
       });
-      currentProject = request.nextProject;
+      currentProject = validateRecoveredProject(request.nextProject, currentProject);
       revision = ack.revision;
       return {
         ok: true,
@@ -294,7 +286,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     sessionId = session.sessionId;
     projectId = session.projectId;
     mode = session.mode;
-    currentProject = session.project;
+    currentProject = validateRecoveredProject(session.project, currentProject);
     revision = session.currentRevision ?? session.stableSnapshotRevision;
     availableSnapshotIds = await readDesktopRecoverySnapshotIds();
   }
@@ -303,7 +295,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     if (sessionId === null) return availableSnapshotIds;
     try {
       const plan = await bridge.getRecoveryPlan({ sessionId });
-      return plan.candidates.map((candidate) => candidate.snapshotId);
+      return selectDurableRecoverySnapshotIds(plan);
     } catch {
       return availableSnapshotIds;
     }
