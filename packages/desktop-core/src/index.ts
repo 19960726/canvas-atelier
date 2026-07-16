@@ -158,6 +158,7 @@ export type {
   AckImageJobTerminalBridgeResult,
   ComflyFetch,
   CancelImageJobBridgeRequest,
+  CancelImageJobBridgeResult,
   ConfigureProviderBridgeRequest,
   PollImageJobBridgeRequest,
   PollImageJobBridgeResult,

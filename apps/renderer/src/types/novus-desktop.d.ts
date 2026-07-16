@@ -1,4 +1,5 @@
 import type { DesktopBridgeApi } from '@agent-canvas/desktop-core';
+import type { AgentCanvasApi } from '@agent-canvas/desktop-bridge';
 import type { ProjectPersistenceClient } from '../app/desktop-persistence';
 
 type ProjectPersistenceBridgeApi = Pick<
@@ -15,6 +16,7 @@ type ProjectPersistenceBridgeApi = Pick<
 
 declare global {
   interface Window {
+    agentCanvas?: AgentCanvasApi;
     novusDesktop?: DesktopBridgeApi;
   }
 }

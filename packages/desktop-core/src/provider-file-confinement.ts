@@ -1,6 +1,7 @@
-import { dirname, normalize, resolve, sep } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { basename, dirname, join, normalize, resolve, sep } from 'node:path';
 
-import type { FileSystem } from './file-system.js';
+import type { FileHandleLike, FileSystem } from './file-system.js';
 import { createProviderBridgeError, type ProviderBridgeErrorCode } from './provider-contracts.js';
 
 const CREDENTIALS_FILE = 'provider-credentials.json';
@@ -114,6 +115,116 @@ export async function rollbackConfirmedInRootFile(
   }
 }
 
+export async function writeConfinedAtomicUpdate(
+  fileSystem: FileSystem,
+  options: {
+    readonly appDataRoot: string;
+    readonly targetPath: string;
+    readonly data: string | Uint8Array;
+    readonly assertPathForRead: () => Promise<void>;
+    readonly assertPathForWrite: () => Promise<void>;
+    readonly errorCode: ConfinementErrorCode;
+    readonly errorMessage: string;
+  },
+): Promise<void> {
+  await options.assertPathForWrite();
+  const previous = await readExistingTarget(fileSystem, options);
+  const tempPath = join(
+    dirname(options.targetPath),
+    `.${basename(options.targetPath)}.tmp-${randomBytes(8).toString('hex')}`,
+  );
+  let handle: FileHandleLike | null = null;
+  let closed = false;
+  let replaced = false;
+
+  try {
+    handle = await fileSystem.open(tempPath, 'wx');
+    await handle.writeFile(options.data);
+    await handle.sync();
+    await handle.close();
+    closed = true;
+    await fileSystem.rename(tempPath, options.targetPath);
+    replaced = true;
+    await options.assertPathForRead();
+  } catch (error) {
+    if (handle !== null && !closed) {
+      try {
+        await handle.close();
+      } catch {
+        // Preserve the original failure.
+      }
+    }
+    await fileSystem.rm(tempPath, { force: true });
+    if (replaced) {
+      await restoreConfirmedInRootTarget(fileSystem, options, previous);
+    }
+    if (isProviderDomainError(error)) throw error;
+    throw createProviderBridgeError(options.errorCode, options.errorMessage);
+  }
+}
+
+async function readExistingTarget(
+  fileSystem: FileSystem,
+  options: {
+    readonly targetPath: string;
+    readonly assertPathForRead: () => Promise<void>;
+  },
+): Promise<{ readonly existed: false } | { readonly existed: true; readonly data: string | Uint8Array }> {
+  try {
+    await options.assertPathForRead();
+    return {
+      existed: true,
+      data: fileSystem.readFileBuffer === undefined
+        ? await fileSystem.readFile(options.targetPath, 'utf8')
+        : await fileSystem.readFileBuffer(options.targetPath),
+    };
+  } catch (error) {
+    if (isMissingFileError(error)) return { existed: false };
+    throw error;
+  }
+}
+
+async function restoreConfirmedInRootTarget(
+  fileSystem: FileSystem,
+  options: {
+    readonly appDataRoot: string;
+    readonly targetPath: string;
+  },
+  previous: { readonly existed: false } | { readonly existed: true; readonly data: string | Uint8Array },
+): Promise<void> {
+  try {
+    if (!await canTouchConfirmedInRootFile(fileSystem, options.appDataRoot, options.targetPath)) return;
+    if (previous.existed) {
+      const handle = await fileSystem.open(options.targetPath, 'w');
+      try {
+        await handle.writeFile(previous.data);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } else {
+      await fileSystem.rm(options.targetPath, { force: true });
+    }
+  } catch {
+    // Do not touch uncertain paths further after the provider-domain failure.
+  }
+}
+
+async function canTouchConfirmedInRootFile(
+  fileSystem: FileSystem,
+  appDataRoot: string,
+  targetPath: string,
+): Promise<boolean> {
+  if (fileSystem.lstat === undefined || fileSystem.realpath === undefined) return false;
+  const root = normalizeRealPath(await fileSystem.realpath(resolve(appDataRoot)));
+  const parent = normalizeRealPath(await fileSystem.realpath(dirname(targetPath)));
+  if (parent !== root) return false;
+  const target = normalizeRealPath(await fileSystem.realpath(targetPath));
+  if (target !== root && !target.startsWith(`${root}${sep}`)) return false;
+  const stat = await fileSystem.lstat(targetPath);
+  return stat.isFile() && stat.isSymbolicLink?.() !== true;
+}
+
 function confinedAppDataPath(
   appDataRoot: string,
   fileName: string,
@@ -152,4 +263,11 @@ function normalizeRealPath(path: string): string {
 
 function isMissingFileError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+function isProviderDomainError(error: unknown): error is { readonly code: string; readonly retryable: boolean } {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && 'retryable' in error;
 }

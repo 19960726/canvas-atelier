@@ -2,13 +2,13 @@ import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback
 import { promisify } from 'node:util';
 
 import { acquireConfinedFileLock, releaseConfinedFileLock } from './confined-file-lock.js';
-import { NodeFileSystem, writeAtomic, type FileSystem } from './file-system.js';
+import { NodeFileSystem, type FileSystem } from './file-system.js';
 import {
   assertConfinedAppDataPathForRead,
   assertConfinedAppDataPathForWrite,
   confinedCredentialsLockPath,
   confinedCredentialsPath,
-  rollbackConfirmedInRootFile,
+  writeConfinedAtomicUpdate,
 } from './provider-file-confinement.js';
 import {
   createProviderBridgeError,
@@ -189,13 +189,19 @@ export function createSecureProviderCredentialStore(options: {
 
   async function writeEnvelopeUnlocked(envelope: ProviderCredentialEnvelope): Promise<void> {
     await fileSystem.mkdir(options.appDataRoot, { recursive: true });
-    await assertConfinedCredentialPathForWrite();
     try {
-      await writeAtomic(fileSystem, targetPath, `${JSON.stringify(envelope)}\n`);
-      await assertConfinedCredentialPathForRead();
+      await writeConfinedAtomicUpdate(fileSystem, {
+        appDataRoot: options.appDataRoot,
+        targetPath,
+        data: `${JSON.stringify(envelope)}\n`,
+        assertPathForRead: assertConfinedCredentialPathForRead,
+        assertPathForWrite: assertConfinedCredentialPathForWrite,
+        errorCode: 'CREDENTIALS_LOCKED',
+        errorMessage: 'Provider credential metadata path is invalid',
+      });
     } catch (error) {
-      await rollbackConfirmedInRootFile(fileSystem, options.appDataRoot, targetPath);
-      throw error;
+      if (isProviderBridgeError(error)) throw error;
+      throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata path is invalid');
     }
   }
 

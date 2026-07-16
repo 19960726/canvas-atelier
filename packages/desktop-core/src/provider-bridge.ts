@@ -73,19 +73,14 @@ export type {
   UnlockProviderBridgeRequest,
 } from './provider-contracts.js';
 export type { ProviderCredentialStore, SafeStorageAdapter } from './provider-credential-vault.js';
-
 const DEFAULT_COMFLY_BASE_URL = 'https://api.comfly.chat';
 const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
-
 export type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
-
 interface ConfigurationSnapshot {
   readonly baseUrl: string;
   readonly profiles: readonly ProviderBridgeProfile[];
 }
-
 interface RuntimeSnapshot extends ConfigurationSnapshot {
   readonly token: string;
 }
@@ -568,7 +563,7 @@ function validateProviderProfiles(value: unknown): ProviderBridgeProfile[] {
 function validateSubmitImageJobResult(value: unknown): SubmitImageJobBridgeResult {
   const record = expectStrictRecord(value, ['providerTaskId']);
   const providerTaskId = parseNonEmptyString(record.providerTaskId, 'providerTaskId');
-  if (!providerTaskId.startsWith('provider-job-')) {
+  if (!/^provider-job-[a-f0-9]{32}$/u.test(providerTaskId)) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image job handle');
   }
   assertPublicProviderPayload({ providerTaskId });
@@ -645,6 +640,9 @@ function validateProviderError(value: unknown): ProviderBridgeError {
 function validateProviderImageJobResult(value: unknown): ProviderImageJobResult {
   const record = expectStrictRecord(value, ['assetId', 'width', 'height']);
   const assetId = parseNonEmptyString(record.assetId, 'assetId');
+  if (!isOpaqueProviderAssetId(assetId)) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image asset id');
+  }
   const result = {
     assetId,
     ...(record.width === undefined ? {} : { width: parseFiniteNumber(record.width, 'width') }),
@@ -723,7 +721,7 @@ function mapImageTaskPollResult(
     status: 'completed',
     progress: 1,
     result: {
-      assetId: `provider:${provider}:${publicTaskId}:0`,
+      assetId: createProviderResultAssetId(provider, publicTaskId),
       ...(first.width === undefined ? {} : { width: parseFiniteNumber(first.width, 'width') }),
       ...(first.height === undefined ? {} : { height: parseFiniteNumber(first.height, 'height') }),
     },
@@ -733,6 +731,15 @@ function mapImageTaskPollResult(
 function createPublicProviderTaskId(): string {
   return `provider-job-${randomBytes(16).toString('hex')}`;
 }
+
+function createProviderResultAssetId(_provider: string, publicTaskId: string): string {
+  if (!/^provider-job-[a-f0-9]{32}$/u.test(publicTaskId)) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+  }
+  return `provider-result-${publicTaskId}`;
+}
+
+const isOpaqueProviderAssetId = (assetId: string): boolean => /^provider-result-provider-job-[a-f0-9]{32}$/u.test(assetId);
 
 function blockedCredentialsPollResult(): PollImageJobBridgeResult {
   return {

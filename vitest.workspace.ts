@@ -38,3 +38,11 @@ export const desktopCoreTestProject = {
     include: ['packages/desktop-core/src/**/*.test.ts'],
   },
 };
+
+export const desktopBridgeTestProject = {
+  test: {
+    name: '@agent-canvas/desktop-bridge',
+    environment: 'node',
+    include: ['packages/desktop-bridge/src/**/*.test.ts'],
+  },
+};

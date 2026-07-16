@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback
 import { promisify } from 'node:util';
 
 import { acquireConfinedFileLock, releaseConfinedFileLock } from './confined-file-lock.js';
-import { NodeFileSystem, writeAtomic, type FileSystem } from './file-system.js';
+import { NodeFileSystem, type FileSystem } from './file-system.js';
 import {
   assertConfinedAppDataPathForRead,
   assertConfinedAppDataPathForWrite,
@@ -10,7 +10,7 @@ import {
   assertConfinedProviderTaskPathForWrite,
   confinedProviderTaskMappingsLockPath,
   confinedProviderTaskMappingsPath,
-  rollbackConfirmedInRootFile,
+  writeConfinedAtomicUpdate,
 } from './provider-file-confinement.js';
 import {
   createProviderBridgeError,
@@ -201,10 +201,16 @@ export function createProviderTaskMappingStore(options: {
       mappings: [...mappings.values()],
     }), secret.primary);
     try {
-      await writeAtomic(fileSystem, targetPath, `${JSON.stringify(envelope)}\n`);
-      await assertConfinedProviderTaskPathForRead(fileSystem, options.appDataRoot, targetPath);
+      await writeConfinedAtomicUpdate(fileSystem, {
+        appDataRoot: options.appDataRoot,
+        targetPath,
+        data: `${JSON.stringify(envelope)}\n`,
+        assertPathForRead: () => assertConfinedProviderTaskPathForRead(fileSystem, options.appDataRoot, targetPath),
+        assertPathForWrite: () => assertConfinedProviderTaskPathForWrite(fileSystem, options.appDataRoot, targetPath),
+        errorCode: 'PROVIDER_UNAVAILABLE',
+        errorMessage: 'Provider task mapping path is invalid',
+      });
     } catch (error) {
-      await rollbackConfirmedInRootFile(fileSystem, options.appDataRoot, targetPath);
       if (isProviderBridgeError(error)) throw error;
       throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping path is invalid');
     }

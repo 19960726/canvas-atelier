@@ -19,7 +19,7 @@ import {
   type ProviderBridgeProfile,
   type SafeStorageAdapter,
 } from './provider-bridge.js';
-import { NodeFileSystem, type FileSystem } from './file-system.js';
+import { NodeFileSystem, type FileHandleLike, type FileSystem } from './file-system.js';
 
 const token = 'sk-task-9-secret-token';
 const passphrase = 'correct horse battery staple';
@@ -140,6 +140,65 @@ describe('secure provider credential storage', () => {
     await expect(readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8')).rejects.toThrow();
     await cleanupTempRoot(appDataRoot);
   });
+
+  it.each(['open', 'write', 'sync', 'rename'] as const)(
+    'preserves existing credential bytes when atomic %s fails before target replacement',
+    async (phase) => {
+      const appDataRoot = await makeTempRoot();
+      const safeStorage = createFakeSafeStorage();
+      const initial = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+      await initial.configure({ token: 'sk-original-credential-token' });
+      const before = await readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8');
+
+      const failing = createSecureProviderCredentialStore({
+        appDataRoot,
+        safeStorage,
+        fileSystem: new FailingAtomicWriteFileSystem('provider-credentials.json', phase),
+      });
+
+      await expect(failing.configure({ token: 'sk-rotated-credential-token' })).rejects.toBeTruthy();
+      await expect(readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8')).resolves.toBe(before);
+      await expect(createSecureProviderCredentialStore({ appDataRoot, safeStorage }).getToken()).resolves.toBe('sk-original-credential-token');
+      await cleanupTempRoot(appDataRoot);
+    },
+  );
+
+  it('restores existing credential bytes when post-replace verification fails inside app data', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const initial = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    await initial.configure({ token: 'sk-original-post-verify-token' });
+    const before = await readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8');
+
+    const failing = createSecureProviderCredentialStore({
+      appDataRoot,
+      safeStorage,
+      fileSystem: new PostReplaceVerificationFailureFileSystem(appDataRoot, 'provider-credentials.json'),
+    });
+
+    await expect(failing.configure({ token: 'sk-rotated-post-verify-token' })).rejects.toBeTruthy();
+    await expect(readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8')).resolves.toBe(before);
+    await expect(createSecureProviderCredentialStore({ appDataRoot, safeStorage }).getToken()).resolves.toBe('sk-original-post-verify-token');
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('keeps legacy credential bytes when migration write fails before target replacement', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    await writeLegacySafeStorageCredential(appDataRoot, safeStorage, 'sk-legacy-migration-token');
+    const before = await readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8');
+
+    const failing = createSecureProviderCredentialStore({
+      appDataRoot,
+      safeStorage,
+      fileSystem: new FailingAtomicWriteFileSystem('provider-credentials.json', 'sync'),
+    });
+
+    await expect(failing.getToken()).rejects.toBeTruthy();
+    await expect(readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8')).resolves.toBe(before);
+    await expect(createSecureProviderCredentialStore({ appDataRoot, safeStorage }).getToken()).resolves.toBe('sk-legacy-migration-token');
+    await cleanupTempRoot(appDataRoot);
+  });
 });
 
 describe('Comfly provider service', () => {
@@ -219,7 +278,7 @@ describe('Comfly provider service', () => {
       status: 'completed',
       progress: 1,
       result: {
-        assetId: `provider:comfly:${submitted.providerTaskId}:0`,
+        assetId: `provider-result-${submitted.providerTaskId}`,
       },
     });
     expect(failed).toEqual({
@@ -274,7 +333,7 @@ describe('Comfly provider service', () => {
       status: 'completed',
       progress: 1,
       result: {
-        assetId: `provider:comfly:${submitted.providerTaskId}:0`,
+        assetId: `provider-result-${submitted.providerTaskId}`,
         width: 512,
         height: 512,
       },
@@ -305,6 +364,29 @@ describe('Comfly provider service', () => {
       body: `{"apiKey":"${token}","path":"C:\\Users\\Private\\source.png"}`,
       signal: AbortSignal.timeout(1),
     })).rejects.not.toThrow(/Bearer|sk-task-9|apiKey|Users|source\.png/i);
+  });
+
+  it.each([
+    'http://api.comfly.chat/v1/images/tasks/raw-provider-task',
+    'https://10.0.0.4/v1/images/tasks/raw-provider-task',
+    'https://assets.example/redirected.png',
+  ])('rejects Electron redirects to %s without forwarding sanitized details', async (redirectUrl) => {
+    const net = createRedirectElectronNet(redirectUrl);
+    const fetch = createElectronNetComflyFetch(net);
+
+    await expect(fetch('https://api.comfly.chat/v1/images/generations', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      body: '{"prompt":"draw"}',
+    })).rejects.not.toThrow(/Bearer|sk-task-9|10\.0\.0\.4|raw-provider-task|redirected\.png/i);
+
+    expect(net.requests).toHaveLength(1);
+    expect(net.requests[0]?.options).toEqual(expect.objectContaining({
+      url: 'https://api.comfly.chat/v1/images/generations',
+      method: 'POST',
+      redirect: 'manual',
+    }));
+    expect(net.requests[0]?.headers).toEqual({ authorization: `Bearer ${token}` });
   });
 
   it('preserves durable task mappings across token rotation and service restart', async () => {
@@ -347,7 +429,7 @@ describe('Comfly provider service', () => {
     })).resolves.toEqual({
       status: 'completed',
       progress: 1,
-      result: { assetId: `provider:comfly:${submitted.providerTaskId}:0` },
+      result: { assetId: `provider-result-${submitted.providerTaskId}` },
     });
     expect(restartedFetch.mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({
       authorization: 'Bearer sk-second-rotation-token',
@@ -359,7 +441,7 @@ describe('Comfly provider service', () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();
     const legacyToken = 'sk-legacy-mapping-token';
-    const publicTaskId = 'provider-job-legacy-fallback';
+    const publicTaskId = 'provider-job-1234567890abcdef1234567890abcdea';
     await writeLegacySafeStorageCredential(appDataRoot, safeStorage, legacyToken);
     await writeEncryptedTaskMappingsForTest(appDataRoot, legacyToken, [{
       provider: 'comfly',
@@ -383,7 +465,7 @@ describe('Comfly provider service', () => {
     await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: publicTaskId })).resolves.toEqual({
       status: 'completed',
       progress: 1,
-      result: { assetId: `provider:comfly:${publicTaskId}:0` },
+      result: { assetId: `provider-result-${publicTaskId}` },
     });
     await service.configure({ token: 'sk-rotated-after-legacy-migration', profiles });
     const restarted = createComflyProviderService({
@@ -492,7 +574,7 @@ describe('Comfly provider service', () => {
       status: 'completed',
       progress: 1,
       result: {
-        assetId: `provider:comfly:${submitted.providerTaskId}:0`,
+        assetId: `provider-result-${submitted.providerTaskId}`,
       },
     });
 
@@ -644,7 +726,7 @@ describe('Comfly provider service', () => {
   it('rolls back in-root mapping writes when post-write confinement verification fails', async () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();
-    const fileSystem = new PostWriteEscapeMappingFileSystem(appDataRoot);
+    const fileSystem = new PostReplaceVerificationFailureFileSystem(appDataRoot, 'provider-task-mappings.json');
     const service = createComflyProviderService({
       appDataRoot,
       credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
@@ -666,6 +748,131 @@ describe('Comfly provider service', () => {
       message: expect.stringMatching(/mapping path/i),
     });
     await expect(readFile(join(appDataRoot, 'provider-task-mappings.json'), 'utf8')).rejects.toThrow();
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it.each(['open', 'write', 'sync', 'rename'] as const)(
+    'preserves running task mappings when atomic %s fails before target replacement',
+    async (phase) => {
+      const appDataRoot = await makeTempRoot();
+      const safeStorage = createFakeSafeStorage();
+      const first = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+        fetch: vi.fn().mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-running-preserved', status: 'queued' })),
+        profiles,
+      });
+      await first.configure({ token });
+      const submitted = await first.submitImageJob({
+        jobId: 'job-running-preserved',
+        provider: 'comfly',
+        modelRoute: 'gpt-image',
+        prompt: 'keep running mapping',
+        conversationId: 'conversation-1',
+        referenceAssetIds: [],
+      });
+      const before = await readFile(join(appDataRoot, 'provider-task-mappings.json'), 'utf8');
+
+      const failing = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+        fetch: vi.fn().mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-failed-write', status: 'queued' })),
+        fileSystem: new FailingAtomicWriteFileSystem('provider-task-mappings.json', phase),
+        profiles,
+      });
+
+      await expect(failing.submitImageJob({
+        jobId: 'job-failed-write',
+        provider: 'comfly',
+        modelRoute: 'gpt-image',
+        prompt: 'this write fails',
+        conversationId: 'conversation-1',
+        referenceAssetIds: [],
+      })).rejects.toBeTruthy();
+      await expect(readFile(join(appDataRoot, 'provider-task-mappings.json'), 'utf8')).resolves.toBe(before);
+
+      const restarted = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+        fetch: vi.fn().mockResolvedValueOnce(jsonResponse({
+          taskId: 'raw-provider-task-running-preserved',
+          status: 'succeeded',
+          data: [{ url: 'https://assets.example/running-preserved.png' }],
+        })),
+        profiles,
+      });
+      await expect(restarted.pollImageJob({
+        provider: 'comfly',
+        providerTaskId: submitted.providerTaskId,
+      })).resolves.toMatchObject({
+        status: 'completed',
+        result: { assetId: `provider-result-${submitted.providerTaskId}` },
+      });
+      await cleanupTempRoot(appDataRoot);
+    },
+  );
+
+  it('restores unACKed terminal task mappings when post-replace verification fails inside app data', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const first = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-terminal-preserved', status: 'queued' }))
+        .mockResolvedValueOnce(jsonResponse({
+          taskId: 'raw-provider-task-terminal-preserved',
+          status: 'succeeded',
+          data: [{ url: 'https://assets.example/terminal-preserved.png' }],
+        })),
+      profiles,
+    });
+    await first.configure({ token });
+    const submitted = await first.submitImageJob({
+      jobId: 'job-terminal-preserved',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'keep terminal mapping',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    });
+    await expect(first.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).resolves.toMatchObject({ status: 'completed' });
+    const before = await readFile(join(appDataRoot, 'provider-task-mappings.json'), 'utf8');
+
+    const failing = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn().mockResolvedValueOnce(jsonResponse({ taskId: 'raw-provider-task-new-terminal', status: 'queued' })),
+      fileSystem: new PostReplaceVerificationFailureFileSystem(appDataRoot, 'provider-task-mappings.json'),
+      profiles,
+    });
+
+    await expect(failing.submitImageJob({
+      jobId: 'job-new-terminal',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'post verify fails',
+      conversationId: 'conversation-1',
+      referenceAssetIds: [],
+    })).rejects.toBeTruthy();
+    await expect(readFile(join(appDataRoot, 'provider-task-mappings.json'), 'utf8')).resolves.toBe(before);
+
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn(),
+      profiles,
+    });
+    await expect(restarted.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).resolves.toMatchObject({
+      status: 'completed',
+      result: { assetId: `provider-result-${submitted.providerTaskId}` },
+    });
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -727,7 +934,7 @@ describe('Comfly provider service', () => {
     expect(completed).toEqual({
       status: 'completed',
       progress: 1,
-      result: { assetId: `provider:comfly:${success.providerTaskId}:0` },
+      result: { assetId: `provider-result-${success.providerTaskId}` },
     });
     expect(failed).toEqual({
       status: 'failed',
@@ -869,7 +1076,7 @@ describe('Comfly provider service', () => {
       expect(publicResult).toEqual({
         status: 'completed',
         progress: 1,
-        result: { assetId: `provider:comfly:${submitted.providerTaskId}:0` },
+        result: { assetId: `provider-result-${submitted.providerTaskId}` },
       });
       expect(JSON.stringify(publicResult)).not.toContain(unsafeUrl);
       expect(JSON.stringify(publicResult)).not.toMatch(/localhost|127\.0\.0\.1|10\.0\.0\.4|192\.168|169\.254|fc00|fe80|redirect|meta-data|generated\.png/i);
@@ -1274,13 +1481,13 @@ describe('provider IPC handlers', () => {
           retryable: false,
         },
       })),
-      submitImageJob: vi.fn(async () => ({ providerTaskId: 'provider-job-public-1' })),
+      submitImageJob: vi.fn(async () => ({ providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef' })),
       unlock: vi.fn(),
     } as never);
 
     await expect(sanitizedHandlers.pollImageJob({}, {
       provider: 'comfly',
-      providerTaskId: 'provider-job-public-1',
+      providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef',
     })).resolves.toEqual({
       status: 'failed',
       error: {
@@ -1289,6 +1496,62 @@ describe('provider IPC handlers', () => {
         retryable: false,
       },
     });
+  });
+
+  it('allows only opaque provider result asset ids across the IPC boundary', async () => {
+    const goodAssetId = 'provider-result-provider-job-1234567890abcdef1234567890abcdef';
+    const goodHandlers = createProviderBridgeHandlers({
+      ackImageJobTerminal: vi.fn(),
+      cancelImageJob: vi.fn(async () => ({ status: 'cancelled' })),
+      configure: vi.fn(),
+      getStatus: vi.fn(),
+      listProfiles: vi.fn(),
+      pollImageJob: vi.fn(async () => ({
+        status: 'completed',
+        progress: 1,
+        result: { assetId: goodAssetId, width: 512, height: 512 },
+      })),
+      submitImageJob: vi.fn(),
+      unlock: vi.fn(),
+    } as never);
+
+    await expect(goodHandlers.pollImageJob({}, {
+      provider: 'comfly',
+      providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef',
+    })).resolves.toEqual({
+      status: 'completed',
+      progress: 1,
+      result: { assetId: goodAssetId, width: 512, height: 512 },
+    });
+
+    for (const assetId of [
+      'provider:comfly:provider-job-1234567890abcdef1234567890abcdef:0',
+      'https://assets.example/generated.png',
+      'data:image/png;base64,AAAAAAAAAAAAAAAAAAAA',
+      'C:\\Users\\Private\\generated.png',
+      '../generated.png',
+      'asset-live-job',
+    ]) {
+      const handlers = createProviderBridgeHandlers({
+        ackImageJobTerminal: vi.fn(),
+        cancelImageJob: vi.fn(),
+        configure: vi.fn(),
+        getStatus: vi.fn(),
+        listProfiles: vi.fn(),
+        pollImageJob: vi.fn(async () => ({
+          status: 'completed',
+          progress: 1,
+          result: { assetId },
+        })),
+        submitImageJob: vi.fn(),
+        unlock: vi.fn(),
+      } as never);
+
+      await expect(handlers.pollImageJob({}, {
+        provider: 'comfly',
+        providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef',
+      })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    }
   });
 
   it('rejects malformed progress, blocked reasons, error codes, and ACK payloads at the IPC boundary', async () => {
@@ -1516,12 +1779,91 @@ class PostWriteEscapeMappingFileSystem extends NodeFileSystem {
   }
 }
 
+type AtomicFailurePhase = 'open' | 'write' | 'sync' | 'rename';
+
+class FailingAtomicWriteFileSystem extends NodeFileSystem {
+  private failed = false;
+
+  constructor(
+    private readonly targetFileName: string,
+    private readonly phase: AtomicFailurePhase,
+  ) {
+    super();
+  }
+
+  override open(path: string, flags: string): ReturnType<NodeFileSystem['open']> {
+    return this.openForTest(path, flags) as ReturnType<NodeFileSystem['open']>;
+  }
+
+  private async openForTest(path: string, flags: string): Promise<FileHandleLike> {
+    if (!this.failed && this.phase === 'open' && path.includes(`.${this.targetFileName}.tmp-`)) {
+      this.failed = true;
+      throw new Error(`injected ${this.targetFileName} temp open failure`);
+    }
+    const handle = await super.open(path, flags);
+    if (!path.includes(`.${this.targetFileName}.tmp-`)) return handle;
+    return {
+      close: () => handle.close(),
+      sync: async () => {
+        if (!this.failed && this.phase === 'sync') {
+          this.failed = true;
+          throw new Error(`injected ${this.targetFileName} temp sync failure`);
+        }
+        await handle.sync();
+      },
+      truncate: (length: number) => handle.truncate?.(length) ?? Promise.resolve(),
+      writeFile: async (data: string | Uint8Array) => {
+        if (!this.failed && this.phase === 'write') {
+          this.failed = true;
+          throw new Error(`injected ${this.targetFileName} temp write failure`);
+        }
+        await handle.writeFile(data);
+      },
+    };
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    if (!this.failed && this.phase === 'rename' && destination.endsWith(this.targetFileName)) {
+      this.failed = true;
+      throw new Error(`injected ${this.targetFileName} rename failure`);
+    }
+    await super.rename(source, destination);
+  }
+}
+
+class PostReplaceVerificationFailureFileSystem extends NodeFileSystem {
+  private shouldFailTargetRealpath = false;
+
+  constructor(
+    private readonly appDataRoot: string,
+    private readonly targetFileName: string,
+  ) {
+    super();
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    await super.rename(source, destination);
+    if (destination === join(this.appDataRoot, this.targetFileName)) {
+      this.shouldFailTargetRealpath = true;
+    }
+  }
+
+  override async realpath(path: string): Promise<string> {
+    if (this.shouldFailTargetRealpath && path === join(this.appDataRoot, this.targetFileName)) {
+      this.shouldFailTargetRealpath = false;
+      throw new Error(`injected ${this.targetFileName} post-replace verification failure`);
+    }
+    return super.realpath(path);
+  }
+}
+
 type FakeElectronResponse = {
   readonly statusCode: number;
   readonly body: unknown;
 };
 
 type FakeElectronRequestRecord = {
+  readonly options: Record<string, unknown>;
   readonly url: string;
   readonly method: string;
   readonly headers: Record<string, string>;
@@ -1561,6 +1903,7 @@ class FakeElectronClientRequest extends EventEmitter {
 
   end(): void {
     this.requests.push({
+      options: { ...this.options },
       url: this.options.url ?? '',
       method: this.options.method ?? 'GET',
       headers: { ...this.headers },
@@ -1579,6 +1922,62 @@ class FakeElectronClientRequest extends EventEmitter {
 
   abort(): void {
     this.emit('error', new Error(`Authorization: Bearer ${token} from C:\\Users\\Private\\source.png`));
+  }
+}
+
+function createRedirectElectronNet(redirectUrl: string) {
+  const requests: FakeElectronRequestRecord[] = [];
+  return {
+    requests,
+    request(options: { readonly url?: string; readonly method?: string; readonly redirect?: string }) {
+      return new RedirectElectronClientRequest(options, redirectUrl, requests);
+    },
+  };
+}
+
+class RedirectElectronClientRequest extends EventEmitter {
+  private readonly headers: Record<string, string> = {};
+  private body = '';
+
+  constructor(
+    private readonly options: { readonly url?: string; readonly method?: string; readonly redirect?: string },
+    private readonly redirectUrl: string,
+    private readonly requests: FakeElectronRequestRecord[],
+  ) {
+    super();
+  }
+
+  setHeader(name: string, value: string): void {
+    this.headers[name.toLowerCase()] = value;
+  }
+
+  write(chunk: string | Uint8Array): void {
+    this.body += Buffer.from(chunk).toString('utf8');
+  }
+
+  end(): void {
+    this.requests.push({
+      options: { ...this.options },
+      url: this.options.url ?? '',
+      method: this.options.method ?? 'GET',
+      headers: { ...this.headers },
+      body: this.body,
+    });
+    const incoming = new EventEmitter() as EventEmitter & { statusCode: number };
+    incoming.statusCode = 302;
+    queueMicrotask(() => {
+      this.emit('redirect', 302, this.options.method ?? 'GET', this.redirectUrl, {
+        location: [this.redirectUrl],
+        authorization: [`Bearer ${token}`],
+      });
+      this.emit('response', incoming);
+      incoming.emit('data', Buffer.from(JSON.stringify({ location: this.redirectUrl }), 'utf8'));
+      incoming.emit('end');
+    });
+  }
+
+  abort(): void {
+    this.emit('error', new Error(`Authorization: Bearer ${token} redirect ${this.redirectUrl}`));
   }
 }
 

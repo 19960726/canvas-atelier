@@ -1,26 +1,28 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 import {
+  AGENT_CANVAS_PRELOAD_KEY,
   DESKTOP_BRIDGE_PRELOAD_KEY,
-  createPreloadApi,
+  createDesktopPreloadApis,
+} from '@agent-canvas/desktop-bridge/preload';
+import {
   redactBridgeDiagnostics,
 } from '@agent-canvas/desktop-core/preload-api';
 
-contextBridge.exposeInMainWorld(
-  DESKTOP_BRIDGE_PRELOAD_KEY,
-  createPreloadApi(
-    (channel, payload) => ipcRenderer.invoke(channel, payload),
-    (channel, listener) => {
-      const wrapped = (_event: IpcRendererEvent, payload: unknown) => {
-        listener(payload);
-      };
-      ipcRenderer.on(channel, wrapped);
-      return () => {
-        ipcRenderer.removeListener(channel, wrapped);
-      };
-    },
-  ),
-);
+const invoke = (channel: string, payload?: unknown) => ipcRenderer.invoke(channel, payload);
+const subscribe = (channel: string, listener: (payload: unknown) => void) => {
+  const wrapped = (_event: IpcRendererEvent, payload: unknown) => {
+    listener(payload);
+  };
+  ipcRenderer.on(channel, wrapped);
+  return () => {
+    ipcRenderer.removeListener(channel, wrapped);
+  };
+};
+const apis = createDesktopPreloadApis(invoke, subscribe);
+
+contextBridge.exposeInMainWorld(DESKTOP_BRIDGE_PRELOAD_KEY, apis.novusDesktop);
+contextBridge.exposeInMainWorld(AGENT_CANVAS_PRELOAD_KEY, apis.agentCanvas);
 
 const reportSafeModeFailure = (value: unknown) => {
   const message = value instanceof Error ? value.stack ?? value.message : String(value);

@@ -1,7 +1,7 @@
 import type { ComflyFetch, ComflyFetchResponse } from '@agent-canvas/provider-comfly';
 
 export interface ElectronNetLike {
-  request(options: { readonly url: string; readonly method: string }): ElectronClientRequestLike;
+  request(options: { readonly url: string; readonly method: string; readonly redirect: 'manual' }): ElectronClientRequestLike;
 }
 
 export interface ElectronClientRequestLike {
@@ -10,6 +10,12 @@ export interface ElectronClientRequestLike {
   end(): void;
   abort?(): void;
   on(event: 'response', listener: (response: ElectronIncomingMessageLike) => void): this;
+  on(event: 'redirect', listener: (
+    statusCode: number,
+    method: string,
+    redirectUrl: string,
+    responseHeaders: Record<string, string[]>,
+  ) => void): this;
   on(event: 'error', listener: (error: unknown) => void): this;
   on(event: string, listener: (...args: unknown[]) => void): this;
 }
@@ -32,6 +38,7 @@ export function createElectronNetComflyFetch(
       const request = net.request({
         url: parsedUrl.toString(),
         method: init.method ?? 'GET',
+        redirect: 'manual',
       });
       let settled = false;
       let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -88,6 +95,10 @@ export function createElectronNetComflyFetch(
         response.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf8');
           const status = response.statusCode ?? 0;
+          if (status >= 300 && status < 400) {
+            fail('Provider network redirect was blocked');
+            return;
+          }
           succeed({
             ok: status >= 200 && status < 300,
             status,
@@ -97,6 +108,7 @@ export function createElectronNetComflyFetch(
         });
         response.on('error', () => fail('Provider network response failed'));
       });
+      request.on('redirect', () => fail('Provider network redirect was blocked'));
       request.on('error', () => fail('Provider network request failed'));
       if (init.body !== undefined) {
         request.write?.(init.body);

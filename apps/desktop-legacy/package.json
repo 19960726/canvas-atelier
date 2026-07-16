@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@agent-canvas/desktop-bridge": "file:../../packages/desktop-bridge",
     "@agent-canvas/desktop-core": "file:../../packages/desktop-core"
   },
   "devDependencies": {
