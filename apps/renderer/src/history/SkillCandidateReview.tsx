@@ -149,6 +149,18 @@ function getReviewability(candidate: SkillPromotionCandidate): { canReview: bool
         : 'Review preview is unavailable.',
     };
   }
+  if (candidate.reviewPreparationStatus !== 'ready') {
+    return {
+      canReview: false,
+      reason: 'Review preview is not ready.',
+    };
+  }
+  if (candidate.preparedManagedSnapshot === undefined) {
+    return {
+      canReview: false,
+      reason: 'Cannot review until prepared managed snapshot metadata is available.',
+    };
+  }
   if (candidate.sourceRule && candidate.managedRule && candidate.diffHunks && candidate.diffHunks.length > 0) {
     return { canReview: true, reason: '' };
   }

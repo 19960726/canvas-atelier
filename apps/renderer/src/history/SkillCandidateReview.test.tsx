@@ -11,7 +11,11 @@ describe('SkillCandidateReview', () => {
   it('approves and rejects pending candidates through the review bridge only when clicked', async () => {
     const onReview = vi.fn(async () => undefined);
     render(<SkillCandidateReview
-      candidates={[candidate({ reviewStatus: 'pending_review' })]}
+      candidates={[candidate({
+        reviewStatus: 'pending_review',
+        reviewPreparationStatus: 'ready',
+        preparedManagedSnapshot: preparedManagedSnapshot(),
+      })]}
       knowledgeBases={[knowledgeState()]}
       onReview={onReview}
       projectId="project-1"
@@ -104,7 +108,12 @@ describe('SkillCandidateReview', () => {
 
   it('keeps pending candidates non-reviewable when source or managed rule text is missing', () => {
     render(<SkillCandidateReview
-      candidates={[candidate({ sourceRule: undefined, managedRule: undefined })]}
+      candidates={[candidate({
+        sourceRule: undefined,
+        managedRule: undefined,
+        reviewPreparationStatus: 'ready',
+        preparedManagedSnapshot: preparedManagedSnapshot(),
+      })]}
       knowledgeBases={[knowledgeState()]}
       onReview={async () => undefined}
       projectId="project-1"
@@ -136,6 +145,43 @@ describe('SkillCandidateReview', () => {
     expect(screen.getByTestId('skill-review-unavailable')).toHaveTextContent(/preparing/i);
     fireEvent.click(screen.getByRole('button', { name: 'Reject candidate-1' }));
     expect(onReview).not.toHaveBeenCalled();
+  });
+
+  it('enables decisions only for a ready preview with bound managed snapshot metadata', () => {
+    render(<SkillCandidateReview
+      candidates={[
+        candidate({
+          id: 'candidate-missing-status',
+          preparedManagedSnapshot: preparedManagedSnapshot(),
+        }),
+        candidate({
+          id: 'candidate-non-ready',
+          reviewPreparationStatus: 'preparing',
+          preparedManagedSnapshot: preparedManagedSnapshot(),
+        }),
+        candidate({
+          id: 'candidate-missing-snapshot',
+          reviewPreparationStatus: 'ready',
+        }),
+        candidate({
+          id: 'candidate-ready',
+          reviewPreparationStatus: 'ready',
+          preparedManagedSnapshot: preparedManagedSnapshot(),
+        }),
+      ]}
+      knowledgeBases={[knowledgeState()]}
+      onReview={async () => undefined}
+      projectId="project-1"
+    />);
+
+    expect(screen.getByRole('button', { name: 'Approve candidate-missing-status' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reject candidate-missing-status' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Approve candidate-non-ready' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reject candidate-non-ready' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Approve candidate-missing-snapshot' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reject candidate-missing-snapshot' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Approve candidate-ready' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Reject candidate-ready' })).toBeEnabled();
   });
 
   it('omits evidence counts that are not present in the persisted candidate', () => {
@@ -212,6 +258,14 @@ function candidate(overrides: Partial<SkillPromotionCandidate> = {}): SkillPromo
     evidence: { keep: ['product'], change: ['liquid'], never: [] },
     reviewStatus: 'pending_review',
     ...overrides,
+  };
+}
+
+function preparedManagedSnapshot(): NonNullable<SkillPromotionCandidate['preparedManagedSnapshot']> {
+  return {
+    knowledgeBaseId: 'scene-skill',
+    version: 3,
+    contentHash: 'c'.repeat(64),
   };
 }
 

@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const root = process.cwd();
@@ -10,6 +11,7 @@ const distBase64Finding = join(root, 'apps', 'renderer', 'dist', 'secret-scan-ba
 const testPrivatePathFinding = join(root, 'tests', 'secret-scan-private-red.test.ts');
 const testBase64Finding = join(root, 'tests', 'secret-scan-base64-red.test.ts');
 const testTokenFinding = join(root, 'tests', 'secret-scan-token-red.test.ts');
+const isolatedRoots: string[] = [];
 
 afterEach(() => {
   rmSync(artifactFinding, { force: true });
@@ -18,6 +20,9 @@ afterEach(() => {
   rmSync(testPrivatePathFinding, { force: true });
   rmSync(testBase64Finding, { force: true });
   rmSync(testTokenFinding, { force: true });
+  for (const isolatedRoot of isolatedRoots.splice(0)) {
+    rmSync(isolatedRoot, { force: true, recursive: true });
+  }
 });
 
 describe('secret/path scan coverage', () => {
@@ -134,4 +139,58 @@ describe('secret/path scan coverage', () => {
     expect(`${result.stdout}\n${result.stderr}`).toContain('tests/secret-scan-token-red.test.ts');
     expect(`${result.stdout}\n${result.stderr}`).toContain('API key');
   });
+
+  it('fails for an unlisted Authorization token in an allowlisted file and finding kind', () => {
+    const result = runScannerInIsolatedRoot(
+      'apps/renderer/src/app/knowledge-client.test.ts',
+      'Authorization: Bearer secret-unlisted-variant-token\n',
+    );
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('Authorization header');
+  });
+
+  it('fails for an unlisted private path in an allowlisted file and finding kind', () => {
+    const privatePath = ['E:', 'unlisted', 'private-image.png'].join(String.fromCharCode(92));
+    const result = runScannerInIsolatedRoot(
+      'apps/renderer/src/app/app-store.test.ts',
+      `const leaked = ${JSON.stringify(privatePath)};\n`,
+    );
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('private absolute path');
+  });
+
+  it('fails for an unlisted token in the scanner implementation file', () => {
+    const token = ['sk', 'scannerImplementationUnexpectedToken1234567890'].join('-');
+    const result = runScannerInIsolatedRoot(
+      'tests/e2e/helpers/secret-path-scan.mjs',
+      `const leaked = ${JSON.stringify(token)};\n`,
+    );
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('API key');
+  });
+  it('fails for an unlisted Base64 payload in an allowlisted file and finding kind', () => {
+    const payload = [`data:image/png;base${'64'}`, 'R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='].join(',');
+    const result = runScannerInIsolatedRoot(
+      'apps/renderer/src/jobs/job-store.test.ts',
+      `const leaked = ${JSON.stringify(payload)};\n`,
+    );
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('raw base64 image payload');
+  });
 });
+
+function runScannerInIsolatedRoot(relativePath: string, content: string) {
+  const isolatedRoot = mkdtempSync(join(tmpdir(), 'novus-secret-scan-listed-'));
+  isolatedRoots.push(isolatedRoot);
+  const target = join(isolatedRoot, ...relativePath.split('/'));
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, content, 'utf8');
+  return spawnSync(process.execPath, [join(root, 'tests/e2e/helpers/secret-path-scan.mjs')], {
+    cwd: isolatedRoot,
+    encoding: 'utf8',
+  });
+}
