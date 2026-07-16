@@ -44,13 +44,15 @@ import {
   type ModelJobRequest,
   type ModelJobStore,
 } from '../jobs/job-store';
+import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
 
 let planSequence = 0;
 let pendingSave: ReturnType<typeof setTimeout> | undefined;
 let referenceOrderCommitTail: Promise<void> | null = null;
 let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
-let modelJobExecutor = createUnavailableModelJobExecutor();
+let modelJobExecutorOverride: ModelJobExecutor | null = null;
+let pendingModelJobExecutorOverride: ModelJobExecutor | null = null;
 let modelJobStore: ModelJobStore | null = null;
 let modelJobUnsubscribe: (() => void) | null = null;
 let modelJobStoreGeneration = 0;
@@ -533,7 +535,8 @@ export function replaceKnowledgeClientForTests(client: KnowledgeClient): void {
 export function replaceModelJobExecutorForTests(executor: ModelJobExecutor): void {
   invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
-  modelJobExecutor = executor;
+  modelJobExecutorOverride = executor;
+  pendingModelJobExecutorOverride = executor;
   modelJobUnsubscribe?.();
   modelJobUnsubscribe = null;
   modelJobStore = null;
@@ -559,6 +562,8 @@ export function resetAppStoreForTests(): void {
   modelJobUnsubscribe?.();
   modelJobUnsubscribe = null;
   modelJobStore = null;
+  modelJobExecutorOverride = pendingModelJobExecutorOverride;
+  pendingModelJobExecutorOverride = null;
   knowledgeClient.stop();
   useAppStore.setState(createInitialState());
 }
@@ -663,7 +668,7 @@ function getModelJobStore(): ModelJobStore {
     const generation = modelJobStoreGeneration;
     modelJobStore = createModelJobStore({
       storage: isIndexedDbAvailable() ? undefined : createInMemoryModelJobStorage(),
-      executor: modelJobExecutor,
+      executor: modelJobExecutorOverride ?? createDefaultModelJobExecutor(),
       commitProjectTransaction: (transaction) => {
         if (generation !== modelJobStoreGeneration) return Promise.resolve(false);
         return useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' });
@@ -714,20 +719,43 @@ function createUnavailableModelJobExecutor(): ModelJobExecutor {
   };
 }
 
+function createDefaultModelJobExecutor(): ModelJobExecutor {
+  return {
+    submit: async (job) => selectProductionModelJobExecutor().submit(job),
+    poll: async (job) => selectProductionModelJobExecutor().poll(job),
+    cancel: async (job) => {
+      await selectProductionModelJobExecutor().cancel?.(job);
+    },
+  };
+}
+
+function selectProductionModelJobExecutor(): ModelJobExecutor {
+  return isDesktopProviderBridgeAvailable()
+    ? createDesktopModelJobExecutor()
+    : createUnavailableModelJobExecutor();
+}
+
 function buildModelJobRequests(project: CanvasProject, plan: AgentCanvasPlan): ModelJobRequest[] {
   const promptNode = project.nodes.find((node) => node.type === 'prompt');
-  const route = plan.modelRoute ?? 'desktop-bridge';
+  const route = normalizeProviderModelRoute(plan.modelRoute);
   const prompt = promptNode?.type === 'prompt' ? promptNode.data.prompt : plan.transaction.label;
   return Array.from({ length: Math.max(0, plan.jobCount) }, (_, index) => ({
     id: `model-job-${plan.id}-${index}`,
     promptNodeId: promptNode?.id ?? 'prompt-start',
     prompt,
-    provider: 'desktop-bridge',
+    provider: 'comfly',
     modelRoute: route,
     displayName: route,
     modelId: route,
     referenceAssetIds: collectReferenceAssetIds(project),
   }));
+}
+
+function normalizeProviderModelRoute(route: string | undefined): string {
+  if (route === undefined || route === 'desktop-bridge' || route.startsWith('Comfly ')) {
+    return 'gpt-image';
+  }
+  return route;
 }
 
 function isIndexedDbAvailable(): boolean {
@@ -736,6 +764,10 @@ function isIndexedDbAvailable(): boolean {
 
 function isDesktopBridgeAvailable(): boolean {
   return globalThis.window?.novusDesktop !== undefined;
+}
+
+function isDesktopProviderBridgeAvailable(): boolean {
+  return globalThis.window?.novusDesktop?.provider !== undefined;
 }
 
 function createOptimizationMemory(

@@ -230,6 +230,43 @@ describe('project optimization memory', () => {
     });
   });
 
+  it('uses the desktop provider bridge executor for confirmed model plans without exposing tokens', async () => {
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-app-store' }));
+    const pollImageJob = vi.fn(async () => ({ status: 'running' as const, progress: 0.42 }));
+    const cancelImageJob = vi.fn(async () => {});
+    window.novusDesktop = {
+      provider: {
+        submitImageJob,
+        pollImageJob,
+        cancelImageJob,
+        getStatus: vi.fn(),
+        configure: vi.fn(),
+        unlock: vi.fn(),
+        listProfiles: vi.fn(),
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    useAppStore.getState().draftAgentPlan('Generate through the desktop provider bridge');
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(submitImageJob).toHaveBeenCalledWith({
+      jobId: expect.stringMatching(/^model-job-/),
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'Generate through the desktop provider bridge',
+      conversationId: 'agent-conversation-shared',
+      referenceAssetIds: ['starter-product'],
+    });
+    expect(JSON.stringify(submitImageJob.mock.calls)).not.toMatch(/Authorization|Bearer|token|apiKey|secret/i);
+    expect(pollImageJob).toHaveBeenCalledWith({
+      provider: 'comfly',
+      providerTaskId: 'provider-task-app-store',
+    });
+    expect(cancelImageJob).not.toHaveBeenCalled();
+  });
+
   it('hydrates durable project before deferred model job recovery finishes', async () => {
     const finalPoll = deferred<{ status: 'completed'; result: { assetId: string } }>();
     replaceModelJobExecutorForTests({
