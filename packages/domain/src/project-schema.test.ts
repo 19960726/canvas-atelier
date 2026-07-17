@@ -491,6 +491,7 @@ describe('agentPlanSchema', () => {
 describe('public domain API', () => {
   it('exposes only the approved runtime functions', () => {
     expect(Object.keys(publicApi).sort()).toEqual([
+      'CANVAS_MODULE_DEFINITIONS',
       'DEFAULT_REVERSE_PROMPT_PERSONA',
       'MAX_GENERATION_REFERENCES',
       'REVERSE_PROMPT_PERSONAS',
@@ -503,6 +504,7 @@ describe('public domain API', () => {
       'buildProjectMemoryContext',
       'cancelAgentPlan',
       'canvasOperationSchema',
+      'createCanvasModuleNode',
       'confirmAgentPlan',
       'containsProtectedRendererPayload',
       'createAgentKnowledgeLease',
@@ -512,6 +514,7 @@ describe('public domain API', () => {
       'createSkillPromotionCandidateFingerprint',
       'createUserFeedbackMemory',
       'getLegalModelJobTransitions',
+      'getCanvasModuleDefinition',
       'getRuntimeProfile',
       'modelJobSchema',
       'modelJobStatusSchema',
@@ -523,6 +526,7 @@ describe('public domain API', () => {
       'placementToPromptConstraints',
       'projectOperationSchema',
       'projectTransactionSchema',
+      'listCanvasModuleDefinitions',
       'reorderReferences',
       'revertTransaction',
       'reviewSkillPromotionCandidate',

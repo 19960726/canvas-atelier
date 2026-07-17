@@ -45,6 +45,12 @@ export {
 export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
+export {
+  CANVAS_MODULE_DEFINITIONS,
+  createCanvasModuleNode,
+  getCanvasModuleDefinition,
+  listCanvasModuleDefinitions,
+} from './canvas-module';
 
 export type {
   AppliedCanvasTransaction,
@@ -71,3 +77,9 @@ export type { ConfirmedModelJobInput, ModelJobStatus } from './model-job';
 
 export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation } from './agent-plan';
 export type { RuntimeProfile, RuntimeProfileId } from './runtime-profile';
+export type {
+  CanvasModuleDefinition,
+  CanvasModuleNodeData,
+  CanvasModuleType,
+  CanvasPortDataType,
+} from './canvas-module';
