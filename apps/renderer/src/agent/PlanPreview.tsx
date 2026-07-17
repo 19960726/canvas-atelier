@@ -26,14 +26,14 @@ export function PlanPreview({ plan, onConfirm, onCancel, onRetryJobs }: PlanPrev
   }, [plan.id]);
 
   return (
-    <section className="plan-preview" aria-label="Agent 方案预览" data-testid="plan-preview">
+    <section className="plan-preview" aria-label="Agent 方案预览" data-testid="plan-preview" data-plan-state={plan.state}>
       <div className="plan-preview__heading">
         <span><Check size={15} />待确认方案</span>
         <b>{plan.transaction.operations.length} 项画布变更</b>
       </div>
       <div className="plan-operation-list">
         {plan.transaction.operations.map((operation, index) => (
-          <div className="plan-operation" data-testid="plan-operation" key={`${operation.kind}-${index}`}>
+          <div className="plan-operation" data-testid="plan-operation" data-operation-kind={operation.kind} key={`${operation.kind}-${index}`}>
             <Link2 size={13} />
             <span>{operationLabel(operation)}</span>
           </div>

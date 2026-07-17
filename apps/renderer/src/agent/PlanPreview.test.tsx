@@ -34,6 +34,9 @@ describe('PlanPreview', () => {
     const onConfirm = vi.fn();
     render(<PlanPreview plan={plan} onConfirm={onConfirm} onCancel={() => {}} />);
 
+    expect(screen.getByTestId('plan-preview')).toHaveAttribute('data-plan-state', 'waiting_for_confirmation');
+    expect(screen.getByTestId('plan-operation')).toHaveAttribute('data-operation-kind', 'create_node');
+
     expect(screen.getByText('创建审核节点')).toBeInTheDocument();
     expect(screen.getByText('comfly/image')).toBeInTheDocument();
     expect(screen.getByText('1 个模型任务')).toBeInTheDocument();

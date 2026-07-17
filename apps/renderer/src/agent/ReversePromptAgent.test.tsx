@@ -64,6 +64,17 @@ describe('ReversePromptAgent', () => {
     expect(screen.getByText('1 / 20')).toBeVisible();
   });
 
+  it('exposes stable section hooks for skill controls, context, knowledge status, and run action', () => {
+    renderAgent({ analysisMode: 'local_draft' });
+
+    expect(document.querySelector('.reverse-agent__skill-controls')).toBeVisible();
+    expect(document.querySelector('.reverse-agent__persona-control')).toBeVisible();
+    expect(document.querySelector('.reverse-agent__context-metrics')).toBeVisible();
+    expect(document.querySelector('.reverse-agent__knowledge')).toBeVisible();
+    expect(document.querySelector('.reverse-agent__run-action')).toBeVisible();
+    expect(screen.getByRole('status')).toHaveAttribute('data-knowledge-status');
+  });
+
   it('reads the newest approved snapshot and creates fresh run identity on every start', async () => {
     const snapshots = [
       approvedMemorySnapshot,

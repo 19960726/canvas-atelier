@@ -19,12 +19,14 @@ export function KnowledgeStatus({
 }: KnowledgeStatusProps) {
   const displayStatus = selectDisplayStatus(knowledgeBases, syncStatuses, pendingReviewCount);
   const active = selectActiveVersion(knowledgeBases);
+  const activeLabel = active ? `${active.knowledgeBaseId}@${active.version} updated ${active.publishedAt}` : 'No active knowledge';
 
   return (
-    <aside className="knowledge-status" role="status" aria-live="polite">
-      <span className="knowledge-status__state">{formatStatus(displayStatus)}</span>
-      <span className="knowledge-status__active">
-        {active ? `${active.knowledgeBaseId}@${active.version} updated ${active.publishedAt}` : 'No active knowledge'}
+    <aside className={`knowledge-status is-${displayStatus}`} data-knowledge-status={displayStatus} role="status" aria-live="polite">
+      <span className="knowledge-status__indicator" aria-hidden="true" />
+      <span className="knowledge-status__copy">
+        <strong data-testid="knowledge-status-label">{formatStatus(displayStatus)}</strong>
+        <span data-testid="knowledge-status-detail">{activeLabel}</span>
       </span>
       {pinnedLease && (
         <span className="knowledge-status__pinned">Pinned {pinnedLease.versionKey}</span>

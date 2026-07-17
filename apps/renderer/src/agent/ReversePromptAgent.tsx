@@ -136,7 +136,7 @@ export function ReversePromptAgent({
 
   return (
     <section className="reverse-agent" aria-label="反推 Agent">
-      <header className="reverse-agent__header">
+      <header className="reverse-agent__header reverse-agent__skill-controls">
         <div className="reverse-agent__skill">
           <span>场景 Skill</span>
           <strong>场景生成 Skill</strong>
@@ -147,25 +147,27 @@ export function ReversePromptAgent({
         </div>
       </header>
 
-      <label className="reverse-agent__persona">反推角色
+      <label className="reverse-agent__persona reverse-agent__persona-control">反推角色
         <select aria-label="反推角色" value={personaId} onChange={(event) => setPersonaId(event.target.value as ReversePromptPersona['id'])}>
           {REVERSE_PROMPT_PERSONAS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
       </label>
 
-      <div className="reverse-agent__context">
+      <div className="reverse-agent__context reverse-agent__context-metrics">
         <span>参考图 <b>{references.length} / 20</b></span>
         <span>知识快照 <b>运行时读取</b></span>
       </div>
-      <KnowledgeStatus
-        knowledgeBases={knowledgeBases}
-        pendingReviewCount={pendingKnowledgeReviewCount}
-        syncStatuses={knowledgeSyncStatuses}
-        pinnedLease={history[0]?.run.knowledgeLease ?? null}
-      />
+      <div className="reverse-agent__knowledge">
+        <KnowledgeStatus
+          knowledgeBases={knowledgeBases}
+          pendingReviewCount={pendingKnowledgeReviewCount}
+          syncStatuses={knowledgeSyncStatuses}
+          pinnedLease={history[0]?.run.knowledgeLease ?? null}
+        />
+      </div>
       {analysisMode === 'local_draft' && <p className="reverse-agent__mode">本地草稿，未调用模型</p>}
 
-      <button className="reverse-agent__run" type="button" disabled={status === 'running' || references.length === 0} onClick={startAnalysis}>
+      <button className="reverse-agent__run reverse-agent__run-action" type="button" disabled={status === 'running' || references.length === 0} onClick={startAnalysis}>
         <Sparkles size={15} />{status === 'running' ? '正在反推…' : '开始反推'}
       </button>
       {error && <p className="reverse-agent__error" role="alert">{error}</p>}

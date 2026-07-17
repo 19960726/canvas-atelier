@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createAgentKnowledgeLease, type AgentKnowledgeLease } from '@agent-canvas/domain';
@@ -40,6 +40,24 @@ describe('KnowledgeStatus', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent(status);
     expect(screen.getByText(/scene-skill@2/)).toBeVisible();
+  });
+  it('separates the status label from active knowledge detail with a stable status attribute', () => {
+    render(<KnowledgeStatus
+      knowledgeBases={[]}
+      pendingReviewCount={0}
+      syncStatuses={[{
+        schemaVersion: 1,
+        knowledgeBaseId: 'scene-skill',
+        status: 'syncing',
+        changedAt: '2026-07-16T04:00:00.000Z',
+        lastFailure: null,
+      }]}
+    />);
+
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('data-knowledge-status', 'syncing');
+    expect(within(status).getByTestId('knowledge-status-label')).toHaveTextContent(/syncing/i);
+    expect(within(status).getByTestId('knowledge-status-detail')).toHaveTextContent(/No active knowledge/i);
   });
   it('prioritizes conflict over offline when different knowledge bases report both', () => {
     render(<KnowledgeStatus
