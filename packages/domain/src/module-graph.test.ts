@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createCanvasModuleNode } from './canvas-module';
 import { migrateCanvasProjectGraph, canConnectCanvasPorts, reorderCanvasInputEdges, validateCanvasModuleGraph } from './module-graph';
-import { parseCanvasProject, type CanvasEdge, type CanvasModuleNode, type CanvasProject } from './project-schema';
+import { parseCanvasProject, type CanvasEdge, type CanvasModuleNode, type CanvasNode, type CanvasProject } from './project-schema';
+import type { RuntimeProfileId } from './runtime-profile';
 
 describe('migrateCanvasProjectGraph', () => {
   it('adds graphVersion 2 to legacy projects', () => {
@@ -96,6 +97,17 @@ describe('canConnectCanvasPorts', () => {
       code: 'DIRECTION',
     });
   });
+
+  it('resolves duplicate editor port ids by direction', () => {
+    const editorA = createCanvasModuleNode('editor-a', 'image_editor', { x: 0, y: 0 });
+    const editorB = createCanvasModuleNode('editor-b', 'image_editor', { x: 320, y: 0 });
+    const generator = createCanvasModuleNode('generator', 'image_generation_v1', { x: 640, y: 0 });
+    const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 960, y: 0 });
+
+    expect(canConnectCanvasPorts(editorA, 'image', editorB, 'image')).toEqual({ ok: true });
+    expect(canConnectCanvasPorts(generator, 'prompt', editorB, 'image')).toMatchObject({ ok: false, code: 'DIRECTION' });
+    expect(canConnectCanvasPorts(editorA, 'image', prompt, 'prompt')).toMatchObject({ ok: false, code: 'DIRECTION' });
+  });
 });
 
 describe('validateCanvasModuleGraph', () => {
@@ -128,6 +140,52 @@ describe('validateCanvasModuleGraph', () => {
       'MISSING_PORT',
       'MISSING_PORT',
       'MISSING_PORT',
+    ]);
+  });
+
+  it('reports missing port metadata for the correct endpoint', () => {
+    const project = moduleProject([
+      createCanvasModuleNode('source', 'text_prompt', { x: 0, y: 0 }),
+      createCanvasModuleNode('target', 'image_generation_v1', { x: 320, y: 0 }),
+    ], [
+      moduleEdge('bad-source-port', 'source', 'missing', 'target', 'prompt', 0),
+      moduleEdge('bad-target-port', 'source', 'prompt', 'target', 'missing', 0),
+    ]);
+
+    expect(validateCanvasModuleGraph(project).filter((issue) => issue.code === 'MISSING_PORT')).toMatchObject([
+      { edgeId: 'bad-source-port', nodeId: 'source', portId: 'missing' },
+      { edgeId: 'bad-target-port', nodeId: 'target', portId: 'missing' },
+    ]);
+  });
+
+  it('reports unsupported runtime profiles for module nodes', () => {
+    const project = moduleProject([
+      createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 }),
+    ], []);
+
+    expect(validateCanvasModuleGraph(project, 'unsupported' as RuntimeProfileId)).toMatchObject([
+      { code: 'RUNTIME_UNSUPPORTED', nodeId: 'prompt' },
+    ]);
+  });
+
+  it('keeps legacy-only edges compatible while validating mixed module edges', () => {
+    const project = moduleProject([
+      legacyNode('legacy-source'),
+      legacyNode('legacy-target'),
+      createCanvasModuleNode('module', 'image_editor', { x: 320, y: 0 }),
+    ], [
+      { id: 'legacy-only', source: 'legacy-source', target: 'legacy-target' },
+      { id: 'legacy-to-module-missing', source: 'legacy-source', target: 'module' },
+      { id: 'module-to-legacy-missing', source: 'module', target: 'legacy-target' },
+      { id: 'legacy-to-module-valid', source: 'legacy-source', target: 'module', targetPortId: 'image', order: 0 },
+      { id: 'module-to-legacy-valid', source: 'module', sourcePortId: 'image', target: 'legacy-target', order: 0 },
+    ]);
+
+    expect(validateCanvasModuleGraph(project).map((issue) => [issue.edgeId, issue.code])).toEqual([
+      ['legacy-to-module-missing', 'MISSING_PORT'],
+      ['legacy-to-module-missing', 'MISSING_PORT'],
+      ['module-to-legacy-missing', 'MISSING_PORT'],
+      ['module-to-legacy-missing', 'MISSING_PORT'],
     ]);
   });
 
@@ -189,7 +247,7 @@ function moduleEdge(
   return { id, source, sourcePortId, target, targetPortId, order };
 }
 
-function moduleProject(nodes: CanvasModuleNode[], edges: CanvasEdge[]): CanvasProject {
+function moduleProject(nodes: CanvasNode[], edges: CanvasEdge[]): CanvasProject {
   return parseCanvasProject({
     version: 1,
     graphVersion: 2,
@@ -198,4 +256,13 @@ function moduleProject(nodes: CanvasModuleNode[], edges: CanvasEdge[]): CanvasPr
     nodes,
     edges,
   });
+}
+
+function legacyNode(id: string): CanvasNode {
+  return {
+    id,
+    type: 'reference',
+    position: { x: 0, y: 0 },
+    data: { assetId: `asset-${id}`, role: 'product_identity' },
+  };
 }

@@ -45,7 +45,12 @@ export {
 export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
-export { migrateCanvasProjectGraph } from './module-graph';
+export {
+  canConnectCanvasPorts,
+  migrateCanvasProjectGraph,
+  reorderCanvasInputEdges,
+  validateCanvasModuleGraph,
+} from './module-graph';
 export type { GraphValidationIssue } from './module-graph';
 export {
   CANVAS_MODULE_DEFINITIONS,

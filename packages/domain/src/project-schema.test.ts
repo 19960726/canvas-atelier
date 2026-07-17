@@ -648,6 +648,7 @@ describe('public domain API', () => {
       'applyTransaction',
       'assertPublicModelJobPayload',
       'buildProjectMemoryContext',
+      'canConnectCanvasPorts',
       'cancelAgentPlan',
       'canvasOperationSchema',
       'createCanvasModuleNode',
@@ -674,6 +675,7 @@ describe('public domain API', () => {
       'projectTransactionSchema',
       'listCanvasModuleDefinitions',
       'migrateCanvasProjectGraph',
+      'reorderCanvasInputEdges',
       'reorderReferences',
       'revertTransaction',
       'reviewSkillPromotionCandidate',
@@ -685,6 +687,7 @@ describe('public domain API', () => {
       'skillPromotionCandidateSchema',
       'transitionModelJob',
       'validateAgentPlan',
+      'validateCanvasModuleGraph',
     ].sort());
   });
 });

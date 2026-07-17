@@ -100,11 +100,11 @@ export function canConnectCanvasPorts(
   targetNode: CanvasModuleNode,
   targetPortId: string,
 ): { ok: true } | { ok: false; code: GraphValidationIssue['code']; message: string } {
-  const source = getPort(sourceNode, sourcePortId);
+  const source = getPort(sourceNode, sourcePortId, 'output');
   if (!source) {
     return { ok: false, code: 'MISSING_PORT', message: `Unknown source port: ${sourcePortId}` };
   }
-  const target = getPort(targetNode, targetPortId);
+  const target = getPort(targetNode, targetPortId, 'input');
   if (!target) {
     return { ok: false, code: 'MISSING_PORT', message: `Unknown target port: ${targetPortId}` };
   }
@@ -166,28 +166,54 @@ export function validateCanvasModuleGraph(
 
     const sourceModuleNode = moduleNodesById.get(edge.source);
     const targetModuleNode = moduleNodesById.get(edge.target);
-    if (!sourceModuleNode || !targetModuleNode) continue;
+    if (!sourceModuleNode && !targetModuleNode) continue;
 
-    adjacency.get(sourceModuleNode.id)?.push({ nodeId: targetModuleNode.id, edgeId: edge.id });
+    if (sourceModuleNode && targetModuleNode) {
+      adjacency.get(sourceModuleNode.id)?.push({ nodeId: targetModuleNode.id, edgeId: edge.id });
+    }
 
-    let hasMissingPort = false;
-    if (!edge.sourcePortId) {
+    let hasMalformedModulePort = false;
+    const sourcePort = sourceModuleNode && edge.sourcePortId
+      ? getPort(sourceModuleNode, edge.sourcePortId, 'output')
+      : undefined;
+    const targetPort = targetModuleNode && edge.targetPortId
+      ? getPort(targetModuleNode, edge.targetPortId, 'input')
+      : undefined;
+    if (sourceModuleNode && !edge.sourcePortId) {
       issues.push({
         code: 'MISSING_PORT',
         edgeId: edge.id,
         nodeId: sourceModuleNode.id,
         message: `Edge ${edge.id} is missing a source port`,
       });
-      hasMissingPort = true;
+      hasMalformedModulePort = true;
+    } else if (sourceModuleNode && !sourcePort) {
+      issues.push({
+        code: 'MISSING_PORT',
+        edgeId: edge.id,
+        nodeId: sourceModuleNode.id,
+        portId: edge.sourcePortId,
+        message: `Unknown source port: ${edge.sourcePortId}`,
+      });
+      hasMalformedModulePort = true;
     }
-    if (!edge.targetPortId) {
+    if (targetModuleNode && !edge.targetPortId) {
       issues.push({
         code: 'MISSING_PORT',
         edgeId: edge.id,
         nodeId: targetModuleNode.id,
         message: `Edge ${edge.id} is missing a target port`,
       });
-      hasMissingPort = true;
+      hasMalformedModulePort = true;
+    } else if (targetModuleNode && !targetPort) {
+      issues.push({
+        code: 'MISSING_PORT',
+        edgeId: edge.id,
+        nodeId: targetModuleNode.id,
+        portId: edge.targetPortId,
+        message: `Unknown target port: ${edge.targetPortId}`,
+      });
+      hasMalformedModulePort = true;
     }
     if (edge.order === undefined) {
       issues.push({
@@ -196,7 +222,21 @@ export function validateCanvasModuleGraph(
         message: `Edge ${edge.id} is missing input order`,
       });
     }
-    if (hasMissingPort) continue;
+    if (hasMalformedModulePort) continue;
+
+    if (!sourceModuleNode || !targetModuleNode) {
+      const modulePort = sourcePort ?? targetPort;
+      if (modulePort?.direction === (sourceModuleNode ? 'input' : 'output')) {
+        issues.push({
+          code: 'DIRECTION',
+          edgeId: edge.id,
+          nodeId: sourceModuleNode?.id ?? targetModuleNode?.id,
+          portId: sourceModuleNode ? edge.sourcePortId : edge.targetPortId,
+          message: 'Connections require output to input',
+        });
+      }
+      continue;
+    }
 
     const sourcePortId = edge.sourcePortId;
     const targetPortId = edge.targetPortId;
@@ -212,14 +252,11 @@ export function validateCanvasModuleGraph(
       issues.push({
         code: connection.code,
         edgeId: edge.id,
-        nodeId: connection.code === 'MISSING_PORT' ? targetModuleNode.id : undefined,
-        portId: connection.code === 'MISSING_PORT' ? targetPortId : undefined,
         message: connection.message,
       });
       continue;
     }
 
-    const targetPort = getPort(targetModuleNode, targetPortId);
     if (targetPort?.cardinality === 'one') {
       const key = `${targetModuleNode.id}:${targetPort.id}`;
       const incoming = incomingByPort.get(key) ?? [];
@@ -282,8 +319,13 @@ export function reorderCanvasInputEdges(
   });
 }
 
-function getPort(node: CanvasModuleNode, portId: string): CanvasModulePortDefinition | undefined {
-  return getCanvasModuleDefinition(node.data.moduleType).ports.find((port) => port.id === portId);
+function getPort(
+  node: CanvasModuleNode,
+  portId: string,
+  direction: CanvasModulePortDefinition['direction'],
+): CanvasModulePortDefinition | undefined {
+  const ports = getCanvasModuleDefinition(node.data.moduleType).ports.filter((port) => port.id === portId);
+  return ports.find((port) => port.direction === direction) ?? ports[0];
 }
 
 function isCanvasModuleNode(node: CanvasNode): node is CanvasModuleNode {
