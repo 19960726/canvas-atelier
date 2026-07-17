@@ -48,6 +48,12 @@ function mergeDurableNodes<TNode extends Node>(
   return source.map((sourceNode) => {
     const draftNode = currentById.get(sourceNode.id);
     if (!draftNode || !activeDraggedNodeIds.has(sourceNode.id)) return sourceNode;
-    return { ...sourceNode, position: draftNode.position };
+    return {
+      ...sourceNode,
+      position: draftNode.position,
+      ...(draftNode.selected === undefined ? {} : { selected: draftNode.selected }),
+      ...(draftNode.dragging === undefined ? {} : { dragging: draftNode.dragging }),
+      ...(draftNode.resizing === undefined ? {} : { resizing: draftNode.resizing }),
+    };
   });
 }

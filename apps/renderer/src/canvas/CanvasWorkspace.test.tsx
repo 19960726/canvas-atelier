@@ -81,6 +81,23 @@ describe('CanvasWorkspace', () => {
     expect(isValidCanvasConnection({ source: 'editor-c', sourceHandle: 'image', target: 'editor-a', targetHandle: 'image' }, nodes, existingEdges)).toBe(false);
   });
 
+  it('ignores ghost edges when validating a real durable module connection', () => {
+    const source = createCanvasModuleNode('source', 'image_input', { x: 0, y: 0 });
+    const target = createCanvasModuleNode('target', 'image_editor', { x: 320, y: 0 });
+    const nodes = [source, target].map((node) => ({
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      data: node.data,
+    }));
+    const ghostEdges: Edge[] = [
+      { id: 'ghost-duplicate', source: 'source', sourceHandle: 'image', target: 'target', targetHandle: 'image', className: 'agent-ghost-edge' },
+      { id: 'ghost-cycle', source: 'target', sourceHandle: 'image', target: 'source', targetHandle: 'image', className: 'agent-ghost-edge' },
+    ];
+
+    expect(isValidCanvasConnection({ source: 'source', sourceHandle: 'image', target: 'target', targetHandle: 'image' }, nodes, ghostEdges)).toBe(true);
+  });
+
   it('exposes stable visual-state hooks for the professional shell', () => {
     render(<CanvasWorkspace />);
 

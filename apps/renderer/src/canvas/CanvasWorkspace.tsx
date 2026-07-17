@@ -80,8 +80,9 @@ export function isValidCanvasConnection(
   const target = nodes.find((node) => node.id === targetId);
   if (!source || !target || source.type !== 'module' || target.type !== 'module') return false;
   if (isGhostFlowNode(source) || isGhostFlowNode(target)) return false;
-  if (hasExactCanvasEdge(edges, sourceId, sourcePortId, targetId, targetPortId)) return false;
-  if (wouldCreateCanvasCycle(nodes, edges, sourceId, targetId)) return false;
+  const durableEdges = edges.filter((edge) => !isGhostFlowEdge(edge));
+  if (hasExactCanvasEdge(durableEdges, sourceId, sourcePortId, targetId, targetPortId)) return false;
+  if (wouldCreateCanvasCycle(nodes, durableEdges, sourceId, targetId)) return false;
 
   try {
     const sourceNode = toCanvasModuleNode(source);
@@ -93,7 +94,7 @@ export function isValidCanvasConnection(
     ));
     if (!targetPort) return false;
     return targetPort.cardinality === 'many'
-      || !edges.some((edge) => edge.target === targetId && edge.targetHandle === targetPortId);
+      || !durableEdges.some((edge) => edge.target === targetId && edge.targetHandle === targetPortId);
   } catch {
     return false;
   }
@@ -101,6 +102,10 @@ export function isValidCanvasConnection(
 
 function isGhostFlowNode(node: Node): boolean {
   return typeof node.className === 'string' && node.className.split(/\s+/u).includes('agent-ghost-node');
+}
+
+function isGhostFlowEdge(edge: Edge): boolean {
+  return typeof edge.className === 'string' && edge.className.split(/\s+/u).includes('agent-ghost-edge');
 }
 
 function hasExactCanvasEdge(
