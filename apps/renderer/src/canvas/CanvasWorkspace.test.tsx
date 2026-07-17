@@ -19,6 +19,7 @@ import type {
   ProjectPersistenceClient,
 } from '../app/desktop-persistence';
 import { CanvasWorkspace } from './CanvasWorkspace';
+import { MODULE_DRAG_MIME } from './ModuleLibrary';
 
 const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
 
@@ -74,6 +75,90 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByLabelText('选择工具')).toBeVisible();
     expect(screen.getByLabelText('Agent 面板')).toBeVisible();
     expect(screen.getByLabelText('任务队列')).toBeVisible();
+  });
+
+  it('opens the module library without persisting and places clicked modules in a cascade', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests();
+
+    render(<CanvasWorkspace />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
+    expect(commit).not.toHaveBeenCalled();
+    expect(screen.getByRole('searchbox', { name: 'Search modules' })).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Text Prompt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Text Prompt' }));
+
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    const moduleNodes = useAppStore.getState().project.nodes.filter((node) => node.type === 'module');
+    expect(moduleNodes).toHaveLength(2);
+    expect(moduleNodes[0]?.position).not.toEqual(moduleNodes[1]?.position);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
+    expect(screen.queryByRole('searchbox', { name: 'Search modules' })).toBeNull();
+    expect(commit).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores foreign and invalid module drops', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests();
+
+    render(<CanvasWorkspace />);
+    const canvas = screen.getByTestId('canvas-stage');
+
+    fireEvent.drop(canvas, {
+      clientX: 320,
+      clientY: 240,
+      dataTransfer: { types: ['text/plain'], getData: vi.fn(() => 'text_prompt') },
+    });
+    fireEvent.drop(canvas, {
+      clientX: 320,
+      clientY: 240,
+      dataTransfer: { types: [MODULE_DRAG_MIME], getData: vi.fn(() => 'not-a-module') },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module')).toHaveLength(0);
+  });
+
+  it('creates a valid dropped module at the React Flow drop position', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests();
+
+    render(<CanvasWorkspace />);
+    const getData = vi.fn((mime: string) => mime === MODULE_DRAG_MIME ? 'text_prompt' : 'foreign');
+    fireEvent.drop(screen.getByTestId('canvas-stage'), {
+      clientX: 320,
+      clientY: 240,
+      dataTransfer: {
+        types: [MODULE_DRAG_MIME],
+        getData,
+      },
+    });
+
+    expect(getData).toHaveBeenCalledWith(MODULE_DRAG_MIME);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    const moduleNode = useAppStore.getState().project.nodes.find((node) => node.type === 'module');
+    expect(moduleNode).toMatchObject({ type: 'module', data: { moduleType: 'text_prompt' } });
+    expect(moduleNode?.position.x).toEqual(expect.any(Number));
+    expect(moduleNode?.position.y).toEqual(expect.any(Number));
   });
 
   it('renders React Flow nodes from the domain project state', () => {

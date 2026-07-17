@@ -5,6 +5,8 @@ import {
   applyProjectTransaction,
   createSkillPromotionCandidateFingerprint,
   createSkillPromotionCandidate,
+  createCanvasModuleNode,
+  getCanvasModuleDefinition,
   createUserFeedbackMemory,
   confirmAgentPlan as confirmDomainPlan,
   revertTransaction,
@@ -14,6 +16,7 @@ import {
   type AgentKnowledgeLease,
   type AgentPlanApprovalSelection,
   type CanvasOperation,
+  type CanvasModuleType,
   type CanvasProject,
   type CanvasTransaction,
   type FeedbackObservations,
@@ -135,6 +138,7 @@ interface AppState {
   cancelModelJob: (jobId: string) => Promise<void>;
   closePersistence: () => Promise<boolean>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
+  addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
   commitReferenceOrder: (assetIds: string[]) => Promise<boolean>;
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
   getKnowledgeLease: KnowledgeClient['getLease'];
@@ -188,6 +192,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     await getModelJobStore().cancelQueuedJob(jobId);
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
+  },
+  addModuleNode: async (moduleType, position) => {
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const node = createCanvasModuleNode(`module-${moduleType}-${suffix}`, moduleType, position);
+    return get().commitProjectTransaction({
+      id: `add-module-${suffix}`,
+      label: `Add ${getCanvasModuleDefinition(moduleType).displayName}`,
+      operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
+    });
   },
   closePersistence: async () => {
     const flushed = await flushPendingProjectSave(get, set, 'close');

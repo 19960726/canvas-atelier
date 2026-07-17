@@ -4,6 +4,7 @@ import type { Viewport } from '@xyflow/react';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type {
   AgentPlanState,
+  CanvasModuleType,
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
   PlacementObject,
@@ -13,13 +14,14 @@ import type {
   ReversePromptResult,
   ReversePromptRun,
 } from '@agent-canvas/domain';
-import { MAX_GENERATION_REFERENCES, buildProjectMemoryContext } from '@agent-canvas/domain';
+import { getCanvasModuleDefinition, MAX_GENERATION_REFERENCES, buildProjectMemoryContext } from '@agent-canvas/domain';
 import {
   Box,
   ChevronRight,
   Hand,
   Image,
   LayoutTemplate,
+  Library,
   Maximize2,
   MessageSquare,
   MousePointer2,
@@ -38,6 +40,7 @@ import { PlanPreview } from '../agent/PlanPreview';
 import { ReversePromptAgent } from '../agent/ReversePromptAgent';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
 import { JobStrip } from '../jobs/JobStrip';
+import { ModuleLibrary, MODULE_DRAG_MIME } from './ModuleLibrary';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
 import { ReferenceOrderList } from '../references/ReferenceOrderList';
@@ -49,6 +52,11 @@ type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
 
 interface SubmittedAgentContext extends ImageMentionValue {
   references: OrderedReference[];
+}
+
+interface CanvasFlowInstance {
+  getViewport: () => Viewport;
+  screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
 }
 
 function isPlacementNode(node: CanvasNode): node is PlacementNode {
@@ -65,11 +73,15 @@ const uploadDefaults: Record<
   material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground', name: '材质光照参考' },
 };
 
+const MODULE_NODE_SIZE = { width: 264, height: 214 } as const;
+const MODULE_NODE_GAP = 28;
+
 export function CanvasWorkspace() {
   const project = useAppStore((state) => state.project);
   const activeTool = useAppStore((state) => state.activeTool);
   const agentPanelCollapsed = useAppStore((state) => state.agentPanelCollapsed);
   const setActiveTool = useAppStore((state) => state.setActiveTool);
+  const addModuleNode = useAppStore((state) => state.addModuleNode);
   const toggleAgentPanel = useAppStore((state) => state.toggleAgentPanel);
   const setProject = useAppStore((state) => state.setProject);
   const agentPlan = useAppStore((state) => state.agentPlan);
@@ -107,6 +119,9 @@ export function CanvasWorkspace() {
   const previewUrlsRef = useRef(new Map<string, string>());
   const uploadSequenceRef = useRef(0);
   const focusAgentTabOnChangeRef = useRef(false);
+  const canvasStageRef = useRef<HTMLElement | null>(null);
+  const flowInstanceRef = useRef<CanvasFlowInstance | null>(null);
+  const [moduleLibraryOpen, setModuleLibraryOpen] = useState(false);
 
   const flowNodeState = useMemo(() => {
     const nodes = toFlowNodes(project.nodes);
@@ -199,6 +214,104 @@ export function CanvasWorkspace() {
     { id: 'prompt' as const, label: '提示词节点', icon: MessageSquare },
     { id: 'placement' as const, label: '摆放预览', icon: LayoutTemplate },
   ], []);
+
+  const handleCanvasStageRef = useCallback((element: HTMLElement | null) => {
+    canvasStageRef.current = element;
+    viewportCulling.containerRef(element);
+  }, [viewportCulling.containerRef]);
+
+  const handleReactFlowInit = useCallback((instance: CanvasFlowInstance) => {
+    flowInstanceRef.current = instance;
+    viewportCulling.handleViewportInitialized(instance);
+  }, [viewportCulling.handleViewportInitialized]);
+
+  const getViewportCenter = useCallback(() => {
+    const instance = flowInstanceRef.current;
+    const stage = canvasStageRef.current;
+    if (!stage) return null;
+    const rect = stage.getBoundingClientRect();
+    if (instance && rect.width > 0 && rect.height > 0) {
+      return instance.screenToFlowPosition({
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      });
+    }
+    const viewport = viewportCulling.viewport;
+    return {
+      x: (rect.width / 2 - viewport.x) / viewport.zoom,
+      y: (rect.height / 2 - viewport.y) / viewport.zoom,
+    };
+  }, [viewportCulling.viewport]);
+
+  const getModulePlacement = useCallback(() => {
+    const center = getViewportCenter();
+    if (!center) return null;
+    const existingModules = useAppStore.getState().project.nodes
+      .filter((node) => node.type === 'module')
+      .map((node) => node.position);
+    const gridWidth = MODULE_NODE_SIZE.width * 4 + MODULE_NODE_GAP * 3;
+    for (let index = 0; index < existingModules.length + 100; index += 1) {
+      const column = index % 4;
+      const row = Math.floor(index / 4);
+      const candidate = {
+        x: center.x - gridWidth / 2 + column * (MODULE_NODE_SIZE.width + MODULE_NODE_GAP),
+        y: center.y - MODULE_NODE_SIZE.height / 2 + row * (MODULE_NODE_SIZE.height + MODULE_NODE_GAP),
+      };
+      const overlaps = existingModules.some((position) => (
+        candidate.x < position.x + MODULE_NODE_SIZE.width
+        && candidate.x + MODULE_NODE_SIZE.width > position.x
+        && candidate.y < position.y + MODULE_NODE_SIZE.height
+        && candidate.y + MODULE_NODE_SIZE.height > position.y
+      ));
+      if (!overlaps) return candidate;
+    }
+    return null;
+  }, [getViewportCenter]);
+
+  const createModuleAtViewportCenter = useCallback((moduleType: CanvasModuleType) => {
+    const position = getModulePlacement();
+    if (!position) return;
+    void addModuleNode(moduleType, position);
+  }, [addModuleNode, getModulePlacement]);
+
+  const handleCanvasDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes(MODULE_DRAG_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const handleCanvasDrop = useCallback((event: React.DragEvent<HTMLElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes(MODULE_DRAG_MIME)) return;
+    const rawType = event.dataTransfer.getData(MODULE_DRAG_MIME);
+    if (!rawType) return;
+    let moduleType: CanvasModuleType;
+    try {
+      moduleType = getCanvasModuleDefinition(rawType as CanvasModuleType).type;
+    } catch {
+      return;
+    }
+    const instance = flowInstanceRef.current;
+    const stage = canvasStageRef.current;
+    if (!stage) return;
+    event.preventDefault();
+    const position = instance?.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      ?? (() => {
+        const rect = stage.getBoundingClientRect();
+        const viewport = viewportCulling.viewport;
+        const left = Number.isFinite(rect.left) ? rect.left : 0;
+        const top = Number.isFinite(rect.top) ? rect.top : 0;
+        const x = Number.isFinite(viewport.x) ? viewport.x : 0;
+        const y = Number.isFinite(viewport.y) ? viewport.y : 0;
+        const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : 1;
+        const clientX = Number.isFinite(event.clientX) ? event.clientX : 0;
+        const clientY = Number.isFinite(event.clientY) ? event.clientY : 0;
+        return {
+          x: (clientX - left - x) / zoom,
+          y: (clientY - top - y) / zoom,
+        };
+      })();
+    void addModuleNode(moduleType, position);
+  }, [addModuleNode, viewportCulling.viewport]);
 
   const activateAgentTab = (next: 'conversation' | 'plan' | 'memory', moveFocus = false) => {
     focusAgentTabOnChangeRef.current = moveFocus;
@@ -394,6 +507,17 @@ export function CanvasWorkspace() {
             <Icon size={18} />
           </button>
         ))}
+        <button
+          type="button"
+          data-testid="tool-modules"
+          className={`tool-button${moduleLibraryOpen ? ' is-active' : ''}`}
+          aria-label="Modules"
+          aria-pressed={moduleLibraryOpen}
+          title="Modules"
+          onClick={() => setModuleLibraryOpen((open) => !open)}
+        >
+          <Library size={18} />
+        </button>
         <span className="toolrail__spacer" />
         <button
           className="tool-button"
@@ -406,7 +530,7 @@ export function CanvasWorkspace() {
         </button>
       </nav>
 
-      <main ref={viewportCulling.containerRef} className="canvas-stage" role="application" aria-label="无限画布" data-testid="canvas-stage">
+      <main ref={handleCanvasStageRef} className="canvas-stage" role="application" aria-label="无限画布" data-testid="canvas-stage" onDragOverCapture={handleCanvasDragOver} onDropCapture={handleCanvasDrop}>
         <ReactFlow
           nodes={viewportCulling.nodes}
           edges={viewportCulling.edges}
@@ -414,7 +538,7 @@ export function CanvasWorkspace() {
           fitView
           minZoom={0.08}
           maxZoom={2.5}
-          onInit={viewportCulling.handleViewportInitialized}
+          onInit={handleReactFlowInit}
           onMove={handleViewportInteraction}
           onMoveStart={handleViewportInteraction}
           onMoveEnd={handleViewportInteraction}
@@ -433,6 +557,9 @@ export function CanvasWorkspace() {
           <MiniMap pannable zoomable nodeColor="#0f766e" maskColor="rgba(236, 240, 243, 0.76)" />
           <Controls showInteractive={false} />
         </ReactFlow>
+        {moduleLibraryOpen && (
+          <ModuleLibrary onCreate={createModuleAtViewportCenter} onClose={() => setModuleLibraryOpen(false)} />
+        )}
         <div className="canvas-context">
           <span>{activeTool === 'hand' ? '平移模式' : '编辑模式'}</span>
           <span>100%</span>

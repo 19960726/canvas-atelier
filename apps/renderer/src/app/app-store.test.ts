@@ -70,6 +70,24 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().desktopRevision).toBe(4);
   });
 
+  it('uses one durable transaction to create a module node', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 4,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+
+    const saved = await useAppStore.getState().addModuleNode('text_prompt', { x: 240, y: 180 });
+
+    expect(saved).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(1);
+    const nodes = useAppStore.getState().project.nodes;
+    expect(nodes[nodes.length - 1]).toMatchObject({ type: 'module', data: { moduleType: 'text_prompt' } });
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+  });
+
   it('hydrates the last durable desktop state on REVISION_CONFLICT', async () => {
     const durableProject = createStarterProject();
     const conflictingProject = { ...createStarterProject(), name: 'stale-local-draft' };
