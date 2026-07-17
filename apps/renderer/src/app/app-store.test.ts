@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommitAck } from '@agent-canvas/desktop-core';
-import { buildProjectMemoryContext, createAgentKnowledgeLease, createSkillPromotionCandidateFingerprint } from '@agent-canvas/domain';
-import type { ModelJob, OrderedReference, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
+import { buildProjectMemoryContext, createAgentKnowledgeLease, createCanvasModuleNode, createSkillPromotionCandidateFingerprint, parseCanvasProject } from '@agent-canvas/domain';
+import type { CanvasProject, ModelJob, OrderedReference, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   createStarterProject,
@@ -2568,6 +2568,163 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().agentPlan).toBeNull();
   });
 });
+
+describe('stable module graph commits', () => {
+  beforeEach(() => {
+    delete window.novusDesktop;
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
+    resetAppStoreForTests();
+  });
+
+  it('connects compatible module ports once and rejects invalid handles before persistence', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const project = moduleGraphProject();
+    useAppStore.setState({ project, saveStatus: 'saved' });
+
+    const valid = await useAppStore.getState().connectModulePorts({
+      source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'prompt',
+    });
+    const invalid = await useAppStore.getState().connectModulePorts({
+      source: 'prompt', sourceHandle: 'missing', target: 'generator', targetHandle: 'prompt',
+    });
+
+    expect(valid).toBe(true);
+    expect(invalid).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0]![0].transaction.operations).toEqual([{
+      kind: 'canvas',
+      operation: expect.objectContaining({ kind: 'create_edge' }),
+    }]);
+    expect(useAppStore.getState().project.edges.filter((edge) => edge.source === 'prompt' && edge.target === 'generator')).toHaveLength(1);
+  });
+
+  it('treats missing, ghost, non-module, and incompatible endpoints as synchronous invalid connections', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project: moduleGraphProject(), saveStatus: 'saved' });
+
+    const requests = [
+      { source: 'missing', sourceHandle: 'prompt', target: 'generator', targetHandle: 'prompt' },
+      { source: 'prompt', sourceHandle: null, target: 'generator', targetHandle: 'prompt' },
+      { source: 'prompt', sourceHandle: 'prompt', target: 'prompt-start', targetHandle: 'prompt' },
+      { source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'references' },
+    ] as const;
+
+    for (const request of requests) {
+      expect(await useAppStore.getState().connectModulePorts(request)).toBe(false);
+    }
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+  });
+
+  it('commits a changed node position once, no-ops unchanged positions, and rolls back failed commits', async () => {
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      code: 'INVALID_REQUEST',
+      ok: false,
+      project: request.previousProject,
+      revision: request.baseRevision + 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const project = moduleGraphProject();
+    useAppStore.setState({ project, saveStatus: 'saved' });
+
+    expect(await useAppStore.getState().commitNodePosition('prompt', { x: 0, y: 0 })).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+
+    expect(await useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 })).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 0, y: 0 });
+    expect(useAppStore.getState().saveStatus).toBe('error');
+  });
+
+  it('serializes rapid stable graph operations against the latest acknowledged revision and continues after failure', async () => {
+    const firstAck = deferred<CommitAck>();
+    const commit = vi.fn()
+      .mockReturnValueOnce(firstAck.promise)
+      .mockImplementation(async (request: ProjectCommitRequest) => ({
+        ok: true,
+        project: request.nextProject,
+        revision: request.baseRevision + 1,
+      } satisfies ProjectCommitResult));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project: moduleGraphProject(), saveStatus: 'saved' });
+
+    const first = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    const second = useAppStore.getState().commitNodePosition('generator', { x: 420, y: 30 });
+    expect(commit).toHaveBeenCalledTimes(1);
+
+    firstAck.resolve({
+      committedAt: '2026-07-17T10:00:00.000Z',
+      projectId: 'local-project',
+      revision: 4,
+      sequence: 4,
+      transactionId: commit.mock.calls[0]![0].transaction.id,
+    });
+
+    await waitForStore(() => commit.mock.calls.length === 2);
+    expect(commit.mock.calls[1]![0].baseRevision).toBe(4);
+    expect(commit.mock.calls[1]![0].previousProject.nodes.find((node: { id: string }) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+  });
+
+  it('reorders a many-input module port and rejects non-permutations without persistence', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project: moduleGraphProjectWithReferences(), saveStatus: 'saved' });
+
+    expect(await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-b', 'edge-a'])).toBe(true);
+    expect(await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-a'])).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.edges.filter((edge) => edge.target === 'reverse').map((edge) => [edge.id, edge.order])).toEqual([
+      ['edge-a', 1],
+      ['edge-b', 0],
+    ]);
+  });
+});
+
+function moduleGraphProject(): CanvasProject {
+  const starter = createStarterProject();
+  return parseCanvasProject({
+    ...starter,
+    nodes: [
+      ...starter.nodes,
+      createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 }),
+      createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 }),
+    ],
+  });
+}
+
+function moduleGraphProjectWithReferences(): CanvasProject {
+  return parseCanvasProject({
+    ...moduleGraphProject(),
+    nodes: [
+      ...moduleGraphProject().nodes,
+      createCanvasModuleNode('image-a', 'image_input', { x: 0, y: 240 }),
+      createCanvasModuleNode('image-b', 'image_input', { x: 0, y: 400 }),
+      createCanvasModuleNode('reverse', 'reverse_agent', { x: 360, y: 320 }),
+    ],
+    edges: [
+      ...moduleGraphProject().edges,
+      { id: 'edge-a', source: 'image-a', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 0 },
+      { id: 'edge-b', source: 'image-b', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 1 },
+    ],
+  });
+}
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

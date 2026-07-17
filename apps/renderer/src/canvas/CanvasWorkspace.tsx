@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
-import type { Viewport } from '@xyflow/react';
+import type { Connection, Edge, Node, Viewport } from '@xyflow/react';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type {
   AgentPlanState,
+  CanvasModuleNode,
   CanvasModuleType,
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
@@ -14,7 +15,7 @@ import type {
   ReversePromptResult,
   ReversePromptRun,
 } from '@agent-canvas/domain';
-import { getCanvasModuleDefinition, MAX_GENERATION_REFERENCES, buildProjectMemoryContext } from '@agent-canvas/domain';
+import { canConnectCanvasPorts, getCanvasModuleDefinition, MAX_GENERATION_REFERENCES, buildProjectMemoryContext } from '@agent-canvas/domain';
 import {
   Box,
   ChevronRight,
@@ -46,6 +47,7 @@ import { PlacementInspector } from '../placement/PlacementInspector';
 import { ReferenceOrderList } from '../references/ReferenceOrderList';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
 import { useInteractionQuality } from './use-interaction-quality';
+import { useCanvasDraft } from './use-canvas-draft';
 import { useViewportCulling } from './use-viewport-culling';
 
 type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
@@ -61,6 +63,51 @@ interface CanvasFlowInstance {
 
 function isPlacementNode(node: CanvasNode): node is PlacementNode {
   return node.type === 'placement_preview';
+}
+
+export function isValidCanvasConnection(
+  connection: Connection | Edge,
+  nodes: readonly Node[],
+  edges: readonly Edge[],
+): boolean {
+  const sourceId = connection.source;
+  const targetId = connection.target;
+  const sourcePortId = connection.sourceHandle;
+  const targetPortId = connection.targetHandle;
+  if (!sourceId || !targetId || !sourcePortId || !targetPortId) return false;
+
+  const source = nodes.find((node) => node.id === sourceId);
+  const target = nodes.find((node) => node.id === targetId);
+  if (!source || !target || source.type !== 'module' || target.type !== 'module') return false;
+  if (isGhostFlowNode(source) || isGhostFlowNode(target)) return false;
+
+  try {
+    const sourceNode = toCanvasModuleNode(source);
+    const targetNode = toCanvasModuleNode(target);
+    const validation = canConnectCanvasPorts(sourceNode, sourcePortId, targetNode, targetPortId);
+    if (!validation.ok) return false;
+    const targetPort = getCanvasModuleDefinition(targetNode.data.moduleType).ports.find((port) => (
+      port.id === targetPortId && port.direction === 'input'
+    ));
+    if (!targetPort) return false;
+    return targetPort.cardinality === 'many'
+      || !edges.some((edge) => edge.target === targetId && edge.targetHandle === targetPortId);
+  } catch {
+    return false;
+  }
+}
+
+function isGhostFlowNode(node: Node): boolean {
+  return typeof node.className === 'string' && node.className.split(/\s+/u).includes('agent-ghost-node');
+}
+
+function toCanvasModuleNode(node: Node): CanvasModuleNode {
+  return {
+    id: node.id,
+    type: 'module',
+    position: node.position,
+    data: node.data as CanvasModuleNode['data'],
+  };
 }
 
 const uploadDefaults: Record<
@@ -135,6 +182,8 @@ export function CanvasWorkspace() {
   const agentPanelCollapsed = useAppStore((state) => state.agentPanelCollapsed);
   const setActiveTool = useAppStore((state) => state.setActiveTool);
   const addModuleNode = useAppStore((state) => state.addModuleNode);
+  const connectModulePorts = useAppStore((state) => state.connectModulePorts);
+  const commitNodePosition = useAppStore((state) => state.commitNodePosition);
   const toggleAgentPanel = useAppStore((state) => state.toggleAgentPanel);
   const setProject = useAppStore((state) => state.setProject);
   const agentPlan = useAppStore((state) => state.agentPlan);
@@ -198,6 +247,8 @@ export function CanvasWorkspace() {
   }, [project.edges, agentPlan]);
   const flowNodes = flowNodeState.nodes;
   const flowEdges = flowEdgeState.edges;
+  const canvasDraft = useCanvasDraft({ nodes: flowNodes, onCommitPosition: commitNodePosition });
+  const draftNodes = canvasDraft.nodes;
   const [selectedFlowNodeIds, setSelectedFlowNodeIds] = useState<string[]>([]);
   const [activeFlowEdgeIds, setActiveFlowEdgeIds] = useState<string[]>([]);
   const interactionQuality = useInteractionQuality(runtimeProfile);
@@ -206,7 +257,7 @@ export function CanvasWorkspace() {
     edges: flowEdges,
     ghostEdgeIds: flowEdgeState.ghostEdgeIds,
     ghostNodeIds: flowNodeState.ghostNodeIds,
-    nodes: flowNodes,
+    nodes: draftNodes,
     selectedNodeIds: selectedFlowNodeIds,
   });
   const handleViewportInteraction = useCallback((event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
@@ -603,9 +654,15 @@ export function CanvasWorkspace() {
           onMove={handleViewportInteraction}
           onMoveStart={handleViewportInteraction}
           onMoveEnd={handleViewportInteraction}
+          onNodesChange={canvasDraft.onNodesChange}
           onNodeDrag={markInteraction}
           onNodeDragStart={markInteraction}
-          onNodeDragStop={markInteraction}
+          onNodeDragStop={(event, node) => {
+            markInteraction();
+            void canvasDraft.onNodeDragStop(event, node);
+          }}
+          onConnect={(connection) => { void connectModulePorts(connection); }}
+          isValidConnection={(connection) => isValidCanvasConnection(connection, draftNodes, flowEdges)}
           onSelectionChange={({ nodes, edges }) => {
             const nextNodeIds = nodes.map((node) => node.id);
             const nextEdgeIds = edges.map((edge) => edge.id);

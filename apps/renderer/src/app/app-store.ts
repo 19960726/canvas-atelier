@@ -1,12 +1,15 @@
 import { create } from 'zustand';
+import type { Connection } from '@xyflow/react';
 import type { KnowledgeSyncStatusSummary, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import {
   appendProjectMemoryEntry,
   applyProjectTransaction,
+  canConnectCanvasPorts,
   createSkillPromotionCandidateFingerprint,
   createSkillPromotionCandidate,
   createCanvasModuleNode,
   getCanvasModuleDefinition,
+  reorderCanvasInputEdges,
   createUserFeedbackMemory,
   confirmAgentPlan as confirmDomainPlan,
   revertTransaction,
@@ -16,6 +19,7 @@ import {
   type AgentKnowledgeLease,
   type AgentPlanApprovalSelection,
   type CanvasOperation,
+  type CanvasModuleNode,
   type CanvasModuleType,
   type CanvasProject,
   type CanvasTransaction,
@@ -59,7 +63,7 @@ import { runtimeProfile } from './runtime-profile';
 
 let planSequence = 0;
 let referenceOrderCommitTail: Promise<void> | null = null;
-let moduleCreationCommitTail: Promise<void> | null = null;
+let moduleGraphCommitTail: Promise<void> | null = null;
 let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
 let modelJobExecutorOverride: ModelJobExecutor | null = null;
@@ -140,6 +144,9 @@ interface AppState {
   closePersistence: () => Promise<boolean>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
   addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
+  connectModulePorts: (connection: Connection) => Promise<boolean>;
+  commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
+  reorderModuleInput: (targetNodeId: string, targetPortId: string, edgeIds: string[]) => Promise<boolean>;
   commitReferenceOrder: (assetIds: string[]) => Promise<boolean>;
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
   getKnowledgeLease: KnowledgeClient['getLease'];
@@ -194,7 +201,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
   },
-  addModuleNode: (moduleType, position) => enqueueModuleCreationCommit(async () => {
+  addModuleNode: (moduleType, position) => enqueueModuleGraphCommit(async () => {
     const suffix = `${Date.now()}-${planSequence++}`;
     const node = createCanvasModuleNode(`module-${moduleType}-${suffix}`, moduleType, position);
     return get().commitProjectTransaction({
@@ -202,6 +209,110 @@ export const useAppStore = create<AppState>((set, get) => ({
       label: `Add ${getCanvasModuleDefinition(moduleType).displayName}`,
       operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
     });
+  }),
+  connectModulePorts: (connection) => enqueueModuleGraphCommit(async () => {
+    const state = get();
+    const sourceId = connection?.source;
+    const targetId = connection?.target;
+    const sourcePortId = connection?.sourceHandle;
+    const targetPortId = connection?.targetHandle;
+    if (!isNonEmptyString(sourceId) || !isNonEmptyString(targetId)
+      || !isNonEmptyString(sourcePortId) || !isNonEmptyString(targetPortId)) return false;
+
+    const sourceNode = getModuleNode(state.project.nodes, sourceId);
+    const targetNode = getModuleNode(state.project.nodes, targetId);
+    if (!sourceNode || !targetNode) return false;
+    const validation = canConnectCanvasPorts(sourceNode, sourcePortId, targetNode, targetPortId);
+    if (!validation.ok) return false;
+    const targetPort = getCanvasModuleDefinition(targetNode.data.moduleType).ports.find((port) => (
+      port.id === targetPortId && port.direction === 'input'
+    ));
+    if (!targetPort) return false;
+
+    const incoming = state.project.edges.filter((edge) => (
+      edge.target === targetId && edge.targetPortId === targetPortId
+    ));
+    if (targetPort.cardinality === 'one' && incoming.length > 0) return false;
+    const nextOrder = incoming.length === 0
+      ? 0
+      : Math.max(...incoming.map((edge, index) => edge.order ?? index)) + 1;
+    const edgeId = createModuleEdgeId(state.project.edges.map((edge) => edge.id), {
+      sourceId,
+      sourcePortId,
+      targetId,
+      targetPortId,
+      order: nextOrder,
+    });
+    const transaction: ProjectTransaction = {
+      id: `connect-module-${edgeId}`,
+      label: 'Connect module ports',
+      operations: [{
+        kind: 'canvas',
+        operation: {
+          kind: 'create_edge',
+          edge: { id: edgeId, source: sourceId, sourcePortId, target: targetId, targetPortId, order: nextOrder },
+        },
+      }],
+    };
+    try {
+      const nextProject = applyProjectTransaction(state.project, transaction);
+      return get().commitProjectTransaction(transaction, { nextProject });
+    } catch {
+      return false;
+    }
+  }),
+  commitNodePosition: (nodeId, position) => enqueueModuleGraphCommit(async () => {
+    const state = get();
+    if (!isNonEmptyString(nodeId) || !isFinitePosition(position)) return false;
+    const node = state.project.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) return false;
+    if (node.position.x === position.x && node.position.y === position.y) return true;
+
+    const nextNode = { ...node, position };
+    const transaction: ProjectTransaction = {
+      id: `move-node-${nodeId}-${position.x}-${position.y}`,
+      label: 'Move canvas node',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    try {
+      const nextProject = applyProjectTransaction(state.project, transaction);
+      return get().commitProjectTransaction(transaction, { nextProject });
+    } catch {
+      return false;
+    }
+  }),
+  reorderModuleInput: (targetNodeId, targetPortId, edgeIds) => enqueueModuleGraphCommit(async () => {
+    const state = get();
+    if (!isNonEmptyString(targetNodeId) || !isNonEmptyString(targetPortId)
+      || !edgeIds.every(isNonEmptyString)) return false;
+    const targetNode = getModuleNode(state.project.nodes, targetNodeId);
+    if (!targetNode) return false;
+    const targetPort = getCanvasModuleDefinition(targetNode.data.moduleType).ports.find((port) => (
+      port.id === targetPortId && port.direction === 'input'
+    ));
+    if (!targetPort || targetPort.cardinality !== 'many') return false;
+    const matching = state.project.edges.filter((edge) => (
+      edge.target === targetNodeId && edge.targetPortId === targetPortId
+    ));
+    if (matching.length === 0) return false;
+    for (const edge of matching) {
+      const sourceNode = getModuleNode(state.project.nodes, edge.source);
+      if (!sourceNode || !edge.sourcePortId || !canConnectCanvasPorts(sourceNode, edge.sourcePortId, targetNode, targetPortId).ok) {
+        return false;
+      }
+    }
+    const transaction: ProjectTransaction = {
+      id: `reorder-module-${targetNodeId}-${targetPortId}`,
+      label: 'Reorder module input',
+      operations: [{ kind: 'canvas', operation: { kind: 'reorder_input_edges', targetNodeId, targetPortId, edgeIds: [...edgeIds] } }],
+    };
+    try {
+      reorderCanvasInputEdges(state.project.edges, targetNodeId, targetPortId, edgeIds);
+      const nextProject = applyProjectTransaction(state.project, transaction);
+      return get().commitProjectTransaction(transaction, { nextProject });
+    } catch {
+      return false;
+    }
   }),
   closePersistence: async () => {
     const flushed = await flushPendingProjectSave(get, set, 'close');
@@ -734,14 +845,14 @@ function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise
   return result;
 }
 
-function enqueueModuleCreationCommit(operation: () => Promise<boolean>): Promise<boolean> {
-  const result = moduleCreationCommitTail === null
+function enqueueModuleGraphCommit(operation: () => Promise<boolean>): Promise<boolean> {
+  const result = moduleGraphCommitTail === null
     ? operation()
-    : moduleCreationCommitTail.then(operation);
+    : moduleGraphCommitTail.then(operation);
   const tail = result.then(() => undefined, () => undefined);
-  moduleCreationCommitTail = tail;
+  moduleGraphCommitTail = tail;
   void tail.finally(() => {
-    if (moduleCreationCommitTail === tail) moduleCreationCommitTail = null;
+    if (moduleGraphCommitTail === tail) moduleGraphCommitTail = null;
   });
   return result;
 }
@@ -752,7 +863,7 @@ export function resetAppStoreForTests(): void {
   clearPendingAgentConfirmation();
   pendingAgentJobRetry = null;
   referenceOrderCommitTail = null;
-  moduleCreationCommitTail = null;
+  moduleGraphCommitTail = null;
   invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
   modelJobUnsubscribe?.();
@@ -762,6 +873,31 @@ export function resetAppStoreForTests(): void {
   pendingModelJobExecutorOverride = null;
   knowledgeClient.stop();
   useAppStore.setState(createInitialState());
+}
+
+function getModuleNode(nodes: readonly CanvasProject['nodes'][number][], nodeId: string): CanvasModuleNode | undefined {
+  const node = nodes.find((candidate) => candidate.id === nodeId);
+  return node?.type === 'module' ? node : undefined;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isFinitePosition(value: { x: number; y: number }): boolean {
+  return Number.isFinite(value.x) && Number.isFinite(value.y);
+}
+
+function createModuleEdgeId(
+  existingIds: readonly string[],
+  input: { sourceId: string; sourcePortId: string; targetId: string; targetPortId: string; order: number },
+): string {
+  const existing = new Set(existingIds);
+  const base = `module-edge-${input.sourceId}-${input.sourcePortId}-${input.targetId}-${input.targetPortId}-${input.order}`;
+  if (!existing.has(base)) return base;
+  let suffix = 2;
+  while (existing.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
 }
 
 function applyCommitResult(

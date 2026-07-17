@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createAgentKnowledgeLease, type PlacementObject, type ProjectMemoryEntry } from '@agent-canvas/domain';
+import { createAgentKnowledgeLease, createCanvasModuleNode, type PlacementObject, type ProjectMemoryEntry } from '@agent-canvas/domain';
 import {
   createStarterProject,
   replaceKnowledgeClientForTests,
@@ -18,7 +18,7 @@ import type {
   ProjectHydrationResult,
   ProjectPersistenceClient,
 } from '../app/desktop-persistence';
-import { calculateModulePlacement, CanvasWorkspace, type ModulePlacementBounds } from './CanvasWorkspace';
+import { calculateModulePlacement, CanvasWorkspace, isValidCanvasConnection, type ModulePlacementBounds } from './CanvasWorkspace';
 import { MODULE_DRAG_MIME } from './ModuleLibrary';
 
 const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
@@ -37,6 +37,24 @@ afterEach(() => {
 });
 
 describe('CanvasWorkspace', () => {
+  it('validates module connections synchronously before React Flow offers them', () => {
+    const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });
+    const generator = createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 });
+    const ghost = { ...generator, id: 'ghost-generator' };
+    const nodes = [prompt, generator, ghost].map((node) => ({
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      data: node.data,
+      ...(node.id === 'ghost-generator' ? { className: 'agent-ghost-node' } : {}),
+    }));
+
+    expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'prompt' }, nodes, [])).toBe(true);
+    expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'references' }, nodes, [])).toBe(false);
+    expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'ghost-generator', targetHandle: 'prompt' }, nodes, [])).toBe(false);
+    expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: null, target: 'generator', targetHandle: 'prompt' }, nodes, [])).toBe(false);
+  });
+
   it('exposes stable visual-state hooks for the professional shell', () => {
     render(<CanvasWorkspace />);
 
