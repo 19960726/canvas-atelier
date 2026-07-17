@@ -88,6 +88,71 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().saveStatus).toBe('saved');
   });
 
+  it('serializes rapid module creation until each desktop ACK advances the revision', async () => {
+    const firstAck = deferred<CommitAck>();
+    const secondAck = deferred<CommitAck>();
+    const commit = vi.fn()
+      .mockReturnValueOnce(firstAck.promise)
+      .mockReturnValueOnce(secondAck.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+
+    const first = useAppStore.getState().addModuleNode('text_prompt', { x: 120, y: 120 });
+    const second = useAppStore.getState().addModuleNode('openpose', { x: 420, y: 120 });
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().saveStatus).toBe('saving');
+
+    firstAck.resolve({
+      committedAt: '2026-07-17T10:00:00.000Z',
+      projectId: 'local-project',
+      revision: 4,
+      sequence: 4,
+      transactionId: commit.mock.calls[0]![0].transaction.id,
+    });
+
+    await waitForStore(() => commit.mock.calls.length === 2);
+    expect(commit.mock.calls[1]![0].baseRevision).toBe(4);
+    expect(commit.mock.calls[1]![0].previousProject.nodes.some((node: { type: string; data?: { moduleType?: string } }) => node.data?.moduleType === 'text_prompt')).toBe(true);
+
+    secondAck.resolve({
+      committedAt: '2026-07-17T10:00:01.000Z',
+      projectId: 'local-project',
+      revision: 5,
+      sequence: 5,
+      transactionId: commit.mock.calls[1]![0].transaction.id,
+    });
+
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+    expect(useAppStore.getState().desktopRevision).toBe(5);
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+    expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module')).toHaveLength(2);
+  });
+
+  it('continues module creation after a failed commit', async () => {
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (request.baseRevision === 0) {
+        return { code: 'INVALID_REQUEST', ok: false, project: request.previousProject, revision: 1 };
+      }
+      return { ok: true, project: request.nextProject, revision: 2 };
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+
+    const first = useAppStore.getState().addModuleNode('text_prompt', { x: 120, y: 120 });
+    const second = useAppStore.getState().addModuleNode('openpose', { x: 420, y: 120 });
+
+    expect(await first).toBe(false);
+    expect(await second).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]![0].baseRevision).toBe(1);
+    expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module')).toMatchObject([
+      { data: { moduleType: 'openpose' } },
+    ]);
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+  });
+
   it('hydrates the last durable desktop state on REVISION_CONFLICT', async () => {
     const durableProject = createStarterProject();
     const conflictingProject = { ...createStarterProject(), name: 'stale-local-draft' };

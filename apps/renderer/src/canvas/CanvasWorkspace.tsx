@@ -75,6 +75,59 @@ const uploadDefaults: Record<
 
 const MODULE_NODE_SIZE = { width: 264, height: 214 } as const;
 const MODULE_NODE_GAP = 28;
+const CANVAS_MARGIN = 12;
+const MODULE_LIBRARY_WIDTH = 286;
+const MODULE_LIBRARY_GAP = 12;
+
+export interface ModulePlacementBounds {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+export interface ModulePlacementPosition {
+  x: number;
+  y: number;
+}
+
+export function calculateModulePlacement(
+  bounds: ModulePlacementBounds,
+  existingPositions: readonly ModulePlacementPosition[],
+): ModulePlacementPosition | null {
+  const availableWidth = bounds.right - bounds.left;
+  const availableHeight = bounds.bottom - bounds.top;
+  if (!Number.isFinite(availableWidth) || !Number.isFinite(availableHeight)) return null;
+
+  const columnCount = Math.min(
+    4,
+    Math.floor((availableWidth + MODULE_NODE_GAP) / (MODULE_NODE_SIZE.width + MODULE_NODE_GAP)),
+  );
+  const rowCount = Math.floor((availableHeight + MODULE_NODE_GAP) / (MODULE_NODE_SIZE.height + MODULE_NODE_GAP));
+  if (columnCount < 1 || rowCount < 1) return null;
+
+  const gridWidth = columnCount * MODULE_NODE_SIZE.width + (columnCount - 1) * MODULE_NODE_GAP;
+  const gridHeight = rowCount * MODULE_NODE_SIZE.height + (rowCount - 1) * MODULE_NODE_GAP;
+  const startX = bounds.left + Math.max(0, (availableWidth - gridWidth) / 2);
+  const startY = bounds.top + Math.max(0, (availableHeight - gridHeight) / 2);
+
+  for (let row = 0; row < rowCount; row += 1) {
+    for (let column = 0; column < columnCount; column += 1) {
+      const candidate = {
+        x: startX + column * (MODULE_NODE_SIZE.width + MODULE_NODE_GAP),
+        y: startY + row * (MODULE_NODE_SIZE.height + MODULE_NODE_GAP),
+      };
+      const overlaps = existingPositions.some((position) => (
+        candidate.x < position.x + MODULE_NODE_SIZE.width
+        && candidate.x + MODULE_NODE_SIZE.width > position.x
+        && candidate.y < position.y + MODULE_NODE_SIZE.height
+        && candidate.y + MODULE_NODE_SIZE.height > position.y
+      ));
+      if (!overlaps) return candidate;
+    }
+  }
+  return null;
+}
 
 export function CanvasWorkspace() {
   const project = useAppStore((state) => state.project);
@@ -225,48 +278,54 @@ export function CanvasWorkspace() {
     viewportCulling.handleViewportInitialized(instance);
   }, [viewportCulling.handleViewportInitialized]);
 
-  const getViewportCenter = useCallback(() => {
+  const screenToFlowPosition = useCallback((position: { x: number; y: number }) => {
     const instance = flowInstanceRef.current;
+    if (instance) return instance.screenToFlowPosition(position);
     const stage = canvasStageRef.current;
     if (!stage) return null;
     const rect = stage.getBoundingClientRect();
-    if (instance && rect.width > 0 && rect.height > 0) {
-      return instance.screenToFlowPosition({
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-      });
-    }
     const viewport = viewportCulling.viewport;
+    const left = Number.isFinite(rect.left) ? rect.left : 0;
+    const top = Number.isFinite(rect.top) ? rect.top : 0;
+    const x = Number.isFinite(viewport.x) ? viewport.x : 0;
+    const y = Number.isFinite(viewport.y) ? viewport.y : 0;
+    const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : 1;
     return {
-      x: (rect.width / 2 - viewport.x) / viewport.zoom,
-      y: (rect.height / 2 - viewport.y) / viewport.zoom,
+      x: (position.x - left - x) / zoom,
+      y: (position.y - top - y) / zoom,
     };
   }, [viewportCulling.viewport]);
 
+  const getModulePlacementBounds = useCallback(() => {
+    const stage = canvasStageRef.current;
+    if (!stage) return null;
+    const rect = stage.getBoundingClientRect();
+    const width = rect.width > 0 ? rect.width : stage.clientWidth || 1024;
+    const height = rect.height > 0 ? rect.height : stage.clientHeight || 768;
+
+    const left = rect.left + CANVAS_MARGIN + (moduleLibraryOpen ? MODULE_LIBRARY_WIDTH + MODULE_LIBRARY_GAP : 0);
+    const right = rect.left + width - CANVAS_MARGIN;
+    const top = rect.top + CANVAS_MARGIN;
+    const bottom = rect.top + height - CANVAS_MARGIN;
+    const topLeft = screenToFlowPosition({ x: left, y: top });
+    const bottomRight = screenToFlowPosition({ x: right, y: bottom });
+    if (!topLeft || !bottomRight) return null;
+    return {
+      left: Math.min(topLeft.x, bottomRight.x),
+      right: Math.max(topLeft.x, bottomRight.x),
+      top: Math.min(topLeft.y, bottomRight.y),
+      bottom: Math.max(topLeft.y, bottomRight.y),
+    };
+  }, [moduleLibraryOpen, screenToFlowPosition]);
+
   const getModulePlacement = useCallback(() => {
-    const center = getViewportCenter();
-    if (!center) return null;
+    const bounds = getModulePlacementBounds();
+    if (!bounds) return null;
     const existingModules = useAppStore.getState().project.nodes
       .filter((node) => node.type === 'module')
       .map((node) => node.position);
-    const gridWidth = MODULE_NODE_SIZE.width * 4 + MODULE_NODE_GAP * 3;
-    for (let index = 0; index < existingModules.length + 100; index += 1) {
-      const column = index % 4;
-      const row = Math.floor(index / 4);
-      const candidate = {
-        x: center.x - gridWidth / 2 + column * (MODULE_NODE_SIZE.width + MODULE_NODE_GAP),
-        y: center.y - MODULE_NODE_SIZE.height / 2 + row * (MODULE_NODE_SIZE.height + MODULE_NODE_GAP),
-      };
-      const overlaps = existingModules.some((position) => (
-        candidate.x < position.x + MODULE_NODE_SIZE.width
-        && candidate.x + MODULE_NODE_SIZE.width > position.x
-        && candidate.y < position.y + MODULE_NODE_SIZE.height
-        && candidate.y + MODULE_NODE_SIZE.height > position.y
-      ));
-      if (!overlaps) return candidate;
-    }
-    return null;
-  }, [getViewportCenter]);
+    return calculateModulePlacement(bounds, existingModules);
+  }, [getModulePlacementBounds]);
 
   const createModuleAtViewportCenter = useCallback((moduleType: CanvasModuleType) => {
     const position = getModulePlacement();
@@ -290,28 +349,30 @@ export function CanvasWorkspace() {
     } catch {
       return;
     }
-    const instance = flowInstanceRef.current;
     const stage = canvasStageRef.current;
     if (!stage) return;
     event.preventDefault();
-    const position = instance?.screenToFlowPosition({ x: event.clientX, y: event.clientY })
-      ?? (() => {
-        const rect = stage.getBoundingClientRect();
-        const viewport = viewportCulling.viewport;
-        const left = Number.isFinite(rect.left) ? rect.left : 0;
-        const top = Number.isFinite(rect.top) ? rect.top : 0;
-        const x = Number.isFinite(viewport.x) ? viewport.x : 0;
-        const y = Number.isFinite(viewport.y) ? viewport.y : 0;
-        const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : 1;
-        const clientX = Number.isFinite(event.clientX) ? event.clientX : 0;
-        const clientY = Number.isFinite(event.clientY) ? event.clientY : 0;
-        return {
-          x: (clientX - left - x) / zoom,
-          y: (clientY - top - y) / zoom,
-        };
-      })();
+    const position = screenToFlowPosition({
+      x: Number.isFinite(event.clientX) ? event.clientX : 0,
+      y: Number.isFinite(event.clientY) ? event.clientY : 0,
+    });
+    if (!position) return;
     void addModuleNode(moduleType, position);
-  }, [addModuleNode, viewportCulling.viewport]);
+  }, [addModuleNode, screenToFlowPosition]);
+
+  const activateCanvasTool = useCallback((tool: Parameters<typeof setActiveTool>[0]) => {
+    setModuleLibraryOpen(false);
+    setActiveTool(tool);
+  }, [setActiveTool]);
+
+  const toggleModuleLibrary = useCallback(() => {
+    if (moduleLibraryOpen) {
+      setModuleLibraryOpen(false);
+      return;
+    }
+    setActiveTool('select');
+    setModuleLibraryOpen(true);
+  }, [moduleLibraryOpen, setActiveTool]);
 
   const activateAgentTab = (next: 'conversation' | 'plan' | 'memory', moveFocus = false) => {
     focusAgentTabOnChangeRef.current = moveFocus;
@@ -502,7 +563,7 @@ export function CanvasWorkspace() {
             aria-label={label}
             aria-pressed={activeTool === id}
             title={label}
-            onClick={() => setActiveTool(id)}
+            onClick={() => activateCanvasTool(id)}
           >
             <Icon size={18} />
           </button>
@@ -514,7 +575,7 @@ export function CanvasWorkspace() {
           aria-label="Modules"
           aria-pressed={moduleLibraryOpen}
           title="Modules"
-          onClick={() => setModuleLibraryOpen((open) => !open)}
+          onClick={toggleModuleLibrary}
         >
           <Library size={18} />
         </button>

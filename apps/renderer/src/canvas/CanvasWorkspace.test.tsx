@@ -18,7 +18,7 @@ import type {
   ProjectHydrationResult,
   ProjectPersistenceClient,
 } from '../app/desktop-persistence';
-import { CanvasWorkspace } from './CanvasWorkspace';
+import { calculateModulePlacement, CanvasWorkspace, type ModulePlacementBounds } from './CanvasWorkspace';
 import { MODULE_DRAG_MIME } from './ModuleLibrary';
 
 const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
@@ -103,6 +103,50 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
     expect(screen.queryByRole('searchbox', { name: 'Search modules' })).toBeNull();
     expect(commit).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps module placement inside the unobscured canvas with at most four columns', () => {
+    const bounds: ModulePlacementBounds = { left: 310, right: 958, top: 12, bottom: 612 };
+    const positions = [];
+    for (let index = 0; index < 4; index += 1) {
+      const next = calculateModulePlacement(bounds, positions);
+      expect(next).not.toBeNull();
+      positions.push(next!);
+    }
+
+    expect(new Set(positions.map((position) => position.x)).size).toBe(2);
+    for (const position of positions) {
+      expect(position.x).toBeGreaterThanOrEqual(bounds.left);
+      expect(position.x + 264).toBeLessThanOrEqual(bounds.right);
+      expect(position.y).toBeGreaterThanOrEqual(bounds.top);
+      expect(position.y + 214).toBeLessThanOrEqual(bounds.bottom);
+    }
+    expect(positions[0]).not.toEqual(positions[1]);
+    expect(positions[2]).not.toEqual(positions[3]);
+  });
+
+  it('keeps the module library and placement workbench mutually exclusive', () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests();
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByTestId('tool-placement'));
+    expect(screen.getByTestId('placement-workbench')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
+    expect(screen.getByTestId('module-library')).toBeVisible();
+    expect(screen.queryByTestId('placement-workbench')).toBeNull();
+    expect(screen.getByTestId('tool-placement')).toHaveAttribute('aria-pressed', 'false');
+    expect(commit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('tool-placement'));
+    expect(screen.queryByTestId('module-library')).toBeNull();
+    expect(screen.getByTestId('placement-workbench')).toBeVisible();
   });
 
   it('ignores foreign and invalid module drops', async () => {

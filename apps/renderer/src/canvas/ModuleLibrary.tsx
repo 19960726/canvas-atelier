@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Search,
   X,
@@ -47,6 +47,7 @@ interface ModuleLibraryProps {
 export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'all' | CanvasModuleDefinition['category']>('all');
+  const categoryTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const definitions = useMemo(() => listCanvasModuleDefinitions(), []);
   const filteredDefinitions = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -57,6 +58,20 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
         .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
     });
   }, [category, definitions, query]);
+
+  const moveCategory = (currentIndex: number, direction: 'first' | 'last' | 'next' | 'previous') => {
+    const nextIndex = direction === 'first'
+      ? 0
+      : direction === 'last'
+        ? categories.length - 1
+        : direction === 'next'
+          ? (currentIndex + 1) % categories.length
+          : (currentIndex - 1 + categories.length) % categories.length;
+    const nextCategory = categories[nextIndex];
+    if (!nextCategory) return;
+    setCategory(nextCategory.id);
+    categoryTabRefs.current[nextIndex]?.focus();
+  };
 
   return (
     <aside className="module-library" aria-label="Module library" data-testid="module-library">
@@ -82,20 +97,36 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
         />
       </label>
       <div className="module-library__categories" role="tablist" aria-label="Module categories">
-        {categories.map((item) => (
+        {categories.map((item, index) => (
           <button
             key={item.id}
+            ref={(element) => { categoryTabRefs.current[index] = element; }}
+            id={`module-category-tab-${item.id}`}
             type="button"
             role="tab"
             aria-selected={category === item.id}
+            aria-controls="module-category-panel"
+            tabIndex={category === item.id ? 0 : -1}
             className={category === item.id ? 'is-active' : ''}
             onClick={() => setCategory(item.id)}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowRight') moveCategory(index, 'next');
+              if (event.key === 'ArrowLeft') moveCategory(index, 'previous');
+              if (event.key === 'Home') moveCategory(index, 'first');
+              if (event.key === 'End') moveCategory(index, 'last');
+              if (['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) event.preventDefault();
+            }}
           >
             {item.label}
           </button>
         ))}
       </div>
-      <div className="module-library__list">
+      <div
+        className="module-library__list"
+        id="module-category-panel"
+        role="tabpanel"
+        aria-labelledby={`module-category-tab-${category}`}
+      >
         {filteredDefinitions.map((definition) => {
           const Icon = resolveCanvasModuleIcon(definition.iconKey);
           return (

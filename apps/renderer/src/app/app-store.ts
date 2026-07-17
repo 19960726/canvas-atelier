@@ -59,6 +59,7 @@ import { runtimeProfile } from './runtime-profile';
 
 let planSequence = 0;
 let referenceOrderCommitTail: Promise<void> | null = null;
+let moduleCreationCommitTail: Promise<void> | null = null;
 let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
 let modelJobExecutorOverride: ModelJobExecutor | null = null;
@@ -193,7 +194,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
   },
-  addModuleNode: async (moduleType, position) => {
+  addModuleNode: (moduleType, position) => enqueueModuleCreationCommit(async () => {
     const suffix = `${Date.now()}-${planSequence++}`;
     const node = createCanvasModuleNode(`module-${moduleType}-${suffix}`, moduleType, position);
     return get().commitProjectTransaction({
@@ -201,7 +202,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       label: `Add ${getCanvasModuleDefinition(moduleType).displayName}`,
       operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
     });
-  },
+  }),
   closePersistence: async () => {
     const flushed = await flushPendingProjectSave(get, set, 'close');
     if (!flushed) return false;
@@ -733,12 +734,25 @@ function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise
   return result;
 }
 
+function enqueueModuleCreationCommit(operation: () => Promise<boolean>): Promise<boolean> {
+  const result = moduleCreationCommitTail === null
+    ? operation()
+    : moduleCreationCommitTail.then(operation);
+  const tail = result.then(() => undefined, () => undefined);
+  moduleCreationCommitTail = tail;
+  void tail.finally(() => {
+    if (moduleCreationCommitTail === tail) moduleCreationCommitTail = null;
+  });
+  return result;
+}
+
 export function resetAppStoreForTests(): void {
   cancelPendingProjectSave();
   pendingProjectFlushBoundary = null;
   clearPendingAgentConfirmation();
   pendingAgentJobRetry = null;
   referenceOrderCommitTail = null;
+  moduleCreationCommitTail = null;
   invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
   modelJobUnsubscribe?.();
