@@ -45,6 +45,7 @@ export {
 export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
+export { migrateCanvasProjectGraph } from './module-graph';
 export {
   CANVAS_MODULE_DEFINITIONS,
   createCanvasModuleNode,
@@ -66,6 +67,7 @@ export type {
 export type {
   AgentPlan,
   CanvasEdge,
+  CanvasModuleNode,
   CanvasNode,
   CanvasProject,
   ModelJob,

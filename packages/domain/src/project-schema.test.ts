@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as publicApi from './index';
+import { createCanvasModuleNode } from './canvas-module';
 import { createAgentKnowledgeLease } from './knowledge-context';
 import { createSkillPromotionCandidate, createUserFeedbackMemory, reviewSkillPromotionCandidate } from './project-memory';
 import { agentPlanSchema, parseCanvasProject } from './project-schema';
@@ -16,6 +17,89 @@ describe('parseCanvasProject', () => {
 
     expect(project.projectMemory).toEqual([]);
     expect(project.skillPromotionCandidates).toEqual([]);
+    expect(project.graphVersion).toBe(2);
+  });
+
+  it('accepts a strict module node with a port-aware edge', () => {
+    const promptNode = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });
+
+    const project = parseCanvasProject({
+      version: 1,
+      graphVersion: 2,
+      id: 'p1',
+      name: 'module graph',
+      nodes: [
+        {
+          ...promptNode,
+          data: {
+            ...promptNode.data,
+            config: { note: 'slash prose / not a file path' },
+          },
+        },
+        createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 }),
+      ],
+      edges: [{
+        id: 'edge-1',
+        source: 'prompt',
+        sourcePortId: 'prompt',
+        target: 'generator',
+        targetPortId: 'prompt',
+        order: 0,
+      }],
+    });
+
+    expect(project.nodes[0]).toMatchObject({
+      type: 'module',
+      data: {
+        moduleType: 'text_prompt',
+        moduleVersion: 1,
+        execution: { state: 'idle' },
+      },
+    });
+    expect(project.edges[0]).toMatchObject({
+      sourcePortId: 'prompt',
+      targetPortId: 'prompt',
+      order: 0,
+    });
+  });
+
+  it('rejects protected or unknown module node data', () => {
+    const moduleNode = createCanvasModuleNode('unsafe', 'text_prompt', { x: 0, y: 0 });
+
+    expect(() => parseCanvasProject({
+      version: 1,
+      graphVersion: 2,
+      id: 'p1',
+      name: 'unsafe graph',
+      nodes: [{
+        ...moduleNode,
+        data: {
+          ...moduleNode.data,
+          config: {
+            apiKey: 'secret',
+          },
+        },
+      }],
+      edges: [],
+    })).toThrow(/apiKey|protected|secret/i);
+
+    expect(() => parseCanvasProject({
+      version: 1,
+      graphVersion: 2,
+      id: 'p1',
+      name: 'unsafe graph',
+      nodes: [{
+        ...moduleNode,
+        data: {
+          ...moduleNode.data,
+          execution: {
+            ...moduleNode.data.execution,
+            providerTaskId: 'task-1',
+          },
+        },
+      }],
+      edges: [],
+    })).toThrow(/Unrecognized key/);
   });
 
   it('restores project memory stored with the project', () => {
@@ -527,6 +611,7 @@ describe('public domain API', () => {
       'projectOperationSchema',
       'projectTransactionSchema',
       'listCanvasModuleDefinitions',
+      'migrateCanvasProjectGraph',
       'reorderReferences',
       'revertTransaction',
       'reviewSkillPromotionCandidate',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CanvasNode, CanvasProject } from './project-schema';
+import { parseCanvasProject } from './project-schema';
 import { applyTransaction, revertTransaction } from './canvas-transaction';
 
 const emptyProject: CanvasProject = {
@@ -40,7 +41,7 @@ describe('canvas transactions', () => {
 
     expect(result.project.nodes).toHaveLength(2);
     expect(result.project.edges).toHaveLength(1);
-    expect(revertTransaction(result.project, result.inverse)).toEqual(emptyProject);
+    expect(revertTransaction(result.project, result.inverse)).toEqual(parseCanvasProject(emptyProject));
   });
 
   it('does not mutate the input project when a later operation is invalid', () => {
@@ -68,7 +69,7 @@ describe('canvas transactions', () => {
     });
 
     expect(result.project.nodes[0]?.position).toEqual({ x: 50, y: 75 });
-    expect(revertTransaction(result.project, result.inverse)).toEqual(project);
+    expect(revertTransaction(result.project, result.inverse)).toEqual(parseCanvasProject(project));
   });
 
   it('rejects unknown operation kinds from runtime input', () => {

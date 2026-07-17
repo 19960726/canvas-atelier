@@ -1,11 +1,13 @@
 import { MAX_GENERATION_REFERENCES, referenceRoleSchema } from './agent-knowledge-contract';
 import { modelJobSchema } from './model-job';
+import { canvasEdgeSchema, migrateCanvasProjectGraph, moduleNodeSchema } from './module-graph';
 import { projectMemoryEntrySchema, selectActiveProjectMemoryEntries, skillPromotionCandidateSchema } from './project-memory';
 import { z } from 'zod';
 
 const idSchema = z.string().min(1);
 const normalizedSchema = z.number().min(0).max(1);
 export { MAX_GENERATION_REFERENCES, referenceRoleSchema };
+export { canvasEdgeSchema };
 
 export const placementSafeAreaSchema = z.object({
   id: idSchema,
@@ -166,17 +168,12 @@ export const canvasNodeSchema = z.discriminatedUnion('type', [
   reviewNodeSchema,
   memoryDiffNodeSchema,
   agentPlanNodeSchema,
+  moduleNodeSchema,
 ]);
-
-export const canvasEdgeSchema = z.object({
-  id: idSchema,
-  source: idSchema,
-  target: idSchema,
-  label: z.string().optional(),
-}).strict();
 
 export const canvasProjectSchema = z.object({
   version: z.literal(1),
+  graphVersion: z.literal(2).optional(),
   id: idSchema,
   name: z.string().min(1),
   nodes: z.array(canvasNodeSchema),
@@ -260,9 +257,10 @@ export type PlacementBoard = z.infer<typeof placementBoardSchema>;
 export type AgentPlan = z.infer<typeof agentPlanSchema>;
 export type ModelJob = z.infer<typeof modelJobSchema>;
 export type CanvasNode = z.infer<typeof canvasNodeSchema>;
+export type CanvasModuleNode = Extract<CanvasNode, { type: 'module' }>;
 export type CanvasEdge = z.infer<typeof canvasEdgeSchema>;
 export type CanvasProject = z.infer<typeof canvasProjectSchema>;
 
 export function parseCanvasProject(input: unknown): CanvasProject {
-  return canvasProjectSchema.parse(input);
+  return canvasProjectSchema.parse(migrateCanvasProjectGraph(input));
 }
