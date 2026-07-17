@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Work only in `E:\画布项目\.worktrees\canvas-agent-mvp` on `feature/canvas-agent-mvp`; never modify the main checkout.
+- Work only in the linked `canvas-agent-mvp` worktree on `feature/canvas-agent-mvp`; never modify the main checkout.
 - Preserve the existing 44 px top bar, 48 px tool rail, 360 px Agent panel, and 36 px job strip.
 - Use Segoe UI with Microsoft YaHei UI fallback and zero letter spacing.
 - Use restrained radii: 4-5 px controls and 6-7 px panels/nodes.

@@ -2,6 +2,11 @@ import type { Locator, Page, TestInfo } from '@playwright/test';
 import { expect } from './e2e-test';
 import type { GeneratedImageFixture } from './fixtures';
 
+export interface PanZoomFrameMetrics {
+  medianFrameMs: number;
+  markCount: number;
+}
+
 type E2EState = {
   commitCount: number;
   modelJobs: Array<{
@@ -109,7 +114,7 @@ export async function captureLayoutScreenshot(page: Page, testInfo: TestInfo, na
   });
 }
 
-export async function medianPanZoomFrameInterval(page: Page): Promise<number> {
+export async function medianPanZoomFrameInterval(page: Page): Promise<PanZoomFrameMetrics> {
   await page.evaluate(() => performance.clearMarks('novus-pan-zoom-frame'));
   const canvas = page.getByTestId('canvas-stage');
   const box = await canvas.boundingBox();
@@ -133,7 +138,10 @@ export async function medianPanZoomFrameInterval(page: Page): Promise<number> {
   expect(marks.length).toBeGreaterThanOrEqual(4);
   const intervals = marks.slice(1).map((value, index) => value - marks[index]!);
   const sorted = intervals.filter((value) => value >= 0).sort((left, right) => left - right);
-  return sorted[Math.floor(sorted.length / 2)] ?? Number.POSITIVE_INFINITY;
+  return {
+    medianFrameMs: sorted[Math.floor(sorted.length / 2)] ?? Number.POSITIVE_INFINITY,
+    markCount: marks.length,
+  };
 }
 
 export async function expectVisibleMainRegion(page: Page): Promise<void> {

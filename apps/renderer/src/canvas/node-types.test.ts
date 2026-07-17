@@ -98,6 +98,24 @@ describe('toFlowNodes', () => {
         },
       },
       {
+        id: 'image-result',
+        type: 'image_result',
+        position: { x: 320, y: 260 },
+        data: {
+          assetId: 'asset-result-direct',
+          modelId: 'gpt-image-1',
+          provider: 'comfly',
+          modelRoute: 'gpt-image',
+          displayName: 'GPT Image result',
+          parentNodeIds: ['prompt-node'],
+          referenceAssetIds: ['asset-product'],
+          promptNodeId: 'prompt-node',
+          jobId: 'job-1',
+          width: 1024,
+          height: 1024,
+        },
+      },
+      {
         id: 'review-node',
         type: 'review',
         position: { x: 360, y: 280 },
@@ -151,18 +169,26 @@ describe('toFlowNodes', () => {
       status: 'running',
     });
     expect(flowNodes[4]?.data).toMatchObject({
+      kind: 'image_result',
+      eyebrow: 'Image result',
+      tone: 'teal',
+      subtitle: 'GPT Image result',
+      status: 'Result',
+      resultAssetId: 'asset-result-direct',
+    });
+    expect(flowNodes[5]?.data).toMatchObject({
       kind: 'review',
       eyebrow: 'Review',
       tone: 'amber',
       status: 'Review',
     });
-    expect(flowNodes[5]?.data).toMatchObject({
+    expect(flowNodes[6]?.data).toMatchObject({
       kind: 'memory_diff',
       eyebrow: 'Memory diff',
       tone: 'amber',
       status: 'pending_review',
     });
-    expect(flowNodes[6]?.data).toMatchObject({
+    expect(flowNodes[7]?.data).toMatchObject({
       kind: 'agent_plan',
       eyebrow: 'Agent plan',
       tone: 'blue',

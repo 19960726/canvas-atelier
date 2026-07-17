@@ -157,6 +157,23 @@ textarea:focus-visible {
 .workspace.is-interaction-low-quality .canvas-stage .react-flow__minimap { box-shadow: none; }
 .workspace.is-interaction-low-quality .canvas-node.is-selected { box-shadow: none; }
 .canvas-node.is-selected { border-color: var(--node-tone); box-shadow: 0 0 0 2px var(--node-soft), var(--shadow-node, var(--shadow)); }
+.canvas-stage .react-flow__node:focus { outline: none; }
+.canvas-stage .react-flow__node:focus .canvas-node,
+.canvas-stage .react-flow__node:focus-visible .canvas-node {
+  outline: 2px solid rgba(37, 99, 235, 0.56);
+  outline-offset: 3px;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16), var(--shadow-node, var(--shadow));
+}
+.canvas-stage .react-flow__node:focus .canvas-node.is-selected,
+.canvas-stage .react-flow__node:focus-visible .canvas-node.is-selected {
+  border-color: var(--node-tone);
+  box-shadow: 0 0 0 2px var(--node-soft), 0 0 0 5px rgba(37, 99, 235, 0.16), var(--shadow-node, var(--shadow));
+}
+.workspace.is-interaction-low-quality .canvas-stage .react-flow__node:focus .canvas-node,
+.workspace.is-interaction-low-quality .canvas-stage .react-flow__node:focus-visible .canvas-node {
+  box-shadow: none;
+}
 .canvas-node .react-flow__handle {
   top: calc(50% - 4px);
   width: 8px;
@@ -206,8 +223,14 @@ textarea:focus-visible {
 .placement-rotate { position: absolute; left: calc(50% - 12px); top: -32px; width: 24px; height: 24px; display: grid; place-items: center; padding: 0; color: var(--accent); background: white; border: 1px solid var(--accent); border-radius: 6px; cursor: grab; transition: color 120ms ease, border-color 120ms ease, opacity 120ms ease; }
 .placement-inspector { min-width: 0; padding: 12px; overflow-y: auto; background: var(--surface); border-left: 1px solid var(--border-strong); }
 .placement-upload-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
-.placement-upload { position: relative; height: 56px; display: grid; place-items: center; align-content: center; gap: 4px; color: #4c5a64; background: var(--surface-muted); border: 1px dashed var(--border-strong); border-radius: 5px; cursor: pointer; font-size: 10px; transition: color 140ms ease, border-color 140ms ease, opacity 140ms ease; }
+.placement-upload { position: relative; height: 56px; display: grid; place-items: center; align-content: center; gap: 4px; color: #4c5a64; background: var(--surface-muted); border: 1px dashed var(--border-strong); border-radius: 5px; cursor: pointer; font-size: 10px; transition: color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease; }
 .placement-upload:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.placement-upload:focus-within {
+  outline: 2px solid rgba(37, 99, 235, 0.52);
+  outline-offset: 2px;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+}
 .placement-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .placement-properties { display: grid; gap: 11px; padding-top: 13px; }
 .placement-properties__identity, .placement-properties__transform, .placement-properties__visibility, .placement-properties__layers { display: grid; gap: 7px; padding-bottom: 10px; border-bottom: 1px solid #edf0f2; }
