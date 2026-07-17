@@ -1,5 +1,6 @@
 import { test, expect } from './helpers/e2e-test';
 import {
+  assertLocatorInside,
   assertNoTrackedRegionsOverlap,
   captureLayoutScreenshot,
   expectVisibleMainRegion,
@@ -30,6 +31,17 @@ for (const viewport of viewports) {
       'canvas-stage',
     ]);
     await expectVisibleMainRegion(page);
+    const visibleNode = page.locator('[data-testid="canvas-node-card"]').first();
+    await expect(visibleNode).toBeVisible();
+    await expect(visibleNode).toHaveAttribute('data-node-kind', /.+/);
+    await expect(visibleNode.locator('.canvas-node__footer')).toBeVisible();
+    await assertLocatorInside(visibleNode, visibleNode.locator('.canvas-node__title'), `node title at ${viewport.name}`);
+    await assertLocatorInside(visibleNode, visibleNode.locator('.canvas-node__footer'), `node footer at ${viewport.name}`);
+
+    const knowledge = page.locator('[data-knowledge-status]').first();
+    await expect(knowledge).toBeVisible();
+    await expect(knowledge.getByTestId('knowledge-status-detail')).toBeVisible();
+
     const medianFrameMs = await medianPanZoomFrameInterval(page);
 
     await page.getByTestId('tool-placement').click();
@@ -40,7 +52,13 @@ for (const viewport of viewports) {
       'job-strip',
       'placement-workbench',
     ]);
-    await expect(page.getByTestId('placement-workbench')).toBeVisible();
+    const placementWorkbench = page.getByTestId('placement-workbench');
+    await expect(placementWorkbench).toBeVisible();
+    await assertLocatorInside(
+      placementWorkbench,
+      page.getByTestId('placement-inspector'),
+      `placement inspector at ${viewport.name}`,
+    );
     await captureLayoutScreenshot(page, testInfo, `renderer-layout-${viewport.name}`);
 
     await testInfo.attach(`pan-zoom-median-${viewport.name}.txt`, {

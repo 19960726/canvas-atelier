@@ -78,6 +78,30 @@ export async function assertNoTrackedRegionsOverlap(page: Page, testIds: string[
   }
 }
 
+export async function assertLocatorInside(
+  outer: Locator,
+  inner: Locator,
+  label: string,
+  tolerance = 1,
+): Promise<void> {
+  await expect(outer, `${label} outer should be visible`).toBeVisible();
+  await expect(inner, `${label} inner should be visible`).toBeVisible();
+  const [outerBox, innerBox] = await Promise.all([
+    outer.boundingBox(),
+    inner.boundingBox(),
+  ]);
+  expect(outerBox, `${label} outer should be visible and measurable`).not.toBeNull();
+  expect(innerBox, `${label} inner should be visible and measurable`).not.toBeNull();
+  expect(innerBox!.x, `${label} left edge`).toBeGreaterThanOrEqual(outerBox!.x - tolerance);
+  expect(innerBox!.y, `${label} top edge`).toBeGreaterThanOrEqual(outerBox!.y - tolerance);
+  expect(innerBox!.x + innerBox!.width, `${label} right edge`).toBeLessThanOrEqual(
+    outerBox!.x + outerBox!.width + tolerance,
+  );
+  expect(innerBox!.y + innerBox!.height, `${label} bottom edge`).toBeLessThanOrEqual(
+    outerBox!.y + outerBox!.height + tolerance,
+  );
+}
+
 export async function captureLayoutScreenshot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
   await page.screenshot({
     fullPage: true,
@@ -96,7 +120,14 @@ export async function medianPanZoomFrameInterval(page: Page): Promise<number> {
     await page.mouse.move(box!.x + box!.width / 2 + 12 + index * 4, box!.y + box!.height / 2 + 8, { steps: 2 });
   }
   await page.mouse.up();
-  await page.mouse.wheel(0, -160);
+  for (let index = 0; index < 6; index += 1) {
+    await page.mouse.wheel(0, index % 2 === 0 ? -160 : 120);
+  }
+  await page.waitForFunction(
+    () => performance.getEntriesByName('novus-pan-zoom-frame').length >= 4,
+    undefined,
+    { timeout: 3_000 },
+  ).catch(() => undefined);
 
   const marks = await page.evaluate(() => performance.getEntriesByName('novus-pan-zoom-frame').map((entry) => entry.startTime));
   expect(marks.length).toBeGreaterThanOrEqual(4);

@@ -117,15 +117,8 @@ describe('toFlowNodes', () => {
           plan: {
             id: 'plan-1',
             state: 'waiting_for_confirmation',
-            transaction: {
-              id: 'tx-1',
-              label: 'Agent plan',
-              operations: [],
-            },
-            requestedCapabilities: ['model_execution'],
-            confirmations: {},
-            conflicts: [],
-            jobCount: 1,
+            proposedOperationIds: [],
+            requiresModelConfirmation: true,
           },
         },
       },

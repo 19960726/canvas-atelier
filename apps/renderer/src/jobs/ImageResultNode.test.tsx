@@ -18,7 +18,10 @@ describe('ImageResultNode', () => {
           positionAbsoluteX={0}
           positionAbsoluteY={0}
           selected={false}
+          draggable
           dragging={false}
+          selectable
+          deletable
           isConnectable
           zIndex={1}
           data={{

@@ -43,7 +43,7 @@ export function PlacementInspector({ value, selectedObjectId, onChange, onUpload
   };
 
   return (
-    <aside className="placement-inspector nodrag" aria-label="摆放检查器">
+    <aside className="placement-inspector nodrag" aria-label="摆放检查器" data-testid="placement-inspector">
       <div className="placement-upload-grid">
         <UploadField dataTestId="upload-product" label="产品" ariaLabel="上传产品参考" onChange={upload('product_identity')} />
         <UploadField dataTestId="upload-scene" label="场景" ariaLabel="上传场景参考" onChange={upload('scene_composition')} />

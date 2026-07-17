@@ -1,6 +1,7 @@
 # Windows Compatibility Matrix
 
 Task 12 evidence date: 2026-07-16.
+Task 4 automated renderer visual evidence date: 2026-07-17.
 
 This matrix records automated renderer acceptance separately from target operating-system compatibility. The automated rows below were run on the current local renderer with installed Microsoft Edge. They are not evidence that Windows 7, Windows 10, Windows 11, portable packaging, or installer targets passed.
 
@@ -13,8 +14,8 @@ This matrix records automated renderer acceptance separately from target operati
 | Agent post-commit job retry | passed | `npm run e2e -- tests/e2e/agent-job-retry.spec.ts` -> 1 passed | Simulated one in-memory model enqueue failure after canvas commit, kept retry UI visible, and retried model jobs without another canvas commit. |
 | Skill guarded sync | passed | `npm run e2e -- tests/e2e/skill-sync-guard.spec.ts` -> 1 passed | In-memory fake knowledge adapter through production candidate preparation; source/managed/proposed diff; no sync write before explicit Chinese confirmation. |
 | Model confirmation and route switching | passed | `npm run e2e -- tests/e2e/model-confirmation.spec.ts` -> 1 passed | Same Agent conversation while switching GPT Image and Nano Banana 2; image-edit-only profiles are not selectable for generation; no queue before confirmation. |
-| Renderer layout screenshots | passed | `npm run e2e -- tests/e2e/visual-layout.spec.ts` -> 3 passed | Captured 1440x900, 1920x1080, and 1366x768 screenshots in Playwright output only. |
-| Pan/zoom frame marks | passed | `npm run e2e -- tests/e2e/visual-layout.spec.ts` -> 3 passed | Median frame interval recorded through `performance.mark('novus-pan-zoom-frame')` attachments; conservative renderer CI threshold only. |
+| Renderer layout screenshots | passed | 2026-07-17 `npm run e2e -- tests/e2e/visual-layout.spec.ts` -> 3 passed | Captured `test-results/e2e/visual-layout-desktop-layo-b7f2a-oom-frame-marks-at-1440x900/renderer-layout-1440x900.png` (1440x900), `test-results/e2e/visual-layout-desktop-layo-b28bc-om-frame-marks-at-1920x1080/renderer-layout-1920x1080.png` (1920x1080), and `test-results/e2e/visual-layout-desktop-layo-3b155-oom-frame-marks-at-1366x768/renderer-layout-1366x768.png` (1366x768). |
+| Pan/zoom frame marks | passed | 2026-07-17 `npm run e2e -- tests/e2e/visual-layout.spec.ts` -> 3 passed | Median frame interval asserted below 150 ms through `performance.mark('novus-pan-zoom-frame')`; conservative renderer CI threshold only. |
 | Focused unit review suite | passed | `npm test -- apps/renderer/src/history/SkillCandidateReview.test.tsx tests/integration/secret-path-scan.test.ts` -> 20 passed; supplemental renderer/scan suite -> 96 passed | Covers ready-preview UI gating, prepared snapshot requirements, and exact allowlist rejection for new token/path/Base64 variants inside listed files. |
 | Unit/integration suite | passed | `npm test` -> 773 passed, 2 skipped | Performance-only suites remain skipped unless their explicit perf env vars are set. |
 | TypeScript | passed | `npm run typecheck` -> passed | Includes renderer e2e test-mode types. |
