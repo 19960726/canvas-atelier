@@ -102,6 +102,64 @@ describe('parseCanvasProject', () => {
     })).toThrow(/Unrecognized key/);
   });
 
+  it('rejects private absolute POSIX-like paths in module config', () => {
+    const moduleNode = createCanvasModuleNode('unsafe-paths', 'text_prompt', { x: 0, y: 0 });
+    const protectedValues = [
+      '/etc/passwd',
+      '/root/.ssh/id_rsa',
+      '/proc/self/environ',
+    ];
+
+    for (const protectedValue of protectedValues) {
+      expect(() => parseCanvasProject({
+        version: 1,
+        graphVersion: 2,
+        id: 'p1',
+        name: 'unsafe path graph',
+        nodes: [{
+          ...moduleNode,
+          data: {
+            ...moduleNode.data,
+            config: { note: protectedValue },
+          },
+        }],
+        edges: [],
+      })).toThrow(/protected|path/i);
+    }
+  });
+
+  it('accepts ordinary slash prose in module config', () => {
+    const moduleNode = createCanvasModuleNode('safe-text', 'text_prompt', { x: 0, y: 0 });
+    const acceptedValues = [
+      'slash prose / not a file path',
+      'Compare keep/change and 1 / 2',
+      'https://example.com/guide/keep-change',
+      'scene / lighting / material',
+    ];
+
+    for (const acceptedValue of acceptedValues) {
+      const project = parseCanvasProject({
+        version: 1,
+        graphVersion: 2,
+        id: 'p1',
+        name: 'safe text graph',
+        nodes: [{
+          ...moduleNode,
+          data: {
+            ...moduleNode.data,
+            config: { note: acceptedValue },
+          },
+        }],
+        edges: [],
+      });
+
+      expect(project.nodes[0]).toMatchObject({
+        type: 'module',
+        data: { config: { note: acceptedValue } },
+      });
+    }
+  });
+
   it('restores project memory stored with the project', () => {
     const project = parseCanvasProject({
       version: 1,

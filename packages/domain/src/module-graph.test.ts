@@ -16,6 +16,27 @@ describe('migrateCanvasProjectGraph', () => {
     });
   });
 
+  it('treats prototype graphVersion as absent and returns an own graphVersion 2', () => {
+    const legacyProject = Object.create({ graphVersion: 1 }) as {
+      version: number;
+      id: string;
+      name: string;
+      nodes: [];
+      edges: [];
+      graphVersion?: number;
+    };
+    legacyProject.version = 1;
+    legacyProject.id = 'p1';
+    legacyProject.name = 'prototype graph';
+    legacyProject.nodes = [];
+    legacyProject.edges = [];
+
+    const migrated = migrateCanvasProjectGraph(legacyProject) as typeof legacyProject;
+
+    expect(Object.prototype.hasOwnProperty.call(migrated, 'graphVersion')).toBe(true);
+    expect(migrated.graphVersion).toBe(2);
+  });
+
   it('preserves explicit graphVersion 2 without mutating graph data', () => {
     const project = {
       version: 1,

@@ -70,7 +70,8 @@ export function migrateCanvasProjectGraph(input: unknown): unknown {
   }
 
   const project = input as Record<string, unknown>;
-  if (project.graphVersion === undefined) {
+  const hasOwnGraphVersion = Object.prototype.hasOwnProperty.call(project, 'graphVersion');
+  if (!hasOwnGraphVersion || project.graphVersion === undefined) {
     return {
       ...project,
       graphVersion: 2,
@@ -118,9 +119,9 @@ function containsProtectedString(value: string, key?: string): boolean {
     || /base64,[a-z0-9+/=]{16,}/i.test(value)
     || /blob:[^\s"'`]+/i.test(value)
     || /file:\/\/[^\s"'`]+/i.test(value)
-    || /[a-zA-Z]:[\\/]/.test(value)
+    || /(?:^|[\s([{"'])(?:[a-zA-Z]:[\\/])/.test(value)
     || /\\\\[^\\\s]+\\[^\s"'`]+/.test(value)
-    || /(?:^|\s)\/(?:Users|home|var|opt|tmp|private)\//.test(value)
+    || /(?:^|[\s([{"'])\/(?:Users|home|var|opt|tmp|private|etc|root|proc)\/[^\s"'`)\]}]+/.test(value)
     || /%(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|HOMEDRIVE|HOMEPATH)%[\\/]/i.test(value);
 }
 
