@@ -79,7 +79,9 @@ export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, Agen
 export type { RuntimeProfile, RuntimeProfileId } from './runtime-profile';
 export type {
   CanvasModuleDefinition,
+  CanvasModuleExecutionState,
   CanvasModuleNodeData,
+  CanvasModulePortDefinition,
   CanvasModuleType,
   CanvasPortDataType,
 } from './canvas-module';

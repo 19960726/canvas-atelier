@@ -12,39 +12,41 @@ export type CanvasModuleType =
   | 'openpose' | 'reverse_agent' | 'skill_agent' | 'detail_page_agent'
   | 'video_analysis' | 'line_art_material' | 'result_output';
 
-interface CanvasModulePortDefinition {
-  id: string;
-  label: string;
-  dataType: CanvasPortDataType;
-  direction: 'input' | 'output';
-  cardinality: 'one' | 'many';
-  required: boolean;
+export interface CanvasModulePortDefinition {
+  readonly id: string;
+  readonly label: string;
+  readonly dataType: CanvasPortDataType;
+  readonly direction: 'input' | 'output';
+  readonly cardinality: 'one' | 'many';
+  readonly required: boolean;
 }
 
 export interface CanvasModuleDefinition {
-  type: CanvasModuleType;
-  version: 1;
-  category: 'input' | 'generation' | 'editing' | 'analysis' | 'output';
-  displayName: string;
-  iconKey: string;
-  searchAliases: readonly string[];
-  runtimeProfiles: readonly RuntimeProfileId[];
-  executionMode: 'local' | 'provider' | 'agent' | 'composite';
-  capabilities: readonly string[];
-  ports: readonly CanvasModulePortDefinition[];
-  createDefaultConfig: () => Record<string, unknown>;
+  readonly type: CanvasModuleType;
+  readonly version: 1;
+  readonly category: 'input' | 'generation' | 'editing' | 'analysis' | 'output';
+  readonly displayName: string;
+  readonly iconKey: string;
+  readonly searchAliases: readonly string[];
+  readonly runtimeProfiles: readonly RuntimeProfileId[];
+  readonly executionMode: 'local' | 'provider' | 'agent' | 'composite';
+  readonly capabilities: readonly string[];
+  readonly ports: readonly CanvasModulePortDefinition[];
+  readonly createDefaultConfig: () => Record<string, unknown>;
 }
 
-type CanvasModuleExecutionState =
+export type CanvasModuleExecutionState =
   | 'idle' | 'invalid' | 'ready' | 'waiting_confirmation' | 'queued'
   | 'running' | 'blocked' | 'completed' | 'failed' | 'cancelled';
 
 export interface CanvasModuleNodeData {
-  moduleType: CanvasModuleType;
-  moduleVersion: 1;
-  config: Record<string, unknown>;
-  execution: { state: CanvasModuleExecutionState; latestExecutionId?: string };
+  readonly moduleType: CanvasModuleType;
+  readonly moduleVersion: 1;
+  readonly config: Record<string, unknown>;
+  readonly execution: { readonly state: CanvasModuleExecutionState; readonly latestExecutionId?: string };
 }
+
+const CANONICAL_RUNTIME_PROFILES = Object.freeze(['legacy-win7', 'modern'] as const);
 
 function definition(
   type: CanvasModuleType,
@@ -57,6 +59,8 @@ function definition(
   inputs: readonly CanvasModulePortDefinition[],
   outputs: readonly CanvasModulePortDefinition[],
 ): CanvasModuleDefinition {
+  const frozenInputs = inputs.map(freezePort);
+  const frozenOutputs = outputs.map(freezePort);
   return Object.freeze({
     type,
     version: 1 as const,
@@ -64,10 +68,10 @@ function definition(
     displayName,
     iconKey,
     searchAliases: Object.freeze([...searchAliases]),
-    runtimeProfiles: Object.freeze(['legacy-win7', 'modern'] as const),
+    runtimeProfiles: CANONICAL_RUNTIME_PROFILES,
     executionMode,
     capabilities: Object.freeze([...capabilities]),
-    ports: Object.freeze([...inputs, ...outputs]),
+    ports: Object.freeze([...frozenInputs, ...frozenOutputs]),
     createDefaultConfig: () => ({}),
   });
 }
@@ -85,7 +89,7 @@ function input(
     direction: 'input',
     cardinality: 'one',
     required,
-  };
+  } as const;
 }
 
 function inputMany(
@@ -101,7 +105,7 @@ function inputMany(
     direction: 'input',
     cardinality: 'many',
     required,
-  };
+  } as const;
 }
 
 function out(
@@ -116,7 +120,7 @@ function out(
     direction: 'output',
     cardinality: 'one',
     required: true,
-  };
+  } as const;
 }
 
 function outMany(
@@ -131,7 +135,21 @@ function outMany(
     direction: 'output',
     cardinality: 'many',
     required: true,
-  };
+  } as const;
+}
+
+function freezePort(port: CanvasModulePortDefinition): CanvasModulePortDefinition {
+  return Object.freeze({ ...port });
+}
+
+function cloneDefinition(item: CanvasModuleDefinition): CanvasModuleDefinition {
+  return Object.freeze({
+    ...item,
+    searchAliases: Object.freeze([...item.searchAliases]),
+    runtimeProfiles: Object.freeze([...item.runtimeProfiles]),
+    capabilities: Object.freeze([...item.capabilities]),
+    ports: Object.freeze(item.ports.map((port) => freezePort(port))),
+  });
 }
 
 export const CANVAS_MODULE_DEFINITIONS = Object.freeze([
@@ -211,7 +229,7 @@ export const CANVAS_MODULE_DEFINITIONS = Object.freeze([
 ] as const);
 
 export function listCanvasModuleDefinitions(): CanvasModuleDefinition[] {
-  return CANVAS_MODULE_DEFINITIONS.map((item) => ({ ...item, ports: [...item.ports] }));
+  return Object.freeze(CANVAS_MODULE_DEFINITIONS.map((item) => cloneDefinition(item))) as CanvasModuleDefinition[];
 }
 
 export function getCanvasModuleDefinition(type: CanvasModuleType): CanvasModuleDefinition {
