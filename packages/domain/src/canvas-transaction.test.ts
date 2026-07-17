@@ -162,6 +162,25 @@ describe('canvas transactions', () => {
     expect(revertTransaction(result.project, result.inverse)).toEqual(project);
   });
 
+  it('keeps inverse sidecar slots aligned when deleting then creating an edge', () => {
+    const project = parseCanvasProject({
+      ...emptyProject,
+      nodes: [referenceNode, promptNode],
+      edges: [{ id: 'old-edge', source: referenceNode.id, target: promptNode.id }],
+    });
+
+    const result = applyTransaction(project, {
+      id: 'delete-then-create',
+      label: 'Replace edge',
+      operations: [
+        { kind: 'delete_edge', edgeId: 'old-edge' },
+        { kind: 'create_edge', edge: { id: 'new-edge', source: referenceNode.id, target: promptNode.id } },
+      ],
+    });
+
+    expect(revertTransaction(result.project, result.inverse)).toEqual(project);
+  });
+
   it('does not expose an internal inverse restoration operation through the public schema', () => {
     expect(() => canvasOperationSchema.parse({
       kind: 'restore_edge_snapshot',

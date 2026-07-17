@@ -115,7 +115,7 @@ export function applyTransaction(
         const previousIssues = validateCanvasModuleGraph(draft);
         draft.edges.push(edge);
         rejectNewGraphIssues(previousIssues, validateCanvasModuleGraph(draft), edge.id);
-        inverseOperations.unshift({ kind: 'delete_edge', edgeId: edge.id });
+        prependInverse(inverseOperations, inverseRestorationOperations, { kind: 'delete_edge', edgeId: edge.id });
         break;
       }
 
