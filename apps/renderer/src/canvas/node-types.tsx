@@ -1,69 +1,129 @@
 import { memo } from 'react';
 import type { Edge, Node, NodeProps, NodeTypes } from '@xyflow/react';
-import { Handle, Position } from '@xyflow/react';
 import type { CanvasEdge, CanvasNode, ReferenceRole } from '@agent-canvas/domain';
+import { CanvasNodeCard, type CanvasNodePresentation, type CanvasNodeTone } from './CanvasNodeCard';
 import { ImageResultNode } from '../jobs/ImageResultNode';
 
-export interface CanvasNodeData extends Record<string, unknown> {
-  title: string;
-  subtitle: string;
-  resultAssetId?: string;
-}
+export interface CanvasNodeData extends Record<string, unknown>, CanvasNodePresentation {}
 
 const referenceTitles: Record<ReferenceRole, string> = {
-  product_identity: '产品身份参考',
-  scene_composition: '场景构图参考',
-  prop_reference: '道具参考',
-  material_lighting: '材质与光照参考',
-  placement_preview: '摆放预览参考',
+  product_identity: '\u4ea7\u54c1\u8eab\u4efd\u53c2\u8003',
+  scene_composition: '\u573a\u666f\u6784\u56fe\u53c2\u8003',
+  prop_reference: '\u9053\u5177\u53c2\u8003',
+  material_lighting: '\u6750\u8d28\u4e0e\u5149\u7167\u53c2\u8003',
+  placement_preview: '\u6446\u653e\u9884\u89c8\u53c2\u8003',
 };
+
+const referenceTones: Record<ReferenceRole, CanvasNodeTone> = {
+  product_identity: 'teal',
+  scene_composition: 'blue',
+  prop_reference: 'amber',
+  material_lighting: 'amber',
+  placement_preview: 'blue',
+};
+
+function getModelJobTone(status: Extract<CanvasNode, { type: 'model_job' }>['data']['job']['status']): CanvasNodeTone {
+  if (status === 'failed') return 'red';
+  if (status === 'completed') return 'teal';
+  return 'slate';
+}
+
+function getMemoryDiffTone(status: Extract<CanvasNode, { type: 'memory_diff' }>['data']['status']): CanvasNodeTone {
+  return status === 'approved' || status === 'synced' ? 'blue' : 'amber';
+}
 
 function getViewData(node: CanvasNode): CanvasNodeData {
   switch (node.type) {
     case 'reference':
-      return { title: referenceTitles[node.data.role], subtitle: `资源 ${node.data.assetId}` };
+      return {
+        kind: node.type,
+        tone: referenceTones[node.data.role],
+        eyebrow: 'Reference',
+        title: referenceTitles[node.data.role],
+        subtitle: `\u8d44\u6e90 ${node.data.assetId}`,
+        status: 'Reference',
+      };
     case 'placement_preview':
-      return { title: '摆放预览', subtitle: `${node.data.board.aspectRatio} · ${node.data.objects.length} 个对象` };
+      return {
+        kind: node.type,
+        tone: 'blue',
+        eyebrow: 'Placement',
+        title: '\u6446\u653e\u9884\u89c8',
+        subtitle: `${node.data.board.aspectRatio} / ${node.data.objects.length} \u4e2a\u5bf9\u8c61`,
+        status: `${node.data.objects.length} layers`,
+      };
     case 'prompt':
-      return { title: 'Agent 生成计划', subtitle: node.data.prompt || '等待提示词' };
+      return {
+        kind: node.type,
+        tone: 'teal',
+        eyebrow: 'Agent plan',
+        title: 'Agent \u751f\u6210\u8ba1\u5212',
+        subtitle: node.data.prompt || '\u7b49\u5f85\u63d0\u793a\u8bcd',
+        status: node.data.prompt.trim().length > 0 ? 'Ready' : 'Draft',
+      };
     case 'model_job':
-      return { title: '模型任务', subtitle: `${node.data.job.modelId} · ${node.data.job.status}` };
+      return {
+        kind: node.type,
+        tone: getModelJobTone(node.data.job.status),
+        eyebrow: 'Model job',
+        title: '\u6a21\u578b\u4efb\u52a1',
+        subtitle: `${node.data.job.displayName ?? node.data.job.modelRoute ?? node.data.job.modelId} / ${node.data.job.status}`,
+        status: node.data.job.status,
+      };
     case 'image_result':
       return {
-        title: '生成结果',
+        kind: node.type,
+        tone: 'teal',
+        eyebrow: 'Image result',
+        title: '\u751f\u6210\u7ed3\u679c',
         subtitle: node.data.displayName ?? node.data.modelRoute ?? node.data.modelId,
+        status: 'Result',
         resultAssetId: node.data.assetId,
       };
     case 'review':
-      return { title: 'KEEP / CHANGE / NEVER', subtitle: `${node.data.keep.length + node.data.change.length + node.data.never.length} 条要求` };
+      return {
+        kind: node.type,
+        tone: 'amber',
+        eyebrow: 'Review',
+        title: 'KEEP / CHANGE / NEVER',
+        subtitle: `${node.data.keep.length + node.data.change.length + node.data.never.length} \u6761\u8981\u70b9`,
+        status: 'Review',
+      };
     case 'memory_diff':
-      return { title: 'Skill 记忆差异', subtitle: node.data.status };
+      return {
+        kind: node.type,
+        tone: getMemoryDiffTone(node.data.status),
+        eyebrow: 'Memory diff',
+        title: 'Skill \u8bb0\u5fc6\u5dee\u5f02',
+        subtitle: node.data.status,
+        status: node.data.status,
+      };
     case 'agent_plan':
-      return { title: 'Agent 方案', subtitle: node.data.plan.state };
+      return {
+        kind: node.type,
+        tone: 'blue',
+        eyebrow: 'Agent plan',
+        title: 'Agent \u65b9\u6848',
+        subtitle: node.data.plan.state,
+        status: node.data.plan.state,
+      };
   }
 }
 
-const BaseNode = memo(function BaseNode({ data, selected }: NodeProps) {
+const SharedCanvasNode = memo(function SharedCanvasNode({ data, selected }: NodeProps) {
   const nodeData = data as CanvasNodeData;
-  return (
-    <div className={`canvas-node${selected ? ' is-selected' : ''}`}>
-      <Handle type="target" position={Position.Left} />
-      <div className="canvas-node__title">{nodeData.title}</div>
-      <div className="canvas-node__meta">{nodeData.subtitle}</div>
-      <Handle type="source" position={Position.Right} />
-    </div>
-  );
+  return <CanvasNodeCard {...nodeData} selected={selected} />;
 });
 
 export const nodeTypes: NodeTypes = {
-  reference: BaseNode,
-  prompt: BaseNode,
-  placement_preview: BaseNode,
-  model_job: BaseNode,
+  reference: SharedCanvasNode,
+  prompt: SharedCanvasNode,
+  placement_preview: SharedCanvasNode,
+  model_job: SharedCanvasNode,
   image_result: ImageResultNode,
-  review: BaseNode,
-  memory_diff: BaseNode,
-  agent_plan: BaseNode,
+  review: SharedCanvasNode,
+  memory_diff: SharedCanvasNode,
+  agent_plan: SharedCanvasNode,
 };
 
 export function toFlowNodes(nodes: readonly CanvasNode[]): Node<CanvasNodeData>[] {
