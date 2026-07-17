@@ -34,7 +34,7 @@ This matrix records automated renderer acceptance separately from target operati
 | Windows 7 SP1 x64 | Recovery | pending | not available | Not run on physical or VM Windows 7 target. |
 | Windows 7 SP1 x64 | Safe mode | pending | not available | Not run on physical or VM Windows 7 target. |
 | Windows 7 SP1 x64 | Installer/portable | pending | not available | Pack/installer was intentionally not run. |
-| Windows 10 x64 | Launch | pending | not available | Not run on physical or VM Windows 10 target. |
+| Windows 10 x64 | Launch | passed | 2026-07-17 real unpacked smoke on OS `Windows 10 Pro` / Electron `43.1.0` | Responsive `Agent Canvas` window; `stderr` empty; `CloseMainWindow()` returned `true`; exit code `0`; zero new Electron PIDs after close. |
 | Windows 10 x64 | Chinese path open/save | pending | not available | Not run on physical or VM Windows 10 target. |
 | Windows 10 x64 | Comfly HTTPS | pending | not available | No live provider/network target run. |
 | Windows 10 x64 | Pan/zoom | pending | not available | Current renderer marks are not Win10 FPS evidence. |

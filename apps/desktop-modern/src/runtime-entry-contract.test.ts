@@ -13,6 +13,12 @@ type DesktopShell = {
   packageName: string;
 };
 
+type BuildPackageJson = {
+  main: string;
+  scripts: { build: string };
+  type?: string;
+};
+
 const desktopShells: DesktopShell[] = [
   {
     appDir: 'apps/desktop-modern',
@@ -41,7 +47,12 @@ function runWorkspaceBuild(packageName: string) {
   });
 }
 
-const electronStubCjs = `'use strict';
+function createElectronStubCjs(options: { whenReadyFailureMessage?: string }) {
+  const failure = options.whenReadyFailureMessage === undefined
+    ? ''
+    : `return Promise.reject(new Error(${JSON.stringify(options.whenReadyFailureMessage)}));`;
+
+  return `'use strict';
 const { EventEmitter } = require('node:events');
 
 class StubApp extends EventEmitter {
@@ -50,10 +61,14 @@ class StubApp extends EventEmitter {
   }
 
   whenReady() {
-    return new Promise(() => {});
+    ${failure || 'return new Promise(() => {});'}
   }
 
   quit() {}
+
+  exit(code) {
+    process.exitCode = code;
+  }
 
   getPath() {
     return 'C:/tmp/canvas-agent-vitest-user-data';
@@ -81,7 +96,19 @@ class StubBrowserWindow extends EventEmitter {
     return Promise.resolve();
   }
 
+  destroy() {}
+
   close() {}
+
+  show() {}
+
+  once() {
+    return this;
+  }
+
+  on() {
+    return this;
+  }
 
   get webContents() {
     return {
@@ -138,12 +165,14 @@ const moduleExports = {
     },
   },
   shell: {
+    openPath: async () => '',
     openExternal: async () => undefined,
   },
 };
 
 module.exports = moduleExports;
 `;
+}
 
 const electronStubMjs = `import cjsModule from './index.cjs';
 
@@ -159,52 +188,6 @@ export const shell = cjsModule.shell;
 export default cjsModule;
 `;
 
-const archiverStubCjs = `'use strict';
-module.exports = function createArchiver() {
-  return {
-    append() {},
-    directory() {},
-    file() {},
-    finalize() {
-      return Promise.resolve();
-    },
-    on() {},
-    pipe() {},
-  };
-};
-`;
-
-const archiverStubMjs = `import createArchiver from './index.cjs';
-export default createArchiver;
-`;
-
-const yauzlStubCjs = `'use strict';
-module.exports = {
-  fromBuffer(_buffer, _options, callback) {
-    if (typeof callback === 'function') {
-      callback(new Error('stubbed yauzl.fromBuffer should not be invoked during entry load'));
-    }
-  },
-  fromFd(_fd, _options, callback) {
-    if (typeof callback === 'function') {
-      callback(new Error('stubbed yauzl.fromFd should not be invoked during entry load'));
-    }
-  },
-  open(_path, _options, callback) {
-    if (typeof callback === 'function') {
-      callback(new Error('stubbed yauzl.open should not be invoked during entry load'));
-    }
-  },
-};
-`;
-
-const yauzlStubMjs = `import yauzl from './index.cjs';
-export const fromBuffer = yauzl.fromBuffer;
-export const fromFd = yauzl.fromFd;
-export const open = yauzl.open;
-export default yauzl;
-`;
-
 const loadEntryScript = `
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -218,135 +201,132 @@ global.window = {
 
 (async () => {
   if (path.extname(entryPath) === '.cjs') {
-    const loaded = require(entryPath);
-    if (loaded && typeof loaded.then === 'function') {
-      await loaded;
-    }
+    require(entryPath);
   } else {
     await import(pathToFileURL(entryPath).href);
   }
+  await new Promise((resolve) => setTimeout(resolve, 50));
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : String(error));
   process.exitCode = 1;
 });
 `;
 
+async function readPackageJson(shell: DesktopShell): Promise<BuildPackageJson> {
+  return JSON.parse(await readFile(join(workspaceRoot, shell.appDir, 'package.json'), 'utf8')) as BuildPackageJson;
+}
+
+async function withTempPackage(
+  shell: DesktopShell,
+  packageJson: BuildPackageJson,
+  electronStubCjs: string,
+  callback: (packageRoot: string) => Promise<void>,
+): Promise<void> {
+  const tempRoot = await mkdtemp(join(tmpdir(), `canvas-agent-${shell.label}-runtime-`));
+  const packageRoot = join(tempRoot, basename(shell.appDir));
+  try {
+    await mkdir(join(packageRoot, 'dist'), { recursive: true });
+    await mkdir(join(packageRoot, 'node_modules', 'electron'), { recursive: true });
+    await cp(join(workspaceRoot, shell.appDir, 'dist'), join(packageRoot, 'dist'), { recursive: true });
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({ type: packageJson.type ?? 'commonjs' }, null, 2),
+      'utf8',
+    );
+    await writeFile(
+      join(packageRoot, 'node_modules', 'electron', 'package.json'),
+      JSON.stringify(
+        {
+          name: 'electron',
+          type: 'module',
+          exports: {
+            '.': {
+              import: './index.mjs',
+              require: './index.cjs',
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    await writeFile(join(packageRoot, 'node_modules', 'electron', 'index.cjs'), electronStubCjs, 'utf8');
+    await writeFile(join(packageRoot, 'node_modules', 'electron', 'index.mjs'), electronStubMjs, 'utf8');
+    await callback(packageRoot);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function spawnArtifactLoad(entryPath: string) {
+  return spawnSync(
+    process.execPath,
+    ['-e', loadEntryScript, entryPath],
+    {
+      cwd: resolve(entryPath, '..', '..'),
+      encoding: 'utf8',
+    },
+  );
+}
+
 describe('desktop runtime entry contract', () => {
   for (const shell of desktopShells) {
-    it(`${shell.label} keeps the Electron ESM entrypoint behind a CommonJS launcher that loads without dynamic require traps`, async () => {
-      const packageJsonPath = join(workspaceRoot, shell.appDir, 'package.json');
-      const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8')) as {
-        main: string;
-        scripts: { build: string };
-        type?: string;
-      };
+    it(`${shell.label} builds a self-contained CommonJS desktop main that loads under the Electron contract`, async () => {
+      const packageJson = await readPackageJson(shell);
 
       expect(packageJson.main).toBe('./dist/main.cjs');
-      expect(packageJson.scripts.build).toContain('--format=esm --outfile=dist/main.js');
-      expect(packageJson.scripts.build).toContain('--format=esm --outfile=dist/preload.js');
-      expect(packageJson.scripts.build).toContain('--format=esm --outfile=dist/safe-preload.js');
-      expect(packageJson.scripts.build).toContain('--external:archiver');
-      expect(packageJson.scripts.build).toContain('--external:yauzl');
+      expect(packageJson.scripts.build).toContain('--format=cjs --outfile=dist/main.cjs');
+      expect(packageJson.scripts.build).toContain('--format=cjs --outfile=dist/snapshot-worker-entry.cjs');
+      expect(packageJson.scripts.build).not.toContain('--external:archiver');
+      expect(packageJson.scripts.build).not.toContain('--external:yauzl');
 
       const buildResult = runWorkspaceBuild(shell.packageName);
-
       expect(buildResult.status, buildResult.stderr || buildResult.stdout).toBe(0);
-      const builtMainSource = await readFile(join(workspaceRoot, shell.appDir, 'dist', 'main.js'), 'utf8');
-      const builtLauncherSource = await readFile(join(workspaceRoot, shell.appDir, 'dist', 'main.cjs'), 'utf8');
 
-      expect(builtMainSource).toContain('from "archiver"');
-      expect(builtMainSource).toContain('from "yauzl"');
-      expect(builtMainSource).not.toContain('archiver/lib/core.js');
-      expect(builtMainSource).not.toContain('yauzl/fd-slicer.js');
+      const builtMainSource = await readFile(join(workspaceRoot, shell.appDir, 'dist', 'main.cjs'), 'utf8');
       expect(builtMainSource).not.toContain('Dynamic require of "');
-      expect(builtLauncherSource).toContain("import('./main.js')");
+      expect(builtMainSource).not.toMatch(/(?:from|require\()["']archiver["']/u);
+      expect(builtMainSource).not.toMatch(/(?:from|require\()["']yauzl["']/u);
 
-      const tempRoot = await mkdtemp(join(tmpdir(), `canvas-agent-${shell.label}-runtime-`));
-      const packageRoot = join(tempRoot, basename(shell.appDir));
-      try {
-        await mkdir(join(packageRoot, 'dist'), { recursive: true });
-        await mkdir(join(packageRoot, 'node_modules', 'electron'), { recursive: true });
-        await mkdir(join(packageRoot, 'node_modules', 'archiver'), { recursive: true });
-        await mkdir(join(packageRoot, 'node_modules', 'yauzl'), { recursive: true });
-        await cp(join(workspaceRoot, shell.appDir, 'dist'), join(packageRoot, 'dist'), { recursive: true });
-        await writeFile(
-          join(packageRoot, 'package.json'),
-          JSON.stringify({ type: packageJson.type ?? 'commonjs' }, null, 2),
-          'utf8',
-        );
-        await writeFile(
-          join(packageRoot, 'node_modules', 'electron', 'package.json'),
-          JSON.stringify(
-            {
-              name: 'electron',
-              type: 'module',
-              exports: {
-                '.': {
-                  import: './index.mjs',
-                  require: './index.cjs',
-                },
-              },
-            },
-            null,
-            2,
-          ),
-          'utf8',
-        );
-        await writeFile(join(packageRoot, 'node_modules', 'electron', 'index.cjs'), electronStubCjs, 'utf8');
-        await writeFile(join(packageRoot, 'node_modules', 'electron', 'index.mjs'), electronStubMjs, 'utf8');
-        await writeFile(
-          join(packageRoot, 'node_modules', 'archiver', 'package.json'),
-          JSON.stringify(
-            {
-              name: 'archiver',
-              type: 'module',
-              exports: {
-                '.': {
-                  import: './index.mjs',
-                  require: './index.cjs',
-                },
-              },
-            },
-            null,
-            2,
-          ),
-          'utf8',
-        );
-        await writeFile(join(packageRoot, 'node_modules', 'archiver', 'index.cjs'), archiverStubCjs, 'utf8');
-        await writeFile(join(packageRoot, 'node_modules', 'archiver', 'index.mjs'), archiverStubMjs, 'utf8');
-        await writeFile(
-          join(packageRoot, 'node_modules', 'yauzl', 'package.json'),
-          JSON.stringify(
-            {
-              name: 'yauzl',
-              type: 'module',
-              exports: {
-                '.': {
-                  import: './index.mjs',
-                  require: './index.cjs',
-                },
-              },
-            },
-            null,
-            2,
-          ),
-          'utf8',
-        );
-        await writeFile(join(packageRoot, 'node_modules', 'yauzl', 'index.cjs'), yauzlStubCjs, 'utf8');
-        await writeFile(join(packageRoot, 'node_modules', 'yauzl', 'index.mjs'), yauzlStubMjs, 'utf8');
+      const workerEntryPath = join(workspaceRoot, shell.appDir, 'dist', 'snapshot-worker-entry.cjs');
+      await expect(readFile(workerEntryPath, 'utf8')).resolves.toContain('buildSnapshotProject');
 
-        for (const entryPoint of ['main.cjs', 'main.js', 'preload.js', 'safe-preload.js']) {
-          const entryLoad = spawnSync(process.execPath, ['-e', loadEntryScript, resolve(packageRoot, 'dist', entryPoint)], {
-            cwd: packageRoot,
-            encoding: 'utf8',
-          });
-
+      await withTempPackage(shell, packageJson, createElectronStubCjs({}), async (packageRoot) => {
+        for (const entryPoint of ['main.cjs', 'snapshot-worker-entry.cjs', 'preload.js', 'safe-preload.js']) {
+          const entryLoad = spawnArtifactLoad(resolve(packageRoot, 'dist', entryPoint));
           expect(entryLoad.status, `${entryPoint}\n${entryLoad.stderr}\n${entryLoad.stdout}`).toBe(0);
           expect(entryLoad.stderr).not.toContain('Dynamic require of "');
         }
-      } finally {
-        await rm(tempRoot, { recursive: true, force: true });
-      }
+      });
+    });
+
+    it(`${shell.label} reports redacted startup failures instead of leaving an unhandled readiness rejection`, async () => {
+      const packageJson = await readPackageJson(shell);
+      const buildResult = runWorkspaceBuild(shell.packageName);
+      expect(buildResult.status, buildResult.stderr || buildResult.stdout).toBe(0);
+
+      await withTempPackage(
+        shell,
+        packageJson,
+        createElectronStubCjs({ whenReadyFailureMessage: 'startup bootstrap failed at C:\\Users\\secret\\project' }),
+        async (packageRoot) => {
+          const entryLoad = spawnSync(
+            process.execPath,
+            ['--unhandled-rejections=strict', '-e', loadEntryScript, resolve(packageRoot, 'dist', 'main.cjs')],
+            {
+              cwd: packageRoot,
+              encoding: 'utf8',
+            },
+          );
+
+          expect(entryLoad.status, `${entryLoad.stderr}\n${entryLoad.stdout}`).toBe(1);
+          expect(entryLoad.stderr).toContain('Desktop startup failed:');
+          expect(entryLoad.stderr).toContain('[REDACTED_PATH]');
+          expect(entryLoad.stderr).not.toContain('C:\\Users\\secret\\project');
+          expect(entryLoad.stderr).not.toContain('UnhandledPromiseRejection');
+        },
+      );
     });
   }
 });

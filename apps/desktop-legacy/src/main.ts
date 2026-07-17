@@ -1,6 +1,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 
 import { app, BrowserWindow, dialog, ipcMain, net, safeStorage, shell } from 'electron';
 
@@ -16,7 +17,10 @@ import {
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
   createProviderBridgeHandlers,
+  createPersistenceError,
   createSecureProviderCredentialStore,
+  NodeFileSystem,
+  SnapshotScheduler,
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
   registerProviderBridgeHandlers,
@@ -27,15 +31,18 @@ import {
   type BridgeDialogAdapter,
   type DesktopBridgeHandlers,
   type RendererCloseFlushCoordinator,
+  type SnapshotWorkerInput,
+  type SnapshotWorkerOutput,
 } from '@agent-canvas/desktop-core';
 import { resolveRendererHtmlPath } from './renderer-path';
 
 const runtimeChannel = 'legacy' as const;
-const currentDir = dirname(fileURLToPath(import.meta.url));
+const currentDir = __dirname;
 const rendererHtmlPath = resolveRendererHtmlPath(currentDir);
 const preloadPath = join(currentDir, 'preload.js');
 const safeModePreloadPath = join(currentDir, 'safe-preload.js');
 const safeModeHtmlPath = join(currentDir, 'safe-mode.html');
+const snapshotWorkerEntryPath = join(currentDir, 'snapshot-worker-entry.cjs');
 const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
 
 let mainWindow: BrowserWindow | null = null;
@@ -66,6 +73,11 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+  const fileSystem = new NodeFileSystem();
+  const snapshotScheduler = new SnapshotScheduler({
+    fileSystem,
+    worker: createBundledSnapshotWorkerRunner(snapshotWorkerEntryPath),
+  });
   const knowledgeStore = new ManagedKnowledgeStore({
     appDataRoot: app.getPath('userData'),
   });
@@ -104,10 +116,12 @@ app.whenReady().then(async () => {
     channel: runtimeChannel,
     dialogs: createDialogAdapter(),
     approvedSnapshotOutbox,
+    fileSystem,
     knowledgeConfigurationSync: approvedSnapshotPullCoordinator,
     knowledgeRefreshService,
     knowledgeStore,
     knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator,
+    snapshotScheduler,
   });
   closeCoordinator = createRendererCloseFlushCoordinator({
     canRequestRendererFlush: canRequestRendererCloseFlush,
@@ -147,6 +161,8 @@ app.whenReady().then(async () => {
       void createMainWindow();
     }
   });
+}).catch((error) => {
+  void handleStartupFailure(error);
 });
 
 app.on('window-all-closed', () => {
@@ -316,6 +332,28 @@ async function loadSafeMode(reason: string): Promise<void> {
   });
 }
 
+async function handleStartupFailure(error: unknown): Promise<void> {
+  const message = `Desktop startup failed: ${redactNovusPackDiagnostics(
+    error instanceof Error ? error.stack ?? error.message : String(error),
+  )}`;
+  console.error(message);
+
+  if (mainWindow !== null && !mainWindow.isDestroyed() && !safeModeLoaded) {
+    try {
+      await loadSafeMode(message);
+      return;
+    } catch (safeModeError) {
+      console.error(
+        `Desktop startup safe mode failed: ${redactNovusPackDiagnostics(
+          safeModeError instanceof Error ? safeModeError.stack ?? safeModeError.message : String(safeModeError),
+        )}`,
+      );
+    }
+  }
+
+  app.exit(1);
+}
+
 async function handleSafeModeCommand(command: string): Promise<void> {
   switch (command) {
     case 'clear-cache': {
@@ -391,4 +429,81 @@ function createDialogAdapter(): BridgeDialogAdapter {
       return result.canceled ? null : result.filePaths[0] ?? null;
     },
   };
+}
+
+function createBundledSnapshotWorkerRunner(
+  workerEntryPath: string,
+): (input: SnapshotWorkerInput) => Promise<SnapshotWorkerOutput> {
+  return (input) => new Promise<SnapshotWorkerOutput>((resolve, reject) => {
+    const worker = new Worker(pathToFileURL(workerEntryPath));
+    let settled = false;
+
+    const settle = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      callback();
+      void Promise.resolve(worker.terminate()).catch(() => undefined);
+    };
+
+    worker.once('message', (message) => {
+      settle(() => {
+        if (isWorkerSuccessMessage(message)) {
+          resolve(message.output);
+          return;
+        }
+
+        if (isWorkerFailureMessage(message)) {
+          reject(createPersistenceError(
+            'CORRUPT_SNAPSHOT',
+            false,
+            `Snapshot worker failed: ${message.error}`,
+          ));
+          return;
+        }
+
+        reject(createPersistenceError(
+          'CORRUPT_SNAPSHOT',
+          false,
+          'Snapshot worker returned an invalid response',
+        ));
+      });
+    });
+    worker.once('error', (workerError) => {
+      settle(() => reject(workerError));
+    });
+    worker.once('exit', (code) => {
+      if (code !== 0) {
+        settle(() => reject(createPersistenceError(
+          'CORRUPT_SNAPSHOT',
+          false,
+          `Snapshot worker exited with code ${code}`,
+        )));
+      }
+    });
+    worker.postMessage(input);
+  });
+}
+
+function isWorkerSuccessMessage(
+  message: unknown,
+): message is { readonly ok: true; readonly output: SnapshotWorkerOutput } {
+  return isPlainRecord(message) && message.ok === true && isPlainRecord(message.output);
+}
+
+function isWorkerFailureMessage(
+  message: unknown,
+): message is { readonly ok: false; readonly error: string } {
+  return isPlainRecord(message) && message.ok === false && typeof message.error === 'string';
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
 }
