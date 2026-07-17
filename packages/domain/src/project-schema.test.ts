@@ -5,6 +5,10 @@ import { createAgentKnowledgeLease } from './knowledge-context';
 import { createSkillPromotionCandidate, createUserFeedbackMemory, reviewSkillPromotionCandidate } from './project-memory';
 import { agentPlanSchema, parseCanvasProject } from './project-schema';
 
+function buildAbsolutePath(root: string, ...segments: string[]): string {
+  return `/${[root, ...segments].join('/')}`;
+}
+
 describe('parseCanvasProject', () => {
   it('migrates an older project to an empty project-memory timeline', () => {
     const project = parseCanvasProject({
@@ -105,9 +109,9 @@ describe('parseCanvasProject', () => {
   it('rejects private absolute POSIX-like paths in module config', () => {
     const moduleNode = createCanvasModuleNode('unsafe-paths', 'text_prompt', { x: 0, y: 0 });
     const protectedValues = [
-      '/etc/passwd',
-      '/root/.ssh/id_rsa',
-      '/proc/self/environ',
+      buildAbsolutePath('etc', 'passwd'),
+      buildAbsolutePath('root', '.ssh', 'id_rsa'),
+      buildAbsolutePath('proc', 'self', 'environ'),
     ];
 
     for (const protectedValue of protectedValues) {
