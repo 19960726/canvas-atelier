@@ -88,6 +88,54 @@ describe('useCanvasDraft', () => {
     expect(activeNode?.dragging).toBe(true);
   });
 
+  it('keeps a stopped draft stable while its commit waits behind another commit and reconciles failure', async () => {
+    const firstCommit = deferred<boolean>();
+    const queuedCommitGate = deferred<void>();
+    const secondCommitStarted = deferred<void>();
+    const secondCommit = deferred<boolean>();
+    const onCommitPosition = vi.fn((nodeId: string) => {
+      if (nodeId === 'a') return firstCommit.promise;
+      return queuedCommitGate.promise.then(() => {
+        secondCommitStarted.resolve();
+        return secondCommit.promise;
+      });
+    });
+    const initialNodes = [draftNode('a', 0, 0), draftNode('b', 100, 100)];
+    const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({ nodes, onCommitPosition }), {
+      initialProps: { nodes: initialNodes },
+    });
+
+    act(() => {
+      result.current.onNodesChange([{ id: 'a', type: 'position', position: { x: 20, y: 30 }, dragging: true }]);
+    });
+    const firstStop = result.current.onNodeDragStop({} as never, result.current.nodes.find((node) => node.id === 'a')!);
+
+    act(() => {
+      result.current.onNodesChange([{ id: 'b', type: 'position', position: { x: 800, y: 900 }, dragging: true }]);
+    });
+    const secondStop = result.current.onNodeDragStop({} as never, result.current.nodes.find((node) => node.id === 'b')!);
+
+    firstCommit.resolve(true);
+    await act(async () => {
+      await firstStop;
+    });
+    rerender({ nodes: [draftNode('a', 20, 30), draftNode('b', 100, 100)] });
+
+    expect(result.current.nodes.find((node) => node.id === 'b')?.position).toEqual({ x: 800, y: 900 });
+
+    queuedCommitGate.resolve();
+    await act(async () => {
+      await secondCommitStarted.promise;
+    });
+    expect(result.current.nodes.find((node) => node.id === 'b')?.position).toEqual({ x: 800, y: 900 });
+
+    secondCommit.resolve(false);
+    await act(async () => {
+      await secondStop;
+    });
+    expect(result.current.nodes.find((node) => node.id === 'b')?.position).toEqual({ x: 100, y: 100 });
+  });
+
   it('resynchronizes from a changed durable source and culls using the draft position', async () => {
     const initialNodes = [draftNode('module-1', 1600, 1600)];
     const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({
@@ -118,4 +166,12 @@ describe('useCanvasDraft', () => {
 
 function draftNode(id: string, x: number, y: number, overrides: Partial<Node<DraftNodeData>> = {}): Node<DraftNodeData> {
   return { id, type: 'module', position: { x, y }, data: { title: id }, ...overrides };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
