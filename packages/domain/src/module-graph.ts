@@ -1,6 +1,8 @@
 import { z } from 'zod';
-import type { CanvasModuleType } from './canvas-module';
+import type { CanvasModulePortDefinition, CanvasModuleType } from './canvas-module';
 import { getCanvasModuleDefinition } from './canvas-module';
+import type { CanvasEdge, CanvasModuleNode, CanvasNode, CanvasProject } from './project-schema';
+import type { RuntimeProfileId } from './runtime-profile';
 
 const idSchema = z.string().min(1);
 const positionSchema = z.object({ x: z.number(), y: z.number() }).strict();
@@ -81,6 +83,228 @@ export function migrateCanvasProjectGraph(input: unknown): unknown {
     throw new Error(`Unsupported graphVersion: ${String(project.graphVersion)}`);
   }
   return project;
+}
+
+export interface GraphValidationIssue {
+  code: 'MISSING_NODE' | 'MISSING_PORT' | 'DIRECTION' | 'TYPE_MISMATCH'
+    | 'INPUT_CARDINALITY' | 'CYCLE' | 'RUNTIME_UNSUPPORTED';
+  edgeId?: string;
+  nodeId?: string;
+  portId?: string;
+  message: string;
+}
+
+export function canConnectCanvasPorts(
+  sourceNode: CanvasModuleNode,
+  sourcePortId: string,
+  targetNode: CanvasModuleNode,
+  targetPortId: string,
+): { ok: true } | { ok: false; code: GraphValidationIssue['code']; message: string } {
+  const source = getPort(sourceNode, sourcePortId);
+  if (!source) {
+    return { ok: false, code: 'MISSING_PORT', message: `Unknown source port: ${sourcePortId}` };
+  }
+  const target = getPort(targetNode, targetPortId);
+  if (!target) {
+    return { ok: false, code: 'MISSING_PORT', message: `Unknown target port: ${targetPortId}` };
+  }
+  if (source.direction !== 'output' || target.direction !== 'input') {
+    return { ok: false, code: 'DIRECTION', message: 'Connections require output to input' };
+  }
+  if (source.dataType !== target.dataType && !(source.dataType === 'image_asset' && target.dataType === 'image_list')) {
+    return { ok: false, code: 'TYPE_MISMATCH', message: `${source.dataType} cannot connect to ${target.dataType}` };
+  }
+  return { ok: true };
+}
+
+export function validateCanvasModuleGraph(
+  project: CanvasProject,
+  runtimeProfileId: RuntimeProfileId = 'modern',
+): GraphValidationIssue[] {
+  const issues: GraphValidationIssue[] = [];
+  const nodesById = new Map(project.nodes.map((node) => [node.id, node]));
+  const moduleNodesById = new Map(
+    project.nodes
+      .filter(isCanvasModuleNode)
+      .map((node) => [node.id, node]),
+  );
+  const incomingByPort = new Map<string, CanvasEdge[]>();
+  const adjacency = new Map<string, Array<{ nodeId: string; edgeId: string }>>();
+
+  for (const node of moduleNodesById.values()) {
+    adjacency.set(node.id, []);
+    const definition = getCanvasModuleDefinition(node.data.moduleType);
+    if (!definition.runtimeProfiles.includes(runtimeProfileId)) {
+      issues.push({
+        code: 'RUNTIME_UNSUPPORTED',
+        nodeId: node.id,
+        message: `${node.data.moduleType} is not supported by runtime ${runtimeProfileId}`,
+      });
+    }
+  }
+
+  for (const edge of project.edges) {
+    const sourceNode = nodesById.get(edge.source);
+    const targetNode = nodesById.get(edge.target);
+    if (!sourceNode) {
+      issues.push({
+        code: 'MISSING_NODE',
+        edgeId: edge.id,
+        nodeId: edge.source,
+        message: `Unknown source node: ${edge.source}`,
+      });
+    }
+    if (!targetNode) {
+      issues.push({
+        code: 'MISSING_NODE',
+        edgeId: edge.id,
+        nodeId: edge.target,
+        message: `Unknown target node: ${edge.target}`,
+      });
+    }
+    if (!sourceNode || !targetNode) continue;
+
+    const sourceModuleNode = moduleNodesById.get(edge.source);
+    const targetModuleNode = moduleNodesById.get(edge.target);
+    if (!sourceModuleNode || !targetModuleNode) continue;
+
+    adjacency.get(sourceModuleNode.id)?.push({ nodeId: targetModuleNode.id, edgeId: edge.id });
+
+    let hasMissingPort = false;
+    if (!edge.sourcePortId) {
+      issues.push({
+        code: 'MISSING_PORT',
+        edgeId: edge.id,
+        nodeId: sourceModuleNode.id,
+        message: `Edge ${edge.id} is missing a source port`,
+      });
+      hasMissingPort = true;
+    }
+    if (!edge.targetPortId) {
+      issues.push({
+        code: 'MISSING_PORT',
+        edgeId: edge.id,
+        nodeId: targetModuleNode.id,
+        message: `Edge ${edge.id} is missing a target port`,
+      });
+      hasMissingPort = true;
+    }
+    if (edge.order === undefined) {
+      issues.push({
+        code: 'MISSING_PORT',
+        edgeId: edge.id,
+        message: `Edge ${edge.id} is missing input order`,
+      });
+    }
+    if (hasMissingPort) continue;
+
+    const sourcePortId = edge.sourcePortId;
+    const targetPortId = edge.targetPortId;
+    if (!sourcePortId || !targetPortId) continue;
+
+    const connection = canConnectCanvasPorts(
+      sourceModuleNode,
+      sourcePortId,
+      targetModuleNode,
+      targetPortId,
+    );
+    if (!connection.ok) {
+      issues.push({
+        code: connection.code,
+        edgeId: edge.id,
+        nodeId: connection.code === 'MISSING_PORT' ? targetModuleNode.id : undefined,
+        portId: connection.code === 'MISSING_PORT' ? targetPortId : undefined,
+        message: connection.message,
+      });
+      continue;
+    }
+
+    const targetPort = getPort(targetModuleNode, targetPortId);
+    if (targetPort?.cardinality === 'one') {
+      const key = `${targetModuleNode.id}:${targetPort.id}`;
+      const incoming = incomingByPort.get(key) ?? [];
+      incoming.push(edge);
+      incomingByPort.set(key, incoming);
+    }
+  }
+
+  for (const [key, incoming] of incomingByPort.entries()) {
+    if (incoming.length <= 1) continue;
+    const duplicate = incoming[1];
+    if (!duplicate) continue;
+    const separator = key.indexOf(':');
+    const nodeId = key.slice(0, separator);
+    const portId = key.slice(separator + 1);
+    issues.push({
+      code: 'INPUT_CARDINALITY',
+      edgeId: duplicate.id,
+      nodeId,
+      portId,
+      message: `Input ${nodeId}.${portId} accepts one edge but received ${incoming.length}`,
+    });
+  }
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (nodeId: string): void => {
+    if (visited.has(nodeId)) return;
+    visiting.add(nodeId);
+    for (const edge of adjacency.get(nodeId) ?? []) {
+      if (visiting.has(edge.nodeId)) {
+        issues.push({ code: 'CYCLE', edgeId: edge.edgeId, nodeId: edge.nodeId, message: `Cycle detected at node ${edge.nodeId}` });
+        continue;
+      }
+      visit(edge.nodeId);
+    }
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+  };
+  for (const node of moduleNodesById.values()) visit(node.id);
+
+  return issues;
+}
+
+export function reorderCanvasInputEdges(
+  edges: readonly CanvasEdge[],
+  targetNodeId: string,
+  targetPortId: string,
+  edgeIds: readonly string[],
+): CanvasEdge[] {
+  const matching = edges.filter((edge) => edge.target === targetNodeId && edge.targetPortId === targetPortId);
+  if (!hasExactPermutation(matching.map((edge) => edge.id), edgeIds)) {
+    throw new Error('edgeIds must be an exact permutation of matching input edge ids');
+  }
+
+  const orderById = new Map(edgeIds.map((edgeId, index) => [edgeId, index]));
+  return edges.map((edge) => {
+    if (edge.target !== targetNodeId || edge.targetPortId !== targetPortId) return edge;
+    return { ...edge, order: orderById.get(edge.id) as number };
+  });
+}
+
+function getPort(node: CanvasModuleNode, portId: string): CanvasModulePortDefinition | undefined {
+  return getCanvasModuleDefinition(node.data.moduleType).ports.find((port) => port.id === portId);
+}
+
+function isCanvasModuleNode(node: CanvasNode): node is CanvasModuleNode {
+  return node.type === 'module';
+}
+
+function hasExactPermutation(expected: readonly string[], actual: readonly string[]): boolean {
+  if (expected.length !== actual.length) return false;
+  const expectedCounts = countIds(expected);
+  const actualCounts = countIds(actual);
+  if (expectedCounts.size !== actualCounts.size) return false;
+  for (const [id, count] of expectedCounts) {
+    if (actualCounts.get(id) !== count) return false;
+  }
+  return true;
+}
+
+function countIds(ids: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+  return counts;
 }
 
 function containsProtectedModuleConfig(value: unknown, keyPath: string[] = []): boolean {

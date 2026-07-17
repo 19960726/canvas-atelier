@@ -46,6 +46,7 @@ export { applyProjectTransaction, projectOperationSchema, projectTransactionSche
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
 export { migrateCanvasProjectGraph } from './module-graph';
+export type { GraphValidationIssue } from './module-graph';
 export {
   CANVAS_MODULE_DEFINITIONS,
   createCanvasModuleNode,
