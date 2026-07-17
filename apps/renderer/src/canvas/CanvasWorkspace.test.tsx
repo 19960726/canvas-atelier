@@ -33,6 +33,18 @@ afterEach(() => {
 });
 
 describe('CanvasWorkspace', () => {
+  it('exposes stable visual-state hooks for the professional shell', () => {
+    render(<CanvasWorkspace />);
+
+    expect(screen.getByTestId('workspace')).toHaveClass('workspace');
+    expect(screen.getByTestId('topbar')).toHaveAttribute('data-surface', 'chrome');
+    expect(screen.getByTestId('tool-placement')).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByTestId('tool-placement'));
+
+    expect(screen.getByTestId('tool-placement')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('renders the canvas-first application shell', () => {
     render(<CanvasWorkspace />);
     expect(screen.getByRole('application', { name: '无限画布' })).toBeVisible();

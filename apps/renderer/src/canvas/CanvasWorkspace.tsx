@@ -358,7 +358,7 @@ export function CanvasWorkspace() {
 
   return (
     <div data-testid="workspace" className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
-      <header className="topbar" data-testid="topbar">
+      <header className="topbar" data-testid="topbar" data-surface="chrome">
         <div className="product-mark" aria-label="Novus Atelier">
           <span className="product-mark__icon"><Box size={17} /></span>
           <strong>Novus Atelier</strong>
@@ -387,6 +387,7 @@ export function CanvasWorkspace() {
             data-testid={`tool-${id}`}
             className={`tool-button${activeTool === id ? ' is-active' : ''}`}
             aria-label={label}
+            aria-pressed={activeTool === id}
             title={label}
             onClick={() => setActiveTool(id)}
           >
@@ -576,6 +577,7 @@ export function CanvasWorkspace() {
 
       <JobStrip
         jobs={modelJobs}
+        saveState={saveStatus}
         saveLabel={saveStatusLabel(saveStatus, saveErrorCode)}
         onRetry={(jobId) => { void retryModelJob(jobId); }}
         onCancel={(jobId) => { void cancelModelJob(jobId); }}

@@ -3,6 +3,7 @@ import { Loader2, RotateCcw, XCircle } from 'lucide-react';
 
 interface JobStripProps {
   jobs: ModelJob[];
+  saveState: 'pending' | 'saving' | 'saved' | 'error' | 'read_only';
   saveLabel: string;
   onRetry: (jobId: string) => void;
   onCancel: (jobId: string) => void;
@@ -10,7 +11,7 @@ interface JobStripProps {
 
 const activeStatuses = new Set<ModelJob['status']>(['queued', 'submitting', 'running']);
 
-export function JobStrip({ jobs, saveLabel, onRetry, onCancel }: JobStripProps) {
+export function JobStrip({ jobs, saveState, saveLabel, onRetry, onCancel }: JobStripProps) {
   const activeJobs = jobs.filter((job) => activeStatuses.has(job.status));
   const queuedJobs = activeJobs.filter((job) => job.status === 'queued');
   const visibleJobs = jobs
@@ -18,7 +19,12 @@ export function JobStrip({ jobs, saveLabel, onRetry, onCancel }: JobStripProps) 
     .slice(0, 4);
 
   return (
-    <footer className="job-strip" aria-label="任务队列" data-testid="job-strip">
+    <footer
+      className="job-strip"
+      aria-label="任务队列"
+      data-testid="job-strip"
+      data-has-active-jobs={activeJobs.length > 0 ? 'true' : 'false'}
+    >
       <span className="job-strip__label">
         <span className={`status-dot ${activeJobs.length === 0 ? 'is-idle' : ''}`} />
         任务队列
@@ -53,7 +59,7 @@ export function JobStrip({ jobs, saveLabel, onRetry, onCancel }: JobStripProps) 
         ))}
       </div>
       <span className="job-strip__spacer" />
-      <span>{saveLabel}</span>
+      <span data-testid="save-state" data-save-state={saveState} className="job-strip__save">{saveLabel}</span>
     </footer>
   );
 }
