@@ -94,8 +94,8 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
 
-    expect(screen.getByText(/asset-far-reference/)).toBeInTheDocument();
-    expect(screen.getByText('fitView should see this far prompt')).toBeInTheDocument();
+    expect(screen.getAllByText(/asset-far-reference/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('fitView should see this far prompt').length).toBeGreaterThan(0);
   });
 
   it('opens the placement workbench with separate reference uploads', () => {

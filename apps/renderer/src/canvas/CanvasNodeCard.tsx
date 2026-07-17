@@ -41,10 +41,6 @@ const iconByKind: Record<CanvasNode['type'], LucideIcon> = {
   agent_plan: Sparkles,
 };
 
-function splitFooterSubtitle(subtitle: string): ReactNode[] {
-  return subtitle.split(/([ -])/).map((part, index) => <span key={`${part}-${index}`}>{part}</span>);
-}
-
 export const CanvasNodeCard = memo(function CanvasNodeCard({
   kind,
   tone,
@@ -77,7 +73,7 @@ export const CanvasNodeCard = memo(function CanvasNodeCard({
       </header>
       <div className="canvas-node__body">{children ?? <p className="canvas-node__meta">{subtitle}</p>}</div>
       <footer className="canvas-node__footer">
-        <span>{splitFooterSubtitle(subtitle)}</span>
+        <span>{subtitle}</span>
         <b>{status}</b>
       </footer>
       <Handle type="source" position={Position.Right} />

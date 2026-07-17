@@ -30,6 +30,10 @@ describe('CanvasNodeCard', () => {
     expect(node).toHaveClass('is-selected');
     expect(screen.getByText('Agent plan')).toBeVisible();
     expect(node.querySelector('.canvas-node__body .canvas-node__meta')).toHaveTextContent('3 references');
+    const footerSubtitle = node.querySelector('.canvas-node__footer > span');
+    expect(footerSubtitle).not.toBeNull();
+    expect(footerSubtitle).toHaveTextContent('3 references');
+    expect(footerSubtitle?.querySelector('span')).toBeNull();
     expect(screen.getByText('Ready')).toBeVisible();
     expect(node.querySelector('.canvas-node__type-icon')).not.toBeNull();
   });
