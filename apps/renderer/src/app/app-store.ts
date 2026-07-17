@@ -222,6 +222,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sourceNode = getModuleNode(state.project.nodes, sourceId);
     const targetNode = getModuleNode(state.project.nodes, targetId);
     if (!sourceNode || !targetNode) return false;
+    if (hasExactModuleEdge(state.project.edges, sourceId, sourcePortId, targetId, targetPortId)) return false;
+    if (wouldCreateModuleCycle(state.project.nodes, state.project.edges, sourceId, targetId)) return false;
     const validation = canConnectCanvasPorts(sourceNode, sourcePortId, targetNode, targetPortId);
     if (!validation.ok) return false;
     const targetPort = getCanvasModuleDefinition(targetNode.data.moduleType).ports.find((port) => (
@@ -301,13 +303,26 @@ export const useAppStore = create<AppState>((set, get) => ({
         return false;
       }
     }
+    try {
+      reorderCanvasInputEdges(state.project.edges, targetNodeId, targetPortId, edgeIds);
+    } catch {
+      return false;
+    }
+    const currentOrder = matching
+      .map((edge, index) => ({ edge, index }))
+      .sort((left, right) => (
+        (left.edge.order ?? left.index) - (right.edge.order ?? right.index)
+        || left.index - right.index
+      ))
+      .map(({ edge }) => edge.id);
+    if (sameStringList(currentOrder, edgeIds)) return true;
+
     const transaction: ProjectTransaction = {
       id: `reorder-module-${targetNodeId}-${targetPortId}`,
       label: 'Reorder module input',
       operations: [{ kind: 'canvas', operation: { kind: 'reorder_input_edges', targetNodeId, targetPortId, edgeIds: [...edgeIds] } }],
     };
     try {
-      reorderCanvasInputEdges(state.project.edges, targetNodeId, targetPortId, edgeIds);
       const nextProject = applyProjectTransaction(state.project, transaction);
       return get().commitProjectTransaction(transaction, { nextProject });
     } catch {
@@ -886,6 +901,52 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isFinitePosition(value: { x: number; y: number }): boolean {
   return Number.isFinite(value.x) && Number.isFinite(value.y);
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function hasExactModuleEdge(
+  edges: readonly CanvasProject['edges'][number][],
+  sourceId: string,
+  sourcePortId: string,
+  targetId: string,
+  targetPortId: string,
+): boolean {
+  return edges.some((edge) => (
+    edge.source === sourceId
+    && edge.sourcePortId === sourcePortId
+    && edge.target === targetId
+    && edge.targetPortId === targetPortId
+  ));
+}
+
+function wouldCreateModuleCycle(
+  nodes: readonly CanvasProject['nodes'][number][],
+  edges: readonly CanvasProject['edges'][number][],
+  sourceId: string,
+  targetId: string,
+): boolean {
+  if (sourceId === targetId) return true;
+  const moduleIds = new Set(nodes.filter((node) => node.type === 'module').map((node) => node.id));
+  const adjacency = new Map<string, string[]>();
+  for (const nodeId of moduleIds) adjacency.set(nodeId, []);
+  for (const edge of edges) {
+    if (!moduleIds.has(edge.source) || !moduleIds.has(edge.target)) continue;
+    adjacency.get(edge.source)?.push(edge.target);
+  }
+
+  const visited = new Set<string>();
+  const pending = [targetId];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current === sourceId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    for (const next of adjacency.get(current) ?? []) pending.push(next);
+  }
+  return false;
 }
 
 function createModuleEdgeId(

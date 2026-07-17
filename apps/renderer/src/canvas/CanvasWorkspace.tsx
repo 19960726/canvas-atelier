@@ -80,6 +80,8 @@ export function isValidCanvasConnection(
   const target = nodes.find((node) => node.id === targetId);
   if (!source || !target || source.type !== 'module' || target.type !== 'module') return false;
   if (isGhostFlowNode(source) || isGhostFlowNode(target)) return false;
+  if (hasExactCanvasEdge(edges, sourceId, sourcePortId, targetId, targetPortId)) return false;
+  if (wouldCreateCanvasCycle(nodes, edges, sourceId, targetId)) return false;
 
   try {
     const sourceNode = toCanvasModuleNode(source);
@@ -99,6 +101,48 @@ export function isValidCanvasConnection(
 
 function isGhostFlowNode(node: Node): boolean {
   return typeof node.className === 'string' && node.className.split(/\s+/u).includes('agent-ghost-node');
+}
+
+function hasExactCanvasEdge(
+  edges: readonly Edge[],
+  sourceId: string,
+  sourcePortId: string,
+  targetId: string,
+  targetPortId: string,
+): boolean {
+  return edges.some((edge) => (
+    edge.source === sourceId
+    && edge.sourceHandle === sourcePortId
+    && edge.target === targetId
+    && edge.targetHandle === targetPortId
+  ));
+}
+
+function wouldCreateCanvasCycle(
+  nodes: readonly Node[],
+  edges: readonly Edge[],
+  sourceId: string,
+  targetId: string,
+): boolean {
+  if (sourceId === targetId) return true;
+  const moduleIds = new Set(nodes.filter((node) => node.type === 'module').map((node) => node.id));
+  const adjacency = new Map<string, string[]>();
+  for (const nodeId of moduleIds) adjacency.set(nodeId, []);
+  for (const edge of edges) {
+    if (!moduleIds.has(edge.source) || !moduleIds.has(edge.target)) continue;
+    adjacency.get(edge.source)?.push(edge.target);
+  }
+
+  const visited = new Set<string>();
+  const pending = [targetId];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current === sourceId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    for (const next of adjacency.get(current) ?? []) pending.push(next);
+  }
+  return false;
 }
 
 function toCanvasModuleNode(node: Node): CanvasModuleNode {

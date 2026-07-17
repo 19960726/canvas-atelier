@@ -2603,6 +2603,27 @@ describe('stable module graph commits', () => {
     expect(useAppStore.getState().project.edges.filter((edge) => edge.source === 'prompt' && edge.target === 'generator')).toHaveLength(1);
   });
 
+  it('allows one many-input connection, rejects its exact duplicate, and allows a distinct source', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project: moduleGraphProjectWithEmptyReferences(), saveStatus: 'saved' });
+    const connection = { source: 'image-a', sourceHandle: 'image', target: 'reverse', targetHandle: 'references' } as const;
+
+    expect(await useAppStore.getState().connectModulePorts(connection)).toBe(true);
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+    expect(await useAppStore.getState().connectModulePorts(connection)).toBe(false);
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+    expect(await useAppStore.getState().connectModulePorts({
+      source: 'image-b', sourceHandle: 'image', target: 'reverse', targetHandle: 'references',
+    })).toBe(true);
+
+    expect(commit).toHaveBeenCalledTimes(2);
+  });
+
   it('treats missing, ghost, non-module, and incompatible endpoints as synchronous invalid connections', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -2695,6 +2716,39 @@ describe('stable module graph commits', () => {
       ['edge-b', 0],
     ]);
   });
+
+  it('treats an already ordered many-input request as a saved no-op', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project: moduleGraphProjectWithReferences(), saveStatus: 'saved' });
+
+    expect(await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-a', 'edge-b'])).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+  });
+
+  it('rejects self and multi-node cycles before persistence', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project: moduleGraphProjectWithCycle(), saveStatus: 'saved' });
+
+    expect(await useAppStore.getState().connectModulePorts({
+      source: 'editor-a', sourceHandle: 'image', target: 'editor-a', targetHandle: 'image',
+    })).toBe(false);
+    expect(await useAppStore.getState().connectModulePorts({
+      source: 'editor-c', sourceHandle: 'image', target: 'editor-a', targetHandle: 'image',
+    })).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+  });
 });
 
 function moduleGraphProject(): CanvasProject {
@@ -2722,6 +2776,37 @@ function moduleGraphProjectWithReferences(): CanvasProject {
       ...moduleGraphProject().edges,
       { id: 'edge-a', source: 'image-a', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 0 },
       { id: 'edge-b', source: 'image-b', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 1 },
+    ],
+  });
+}
+
+function moduleGraphProjectWithEmptyReferences(): CanvasProject {
+  const project = moduleGraphProject();
+  return parseCanvasProject({
+    ...project,
+    nodes: [
+      ...project.nodes,
+      createCanvasModuleNode('image-a', 'image_input', { x: 0, y: 240 }),
+      createCanvasModuleNode('image-b', 'image_input', { x: 0, y: 400 }),
+      createCanvasModuleNode('reverse', 'reverse_agent', { x: 360, y: 320 }),
+    ],
+  });
+}
+
+function moduleGraphProjectWithCycle(): CanvasProject {
+  const starter = createStarterProject();
+  return parseCanvasProject({
+    ...starter,
+    nodes: [
+      ...starter.nodes,
+      createCanvasModuleNode('editor-a', 'image_editor', { x: 0, y: 240 }),
+      createCanvasModuleNode('editor-b', 'image_editor', { x: 320, y: 240 }),
+      createCanvasModuleNode('editor-c', 'image_editor', { x: 640, y: 240 }),
+    ],
+    edges: [
+      ...starter.edges,
+      { id: 'cycle-a-b', source: 'editor-a', sourcePortId: 'image', target: 'editor-b', targetPortId: 'image', order: 0 },
+      { id: 'cycle-b-c', source: 'editor-b', sourcePortId: 'image', target: 'editor-c', targetPortId: 'image', order: 0 },
     ],
   });
 }

@@ -38,22 +38,39 @@ describe('useCanvasDraft', () => {
     expect(onCommitPosition).toHaveBeenCalledWith('module-1', { x: 60, y: 70 });
   });
 
-  it('does not let a stale same-source effect overwrite an active draft', () => {
-    const initialNodes = [draftNode('module-1', 0, 0)];
-    const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({
-      nodes,
-      onCommitPosition: async () => true,
-    }), { initialProps: { nodes: initialNodes } });
+  it('merges durable source updates around an active drag and rolls back the stopped node after failure', async () => {
+    const initialNodes = [draftNode('a', 0, 0), draftNode('b', 100, 100), draftNode('removed', 200, 200)];
+    const onCommitPosition = vi.fn(async () => false);
+    const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({ nodes, onCommitPosition }), {
+      initialProps: { nodes: initialNodes },
+    });
 
     act(() => {
-      result.current.onNodesChange([{ id: 'module-1', type: 'position', position: { x: 80, y: 90 }, dragging: true }]);
+      result.current.onNodesChange([{ id: 'b', type: 'position', position: { x: 800, y: 900 }, dragging: true }]);
     });
-    rerender({ nodes: initialNodes });
 
-    expect(result.current.nodes.find((node) => node.id === 'module-1')?.position).toEqual({ x: 80, y: 90 });
+    rerender({ nodes: [draftNode('a', 20, 30), draftNode('b', 100, 100), draftNode('added', 300, 300)] });
+
+    expect(result.current.nodes.map((node) => [node.id, node.position])).toEqual([
+      ['a', { x: 20, y: 30 }],
+      ['b', { x: 800, y: 900 }],
+      ['added', { x: 300, y: 300 }],
+    ]);
+
+    await act(async () => {
+      await result.current.onNodeDragStop({} as never, result.current.nodes.find((node) => node.id === 'b')!);
+    });
+    rerender({ nodes: [draftNode('a', 20, 30), draftNode('b', 100, 100), draftNode('added', 300, 300)] });
+
+    expect(onCommitPosition).toHaveBeenCalledWith('b', { x: 800, y: 900 });
+    expect(result.current.nodes.map((node) => [node.id, node.position])).toEqual([
+      ['a', { x: 20, y: 30 }],
+      ['b', { x: 100, y: 100 }],
+      ['added', { x: 300, y: 300 }],
+    ]);
   });
 
-  it('resynchronizes from a changed durable source and culls using the draft position', () => {
+  it('resynchronizes from a changed durable source and culls using the draft position', async () => {
     const initialNodes = [draftNode('module-1', 1600, 1600)];
     const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({
       nodes,
@@ -73,6 +90,9 @@ describe('useCanvasDraft', () => {
     });
     expect(culled.nodes.map((node) => node.id)).toEqual(['module-1']);
 
+    await act(async () => {
+      await result.current.onNodeDragStop({} as never, result.current.nodes[0]!);
+    });
     rerender({ nodes: [draftNode('module-1', 320, 240)] });
     expect(result.current.nodes.find((node) => node.id === 'module-1')?.position).toEqual({ x: 320, y: 240 });
   });

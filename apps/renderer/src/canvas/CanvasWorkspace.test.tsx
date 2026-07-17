@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAgentKnowledgeLease, createCanvasModuleNode, type PlacementObject, type ProjectMemoryEntry } from '@agent-canvas/domain';
+import type { Edge } from '@xyflow/react';
 import {
   createStarterProject,
   replaceKnowledgeClientForTests,
@@ -53,6 +54,31 @@ describe('CanvasWorkspace', () => {
     expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'generator', targetHandle: 'references' }, nodes, [])).toBe(false);
     expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: 'prompt', target: 'ghost-generator', targetHandle: 'prompt' }, nodes, [])).toBe(false);
     expect(isValidCanvasConnection({ source: 'prompt', sourceHandle: null, target: 'generator', targetHandle: 'prompt' }, nodes, [])).toBe(false);
+  });
+
+  it('rejects duplicate many-input connections and direct or multi-node cycles synchronously', () => {
+    const imageA = createCanvasModuleNode('image-a', 'image_input', { x: 0, y: 0 });
+    const imageB = createCanvasModuleNode('image-b', 'image_input', { x: 0, y: 160 });
+    const reverse = createCanvasModuleNode('reverse', 'reverse_agent', { x: 320, y: 80 });
+    const editorA = createCanvasModuleNode('editor-a', 'image_editor', { x: 0, y: 320 });
+    const editorB = createCanvasModuleNode('editor-b', 'image_editor', { x: 320, y: 320 });
+    const editorC = createCanvasModuleNode('editor-c', 'image_editor', { x: 640, y: 320 });
+    const nodes = [imageA, imageB, reverse, editorA, editorB, editorC].map((node) => ({
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      data: node.data,
+    }));
+    const existingEdges: Edge[] = [
+      { id: 'image-a-reference', source: 'image-a', sourceHandle: 'image', target: 'reverse', targetHandle: 'references' },
+      { id: 'editor-a-b', source: 'editor-a', sourceHandle: 'image', target: 'editor-b', targetHandle: 'image' },
+      { id: 'editor-b-c', source: 'editor-b', sourceHandle: 'image', target: 'editor-c', targetHandle: 'image' },
+    ];
+
+    expect(isValidCanvasConnection({ source: 'image-a', sourceHandle: 'image', target: 'reverse', targetHandle: 'references' }, nodes, existingEdges)).toBe(false);
+    expect(isValidCanvasConnection({ source: 'image-b', sourceHandle: 'image', target: 'reverse', targetHandle: 'references' }, nodes, existingEdges)).toBe(true);
+    expect(isValidCanvasConnection({ source: 'editor-a', sourceHandle: 'image', target: 'editor-a', targetHandle: 'image' }, nodes, existingEdges)).toBe(false);
+    expect(isValidCanvasConnection({ source: 'editor-c', sourceHandle: 'image', target: 'editor-a', targetHandle: 'image' }, nodes, existingEdges)).toBe(false);
   });
 
   it('exposes stable visual-state hooks for the professional shell', () => {
