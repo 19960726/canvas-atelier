@@ -9,6 +9,7 @@
     "rail canvas agent"
     "jobs jobs jobs";
   background: var(--canvas);
+  letter-spacing: 0;
 }
 
 .workspace.is-agent-collapsed {
@@ -29,17 +30,17 @@
 .product-mark { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; white-space: nowrap; }
 .product-mark__icon { width: 26px; height: 26px; display: grid; place-items: center; color: white; background: var(--accent); border-radius: 6px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14); }
 .topbar__divider { width: 1px; height: 20px; margin: 0 10px; background: var(--border); }
-.project-button { display: flex; align-items: center; gap: 4px; max-width: 220px; padding: 5px 8px; color: var(--text); border: 1px solid transparent; background: transparent; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.project-button { display: flex; align-items: center; gap: 4px; max-width: 220px; padding: 5px 8px; color: var(--text); border: 1px solid transparent; background: transparent; border-radius: 5px; cursor: pointer; font-size: 12px; }
 .project-button:hover { background: var(--surface-muted); border-color: var(--border-subtle); }
 .project-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar__center { position: absolute; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 3px; padding: 3px; background: var(--surface-muted); border: 1px solid var(--border-subtle); border-radius: 6px; }
 .topbar__actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.icon-button { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; color: var(--text-secondary); border: 1px solid transparent; background: transparent; border-radius: 6px; cursor: pointer; }
+.icon-button { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; color: var(--text-secondary); border: 1px solid transparent; background: transparent; border-radius: 5px; cursor: pointer; }
 .icon-button:hover { color: var(--text); background: var(--surface); border-color: var(--border); }
 .model-status { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px; color: var(--text-secondary); background: var(--surface-muted); border: 1px solid var(--border-subtle); border-radius: 6px; font-size: 11px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
 .status-dot.is-idle { background: #94a3b8; }
-.run-button { height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 11px; color: white; background: var(--accent); border: 1px solid #0b665f; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.run-button { height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 11px; color: white; background: var(--accent); border: 1px solid #0b665f; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 600; }
 .run-button:hover { background: #0d6b64; }
 button:focus-visible,
 select:focus-visible,
@@ -50,7 +51,7 @@ textarea:focus-visible {
 }
 
 .toolrail { grid-area: rail; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 5px; background: var(--surface-elevated); border-right: 1px solid var(--border); z-index: 10; }
-.tool-button { position: relative; width: 36px; height: 36px; display: grid; place-items: center; padding: 0; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+.tool-button { position: relative; width: 36px; height: 36px; display: grid; place-items: center; padding: 0; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
 .tool-button::before { content: ""; position: absolute; left: -5px; top: 7px; width: 2px; height: 20px; border-radius: 999px; background: transparent; }
 .tool-button:hover { color: var(--text); background: var(--surface-muted); border-color: var(--border-subtle); }
 .tool-button.is-active,

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +19,8 @@ import type {
   ProjectPersistenceClient,
 } from '../app/desktop-persistence';
 import { CanvasWorkspace } from './CanvasWorkspace';
+
+const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
 
 beforeEach(() => {
   delete window.novusDesktop;
@@ -43,6 +46,26 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByTestId('tool-placement'));
 
     expect(screen.getByTestId('tool-placement')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps shell controls within approved geometry and zero letter spacing', () => {
+    const style = document.createElement('style');
+    style.textContent = appStyles;
+    document.head.append(style);
+    try {
+      const { container } = render(<CanvasWorkspace />);
+      const workspace = screen.getByTestId('workspace');
+      const selectors = ['.project-button', '.icon-button', '.run-button', '.tool-button'];
+
+      for (const selector of selectors) {
+        const control = container.querySelector<HTMLElement>(selector);
+        expect(control).not.toBeNull();
+        expect(getComputedStyle(control!).borderRadius).toBe('5px');
+      }
+      expect(getComputedStyle(workspace).letterSpacing).toBe('0px');
+    } finally {
+      style.remove();
+    }
   });
 
   it('renders the canvas-first application shell', () => {
