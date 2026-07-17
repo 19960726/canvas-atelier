@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createCanvasModuleNode } from './canvas-module';
 import { createAgentKnowledgeLease } from './knowledge-context';
-import type { CanvasNode, CanvasProject } from './project-schema';
+import { parseCanvasProject, type CanvasEdge, type CanvasNode, type CanvasProject } from './project-schema';
 import { createSkillPromotionCandidate, createUserFeedbackMemory, reviewSkillPromotionCandidate, type ProjectMemoryEntry, type SkillPromotionCandidate } from './project-memory';
 import { applyProjectTransaction } from './project-transaction';
 import type { ProjectTransaction } from './project-transaction';
@@ -360,4 +361,100 @@ describe('project transactions', () => {
       skillPromotionCandidates: [candidate],
     });
   });
+
+  it('applies reorder_input_edges through a project canvas operation', () => {
+    const original = moduleProjectWithTwoReferences();
+
+    const result = applyProjectTransaction(original, {
+      id: 'tx-reorder-inputs',
+      label: 'reorder references',
+      operations: [{
+        kind: 'canvas',
+        operation: {
+          kind: 'reorder_input_edges',
+          targetNodeId: 'reverse',
+          targetPortId: 'references',
+          edgeIds: ['edge-b', 'edge-a'],
+        },
+      }],
+    });
+
+    expect(result.edges.map((edge) => [edge.id, edge.order]))
+      .toEqual([['edge-a', 1], ['edge-b', 0]]);
+    expect(original.edges.map((edge) => [edge.id, edge.order]))
+      .toEqual([['edge-a', 0], ['edge-b', 1]]);
+  });
+
+  it('rejects an invalid typed canvas operation without partial project changes', () => {
+    const original = moduleProjectWithPromptAndGenerator();
+    const snapshot = structuredClone(original);
+    const projectMemory = { ...optimizationMemory, projectId: original.id };
+
+    expect(() => applyProjectTransaction(original, {
+      id: 'tx-invalid-typed-edge',
+      label: 'invalid typed edge',
+      operations: [
+        { kind: 'append_project_memory', entry: projectMemory },
+        {
+          kind: 'canvas',
+          operation: {
+            kind: 'create_edge',
+            edge: {
+              id: 'bad',
+              source: 'prompt',
+              sourcePortId: 'prompt',
+              target: 'generator',
+              targetPortId: 'references',
+              order: 0,
+            },
+          },
+        },
+      ],
+    })).toThrow(/cannot connect/i);
+
+    expect(original).toEqual(snapshot);
+  });
 });
+
+function moduleEdge(
+  id: string,
+  source: string,
+  sourcePortId: string,
+  target: string,
+  targetPortId: string,
+  order: number,
+): CanvasEdge {
+  return { id, source, sourcePortId, target, targetPortId, order };
+}
+
+function moduleProjectWithPromptAndGenerator(): CanvasProject {
+  return parseCanvasProject({
+    version: 1,
+    graphVersion: 2,
+    id: 'typed-edge-project',
+    name: 'typed edge project',
+    nodes: [
+      createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 }),
+      createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 }),
+    ],
+    edges: [],
+  });
+}
+
+function moduleProjectWithTwoReferences(): CanvasProject {
+  return parseCanvasProject({
+    version: 1,
+    graphVersion: 2,
+    id: 'reorder-project',
+    name: 'reorder project',
+    nodes: [
+      createCanvasModuleNode('image-a', 'image_input', { x: 0, y: 0 }),
+      createCanvasModuleNode('image-b', 'image_input', { x: 0, y: 160 }),
+      createCanvasModuleNode('reverse', 'reverse_agent', { x: 360, y: 80 }),
+    ],
+    edges: [
+      moduleEdge('edge-a', 'image-a', 'image', 'reverse', 'references', 0),
+      moduleEdge('edge-b', 'image-b', 'image', 'reverse', 'references', 1),
+    ],
+  });
+}
