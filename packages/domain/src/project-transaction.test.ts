@@ -3,7 +3,7 @@ import { createCanvasModuleNode } from './canvas-module';
 import { createAgentKnowledgeLease } from './knowledge-context';
 import { parseCanvasProject, type CanvasEdge, type CanvasNode, type CanvasProject } from './project-schema';
 import { createSkillPromotionCandidate, createUserFeedbackMemory, reviewSkillPromotionCandidate, type ProjectMemoryEntry, type SkillPromotionCandidate } from './project-memory';
-import { applyProjectTransaction } from './project-transaction';
+import { applyProjectTransaction, projectOperationSchema } from './project-transaction';
 import type { ProjectTransaction } from './project-transaction';
 
 const project: CanvasProject = {
@@ -387,7 +387,7 @@ describe('project transactions', () => {
 
   it('rejects an invalid typed canvas operation without partial project changes', () => {
     const original = moduleProjectWithPromptAndGenerator();
-    const snapshot = structuredClone(original);
+    const snapshot = JSON.parse(JSON.stringify(original)) as CanvasProject;
     const projectMemory = { ...optimizationMemory, projectId: original.id };
 
     expect(() => applyProjectTransaction(original, {
@@ -413,6 +413,16 @@ describe('project transactions', () => {
     })).toThrow(/cannot connect/i);
 
     expect(original).toEqual(snapshot);
+  });
+
+  it('rejects internal inverse restoration operations from the public project schema', () => {
+    expect(() => projectOperationSchema.parse({
+      kind: 'canvas',
+      operation: {
+        kind: 'restore_edge_snapshot',
+        edges: [],
+      },
+    })).toThrow();
   });
 });
 

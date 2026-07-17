@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createCanvasModuleNode } from './canvas-module';
 import type { CanvasEdge, CanvasNode, CanvasProject } from './project-schema';
 import { parseCanvasProject } from './project-schema';
-import { applyTransaction, revertTransaction } from './canvas-transaction';
+import { applyTransaction, canvasOperationSchema, revertTransaction } from './canvas-transaction';
 
 const emptyProject: CanvasProject = {
   version: 1,
@@ -46,7 +46,7 @@ describe('canvas transactions', () => {
   });
 
   it('does not mutate the input project when a later operation is invalid', () => {
-    const snapshot = structuredClone(emptyProject);
+    const snapshot = JSON.parse(JSON.stringify(emptyProject)) as CanvasProject;
 
     expect(() => applyTransaction(emptyProject, {
       id: 'tx-invalid',
@@ -134,6 +134,40 @@ describe('canvas transactions', () => {
       .toEqual([['edge-a', 1], ['edge-b', 0]]);
     expect(revertTransaction(result.project, result.inverse)).toEqual(project);
   });
+
+  it('restores exact edge snapshots after delete then reorder', () => {
+    const project = moduleProjectWithMalformedReorderEdges();
+    const result = applyTransaction(project, {
+      id: 'delete-then-reorder',
+      label: 'Delete then reorder references',
+      operations: [
+        { kind: 'delete_edge', edgeId: 'duplicate-edge' },
+        {
+          kind: 'reorder_input_edges',
+          targetNodeId: 'reverse',
+          targetPortId: 'references',
+          edgeIds: ['edge-b', 'edge-a', 'edge-before'],
+        },
+      ],
+    });
+
+    expect(result.project.edges
+      .filter((edge) => edge.target === 'reverse')
+      .map((edge) => [edge.id, edge.order]))
+      .toEqual([
+        ['edge-before', 2],
+        ['edge-a', 1],
+        ['edge-b', 0],
+      ]);
+    expect(revertTransaction(result.project, result.inverse)).toEqual(project);
+  });
+
+  it('does not expose an internal inverse restoration operation through the public schema', () => {
+    expect(() => canvasOperationSchema.parse({
+      kind: 'restore_edge_snapshot',
+      edges: [],
+    })).toThrow();
+  });
 });
 
 function moduleEdge(
@@ -175,6 +209,29 @@ function moduleProjectWithTwoReferences(): CanvasProject {
     edges: [
       moduleEdge('edge-a', 'image-a', 'image', 'reverse', 'references', 0),
       moduleEdge('edge-b', 'image-b', 'image', 'reverse', 'references', 1),
+    ],
+  });
+}
+
+function moduleProjectWithMalformedReorderEdges(): CanvasProject {
+  return parseCanvasProject({
+    version: 1,
+    graphVersion: 2,
+    id: 'malformed-reorder-project',
+    name: 'malformed reorder project',
+    nodes: [
+      createCanvasModuleNode('image-a', 'image_input', { x: 0, y: 0 }),
+      createCanvasModuleNode('image-b', 'image_input', { x: 0, y: 160 }),
+      createCanvasModuleNode('reverse', 'reverse_agent', { x: 360, y: 80 }),
+      { id: 'legacy-source', type: 'reference', position: { x: 0, y: 320 }, data: { assetId: 'asset-legacy-source', role: 'product_identity' } },
+      { id: 'legacy-target', type: 'prompt', position: { x: 360, y: 320 }, data: { prompt: 'legacy target', requirementIds: [] } },
+    ],
+    edges: [
+      { id: 'edge-before', source: 'image-a', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 5, label: 'before' },
+      { id: 'duplicate-edge', source: 'missing-source', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 10, label: 'dangling' },
+      { id: 'edge-a', source: 'image-a', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 20, label: 'A' },
+      { id: 'edge-b', source: 'image-b', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 30, label: 'B' },
+      { id: 'duplicate-edge', source: 'legacy-source', target: 'legacy-target', label: 'duplicate id' },
     ],
   });
 }

@@ -334,6 +334,7 @@ function isCanvasModuleNode(node: CanvasNode): node is CanvasModuleNode {
 
 function hasExactPermutation(expected: readonly string[], actual: readonly string[]): boolean {
   if (expected.length !== actual.length) return false;
+  if (!hasUniqueIds(expected) || !hasUniqueIds(actual)) return false;
   const expectedCounts = countIds(expected);
   const actualCounts = countIds(actual);
   if (expectedCounts.size !== actualCounts.size) return false;
@@ -341,6 +342,10 @@ function hasExactPermutation(expected: readonly string[], actual: readonly strin
     if (actualCounts.get(id) !== count) return false;
   }
   return true;
+}
+
+function hasUniqueIds(ids: readonly string[]): boolean {
+  return new Set(ids).size === ids.length;
 }
 
 function countIds(ids: readonly string[]): Map<string, number> {

@@ -2,6 +2,7 @@ import {
   canvasEdgeSchema,
   canvasNodeSchema,
   parseCanvasProject,
+  type CanvasEdge,
   type CanvasProject,
 } from './project-schema';
 import { reorderCanvasInputEdges, validateCanvasModuleGraph, type GraphValidationIssue } from './module-graph';
@@ -41,12 +42,20 @@ export interface AppliedCanvasTransaction {
   inverse: CanvasTransaction;
 }
 
+type InternalInverseOperation = {
+  kind: 'restore_edge_snapshot';
+  edges: CanvasEdge[];
+};
+
+const inverseRestorations = new WeakMap<CanvasTransaction, Array<InternalInverseOperation | undefined>>();
+
 export function applyTransaction(
   project: CanvasProject,
   transaction: CanvasTransaction,
 ): AppliedCanvasTransaction {
   const draft = parseCanvasProject(project);
   const inverseOperations: CanvasOperation[] = [];
+  const inverseRestorationOperations: Array<InternalInverseOperation | undefined> = [];
 
   for (const operation of transaction.operations) {
     switch (operation.kind) {
@@ -56,7 +65,7 @@ export function applyTransaction(
           throw new Error(`node id already exists: ${node.id}`);
         }
         draft.nodes.push(node);
-        inverseOperations.unshift({ kind: 'delete_node', nodeId: node.id });
+        prependInverse(inverseOperations, inverseRestorationOperations, { kind: 'delete_node', nodeId: node.id });
         break;
       }
 
@@ -71,7 +80,7 @@ export function applyTransaction(
           throw new Error(`node does not exist: ${node.id}`);
         }
         draft.nodes[index] = node;
-        inverseOperations.unshift({ kind: 'update_node', node: previous });
+        prependInverse(inverseOperations, inverseRestorationOperations, { kind: 'update_node', node: previous });
         break;
       }
 
@@ -88,7 +97,7 @@ export function applyTransaction(
           throw new Error(`node does not exist: ${operation.nodeId}`);
         }
         draft.nodes.splice(index, 1);
-        inverseOperations.unshift({ kind: 'create_node', node: previous });
+        prependInverse(inverseOperations, inverseRestorationOperations, { kind: 'create_node', node: previous });
         break;
       }
 
@@ -119,12 +128,19 @@ export function applyTransaction(
         if (!previous) {
           throw new Error(`edge does not exist: ${operation.edgeId}`);
         }
+        const previousEdges = cloneEdges(draft.edges);
         draft.edges.splice(index, 1);
-        inverseOperations.unshift({ kind: 'create_edge', edge: previous });
+        prependInverse(
+          inverseOperations,
+          inverseRestorationOperations,
+          { kind: 'create_edge', edge: previous },
+          { kind: 'restore_edge_snapshot', edges: previousEdges },
+        );
         break;
       }
 
       case 'reorder_input_edges': {
+        const previousEdges = cloneEdges(draft.edges);
         const matching = draft.edges
           .map((edge, index) => ({ edge, index }))
           .filter(({ edge }) => edge.target === operation.targetNodeId && edge.targetPortId === operation.targetPortId)
@@ -140,12 +156,17 @@ export function applyTransaction(
           operation.targetPortId,
           operation.edgeIds,
         );
-        inverseOperations.unshift({
-          kind: 'reorder_input_edges',
-          targetNodeId: operation.targetNodeId,
-          targetPortId: operation.targetPortId,
-          edgeIds: previousEdgeIds,
-        });
+        prependInverse(
+          inverseOperations,
+          inverseRestorationOperations,
+          {
+            kind: 'reorder_input_edges',
+            targetNodeId: operation.targetNodeId,
+            targetPortId: operation.targetPortId,
+            edgeIds: previousEdgeIds,
+          },
+          { kind: 'restore_edge_snapshot', edges: previousEdges },
+        );
         break;
       }
 
@@ -156,13 +177,18 @@ export function applyTransaction(
     }
   }
 
+  const inverse = {
+    id: `undo:${transaction.id}`,
+    label: `Undo ${transaction.label}`,
+    operations: inverseOperations,
+  } satisfies CanvasTransaction;
+  if (inverseRestorationOperations.some((operation) => operation !== undefined)) {
+    inverseRestorations.set(inverse, inverseRestorationOperations);
+  }
+
   return {
     project: draft,
-    inverse: {
-      id: `undo:${transaction.id}`,
-      label: `Undo ${transaction.label}`,
-      operations: inverseOperations,
-    },
+    inverse,
   };
 }
 
@@ -170,7 +196,42 @@ export function revertTransaction(
   project: CanvasProject,
   inverse: CanvasTransaction,
 ): CanvasProject {
-  return applyTransaction(project, inverse).project;
+  const restorations = inverseRestorations.get(inverse);
+  if (restorations === undefined) {
+    return applyTransaction(project, inverse).project;
+  }
+
+  let draft = parseCanvasProject(project);
+  for (const [index, operation] of inverse.operations.entries()) {
+    const restoration = restorations[index];
+    if (restoration !== undefined) {
+      draft = parseCanvasProject({ ...draft, edges: cloneEdges(restoration.edges) });
+      continue;
+    }
+    if (operation === undefined) {
+      throw new Error('inverse operation is missing');
+    }
+    draft = applyTransaction(draft, {
+      id: inverse.id,
+      label: inverse.label,
+      operations: [operation],
+    }).project;
+  }
+  return draft;
+}
+
+function prependInverse(
+  inverseOperations: CanvasOperation[],
+  inverseRestorationOperations: Array<InternalInverseOperation | undefined>,
+  operation: CanvasOperation,
+  restoration?: InternalInverseOperation,
+): void {
+  inverseOperations.unshift(operation);
+  inverseRestorationOperations.unshift(restoration);
+}
+
+function cloneEdges(edges: readonly CanvasEdge[]): CanvasEdge[] {
+  return edges.map((edge) => ({ ...edge }));
 }
 
 function rejectNewGraphIssues(

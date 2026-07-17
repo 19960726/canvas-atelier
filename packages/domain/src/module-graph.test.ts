@@ -234,6 +234,16 @@ describe('reorderCanvasInputEdges', () => {
 
     expect(() => reorderCanvasInputEdges(edges, 'reverse', 'references', ['b', 'b'])).toThrow(/exact permutation/i);
   });
+
+  it('rejects duplicate matching edge ids before assigning requested order', () => {
+    const edges = [
+      moduleEdge('duplicate', 'image-a', 'image', 'reverse', 'references', 0),
+      moduleEdge('duplicate', 'image-b', 'image', 'reverse', 'references', 1),
+    ];
+
+    expect(() => reorderCanvasInputEdges(edges, 'reverse', 'references', ['duplicate', 'duplicate']))
+      .toThrow(/exact permutation/i);
+  });
 });
 
 function moduleEdge(
