@@ -112,6 +112,7 @@ function modelRouteLabel(plan: AgentCanvasPlan): string {
 
 function operationLabel(operation: CanvasOperation): string {
   switch (operation.kind) {
+    case 'reorder_input_edges': return 'Reorder module inputs';
     case 'create_node': return `创建${nodeTypeLabel(operation.node.type)}`;
     case 'update_node': return `更新${nodeTypeLabel(operation.node.type)}`;
     case 'delete_node': return '删除画布节点';
@@ -122,6 +123,7 @@ function operationLabel(operation: CanvasOperation): string {
 
 function nodeTypeLabel(type: CanvasNode['type']): string {
   switch (type) {
+    case 'module': return 'Executable module';
     case 'review': return '审核节点';
     case 'prompt': return '提示词节点';
     case 'reference': return '参考节点';

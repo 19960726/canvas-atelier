@@ -4,6 +4,7 @@ import { Handle, Position } from '@xyflow/react';
 import type { CanvasNode } from '@agent-canvas/domain';
 import type { LucideIcon } from 'lucide-react';
 import {
+  Box,
   Check,
   History,
   Image as ImageIcon,
@@ -39,6 +40,7 @@ const iconByKind: Record<CanvasNode['type'], LucideIcon> = {
   review: Check,
   memory_diff: History,
   agent_plan: Sparkles,
+  module: Box,
 };
 
 export const CanvasNodeCard = memo(function CanvasNodeCard({

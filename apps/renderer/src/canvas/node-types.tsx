@@ -1,10 +1,12 @@
 import { memo } from 'react';
 import type { Edge, Node, NodeProps, NodeTypes } from '@xyflow/react';
-import type { CanvasEdge, CanvasNode, ReferenceRole } from '@agent-canvas/domain';
+import type { CanvasEdge, CanvasModuleNodeData, CanvasNode, ReferenceRole } from '@agent-canvas/domain';
 import { CanvasNodeCard, type CanvasNodePresentation, type CanvasNodeTone } from './CanvasNodeCard';
 import { ImageResultNode } from '../jobs/ImageResultNode';
+import { ModuleNodeCard } from './ModuleNodeCard';
 
-export interface CanvasNodeData extends Record<string, unknown>, CanvasNodePresentation {}
+export type CanvasNodeData = Record<string, unknown> & CanvasNodePresentation;
+export type CanvasFlowNodeData = CanvasNodeData | (Record<string, unknown> & CanvasModuleNodeData);
 
 const referenceTitles: Record<ReferenceRole, string> = {
   product_identity: '\u4ea7\u54c1\u8eab\u4efd\u53c2\u8003',
@@ -32,7 +34,7 @@ function getMemoryDiffTone(status: Extract<CanvasNode, { type: 'memory_diff' }>[
   return status === 'approved' || status === 'synced' ? 'blue' : 'amber';
 }
 
-function getViewData(node: CanvasNode): CanvasNodeData {
+function getViewData(node: CanvasNode): CanvasFlowNodeData {
   switch (node.type) {
     case 'reference':
       return {
@@ -107,11 +109,13 @@ function getViewData(node: CanvasNode): CanvasNodeData {
         subtitle: node.data.plan.state,
         status: node.data.plan.state,
       };
+    case 'module':
+      return node.data as Record<string, unknown> & CanvasModuleNodeData;
   }
 }
 
 const SharedCanvasNode = memo(function SharedCanvasNode({ data, selected }: NodeProps) {
-  const nodeData = data as CanvasNodeData;
+  const nodeData = data as unknown as CanvasNodePresentation;
   return <CanvasNodeCard {...nodeData} selected={selected} />;
 });
 
@@ -124,9 +128,10 @@ export const nodeTypes: NodeTypes = {
   review: SharedCanvasNode,
   memory_diff: SharedCanvasNode,
   agent_plan: SharedCanvasNode,
+  module: ModuleNodeCard,
 };
 
-export function toFlowNodes(nodes: readonly CanvasNode[]): Node<CanvasNodeData>[] {
+export function toFlowNodes(nodes: readonly CanvasNode[]): Node<CanvasFlowNodeData>[] {
   return nodes.map((node) => ({
     id: node.id,
     type: node.type,
@@ -142,5 +147,8 @@ export function toFlowEdges(edges: readonly CanvasEdge[]): Edge[] {
     target: edge.target,
     label: edge.label === 'agent-plan' ? undefined : edge.label,
     animated: false,
+    ...(edge.sourcePortId ? { sourceHandle: edge.sourcePortId } : {}),
+    ...(edge.targetPortId ? { targetHandle: edge.targetPortId } : {}),
+    ...(edge.order !== undefined ? { data: { order: edge.order } } : {}),
   }));
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CanvasNode } from '@agent-canvas/domain';
+import { createCanvasModuleNode, type CanvasNode } from '@agent-canvas/domain';
 import { toFlowEdges, toFlowNodes } from './node-types';
 
 describe('toFlowEdges', () => {
@@ -20,6 +20,21 @@ describe('toFlowEdges', () => {
 
   it('does not animate ordinary persisted Agent edges', () => {
     expect(toFlowEdges([{ id: 'applied', source: 'a', target: 'b' }])[0]?.animated).toBe(false);
+  });
+
+  it('maps persisted port ids and input order to React Flow edge handles', () => {
+    expect(toFlowEdges([{
+      id: 'edge-1',
+      source: 'prompt',
+      sourcePortId: 'prompt',
+      target: 'generator',
+      targetPortId: 'prompt',
+      order: 0,
+    }])[0]).toMatchObject({
+      sourceHandle: 'prompt',
+      targetHandle: 'prompt',
+      data: { order: 0 },
+    });
   });
 });
 
@@ -193,6 +208,18 @@ describe('toFlowNodes', () => {
       eyebrow: 'Agent plan',
       tone: 'blue',
       status: 'waiting_for_confirmation',
+    });
+  });
+
+  it('passes module node data directly to the module renderer', () => {
+    const node = createCanvasModuleNode('generator', 'image_generation_v2', { x: 12, y: 24 });
+    const flowNode = toFlowNodes([node])[0];
+
+    expect(flowNode).toMatchObject({
+      id: 'generator',
+      type: 'module',
+      position: { x: 12, y: 24 },
+      data: node.data,
     });
   });
 });
