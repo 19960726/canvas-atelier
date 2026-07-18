@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { createCanvasModuleNode } from './canvas-module';
-import { migrateCanvasProjectGraph, canConnectCanvasPorts, reorderCanvasInputEdges, validateCanvasModuleGraph } from './module-graph';
+import { createCanvasModuleNode, listCanvasModuleDefinitions } from './canvas-module';
+import {
+  migrateCanvasProjectGraph,
+  canConnectCanvasPorts,
+  reorderCanvasInputEdges,
+  validateCanvasModuleExecutionReadiness,
+  validateCanvasModuleGraph,
+} from './module-graph';
 import { parseCanvasProject, type CanvasEdge, type CanvasModuleNode, type CanvasNode, type CanvasProject } from './project-schema';
 import type { RuntimeProfileId } from './runtime-profile';
 
@@ -209,6 +215,85 @@ describe('validateCanvasModuleGraph', () => {
     ]);
 
     expect(validateCanvasModuleGraph(project).map((issue) => issue.code)).toContain('CYCLE');
+  });
+});
+
+describe('validateCanvasModuleExecutionReadiness', () => {
+  it('keeps empty nodes parseable while reporting every required input only at execution time', () => {
+    const definitions = listCanvasModuleDefinitions();
+    for (const definition of definitions) {
+      const requiredPortIds = definition.ports
+        .filter((port) => port.direction === 'input' && port.required)
+        .map((port) => port.id);
+      if (requiredPortIds.length === 0) continue;
+      const node = createCanvasModuleNode(`node-${definition.type}`, definition.type, { x: 0, y: 0 });
+      const project = moduleProject([node], []);
+
+      expect(project.nodes).toHaveLength(1);
+      expect(validateCanvasModuleExecutionReadiness(project, node.id).filter((issue) => issue.code === 'REQUIRED_INPUT').map((issue) => issue.portId))
+        .toEqual(requiredPortIds);
+    }
+  });
+
+  it.each([
+    ['image_editor', 'image', 'references'],
+    ['video_input', 'video', 'video'],
+    ['text_prompt', 'prompt', 'task'],
+    ['image_editor', 'image', 'line_art'],
+  ] as const)('accepts a Reverse Agent with one analyzable %s input', (sourceType, sourcePortId, targetPortId) => {
+    const source = createCanvasModuleNode('source', sourceType, { x: 0, y: 0 });
+    source.data.config = sourceType === 'video_input'
+      ? { assetId: 'managed-video-1' }
+      : sourceType === 'text_prompt'
+        ? { prompt: 'analyze this input' }
+        : {};
+    const reverse = createCanvasModuleNode('reverse', 'reverse_agent', { x: 320, y: 0 });
+    const project = moduleProject([source, reverse], [
+      moduleEdge('input', source.id, sourcePortId, reverse.id, targetPortId, 0),
+    ]);
+
+    expect(validateCanvasModuleExecutionReadiness(project, reverse.id)).toEqual([]);
+  });
+
+  it('rejects an empty Reverse Agent without making node creation invalid', () => {
+    const reverse = createCanvasModuleNode('reverse', 'reverse_agent', { x: 0, y: 0 });
+    const project = moduleProject([reverse], []);
+
+    expect(validateCanvasModuleExecutionReadiness(project, reverse.id)).toEqual([expect.objectContaining({
+      code: 'ANALYZABLE_INPUT',
+      nodeId: 'reverse',
+    })]);
+  });
+
+  it('enforces the two-image comparison boundary', () => {
+    const imageA = createCanvasModuleNode('image-a', 'image_editor', { x: 0, y: 0 });
+    const imageB = createCanvasModuleNode('image-b', 'image_editor', { x: 0, y: 220 });
+    const compare = createCanvasModuleNode('compare', 'image_compare', { x: 320, y: 0 });
+    const oneImage = moduleProject([imageA, imageB, compare], [
+      moduleEdge('image-a', imageA.id, 'image', compare.id, 'images', 0),
+    ]);
+    const twoImages = moduleProject([imageA, imageB, compare], [
+      ...oneImage.edges,
+      moduleEdge('image-b', imageB.id, 'image', compare.id, 'images', 1),
+    ]);
+
+    expect(validateCanvasModuleExecutionReadiness(oneImage, compare.id)).toEqual([expect.objectContaining({
+      code: 'MINIMUM_INPUTS',
+      nodeId: 'compare',
+      portId: 'images',
+    })]);
+    expect(validateCanvasModuleExecutionReadiness(twoImages, compare.id)).toEqual([]);
+  });
+
+  it('accepts required ports after compatible edges are connected', () => {
+    const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });
+    prompt.data.config = { prompt: 'studio light' };
+    const generation = createCanvasModuleNode('generation', 'image_generation', { x: 320, y: 0 });
+    const project = moduleProject([prompt, generation], [
+      moduleEdge('prompt', prompt.id, 'prompt', generation.id, 'prompt', 0),
+    ]);
+
+    expect(validateCanvasModuleExecutionReadiness(project, generation.id)).toEqual([]);
   });
 });
 

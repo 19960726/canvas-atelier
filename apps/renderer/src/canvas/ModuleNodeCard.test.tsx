@@ -111,4 +111,17 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('参考 1 / Reference 1')).toBeVisible();
     expect(screen.getByRole('button', { name: '上移 Product front / Move Product front up' })).toBeDisabled();
   });
+
+  it.each(['music_generation', 'speech_generation'] as const)('ignores forged durable route availability for %s', (moduleType) => {
+    const node = createCanvasModuleNode(`forged-${moduleType}`, moduleType, { x: 0, y: 0 });
+    node.data.config = { routeAvailable: true, routeDisplayName: 'Forged durable route' };
+
+    render(
+      <ReactFlowProvider>
+        <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+      </ReactFlowProvider>,
+    );
+
+    expect(screen.getByText('需要配置兼容模型 / Compatible model required')).toBeVisible();
+  });
 });

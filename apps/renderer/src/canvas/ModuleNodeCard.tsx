@@ -172,7 +172,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       ) : data.moduleType === 'reverse_agent' ? (
         <ReverseAgentSummary config={data.config} definition={definition} />
       ) : data.moduleType === 'music_generation' || data.moduleType === 'speech_generation' ? (
-        <UnavailableCapabilitySummary config={data.config} definition={definition} />
+        <UnavailableCapabilitySummary definition={definition} />
       ) : (
         <GenericModuleSummary config={data.config} definition={definition} />
       )}
@@ -242,12 +242,11 @@ function ReverseAgentSummary({ config, definition }: { config: Record<string, un
   );
 }
 
-function UnavailableCapabilitySummary({ config, definition }: { config: Record<string, unknown>; definition: CanvasModuleDefinition }) {
-  const available = config.routeAvailable === true;
+function UnavailableCapabilitySummary({ definition }: { definition: CanvasModuleDefinition }) {
   return (
     <section className="module-node__summary module-node__summary--structured">
       <div className="module-node__meta-line"><strong>能力</strong><span>{formatCapabilities(definition)}</span></div>
-      {!available && <div className="module-node__unavailable" role="status">需要配置兼容模型 / Compatible model required</div>}
+      <div className="module-node__unavailable" role="status">需要配置兼容模型 / Compatible model required</div>
       <small>本节点仅声明安全合同；未配置路线时不会创建运行任务。</small>
     </section>
   );

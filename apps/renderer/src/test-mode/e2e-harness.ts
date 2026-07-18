@@ -12,6 +12,7 @@ import {
   rollbackSkillPromotionCandidate,
   skillPromotionCandidateSchema,
   type CanvasModuleType,
+  type CanvasModuleExecutionState,
   type CanvasProject,
   type CanvasModuleNode,
   type ModelJob,
@@ -160,6 +161,27 @@ export function installRendererE2EHarness(): void {
     },
     async createModule(moduleType, position = { x: 240, y: 180 }) {
       return useAppStore.getState().addModuleNode(moduleType, position);
+    },
+    async configureModule(moduleType, patch) {
+      const state = useAppStore.getState();
+      const target = findModuleNodeByType(state.project, moduleType);
+      if (!target) return false;
+      const nextProject: CanvasProject = {
+        ...state.project,
+        nodes: state.project.nodes.map((node) => node.id === target.id
+          ? {
+              ...target,
+              data: {
+                ...target.data,
+                config: { ...target.data.config, ...(patch.config ?? {}) },
+                execution: patch.execution ?? target.data.execution,
+              },
+            }
+          : node),
+      };
+      runtime.currentProject = nextProject;
+      useAppStore.setState({ project: nextProject });
+      return true;
     },
     async seedSkillSyncDivergence() {
       await seedSkillSyncDivergence(runtime);
@@ -827,6 +849,10 @@ declare global {
         targetPortId: string,
       ): Promise<boolean>;
       createModule(moduleType: CanvasModuleType, position?: { x: number; y: number }): Promise<boolean>;
+      configureModule(moduleType: CanvasModuleType, patch: {
+        config?: Record<string, unknown>;
+        execution?: { state: CanvasModuleExecutionState; latestExecutionId?: string };
+      }): Promise<boolean>;
       getState(): {
         commitCount: number;
         durableProjectContainsTransientImageUrl: boolean;

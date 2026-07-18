@@ -51,9 +51,10 @@ export {
   canConnectCanvasPorts,
   migrateCanvasProjectGraph,
   reorderCanvasInputEdges,
+  validateCanvasModuleExecutionReadiness,
   validateCanvasModuleGraph,
 } from './module-graph';
-export type { GraphValidationIssue } from './module-graph';
+export type { GraphValidationIssue, ModuleExecutionReadinessIssue } from './module-graph';
 export {
   CANVAS_MODULE_DEFINITIONS,
   createCanvasModuleNode,
@@ -90,8 +91,10 @@ export type { RuntimeProfile, RuntimeProfileId } from './runtime-profile';
 export type {
   CanvasModuleDefinition,
   CanvasModuleExecutionState,
+  CanvasModuleJobSummary,
   CanvasModuleNodeData,
   CanvasModulePortDefinition,
+  CanvasModuleResultSummary,
   CanvasModuleType,
   CanvasPortDataType,
   LegacyCanvasModuleType,

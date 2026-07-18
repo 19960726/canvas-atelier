@@ -8,19 +8,21 @@ import type { RuntimeProfileId } from './runtime-profile';
 const idSchema = z.string().min(1);
 const positionSchema = z.object({ x: z.number(), y: z.number() }).strict();
 
+const moduleExecutionStateSchema = z.enum([
+  'idle',
+  'invalid',
+  'ready',
+  'waiting_confirmation',
+  'queued',
+  'running',
+  'blocked',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
 export const moduleExecutionSummarySchema = z.object({
-  state: z.enum([
-    'idle',
-    'invalid',
-    'ready',
-    'waiting_confirmation',
-    'queued',
-    'running',
-    'blocked',
-    'completed',
-    'failed',
-    'cancelled',
-  ]),
+  state: moduleExecutionStateSchema,
   latestExecutionId: idSchema.optional(),
 }).strict();
 
@@ -47,12 +49,37 @@ function protectedModuleRecordSchema(label: 'config' | 'job' | 'result') {
 }
 
 const moduleConfigSchema = protectedModuleRecordSchema('config');
-const moduleJobSchema = protectedModuleRecordSchema('job');
-const moduleResultSchema = protectedModuleRecordSchema('result');
-
 function isManagedProjectAssetId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{16}$/u.test(value);
 }
+
+const managedProjectAssetIdSchema = z.string().refine(isManagedProjectAssetId, {
+  message: 'Module results require managed project asset ids',
+});
+
+const publicSummaryStringSchema = z.string().min(1).max(256);
+
+const strictModuleJobSchema = z.object({
+  id: idSchema,
+  executionId: idSchema.optional(),
+  status: moduleExecutionStateSchema.optional(),
+  provider: publicSummaryStringSchema.optional(),
+  route: publicSummaryStringSchema.optional(),
+  progress: z.number().min(0).max(1).optional(),
+}).strict();
+
+const strictModuleResultSchema = z.object({
+  id: idSchema,
+  assetId: managedProjectAssetIdSchema.optional(),
+  assetIds: z.array(managedProjectAssetIdSchema).max(MAX_GENERATION_REFERENCES).optional(),
+  mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'audio/mpeg', 'audio/wav']).optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+}).strict();
+
+const moduleJobSchema = protectedModuleRecordSchema('job').pipe(strictModuleJobSchema);
+const moduleResultSchema = protectedModuleRecordSchema('result').pipe(strictModuleResultSchema);
 
 const moduleNodeDataSchema = z.object({
   moduleType: canvasModuleTypeSchema,
@@ -194,12 +221,53 @@ function migrateModuleNode(value: unknown): unknown {
     data: {
       ...data,
       moduleType: LEGACY_MODULE_MIGRATIONS[legacyType],
-      config: cloneRecord(data.config),
+      config: migrateLegacyModuleConfig(legacyType, data.config),
       execution: cloneRecord(data.execution),
       ...(data.job === undefined ? {} : { job: cloneRecord(data.job) }),
       ...(data.result === undefined ? {} : { result: cloneRecord(data.result) }),
     },
   };
+}
+
+function migrateLegacyModuleConfig(legacyType: LegacyCanvasModuleType, value: unknown): unknown {
+  const cloned = cloneRecord(value);
+  if (!cloned || typeof cloned !== 'object' || Array.isArray(cloned)) return cloned;
+  const config = cloned as Record<string, unknown>;
+  if (legacyType === 'image_generation_v1' || legacyType === 'image_generation_v2') {
+    const enabledInputCapabilities: string[] = [];
+    if (Array.isArray(config.referenceAssetIds) && config.referenceAssetIds.some((assetId) => typeof assetId === 'string' && assetId.length > 0)) {
+      enabledInputCapabilities.push('references');
+    }
+    if (legacyType === 'image_generation_v2' && typeof config.maskAssetId === 'string' && config.maskAssetId.length > 0) {
+      enabledInputCapabilities.push('mask');
+    }
+    if (legacyType === 'image_generation_v2' && typeof config.poseId === 'string' && config.poseId.length > 0) {
+      enabledInputCapabilities.push('pose');
+    }
+    return { ...config, enabledInputCapabilities };
+  }
+  if (typeof config.assetId !== 'string' || config.assetId.length === 0) return config;
+  return {
+    ...config,
+    orderedMedia: [{
+      kind: 'video',
+      assetId: config.assetId,
+      label: typeof config.label === 'string' && config.label.length > 0 ? config.label : '迁移视频',
+      ranges: normalizeLegacyVideoRanges(config.ranges),
+    }],
+  };
+}
+
+function normalizeLegacyVideoRanges(value: unknown): Array<{ startMs: number; endMs: number }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+    const startMs = (candidate as Record<string, unknown>).startMs;
+    const endMs = (candidate as Record<string, unknown>).endMs;
+    return typeof startMs === 'number' && typeof endMs === 'number' && startMs >= 0 && endMs > startMs
+      ? [{ startMs, endMs }]
+      : [];
+  });
 }
 
 function cloneRecord(value: unknown): unknown {
@@ -434,6 +502,146 @@ export function validateCanvasModuleGraph(
   for (const node of moduleNodesById.values()) visit(node.id);
 
   return issues;
+}
+
+export interface ModuleExecutionReadinessIssue {
+  code: 'NODE_NOT_FOUND' | 'REQUIRED_INPUT' | 'ANALYZABLE_INPUT' | 'MINIMUM_INPUTS';
+  nodeId: string;
+  portId?: string;
+  message: string;
+}
+
+export function validateCanvasModuleExecutionReadiness(
+  project: CanvasProject,
+  nodeId: string,
+): ModuleExecutionReadinessIssue[] {
+  const targetNode = project.nodes.find((node): node is CanvasModuleNode => node.id === nodeId && isCanvasModuleNode(node));
+  if (!targetNode) {
+    return [{ code: 'NODE_NOT_FOUND', nodeId, message: `Unknown module node: ${nodeId}` }];
+  }
+
+  const definition = getCanvasModuleDefinition(targetNode.data.moduleType);
+  const inputCounts = new Map<string, number>();
+  for (const port of definition.ports) {
+    if (port.direction !== 'input') continue;
+    inputCounts.set(port.id, countConfiguredModuleInput(targetNode, port.id));
+  }
+
+  const moduleNodesById = new Map(
+    project.nodes.filter(isCanvasModuleNode).map((node) => [node.id, node]),
+  );
+  for (const edge of project.edges) {
+    if (edge.target !== targetNode.id || !edge.sourcePortId || !edge.targetPortId) continue;
+    const sourceNode = moduleNodesById.get(edge.source);
+    if (!sourceNode || !canConnectCanvasPorts(sourceNode, edge.sourcePortId, targetNode, edge.targetPortId).ok) continue;
+    inputCounts.set(
+      edge.targetPortId,
+      (inputCounts.get(edge.targetPortId) ?? 0) + countModuleEdgeItems(sourceNode, edge.sourcePortId),
+    );
+  }
+
+  const issues: ModuleExecutionReadinessIssue[] = [];
+  for (const port of definition.ports) {
+    if (port.direction !== 'input' || !port.required || (inputCounts.get(port.id) ?? 0) > 0) continue;
+    issues.push({
+      code: 'REQUIRED_INPUT',
+      nodeId: targetNode.id,
+      portId: port.id,
+      message: `Required input ${targetNode.id}.${port.id} is not configured or connected`,
+    });
+  }
+
+  if (targetNode.data.moduleType === 'reverse_agent') {
+    const analyzableInputCount = ['references', 'video', 'task', 'line_art']
+      .reduce((total, portId) => total + (inputCounts.get(portId) ?? 0), 0);
+    if (analyzableInputCount === 0) {
+      issues.push({
+        code: 'ANALYZABLE_INPUT',
+        nodeId: targetNode.id,
+        message: 'Reverse Agent requires at least one analyzable image, video, text, or line-art input',
+      });
+    }
+  }
+
+  if (targetNode.data.moduleType === 'image_compare' && (inputCounts.get('images') ?? 0) < 2) {
+    issues.push({
+      code: 'MINIMUM_INPUTS',
+      nodeId: targetNode.id,
+      portId: 'images',
+      message: 'Image comparison requires at least two managed images',
+    });
+  }
+
+  return issues;
+}
+
+function countModuleEdgeItems(sourceNode: CanvasModuleNode, sourcePortId: string): number {
+  const sourcePort = getPort(sourceNode, sourcePortId, 'output');
+  if (!sourcePort) return 0;
+  if (sourceNode.data.moduleType === 'canvas_library' && sourcePort.dataType === 'image_list') {
+    return readStringList(sourceNode.data.config.assetIds).length;
+  }
+  if ((sourceNode.data.moduleType === 'image_input' || sourceNode.data.moduleType === 'upload_image') && sourcePort.dataType === 'image_asset') {
+    return isManagedProjectAssetId(sourceNode.data.config.assetId) ? 1 : 0;
+  }
+  if (sourceNode.data.moduleType === 'video_input' && sourcePort.dataType === 'video_asset') {
+    return hasNonEmptyString(sourceNode.data.config.assetId) ? 1 : 0;
+  }
+  if (sourceNode.data.moduleType === 'text_prompt' && sourcePort.dataType === 'text_prompt') {
+    return hasNonEmptyString(sourceNode.data.config.prompt) ? 1 : 0;
+  }
+  return 1;
+}
+
+function countConfiguredModuleInput(node: CanvasModuleNode, portId: string): number {
+  const config = node.data.config;
+  if (portId === 'references' || portId === 'images') {
+    const explicitIds = [
+      ...readStringList(config.referenceAssetIds),
+      ...readStringList(config.assetIds),
+      ...readOrderedMediaKinds(config.orderedMedia, 'image'),
+    ];
+    return new Set(explicitIds).size;
+  }
+  if (portId === 'video') {
+    const orderedVideoCount = readOrderedMediaKinds(config.orderedMedia, 'video').length;
+    return orderedVideoCount > 0 ? orderedVideoCount : hasNonEmptyString(config.assetId) ? 1 : 0;
+  }
+  if (portId === 'prompt') return hasNonEmptyString(config.prompt) ? 1 : 0;
+  if (portId === 'task') return hasNonEmptyString(config.task) || hasNonEmptyString(config.prompt) ? 1 : 0;
+  if (portId === 'line_art') return hasNonEmptyString(config.lineArtAssetId) ? 1 : 0;
+  if (portId === 'mask') return hasNonEmptyString(config.maskAssetId) ? 1 : 0;
+  if (portId === 'pose') return hasNonEmptyString(config.poseId) ? 1 : 0;
+  if (portId === 'voice') return hasNonEmptyString(config.voiceProfileId) ? 1 : 0;
+  if (hasMeaningfulModuleInput(config[portId])) return 1;
+  if (hasMeaningfulModuleInput(config[`${portId}Id`])) return 1;
+  if (hasMeaningfulModuleInput(config[`${portId}AssetId`])) return 1;
+  return 0;
+}
+
+function readStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => hasNonEmptyString(entry))
+    : [];
+}
+
+function readOrderedMediaKinds(value: unknown, kind: 'image' | 'video'): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    return record.kind === kind && hasNonEmptyString(record.assetId) ? [record.assetId] : [];
+  });
+}
+
+function hasNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function hasMeaningfulModuleInput(value: unknown): boolean {
+  if (hasNonEmptyString(value)) return true;
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== undefined && value !== null && typeof value === 'object';
 }
 
 export function reorderCanvasInputEdges(

@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { ReactFlowProvider } from '@xyflow/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCanvasModuleNode, type CanvasModuleNodeData } from '@agent-canvas/domain';
+import {
+  createCanvasModuleNode,
+  parseCanvasProject,
+  type CanvasModuleNode,
+  type CanvasModuleNodeData,
+} from '@agent-canvas/domain';
 import { ModuleLibrary } from './ModuleLibrary';
 import { ModuleNodeCard } from './ModuleNodeCard';
 import { resetAppStoreForTests } from '../app/app-store';
@@ -86,6 +91,7 @@ describe('formal module node presentation', () => {
     ['speech_generation', '语音生成', 'Speech Generation'],
   ])('shows honest unavailable state for %s without a fake run control', (type, primary, secondary) => {
     const node = createCanvasModuleNode(type, type as never, { x: 0, y: 0 });
+    node.data.config = { routeAvailable: true, routeDisplayName: 'Forged durable route' };
     renderCard(node);
     expect(screen.getByText(primary)).toBeVisible();
     expect(screen.getByText(secondary)).toBeVisible();
@@ -107,12 +113,65 @@ describe('formal module node presentation', () => {
     expect(document.querySelector('.module-node')).not.toHaveTextContent('IMG');
     expect(document.querySelector('.module-node')).not.toHaveTextContent(/[锟斤烫屯拷]/u);
   });
+
+  it('renders migrated V2 capability slots from the parsed legacy project', () => {
+    const node = migratedModuleNode('image_generation_v2');
+    renderCard(node);
+
+    const summary = screen.getByLabelText('生成能力槽位 / Generation capability slots');
+    expect(summary).toHaveTextContent('参考图 2 / References');
+    expect(summary).toHaveTextContent('蒙版 / Mask可用 / Available');
+    expect(summary).toHaveTextContent('姿态 / Pose可用 / Available');
+    expect(screen.getByText(/Legacy image route/)).toBeVisible();
+  });
+
+  it('renders migrated video ranges from the parsed legacy Reverse Agent project', () => {
+    const node = migratedModuleNode('video_analysis');
+    renderCard(node);
+
+    expect(screen.getByText('迁移视频')).toBeVisible();
+    expect(screen.getByText('00:01.200–00:04.200')).toBeVisible();
+    expect(screen.getByText(/Legacy vision route/)).toBeVisible();
+  });
 });
 
-function renderCard(node: ReturnType<typeof createCanvasModuleNode>) {
+function renderCard(node: Pick<CanvasModuleNode, 'id' | 'data'>) {
   return render(
     <ReactFlowProvider>
       <ModuleNodeCard id={node.id} data={node.data} selected={false} />
     </ReactFlowProvider>,
   );
+}
+
+function migratedModuleNode(moduleType: 'image_generation_v2' | 'video_analysis'): CanvasModuleNode {
+  const isVideo = moduleType === 'video_analysis';
+  const project = parseCanvasProject({
+    version: 1,
+    graphVersion: 2,
+    id: `renderer-${moduleType}`,
+    name: 'renderer migration',
+    nodes: [{
+      id: 'legacy-renderer-node',
+      type: 'module',
+      position: { x: 0, y: 0 },
+      data: {
+        moduleType,
+        moduleVersion: 1,
+        config: isVideo
+          ? { assetId: 'legacy-video', ranges: [{ startMs: 1200, endMs: 4200 }], routeDisplayName: 'Legacy vision route' }
+          : {
+              prompt: 'studio light',
+              referenceAssetIds: ['ref-a', 'ref-b'],
+              maskAssetId: 'mask-a',
+              poseId: 'pose-a',
+              routeDisplayName: 'Legacy image route',
+            },
+        execution: { state: 'completed' },
+      },
+    }],
+    edges: [],
+  });
+  const node = project.nodes[0];
+  if (!node || node.type !== 'module') throw new Error('Expected migrated module node');
+  return node;
 }

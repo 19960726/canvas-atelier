@@ -212,6 +212,10 @@ declare global {
         targetPortId: string,
       ): Promise<boolean>;
       createModule(moduleType: CanvasModuleType, position?: { x: number; y: number }): Promise<boolean>;
+      configureModule(moduleType: CanvasModuleType, patch: {
+        config?: Record<string, unknown>;
+        execution?: { state: import('@agent-canvas/domain').CanvasModuleExecutionState; latestExecutionId?: string };
+      }): Promise<boolean>;
       getState(): E2EState;
       nonce: string;
       queueProjectImageImport(input: { byteSize: number; label: string; mediaType: 'image/png' }): void;

@@ -116,7 +116,7 @@ describe('formal legacy graph migration', () => {
     ['video_analysis', 'reverse_agent'],
   ] as const)('migrates %s to %s without mutating or losing node identity and execution data', (legacyType, currentType) => {
     const input = legacyProject(legacyType);
-    const before = structuredClone(input);
+    const before = cloneFixture(input);
     const migrated = migrateCanvasProjectGraph(input) as typeof input;
 
     expect(input).toEqual(before);
@@ -135,6 +135,46 @@ describe('formal legacy graph migration', () => {
     expect(migrated.edges.map((edge) => edge.id)).toEqual(before.edges.map((edge) => edge.id));
     expect(migrateCanvasProjectGraph(migrated)).toEqual(migrated);
     expect(parseCanvasProject(input).nodes[1]).toMatchObject({ data: { moduleType: currentType } });
+  });
+
+  it.each([
+    ['image_generation_v1', ['references']],
+    ['image_generation_v2', ['references', 'mask', 'pose']],
+  ] as const)('normalizes %s capability slots for the current generation workbench', (legacyType, enabledInputCapabilities) => {
+    const parsed = parseCanvasProject(legacyProject(legacyType));
+    const node = parsed.nodes[1];
+    expect(node).toMatchObject({
+      type: 'module',
+      data: {
+        moduleType: 'image_generation',
+        config: {
+          enabledInputCapabilities,
+          referenceAssetIds: ['ref-a', 'ref-b'],
+          route: 'image-route',
+        },
+      },
+    });
+  });
+
+  it('normalizes legacy video media and ranges for the current Reverse Agent workbench', () => {
+    const parsed = parseCanvasProject(legacyProject('video_analysis'));
+    expect(parsed.nodes[1]).toMatchObject({
+      type: 'module',
+      data: {
+        moduleType: 'reverse_agent',
+        config: {
+          assetId: 'video-asset',
+          ranges: [{ startMs: 1200, endMs: 4200 }],
+          route: 'vision-long',
+          orderedMedia: [{
+            kind: 'video',
+            assetId: 'video-asset',
+            label: '迁移视频',
+            ranges: [{ startMs: 1200, endMs: 4200 }],
+          }],
+        },
+      },
+    });
   });
 
   it('migrates mixed graphs and translates legacy video ports without changing ids or ordering', () => {
@@ -185,6 +225,29 @@ describe('formal legacy graph migration', () => {
 
     expect(() => parseCanvasProject(input)).toThrow(/protected payload/i);
   });
+
+  it.each([
+    ['job', 'rawProviderPayload'],
+    ['job', 'providerResponse'],
+    ['job', 'request'],
+    ['result', 'response'],
+    ['result', 'payload'],
+    ['result', 'body'],
+  ] as const)('rejects non-public durable %s field %s', (field, forbiddenField) => {
+    const input = legacyProject('image_generation_v2');
+    const legacyData = input.nodes[1]!.data as Record<string, unknown>;
+    legacyData[field] = { id: `${field}-unsafe`, [forbiddenField]: 'opaque-provider-data' };
+
+    expect(() => parseCanvasProject(input)).toThrow(/Unrecognized key|public summary/i);
+  });
+
+  it('rejects unmanaged durable result asset references', () => {
+    const input = legacyProject('image_generation_v2');
+    const legacyData = input.nodes[1]!.data as Record<string, unknown>;
+    legacyData.result = { id: 'result-unmanaged', assetId: 'provider-result-url-id' };
+
+    expect(() => parseCanvasProject(input)).toThrow(/managed|asset/i);
+  });
 });
 
 function portSnapshot(type: string) {
@@ -197,8 +260,13 @@ function portSnapshot(type: string) {
   ]);
 }
 
+function cloneFixture<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 function legacyProject(legacyType: typeof LEGACY_TYPES[number]) {
   const isVideo = legacyType === 'video_analysis';
+  const isV2 = legacyType === 'image_generation_v2';
   return {
     version: 1,
     graphVersion: 2,
@@ -215,10 +283,15 @@ function legacyProject(legacyType: typeof LEGACY_TYPES[number]) {
           moduleVersion: 1 as const,
           config: isVideo
             ? { assetId: 'video-asset', ranges: [{ startMs: 1200, endMs: 4200 }], route: 'vision-long' }
-            : { prompt: 'studio light', referenceAssetIds: ['ref-a', 'ref-b'], maskAssetId: 'mask-a', poseId: 'pose-a', route: 'image-route' },
+            : {
+                prompt: 'studio light',
+                referenceAssetIds: ['ref-a', 'ref-b'],
+                ...(isV2 ? { maskAssetId: 'mask-a', poseId: 'pose-a' } : {}),
+                route: 'image-route',
+              },
           execution: { state: 'completed' as const, latestExecutionId: 'execution-7' },
-          job: { id: 'job-7', provider: 'compatible-provider' },
-          result: { id: 'result-7', assetId: 'result-asset' },
+          job: { id: 'job-7', executionId: 'execution-7', status: 'completed' as const, provider: 'compatible-provider', route: isVideo ? 'vision-long' : 'image-route', progress: 1 },
+          result: { id: 'result-7', assetId: '0123456789abcdef', mediaType: 'image/png' as const, width: 1024, height: 1024 },
         },
       },
     ],

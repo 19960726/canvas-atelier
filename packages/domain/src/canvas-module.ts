@@ -58,13 +58,32 @@ export type CanvasModuleExecutionState =
   | 'idle' | 'invalid' | 'ready' | 'waiting_confirmation' | 'queued'
   | 'running' | 'blocked' | 'completed' | 'failed' | 'cancelled';
 
+export interface CanvasModuleJobSummary {
+  readonly id: string;
+  readonly executionId?: string;
+  readonly status?: CanvasModuleExecutionState;
+  readonly provider?: string;
+  readonly route?: string;
+  readonly progress?: number;
+}
+
+export interface CanvasModuleResultSummary {
+  readonly id: string;
+  readonly assetId?: string;
+  readonly assetIds?: readonly string[];
+  readonly mediaType?: 'image/png' | 'image/jpeg' | 'image/webp' | 'video/mp4' | 'audio/mpeg' | 'audio/wav';
+  readonly width?: number;
+  readonly height?: number;
+  readonly durationMs?: number;
+}
+
 export interface CanvasModuleNodeData {
   readonly moduleType: CanvasModuleType;
   readonly moduleVersion: 1;
   config: Record<string, unknown>;
   execution: { readonly state: CanvasModuleExecutionState; readonly latestExecutionId?: string };
-  readonly job?: Record<string, unknown>;
-  readonly result?: Record<string, unknown>;
+  readonly job?: CanvasModuleJobSummary;
+  readonly result?: CanvasModuleResultSummary;
 }
 
 interface ModuleCopy {

@@ -106,6 +106,60 @@ describe('parseCanvasProject', () => {
     })).toThrow(/Unrecognized key/);
   });
 
+  it('accepts only strict public module job and result summaries', () => {
+    const moduleNode = createCanvasModuleNode('durable-summary', 'image_generation', { x: 0, y: 0 });
+    const safeProject = parseCanvasProject({
+      version: 1,
+      graphVersion: 2,
+      id: 'durable-summary-project',
+      name: 'durable summary',
+      nodes: [{
+        ...moduleNode,
+        data: {
+          ...moduleNode.data,
+          job: {
+            id: 'job-public-1',
+            executionId: 'execution-public-1',
+            status: 'completed',
+            provider: 'compatible-provider',
+            route: 'public-image-route',
+            progress: 1,
+          },
+          result: {
+            id: 'result-public-1',
+            assetId: '0123456789abcdef',
+            mediaType: 'image/png',
+            width: 1024,
+            height: 1024,
+          },
+        },
+      }],
+      edges: [],
+    });
+
+    expect(safeProject.nodes[0]).toMatchObject({
+      type: 'module',
+      data: {
+        job: { id: 'job-public-1', provider: 'compatible-provider' },
+        result: { id: 'result-public-1', assetId: '0123456789abcdef' },
+      },
+    });
+
+    for (const [field, value] of [
+      ['job', { id: 'job-unsafe', rawProviderPayload: 'opaque-provider-data' }],
+      ['result', { id: 'result-unsafe', body: 'opaque-provider-data' }],
+    ] as const) {
+      expect(() => parseCanvasProject({
+        version: 1,
+        graphVersion: 2,
+        id: `unsafe-${field}`,
+        name: 'unsafe durable summary',
+        nodes: [{ ...moduleNode, data: { ...moduleNode.data, [field]: value } }],
+        edges: [],
+      })).toThrow(/Unrecognized key|public summary/i);
+    }
+  });
+
   it('rejects camelCase credential keys in module config', () => {
     const moduleNode = createCanvasModuleNode('unsafe-camel-credentials', 'text_prompt', { x: 0, y: 0 });
 
@@ -711,6 +765,7 @@ describe('public domain API', () => {
       'skillPromotionCandidateSchema',
       'transitionModelJob',
       'validateAgentPlan',
+      'validateCanvasModuleExecutionReadiness',
       'validateCanvasModuleGraph',
     ].sort());
   });
