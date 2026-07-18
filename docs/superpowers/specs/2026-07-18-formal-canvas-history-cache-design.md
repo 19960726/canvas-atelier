@@ -6,7 +6,7 @@
 
 ## Product direction
 
-Novus Atelier is a bilingual, professional desktop workbench for designing and executing visual-generation workflows on an infinite canvas. It provides a clean, intentional starting state, durable project work, controlled provider execution, and explainable image and video reverse analysis. It is an original product: CanvasForge / 桥豆麻辣配? is observation-only and supplies neither implementation, branding, UI, source code, credentials, nor trade dress.
+Novus Atelier is a bilingual, professional desktop workbench for designing and executing visual-generation workflows on an infinite canvas. It provides a clean, intentional starting state, durable project work, controlled provider execution, and explainable image and video reverse analysis. It is an original product: CanvasForge is observation-only and supplies neither implementation, branding, UI, source code, credentials, nor trade dress.
 
 The visual system supports `system`, `light`, and `dark` themes. `system` is the default; a user's device-local override is retained independently from project data. Both explicit themes use the same semantic token model and retain visible focus, disabled, and error states. The product mark is an original geometric N composed of canvas nodes and connections, legible at 16 pixels. Every executable module has a real Lucide icon; different semantics never share an indistinguishable icon without a visible differentiating badge.
 

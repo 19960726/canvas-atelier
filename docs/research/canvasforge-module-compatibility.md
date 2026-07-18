@@ -2,7 +2,7 @@
 
 ## Scope and provenance
 
-This matrix maps only publicly visible categories observed in user-provided screenshots and ordinary observable behavior to original Novus Atelier concepts. It is a planning reference, not a reverse-engineering record. CanvasForge / 桥豆麻辣配? is observation-only and must not be unpacked, decompiled, copied, credential-inspected, source-inspected, or used to reproduce branding, UI, code, or trade dress.
+This matrix maps only publicly visible categories observed in user-provided screenshots and ordinary observable behavior to original Novus Atelier concepts. It is a planning reference, not a reverse-engineering record. CanvasForge is observation-only and must not be unpacked, decompiled, copied, credential-inspected, source-inspected, or used to reproduce branding, UI, code, or trade dress.
 
 Music and speech capabilities are inventoried for future research but disabled in this delivery. They expose no executable Novus module, provider route, or user-facing action.
 
