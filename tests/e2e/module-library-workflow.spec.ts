@@ -4,11 +4,11 @@ import { makeReferenceImage } from './helpers/fixtures';
 
 test('creates and connects executable modules from the library', async ({ page }) => {
   await openApp(page);
-  await page.getByRole('button', { name: 'Modules' }).click();
-  await page.getByRole('searchbox', { name: 'Search modules' }).fill('prompt');
-  await page.getByRole('button', { name: 'Add Text Prompt' }).click();
-  await page.getByRole('searchbox', { name: 'Search modules' }).fill('generation v1');
-  await page.getByRole('button', { name: 'Add Image Generation V1' }).click();
+  await page.getByTestId('tool-modules').click();
+  await page.getByRole('searchbox', { name: '搜索模块' }).fill('prompt');
+  await page.getByRole('button', { name: '查看 文本提示词 / Text Prompt' }).dblclick();
+  await page.getByRole('searchbox', { name: '搜索模块' }).fill('generation v1');
+  await page.getByRole('button', { name: '查看 图像生成 v1 / Image Generation v1' }).dblclick();
 
   const edgeCountBeforeConnect = (await e2eState(page)).edgeCount;
   await expect(page.locator('[data-module-type="text_prompt"]')).toHaveCount(1);
@@ -28,10 +28,10 @@ test('creates and connects executable modules from the library', async ({ page }
 
 test('does not persist every pointermove', async ({ page }) => {
   await openApp(page);
-  await page.getByRole('button', { name: 'Modules' }).click();
-  await page.getByRole('searchbox', { name: 'Search modules' }).fill('prompt');
-  await page.getByRole('button', { name: 'Add Text Prompt' }).click();
-  await page.getByRole('button', { name: 'Modules' }).click();
+  await page.getByTestId('tool-modules').click();
+  await page.getByRole('searchbox', { name: '搜索模块' }).fill('prompt');
+  await page.getByRole('button', { name: '查看 文本提示词 / Text Prompt' }).dblclick();
+  await page.getByTestId('tool-modules').click();
   const before = (await e2eState(page)).commitCount;
   const dragHandle = page.locator('[data-module-type="text_prompt"] .module-node__header');
   const box = await dragHandle.boundingBox();
@@ -69,22 +69,22 @@ test('imports managed module images and persists a searchable ordered canvas lib
   await expect(canvasLibrary).toBeVisible();
 
   await queueProjectImageImport(page, makeReferenceImage('Product front.png', [20, 132, 108, 255]));
-  await imageInput.getByRole('button', { name: 'Import image' }).click();
+  await imageInput.getByRole('button', { name: '导入图像 / Import image' }).click();
   await expect(imageInput.getByRole('strong').filter({ hasText: 'Product front' })).toBeVisible();
 
   await queueProjectImageImport(page, makeReferenceImage('Studio scene.png', [49, 75, 132, 255]));
-  await uploadImage.getByRole('button', { name: 'Import image' }).click();
+  await uploadImage.getByRole('button', { name: '导入图像 / Import image' }).click();
   await expect(uploadImage.getByRole('strong').filter({ hasText: 'Studio scene' })).toBeVisible();
 
-  await canvasLibrary.getByRole('searchbox', { name: 'Search project images' }).fill('scene');
-  await expect(canvasLibrary.getByRole('checkbox', { name: 'Select Studio scene' })).toBeVisible();
-  await expect(canvasLibrary.getByRole('checkbox', { name: 'Select Product front' })).toHaveCount(0);
-  await canvasLibrary.getByRole('searchbox', { name: 'Search project images' }).fill('');
-  await canvasLibrary.getByRole('checkbox', { name: 'Select Product front' }).check();
-  await canvasLibrary.getByRole('checkbox', { name: 'Select Studio scene' }).check();
-  await canvasLibrary.getByRole('button', { name: 'Move Studio scene up' }).click();
-  await expect(canvasLibrary.getByText('Reference 1')).toBeVisible();
-  await expect(canvasLibrary.getByText('Reference 2')).toBeVisible();
+  await canvasLibrary.getByRole('searchbox', { name: '搜索项目图像 / Search project images' }).fill('scene');
+  await expect(canvasLibrary.getByRole('checkbox', { name: '选择 Studio scene / Select Studio scene' })).toBeVisible();
+  await expect(canvasLibrary.getByRole('checkbox', { name: '选择 Product front / Select Product front' })).toHaveCount(0);
+  await canvasLibrary.getByRole('searchbox', { name: '搜索项目图像 / Search project images' }).fill('');
+  await canvasLibrary.getByRole('checkbox', { name: '选择 Product front / Select Product front' }).check();
+  await canvasLibrary.getByRole('checkbox', { name: '选择 Studio scene / Select Studio scene' }).check();
+  await canvasLibrary.getByRole('button', { name: '上移 Studio scene / Move Studio scene up' }).click();
+  await expect(canvasLibrary.getByText('参考 1 / Reference 1')).toBeVisible();
+  await expect(canvasLibrary.getByText('参考 2 / Reference 2')).toBeVisible();
 
   const state = await e2eState(page);
   expect(state.projectImages.map((asset) => asset.label)).toEqual(['Product front', 'Studio scene']);

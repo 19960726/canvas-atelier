@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAgentKnowledgeLease, createCanvasModuleNode, type PlacementObject, type ProjectMemoryEntry } from '@agent-canvas/domain';
@@ -138,7 +138,7 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByLabelText('任务队列')).toBeVisible();
   });
 
-  it('opens the module library without persisting and places clicked modules in a cascade', async () => {
+  it('opens the module library without persisting and creates only on explicit double click', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
       project: nextProject,
@@ -149,21 +149,90 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
+    fireEvent.click(screen.getByRole('button', { name: '模块库' }));
     expect(commit).not.toHaveBeenCalled();
-    expect(screen.getByRole('searchbox', { name: 'Search modules' })).toBeVisible();
+    expect(screen.getByRole('searchbox', { name: '搜索模块' })).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add Text Prompt' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Add Text Prompt' }));
+    const row = screen.getByRole('button', { name: '查看 文本提示词 / Text Prompt' });
+    fireEvent.click(row);
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.doubleClick(row);
 
-    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     const moduleNodes = useAppStore.getState().project.nodes.filter((node) => node.type === 'module');
-    expect(moduleNodes).toHaveLength(2);
-    expect(moduleNodes[0]?.position).not.toEqual(moduleNodes[1]?.position);
+    expect(moduleNodes).toHaveLength(1);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
-    expect(screen.queryByRole('searchbox', { name: 'Search modules' })).toBeNull();
-    expect(commit).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: '模块库' }));
+    expect(screen.queryByRole('searchbox', { name: '搜索模块' })).toBeNull();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates one double-clicked module at the safe viewport center without persisting selection', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: {
+        version: 1,
+        id: 'empty-center-project',
+        name: '未命名画布',
+        nodes: [],
+        edges: [],
+        projectMemory: [],
+        skillPromotionCandidates: [],
+      },
+    });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 700,
+      height: 600,
+      left: 50,
+      right: 1050,
+      toJSON: () => ({}),
+      top: 100,
+      width: 1000,
+      x: 50,
+      y: 100,
+    });
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: '模块库' }));
+    const row = screen.getByRole('button', { name: '查看 文本提示词 / Text Prompt' });
+    fireEvent.click(row);
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.click(row);
+    fireEvent.doubleClick(row);
+
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    const node = useAppStore.getState().project.nodes.find((candidate) => candidate.type === 'module');
+    expect(node?.position).toEqual({ x: 517, y: 160 });
+  });
+
+  it('shows accessible empty-canvas actions and removes them after a node exists', () => {
+    useAppStore.setState({
+      project: {
+        version: 1,
+        id: 'empty-actions-project',
+        name: '未命名画布',
+        nodes: [],
+        edges: [],
+        projectMemory: [],
+        skillPromotionCandidates: [],
+      },
+    });
+    const view = render(<CanvasWorkspace />);
+
+    expect(screen.getByRole('region', { name: '空白画布操作' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '打开项目' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '新建工作流' })).toBeVisible();
+    expect(screen.getByText('双击模块')).toBeVisible();
+
+    useAppStore.setState({ project: createStarterProject() });
+    view.rerender(<CanvasWorkspace />);
+    expect(screen.queryByRole('region', { name: '空白画布操作' })).toBeNull();
   });
 
   it('keeps module placement inside the unobscured canvas with at most four columns', () => {
@@ -199,7 +268,7 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByTestId('tool-placement'));
     expect(screen.getByTestId('placement-workbench')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
+    fireEvent.click(screen.getByRole('button', { name: '模块库' }));
     expect(screen.getByTestId('module-library')).toBeVisible();
     expect(screen.queryByTestId('placement-workbench')).toBeNull();
     expect(screen.getByTestId('tool-placement')).toHaveAttribute('aria-pressed', 'false');
@@ -248,7 +317,7 @@ describe('CanvasWorkspace', () => {
     resetAppStoreForTests();
 
     render(<CanvasWorkspace />);
-    fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
+    fireEvent.click(screen.getByRole('button', { name: '模块库' }));
     const library = screen.getByTestId('module-library');
     fireEvent.drop(library, {
       clientX: 140,
@@ -277,21 +346,23 @@ describe('CanvasWorkspace', () => {
     const getData = vi.fn((mime: string) => mime === MODULE_DRAG_MIME ? 'text_prompt' : 'foreign');
     const pane = screen.getByTestId('canvas-stage').querySelector<HTMLElement>('.react-flow__pane');
     expect(pane).not.toBeNull();
-    fireEvent.drop(pane!, {
-      clientX: 320,
-      clientY: 240,
+    const dropEvent = createEvent.drop(pane!, {
       dataTransfer: {
         types: [MODULE_DRAG_MIME],
         getData,
       },
     });
+    Object.defineProperties(dropEvent, {
+      clientX: { value: 320 },
+      clientY: { value: 240 },
+    });
+    fireEvent(pane!, dropEvent);
 
     expect(getData).toHaveBeenCalledWith(MODULE_DRAG_MIME);
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     const moduleNode = useAppStore.getState().project.nodes.find((node) => node.type === 'module');
     expect(moduleNode).toMatchObject({ type: 'module', data: { moduleType: 'text_prompt' } });
-    expect(moduleNode?.position.x).toEqual(expect.any(Number));
-    expect(moduleNode?.position.y).toEqual(expect.any(Number));
+    expect(moduleNode?.position).toEqual({ x: 320, y: 240 });
   });
 
   it('renders React Flow nodes from the domain project state', () => {

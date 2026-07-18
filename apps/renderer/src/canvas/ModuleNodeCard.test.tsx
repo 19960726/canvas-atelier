@@ -38,12 +38,14 @@ describe('ModuleNodeCard', () => {
       </ReactFlowProvider>,
     );
 
+    expect(screen.getByText('图像生成 v2')).toBeVisible();
     expect(screen.getByText('Image Generation v2')).toBeVisible();
     expect(document.querySelector('[data-port-id="prompt"][data-port-direction="input"]')).not.toBeNull();
     expect(document.querySelector('[data-port-id="result"][data-port-direction="output"]')).not.toBeNull();
+    expect(screen.getByText('提示词')).toBeVisible();
     expect(screen.getByText('Prompt')).toBeVisible();
-    expect(screen.getByText('Result')).toBeVisible();
-    expect(screen.getByText('Idle')).toBeVisible();
+    expect(screen.getByText('结果')).toBeVisible();
+    expect(screen.getByText('空闲')).toBeVisible();
     expect(document.querySelector('.module-node__icon')).toHaveAttribute('data-icon-category', 'generation');
     expect(document.querySelector('.module-node__icon svg')).toHaveAttribute('width', '18');
   });
@@ -76,7 +78,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getAllByText('Product front')).toHaveLength(2);
     expect(screen.getByText('2 × 3')).toBeVisible();
     expect(document.querySelector('input[type="file"]')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Replace image' }));
+    fireEvent.click(screen.getByRole('button', { name: '更换图像 / Replace image' }));
     expect(importImageForModule).toHaveBeenCalledWith('image-input');
   });
 
@@ -105,8 +107,8 @@ describe('ModuleNodeCard', () => {
       </ReactFlowProvider>,
     );
 
-    expect(screen.getByRole('checkbox', { name: 'Select Product front' })).toBeChecked();
-    expect(screen.getByText('Reference 1')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Move Product front up' })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: '选择 Product front / Select Product front' })).toBeChecked();
+    expect(screen.getByText('参考 1 / Reference 1')).toBeVisible();
+    expect(screen.getByRole('button', { name: '上移 Product front / Move Product front up' })).toBeDisabled();
   });
 });

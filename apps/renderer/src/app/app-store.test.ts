@@ -31,6 +31,26 @@ describe('project optimization memory', () => {
     resetAppStoreForTests();
   });
 
+  it('starts every normal renderer session as a unique clean untitled canvas without browser-local restoration', () => {
+    localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify({
+      current: { ...createStarterProject(), name: '不应自动恢复的浏览器项目' },
+      schemaVersion: 2,
+      snapshots: [],
+    }));
+
+    resetAppStoreForTests({ project: 'empty' });
+    const first = useAppStore.getState();
+    resetAppStoreForTests({ project: 'empty' });
+    const second = useAppStore.getState();
+
+    expect(first.project).toMatchObject({ name: '未命名画布', nodes: [], edges: [], projectMemory: [], skillPromotionCandidates: [] });
+    expect(first.confirmedModelJobs).toBe(0);
+    expect(first.modelJobs).toEqual([]);
+    expect(first.saveStatus).toBe('pending');
+    expect(first.project.id).not.toBe(second.project.id);
+    expect(first.project.name).not.toBe('不应自动恢复的浏览器项目');
+  });
+
   it('shows saved only after desktop acknowledgement', async () => {
     const transaction: ProjectTransaction = {
       id: 'tx-await-ack',

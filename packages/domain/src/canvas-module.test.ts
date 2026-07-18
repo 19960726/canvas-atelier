@@ -14,7 +14,7 @@ import {
   listCanvasModuleDefinitions,
 } from './canvas-module';
 
-function snapshotPort(port: CanvasModulePortDefinition) {
+function snapshotPort(port: Pick<CanvasModulePortDefinition, 'id' | 'label' | 'dataType' | 'direction' | 'cardinality' | 'required'>) {
   return {
     id: port.id,
     label: port.label,
@@ -38,6 +38,29 @@ function snapshotDefinition(type: string) {
 }
 
 describe('canvas module registry', () => {
+  it('exposes immutable bilingual discovery metadata without changing stable type ids or versions', () => {
+    const reverseAgent = getCanvasModuleDefinition('reverse_agent');
+    const videoAnalysis = getCanvasModuleDefinition('video_analysis');
+
+    expect(reverseAgent).toMatchObject({
+      type: 'reverse_agent',
+      version: 1,
+      primaryName: 'Agent 反推',
+      secondaryName: 'Reverse Agent',
+      description: expect.stringContaining('参考'),
+      purpose: expect.any(String),
+      usage: expect.any(String),
+      categoryDisplay: { primaryName: '分析', secondaryName: 'Analysis' },
+    });
+    expect(videoAnalysis).toMatchObject({
+      primaryName: '视频反推拆解',
+      secondaryName: 'Video Reverse Analysis',
+    });
+    expect(reverseAgent.searchAliases).toEqual(expect.arrayContaining(['反推', 'reverse prompt', 'vision']));
+    expect(Object.isFrozen(reverseAgent.categoryDisplay)).toBe(true);
+    expect(Object.isFrozen(reverseAgent.searchAliases)).toBe(true);
+  });
+
   it('exposes the Task 1 type surface through the module and barrel exports', () => {
     const modulePort: CanvasModulePortDefinition = getCanvasModuleDefinition('image_generation_v2').ports[0]!;
     const publicPort: PublicCanvasModulePortDefinition = modulePort;

@@ -34,6 +34,12 @@ import {
   type CloseFlushRequest,
 } from './renderer-close-flush-contract.js';
 import {
+  parseCloseChoiceDecision,
+  parseCloseChoiceRequest,
+  type CloseChoiceDecision,
+  type CloseChoiceRequest,
+} from './close-choice-contract.js';
+import {
   PROVIDER_BRIDGE_CHANNELS,
   normalizeProviderBridgeError,
   parseProviderBridgeEnvelope,
@@ -54,6 +60,7 @@ import {
 export const DESKTOP_BRIDGE_PRELOAD_KEY = 'novusDesktop';
 
 export const BRIDGE_CHANNELS = {
+  closeChoice: 'novus-desktop:close-choice',
   closeFlushAck: 'novus-desktop:close-flush-ack',
   closeFlushRequest: 'novus-desktop:close-flush-request',
   closeProject: 'novus-desktop:close-project',
@@ -108,6 +115,7 @@ export interface DesktopProjectImageBridgeApi {
 
 export interface DesktopLifecycleBridgeApi {
   ackCloseFlush(ack: CloseFlushAck): boolean;
+  chooseCloseDecision(request: CloseChoiceRequest): Promise<CloseChoiceDecision>;
   subscribeCloseFlushRequest(listener: (request: CloseFlushRequest) => void | Promise<void>): () => void;
 }
 
@@ -211,6 +219,12 @@ export function createPreloadApi(
         if (parsed === null) return false;
         send(BRIDGE_CHANNELS.closeFlushAck, parsed);
         return true;
+      },
+      async chooseCloseDecision(request) {
+        const parsedRequest = parseCloseChoiceRequest(request);
+        if (parsedRequest === null) return 'cancel';
+        const decision = parseCloseChoiceDecision(await invoke<unknown>(BRIDGE_CHANNELS.closeChoice, parsedRequest));
+        return decision ?? 'cancel';
       },
       subscribeCloseFlushRequest(listener) {
         return subscribe(BRIDGE_CHANNELS.closeFlushRequest, (payload) => {

@@ -25,7 +25,24 @@ export function App() {
     closeFlushUnsubscribe = lifecycle.subscribeCloseFlushRequest(async (request) => {
       let ok = false;
       try {
-        ok = await useAppStore.getState().closePersistence();
+        const state = useAppStore.getState();
+        const needsUntitledChoice = state.project.name === '未命名画布' && state.saveStatus !== 'saved';
+        if (needsUntitledChoice && lifecycle.chooseCloseDecision !== undefined) {
+          const decision = await lifecycle.chooseCloseDecision({
+            dirty: true,
+            projectName: state.project.name,
+            untitled: true,
+          });
+          if (decision === 'cancel') {
+            lifecycle.ackCloseFlush({ cancelled: true, requestId: request.requestId, ok: false });
+            return;
+          }
+          ok = decision === 'discard'
+            ? await state.discardPersistence()
+            : await state.closePersistence();
+        } else {
+          ok = await state.closePersistence();
+        }
       } catch {
         ok = false;
       }

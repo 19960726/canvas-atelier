@@ -11,6 +11,8 @@ import {
 } from './app-store';
 import type { KnowledgeClient } from './knowledge-client';
 import type { ProjectCommitRequest, ProjectCommitResult, ProjectPersistenceClient } from './desktop-persistence';
+import { createBrowserPersistenceClient } from './desktop-persistence';
+import { PROJECT_STORAGE_KEY } from './project-persistence';
 import { App, resetAppHydrationForTests } from './App';
 
 describe('App persistence hydration', () => {
@@ -22,6 +24,23 @@ describe('App persistence hydration', () => {
     resetAppHydrationForTests();
     replaceProjectPersistenceClientForTests(createHydrationClient());
     resetAppStoreForTests();
+  });
+
+  it('does not restore browser-local canvas content during a normal App launch', async () => {
+    localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify({
+      current: { ...createStarterProject(), name: '旧浏览器画布' },
+      schemaVersion: 2,
+      snapshots: [],
+    }));
+    replaceProjectPersistenceClientForTests(createBrowserPersistenceClient());
+    resetAppStoreForTests();
+
+    render(<App />);
+
+    await waitFor(() => expect(useAppStore.getState().persistenceMode).toBe('browser'));
+    expect(useAppStore.getState().project).toMatchObject({ name: '未命名画布', nodes: [], edges: [] });
+    expect(useAppStore.getState().saveStatus).toBe('pending');
+    expect(screen.queryByText('旧浏览器画布')).toBeNull();
   });
 
   it('hydrates the renderer from the persistence client on startup', async () => {
@@ -160,6 +179,33 @@ describe('App persistence hydration', () => {
     expect(close).not.toHaveBeenCalled();
     expect(useAppStore.getState().saveErrorCode).toBe('INVALID_REQUEST');
     expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-failed-1', ok: false });
+  });
+
+  it('uses the desktop Save Discard Cancel choice for an unnamed dirty project and aborts on cancel', async () => {
+    const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
+    const ackCloseFlush = vi.fn();
+    const chooseCloseDecision = vi.fn(async () => 'cancel' as const);
+    const close = vi.fn(async () => {});
+    window.novusDesktop = {
+      lifecycle: {
+        ackCloseFlush,
+        chooseCloseDecision,
+        subscribeCloseFlushRequest: vi.fn((listener) => {
+          listeners.push(listener);
+          return vi.fn();
+        }),
+      },
+    } as unknown as typeof window.novusDesktop;
+    replaceProjectPersistenceClientForTests(createHydrationClient({ close }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    render(<App />);
+    await waitFor(() => expect(window.novusDesktop?.lifecycle.subscribeCloseFlushRequest).toHaveBeenCalled());
+    await listeners[0]?.({ requestId: 'close-request-cancel-1' });
+
+    expect(chooseCloseDecision).toHaveBeenCalledWith({ dirty: true, projectName: '未命名画布', untitled: true });
+    expect(close).not.toHaveBeenCalled();
+    expect(ackCloseFlush).toHaveBeenCalledWith({ cancelled: true, ok: false, requestId: 'close-request-cancel-1' });
   });
 });
 

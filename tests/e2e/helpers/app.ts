@@ -55,6 +55,12 @@ export async function openApp(page: Page): Promise<void> {
   await expect(page.getByTestId('workspace')).toBeVisible();
 }
 
+export async function openEmptyApp(page: Page): Promise<void> {
+  await openApp(page);
+  await page.evaluate(() => window.__NOVUS_E2E__!.resetEmpty());
+  await expect(page.getByRole('region', { name: '空白画布操作' })).toBeVisible();
+}
+
 export async function uploadReference(page: Page, testId: string, fixture: GeneratedImageFixture): Promise<void> {
   await queueProjectImageImport(page, fixture);
   await page.getByTestId(testId).click();

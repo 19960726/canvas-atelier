@@ -97,6 +97,7 @@ export function createRendererCloseFlushCoordinator({
         reason = 'unavailable';
       }
     }
+    if (reason === 'cancel') return;
     await finishClose(reason);
   };
 
@@ -106,7 +107,7 @@ export function createRendererCloseFlushCoordinator({
       if (ack === null || pendingRequest === null || ack.requestId !== pendingRequest.requestId) {
         return false;
       }
-      return completePending(ack.ok ? 'ack' : 'nack');
+      return completePending(ack.cancelled === true ? 'cancel' : ack.ok ? 'ack' : 'nack');
     },
     async rendererUnavailable() {
       return completePending('unavailable');
@@ -114,8 +115,14 @@ export function createRendererCloseFlushCoordinator({
     requestClose(event) {
       event?.preventDefault();
       if (closePromise !== null) return closePromise;
-      closePromise = runClose();
-      return closePromise;
+      const running = runClose();
+      closePromise = running;
+      void running.then(() => {
+        if (closePromise === running) closePromise = null;
+      }, () => {
+        if (closePromise === running) closePromise = null;
+      });
+      return running;
     },
   };
 }

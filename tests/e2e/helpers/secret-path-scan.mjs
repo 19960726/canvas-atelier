@@ -91,6 +91,14 @@ const allowedFindings = [
     hash: "a964ef448a41b754b480cf11123e85aab4b61fcfebe9584ee5ab7742a5e75bb3",
   },
   {
+    file: "apps/renderer/src/styles/theme-tokens.test.ts",
+    name: "private absolute path",
+    evidence: [
+      "r:\\s*var\\(--on-accent\\)[^}]*background:\\s*var\\(--accent\\)/u);",
+      "d:\\s*var\\(--accent-hover\\);\\s*\\}/u);",
+    ],
+  },
+  {
     file: "apps/renderer/src/app/app-store.test.ts",
     name: "Authorization header",
     evidence: [
@@ -173,6 +181,13 @@ const allowedFindings = [
     name: "Authorization header",
     evidence: [
       "Authorization: Bearer secret",
+    ],
+  },
+  {
+    file: "packages/desktop-core/src/close-choice-contract.ts",
+    name: "private absolute path",
+    evidence: [
+      "\\\\[^\\\\\\s]+\\\\/u.test(value)",
     ],
   },
   {

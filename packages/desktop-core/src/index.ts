@@ -234,3 +234,9 @@ export type {
   NovusPackInventoryEntry,
   NovusPackLimits,
 } from './novus-pack.js';
+export {
+  parseCloseChoiceDecision,
+  parseCloseChoiceRequest,
+  type CloseChoiceDecision,
+  type CloseChoiceRequest,
+} from './close-choice-contract.js';

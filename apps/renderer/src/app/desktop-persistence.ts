@@ -18,6 +18,7 @@ import {
   selectDurableRecoverySnapshotIds,
   validateRecoveredProject,
 } from './recovery';
+import { createUntitledProject } from './project-factory';
 
 export type PersistenceMode = 'browser' | 'desktop';
 export type ProjectSaveStatus = 'pending' | 'saving' | 'saved' | 'error' | 'read_only';
@@ -76,6 +77,7 @@ export interface ProjectPersistenceClient {
   close(): Promise<void>;
   commit(request: ProjectCommitRequest): Promise<ProjectCommitResult>;
   hydrate(): Promise<ProjectHydrationResult>;
+  openProject?(): Promise<ProjectHydrationResult | null>;
   importProjectImage(target: ProjectImageImportTarget): Promise<ProjectImageImportResult | null>;
   listProjectImages(): Promise<ProjectImageAssetSummary[]>;
   restore(snapshotId: string): Promise<ProjectRestoreResult>;
@@ -123,16 +125,29 @@ export function createBrowserPersistenceClient(storage = getStorage()): ProjectP
       };
     },
     async hydrate() {
-      const bundle = loadPersistedProjectBundle(storage);
-      currentProject = bundle?.current ?? null;
-      availableSnapshotIds = bundle?.snapshots.map((snapshot) => snapshot.id) ?? [];
+      currentProject = createUntitledProject();
+      availableSnapshotIds = [];
       revision = 0;
       return {
         availableSnapshotIds,
         mode: 'browser',
-        project: currentProject ?? createFallbackProject(),
+        project: currentProject,
         revision,
-        saveStatus: currentProject === null ? 'pending' : 'saved',
+        saveStatus: 'pending',
+      };
+    },
+    async openProject() {
+      const bundle = loadPersistedProjectBundle(storage);
+      if (bundle === null) return null;
+      currentProject = bundle.current;
+      availableSnapshotIds = bundle.snapshots.map((snapshot) => snapshot.id);
+      revision = 0;
+      return {
+        availableSnapshotIds,
+        mode: 'browser',
+        project: currentProject,
+        revision,
+        saveStatus: 'saved',
       };
     },
     async importProjectImage() {
@@ -144,7 +159,7 @@ export function createBrowserPersistenceClient(storage = getStorage()): ProjectP
     async restore(snapshotId) {
       const bundle = loadPersistedProjectBundle(storage);
       const snapshot = bundle?.snapshots.find((entry) => entry.id === snapshotId);
-      currentProject = snapshot?.project ?? currentProject ?? bundle?.current ?? createFallbackProject();
+      currentProject = snapshot?.project ?? currentProject ?? bundle?.current ?? createUntitledProject();
       availableSnapshotIds = bundle?.snapshots.map((entry) => entry.id) ?? [];
       if (snapshot !== undefined) {
         persistCurrentProject(currentProject, storage);
@@ -163,7 +178,7 @@ export function createBrowserPersistenceClient(storage = getStorage()): ProjectP
       }
       return {
         availableSnapshotIds,
-        project: currentProject ?? createFallbackProject(),
+        project: currentProject ?? createUntitledProject(),
         revision,
       };
     },
@@ -174,7 +189,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   let sessionId: string | null = null;
   let projectId: string | null = null;
   let mode: 'write' | 'read_only' = 'write';
-  let currentProject = createFallbackProject();
+  let currentProject = createUntitledProject();
   let revision = 0;
   let availableSnapshotIds: string[] = [];
 
@@ -203,8 +218,17 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     },
     commit: desktopCommit,
     async hydrate() {
-      await ensureSession();
-
+      return {
+        availableSnapshotIds: sessionId === null ? [] : availableSnapshotIds,
+        mode: 'desktop',
+        project: currentProject,
+        revision,
+        saveStatus: sessionId === null ? 'pending' : mode === 'read_only' ? 'read_only' : 'saved',
+      };
+    },
+    async openProject() {
+      const opened = await ensureSession();
+      if (!opened) return null;
       availableSnapshotIds = await readDesktopRecoverySnapshotIds();
       return {
         availableSnapshotIds,
@@ -312,16 +336,17 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     }
   }
 
-  async function ensureSession(): Promise<void> {
-    if (sessionId !== null) return;
+  async function ensureSession(): Promise<boolean> {
+    if (sessionId !== null) return true;
     const session = await bridge.openProject({ mode: 'write' });
-    if (session === null) return;
+    if (session === null) return false;
     sessionId = session.sessionId;
     projectId = session.projectId;
     mode = session.mode;
     currentProject = validateRecoveredProject(session.project, currentProject);
     revision = session.currentRevision ?? session.stableSnapshotRevision;
     availableSnapshotIds = await readDesktopRecoverySnapshotIds();
+    return true;
   }
 
   async function readDesktopRecoverySnapshotIds(): Promise<string[]> {
@@ -346,28 +371,6 @@ export async function migrateLegacyProject(
   await client.createFromLegacyBundle(bundle);
   clearPersistedProjectBundle(storage);
   return bundle;
-}
-
-function createFallbackProject(): CanvasProject {
-  return {
-    version: 1,
-    id: 'local-project',
-    name: '未命名画布',
-    nodes: [
-      { id: 'reference-start', type: 'reference', position: { x: 120, y: 160 }, data: { assetId: 'starter-product', role: 'product_identity' } },
-      { id: 'placement-start', type: 'placement_preview', position: { x: 460, y: 270 }, data: {
-        board: { id: 'starter-board', aspectRatio: '4:5', width: 1080, height: 1350, safeAreas: [{ id: 'copy-top', x: 0.08, y: 0.06, w: 0.84, h: 0.16, purpose: 'copy_safe' }] },
-        objects: [{ id: 'product-main', assetId: 'starter-product', role: 'product_identity', x: 0.34, y: 0.42, w: 0.32, h: 0.38, rotation: 0, zIndex: 20, locked: false, visible: true, flipX: false, flipY: false, semanticLayer: 'hero_product', name: '主产品' }],
-      } },
-      { id: 'prompt-start', type: 'prompt', position: { x: 800, y: 160 }, data: { prompt: '等待确认后执行模型任务', requirementIds: [] } },
-    ],
-    edges: [
-      { id: 'edge-reference-placement', source: 'reference-start', target: 'placement-start' },
-      { id: 'edge-placement-prompt', source: 'placement-start', target: 'prompt-start', label: 'agent-plan' },
-    ],
-    projectMemory: [],
-    skillPromotionCandidates: [],
-  };
 }
 
 function createImportError(code: ProjectCommitErrorCode): Error & { code: ProjectCommitErrorCode } {

@@ -84,6 +84,7 @@ describe('desktop bridge contract', () => {
     expect(createPreloadApi(mockInvoke).projectImages).not.toHaveProperty('readFile');
     expect(Object.keys(createPreloadApi(mockInvoke).lifecycle).sort()).toEqual([
       'ackCloseFlush',
+      'chooseCloseDecision',
       'subscribeCloseFlushRequest',
     ]);
   });
@@ -178,6 +179,23 @@ describe('desktop bridge contract', () => {
     expect(api.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', ok: true, token: 'secret' } as never)).toBe(false);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeFlushAck, { requestId: 'close-request-123456', ok: true });
+  });
+  it('invokes the close-choice channel with strict requests and defaults malformed responses to cancel', async () => {
+    const invoke = vi.fn(async () => 'discard');
+    const api = createPreloadApi(invoke as DesktopBridgeInvoke);
+    const request = { dirty: true, projectName: '未命名画布', untitled: true };
+
+    await expect(api.lifecycle.chooseCloseDecision(request)).resolves.toBe('discard');
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeChoice, request);
+
+    invoke.mockResolvedValueOnce('unexpected');
+    await expect(api.lifecycle.chooseCloseDecision(request)).resolves.toBe('cancel');
+
+    await expect(api.lifecycle.chooseCloseDecision({
+      ...request,
+      projectName: 'C:\\Users\\Private\\draft.json',
+    })).resolves.toBe('cancel');
+    expect(invoke).toHaveBeenCalledTimes(2);
   });
   it('drops protected values from sync lifecycle events at the preload boundary', () => {
     const subscribe = vi.fn((_channel, _listener) => () => undefined);

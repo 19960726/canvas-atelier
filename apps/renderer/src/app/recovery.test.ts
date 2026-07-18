@@ -63,7 +63,7 @@ describe('renderer recovery validation', () => {
     });
     const client = createDesktopPersistenceClient(bridge);
 
-    await client.hydrate();
+    await client.openProject?.();
     const restored = await client.restore('invalid-after');
 
     expect(restored.project).toStrictEqual(durable);
@@ -79,7 +79,7 @@ describe('renderer recovery validation', () => {
     const getItem = vi.spyOn(Storage.prototype, 'getItem');
     const client = createDesktopPersistenceClient(createBridge());
 
-    await client.hydrate();
+    await client.openProject?.();
 
     expect(getItem).not.toHaveBeenCalledWith(PROJECT_STORAGE_KEY);
   });

@@ -14,24 +14,23 @@ import { useAppStore } from '../app/app-store';
 import { isRenderableManagedImageUrl } from '../app/managed-image-url';
 
 const executionStateLabels: Record<CanvasModuleNodeData['execution']['state'], string> = {
-  idle: 'Idle',
-  invalid: 'Invalid',
-  ready: 'Ready',
-  waiting_confirmation: 'Waiting confirmation',
-  queued: 'Queued',
-  running: 'Running',
-  blocked: 'Blocked',
-  completed: 'Completed',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
+  idle: '空闲',
+  invalid: '无效',
+  ready: '就绪',
+  waiting_confirmation: '等待确认',
+  queued: '已排队',
+  running: '运行中',
+  blocked: '已阻塞',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
 };
 
-const categoryLabels: Record<CanvasModuleDefinition['category'], string> = {
-  input: 'Input',
-  generation: 'Generation',
-  editing: 'Editing',
-  analysis: 'Analysis',
-  output: 'Output',
+const executionModeLabels: Record<CanvasModuleDefinition['executionMode'], string> = {
+  local: '本地 / Local',
+  provider: '模型服务 / Provider',
+  agent: 'Agent',
+  composite: '组合 / Composite',
 };
 
 function formatExecutionState(state: CanvasModuleNodeData['execution']['state']): string {
@@ -40,14 +39,14 @@ function formatExecutionState(state: CanvasModuleNodeData['execution']['state'])
 
 function summarizeModuleConfig(config: Record<string, unknown>): string {
   const entries = Object.entries(config).filter(([, value]) => value !== undefined && value !== null && value !== '');
-  if (entries.length === 0) return 'Default configuration';
+  if (entries.length === 0) return '默认配置 / Default configuration';
   return entries.slice(0, 2).map(([key, value]) => `${key}: ${formatConfigValue(value)}`).join('  |  ');
 }
 
 function formatConfigValue(value: unknown): string {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return `${value.length} items`;
-  return 'Configured';
+  if (Array.isArray(value)) return `${value.length} 项`;
+  return '已配置';
 }
 
 interface ModulePortProps {
@@ -74,8 +73,9 @@ const ModulePort = memo(function ModulePort({ port }: ModulePortProps) {
         />
       )}
       <span className="module-node__port-label">
-        {port.label}
-        {port.required ? null : <small aria-label="optional">Optional</small>}
+        {port.primaryLabel}
+        <small>{port.secondaryLabel}</small>
+        {port.required ? null : <small aria-label="可选 / optional">可选</small>}
       </span>
       {!isInput && (
         <Handle
@@ -134,8 +134,9 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           <Icon size={18} strokeWidth={1.8} />
         </span>
         <span className="module-node__heading">
-          <small>{categoryLabels[definition.category]}</small>
-          <strong>{definition.displayName}</strong>
+          <small>{definition.categoryDisplay.primaryName} / {definition.categoryDisplay.secondaryName}</small>
+          <strong>{definition.primaryName}</strong>
+          <span>{definition.secondaryName}</span>
         </span>
       </header>
       {data.moduleType === 'image_input' || data.moduleType === 'upload_image' ? (
@@ -161,7 +162,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       ) : (
         <div className="module-node__summary">{summarizeModuleConfig(data.config)}</div>
       )}
-      <div className="module-node__ports" aria-label="Module ports">
+      <div className="module-node__ports" aria-label="模块端口 / Module ports">
         <div className="module-node__ports-column module-node__ports-column--inputs">
           {inputs.map((port) => <ModulePort key={port.id} port={port} />)}
         </div>
@@ -170,7 +171,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
         </div>
       </div>
       <footer className="module-node__footer">
-        <span>{definition.executionMode}</span>
+        <span>{executionModeLabels[definition.executionMode]}</span>
         <b>{formatExecutionState(data.execution.state)}</b>
       </footer>
     </article>
@@ -203,18 +204,18 @@ function ProjectImageControl({
           ? <img src={previewUrl} alt="" draggable={false} />
           : <span className="module-node__asset-icon" aria-hidden="true"><ImageIcon size={19} /></span>}
         <span className="module-node__asset-copy">
-          <strong>{asset?.label ?? 'No managed image'}</strong>
-          <small>{asset ? formatAssetDimensions(asset) : 'Choose or import a project image'}</small>
+          <strong>{asset?.label ?? '暂无受管图像'}</strong>
+          <small>{asset ? formatAssetDimensions(asset) : '选择或导入项目图像 / Choose or import'}</small>
         </span>
       </div>
       {moduleType === 'image_input' && assets.length > 0 && (
-        <select aria-label="Choose project image" value={assetId ?? ''} onChange={(event) => onSelect(event.target.value)}>
-          <option value="" disabled>Project library</option>
+        <select aria-label="选择项目图像 / Choose project image" value={assetId ?? ''} onChange={(event) => onSelect(event.target.value)}>
+          <option value="" disabled>项目素材库 / Project library</option>
           {assets.map((candidate) => <option key={candidate.assetId} value={candidate.assetId}>{candidate.label}</option>)}
         </select>
       )}
-      <button type="button" disabled={importing} onClick={onImport}>
-        {importing ? 'Importing…' : asset ? 'Replace image' : 'Import image'}
+      <button type="button" aria-label={asset ? '更换图像 / Replace image' : '导入图像 / Import image'} disabled={importing} onClick={onImport}>
+        {importing ? '正在导入…' : asset ? '更换图像' : '导入图像'}
       </button>
       {error && <small className="module-node__asset-error" role="status">{error}</small>}
     </div>
@@ -251,13 +252,13 @@ function CanvasLibraryControl({
     <div className="module-node__library-control nodrag nopan" onPointerDown={(event) => event.stopPropagation()}>
       <input
         type="search"
-        aria-label="Search project images"
-        placeholder={`Search ${allAssetCount} images`}
+        aria-label="搜索项目图像 / Search project images"
+        placeholder={`搜索 ${allAssetCount} 张图像`}
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
       />
       <div className="module-node__library-assets">
-        {assets.length === 0 ? <small>No project images</small> : assets.map((asset) => {
+        {assets.length === 0 ? <small>暂无项目图像</small> : assets.map((asset) => {
           const position = selectedPositions.get(asset.assetId);
           const selected = position !== undefined;
           return (
@@ -265,7 +266,7 @@ function CanvasLibraryControl({
               <label>
                 <input
                   type="checkbox"
-                  aria-label={`Select ${asset.label}`}
+                  aria-label={`选择 ${asset.label} / Select ${asset.label}`}
                   checked={selected}
                   disabled={!selected && assetIds.length >= MAX_GENERATION_REFERENCES}
                   onChange={(event) => onSelectionChange(event.target.checked
@@ -276,9 +277,9 @@ function CanvasLibraryControl({
               </label>
               {selected && (
                 <span className="module-node__library-order">
-                  <small>{`Reference ${position + 1}`}</small>
-                  <button type="button" aria-label={`Move ${asset.label} up`} disabled={position === 0} onClick={() => move(asset.assetId, -1)}>↑</button>
-                  <button type="button" aria-label={`Move ${asset.label} down`} disabled={position === assetIds.length - 1} onClick={() => move(asset.assetId, 1)}>↓</button>
+                  <small>{`参考 ${position + 1} / Reference ${position + 1}`}</small>
+                  <button type="button" aria-label={`上移 ${asset.label} / Move ${asset.label} up`} disabled={position === 0} onClick={() => move(asset.assetId, -1)}>↑</button>
+                  <button type="button" aria-label={`下移 ${asset.label} / Move ${asset.label} down`} disabled={position === assetIds.length - 1} onClick={() => move(asset.assetId, 1)}>↓</button>
                 </span>
               )}
             </div>
@@ -297,5 +298,5 @@ function readAssetIds(value: unknown): string[] {
 }
 
 function formatAssetDimensions(asset: ProjectImageAssetSummary): string {
-  return asset.width === null || asset.height === null ? 'Dimensions unavailable' : `${asset.width} × ${asset.height}`;
+  return asset.width === null || asset.height === null ? '尺寸不可用' : `${asset.width} × ${asset.height}`;
 }

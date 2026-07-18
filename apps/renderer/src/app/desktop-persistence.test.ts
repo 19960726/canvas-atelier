@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStarterProject } from './app-store';
 import {
+  createBrowserPersistenceClient,
   createDesktopPersistenceClient,
   migrateLegacyProject,
   type LegacyProjectImportClient,
@@ -10,6 +11,50 @@ import { PROJECT_STORAGE_KEY } from './project-persistence';
 describe('desktop persistence', () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+
+  it('keeps normal browser launch empty even when prior canvas content exists locally', async () => {
+    localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify({
+      current: { ...createStarterProject(), name: 'Browser recent project' },
+      schemaVersion: 2,
+      snapshots: [],
+    }));
+
+    const hydrated = await createBrowserPersistenceClient().hydrate();
+
+    expect(hydrated.project).toMatchObject({ name: '未命名画布', nodes: [], edges: [] });
+    expect(hydrated.saveStatus).toBe('pending');
+  });
+
+  it('does not invoke the desktop project picker or auto-open a recent project during normal hydration', async () => {
+    const recentProject = { ...createStarterProject(), name: 'Recent desktop project' };
+    const openProject = vi.fn(async () => ({
+      currentRevision: 7,
+      mode: 'write' as const,
+      project: recentProject,
+      projectId: recentProject.id,
+      projectName: recentProject.name,
+      sessionId: 'recent-session',
+      stableSnapshotId: 'stable-7',
+      stableSnapshotRevision: 7,
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      exportPack: vi.fn(),
+      getRecoveryPlan: vi.fn(),
+      importPack: vi.fn(),
+      openProject,
+      restore: vi.fn(),
+    };
+
+    const hydrated = await createDesktopPersistenceClient(bridge).hydrate();
+
+    expect(openProject).not.toHaveBeenCalled();
+    expect(hydrated.project).toMatchObject({ name: '未命名画布', nodes: [], edges: [] });
+    expect(hydrated.availableSnapshotIds).toEqual([]);
+    expect(hydrated.saveStatus).toBe('pending');
   });
 
   it('removes a v2 localStorage bundle only after desktop import acknowledgement', async () => {
@@ -81,7 +126,7 @@ describe('desktop persistence', () => {
     };
     const client = createDesktopPersistenceClient(bridge);
 
-    await client.hydrate();
+    await client.openProject?.();
 
     const result = await client.commit({
       baseRevision: 2,
@@ -145,9 +190,10 @@ describe('desktop persistence', () => {
     };
     const client = createDesktopPersistenceClient(bridge);
 
-    const hydrated = await client.hydrate();
+    const hydrated = await client.openProject?.();
+    expect(hydrated).not.toBeNull();
     const result = await client.commit({
-      baseRevision: hydrated.revision,
+      baseRevision: hydrated!.revision,
       kind: 'canvas',
       nextProject: { ...durableProject, name: 'After current head' },
       previousProject: durableProject,
@@ -163,7 +209,7 @@ describe('desktop persistence', () => {
       },
     });
 
-    expect(hydrated.revision).toBe(4);
+    expect(hydrated!.revision).toBe(4);
     expect(bridge.commit).toHaveBeenCalledWith(expect.objectContaining({ baseRevision: 4 }));
     expect(result).toMatchObject({ ok: true, revision: 5 });
   });
@@ -220,7 +266,7 @@ describe('desktop persistence', () => {
     };
     const client = createDesktopPersistenceClient(bridge);
 
-    await client.hydrate();
+    await client.openProject?.();
     const result = await client.restore('desktop-after');
 
     expect(bridge.restore).toHaveBeenCalledWith({ candidateId: 'candidate-opaque', sessionId: 'desktop-session' });
@@ -264,10 +310,10 @@ describe('desktop persistence', () => {
     };
     const client = createDesktopPersistenceClient(bridge);
 
-    const result = await client.hydrate();
+    const result = await client.openProject?.();
 
-    expect(result.project.name).toBe('Desktop read-only project');
-    expect(result.saveStatus).toBe('read_only');
+    expect(result?.project.name).toBe('Desktop read-only project');
+    expect(result?.saveStatus).toBe('read_only');
     expect(localStorage.getItem(PROJECT_STORAGE_KEY)).not.toBeNull();
   });
 
@@ -325,7 +371,7 @@ describe('desktop persistence', () => {
       restore: vi.fn(),
     };
     const client = createDesktopPersistenceClient(bridge);
-    await client.hydrate();
+    await client.openProject?.();
 
     await expect(client.listProjectImages()).resolves.toEqual([asset]);
     await expect(client.importProjectImage({ kind: 'module', nodeId: 'image-input' })).resolves.toEqual({

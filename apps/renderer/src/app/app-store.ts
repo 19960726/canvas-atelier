@@ -46,6 +46,7 @@ import {
   type ProjectPersistenceClient,
   type ProjectSaveStatus,
 } from './desktop-persistence';
+import { createUntitledProject } from './project-factory';
 import {
   AUTOSAVE_IDLE_MS,
   createAutosaveController,
@@ -152,6 +153,7 @@ interface AppState {
   modelJobs: ModelJob[];
   cancelModelJob: (jobId: string) => Promise<void>;
   closePersistence: () => Promise<boolean>;
+  discardPersistence: () => Promise<boolean>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
   addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
   connectModulePorts: (connection: Connection) => Promise<boolean>;
@@ -161,6 +163,8 @@ interface AppState {
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
   getKnowledgeLease: KnowledgeClient['getLease'];
   hydratePersistence: () => Promise<void>;
+  openProject: () => Promise<boolean>;
+  newWorkflow: () => Promise<void>;
   importImageForModule: (nodeId: string) => Promise<boolean>;
   importPlacementReference: (
     nodeId: string,
@@ -405,6 +409,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false;
     }
   },
+  discardPersistence: async () => {
+    cancelPendingProjectSave();
+    invalidateModelJobStoreGeneration();
+    modelJobStore?.stop();
+    modelJobUnsubscribe?.();
+    modelJobUnsubscribe = null;
+    knowledgeClient.stop();
+    try {
+      await projectPersistenceClient.close();
+      return true;
+    } catch {
+      return false;
+    }
+  },
   commitProjectTransaction: async (transaction, options = {}) => {
     cancelPendingProjectSave();
     const before = get().project;
@@ -500,6 +518,41 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveStatus: hydrated.saveStatus,
     });
     recoverModelJobsInBackground(jobStore);
+  },
+  openProject: async () => {
+    const openProject = projectPersistenceClient.openProject;
+    if (openProject === undefined) return false;
+    const opened = await openProject();
+    if (opened === null) return false;
+    const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
+    set({
+      availableSnapshotIds: opened.availableSnapshotIds,
+      desktopRevision: opened.revision,
+      persistenceMode: opened.mode,
+      project: opened.project,
+      projectImages,
+      projectImageError: null,
+      projectImageImportingNodeId: null,
+      saveErrorCode: null,
+      saveStatus: opened.saveStatus,
+      undoStack: [],
+    });
+    return true;
+  },
+  newWorkflow: async () => {
+    cancelPendingProjectSave();
+    await projectPersistenceClient.close().catch(() => undefined);
+    set({
+      availableSnapshotIds: [],
+      desktopRevision: 0,
+      project: createUntitledProject(),
+      projectImages: [],
+      projectImageError: null,
+      projectImageImportingNodeId: null,
+      saveErrorCode: null,
+      saveStatus: 'pending',
+      undoStack: [],
+    });
   },
   importImageForModule: (nodeId) => importProjectImageWithTarget({ kind: 'module', nodeId }),
   importPlacementReference: (nodeId, role) => importProjectImageWithTarget({
@@ -1045,7 +1098,7 @@ function enqueueModuleGraphCommit(operation: () => Promise<boolean>): Promise<bo
   return result;
 }
 
-export function resetAppStoreForTests(): void {
+export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' } = { project: 'starter' }): void {
   cancelPendingProjectSave();
   pendingProjectFlushBoundary = null;
   clearPendingAgentConfirmation();
@@ -1060,7 +1113,10 @@ export function resetAppStoreForTests(): void {
   modelJobExecutorOverride = pendingModelJobExecutorOverride;
   pendingModelJobExecutorOverride = null;
   knowledgeClient.stop();
-  useAppStore.setState(createInitialState());
+  const state = createInitialState();
+  useAppStore.setState(options.project === 'empty'
+    ? state
+    : { ...state, project: createStarterProject(), saveStatus: 'pending' });
 }
 
 function getModuleNode(nodes: readonly CanvasProject['nodes'][number][], nodeId: string): CanvasModuleNode | undefined {
@@ -1204,24 +1260,23 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
 
 function createInitialState(): Pick<AppState, 'project' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
-  const restoredProject = desktopMode ? null : loadPersistedProjectBundle()?.current;
   return {
     activeTool: 'select',
     agentPanelCollapsed: false,
     agentPlan: null,
-    availableSnapshotIds: desktopMode ? [] : readAvailableSnapshotIds(),
+    availableSnapshotIds: [],
     confirmedModelJobs: 0,
     desktopRevision: 0,
     knowledgeBases: [],
     knowledgeSyncStatuses: [],
     modelJobs: [],
     persistenceMode: desktopMode ? 'desktop' : 'browser',
-    project: restoredProject ?? createStarterProject(),
+    project: createUntitledProject(),
     projectImages: [],
     projectImageError: null,
     projectImageImportingNodeId: null,
     saveErrorCode: null,
-    saveStatus: restoredProject ? 'saved' : 'pending',
+    saveStatus: 'pending',
     undoStack: [],
   };
 }

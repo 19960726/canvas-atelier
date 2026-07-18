@@ -32,6 +32,7 @@ import {
   resetAppStoreForTests,
   useAppStore,
 } from '../app/app-store';
+import { createUntitledProject } from '../app/project-factory';
 import type {
   ProjectCommitRequest,
   ProjectCommitResult,
@@ -110,6 +111,26 @@ export function installRendererE2EHarness(): void {
       replaceModelJobStorageForTests(runtime.storage);
       resetAppStoreForTests();
       await useAppStore.getState().hydratePersistence();
+      await useAppStore.getState().initializeKnowledge();
+    },
+    async resetEmpty() {
+      runtime.currentProject = createUntitledProject();
+      runtime.assetSequence = 0;
+      runtime.revision = 0;
+      runtime.commitLog = [];
+      runtime.failNextModelJobEnqueue = false;
+      runtime.knowledgeStates = [];
+      runtime.managedRules = new Map();
+      runtime.modelSubmissions = [];
+      runtime.pendingImageImports = [];
+      runtime.projectImages = [];
+      runtime.providerProfiles = createE2EProviderProfiles();
+      runtime.skillSyncWrites = [];
+      runtime.storage = createE2EModelJobStorage(runtime);
+      replaceModelJobExecutorForTests(createModelExecutor(runtime));
+      replaceModelJobStorageForTests(runtime.storage);
+      resetAppStoreForTests({ project: 'empty' });
+      useAppStore.setState({ project: runtime.currentProject });
       await useAppStore.getState().initializeKnowledge();
     },
     failNextModelJobEnqueue() {
@@ -824,6 +845,7 @@ declare global {
       nonce: string;
       queueProjectImageImport(input: { byteSize: number; label: string; mediaType: 'image/png' }): void;
       reset(): Promise<void>;
+      resetEmpty(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
       seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;
     };

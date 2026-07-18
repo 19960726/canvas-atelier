@@ -44,6 +44,26 @@ describe('renderer close-flush coordinator', () => {
     expect(crashed.calls).toEqual(['send:close-request-crash', 'closeAllProjects', 'finalize:unavailable']);
   });
 
+  it('aborts coordinated close on an explicit cancel decision and permits a later close attempt', async () => {
+    const harness = createHarness({ requestIds: ['close-request-cancel', 'close-request-after-cancel'] });
+    const cancelled = harness.coordinator.requestClose(harness.closeEvent);
+
+    await expect(harness.coordinator.handleCloseFlushAck({
+      requestId: 'close-request-cancel',
+      ok: false,
+      cancelled: true,
+    })).resolves.toBe(true);
+    await cancelled;
+
+    expect(harness.closeAllProjects).not.toHaveBeenCalled();
+    expect(harness.finalizeClose).not.toHaveBeenCalled();
+
+    const closing = harness.coordinator.requestClose({ preventDefault: vi.fn() });
+    await harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-after-cancel', ok: true });
+    await closing;
+    expect(harness.closeAllProjects).toHaveBeenCalledOnce();
+  });
+
   it('coalesces duplicate close attempts into one renderer request', async () => {
     const harness = createHarness();
 
@@ -81,6 +101,11 @@ describe('renderer close-flush coordinator', () => {
     });
     expect(parseCloseFlushAck({ requestId: 'close-request-123456', ok: true })).toEqual({
       ok: true,
+      requestId: 'close-request-123456',
+    });
+    expect(parseCloseFlushAck({ requestId: 'close-request-123456', ok: false, cancelled: true })).toEqual({
+      cancelled: true,
+      ok: false,
       requestId: 'close-request-123456',
     });
     expect(parseCloseFlushRequest({ requestId: 'close-request-123456', path: 'C:\\Users\\Private\\draft.json' })).toBeNull();

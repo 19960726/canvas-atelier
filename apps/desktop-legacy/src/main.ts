@@ -19,6 +19,7 @@ import {
   createProviderBridgeHandlers,
   createPersistenceError,
   createSecureProviderCredentialStore,
+  parseCloseChoiceRequest,
   NodeFileSystem,
   SnapshotScheduler,
   redactNovusPackDiagnostics,
@@ -141,6 +142,22 @@ app.whenReady().then(async () => {
     sendCloseFlushRequest: sendRendererCloseFlushRequest,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
+  ipcMain.handle(BRIDGE_CHANNELS.closeChoice, async (event, payload) => {
+    if (mainWindow === null || event.sender !== mainWindow.webContents) return 'cancel';
+    const request = parseCloseChoiceRequest(payload);
+    if (request === null || !request.dirty || !request.untitled) return 'cancel';
+    const result = await dialog.showMessageBox(mainWindow, {
+      buttons: ['保存', '不保存', '取消'],
+      cancelId: 2,
+      defaultId: 0,
+      detail: '保存会通过现有受限项目边界完成；不保存将关闭当前未命名工作流。',
+      message: `是否保存“${request.projectName}”？`,
+      noLink: true,
+      title: '关闭未命名工作流',
+      type: 'question',
+    });
+    return result.response === 0 ? 'save' : result.response === 1 ? 'discard' : 'cancel';
+  });
   registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createComflyProviderService({
     appDataRoot: app.getPath('userData'),
     credentialStore: createSecureProviderCredentialStore({

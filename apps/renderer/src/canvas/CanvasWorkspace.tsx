@@ -41,6 +41,7 @@ import { ReversePromptAgent } from '../agent/ReversePromptAgent';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
 import { JobStrip } from '../jobs/JobStrip';
 import { ModuleLibrary, MODULE_DRAG_MIME } from './ModuleLibrary';
+import { recordRecentModule } from './module-preferences';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
 import { ReferenceOrderList } from '../references/ReferenceOrderList';
@@ -216,6 +217,18 @@ export function calculateModulePlacement(
   return null;
 }
 
+export function calculateSafeViewportCenter(bounds: ModulePlacementBounds): ModulePlacementPosition | null {
+  const width = bounds.right - bounds.left;
+  const height = bounds.bottom - bounds.top;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < MODULE_NODE_SIZE.width || height < MODULE_NODE_SIZE.height) {
+    return null;
+  }
+  return {
+    x: (bounds.left + bounds.right - MODULE_NODE_SIZE.width) / 2,
+    y: (bounds.top + bounds.bottom - MODULE_NODE_SIZE.height) / 2,
+  };
+}
+
 export function CanvasWorkspace() {
   const theme = useThemePreference();
   const project = useAppStore((state) => state.project);
@@ -253,6 +266,8 @@ export function CanvasWorkspace() {
   const importPlacementReference = useAppStore((state) => state.importPlacementReference);
   const retryModelJob = useAppStore((state) => state.retryModelJob);
   const cancelModelJob = useAppStore((state) => state.cancelModelJob);
+  const openProject = useAppStore((state) => state.openProject);
+  const newWorkflow = useAppStore((state) => state.newWorkflow);
   const [agentMessage, setAgentMessage] = useState<ImageMentionValue>({ text: '', citations: [] });
   const [submittedAgentContext, setSubmittedAgentContext] = useState<SubmittedAgentContext | null>(null);
   const [referenceOrderPreview, setReferenceOrderPreview] = useState<string[] | null>(null);
@@ -416,20 +431,16 @@ export function CanvasWorkspace() {
     };
   }, [moduleLibraryOpen, screenToFlowPosition]);
 
-  const getModulePlacement = useCallback(() => {
+  const getSafeViewportCenter = useCallback(() => {
     const bounds = getModulePlacementBounds();
-    if (!bounds) return null;
-    const existingModules = useAppStore.getState().project.nodes
-      .filter((node) => node.type === 'module')
-      .map((node) => node.position);
-    return calculateModulePlacement(bounds, existingModules);
+    return bounds === null ? null : calculateSafeViewportCenter(bounds);
   }, [getModulePlacementBounds]);
 
-  const createModuleAtViewportCenter = useCallback((moduleType: CanvasModuleType) => {
-    const position = getModulePlacement();
-    if (!position) return;
-    void addModuleNode(moduleType, position);
-  }, [addModuleNode, getModulePlacement]);
+  const createModuleAtViewportCenter = useCallback(async (moduleType: CanvasModuleType) => {
+    const position = getSafeViewportCenter();
+    if (!position) return false;
+    return addModuleNode(moduleType, position);
+  }, [addModuleNode, getSafeViewportCenter]);
 
   const handleCanvasDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
     if (!Array.from(event.dataTransfer.types).includes(MODULE_DRAG_MIME)) return;
@@ -457,7 +468,9 @@ export function CanvasWorkspace() {
       y: Number.isFinite(event.clientY) ? event.clientY : 0,
     });
     if (!position) return;
-    void addModuleNode(moduleType, position);
+    void addModuleNode(moduleType, position).then((created) => {
+      if (created) recordRecentModule(moduleType);
+    });
   }, [addModuleNode, screenToFlowPosition]);
 
   const activateCanvasTool = useCallback((tool: Parameters<typeof setActiveTool>[0]) => {
@@ -655,9 +668,9 @@ export function CanvasWorkspace() {
           type="button"
           data-testid="tool-modules"
           className={`tool-button${moduleLibraryOpen ? ' is-active' : ''}`}
-          aria-label="Modules"
+          aria-label="模块库"
           aria-pressed={moduleLibraryOpen}
-          title="Modules"
+          title="模块库"
           onClick={toggleModuleLibrary}
         >
           <Library size={18} />
@@ -708,6 +721,25 @@ export function CanvasWorkspace() {
           <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
           <Controls showInteractive={false} />
         </ReactFlow>
+        {project.nodes.length === 0 && (
+          <section className="canvas-empty-state" role="region" aria-label="空白画布操作">
+            <div>
+              <strong>从空白画布开始</strong>
+              <span>打开已有项目，创建新工作流，或从模块库激活第一步。</span>
+            </div>
+            <div className="canvas-empty-state__actions">
+              <button type="button" onClick={() => { void openProject(); }}>打开项目</button>
+              <button type="button" onClick={() => { void newWorkflow(); }}>新建工作流</button>
+              <button type="button" onClick={() => setModuleLibraryOpen(true)}>双击模块</button>
+            </div>
+          </section>
+        )}
+        {availableSnapshotIds.length > 0 && (
+          <section className="recovery-choice" role="region" aria-label="恢复选择">
+            <span>发现异常关闭后的可恢复稳定点，当前项目尚未自动替换。</span>
+            <button type="button" onClick={() => { void restoreProjectSnapshot(availableSnapshotIds[0]!); }}>选择恢复</button>
+          </section>
+        )}
         {moduleLibraryOpen && (
           <ModuleLibrary onCreate={createModuleAtViewportCenter} onClose={() => setModuleLibraryOpen(false)} />
         )}
