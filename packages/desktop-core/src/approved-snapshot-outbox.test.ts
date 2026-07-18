@@ -115,7 +115,7 @@ describe('ApprovedSnapshotOutbox', () => {
     }));
   });
 
-  it('keeps an explicitly rejected snapshot durable until the remote reports an accepted duplicate', async () => {
+  it('keeps every unaccepted result durable until the remote explicitly accepts the snapshot', async () => {
     const fixture = await createApprovedOutboxFixture(tempRoots);
     let now = Date.parse('2026-07-15T10:02:00.000Z');
     const outbox = new ApprovedSnapshotOutbox({
@@ -142,14 +142,30 @@ describe('ApprovedSnapshotOutbox', () => {
     ]);
 
     now += 2_000;
-    const duplicate = await outbox.drainApprovedSnapshots({
+    const falseDuplicate = await outbox.drainApprovedSnapshots({
       uploadApprovedSnapshot: async () => ({
         accepted: false,
         duplicate: true,
       }),
     });
-    expect(duplicate.processedJobIds).toHaveLength(1);
-    expect(duplicate.state.jobs).toEqual([]);
+    expect(falseDuplicate.processedJobIds).toEqual([]);
+    expect(falseDuplicate.state.jobs).toEqual([
+      expect.objectContaining({
+        attemptCount: 2,
+        lastError: 'approved_snapshot_not_accepted',
+        status: 'retry_wait',
+      }),
+    ]);
+
+    now += 3_000;
+    const acceptedDuplicate = await outbox.drainApprovedSnapshots({
+      uploadApprovedSnapshot: async () => ({
+        accepted: true,
+        duplicate: true,
+      }),
+    });
+    expect(acceptedDuplicate.processedJobIds).toHaveLength(1);
+    expect(acceptedDuplicate.state.jobs).toEqual([]);
   });
 
   it('drains approved snapshot outbox at startup and when the online-gated retry boundary opens', async () => {

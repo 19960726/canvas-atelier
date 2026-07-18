@@ -38,9 +38,18 @@ describe('approved snapshot cross-device integration', () => {
     await deviceA.store.publish(first);
     await deviceA.outbox.enqueueApprovedSnapshot(first);
 
-    await expect(deviceA.outbox.drainApprovedSnapshots()).resolves.toMatchObject({
+    const firstUpload = await deviceA.outbox.drainApprovedSnapshots();
+    expect(firstUpload).toMatchObject({
       processedJobIds: [expect.any(String)],
       state: { jobs: [] },
+    });
+    const acceptedIdempotencyKey = firstUpload.processedJobIds[0];
+    if (acceptedIdempotencyKey === undefined) throw new Error('expected accepted idempotency key');
+    await expect(deviceA.client.uploadApprovedSnapshot(first, {
+      idempotencyKey: acceptedIdempotencyKey,
+    })).resolves.toMatchObject({
+      accepted: true,
+      duplicate: true,
     });
 
     const pullB = new ApprovedSnapshotPullCoordinator({
@@ -80,8 +89,19 @@ describe('approved snapshot cross-device integration', () => {
       }),
     ]);
 
+    deviceB.advanceNow(2_000);
+    const retriedRejection = await deviceB.outbox.drainApprovedSnapshots();
+    expect(retriedRejection.processedJobIds).toEqual([]);
+    expect(retriedRejection.state.jobs).toEqual([
+      expect.objectContaining({
+        attemptCount: 2,
+        lastError: 'approved_snapshot_not_accepted',
+        status: 'retry_wait',
+      }),
+    ]);
+
     expect(service.uploadedVersions).toEqual([1, 3]);
-    expect(service.rejectedVersions).toEqual([2]);
+    expect(service.rejectedVersions).toEqual([2, 2]);
     expect(service.requestCursors).toEqual([undefined, 'cursor-1']);
     const cursorState = await readFile(
       join(deviceB.appDataRoot, 'sync', 'approved-snapshot-pull-cursors.json'),
@@ -114,13 +134,17 @@ async function createDevice(tempRoot: string, deviceId: string, baseUrl: string)
     NOVUS_KNOWLEDGE_SYNC_URL: baseUrl,
   });
   if (client === null) throw new Error('expected configured sync client');
+  let now = Date.parse('2026-07-18T08:00:00.000Z');
   return {
+    advanceNow: (milliseconds: number) => {
+      now += milliseconds;
+    },
     appDataRoot,
     client,
     outbox: new ApprovedSnapshotOutbox({
       appDataRoot,
       client,
-      now: () => Date.parse('2026-07-18T08:00:00.000Z'),
+      now: () => now,
       random: () => 0.25,
       store,
     }),
@@ -148,14 +172,14 @@ async function startKnowledgeSyncService(): Promise<{
   server: Server;
   uploadedVersions: number[];
 }> {
-  const idempotencyKeys = new Set<string>();
+  const acceptedIdempotencyKeys = new Set<string>();
   const rejectedVersions: number[] = [];
   const requestCursors: Array<string | undefined> = [];
   const snapshots = new Map<string, { cursor: number; snapshot: KnowledgeSnapshot }>();
   const uploadedVersions: number[] = [];
   const server = createServer((request, response) => {
     void handleSyncRequest(request, response, {
-      idempotencyKeys,
+      acceptedIdempotencyKeys,
       rejectedVersions,
       requestCursors,
       snapshots,
@@ -185,7 +209,7 @@ async function handleSyncRequest(
   request: IncomingMessage,
   response: ServerResponse,
   state: {
-    idempotencyKeys: Set<string>;
+    acceptedIdempotencyKeys: Set<string>;
     rejectedVersions: number[];
     requestCursors: Array<string | undefined>;
     snapshots: Map<string, { cursor: number; snapshot: KnowledgeSnapshot }>;
@@ -220,15 +244,14 @@ async function handleSyncRequest(
     respondJson(response, 400, { error: 'missing idempotency key' });
     return;
   }
-  if (state.idempotencyKeys.has(idempotencyKey)) {
+  if (state.acceptedIdempotencyKeys.has(idempotencyKey)) {
     respondJson(response, 200, {
-      accepted: false,
+      accepted: true,
       duplicate: true,
       snapshotId: `${knowledgeBaseId}@${snapshot.version}`,
     });
     return;
   }
-  state.idempotencyKeys.add(idempotencyKey);
   const current = state.snapshots.get(knowledgeBaseId);
   if (current !== undefined && snapshot.version <= current.snapshot.version) {
     state.rejectedVersions.push(snapshot.version);
@@ -241,6 +264,7 @@ async function handleSyncRequest(
   }
   const cursor = (current?.cursor ?? 0) + 1;
   state.snapshots.set(knowledgeBaseId, { cursor, snapshot });
+  state.acceptedIdempotencyKeys.add(idempotencyKey);
   state.uploadedVersions.push(snapshot.version);
   respondJson(response, 200, {
     accepted: true,

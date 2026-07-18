@@ -29,7 +29,9 @@ export interface ApprovedSnapshotUploadClient {
 }
 
 export interface ApprovedSnapshotUploadResult {
+  /** Authoritative durable acknowledgement. Outbox jobs clear only when this is true. */
   readonly accepted: boolean;
+  /** Idempotency diagnostic only; it never substitutes for an accepted acknowledgement. */
   readonly duplicate?: boolean;
 }
 
@@ -158,7 +160,7 @@ export class ApprovedSnapshotOutbox {
           }
           try {
             const result = await client.uploadApprovedSnapshot(snapshot, { idempotencyKey: job.id });
-            if (!result.accepted && result.duplicate !== true) {
+            if (!result.accepted) {
               return {
                 ok: false,
                 reason: 'approved_snapshot_not_accepted',
