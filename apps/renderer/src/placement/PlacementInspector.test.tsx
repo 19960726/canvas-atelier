@@ -34,7 +34,7 @@ const selectedBoard: PlacementBoardValue = {
 };
 
 describe('PlacementInspector hierarchy hooks', () => {
-  it('labels upload controls by reference role without changing upload behavior', () => {
+  it('uses confined picker buttons and never accepts renderer File objects', () => {
     const onUploadReference = vi.fn();
     render(
       <PlacementInspector
@@ -46,15 +46,15 @@ describe('PlacementInspector hierarchy hooks', () => {
     );
 
     const productUpload = screen.getByTestId('upload-product');
+    expect(productUpload.tagName).toBe('BUTTON');
+    expect(document.querySelector('input[type="file"]')).toBeNull();
     expect(productUpload.closest('.placement-upload')).toHaveAttribute('data-reference-role', 'product_identity');
     expect(screen.getByTestId('upload-scene').closest('.placement-upload')).toHaveAttribute('data-reference-role', 'scene_composition');
     expect(screen.getByTestId('upload-prop').closest('.placement-upload')).toHaveAttribute('data-reference-role', 'prop_reference');
     expect(screen.getByTestId('upload-material').closest('.placement-upload')).toHaveAttribute('data-reference-role', 'material_lighting');
 
-    const file = new File(['pixels'], 'product.png', { type: 'image/png' });
-    fireEvent.change(productUpload, { target: { files: [file] } });
-    expect(onUploadReference).toHaveBeenCalledWith('product_identity', file);
-    expect(productUpload).toHaveValue('');
+    fireEvent.click(productUpload);
+    expect(onUploadReference).toHaveBeenCalledWith('product_identity');
   });
 
   it('groups selected object properties while preserving layer action states', () => {

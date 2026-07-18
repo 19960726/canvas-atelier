@@ -8,7 +8,6 @@ import type {
   CanvasModuleType,
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
-  PlacementObject,
   OrderedReference,
   ProjectTransaction,
   ReferenceRole,
@@ -159,17 +158,7 @@ function toCanvasModuleNode(node: Node): CanvasModuleNode {
   };
 }
 
-const uploadDefaults: Record<
-  'product_identity' | 'scene_composition' | 'prop_reference' | 'material_lighting',
-  Pick<PlacementObject, 'x' | 'y' | 'w' | 'h' | 'zIndex' | 'semanticLayer' | 'name'>
-> = {
-  product_identity: { x: 0.34, y: 0.42, w: 0.32, h: 0.38, zIndex: 30, semanticLayer: 'hero_product', name: '主产品' },
-  scene_composition: { x: 0, y: 0, w: 1, h: 1, zIndex: 0, semanticLayer: 'background', name: '场景参考' },
-  prop_reference: { x: 0.66, y: 0.58, w: 0.18, h: 0.22, zIndex: 20, semanticLayer: 'optional_prop', name: '道具参考' },
-  material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground', name: '材质光照参考' },
-};
-
-const MODULE_NODE_SIZE = { width: 264, height: 214 } as const;
+const MODULE_NODE_SIZE = { width: 264, height: 280 } as const;
 const MODULE_NODE_GAP = 28;
 const CANVAS_MARGIN = 12;
 const MODULE_LIBRARY_WIDTH = 286;
@@ -240,6 +229,8 @@ export function CanvasWorkspace() {
   const modelJobs = useAppStore((state) => state.modelJobs);
   const saveStatus = useAppStore((state) => state.saveStatus);
   const saveErrorCode = useAppStore((state) => state.saveErrorCode);
+  const projectImages = useAppStore((state) => state.projectImages);
+  const projectImageError = useAppStore((state) => state.projectImageError);
   const availableSnapshotIds = useAppStore((state) => state.availableSnapshotIds);
   const knowledgeBases = useAppStore((state) => state.knowledgeBases);
   const knowledgeSyncStatuses = useAppStore((state) => state.knowledgeSyncStatuses);
@@ -256,6 +247,7 @@ export function CanvasWorkspace() {
   const restoreProjectSnapshot = useAppStore((state) => state.restoreProjectSnapshot);
   const commitProjectTransaction = useAppStore((state) => state.commitProjectTransaction);
   const commitReferenceOrder = useAppStore((state) => state.commitReferenceOrder);
+  const importPlacementReference = useAppStore((state) => state.importPlacementReference);
   const retryModelJob = useAppStore((state) => state.retryModelJob);
   const cancelModelJob = useAppStore((state) => state.cancelModelJob);
   const [agentMessage, setAgentMessage] = useState<ImageMentionValue>({ text: '', citations: [] });
@@ -267,8 +259,6 @@ export function CanvasWorkspace() {
   const [modelRouteError, setModelRouteError] = useState<string | null>(null);
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
-  const previewUrlsRef = useRef(new Map<string, string>());
-  const uploadSequenceRef = useRef(0);
   const focusAgentTabOnChangeRef = useRef(false);
   const canvasStageRef = useRef<HTMLElement | null>(null);
   const flowInstanceRef = useRef<CanvasFlowInstance | null>(null);
@@ -316,16 +306,20 @@ export function CanvasWorkspace() {
   }, [interactionQuality, viewportCulling]);
   const markInteraction = interactionQuality.markInteraction;
   const placementNode = useMemo(() => project.nodes.find(isPlacementNode), [project.nodes]);
+  const managedImagesByAssetId = useMemo(
+    () => new Map(projectImages.map((asset) => [asset.assetId, asset])),
+    [projectImages],
+  );
   const persistedOrderedReferences = useMemo<OrderedReference[]>(
     () => placementNode?.data.objects
       .filter((object) => !object.assetId.startsWith('starter-'))
       .map((object, position) => ({
         assetId: object.assetId,
-        label: object.name?.trim() || object.assetId,
+        label: managedImagesByAssetId.get(object.assetId)?.label ?? (object.name?.trim() || object.assetId),
         role: object.role,
         position,
       })) ?? [],
-    [placementNode],
+    [managedImagesByAssetId, placementNode],
   );
   const orderedReferences = useMemo(() => {
     if (!referenceOrderPreview) return persistedOrderedReferences;
@@ -358,7 +352,8 @@ export function CanvasWorkspace() {
       prop: objects.filter((object) => object.role === 'prop_reference').length,
     };
   }, [placementNode]);
-  const resolveReferenceThumbnailUrl = (assetId: string) => previewUrlsRef.current.get(assetId) ?? assetId;
+  const resolveReferenceThumbnailUrl = (assetId: string) => managedImagesByAssetId.get(assetId)?.displayUrl ?? assetId;
+  const placementImportError = referenceUploadError ?? projectImageError;
   const tools = useMemo(() => [
     { id: 'select' as const, label: '选择工具', icon: MousePointer2 },
     { id: 'hand' as const, label: '平移工具', icon: Hand },
@@ -536,14 +531,6 @@ export function CanvasWorkspace() {
     };
   }, []);
 
-  useEffect(() => () => {
-    if (typeof URL.revokeObjectURL !== 'function') return;
-    for (const previewUrl of previewUrlsRef.current.values()) {
-      URL.revokeObjectURL(previewUrl);
-    }
-    previewUrlsRef.current.clear();
-  }, []);
-
   const updatePlacement = (nextPlacement: PlacementBoardValue, options: { schedulePersist?: boolean } = {}) => {
     if (!placementNode) return;
     setProject({
@@ -571,36 +558,26 @@ export function CanvasWorkspace() {
     void commitProjectTransaction(transaction, { kind: 'canvas', nextProject });
   };
 
-  const uploadReference = (role: ReferenceRole, file: File) => {
-    if (!placementNode || !(role in uploadDefaults)) return;
+  const uploadReference = async (role: Exclude<ReferenceRole, 'placement_preview'>) => {
+    if (!placementNode) return;
     const currentObjects = placementNode.data.objects.filter((object) => !object.assetId.startsWith('starter-'));
     if (currentObjects.length >= MAX_GENERATION_REFERENCES) {
       setReferenceUploadError('参考图最多 20 张');
       return;
     }
     setReferenceUploadError(null);
-    const supportedRole = role as keyof typeof uploadDefaults;
-    const objectId = `${supportedRole}-${Date.now()}-${uploadSequenceRef.current++}`;
-    const assetId = `local-reference-${objectId}`;
-    if (typeof URL.createObjectURL === 'function') {
-      previewUrlsRef.current.set(assetId, URL.createObjectURL(file));
+    const previousObjectIds = new Set(placementNode.data.objects.map((object) => object.id));
+    const imported = await importPlacementReference(placementNode.id, role);
+    const latestState = useAppStore.getState();
+    if (!imported) {
+      if (latestState.projectImageError) setReferenceUploadError(latestState.projectImageError);
+      return;
     }
-    const nextObject: PlacementObject = {
-      id: objectId,
-      assetId,
-      role: supportedRole,
-      ...uploadDefaults[supportedRole],
-      rotation: 0,
-      locked: false,
-      visible: true,
-      flipX: false,
-      flipY: false,
-    };
-    updatePlacement({
-      ...placementNode.data,
-      objects: [...placementNode.data.objects, nextObject],
-    });
-    setSelectedPlacementObjectId(objectId);
+    const latestPlacement = latestState.project.nodes.find(
+      (node): node is PlacementNode => node.id === placementNode.id && isPlacementNode(node),
+    );
+    const importedObject = latestPlacement?.data.objects.find((object) => !previousObjectIds.has(object.id));
+    if (importedObject) setSelectedPlacementObjectId(importedObject.id);
   };
 
   const previewAgentReferenceOrder = (assetIds: string[]) => {
@@ -740,7 +717,7 @@ export function CanvasWorkspace() {
                 <LayoutTemplate size={17} />
                 <span><strong>摆放预览</strong><small>4:5 固定比例</small></span>
               </div>
-              {referenceUploadError && <span className="placement-reference-error" role="alert">{referenceUploadError}</span>}
+              {placementImportError && <span className="placement-reference-error" role="alert">{placementImportError}</span>}
               <button className="icon-button" type="button" aria-label="关闭摆放工作台" title="关闭摆放工作台" onClick={() => setActiveTool('select')}>
                 <X size={17} />
               </button>
@@ -755,7 +732,7 @@ export function CanvasWorkspace() {
                   onChange={(nextPlacement) => updatePlacement(nextPlacement, { schedulePersist: false })}
                   onCommit={commitPlacement}
                   onSelect={setSelectedPlacementObjectId}
-                  resolveAssetUrl={(assetId) => previewUrlsRef.current.get(assetId) ?? assetId}
+                  resolveAssetUrl={resolveReferenceThumbnailUrl}
                 />
               </div>
               <PlacementInspector

@@ -154,7 +154,23 @@ describe('project optimization memory', () => {
   });
 
   it('hydrates the last durable desktop state on REVISION_CONFLICT', async () => {
-    const durableProject = createStarterProject();
+    const durableAsset = {
+      assetId: '0123456789abcdef',
+      byteSize: 42,
+      extension: 'png' as const,
+      height: 3,
+      label: 'Authoritative image',
+      mediaType: 'image/png' as const,
+      origin: 'imported' as const,
+      sha256: `0123456789abcdef${'0'.repeat(48)}`,
+      width: 2,
+    };
+    const durableProject = { ...createStarterProject(), assets: [durableAsset] };
+    const durableImage = {
+      ...durableAsset,
+      displayUrl: 'novus-asset://project/session/0123456789abcdef',
+      usageCount: 0,
+    };
     const conflictingProject = { ...createStarterProject(), name: 'stale-local-draft' };
     const transaction: ProjectTransaction = {
       id: 'tx-conflict',
@@ -179,14 +195,21 @@ describe('project optimization memory', () => {
         project: durableProject,
         revision: 3,
       })),
+      listProjectImages: vi.fn(async () => [durableImage]),
     }));
     resetAppStoreForTests();
 
-    useAppStore.setState({ project: conflictingProject, desktopRevision: 2, saveStatus: 'pending' });
+    useAppStore.setState({
+      project: conflictingProject,
+      projectImages: [],
+      desktopRevision: 2,
+      saveStatus: 'pending',
+    });
 
     await useAppStore.getState().commitProjectTransaction(transaction, { kind: 'canvas' });
 
     expect(useAppStore.getState().project).toMatchObject({ id: durableProject.id, name: durableProject.name });
+    expect(useAppStore.getState().projectImages).toEqual([durableImage]);
     expect(useAppStore.getState().desktopRevision).toBe(3);
     expect(useAppStore.getState().saveStatus).toBe('error');
     expect(useAppStore.getState().saveErrorCode).toBe('REVISION_CONFLICT');
@@ -2959,6 +2982,8 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient>): Project
       };
     },
     hydrate,
+    importProjectImage: overrides.importProjectImage ?? (async () => null),
+    listProjectImages: overrides.listProjectImages ?? (async () => []),
     restore: overrides.restore ?? (async () => {
       const result = await hydrate();
       return {

@@ -694,6 +694,7 @@ describe('public domain API', () => {
       'parseProjectMemoryEntry',
       'parseReversePromptResult',
       'placementToPromptConstraints',
+      'projectImageAssetSchema',
       'projectOperationSchema',
       'projectTransactionSchema',
       'listCanvasModuleDefinitions',

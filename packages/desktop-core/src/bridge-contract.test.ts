@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { build } from 'esbuild';
 import {
   applyProjectTransaction,
   createAgentKnowledgeLease,
@@ -59,6 +60,7 @@ describe('desktop bridge contract', () => {
       'lifecycle',
       'openProject',
       'prepareSkillCandidateReview',
+      'projectImages',
       'provider',
       'restore',
       'reviewSkillCandidate',
@@ -78,6 +80,8 @@ describe('desktop bridge contract', () => {
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('readFile');
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('watchPath');
     expect(createPreloadApi(mockInvoke).provider).not.toHaveProperty('fetch');
+    expect(Object.keys(createPreloadApi(mockInvoke).projectImages).sort()).toEqual(['importImage', 'list']);
+    expect(createPreloadApi(mockInvoke).projectImages).not.toHaveProperty('readFile');
     expect(Object.keys(createPreloadApi(mockInvoke).lifecycle).sort()).toEqual([
       'ackCloseFlush',
       'subscribeCloseFlushRequest',
@@ -220,13 +224,24 @@ describe('desktop bridge contract', () => {
     const preloadApiSource = await readFile(join(process.cwd(), 'packages/desktop-core/src/preload-api.ts'), 'utf8');
     expect(preloadApiSource).not.toMatch(/provider-bridge|node:crypto|node:fs|provider-comfly|ComflyClient|safeStorage/u);
 
-    for (const bundlePath of [
-      join(process.cwd(), 'apps/desktop-modern/dist/preload.js'),
-      join(process.cwd(), 'apps/desktop-modern/dist/safe-preload.js'),
-      join(process.cwd(), 'apps/desktop-legacy/dist/preload.js'),
-      join(process.cwd(), 'apps/desktop-legacy/dist/safe-preload.js'),
+    for (const entryPoint of [
+      'apps/desktop-modern/src/preload.ts',
+      'apps/desktop-modern/src/safe-preload.ts',
+      'apps/desktop-legacy/src/preload.ts',
+      'apps/desktop-legacy/src/safe-preload.ts',
     ]) {
-      const bundle = await readFile(bundlePath, 'utf8');
+      const result = await build({
+        absWorkingDir: process.cwd(),
+        bundle: true,
+        entryPoints: [entryPoint],
+        external: ['electron'],
+        format: 'esm',
+        platform: 'node',
+        target: 'node16',
+        write: false,
+      });
+      const bundle = result.outputFiles[0]?.text;
+      expect(bundle, `missing in-memory preload bundle for ${entryPoint}`).toBeDefined();
       expect(bundle).not.toMatch(/node:crypto|node:fs|provider-comfly|ComflyClient|createCipheriv|createComflyProviderService/u);
     }
   });

@@ -95,9 +95,8 @@ for (const viewport of viewports) {
       page.getByTestId('placement-inspector'),
       `placement inspector at ${viewport.name}`,
     );
-    const productUploadInput = page.getByTestId('upload-product');
-    const productUploadLabel = page.locator('.placement-upload', { has: productUploadInput });
-    await expectPlacementUploadFocusRing(productUploadInput, productUploadLabel, `placement upload focus at ${viewport.name}`);
+    const productUploadButton = page.getByTestId('upload-product');
+    await expectPlacementUploadFocusRing(productUploadButton, productUploadButton, `placement upload focus at ${viewport.name}`);
     await captureLayoutScreenshot(page, testInfo, `renderer-layout-${viewport.name}`);
 
     await testInfo.attach(`pan-zoom-median-${viewport.name}.txt`, {

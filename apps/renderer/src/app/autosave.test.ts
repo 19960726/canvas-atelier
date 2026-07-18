@@ -204,6 +204,8 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient> = {}): Pr
       revision: 0,
       saveStatus: 'pending',
     })),
+    importProjectImage: overrides.importProjectImage ?? (async () => null),
+    listProjectImages: overrides.listProjectImages ?? (async () => []),
     restore: overrides.restore ?? (async () => ({
       availableSnapshotIds: [],
       project: createStarterProject(),

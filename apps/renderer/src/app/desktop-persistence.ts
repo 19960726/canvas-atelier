@@ -2,6 +2,8 @@ import type {
   DesktopBridgeApi,
   JournalTransactionKind,
   PersistenceErrorCode,
+  ProjectImageAssetSummary,
+  ProjectImageImportTarget,
 } from '@agent-canvas/desktop-core';
 import type { CanvasProject, ProjectTransaction } from '@agent-canvas/domain';
 import {
@@ -64,10 +66,18 @@ export interface ProjectRestoreResult {
   saveStatus: Extract<ProjectSaveStatus, 'saved' | 'read_only'>;
 }
 
+export interface ProjectImageImportResult {
+  asset: ProjectImageAssetSummary;
+  project: CanvasProject;
+  revision: number;
+}
+
 export interface ProjectPersistenceClient {
   close(): Promise<void>;
   commit(request: ProjectCommitRequest): Promise<ProjectCommitResult>;
   hydrate(): Promise<ProjectHydrationResult>;
+  importProjectImage(target: ProjectImageImportTarget): Promise<ProjectImageImportResult | null>;
+  listProjectImages(): Promise<ProjectImageAssetSummary[]>;
   restore(snapshotId: string): Promise<ProjectRestoreResult>;
   stablePoint(): Promise<ProjectStablePointResult>;
 }
@@ -124,6 +134,12 @@ export function createBrowserPersistenceClient(storage = getStorage()): ProjectP
         revision,
         saveStatus: currentProject === null ? 'pending' : 'saved',
       };
+    },
+    async importProjectImage() {
+      return null;
+    },
+    async listProjectImages() {
+      return [];
     },
     async restore(snapshotId) {
       const bundle = loadPersistedProjectBundle(storage);
@@ -197,6 +213,23 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         revision,
         saveStatus: mode === 'read_only' ? 'read_only' : 'saved',
       };
+    },
+    async importProjectImage(target) {
+      await ensureSession();
+      if (sessionId === null) return null;
+      const result = await bridge.projectImages.importImage({ sessionId, target });
+      if (result === null) return null;
+      currentProject = validateRecoveredProject(result.project, currentProject);
+      revision = result.currentRevision;
+      return {
+        asset: result.asset,
+        project: currentProject,
+        revision,
+      };
+    },
+    async listProjectImages() {
+      await ensureSession();
+      return sessionId === null ? [] : bridge.projectImages.list({ sessionId });
     },
     async restore(snapshotId) {
       if (sessionId !== null && mode === 'write') {

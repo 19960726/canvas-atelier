@@ -1,13 +1,12 @@
 import { Box, FlipHorizontal2, FlipVertical2, Image, Layers, Lock, Shapes, SunMedium, Unlock } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { ChangeEvent } from 'react';
 import type { PlacementBoard, PlacementObject, ReferenceRole } from '@agent-canvas/domain';
 
 interface PlacementInspectorProps {
   value: PlacementBoard;
   selectedObjectId?: string;
   onChange: (value: PlacementBoard) => void;
-  onUploadReference?: (role: ReferenceRole, file: File) => void;
+  onUploadReference?: (role: Exclude<ReferenceRole, 'placement_preview'>) => void;
 }
 
 const roleOptions: Array<{ value: ReferenceRole; label: string }> = [
@@ -36,19 +35,13 @@ export function PlacementInspector({ value, selectedObjectId, onChange, onUpload
     });
   };
 
-  const upload = (role: ReferenceRole) => (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) onUploadReference?.(role, file);
-    event.target.value = '';
-  };
-
   return (
     <aside className="placement-inspector nodrag" aria-label="摆放检查器" data-testid="placement-inspector">
       <div className="placement-upload-grid">
-        <UploadField dataTestId="upload-product" label="产品" ariaLabel="上传产品参考" onChange={upload('product_identity')} />
-        <UploadField dataTestId="upload-scene" label="场景" ariaLabel="上传场景参考" onChange={upload('scene_composition')} />
-        <UploadField dataTestId="upload-prop" label="道具" ariaLabel="上传道具参考" onChange={upload('prop_reference')} />
-        <UploadField dataTestId="upload-material" label="材质" ariaLabel="上传材质光照参考" onChange={upload('material_lighting')} />
+        <UploadField dataTestId="upload-product" label="产品" ariaLabel="上传产品参考" onClick={() => onUploadReference?.('product_identity')} />
+        <UploadField dataTestId="upload-scene" label="场景" ariaLabel="上传场景参考" onClick={() => onUploadReference?.('scene_composition')} />
+        <UploadField dataTestId="upload-prop" label="道具" ariaLabel="上传道具参考" onClick={() => onUploadReference?.('prop_reference')} />
+        <UploadField dataTestId="upload-material" label="材质" ariaLabel="上传材质光照参考" onClick={() => onUploadReference?.('material_lighting')} />
       </div>
 
       {selected ? (
@@ -86,15 +79,14 @@ export function PlacementInspector({ value, selectedObjectId, onChange, onUpload
   );
 }
 
-function UploadField({ dataTestId, label, ariaLabel, onChange }: { dataTestId: string; label: string; ariaLabel: string; onChange: (event: ChangeEvent<HTMLInputElement>) => void }) {
+function UploadField({ dataTestId, label, ariaLabel, onClick }: { dataTestId: string; label: string; ariaLabel: string; onClick: () => void }) {
   const meta = uploadFieldMeta[dataTestId];
   const Icon = meta?.Icon ?? Image;
 
   return (
-    <label className={`placement-upload${meta ? ` role-${meta.role}` : ''}`} data-reference-role={meta?.role}>
-      <input data-testid={dataTestId} type="file" accept="image/*" aria-label={ariaLabel} onChange={onChange} />
+    <button type="button" data-testid={dataTestId} aria-label={ariaLabel} className={`placement-upload${meta ? ` role-${meta.role}` : ''}`} data-reference-role={meta?.role} onClick={onClick}>
       <Icon size={15} aria-hidden="true" />
       <span>{label}</span>
-    </label>
+    </button>
   );
 }

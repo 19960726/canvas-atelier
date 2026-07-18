@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import { app, BrowserWindow, dialog, ipcMain, net, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from 'electron';
 
 import {
   BRIDGE_CHANNELS,
@@ -44,6 +44,13 @@ const safeModePreloadPath = join(currentDir, 'safe-preload.js');
 const safeModeHtmlPath = join(currentDir, 'safe-mode.html');
 const snapshotWorkerEntryPath = join(currentDir, 'snapshot-worker-entry.cjs');
 const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
+
+if (protocol !== undefined) {
+  protocol.registerSchemesAsPrivileged([{
+    scheme: 'novus-asset',
+    privileges: { secure: true, standard: true },
+  }]);
+}
 
 let mainWindow: BrowserWindow | null = null;
 let safeModeLoaded = false;
@@ -123,6 +130,7 @@ app.whenReady().then(async () => {
     knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator,
     snapshotScheduler,
   });
+  registerProjectImageProtocol(desktopHandlers);
   closeCoordinator = createRendererCloseFlushCoordinator({
     canRequestRendererFlush: canRequestRendererCloseFlush,
     closeAllProjects: runCoordinatedShutdown,
@@ -421,6 +429,14 @@ function createDialogAdapter(): BridgeDialogAdapter {
       });
       return result.canceled || !result.filePath ? null : result.filePath;
     },
+    async chooseProjectImage() {
+      const result = await dialog.showOpenDialog({
+        filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
+        properties: ['openFile'],
+        title: 'Import project image',
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    },
     async chooseProjectRoot(request) {
       const result = await dialog.showOpenDialog({
         properties: ['openDirectory'],
@@ -429,6 +445,14 @@ function createDialogAdapter(): BridgeDialogAdapter {
       return result.canceled ? null : result.filePaths[0] ?? null;
     },
   };
+}
+
+function registerProjectImageProtocol(handlers: DesktopBridgeHandlers): void {
+  protocol.registerFileProtocol('novus-asset', (request, callback) => {
+    void handlers.resolveProjectImagePath(request.url)
+      .then((path) => callback(path === null ? { error: -6 } : { path }))
+      .catch(() => callback({ error: -6 }));
+  });
 }
 
 function createBundledSnapshotWorkerRunner(

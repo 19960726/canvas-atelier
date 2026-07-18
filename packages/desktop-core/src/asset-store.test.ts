@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -46,6 +46,80 @@ describe('AssetStore', () => {
     expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(pngBytes);
   });
 
+  it('enumerates verified managed images and resolves only content-addressed ids', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const store = new AssetStore();
+    const asset = await store.stageAndCommit(projectRoot, readableFrom(pngBytes), {
+      originalName: 'Reference.PNG',
+    });
+    await writeFile(join(projectRoot, 'assets', 'not-an-asset.png'), Buffer.from('not an image'));
+    await writeFile(join(projectRoot, 'assets', `${asset.id}.gif`), Buffer.from('GIF89a-not-the-catalogued-image'));
+
+    await expect(store.list(projectRoot)).resolves.toEqual([asset]);
+    await expect(store.resolvePath(projectRoot, asset.id, asset.extension))
+      .resolves.toBe(await realpath(join(projectRoot, asset.relativePath)));
+    await expect(store.resolvePath(projectRoot, '../project.novus.json')).resolves.toBeNull();
+    await expect(store.resolvePath(projectRoot, 'not-an-asset')).resolves.toBeNull();
+
+    const tamperedBytes = Buffer.from(pngBytes);
+    tamperedBytes[tamperedBytes.length - 1] = tamperedBytes[tamperedBytes.length - 1]! ^ 1;
+    await writeFile(join(projectRoot, asset.relativePath), tamperedBytes);
+    await expect(store.resolvePath(
+      projectRoot,
+      asset.id,
+      asset.extension,
+      asset.sha256,
+      asset.byteSize,
+    )).resolves.toBeNull();
+  });
+
+  it('rejects redirected asset directories before listing, resolving, or writing files', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const assetsRoot = join(projectRoot, 'assets');
+    const redirectedRoot = join(projectRoot, '..', 'redirected-assets');
+    await rm(assetsRoot, { force: true, recursive: true });
+    await mkdir(redirectedRoot, { recursive: true });
+    await symlink(redirectedRoot, assetsRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    const store = new AssetStore();
+
+    await expect(store.list(projectRoot)).rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+    await expect(store.resolvePath(projectRoot, sha256(pngBytes).slice(0, 16)))
+      .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+    await expect(store.stageAndCommit(projectRoot, readableFrom(pngBytes), { originalName: 'reference.png' }))
+      .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+    expect(await readdir(redirectedRoot)).toEqual([]);
+  });
+
+  it('rejects redirected quarantine directories before staging an import', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const quarantineRoot = join(projectRoot, 'recovery', 'quarantine');
+    const redirectedRoot = join(projectRoot, '..', 'redirected-quarantine');
+    await rm(quarantineRoot, { force: true, recursive: true });
+    await mkdir(redirectedRoot, { recursive: true });
+    await symlink(redirectedRoot, quarantineRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    const store = new AssetStore();
+
+    await expect(store.stageAndCommit(projectRoot, readableFrom(pngBytes), { originalName: 'reference.png' }))
+      .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+    expect(await readdir(join(projectRoot, 'assets'))).toEqual([]);
+    expect(await readdir(redirectedRoot)).toEqual([]);
+  });
+
+  it('rejects redirected recovery parents before creating quarantine outside the project', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const recoveryRoot = join(projectRoot, 'recovery');
+    const redirectedRoot = join(projectRoot, '..', 'redirected-recovery');
+    await rm(recoveryRoot, { force: true, recursive: true });
+    await mkdir(redirectedRoot, { recursive: true });
+    await symlink(redirectedRoot, recoveryRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    const store = new AssetStore();
+
+    await expect(store.stageAndCommit(projectRoot, readableFrom(pngBytes), { originalName: 'reference.png' }))
+      .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+    expect(await readdir(join(projectRoot, 'assets'))).toEqual([]);
+    expect(await readdir(redirectedRoot)).toEqual([]);
+  });
+
   it('promotes staged bytes with atomic rename instead of hard links', async () => {
     vi.resetModules();
     const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
@@ -70,7 +144,7 @@ describe('AssetStore', () => {
       expect(link).not.toHaveBeenCalled();
       expect(rename).toHaveBeenCalledWith(
         expect.stringContaining('.staging-'),
-        join(projectRoot, asset.relativePath),
+        await realpath(join(projectRoot, 'assets')).then((root) => join(root, `${asset.id}.${asset.extension}`)),
       );
       expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(pngBytes);
     } finally {

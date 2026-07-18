@@ -1,13 +1,21 @@
-import { basename, join } from 'node:path';
+import { createReadStream } from 'node:fs';
+import { basename, extname, join } from 'node:path';
 
 import {
   parseCanvasProject,
+  applyProjectTransaction,
+  MAX_GENERATION_REFERENCES,
+  projectImageAssetSchema,
   projectTransactionSchema,
   createSkillPromotionCandidateFingerprint,
   reviewSkillPromotionCandidate,
   rollbackSkillPromotionCandidate,
   skillPromotionCandidateSchema,
   type CanvasProject,
+  type ProjectImageAsset,
+  type ProjectTransaction,
+  type PlacementObject,
+  type ReferenceRole,
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import {
@@ -33,8 +41,11 @@ import {
   type ExportPackBridgeResult,
   type ImportPackBridgeRequest,
   type ImportPackBridgeResult,
+  type ImportProjectImageBridgeRequest,
+  type ImportProjectImageBridgeResult,
   type KnowledgeStateBridgeResult,
   type KnowledgeSyncStatusSummary,
+  type ListProjectImagesBridgeRequest,
   type OpenProjectBridgeRequest,
   type OpenProjectBridgeResult,
   type PrepareSkillCandidateReviewBridgeRequest,
@@ -42,6 +53,8 @@ import {
   type PersistenceChannel,
   type PersistenceError,
   type ProjectManifest,
+  type ProjectImageAssetSummary,
+  type ProjectImageImportTarget,
   type RecoveryCandidateBridgeSummary,
   type RecoveryPlanBridgeRequest,
   type RecoveryPlanBridgeResult,
@@ -54,6 +67,7 @@ import {
   type StablePointBridgeRequest,
   type StablePointBridgeResult,
 } from './contracts.js';
+import { AssetStore, type AssetMetadata } from './asset-store.js';
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
 import { createPersistenceError, releaseJournalState, writeInitialJournalCommitBoundary } from './journal-writer.js';
 import { KnowledgeRefreshService } from './knowledge-refresh-service.js';
@@ -86,6 +100,7 @@ import {
   type SnapshotReason,
 } from './snapshot-scheduler.js';
 import { BRIDGE_CHANNELS } from './preload-api.js';
+import { createProjectAssetDisplayUrl, parseProjectAssetDisplayUrl } from './project-asset-url.js';
 
 interface BridgeWriter {
   commit(request: Omit<CommitBridgeRequest, 'sessionId'>): Promise<CommitAck>;
@@ -97,6 +112,26 @@ interface ProjectRepositoryLike {
   openJournalWriter(session: OpenedProjectSession): Promise<BridgeWriter>;
   readCurrentProject(session: OpenedProjectSession): Promise<CanvasProject>;
   readCurrentRevision?(session: OpenedProjectSession): Promise<number>;
+}
+
+interface ProjectAssetStoreLike {
+  list(projectRoot: string): Promise<AssetMetadata[]>;
+  resolvePath(
+    projectRoot: string,
+    assetId: string,
+    extension: ProjectImageAsset['extension'],
+    sha256: string,
+    byteSize: number,
+  ): Promise<string | null>;
+  stageAndCommit(
+    projectRoot: string,
+    source: NodeJS.ReadableStream,
+    options: {
+      readonly commitReference?: (asset: AssetMetadata) => Promise<void>;
+      readonly maxBytes?: number;
+      readonly originalName?: string;
+    },
+  ): Promise<AssetMetadata>;
 }
 
 interface SnapshotSchedulerLike {
@@ -179,6 +214,7 @@ export interface BridgeDialogAdapter {
   chooseImportPackSource(): Promise<string | null>;
   chooseKnowledgeRoot(request: ConfigureKnowledgeBaseBridgeRequest): Promise<string | null>;
   choosePackExportPath(session: BridgeSessionSummary): Promise<string | null>;
+  chooseProjectImage(): Promise<string | null>;
   chooseProjectRoot(request: OpenProjectBridgeRequest): Promise<string | null>;
 }
 
@@ -190,6 +226,7 @@ export interface DesktopBridgeHandlerDependencies {
   readonly fileSystem?: FileSystem;
   readonly importerIsolationRoot?: string;
   readonly approvedSnapshotOutbox?: ApprovedSnapshotOutboxLike;
+  readonly assetStore?: ProjectAssetStoreLike;
   readonly knowledgeConfigurationSync?: KnowledgeConfigurationSyncLike;
   readonly knowledgeRefreshService?: KnowledgeRefreshServiceLike;
   readonly knowledgeStore?: KnowledgeStoreLike;
@@ -211,10 +248,13 @@ export interface DesktopBridgeHandlers {
   getKnowledgeState(event: unknown, request: unknown): Promise<KnowledgeStateBridgeResult>;
   getRecoveryPlan(event: unknown, request: unknown): Promise<RecoveryPlanBridgeResult>;
   importPack(event: unknown, request: unknown): Promise<ImportPackBridgeResult | null>;
+  importProjectImage(event: unknown, request: unknown): Promise<ImportProjectImageBridgeResult | null>;
+  listProjectImages(event: unknown, request: unknown): Promise<ProjectImageAssetSummary[]>;
   openProject(event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null>;
   prepareSkillCandidateReview(event: unknown, request: unknown): Promise<PrepareSkillCandidateReviewBridgeResult>;
   reviewSkillCandidate(event: unknown, request: unknown): Promise<ReviewSkillCandidateBridgeResult>;
   restore(event: unknown, request: unknown): Promise<RestoreBridgeResult>;
+  resolveProjectImagePath(displayUrl: string): Promise<string | null>;
 }
 
 export interface DesktopIpcMainLike {
@@ -222,6 +262,8 @@ export interface DesktopIpcMainLike {
 }
 
 interface BridgeSessionContext {
+  assets: Map<string, ProjectImageAsset>;
+  imageImportInFlight: boolean;
   session: OpenedProjectSession;
   sessionId: string;
   recoveryCandidatePaths: Map<string, string>;
@@ -255,11 +297,23 @@ interface RecoveryCandidateMirror {
 
 const PROJECT_MANIFEST_PATH = 'project.novus.json';
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
+const MAX_PROJECT_IMAGE_BYTES = 256 * 1024 * 1024;
+type ImportableReferenceRole = Exclude<ReferenceRole, 'placement_preview'>;
+const PROJECT_IMAGE_REFERENCE_LAYOUT: Record<
+  ImportableReferenceRole,
+  Pick<PlacementObject, 'x' | 'y' | 'w' | 'h' | 'zIndex' | 'semanticLayer'>
+> = {
+  product_identity: { x: 0.34, y: 0.42, w: 0.32, h: 0.38, zIndex: 30, semanticLayer: 'hero_product' },
+  scene_composition: { x: 0, y: 0, w: 1, h: 1, zIndex: 0, semanticLayer: 'background' },
+  prop_reference: { x: 0.66, y: 0.58, w: 0.18, h: 0.22, zIndex: 20, semanticLayer: 'optional_prop' },
+  material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground' },
+};
 
 export function createDesktopBridgeHandlers(
   dependencies: DesktopBridgeHandlerDependencies = {},
 ): DesktopBridgeHandlers {
   const fileSystem = dependencies.fileSystem ?? new NodeFileSystem();
+  const assetStore = dependencies.assetStore ?? new AssetStore();
   const createId = dependencies.createId ?? defaultId;
   const dialogs = withDialogDefaults(dependencies.dialogs);
   const repository = withRepositoryDefaults(dependencies.repository, {
@@ -301,7 +355,10 @@ export function createDesktopBridgeHandlers(
       ? await requireMethod(repository, 'openJournalWriter')(opened)
       : null;
     const sessionId = createId();
+    const summary = await summarizeSession(repository, sessionId, opened);
     sessions.set(sessionId, {
+      assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+      imageImportInFlight: false,
       recoveryCandidatePaths: new Map(),
       session: opened,
       sessionId,
@@ -309,11 +366,14 @@ export function createDesktopBridgeHandlers(
     });
     await reconcileStagedKnowledgeTransitionsForProject(opened);
 
-    return summarizeSession(repository, sessionId, opened);
+    return summary;
   }
 
   async function commit(_event: unknown, request: unknown): Promise<CommitAck> {
     const validated = validateCommitBridgeRequest(request);
+    if (validated.transaction.operations.some((operation) => operation.kind === 'set_project_assets')) {
+      throw invalidRequest('Project assets can only be changed through the managed image bridge');
+    }
     const session = requireSession(sessions, validated.sessionId);
     if (session.writer === null) {
       throw createPersistenceError(
@@ -380,8 +440,10 @@ export function createDesktopBridgeHandlers(
       session.writer = await requireMethod(repository, 'openJournalWriter')(session.session);
     }
 
+    const summary = await summarizeSession(repository, session.sessionId, session.session);
+    session.assets = new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset]));
     return {
-      ...await summarizeSession(repository, session.sessionId, session.session),
+      ...summary,
       restoredRevision: restoredManifest.stableSnapshotRevision,
     };
   }
@@ -431,7 +493,10 @@ export function createDesktopBridgeHandlers(
       ? await requireMethod(repository, 'openJournalWriter')(opened)
       : null;
     const sessionId = createId();
+    const summary = await summarizeSession(repository, sessionId, opened);
     sessions.set(sessionId, {
+      assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+      imageImportInFlight: false,
       recoveryCandidatePaths: new Map(),
       session: opened,
       sessionId,
@@ -440,9 +505,112 @@ export function createDesktopBridgeHandlers(
     await reconcileStagedKnowledgeTransitionsForProject(opened);
 
     return {
-      ...await summarizeSession(repository, sessionId, opened),
+      ...summary,
       importedRevision: result.importedRevision,
     };
+  }
+
+  async function importProjectImage(
+    _event: unknown,
+    request: unknown,
+  ): Promise<ImportProjectImageBridgeResult | null> {
+    const validated = validateImportProjectImageBridgeRequest(request);
+    const session = requireWritableSession(sessions, validated.sessionId);
+    if (session.writer === null) {
+      throw createPersistenceError('CONCURRENT_WRITER', true, 'Image import requires a writable desktop session');
+    }
+    if (session.imageImportInFlight) {
+      throw invalidRequest('A project image import is already in progress');
+    }
+    session.imageImportInFlight = true;
+    try {
+      await validateProjectImageTarget(repository, session, validated.target);
+      const sourcePath = await dialogs.chooseProjectImage();
+      if (sourcePath === null) return null;
+
+      const commitState: {
+        value?: { readonly ack: CommitAck; readonly asset: ProjectImageAsset; readonly project: CanvasProject };
+      } = {};
+      await assetStore.stageAndCommit(session.session.root, createReadStream(sourcePath), {
+        maxBytes: MAX_PROJECT_IMAGE_BYTES,
+        originalName: basename(sourcePath),
+        commitReference: async (storedAsset) => {
+          const currentProject = await repository.readCurrentProject(session.session);
+          const currentRevision = await readCurrentRevision(repository, session.session);
+          const projectAsset = createImportedProjectImageAsset(storedAsset, sourcePath);
+          const transaction = createProjectImageImportTransaction(
+            currentProject,
+            validated.target,
+            projectAsset,
+            createId,
+          );
+          const nextProject = applyProjectTransaction(currentProject, transaction);
+          const ack = await session.writer!.commit({
+            baseRevision: currentRevision,
+            kind: 'canvas',
+            projectId: currentProject.id,
+            transaction,
+          });
+          commitState.value = { ack, asset: projectAsset, project: nextProject };
+        },
+      });
+
+      const committed = commitState.value;
+      if (committed === undefined) {
+        throw invalidRequest('Image import did not reach its durable commit boundary');
+      }
+      session.assets.set(committed.asset.assetId, committed.asset);
+      await flushScheduledSnapshotAfterCommit(session, committed.ack, 'canvas');
+      const summary = createProjectImageSummary(
+        committed.asset,
+        session.sessionId,
+        countProjectImageUsage(committed.project, committed.asset.assetId),
+      );
+      const result = {
+        asset: summary,
+        currentRevision: committed.ack.revision,
+        project: committed.project,
+      };
+      assertPublicBridgePayload(result);
+      return result;
+    } finally {
+      session.imageImportInFlight = false;
+    }
+  }
+
+  async function listProjectImages(
+    _event: unknown,
+    request: unknown,
+  ): Promise<ProjectImageAssetSummary[]> {
+    const validated = validateListProjectImagesBridgeRequest(request);
+    const session = requireSession(sessions, validated.sessionId);
+    const project = await repository.readCurrentProject(session.session);
+    const storedAssets = new Map((await assetStore.list(session.session.root)).map((asset) => [asset.id, asset]));
+    const summaries = (project.assets ?? [])
+      .filter((asset) => storedAssetMatchesProjectAsset(storedAssets.get(asset.assetId), asset))
+      .map((asset) => createProjectImageSummary(
+        asset,
+        session.sessionId,
+        countProjectImageUsage(project, asset.assetId),
+      ));
+    session.assets = new Map(summaries.map((asset) => [asset.assetId, asset]));
+    assertPublicBridgePayload(summaries);
+    return summaries;
+  }
+
+  async function resolveProjectImagePath(displayUrl: string): Promise<string | null> {
+    const identity = parseProjectAssetDisplayUrl(displayUrl);
+    if (identity === null) return null;
+    const session = sessions.get(identity.sessionId);
+    const asset = session?.assets.get(identity.assetId);
+    if (session === undefined || asset === undefined) return null;
+    return assetStore.resolvePath(
+      session.session.root,
+      identity.assetId,
+      asset.extension,
+      asset.sha256,
+      asset.byteSize,
+    );
   }
 
   async function configureKnowledgeBase(
@@ -688,10 +856,13 @@ export function createDesktopBridgeHandlers(
     getKnowledgeState,
     getRecoveryPlan,
     importPack,
+    importProjectImage,
+    listProjectImages,
     openProject,
     prepareSkillCandidateReview,
     reviewSkillCandidate,
     restore,
+    resolveProjectImagePath,
   };
 
   async function closeBridgeSession(session: BridgeSessionContext): Promise<void> {
@@ -1181,6 +1352,8 @@ export function registerDesktopBridgeHandlers(
   ipcMain.handle(BRIDGE_CHANNELS.restore, handlers.restore);
   ipcMain.handle(BRIDGE_CHANNELS.exportPack, handlers.exportPack);
   ipcMain.handle(BRIDGE_CHANNELS.importPack, handlers.importPack);
+  ipcMain.handle(BRIDGE_CHANNELS.importProjectImage, handlers.importProjectImage);
+  ipcMain.handle(BRIDGE_CHANNELS.listProjectImages, handlers.listProjectImages);
   ipcMain.handle(BRIDGE_CHANNELS.closeProject, handlers.closeProject);
   ipcMain.handle(BRIDGE_CHANNELS.getRecoveryPlan, handlers.getRecoveryPlan);
   ipcMain.handle(BRIDGE_CHANNELS.configureKnowledgeBase, handlers.configureKnowledgeBase);
@@ -1195,6 +1368,7 @@ function withDialogDefaults(dialogs: Partial<BridgeDialogAdapter> | undefined): 
     chooseImportPackSource: dialogs?.chooseImportPackSource ?? (async () => null),
     chooseKnowledgeRoot: dialogs?.chooseKnowledgeRoot ?? (async () => null),
     choosePackExportPath: dialogs?.choosePackExportPath ?? (async () => null),
+    chooseProjectImage: dialogs?.chooseProjectImage ?? (async () => null),
     chooseProjectRoot: dialogs?.chooseProjectRoot ?? (async () => null),
   };
 }
@@ -1218,6 +1392,168 @@ function withRepositoryDefaults(
     readCurrentProject: repository?.readCurrentProject ?? ((session) => fallback.readCurrentProject(session)),
     readCurrentRevision: repository?.readCurrentRevision ?? ((session) => fallback.readCurrentRevision(session)),
   };
+}
+
+async function validateProjectImageTarget(
+  repository: ProjectRepositoryLike,
+  session: BridgeSessionContext,
+  target: ProjectImageImportTarget,
+): Promise<void> {
+  const project = await repository.readCurrentProject(session.session);
+  const node = project.nodes.find((candidate) => candidate.id === target.nodeId);
+  if (node === undefined) throw invalidRequest('Project image target node is unavailable');
+  if (target.kind === 'module') {
+    if (node.type !== 'module' || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')) {
+      throw invalidRequest('Project image module target is not import-capable');
+    }
+    return;
+  }
+  if (node.type !== 'placement_preview') {
+    throw invalidRequest('Project image placement target is unavailable');
+  }
+  const userReferences = node.data.objects.filter((object) => !object.assetId.startsWith('starter-'));
+  if (userReferences.length >= MAX_GENERATION_REFERENCES) {
+    throw invalidRequest(`Project references are limited to ${MAX_GENERATION_REFERENCES} images`);
+  }
+}
+
+function createImportedProjectImageAsset(storedAsset: AssetMetadata, sourcePath: string): ProjectImageAsset {
+  const rawLabel = basename(sourcePath, extname(sourcePath))
+    .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 120);
+  const base = {
+    assetId: storedAsset.id,
+    byteSize: storedAsset.byteSize,
+    extension: storedAsset.extension,
+    height: storedAsset.height,
+    label: rawLabel || `Image ${storedAsset.id.slice(0, 8)}`,
+    mediaType: storedAsset.mediaType,
+    origin: 'imported' as const,
+    sha256: storedAsset.sha256,
+    width: storedAsset.width,
+  };
+  const parsed = projectImageAssetSchema.safeParse(base);
+  return parsed.success
+    ? parsed.data
+    : projectImageAssetSchema.parse({ ...base, label: `Image ${storedAsset.id.slice(0, 8)}` });
+}
+
+function createProjectImageImportTransaction(
+  project: CanvasProject,
+  target: ProjectImageImportTarget,
+  asset: ProjectImageAsset,
+  createId: () => string,
+): ProjectTransaction {
+  const node = project.nodes.find((candidate) => candidate.id === target.nodeId);
+  if (node === undefined) throw invalidRequest('Project image target node is unavailable');
+  const assets = upsertProjectImageAsset(project.assets ?? [], asset);
+  let nextNode: CanvasProject['nodes'][number];
+  if (target.kind === 'module') {
+    if (node.type !== 'module' || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')) {
+      throw invalidRequest('Project image module target is not import-capable');
+    }
+    nextNode = {
+      ...node,
+      data: {
+        ...node.data,
+        config: { ...node.data.config, assetId: asset.assetId },
+      },
+    };
+  } else {
+    if (node.type !== 'placement_preview') {
+      throw invalidRequest('Project image placement target is unavailable');
+    }
+    const userReferences = node.data.objects.filter((object) => !object.assetId.startsWith('starter-'));
+    if (userReferences.length >= MAX_GENERATION_REFERENCES) {
+      throw invalidRequest(`Project references are limited to ${MAX_GENERATION_REFERENCES} images`);
+    }
+    if (node.data.objects.some((object) => object.assetId === asset.assetId)) {
+      throw invalidRequest('Project image is already present in the ordered references');
+    }
+    const layout = PROJECT_IMAGE_REFERENCE_LAYOUT[target.role];
+    const object: PlacementObject = {
+      id: `reference-${asset.assetId}-${createId()}`,
+      assetId: asset.assetId,
+      role: target.role,
+      ...layout,
+      name: asset.label,
+      rotation: 0,
+      locked: false,
+      visible: true,
+      flipX: false,
+      flipY: false,
+    };
+    nextNode = {
+      ...node,
+      data: { ...node.data, objects: [...node.data.objects, object] },
+    };
+  }
+  const suffix = createId();
+  return {
+    id: `import-project-image-${asset.assetId}-${suffix}`,
+    label: 'Import managed project image',
+    operations: [
+      { kind: 'set_project_assets', assets },
+      { kind: 'canvas', operation: { kind: 'update_node', node: nextNode } },
+    ],
+  };
+}
+
+function upsertProjectImageAsset(
+  assets: readonly ProjectImageAsset[],
+  asset: ProjectImageAsset,
+): ProjectImageAsset[] {
+  const existing = assets.find((candidate) => candidate.assetId === asset.assetId);
+  if (existing !== undefined && existing.sha256 !== asset.sha256) {
+    throw invalidRequest('Project image id conflicts with existing catalog metadata');
+  }
+  return existing === undefined
+    ? [...assets, asset]
+    : assets.map((candidate) => candidate.assetId === asset.assetId ? asset : candidate);
+}
+
+function createProjectImageSummary(
+  asset: ProjectImageAsset,
+  sessionId: string,
+  usageCount: number,
+): ProjectImageAssetSummary {
+  return {
+    ...asset,
+    displayUrl: createProjectAssetDisplayUrl(sessionId, asset.assetId),
+    usageCount,
+  };
+}
+
+function storedAssetMatchesProjectAsset(
+  storedAsset: AssetMetadata | undefined,
+  projectAsset: ProjectImageAsset,
+): boolean {
+  return storedAsset !== undefined
+    && storedAsset.id === projectAsset.assetId
+    && storedAsset.sha256 === projectAsset.sha256
+    && storedAsset.byteSize === projectAsset.byteSize
+    && storedAsset.extension === projectAsset.extension
+    && storedAsset.mediaType === projectAsset.mediaType;
+}
+
+function countProjectImageUsage(project: CanvasProject, assetId: string): number {
+  return collectExactStringCount(project.nodes, assetId);
+}
+
+function collectExactStringCount(value: unknown, expected: string): number {
+  if (value === expected) return 1;
+  if (Array.isArray(value)) {
+    return value.reduce((total, child) => total + collectExactStringCount(child, expected), 0);
+  }
+  if (isRecord(value)) {
+    return Object.values(value).reduce<number>(
+      (total, child) => total + collectExactStringCount(child, expected),
+      0,
+    );
+  }
+  return 0;
 }
 
 async function summarizeSession(
@@ -1485,6 +1821,44 @@ function validateImportPackBridgeRequest(value: unknown): ImportPackBridgeReques
   };
 }
 
+function validateImportProjectImageBridgeRequest(value: unknown): ImportProjectImageBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['sessionId', 'target'], 'Project image import request');
+  const targetRecord = expectPlainRecord(record.target);
+  const kind = targetRecord.kind;
+  let target: ProjectImageImportTarget;
+  if (kind === 'module') {
+    assertExactKeys(targetRecord, ['kind', 'nodeId'], 'Project image module target');
+    target = {
+      kind,
+      nodeId: parseNonEmptyString(targetRecord.nodeId, 'target.nodeId'),
+    };
+  } else if (kind === 'placement_reference') {
+    assertExactKeys(targetRecord, ['kind', 'nodeId', 'role'], 'Project image placement target');
+    target = {
+      kind,
+      nodeId: parseNonEmptyString(targetRecord.nodeId, 'target.nodeId'),
+      role: parseReferenceRole(targetRecord.role),
+    };
+  } else {
+    throw invalidRequest('Project image import target kind is invalid');
+  }
+  const request = {
+    sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+    target,
+  };
+  assertPublicBridgePayload(request);
+  return request;
+}
+
+function validateListProjectImagesBridgeRequest(value: unknown): ListProjectImagesBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['sessionId'], 'Project image list request');
+  const request = { sessionId: parseNonEmptyString(record.sessionId, 'sessionId') };
+  assertPublicBridgePayload(request);
+  return request;
+}
+
 function validateRestoreBridgeRequest(value: unknown): RestoreBridgeRequest {
   const record = expectPlainRecord(value);
   return {
@@ -1663,6 +2037,18 @@ function parseMode(value: unknown): 'write' | 'read_only' {
   throw createPersistenceError('INVALID_REQUEST', false, 'Mode must be write or read_only');
 }
 
+function parseReferenceRole(value: unknown): ImportableReferenceRole {
+  if (
+    value === 'product_identity'
+    || value === 'scene_composition'
+    || value === 'prop_reference'
+    || value === 'material_lighting'
+  ) {
+    return value;
+  }
+  throw invalidRequest('Project image reference role is invalid');
+}
+
 function parseTransactionKind(value: unknown): 'canvas' | 'agent' | 'system' {
   if (value === 'canvas' || value === 'agent' || value === 'system') {
     return value;
@@ -1689,6 +2075,13 @@ function expectPlainRecord(value: unknown): Record<string, unknown> {
     return value;
   }
   throw createPersistenceError('INVALID_REQUEST', false, 'Request payload must be an object');
+}
+
+function assertExactKeys(record: Record<string, unknown>, allowedKeys: readonly string[], label: string): void {
+  const allowed = new Set(allowedKeys);
+  if (Object.keys(record).some((key) => !allowed.has(key))) {
+    throw invalidRequest(`${label} contains unsupported fields`);
+  }
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

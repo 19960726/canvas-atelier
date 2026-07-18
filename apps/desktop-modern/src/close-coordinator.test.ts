@@ -45,4 +45,14 @@ describe('modern desktop close coordinator', () => {
     expect(source).toContain("app.on('before-quit'");
     expect(source).toContain('requestCoordinatedClose');
   });
+
+  it('keeps project image selection and asset resolution in the main process', async () => {
+    const source = await readFile(join(process.cwd(), 'apps/desktop-modern/src/main.ts'), 'utf8');
+
+    expect(source).toContain('protocol.registerSchemesAsPrivileged');
+    expect(source).toContain("protocol.registerFileProtocol('novus-asset'");
+    expect(source).toContain('handlers.resolveProjectImagePath(request.url)');
+    expect(source).toContain('async chooseProjectImage()');
+    expect(source).toContain("properties: ['openFile']");
+  });
 });

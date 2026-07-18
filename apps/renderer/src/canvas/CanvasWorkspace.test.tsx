@@ -180,7 +180,7 @@ describe('CanvasWorkspace', () => {
       expect(position.x).toBeGreaterThanOrEqual(bounds.left);
       expect(position.x + 264).toBeLessThanOrEqual(bounds.right);
       expect(position.y).toBeGreaterThanOrEqual(bounds.top);
-      expect(position.y + 214).toBeLessThanOrEqual(bounds.bottom);
+      expect(position.y + 280).toBeLessThanOrEqual(bounds.bottom);
     }
     expect(positions[0]).not.toEqual(positions[1]);
     expect(positions[2]).not.toEqual(positions[3]);
@@ -361,28 +361,83 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByLabelText('上传材质光照参考')).toBeInTheDocument();
   });
 
-  it('keeps temporary preview URLs outside project JSON and revokes them on unmount', () => {
-    const createObjectUrl = vi.fn(() => 'blob:scene-preview');
+  it('imports a confined managed reference without allocating renderer object URLs', async () => {
+    const project = createStarterProject();
+    const placement = project.nodes.find((node) => node.type === 'placement_preview');
+    if (!placement || placement.type !== 'placement_preview') throw new Error('placement fixture missing');
+    const assetRecord = {
+      assetId: '0123456789abcdef',
+      byteSize: 42,
+      extension: 'png' as const,
+      height: 3,
+      label: 'Managed scene',
+      mediaType: 'image/png' as const,
+      origin: 'imported' as const,
+      sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      width: 2,
+    };
+    const asset = {
+      ...assetRecord,
+      displayUrl: 'novus-asset://project/session/0123456789abcdef',
+      usageCount: 1,
+    };
+    const importedProject = {
+      ...project,
+      assets: [assetRecord],
+      nodes: project.nodes.map((node) => node.id === placement.id && node.type === 'placement_preview'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              objects: [...node.data.objects, {
+                id: 'scene-managed',
+                assetId: asset.assetId,
+                role: 'scene_composition' as const,
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+                rotation: 0,
+                zIndex: 0,
+                locked: false,
+                visible: true,
+                flipX: false,
+                flipY: false,
+                semanticLayer: 'background' as const,
+                name: '场景参考',
+              }],
+            },
+          }
+        : node),
+    };
+    const importProjectImage = vi.fn(async () => ({ asset, project: importedProject, revision: 1 }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ importProjectImage }));
+    resetAppStoreForTests();
+    useAppStore.setState({ project, persistenceMode: 'desktop', saveStatus: 'saved' });
+    const createObjectUrl = vi.fn(() => '');
     const revokeObjectUrl = vi.fn();
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl });
-    const { unmount } = render(<CanvasWorkspace />);
+    render(<CanvasWorkspace />);
     fireEvent.click(screen.getByLabelText('摆放预览'));
-    fireEvent.change(screen.getByLabelText('上传场景参考'), { target: { files: [new File(['scene'], 'scene.png', { type: 'image/png' })] } });
+    fireEvent.click(screen.getByLabelText('上传场景参考'));
+
+    await waitFor(() => expect(importProjectImage).toHaveBeenCalledWith({
+      kind: 'placement_reference',
+      nodeId: placement.id,
+      role: 'scene_composition',
+    }));
 
     const placementNode = useAppStore.getState().project.nodes.find((node) => node.type === 'placement_preview');
     const sceneObject = placementNode?.type === 'placement_preview'
       ? placementNode.data.objects.find((object) => object.role === 'scene_composition')
       : undefined;
-    expect(createObjectUrl).toHaveBeenCalledOnce();
-    expect(sceneObject?.assetId).toMatch(/^local-reference-/);
-    expect(sceneObject?.assetId).not.toContain('blob:');
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(revokeObjectUrl).not.toHaveBeenCalled();
+    expect(sceneObject?.assetId).toBe(asset.assetId);
     expect(placementNode?.type === 'placement_preview' ? placementNode.data.objects.some((object) => object.assetId === 'starter-product') : false).toBe(true);
-    expect(screen.getByAltText('场景参考')).toHaveAttribute('src', 'blob:scene-preview');
+    expect(screen.getByAltText('场景参考')).toHaveAttribute('src', asset.displayUrl);
     expect(within(screen.getByLabelText('当前参考职责')).getByText('已添加 1 张')).toBeInTheDocument();
-
-    unmount();
-    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:scene-preview');
   });
 
   it('does not persist on pointermove and commits once on pointerup', async () => {
@@ -796,7 +851,7 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('plan-retry-jobs')).toHaveTextContent(/重试模型任务|Retry model tasks/i);
   });
 
-  it('blocks image 21 before allocating a preview URL', () => {
+  it('blocks image 21 before invoking the confined picker', () => {
     const project = createStarterProject();
     const objects: PlacementObject[] = Array.from({ length: 20 }, (_, index) => ({
       id: `uploaded-${index}`,
@@ -822,17 +877,15 @@ describe('CanvasWorkspace', () => {
           : node),
       },
     });
-    const createObjectUrl = vi.fn(() => 'blob:should-not-exist');
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+    const importPlacementReference = vi.fn(async () => true);
+    useAppStore.setState({ importPlacementReference });
 
     render(<CanvasWorkspace />);
     fireEvent.click(screen.getByLabelText('摆放预览'));
-    fireEvent.change(screen.getByLabelText('上传材质光照参考'), {
-      target: { files: [new File(['material'], 'material.png', { type: 'image/png' })] },
-    });
+    fireEvent.click(screen.getByLabelText('上传材质光照参考'));
 
     expect(screen.getByRole('alert')).toHaveTextContent('参考图最多 20 张');
-    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(importPlacementReference).not.toHaveBeenCalled();
     const placement = useAppStore.getState().project.nodes.find((node) => node.type === 'placement_preview');
     expect(placement?.type === 'placement_preview' ? placement.data.objects : []).toHaveLength(20);
   });
@@ -952,6 +1005,8 @@ function createImmediateBrowserClient(
       return { ok: true, project: nextProject, revision: 0 };
     }),
     hydrate,
+    importProjectImage: overrides.importProjectImage ?? (async () => null),
+    listProjectImages: overrides.listProjectImages ?? (async () => []),
     restore: overrides.restore ?? (async () => {
       const result = await hydrate();
       return {

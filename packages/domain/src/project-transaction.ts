@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { appendProjectMemoryEntry, projectMemoryEntrySchema, skillPromotionCandidateSchema } from './project-memory';
 import { applyTransaction, canvasOperationSchema } from './canvas-transaction';
 import { canvasEdgeSchema, canvasNodeSchema, parseCanvasProject, type CanvasProject } from './project-schema';
+import { projectImageAssetSchema } from './project-image-asset';
 
 const canvasOperationProjectSchema = z.object({
   kind: z.literal('canvas'),
@@ -24,10 +25,16 @@ const replaceCanvasStateOperationSchema = z.object({
   edges: z.array(canvasEdgeSchema),
 }).strict();
 
+const setProjectAssetsOperationSchema = z.object({
+  kind: z.literal('set_project_assets'),
+  assets: z.array(projectImageAssetSchema),
+}).strict();
+
 export const projectOperationSchema = z.discriminatedUnion('kind', [
   canvasOperationProjectSchema,
   appendProjectMemoryOperationSchema,
   setSkillCandidatesOperationSchema,
+  setProjectAssetsOperationSchema,
   replaceCanvasStateOperationSchema,
 ]);
 
@@ -96,6 +103,11 @@ export function applyProjectTransaction(
 
     if (operation.kind === 'set_skill_candidates') {
       draft = parseCanvasProject({ ...draft, skillPromotionCandidates: operation.candidates });
+      continue;
+    }
+
+    if (operation.kind === 'set_project_assets') {
+      draft = parseCanvasProject({ ...draft, assets: operation.assets });
       continue;
     }
 

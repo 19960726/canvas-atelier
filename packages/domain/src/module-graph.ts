@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_GENERATION_REFERENCES } from './agent-knowledge-contract';
 import type { CanvasModulePortDefinition, CanvasModuleType } from './canvas-module';
 import { getCanvasModuleDefinition } from './canvas-module';
 import type { CanvasEdge, CanvasModuleNode, CanvasNode, CanvasProject } from './project-schema';
@@ -44,16 +45,68 @@ const moduleConfigSchema = z.record(z.unknown()).superRefine((config, context) =
   }
 });
 
+function isManagedProjectAssetId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{16}$/u.test(value);
+}
+
+const moduleNodeDataSchema = z.object({
+  moduleType: canvasModuleTypeSchema,
+  moduleVersion: z.literal(1),
+  config: moduleConfigSchema,
+  execution: moduleExecutionSummarySchema,
+}).strict().superRefine(({ config, moduleType }, context) => {
+  if (moduleType === 'image_input' || moduleType === 'upload_image') {
+    if (config.assetId !== undefined && !isManagedProjectAssetId(config.assetId)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Managed image modules require a content-addressed project asset id',
+        path: ['config', 'assetId'],
+      });
+    }
+    return;
+  }
+  if (moduleType !== 'canvas_library' || config.assetIds === undefined) return;
+  if (!Array.isArray(config.assetIds)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Canvas library asset ids must be an ordered array',
+      path: ['config', 'assetIds'],
+    });
+    return;
+  }
+  if (config.assetIds.length > MAX_GENERATION_REFERENCES) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Canvas library is limited to ${MAX_GENERATION_REFERENCES} project images`,
+      path: ['config', 'assetIds'],
+    });
+  }
+  const seen = new Set<string>();
+  config.assetIds.forEach((assetId, index) => {
+    if (!isManagedProjectAssetId(assetId)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Canvas library entries require content-addressed project asset ids',
+        path: ['config', 'assetIds', index],
+      });
+      return;
+    }
+    if (seen.has(assetId)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Canvas library asset ids must be unique',
+        path: ['config', 'assetIds', index],
+      });
+    }
+    seen.add(assetId);
+  });
+});
+
 export const moduleNodeSchema = z.object({
   id: idSchema,
   position: positionSchema,
   type: z.literal('module'),
-  data: z.object({
-    moduleType: canvasModuleTypeSchema,
-    moduleVersion: z.literal(1),
-    config: moduleConfigSchema,
-    execution: moduleExecutionSummarySchema,
-  }).strict(),
+  data: moduleNodeDataSchema,
 }).strict();
 
 export const canvasEdgeSchema = z.object({

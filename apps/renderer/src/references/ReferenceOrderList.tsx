@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, GripVertical } from 'lucide-react';
 import { reorderReferences, type OrderedReference } from '@agent-canvas/domain';
+import { isRenderableManagedImageUrl } from '../app/managed-image-url';
 
 interface ReferenceOrderListProps {
   references: OrderedReference[];
@@ -136,7 +137,7 @@ function roleLabel(role: OrderedReference['role']): string {
 }
 
 function renderThumbnail(url: string | undefined, label: string) {
-  if (url && /^(blob:|data:|https?:)/.test(url)) {
+  if (isRenderableManagedImageUrl(url)) {
     return <img src={url} alt="" draggable={false} />;
   }
   return <span>{label.slice(0, 1).toUpperCase()}</span>;

@@ -1,5 +1,7 @@
 import type {
   KnowledgeSyncStatusSummary,
+  ProjectImageAssetSummary,
+  ProjectImageImportTarget,
   ProviderBridgeProfile,
   SubmitImageJobBridgeRequest,
 } from '@agent-canvas/desktop-core';
@@ -13,6 +15,8 @@ import {
   type CanvasProject,
   type CanvasModuleNode,
   type ModelJob,
+  type PlacementObject,
+  type ProjectImageAsset,
   type ProjectMemoryEntry,
   type ProjectTransaction,
   type SkillPromotionCandidate,
@@ -32,6 +36,7 @@ import type {
   ProjectCommitRequest,
   ProjectCommitResult,
   ProjectHydrationResult,
+  ProjectImageImportResult,
   ProjectPersistenceClient,
   ProjectRestoreResult,
   ProjectStablePointResult,
@@ -52,6 +57,7 @@ const fixedNow = '2026-07-16T09:00:00.000Z';
 const e2eNonce = import.meta.env.VITE_NOVUS_E2E_NONCE ?? 'novus-e2e-local';
 
 interface RuntimeState {
+  assetSequence: number;
   commitLog: ProjectTransaction[];
   currentProject: CanvasProject;
   failNextModelJobEnqueue: boolean;
@@ -59,6 +65,8 @@ interface RuntimeState {
   knowledgeStates: KnowledgeBaseStateSummary[];
   managedRules: Map<string, string>;
   modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
+  pendingImageImports: Array<{ byteSize: number; label: string; mediaType: 'image/png' }>;
+  projectImages: ProjectImageAssetSummary[];
   providerProfiles: ProviderBridgeProfile[];
   revision: number;
   skillSyncWrites: Array<{
@@ -86,12 +94,15 @@ export function installRendererE2EHarness(): void {
     nonce: e2eNonce,
     async reset() {
       runtime.currentProject = createStarterProject();
+      runtime.assetSequence = 0;
       runtime.revision = 0;
       runtime.commitLog = [];
       runtime.failNextModelJobEnqueue = false;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
       runtime.modelSubmissions = [];
+      runtime.pendingImageImports = [];
+      runtime.projectImages = [];
       runtime.providerProfiles = createE2EProviderProfiles();
       runtime.skillSyncWrites = [];
       runtime.storage = createE2EModelJobStorage(runtime);
@@ -103,6 +114,13 @@ export function installRendererE2EHarness(): void {
     },
     failNextModelJobEnqueue() {
       runtime.failNextModelJobEnqueue = true;
+    },
+    queueProjectImageImport(input) {
+      runtime.pendingImageImports.push({
+        byteSize: Math.max(1, Math.min(256 * 1024 * 1024, Math.floor(input.byteSize))),
+        label: sanitizeE2EImageLabel(input.label),
+        mediaType: 'image/png',
+      });
     },
     get commitCount() {
       return runtime.commitLog.length;
@@ -149,6 +167,14 @@ export function installRendererE2EHarness(): void {
           status: job.status,
         })),
         modelSubmissions: runtime.modelSubmissions.map((submission) => ({ ...submission })),
+        projectAssetIds: (state.project.assets ?? []).map((asset) => asset.assetId),
+        projectImages: state.projectImages.map((asset) => ({
+          assetId: asset.assetId,
+          displayUrl: asset.displayUrl,
+          label: asset.label,
+        })),
+        durableProjectContainsTransientImageUrl: /(?:novus-asset:|\/__novus_e2e_asset\/|blob:|data:image)/u
+          .test(JSON.stringify(state.project)),
         projectNodeTypes: state.project.nodes.map((node) => node.type),
         skillSyncWrites: runtime.skillSyncWrites.map((write) => ({ ...write })),
       };
@@ -158,6 +184,7 @@ export function installRendererE2EHarness(): void {
 
 function createRuntimeState(): RuntimeState {
   const runtime: RuntimeState = {
+    assetSequence: 0,
     commitLog: [],
     currentProject: createStarterProject(),
     failNextModelJobEnqueue: false,
@@ -165,6 +192,8 @@ function createRuntimeState(): RuntimeState {
     knowledgeStates: [],
     managedRules: new Map(),
     modelSubmissions: [],
+    pendingImageImports: [],
+    projectImages: [],
     providerProfiles: createE2EProviderProfiles(),
     revision: 0,
     skillSyncWrites: [],
@@ -179,6 +208,111 @@ function findModuleNodeByType(project: CanvasProject, moduleType: CanvasModuleTy
     candidate.type === 'module' && candidate.data.moduleType === moduleType
   ));
   return node ?? null;
+}
+
+const e2eReferenceLayouts: Record<
+  Exclude<PlacementObject['role'], 'placement_preview'>,
+  Pick<PlacementObject, 'x' | 'y' | 'w' | 'h' | 'zIndex' | 'semanticLayer'>
+> = {
+  product_identity: { x: 0.34, y: 0.42, w: 0.32, h: 0.38, zIndex: 30, semanticLayer: 'hero_product' },
+  scene_composition: { x: 0, y: 0, w: 1, h: 1, zIndex: 0, semanticLayer: 'background' },
+  prop_reference: { x: 0.66, y: 0.58, w: 0.18, h: 0.22, zIndex: 20, semanticLayer: 'optional_prop' },
+  material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground' },
+};
+
+function importE2EProjectImage(
+  runtime: RuntimeState,
+  target: ProjectImageImportTarget,
+): ProjectImageImportResult | null {
+  const pending = runtime.pendingImageImports.shift();
+  if (pending === undefined) return null;
+  const targetNode = runtime.currentProject.nodes.find((node) => node.id === target.nodeId);
+  if (targetNode === undefined) return null;
+
+  runtime.assetSequence += 1;
+  const assetId = runtime.assetSequence.toString(16).padStart(16, '0');
+  const asset: ProjectImageAsset = {
+    assetId,
+    byteSize: pending.byteSize,
+    extension: 'png',
+    height: 48,
+    label: pending.label,
+    mediaType: pending.mediaType,
+    origin: 'imported',
+    sha256: assetId.repeat(4),
+    width: 48,
+  };
+  let nextNode: CanvasProject['nodes'][number];
+  if (target.kind === 'module') {
+    if (targetNode.type !== 'module'
+      || (targetNode.data.moduleType !== 'image_input' && targetNode.data.moduleType !== 'upload_image')) return null;
+    nextNode = {
+      ...targetNode,
+      data: {
+        ...targetNode.data,
+        config: { ...targetNode.data.config, assetId },
+      },
+    };
+  } else {
+    if (targetNode.type !== 'placement_preview') return null;
+    const object: PlacementObject = {
+      id: `reference-${assetId}-${runtime.assetSequence}`,
+      assetId,
+      role: target.role,
+      ...e2eReferenceLayouts[target.role],
+      name: asset.label,
+      rotation: 0,
+      locked: false,
+      visible: true,
+      flipX: false,
+      flipY: false,
+    };
+    nextNode = {
+      ...targetNode,
+      data: { ...targetNode.data, objects: [...targetNode.data.objects, object] },
+    };
+  }
+
+  const assets = [...(runtime.currentProject.assets ?? []), asset];
+  const transaction: ProjectTransaction = {
+    id: `e2e-import-project-image-${assetId}`,
+    label: 'Import managed E2E project image',
+    operations: [
+      { kind: 'set_project_assets', assets },
+      { kind: 'canvas', operation: { kind: 'update_node', node: nextNode } },
+    ],
+  };
+  runtime.currentProject = {
+    ...runtime.currentProject,
+    assets,
+    nodes: runtime.currentProject.nodes.map((node) => node.id === nextNode.id ? nextNode : node),
+  };
+  runtime.revision += 1;
+  runtime.commitLog.push(transaction);
+  const summary = createE2EProjectImageSummary(runtime.currentProject, asset);
+  runtime.projectImages = [...runtime.projectImages, summary];
+  return { asset: summary, project: runtime.currentProject, revision: runtime.revision };
+}
+
+function createE2EProjectImageSummary(
+  project: CanvasProject,
+  asset: ProjectImageAsset,
+): ProjectImageAssetSummary {
+  return {
+    ...asset,
+    displayUrl: `${window.location.origin}/__novus_e2e_asset/${asset.assetId}.svg`,
+    usageCount: JSON.stringify(project.nodes).split(asset.assetId).length - 1,
+  };
+}
+
+function sanitizeE2EImageLabel(value: string): string {
+  const label = value
+    .replace(/\.[A-Za-z0-9]{1,8}$/u, '')
+    .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 120);
+  return label || 'Managed image';
 }
 
 async function seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean> {
@@ -310,6 +444,15 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
         revision: runtime.revision,
         saveStatus: 'saved',
       };
+    },
+    async importProjectImage(target) {
+      return importE2EProjectImage(runtime, target);
+    },
+    async listProjectImages() {
+      return runtime.projectImages.map((asset) => ({
+        ...asset,
+        usageCount: JSON.stringify(runtime.currentProject.nodes).split(asset.assetId).length - 1,
+      }));
     },
     async restore(): Promise<ProjectRestoreResult> {
       return {
@@ -663,10 +806,13 @@ declare global {
       createModule(moduleType: CanvasModuleType, position?: { x: number; y: number }): Promise<boolean>;
       getState(): {
         commitCount: number;
+        durableProjectContainsTransientImageUrl: boolean;
         edgeCount: number;
         moduleTypes: CanvasModuleType[];
         modelJobs: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount' | 'status'>>;
         modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
+        projectAssetIds: string[];
+        projectImages: Array<Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;
         projectNodeTypes: string[];
         skillSyncWrites: Array<{
           candidateId: string;
@@ -676,6 +822,7 @@ declare global {
       };
       failNextModelJobEnqueue(): void;
       nonce: string;
+      queueProjectImageImport(input: { byteSize: number; label: string; mediaType: 'image/png' }): void;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
       seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;

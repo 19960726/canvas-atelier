@@ -21,9 +21,12 @@ export type {
   JournalTransactionKind,
   ImportPackBridgeRequest,
   ImportPackBridgeResult,
+  ImportProjectImageBridgeRequest,
+  ImportProjectImageBridgeResult,
   KnowledgeStateBridgeResult,
   KnowledgeSyncStatus,
   KnowledgeSyncStatusSummary,
+  ListProjectImagesBridgeRequest,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
   PrepareSkillCandidateReviewBridgeRequest,
@@ -33,6 +36,8 @@ export type {
   PersistenceErrorCode,
   ProjectLock,
   ProjectManifest,
+  ProjectImageAssetSummary,
+  ProjectImageImportTarget,
   RecoveryCandidateBridgeSummary,
   RecoveryPlanBridgeRequest,
   RecoveryPlanBridgeResult,
@@ -51,6 +56,12 @@ export type {
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
 export { AssetStore } from './asset-store.js';
 export type { AssetMetadata, StageAssetOptions } from './asset-store.js';
+export {
+  PROJECT_ASSET_SCHEME,
+  createProjectAssetDisplayUrl,
+  parseProjectAssetDisplayUrl,
+} from './project-asset-url.js';
+export type { ProjectAssetUrlIdentity } from './project-asset-url.js';
 export {
   ApprovedSnapshotOutbox,
   createApprovedSnapshotSyncClientFromEnv,
@@ -199,6 +210,7 @@ export type {
   DesktopBridgeInvoke,
   DesktopBridgeSend,
   DesktopBridgeSubscribe,
+  DesktopProjectImageBridgeApi,
   SafeModeBridgeApi,
 } from './preload-api.js';
 export { createDesktopBridgeHandlers, registerDesktopBridgeHandlers } from './bridge-handlers.js';

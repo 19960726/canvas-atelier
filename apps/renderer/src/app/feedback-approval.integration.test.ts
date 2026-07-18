@@ -215,6 +215,8 @@ function createImmediatePersistence(): ProjectPersistenceClient {
       revision: 0,
       saveStatus: 'pending',
     }),
+    importProjectImage: async () => null,
+    listProjectImages: async () => [],
     restore: async () => ({
       availableSnapshotIds: [],
       project: createStarterProject(),

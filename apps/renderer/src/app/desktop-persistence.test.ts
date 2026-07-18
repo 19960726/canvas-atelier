@@ -270,4 +270,73 @@ describe('desktop persistence', () => {
     expect(result.saveStatus).toBe('read_only');
     expect(localStorage.getItem(PROJECT_STORAGE_KEY)).not.toBeNull();
   });
+
+  it('binds project image operations to the hidden desktop session and advances durable state only after ACK', async () => {
+    const durableProject = createStarterProject();
+    const importedProject = {
+      ...durableProject,
+      assets: [{
+        assetId: '0123456789abcdef',
+        byteSize: 42,
+        extension: 'png' as const,
+        height: 3,
+        label: 'Product',
+        mediaType: 'image/png' as const,
+        origin: 'imported' as const,
+        sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        width: 2,
+      }],
+    };
+    const asset = {
+      ...importedProject.assets[0]!,
+      displayUrl: 'novus-asset://project/desktop-session/0123456789abcdef',
+      usageCount: 1,
+    };
+    const projectImages = {
+      importImage: vi.fn(async () => ({ asset, currentRevision: 8, project: importedProject })),
+      list: vi.fn(async () => [asset]),
+    };
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      exportPack: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({
+        action: 'auto_recover' as const,
+        candidates: [],
+        issues: [],
+        projectId: durableProject.id,
+        recoveredRevision: null,
+        stableSnapshotId: null,
+        targetRevision: 7,
+      })),
+      importPack: vi.fn(),
+      openProject: vi.fn(async () => ({
+        currentRevision: 7,
+        mode: 'write' as const,
+        project: durableProject,
+        projectId: durableProject.id,
+        projectName: durableProject.name,
+        sessionId: 'desktop-session',
+        stableSnapshotId: null,
+        stableSnapshotRevision: 7,
+      })),
+      projectImages,
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge);
+    await client.hydrate();
+
+    await expect(client.listProjectImages()).resolves.toEqual([asset]);
+    await expect(client.importProjectImage({ kind: 'module', nodeId: 'image-input' })).resolves.toEqual({
+      asset,
+      project: importedProject,
+      revision: 8,
+    });
+    expect(projectImages.list).toHaveBeenCalledWith({ sessionId: 'desktop-session' });
+    expect(projectImages.importImage).toHaveBeenCalledWith({
+      sessionId: 'desktop-session',
+      target: { kind: 'module', nodeId: 'image-input' },
+    });
+  });
 });

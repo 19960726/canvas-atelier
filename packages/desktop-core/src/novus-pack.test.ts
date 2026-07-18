@@ -65,6 +65,24 @@ describe('NovusPack export and import', () => {
     expect(entries.has(asset.relativePath)).toBe(true);
   });
 
+  it.each([
+    ['the catalog extension', async (projectRoot: string, asset: { bytes: Buffer; id: string; relativePath: string }) => {
+      await writeFile(join(projectRoot, 'assets', `${asset.id}.jpg`), asset.bytes);
+      await rm(join(projectRoot, ...asset.relativePath.split('/')));
+    }],
+    ['the catalog checksum and byte size', async (projectRoot: string, asset: { bytes: Buffer; id: string; relativePath: string }) => {
+      await writeFile(join(projectRoot, ...asset.relativePath.split('/')), Buffer.from('tampered-asset-bytes'));
+    }],
+  ])('refuses to export when a managed image does not match %s', async (_label, mutateAsset) => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const { asset, projectRoot } = await createProjectFixture(tempRoot);
+
+    await mutateAsset(projectRoot, asset);
+
+    await expect(new NovusPackExporter().exportRevision(projectRoot, join(tempRoot, 'rejected.novuspack')))
+      .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+  });
+
   it('imports only after validating checksums and missing asset references, then refuses overwrite', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const { projectRoot } = await createProjectFixture(tempRoot);
@@ -81,6 +99,21 @@ describe('NovusPack export and import', () => {
     await expect(new NovusPackImporter().importTo(packagePath, destination))
       .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
   });
+
+  it.each(['wrong-extension', 'wrong-hash', 'wrong-size'] as const)(
+    'rejects a package whose managed image has a %s catalog mismatch',
+    async (catalogMismatch) => {
+      const tempRoot = await createTempRoot(tempRoots);
+      const destination = join(tempRoot, `Rejected-${catalogMismatch}.novus-project`);
+
+      await expect(new NovusPackImporter().importTo(
+        await createFixturePack(tempRoot, { catalogMismatch }),
+        destination,
+      )).rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+
+      await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
 
   it('exports and imports scheduler-created gzip stable snapshots', async () => {
     const tempRoot = await createTempRoot(tempRoots);
@@ -422,6 +455,17 @@ async function createProjectFixture(tempRoot: string, options: { gzipSnapshot?: 
   const assetId = sha256(assetBytes).slice(0, 16);
   const assetRelativePath = `assets/${assetId}.png`;
   const project = {
+    assets: [{
+      assetId,
+      byteSize: assetBytes.length,
+      extension: 'png',
+      height: null,
+      label: 'Pack fixture image',
+      mediaType: 'image/png',
+      origin: 'imported',
+      sha256: sha256(assetBytes),
+      width: null,
+    }],
     edges: [],
     id: 'project-pack',
     name: 'Packable',
@@ -496,6 +540,7 @@ async function createFixturePack(
   tempRoot: string,
   options: {
     additionalEntries?: readonly ZipEntryInput[];
+    catalogMismatch?: 'wrong-extension' | 'wrong-hash' | 'wrong-size';
     corruptChecksum?: boolean;
     duplicateEntries?: readonly ZipEntryInput[];
     omitAsset?: boolean;
@@ -507,7 +552,15 @@ async function createFixturePack(
   entries.set('project.novus.json', await readFile(join(projectRoot, 'project.novus.json')));
   entries.set('snapshots/revision-7-snapshot.json', await readFile(join(projectRoot, 'snapshots', 'revision-7-snapshot.json')));
   if (!options.omitAsset) {
-    entries.set(asset.relativePath, asset.bytes);
+    const assetPath = options.catalogMismatch === 'wrong-extension'
+      ? `assets/${asset.id}.jpg`
+      : asset.relativePath;
+    const assetBytes = options.catalogMismatch === 'wrong-hash'
+      ? Buffer.from('asset-bytez')
+      : options.catalogMismatch === 'wrong-size'
+        ? Buffer.from('asset-bytes-with-extra-data')
+        : asset.bytes;
+    entries.set(assetPath, assetBytes);
   }
   for (const entry of options.additionalEntries ?? []) {
     entries.set(entry.name, entry.bytes);

@@ -10,6 +10,7 @@ export interface PanZoomFrameMetrics {
 
 type E2EState = {
   commitCount: number;
+  durableProjectContainsTransientImageUrl: boolean;
   edgeCount: number;
   moduleTypes: CanvasModuleType[];
   modelJobs: Array<{
@@ -25,6 +26,12 @@ type E2EState = {
     modelRoute: string;
     retryCount: number;
   }>;
+  projectAssetIds: string[];
+  projectImages: Array<{
+    assetId: string;
+    displayUrl: string;
+    label: string;
+  }>;
   projectNodeTypes: string[];
   skillSyncWrites: Array<{
     candidateId: string;
@@ -34,6 +41,14 @@ type E2EState = {
 };
 
 export async function openApp(page: Page): Promise<void> {
+  await page.route('**/__novus_e2e_asset/*.svg', async (route) => {
+    await route.fulfill({
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="10" fill="#dbeafe"/><path d="M18 67 38 45l13 14 9-10 18 18" fill="none" stroke="#2563eb" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="65" cy="30" r="9" fill="#0f766e"/></svg>',
+      contentType: 'image/svg+xml',
+      headers: { 'cache-control': 'no-store' },
+      status: 200,
+    });
+  });
   await page.goto('/');
   await page.waitForFunction((nonce) => window.__NOVUS_E2E__?.nonce === nonce, process.env.NOVUS_E2E_NONCE);
   await page.evaluate(() => window.__NOVUS_E2E__!.reset());
@@ -41,11 +56,14 @@ export async function openApp(page: Page): Promise<void> {
 }
 
 export async function uploadReference(page: Page, testId: string, fixture: GeneratedImageFixture): Promise<void> {
-  await page.getByTestId(testId).setInputFiles({
-    name: fixture.name,
-    mimeType: fixture.mimeType,
-    buffer: fixture.buffer,
-  });
+  await queueProjectImageImport(page, fixture);
+  await page.getByTestId(testId).click();
+}
+
+export async function queueProjectImageImport(page: Page, fixture: GeneratedImageFixture): Promise<void> {
+  await page.evaluate(({ byteSize, label, mediaType }) => {
+    window.__NOVUS_E2E__!.queueProjectImageImport({ byteSize, label, mediaType });
+  }, { byteSize: fixture.buffer.byteLength, label: fixture.name, mediaType: fixture.mimeType });
 }
 
 export async function e2eState(page: Page): Promise<E2EState> {
@@ -190,6 +208,7 @@ declare global {
       createModule(moduleType: CanvasModuleType, position?: { x: number; y: number }): Promise<boolean>;
       getState(): E2EState;
       nonce: string;
+      queueProjectImageImport(input: { byteSize: number; label: string; mediaType: 'image/png' }): void;
       failNextModelJobEnqueue(): void;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;

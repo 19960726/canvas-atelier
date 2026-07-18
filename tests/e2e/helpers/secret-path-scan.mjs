@@ -64,6 +64,8 @@ const allowlistedTexts = [
 const redactionImplementationFiles = new Set([
   'apps/renderer/src/app/app-store.ts',
   'packages/domain/src/model-job.ts',
+  'packages/domain/src/module-graph.ts',
+  'packages/domain/src/project-image-asset.ts',
   'packages/domain/src/project-memory.ts',
   'packages/desktop-core/src/approved-snapshot-outbox.ts',
   'packages/desktop-core/src/approved-snapshot-pull.ts',
@@ -86,7 +88,7 @@ const allowedFindings = [
   {
     file: "tests/e2e/helpers/secret-path-scan.mjs",
     name: "scanner implementation hash",
-    hash: "0cb763c7bee8588f77059e68bbfc4c83e0a7e1b8ccf0e71e989ce271abd69ec9",
+    hash: "a964ef448a41b754b480cf11123e85aab4b61fcfebe9584ee5ab7742a5e75bb3",
   },
   {
     file: "apps/renderer/src/app/app-store.test.ts",

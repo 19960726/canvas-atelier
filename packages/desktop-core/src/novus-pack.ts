@@ -5,7 +5,7 @@ import { basename, dirname, extname, join, posix } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
 import archiver from 'archiver';
-import { parseCanvasProject } from '@agent-canvas/domain';
+import { parseCanvasProject, type CanvasProject, type ProjectImageAsset } from '@agent-canvas/domain';
 import yauzl from 'yauzl';
 
 import { canonicalJson, sha256Canonical } from './canonical-json.js';
@@ -124,8 +124,7 @@ export class NovusPackExporter {
       join(projectRoot, ...manifest.stableSnapshotPath.split('/')),
       manifest,
     );
-    const referencedAssetIds = collectAssetIds(snapshot.project);
-    const assetPaths = await resolveReferencedAssetPaths(projectRoot, referencedAssetIds);
+    const assetPaths = await resolveReferencedAssetPaths(projectRoot, snapshot.project);
     const candidatePaths = [
       'project.novus.json',
       manifest.stableSnapshotPath,
@@ -485,17 +484,7 @@ async function validateExtractedPackage(
     join(stagingRoot, ...packageManifest.snapshotPath.split('/')),
     projectManifest,
   );
-  const referencedAssetIds = collectAssetIds(snapshot.project);
-  const inventoryAssetIds = new Set(
-    packageManifest.inventory
-      .filter((entry) => entry.path.startsWith('assets/'))
-      .map((entry) => basename(entry.path, extname(entry.path))),
-  );
-  for (const assetId of referencedAssetIds) {
-    if (!inventoryAssetIds.has(assetId)) {
-      throw packageValidationError(`Package is missing referenced asset ${redactNovusPackDiagnostics(assetId)}`);
-    }
-  }
+  validateReferencedAssetInventory(snapshot.project, inventoryByPath);
 
   return packageManifest;
 }
@@ -703,7 +692,10 @@ function parseProjectManifest(value: unknown): ProjectManifest {
   return value as unknown as ProjectManifest;
 }
 
-async function readPackageSnapshotEnvelope(path: string, manifest: ProjectManifest): Promise<SnapshotEnvelope> {
+async function readPackageSnapshotEnvelope(
+  path: string,
+  manifest: ProjectManifest,
+): Promise<SnapshotEnvelope & { readonly project: CanvasProject }> {
   let value: SnapshotEnvelope;
   try {
     value = await readSnapshotEnvelope(path);
@@ -729,20 +721,76 @@ async function readPackageSnapshotEnvelope(path: string, manifest: ProjectManife
   if (value.projectSha256 !== sha256Canonical(value.project)) {
     throw packageValidationError('Snapshot checksum is invalid');
   }
-  parseCanvasProject(value.project);
-  return value as unknown as SnapshotEnvelope;
+  const project = parseCanvasProject(value.project);
+  return { ...value, project };
 }
 
-async function resolveReferencedAssetPaths(projectRoot: string, assetIds: ReadonlySet<string>): Promise<string[]> {
+async function resolveReferencedAssetPaths(projectRoot: string, project: CanvasProject): Promise<string[]> {
+  const catalogById = new Map((project.assets ?? []).map((asset) => [asset.assetId, asset]));
   const paths: string[] = [];
-  for (const assetId of [...assetIds].sort()) {
-    const matches = await findAssetPath(projectRoot, assetId);
-    if (matches === null) {
+  for (const assetId of [...collectAssetIds(project)].sort()) {
+    const catalogAsset = catalogById.get(assetId);
+    const assetPath = catalogAsset === undefined
+      ? await findAssetPath(projectRoot, assetId)
+      : await validateCatalogAssetFile(projectRoot, catalogAsset);
+    if (assetPath === null) {
       throw packageValidationError(`Project is missing asset ${redactNovusPackDiagnostics(assetId)}`);
     }
-    paths.push(matches);
+    paths.push(assetPath);
   }
   return paths;
+}
+
+async function validateCatalogAssetFile(projectRoot: string, asset: ProjectImageAsset): Promise<string> {
+  const relativePath = `assets/${asset.assetId}.${asset.extension}`;
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(join(projectRoot, ...relativePath.split('/')));
+  } catch {
+    throw packageValidationError(
+      `Project is missing catalogued asset ${redactNovusPackDiagnostics(asset.assetId)}`,
+    );
+  }
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  if (bytes.length !== asset.byteSize || sha256 !== asset.sha256) {
+    throw packageValidationError(
+      `Project catalogued asset integrity failed for ${redactNovusPackDiagnostics(asset.assetId)}`,
+    );
+  }
+  return relativePath;
+}
+
+function validateReferencedAssetInventory(
+  project: CanvasProject,
+  inventoryByPath: ReadonlyMap<string, NovusPackInventoryEntry>,
+): void {
+  const catalogById = new Map((project.assets ?? []).map((asset) => [asset.assetId, asset]));
+  const inventoryAssetIds = new Set(
+    [...inventoryByPath.keys()]
+      .filter((path) => path.startsWith('assets/'))
+      .map((path) => basename(path, extname(path))),
+  );
+
+  for (const assetId of collectAssetIds(project)) {
+    const catalogAsset = catalogById.get(assetId);
+    if (catalogAsset === undefined) {
+      if (!inventoryAssetIds.has(assetId)) {
+        throw packageValidationError(`Package is missing referenced asset ${redactNovusPackDiagnostics(assetId)}`);
+      }
+      continue;
+    }
+
+    const expectedPath = `assets/${catalogAsset.assetId}.${catalogAsset.extension}`;
+    const inventoryEntry = inventoryByPath.get(expectedPath);
+    if (inventoryEntry === undefined) {
+      throw packageValidationError(`Package is missing referenced asset ${redactNovusPackDiagnostics(assetId)}`);
+    }
+    if (inventoryEntry.sha256 !== catalogAsset.sha256 || inventoryEntry.byteSize !== catalogAsset.byteSize) {
+      throw packageValidationError(
+        `Package catalogued asset integrity failed for ${redactNovusPackDiagnostics(assetId)}`,
+      );
+    }
+  }
 }
 
 async function findAssetPath(projectRoot: string, assetId: string): Promise<string | null> {

@@ -7,8 +7,11 @@ import type {
   ExportPackBridgeResult,
   ImportPackBridgeRequest,
   ImportPackBridgeResult,
+  ImportProjectImageBridgeRequest,
+  ImportProjectImageBridgeResult,
   KnowledgeStateBridgeResult,
   KnowledgeSyncStatusSummary,
+  ListProjectImagesBridgeRequest,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
   PrepareSkillCandidateReviewBridgeRequest,
@@ -21,6 +24,7 @@ import type {
   RestoreBridgeResult,
   StablePointBridgeRequest,
   StablePointBridgeResult,
+  ProjectImageAssetSummary,
 } from './contracts.js';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
@@ -60,8 +64,10 @@ export const BRIDGE_CHANNELS = {
   getKnowledgeState: 'novus-desktop:get-knowledge-state',
   getRecoveryPlan: 'novus-desktop:get-recovery-plan',
   importPack: 'novus-desktop:import-pack',
+  importProjectImage: 'novus-desktop:import-project-image',
   knowledgeStateChanged: 'novus-desktop:knowledge-state-changed',
   knowledgeSyncStatusChanged: 'novus-desktop:knowledge-sync-status-changed',
+  listProjectImages: 'novus-desktop:list-project-images',
   openProject: 'novus-desktop:open-project',
   prepareSkillCandidateReview: 'novus-desktop:prepare-skill-candidate-review',
   reviewSkillCandidate: 'novus-desktop:review-skill-candidate',
@@ -92,6 +98,12 @@ export interface DesktopBridgeApi {
   subscribeKnowledgeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void;
   lifecycle: DesktopLifecycleBridgeApi;
   provider: DesktopProviderBridgeApi;
+  projectImages: DesktopProjectImageBridgeApi;
+}
+
+export interface DesktopProjectImageBridgeApi {
+  importImage(request: ImportProjectImageBridgeRequest): Promise<ImportProjectImageBridgeResult | null>;
+  list(request: ListProjectImagesBridgeRequest): Promise<ProjectImageAssetSummary[]>;
 }
 
 export interface DesktopLifecycleBridgeApi {
@@ -184,6 +196,14 @@ export function createPreloadApi(
           listener(cloneKnowledgeSyncStatus(status));
         }
       });
+    },
+    projectImages: {
+      importImage(request) {
+        return invoke<ImportProjectImageBridgeResult | null>(BRIDGE_CHANNELS.importProjectImage, request);
+      },
+      list(request) {
+        return invoke<ProjectImageAssetSummary[]>(BRIDGE_CHANNELS.listProjectImages, request);
+      },
     },
     lifecycle: {
       ackCloseFlush(ack) {

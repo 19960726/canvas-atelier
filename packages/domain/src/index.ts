@@ -43,6 +43,8 @@ export {
   transitionModelJob,
 } from './model-job';
 export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
+export { projectImageAssetSchema } from './project-image-asset';
+export type { ProjectImageAsset } from './project-image-asset';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
 export {

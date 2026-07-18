@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import type { Connection } from '@xyflow/react';
-import type { KnowledgeSyncStatusSummary, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
+import type {
+  KnowledgeSyncStatusSummary,
+  ProjectImageAssetSummary,
+  ProjectImageImportTarget,
+  ProviderBridgeProfile,
+} from '@agent-canvas/desktop-core';
 import {
   appendProjectMemoryEntry,
   applyProjectTransaction,
@@ -9,6 +14,7 @@ import {
   createSkillPromotionCandidate,
   createCanvasModuleNode,
   getCanvasModuleDefinition,
+  MAX_GENERATION_REFERENCES,
   reorderCanvasInputEdges,
   createUserFeedbackMemory,
   confirmAgentPlan as confirmDomainPlan,
@@ -30,6 +36,7 @@ import {
   type ProjectOperation,
   type ProjectMemoryEntry,
   type ProjectTransaction,
+  type ReferenceRole,
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import {
@@ -127,6 +134,9 @@ interface RecordUserFeedbackInput {
 }
 interface AppState {
   project: CanvasProject;
+  projectImages: ProjectImageAssetSummary[];
+  projectImageError: string | null;
+  projectImageImportingNodeId: string | null;
   persistenceMode: 'browser' | 'desktop';
   desktopRevision: number;
   availableSnapshotIds: string[];
@@ -151,6 +161,12 @@ interface AppState {
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
   getKnowledgeLease: KnowledgeClient['getLease'];
   hydratePersistence: () => Promise<void>;
+  importImageForModule: (nodeId: string) => Promise<boolean>;
+  importPlacementReference: (
+    nodeId: string,
+    role: Exclude<ReferenceRole, 'placement_preview'>,
+  ) => Promise<boolean>;
+  refreshProjectImages: () => Promise<void>;
   initializeKnowledge: () => Promise<void>;
   flushProjectSave: (reason: Exclude<AutosaveFlushReason, 'idle'>) => Promise<boolean>;
   refreshModelJobs: () => Promise<void>;
@@ -160,6 +176,8 @@ interface AppState {
   setActiveTool: (tool: AppState['activeTool']) => void;
   toggleAgentPanel: () => void;
   setProject: (project: CanvasProject, options?: SetProjectOptions) => void;
+  selectProjectImageForModule: (nodeId: string, assetId: string) => Promise<boolean>;
+  setCanvasLibrarySelection: (nodeId: string, assetIds: string[]) => Promise<boolean>;
   draftAgentPlan: (message: string, options?: { modelRoute?: string; modelRouteDisplayName?: string }) => void;
   confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => Promise<void>;
   cancelAgentPlan: () => void;
@@ -329,6 +347,49 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false;
     }
   }),
+  selectProjectImageForModule: (nodeId, assetId) => enqueueModuleGraphCommit(async () => {
+    const state = get();
+    const node = getModuleNode(state.project.nodes, nodeId);
+    const asset = (state.project.assets ?? []).find((candidate) => candidate.assetId === assetId);
+    if (!node || !asset || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')) {
+      return false;
+    }
+    if (node.data.config.assetId === assetId) return true;
+    const nextNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId } } };
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const transaction: ProjectTransaction = {
+      id: `select-project-image-${suffix}`,
+      label: 'Select managed project image',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    const nextProject = applyProjectTransaction(state.project, transaction);
+    return get().commitProjectTransaction(transaction, { nextProject });
+  }),
+  setCanvasLibrarySelection: (nodeId, assetIds) => enqueueModuleGraphCommit(async () => {
+    const state = get();
+    const node = getModuleNode(state.project.nodes, nodeId);
+    if (!node || node.data.moduleType !== 'canvas_library') return false;
+    const uniqueAssetIds = [...new Set(assetIds)];
+    if (uniqueAssetIds.length !== assetIds.length || uniqueAssetIds.length > MAX_GENERATION_REFERENCES) return false;
+    const catalogAssetIds = new Set((state.project.assets ?? []).map((asset) => asset.assetId));
+    if (uniqueAssetIds.some((assetId) => !catalogAssetIds.has(assetId))) return false;
+    const currentAssetIds = Array.isArray(node.data.config.assetIds)
+      ? node.data.config.assetIds.filter(isNonEmptyString)
+      : [];
+    if (sameStringList(currentAssetIds, uniqueAssetIds)) return true;
+    const nextNode = {
+      ...node,
+      data: { ...node.data, config: { ...node.data.config, assetIds: uniqueAssetIds } },
+    };
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const transaction: ProjectTransaction = {
+      id: `update-canvas-library-${suffix}`,
+      label: 'Update canvas image library',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    const nextProject = applyProjectTransaction(state.project, transaction);
+    return get().commitProjectTransaction(transaction, { nextProject });
+  }),
   closePersistence: async () => {
     const flushed = await flushPendingProjectSave(get, set, 'close');
     if (!flushed) return false;
@@ -366,11 +427,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     if (!result.ok && result.code === 'REVISION_CONFLICT') {
       const hydrated = await projectPersistenceClient.hydrate();
+      const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
       set({
         availableSnapshotIds: hydrated.availableSnapshotIds,
         desktopRevision: hydrated.revision,
         persistenceMode: hydrated.mode,
         project: hydrated.project,
+        projectImages,
         saveErrorCode: result.code,
         saveStatus: 'error',
       });
@@ -422,18 +485,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     cancelPendingProjectSave();
     const jobStore = getModelJobStore();
     const hydrated = await projectPersistenceClient.hydrate();
+    const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
     const modelJobs = await jobStore.listJobs();
     set({
       availableSnapshotIds: hydrated.availableSnapshotIds,
       desktopRevision: hydrated.revision,
       persistenceMode: hydrated.mode,
       project: hydrated.project,
+      projectImages,
+      projectImageError: null,
       confirmedModelJobs: countConfirmedModelJobs(modelJobs),
       modelJobs,
       saveErrorCode: null,
       saveStatus: hydrated.saveStatus,
     });
     recoverModelJobsInBackground(jobStore);
+  },
+  importImageForModule: (nodeId) => importProjectImageWithTarget({ kind: 'module', nodeId }),
+  importPlacementReference: (nodeId, role) => importProjectImageWithTarget({
+    kind: 'placement_reference',
+    nodeId,
+    role,
+  }),
+  refreshProjectImages: async () => {
+    try {
+      const projectImages = await projectPersistenceClient.listProjectImages();
+      set({ projectImages, projectImageError: null });
+    } catch (error) {
+      set({ projectImageError: readErrorCode(error) });
+    }
   },
   initializeKnowledge: async () => {
     await knowledgeClient.start(
@@ -737,10 +817,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (state.persistenceMode === 'desktop') {
       cancelPendingProjectSave();
       const restored = await projectPersistenceClient.restore(snapshotId);
+      const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
       set({
         availableSnapshotIds: restored.availableSnapshotIds,
         desktopRevision: restored.revision,
         project: restored.project,
+        projectImages,
+        projectImageError: null,
         saveErrorCode: null,
         saveStatus: restored.saveStatus,
       });
@@ -820,8 +903,98 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 }));
 
-export function replaceProjectPersistenceClientForTests(client: ProjectPersistenceClient): void {
-  projectPersistenceClient = client;
+async function importProjectImageWithTarget(target: ProjectImageImportTarget): Promise<boolean> {
+  const before = useAppStore.getState();
+  if (before.projectImageImportingNodeId !== null || before.saveStatus === 'read_only') return false;
+  const node = before.project.nodes.find((candidate) => candidate.id === target.nodeId);
+  if (node === undefined) return false;
+  if (target.kind === 'module' && (
+    node.type !== 'module'
+    || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')
+  )) return false;
+  if (target.kind === 'placement_reference' && node.type !== 'placement_preview') return false;
+
+  const previousSaveStatus = before.saveStatus;
+  useAppStore.setState({
+    projectImageError: null,
+    projectImageImportingNodeId: target.nodeId,
+    saveErrorCode: null,
+    saveStatus: 'saving',
+  });
+  try {
+    const result = await projectPersistenceClient.importProjectImage(target);
+    if (result === null) {
+      useAppStore.setState({
+        projectImageImportingNodeId: null,
+        saveStatus: previousSaveStatus,
+      });
+      return false;
+    }
+    const current = useAppStore.getState();
+    useAppStore.setState({
+      desktopRevision: result.revision,
+      project: result.project,
+      projectImages: upsertProjectImageSummary(current.projectImages, result.asset),
+      projectImageError: null,
+      projectImageImportingNodeId: null,
+      saveErrorCode: null,
+      saveStatus: 'saved',
+    });
+    return true;
+  } catch (error) {
+    const code = readErrorCode(error);
+    if (code === 'REVISION_CONFLICT') {
+      const hydrated = await projectPersistenceClient.hydrate().catch(() => null);
+      if (hydrated !== null) {
+        const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
+        useAppStore.setState({
+          availableSnapshotIds: hydrated.availableSnapshotIds,
+          desktopRevision: hydrated.revision,
+          persistenceMode: hydrated.mode,
+          project: hydrated.project,
+          projectImages,
+          projectImageError: code,
+          projectImageImportingNodeId: null,
+          saveErrorCode: code,
+          saveStatus: 'error',
+        });
+        return false;
+      }
+    }
+    useAppStore.setState({
+      projectImageError: code,
+      projectImageImportingNodeId: null,
+      saveErrorCode: code,
+      saveStatus: 'error',
+    });
+    return false;
+  }
+}
+
+function upsertProjectImageSummary(
+  assets: readonly ProjectImageAssetSummary[],
+  asset: ProjectImageAssetSummary,
+): ProjectImageAssetSummary[] {
+  return assets.some((candidate) => candidate.assetId === asset.assetId)
+    ? assets.map((candidate) => candidate.assetId === asset.assetId ? asset : candidate)
+    : [...assets, asset];
+}
+
+type CompatibleProjectPersistenceClient = Omit<
+  ProjectPersistenceClient,
+  'importProjectImage' | 'listProjectImages'
+> & Partial<Pick<ProjectPersistenceClient, 'importProjectImage' | 'listProjectImages'>>;
+
+export function replaceProjectPersistenceClientForTests(client: CompatibleProjectPersistenceClient): void {
+  projectPersistenceClient = withProjectImagePersistenceDefaults(client);
+}
+
+function withProjectImagePersistenceDefaults(client: CompatibleProjectPersistenceClient): ProjectPersistenceClient {
+  return {
+    ...client,
+    importProjectImage: client.importProjectImage ?? (async () => null),
+    listProjectImages: client.listProjectImages ?? (async () => []),
+  };
 }
 
 export function replaceKnowledgeClientForTests(client: KnowledgeClient): void {
@@ -1029,7 +1202,7 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   const restoredProject = desktopMode ? null : loadPersistedProjectBundle()?.current;
   return {
@@ -1044,6 +1217,9 @@ function createInitialState(): Pick<AppState, 'project' | 'persistenceMode' | 'd
     modelJobs: [],
     persistenceMode: desktopMode ? 'desktop' : 'browser',
     project: restoredProject ?? createStarterProject(),
+    projectImages: [],
+    projectImageError: null,
+    projectImageImportingNodeId: null,
     saveErrorCode: null,
     saveStatus: restoredProject ? 'saved' : 'pending',
     undoStack: [],
@@ -1477,6 +1653,13 @@ function isStaleSkillPreparationError(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
+}
+
+function readErrorCode(error: unknown): string {
+  if (isRecord(error) && typeof error.code === 'string' && /^[A-Z0-9_]{1,64}$/u.test(error.code)) {
+    return error.code;
+  }
+  return 'PROJECT_IMAGE_UNAVAILABLE';
 }
 
 function sanitizeSkillPreparationError(error: unknown): string {

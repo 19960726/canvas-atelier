@@ -1,4 +1,11 @@
-import type { CanvasProject, ProjectOperation, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
+import type {
+  CanvasProject,
+  ProjectImageAsset,
+  ProjectOperation,
+  ProjectTransaction,
+  ReferenceRole,
+  SkillPromotionCandidate,
+} from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 
 export const PROJECT_FORMAT_VERSION = 1;
@@ -201,6 +208,34 @@ export interface ImportPackBridgeResult extends BridgeSessionSummary {
 
 export interface CloseProjectBridgeRequest {
   readonly sessionId: string;
+}
+
+export type ProjectImageImportTarget =
+  | { readonly kind: 'module'; readonly nodeId: string }
+  | {
+    readonly kind: 'placement_reference';
+    readonly nodeId: string;
+    readonly role: Exclude<ReferenceRole, 'placement_preview'>;
+  };
+
+export interface ImportProjectImageBridgeRequest {
+  readonly sessionId: string;
+  readonly target: ProjectImageImportTarget;
+}
+
+export interface ListProjectImagesBridgeRequest {
+  readonly sessionId: string;
+}
+
+export interface ProjectImageAssetSummary extends ProjectImageAsset {
+  readonly displayUrl: string;
+  readonly usageCount: number;
+}
+
+export interface ImportProjectImageBridgeResult {
+  readonly asset: ProjectImageAssetSummary;
+  readonly currentRevision: number;
+  readonly project: CanvasProject;
 }
 
 export interface ConfigureKnowledgeBaseBridgeRequest {

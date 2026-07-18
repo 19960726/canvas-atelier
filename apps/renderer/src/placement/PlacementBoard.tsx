@@ -3,6 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import { Image as ImageIcon, RotateCw } from 'lucide-react';
 import type { PlacementBoard as PlacementBoardValue, PlacementObject } from '@agent-canvas/domain';
 import { normalizePlacementObject } from '@agent-canvas/domain';
+import { isRenderableManagedImageUrl } from '../app/managed-image-url';
 
 const minimumPlacementSize = 0.02;
 
@@ -142,7 +143,7 @@ export function PlacementBoard({
       {value.objects.filter((object) => object.visible).sort((a, b) => a.zIndex - b.zIndex).map((object) => {
         const selected = object.id === selectedObjectId;
         const imageSource = resolveAssetUrl?.(object.assetId) ?? object.assetId;
-        const canRenderImage = /^(blob:|data:|https?:)/.test(imageSource);
+        const canRenderImage = isRenderableManagedImageUrl(imageSource);
         return (
           <div
             key={object.id}
