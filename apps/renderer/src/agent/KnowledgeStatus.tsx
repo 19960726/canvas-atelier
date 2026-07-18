@@ -19,7 +19,7 @@ export function KnowledgeStatus({
 }: KnowledgeStatusProps) {
   const displayStatus = selectDisplayStatus(knowledgeBases, syncStatuses, pendingReviewCount);
   const active = selectActiveVersion(knowledgeBases);
-  const activeLabel = active ? `${active.knowledgeBaseId}@${active.version} updated ${active.publishedAt}` : 'No active knowledge';
+  const activeLabel = active ? `${active.knowledgeBaseId}@${active.version} · 更新于 ${active.publishedAt}` : '暂无已启用知识 / No active knowledge';
 
   return (
     <aside className={`knowledge-status is-${displayStatus}`} data-knowledge-status={displayStatus} role="status" aria-live="polite">
@@ -29,7 +29,7 @@ export function KnowledgeStatus({
         <span data-testid="knowledge-status-detail">{activeLabel}</span>
       </span>
       {pinnedLease && (
-        <span className="knowledge-status__pinned">Pinned {pinnedLease.versionKey}</span>
+        <span className="knowledge-status__pinned">固定版本 / Pinned {pinnedLease.versionKey}</span>
       )}
     </aside>
   );
@@ -71,5 +71,13 @@ function selectActiveVersion(knowledgeBases: KnowledgeBaseStateSummary[]): {
 }
 
 function formatStatus(status: DisplayStatus): string {
-  return status === 'pending_review' ? 'pending review' : status;
+  const labels: Record<DisplayStatus, string> = {
+    syncing: '同步中 / Syncing',
+    updated: '已更新 / Updated',
+    pending_review: '待审核 / Pending review',
+    fallback: '回退状态 / Fallback',
+    offline: '离线 / Offline',
+    conflict: '冲突 / Conflict',
+  };
+  return labels[status];
 }

@@ -30,7 +30,7 @@ afterEach(() => {
 
 describe('ModuleNodeCard', () => {
   it('renders stable typed handles from the registry', () => {
-    const node = createCanvasModuleNode('generator', 'image_generation_v2', { x: 0, y: 0 });
+    const node = createCanvasModuleNode('generator', 'image_generation', { x: 0, y: 0 });
 
     render(
       <ReactFlowProvider>
@@ -38,8 +38,8 @@ describe('ModuleNodeCard', () => {
       </ReactFlowProvider>,
     );
 
-    expect(screen.getByText('图像生成 v2')).toBeVisible();
-    expect(screen.getByText('Image Generation v2')).toBeVisible();
+    expect(screen.getAllByText('图片生成')[0]).toBeVisible();
+    expect(screen.getByText('Image Generation')).toBeVisible();
     expect(document.querySelector('[data-port-id="prompt"][data-port-direction="input"]')).not.toBeNull();
     expect(document.querySelector('[data-port-id="result"][data-port-direction="output"]')).not.toBeNull();
     expect(screen.getByText('提示词')).toBeVisible();
@@ -51,7 +51,7 @@ describe('ModuleNodeCard', () => {
   });
 
   it('keeps selection visible without changing the module identity', () => {
-    const node = createCanvasModuleNode('generator', 'image_generation_v2', { x: 0, y: 0 });
+    const node = createCanvasModuleNode('generator', 'image_generation', { x: 0, y: 0 });
 
     render(
       <ReactFlowProvider>
@@ -60,7 +60,7 @@ describe('ModuleNodeCard', () => {
     );
 
     expect(document.querySelector('.module-node')).toHaveClass('is-selected');
-    expect(document.querySelector('[data-module-type="image_generation_v2"]')).not.toBeNull();
+    expect(document.querySelector('[data-module-type="image_generation"]')).not.toBeNull();
   });
 
   it('renders managed preview metadata and opens only the confined desktop import action', () => {

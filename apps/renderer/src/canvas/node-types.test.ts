@@ -212,7 +212,7 @@ describe('toFlowNodes', () => {
   });
 
   it('passes module node data directly to the module renderer', () => {
-    const node = createCanvasModuleNode('generator', 'image_generation_v2', { x: 12, y: 24 });
+    const node = createCanvasModuleNode('generator', 'image_generation', { x: 12, y: 24 });
     const flowNode = toFlowNodes([node])[0];
 
     expect(flowNode).toMatchObject({

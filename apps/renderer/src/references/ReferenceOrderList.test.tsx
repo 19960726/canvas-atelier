@@ -17,6 +17,7 @@ describe('ReferenceOrderList', () => {
     const onPreviewOrder = vi.fn();
     const onCommitOrder = vi.fn();
     render(<ReferenceOrderList references={references} onPreviewOrder={onPreviewOrder} onCommitOrder={onCommitOrder} />);
+    expect(screen.getByRole('region', { name: 'Agent 参考顺序' })).toHaveTextContent('参考顺序 / Reference order');
 
     fireEvent.dragStart(screen.getByText('Scene'));
     fireEvent.dragOver(screen.getByText('Product'));
@@ -51,7 +52,7 @@ describe('ReferenceOrderList', () => {
     render(<ReferenceOrderList references={references} onPreviewOrder={onPreviewOrder} onCommitOrder={onCommitOrder} />);
 
     fireEvent.dragStart(screen.getByText('Product'));
-    fireEvent.dragOver(screen.getByLabelText('Drop reference at end'));
+    fireEvent.dragOver(screen.getByLabelText('放到参考顺序末尾 / Drop reference at end'));
     expect(onPreviewOrder).toHaveBeenLastCalledWith(['scene', 'prop', 'product']);
 
     fireEvent.keyDown(window, { key: 'Escape' });
@@ -65,12 +66,12 @@ describe('ReferenceOrderList', () => {
     render(<ReferenceOrderList references={references} onPreviewOrder={onPreviewOrder} onCommitOrder={onCommitOrder} />);
 
     fireEvent.dragStart(screen.getByText('Product'));
-    fireEvent.dragOver(screen.getByLabelText('Drop reference at end'));
+    fireEvent.dragOver(screen.getByLabelText('放到参考顺序末尾 / Drop reference at end'));
 
     expect(onPreviewOrder).toHaveBeenLastCalledWith(['scene', 'prop', 'product']);
     expect(onCommitOrder).not.toHaveBeenCalled();
 
-    fireEvent.drop(screen.getByLabelText('Drop reference at end'));
+    fireEvent.drop(screen.getByLabelText('放到参考顺序末尾 / Drop reference at end'));
 
     expect(onCommitOrder).toHaveBeenCalledTimes(1);
     expect(onCommitOrder).toHaveBeenCalledWith(['scene', 'prop', 'product']);
@@ -80,15 +81,15 @@ describe('ReferenceOrderList', () => {
     const onCommitOrder = vi.fn();
     render(<ReferenceOrderList references={references} onPreviewOrder={onPreviewOrder} onCommitOrder={onCommitOrder} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move Scene up' }));
+    fireEvent.click(screen.getByRole('button', { name: '上移 Scene / Move Scene up' }));
 
     expect(onPreviewOrder).toHaveBeenCalledTimes(1);
     expect(onPreviewOrder).toHaveBeenCalledWith(['scene', 'product', 'prop']);
     expect(onCommitOrder).toHaveBeenCalledTimes(1);
     expect(onCommitOrder).toHaveBeenCalledWith(['scene', 'product', 'prop']);
-    expect(screen.getByRole('button', { name: 'Move Scene up' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '上移 Scene / Move Scene up' })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move Scene down' }));
+    fireEvent.click(screen.getByRole('button', { name: '下移 Scene / Move Scene down' }));
 
     expect(onPreviewOrder).toHaveBeenLastCalledWith(['product', 'scene', 'prop']);
     expect(onCommitOrder).toHaveBeenCalledTimes(2);

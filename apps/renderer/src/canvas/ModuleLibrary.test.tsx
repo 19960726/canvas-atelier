@@ -11,7 +11,7 @@ describe('ModuleLibrary', () => {
 
     expect(screen.getByText('Agent 反推')).toBeVisible();
     expect(screen.getByText('Reverse Agent')).toBeVisible();
-    expect(screen.getByText(/分析参考图并整理可执行的复现方向/)).toBeVisible();
+    expect(screen.getByText(/按顺序分析图片、视频、文本任务与线稿/)).toBeVisible();
   });
 
   it('matches the same module with Chinese and English search terms', () => {
@@ -79,10 +79,10 @@ describe('ModuleLibrary', () => {
     render(<ModuleLibrary onCreate={onCreate} />);
 
     fireEvent.click(screen.getByRole('tab', { name: '生成 / Generation' }));
-    fireEvent.click(screen.getByRole('button', { name: '收藏 图像生成 v2 / Image Generation v2' }));
+    fireEvent.click(screen.getByRole('button', { name: '收藏 图片生成 / Image Generation' }));
     fireEvent.click(screen.getByRole('tab', { name: '收藏 / Favorites' }));
 
-    expect(screen.getByRole('button', { name: '查看 图像生成 v2 / Image Generation v2' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '查看 图片生成 / Image Generation' })).toBeVisible();
     expect(onCreate).not.toHaveBeenCalled();
   });
 

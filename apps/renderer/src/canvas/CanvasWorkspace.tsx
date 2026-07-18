@@ -626,7 +626,7 @@ export function CanvasWorkspace() {
   };
 
   return (
-    <div data-testid="workspace" className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
+    <div data-testid="workspace" data-agent-collapsed={agentPanelCollapsed} className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
       <header className="topbar" data-testid="topbar" data-surface="chrome">
         <div className="product-mark" aria-label="Novus Atelier">
           <span className="product-mark__icon"><Box size={17} /></span>
@@ -679,8 +679,8 @@ export function CanvasWorkspace() {
         <button
           className="tool-button"
           type="button"
-          aria-label={agentPanelCollapsed ? '展开 Agent 面板' : '收起 Agent 面板'}
-          title={agentPanelCollapsed ? '展开 Agent 面板' : '收起 Agent 面板'}
+          aria-label={agentPanelCollapsed ? '展开 Agent 面板' : '折叠 Agent 面板'}
+          title={agentPanelCollapsed ? '展开 Agent 面板' : '折叠 Agent 面板'}
           onClick={toggleAgentPanel}
         >
           {agentPanelCollapsed ? <PanelRightOpen size={18} /> : <PanelRightClose size={18} />}
@@ -787,9 +787,9 @@ export function CanvasWorkspace() {
         <div className="agent-panel__header">
           <div>
             <strong>Novus Agent</strong>
-            <span>已读取 2 个 Skill</span>
+            <span>技能与知识工作台 / Skills & Knowledge</span>
           </div>
-          <button className="icon-button" type="button" aria-label="收起 Agent 面板" title="收起 Agent 面板" onClick={toggleAgentPanel}>
+          <button className="icon-button" type="button" aria-label="折叠 Agent 面板" title="折叠 Agent 面板" onClick={toggleAgentPanel}>
             <PanelRightClose size={16} />
           </button>
         </div>

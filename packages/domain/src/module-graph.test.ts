@@ -68,7 +68,7 @@ describe('migrateCanvasProjectGraph', () => {
 describe('canConnectCanvasPorts', () => {
   it('accepts prompt to generator and rejects prompt to references', () => {
     const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });
-    const generator = createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 });
+    const generator = createCanvasModuleNode('generator', 'image_generation', { x: 320, y: 0 });
 
     expect(canConnectCanvasPorts(prompt, 'prompt', generator, 'prompt')).toEqual({ ok: true });
     expect(canConnectCanvasPorts(prompt, 'prompt', generator, 'references')).toMatchObject({
@@ -86,7 +86,7 @@ describe('canConnectCanvasPorts', () => {
 
   it('returns typed failures for missing ports and reversed direction', () => {
     const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });
-    const generator = createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 });
+    const generator = createCanvasModuleNode('generator', 'image_generation', { x: 320, y: 0 });
 
     expect(canConnectCanvasPorts(prompt, 'missing', generator, 'prompt')).toMatchObject({
       ok: false,
@@ -101,7 +101,7 @@ describe('canConnectCanvasPorts', () => {
   it('resolves duplicate editor port ids by direction', () => {
     const editorA = createCanvasModuleNode('editor-a', 'image_editor', { x: 0, y: 0 });
     const editorB = createCanvasModuleNode('editor-b', 'image_editor', { x: 320, y: 0 });
-    const generator = createCanvasModuleNode('generator', 'image_generation_v1', { x: 640, y: 0 });
+    const generator = createCanvasModuleNode('generator', 'image_generation', { x: 640, y: 0 });
     const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 960, y: 0 });
 
     expect(canConnectCanvasPorts(editorA, 'image', editorB, 'image')).toEqual({ ok: true });
@@ -114,7 +114,7 @@ describe('validateCanvasModuleGraph', () => {
   it('rejects duplicate single-input bindings', () => {
     const project = moduleProject([
       createCanvasModuleNode('a', 'text_prompt', { x: 0, y: 0 }),
-      createCanvasModuleNode('b', 'image_generation_v1', { x: 320, y: 0 }),
+      createCanvasModuleNode('b', 'image_generation', { x: 320, y: 0 }),
     ], [
       moduleEdge('edge-1', 'a', 'prompt', 'b', 'prompt', 0),
       moduleEdge('edge-2', 'a', 'prompt', 'b', 'prompt', 1),
@@ -126,7 +126,7 @@ describe('validateCanvasModuleGraph', () => {
   it('reports malformed edges instead of throwing', () => {
     const project = moduleProject([
       createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 }),
-      createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 }),
+      createCanvasModuleNode('generator', 'image_generation', { x: 320, y: 0 }),
     ], [
       moduleEdge('missing-node', 'missing', 'prompt', 'generator', 'prompt', 0),
       moduleEdge('missing-port', 'prompt', 'missing', 'generator', 'prompt', 1),
@@ -146,7 +146,7 @@ describe('validateCanvasModuleGraph', () => {
   it('reports missing port metadata for the correct endpoint', () => {
     const project = moduleProject([
       createCanvasModuleNode('source', 'text_prompt', { x: 0, y: 0 }),
-      createCanvasModuleNode('target', 'image_generation_v1', { x: 320, y: 0 }),
+      createCanvasModuleNode('target', 'image_generation', { x: 320, y: 0 }),
     ], [
       moduleEdge('bad-source-port', 'source', 'missing', 'target', 'prompt', 0),
       moduleEdge('bad-target-port', 'source', 'prompt', 'target', 'missing', 0),

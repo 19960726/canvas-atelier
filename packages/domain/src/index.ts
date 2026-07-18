@@ -94,4 +94,6 @@ export type {
   CanvasModulePortDefinition,
   CanvasModuleType,
   CanvasPortDataType,
+  LegacyCanvasModuleType,
+  SerializedCanvasModuleType,
 } from './canvas-module';

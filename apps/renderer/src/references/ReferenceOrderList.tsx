@@ -76,8 +76,8 @@ export function ReferenceOrderList({
   };
 
   return (
-    <section className="reference-order" aria-label="Agent reference order" data-testid="reference-order">
-      <header><span>Reference order</span><b>{previewReferences.length}</b></header>
+    <section className="reference-order" aria-label="Agent 参考顺序" data-testid="reference-order">
+      <header><span>参考顺序 / Reference order</span><b>{previewReferences.length}</b></header>
       <ol>
         {previewReferences.map((reference, index) => (
           <li key={reference.assetId} data-testid="reference-order-item" data-role={reference.role} data-asset-id={reference.assetId} data-position={index} draggable
@@ -101,9 +101,9 @@ export function ReferenceOrderList({
             </div>
             <span className="reference-order__label">{reference.label}<small>{roleLabel(reference.role)}</small></span>
             <span className="reference-order__actions">
-              <button type="button" aria-label={`Move ${reference.label} up`} title={`Move ${reference.label} up`}
+              <button type="button" aria-label={`上移 ${reference.label} / Move ${reference.label} up`} title={`上移 ${reference.label}`}
                 disabled={index === 0} onClick={() => moveByKeyboard(reference.assetId, -1)}><ArrowUp size={13} /></button>
-              <button type="button" aria-label={`Move ${reference.label} down`} title={`Move ${reference.label} down`}
+              <button type="button" aria-label={`下移 ${reference.label} / Move ${reference.label} down`} title={`下移 ${reference.label}`}
                 disabled={index === previewReferences.length - 1} onClick={() => moveByKeyboard(reference.assetId, 1)}><ArrowDown size={13} /></button>
             </span>
           </li>
@@ -111,7 +111,7 @@ export function ReferenceOrderList({
       </ol>
       <div
         className="reference-order__end-drop"
-        aria-label="Drop reference at end"
+        aria-label="放到参考顺序末尾 / Drop reference at end"
         onDragOver={(event) => { event.preventDefault(); previewBefore(); }}
         onDrop={(event) => {
           event.preventDefault();
@@ -129,11 +129,11 @@ function sameAssetOrder(left: OrderedReference[], right: OrderedReference[]): bo
 }
 
 function roleLabel(role: OrderedReference['role']): string {
-  if (role === 'product_identity') return 'product';
-  if (role === 'scene_composition') return 'scene';
-  if (role === 'prop_reference') return 'prop';
-  if (role === 'material_lighting') return 'material';
-  return 'placement';
+  if (role === 'product_identity') return '产品 / Product';
+  if (role === 'scene_composition') return '场景 / Scene';
+  if (role === 'prop_reference') return '道具 / Prop';
+  if (role === 'material_lighting') return '材质光照 / Material';
+  return '摆放 / Placement';
 }
 
 function renderThumbnail(url: string | undefined, label: string) {

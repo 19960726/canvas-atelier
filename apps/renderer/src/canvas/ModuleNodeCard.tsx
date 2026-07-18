@@ -55,12 +55,14 @@ interface ModulePortProps {
 
 const ModulePort = memo(function ModulePort({ port }: ModulePortProps) {
   const isInput = port.direction === 'input';
+  const portShape = getPortShape(port.dataType);
   return (
     <div
       className={`module-node__port-row module-node__port-row--${port.direction}`}
       data-port-id={port.id}
       data-port-direction={port.direction}
       data-port-type={port.dataType}
+      data-port-shape={portShape}
     >
       {isInput && (
         <Handle
@@ -70,6 +72,7 @@ const ModulePort = memo(function ModulePort({ port }: ModulePortProps) {
           data-port-id={port.id}
           data-port-direction={port.direction}
           data-port-type={port.dataType}
+          data-port-shape={portShape}
         />
       )}
       <span className="module-node__port-label">
@@ -85,6 +88,7 @@ const ModulePort = memo(function ModulePort({ port }: ModulePortProps) {
           data-port-id={port.id}
           data-port-direction={port.direction}
           data-port-type={port.dataType}
+          data-port-shape={portShape}
         />
       )}
     </div>
@@ -112,6 +116,10 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const hasImageControls = data.moduleType === 'image_input'
     || data.moduleType === 'upload_image'
     || data.moduleType === 'canvas_library';
+  const isProfessionalWorkbench = data.moduleType === 'image_generation'
+    || data.moduleType === 'reverse_agent'
+    || data.moduleType === 'music_generation'
+    || data.moduleType === 'speech_generation';
   const filteredProjectImages = useMemo(() => {
     const query = libraryQuery.trim().toLocaleLowerCase();
     return query.length === 0
@@ -121,7 +129,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
 
   return (
     <article
-      className={`module-node${hasImageControls ? ' module-node--image-controls' : ''}${selected ? ' is-selected' : ''}`}
+      className={`module-node${hasImageControls ? ' module-node--image-controls' : ''}${isProfessionalWorkbench ? ' module-node--workbench' : ''}${selected ? ' is-selected' : ''}`}
       data-testid="module-node-card"
       data-module-type={definition.type}
     >
@@ -159,24 +167,195 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           onQueryChange={setLibraryQuery}
           onSelectionChange={(assetIds) => { void setCanvasLibrarySelection(id, assetIds); }}
         />
+      ) : data.moduleType === 'image_generation' ? (
+        <ImageGenerationSummary config={data.config} definition={definition} />
+      ) : data.moduleType === 'reverse_agent' ? (
+        <ReverseAgentSummary config={data.config} definition={definition} />
+      ) : data.moduleType === 'music_generation' || data.moduleType === 'speech_generation' ? (
+        <UnavailableCapabilitySummary config={data.config} definition={definition} />
       ) : (
-        <div className="module-node__summary">{summarizeModuleConfig(data.config)}</div>
+        <GenericModuleSummary config={data.config} definition={definition} />
       )}
       <div className="module-node__ports" aria-label="模块端口 / Module ports">
         <div className="module-node__ports-column module-node__ports-column--inputs">
-          {inputs.map((port) => <ModulePort key={port.id} port={port} />)}
+          {inputs.map((port) => <ModulePort key={`${port.direction}:${port.id}`} port={port} />)}
         </div>
         <div className="module-node__ports-column module-node__ports-column--outputs">
-          {outputs.map((port) => <ModulePort key={port.id} port={port} />)}
+          {outputs.map((port) => <ModulePort key={`${port.direction}:${port.id}`} port={port} />)}
         </div>
       </div>
       <footer className="module-node__footer">
-        <span>{executionModeLabels[definition.executionMode]}</span>
-        <b>{formatExecutionState(data.execution.state)}</b>
+        <span>{executionModeLabels[definition.executionMode]} · {formatRoute(data.config)}</span>
+        <b data-execution-state={data.execution.state}>{formatExecutionState(data.execution.state)}</b>
       </footer>
+      <ModuleError config={data.config} />
     </article>
   );
 });
+
+function ImageGenerationSummary({ config, definition }: { config: Record<string, unknown>; definition: CanvasModuleDefinition }) {
+  const enabled = readStringArray(config.enabledInputCapabilities);
+  const referenceCount = readStringArray(config.referenceAssetIds).length;
+  return (
+    <section className="module-node__summary module-node__summary--structured" aria-label="生成能力槽位 / Generation capability slots">
+      <div className="module-node__meta-line"><strong>能力</strong><span>{formatCapabilities(definition)}</span></div>
+      <div className="module-node__slot-grid">
+        <CapabilitySlot label="提示词 / Prompt" state="required" />
+        <CapabilitySlot label={`参考图 ${referenceCount} / References`} state={enabled.includes('references') ? 'available' : 'unsupported'} />
+        <CapabilitySlot label="蒙版 / Mask" state={enabled.includes('mask') ? 'available' : 'unsupported'} />
+        <CapabilitySlot label="姿态 / Pose" state={enabled.includes('pose') ? 'available' : 'unsupported'} />
+      </div>
+      <ResultFreshness value={config.resultState} />
+    </section>
+  );
+}
+
+function CapabilitySlot({ label, state }: { label: string; state: 'required' | 'available' | 'unsupported' }) {
+  const stateLabel = state === 'required'
+    ? '必需 / Required'
+    : state === 'available'
+      ? '可用 / Available'
+      : '当前模型不支持 / Unsupported';
+  return <span className={`module-node__slot is-${state}`}><b>{label}</b><small>{stateLabel}</small></span>;
+}
+
+function ReverseAgentSummary({ config, definition }: { config: Record<string, unknown>; definition: CanvasModuleDefinition }) {
+  const media = readOrderedMedia(config.orderedMedia);
+  const skillName = readNonEmptyString(config.skillName) ?? '自动识别';
+  const mode = readNonEmptyString(config.mode) ?? 'auto';
+  const knowledgeVersion = typeof config.knowledgeVersion === 'number' ? `知识 v${config.knowledgeVersion}` : '知识未绑定';
+  return (
+    <section className="module-node__summary module-node__summary--structured" aria-label="反推媒体摘要 / Reverse media summary">
+      <div className="module-node__meta-line"><strong>Skill / 模式</strong><span>{skillName} · {mode}</span></div>
+      <div className="module-node__meta-line"><strong>能力 / 知识</strong><span>{formatCapabilities(definition)} · {knowledgeVersion}</span></div>
+      <div className="module-node__media-strip">
+        {media.length === 0 ? <small>等待图片、视频、文本任务或线稿输入</small> : media.map((item, index) => (
+          <span className={`module-node__media-item is-${item.kind}`} key={`${item.assetId}-${index}`}>
+            <b>{String(index + 1).padStart(2, '0')}</b>
+            <span>{item.label}</span>
+            {item.ranges.map((range) => <small key={`${range.startMs}-${range.endMs}`}>{formatRange(range.startMs, range.endMs)}</small>)}
+          </span>
+        ))}
+      </div>
+      <ResultFreshness value={config.resultState} />
+    </section>
+  );
+}
+
+function UnavailableCapabilitySummary({ config, definition }: { config: Record<string, unknown>; definition: CanvasModuleDefinition }) {
+  const available = config.routeAvailable === true;
+  return (
+    <section className="module-node__summary module-node__summary--structured">
+      <div className="module-node__meta-line"><strong>能力</strong><span>{formatCapabilities(definition)}</span></div>
+      {!available && <div className="module-node__unavailable" role="status">需要配置兼容模型 / Compatible model required</div>}
+      <small>本节点仅声明安全合同；未配置路线时不会创建运行任务。</small>
+    </section>
+  );
+}
+
+function GenericModuleSummary({ config, definition }: { config: Record<string, unknown>; definition: CanvasModuleDefinition }) {
+  return (
+    <section className="module-node__summary module-node__summary--structured">
+      <div className="module-node__meta-line"><strong>配置</strong><span>{summarizeModuleConfig(config)}</span></div>
+      <div className="module-node__meta-line"><strong>能力</strong><span>{formatCapabilities(definition)}</span></div>
+      <ResultFreshness value={config.resultState} />
+    </section>
+  );
+}
+
+function ModuleError({ config }: { config: Record<string, unknown> }) {
+  const error = config.error;
+  if (!error || typeof error !== 'object' || Array.isArray(error)) return null;
+  const title = readNonEmptyString((error as Record<string, unknown>).title);
+  const action = readNonEmptyString((error as Record<string, unknown>).action);
+  if (!title && !action) return null;
+  return <div className="module-node__error" role="alert"><strong>{title ?? '模块需要处理'}</strong>{action && <span>{action}</span>}</div>;
+}
+
+function ResultFreshness({ value }: { value: unknown }) {
+  if (value === 'stale') return <span className="module-node__freshness is-stale">结果已过期 / Stale result</span>;
+  if (value === 'fresh') return <span className="module-node__freshness is-fresh">结果为最新 / Fresh result</span>;
+  return <span className="module-node__freshness">暂无结果 / No result</span>;
+}
+
+function formatCapabilities(definition: CanvasModuleDefinition): string {
+  const labels: Readonly<Record<string, string>> = {
+    chat: '对话',
+    comfy_workflow: '受控 Comfy',
+    image_edit: '图片编辑',
+    image_generation: '图片生成',
+    line_art_material: '线稿材质',
+    local_redraw: '局部重绘',
+    mask_edit: '蒙版',
+    music_generation: '音乐',
+    pose: '姿态',
+    speech_synthesis: '语音',
+    storyboard: '分镜',
+    structured_comparison: '结构化对比',
+    structured_output: '结构化输出',
+    video_understanding: '视频理解',
+    vision: '视觉',
+  };
+  return definition.capabilities.map((capability) => labels[capability] ?? capability).join(' · ') || '本地';
+}
+
+function formatRoute(config: Record<string, unknown>): string {
+  return readNonEmptyString(config.routeDisplayName) ?? readNonEmptyString(config.route) ?? '未选择路线';
+}
+
+function getPortShape(dataType: CanvasModulePortDefinition['dataType']): 'circle' | 'diamond' | 'square' {
+  if (dataType === 'text_prompt' || dataType === 'voice_profile_id') return 'diamond';
+  if (dataType.endsWith('_document') || dataType === 'storyboard_chart' || dataType === 'material_plan' || dataType === 'sanitized_workflow') return 'square';
+  return 'circle';
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+interface OrderedMediaSummary {
+  readonly kind: 'image' | 'video';
+  readonly assetId: string;
+  readonly label: string;
+  readonly ranges: readonly { startMs: number; endMs: number }[];
+}
+
+function readOrderedMedia(value: unknown): OrderedMediaSummary[] {
+  if (!Array.isArray(value)) return [];
+  const media: OrderedMediaSummary[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    if (record.kind !== 'image' && record.kind !== 'video') continue;
+    const assetId = readNonEmptyString(record.assetId);
+    if (!assetId) continue;
+    const ranges = Array.isArray(record.ranges) ? record.ranges.flatMap((range) => {
+      if (!range || typeof range !== 'object' || Array.isArray(range)) return [];
+      const startMs = (range as Record<string, unknown>).startMs;
+      const endMs = (range as Record<string, unknown>).endMs;
+      return typeof startMs === 'number' && typeof endMs === 'number' && startMs >= 0 && endMs > startMs
+        ? [{ startMs, endMs }]
+        : [];
+    }) : [];
+    media.push({ kind: record.kind, assetId, label: readNonEmptyString(record.label) ?? (record.kind === 'image' ? '图片' : '视频'), ranges });
+  }
+  return media;
+}
+
+function formatRange(startMs: number, endMs: number): string {
+  return `${formatTimestamp(startMs)}–${formatTimestamp(endMs)}`;
+}
+
+function formatTimestamp(milliseconds: number): string {
+  const minutes = Math.floor(milliseconds / 60_000);
+  const seconds = Math.floor((milliseconds % 60_000) / 1_000);
+  const millis = Math.floor(milliseconds % 1_000);
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+}
 
 function ProjectImageControl({
   assetId,

@@ -65,6 +65,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
         definition.description,
         definition.purpose,
         definition.usage,
+        definition.limitations,
         definition.categoryDisplay.primaryName,
         definition.categoryDisplay.secondaryName,
         ...definition.searchAliases,
@@ -216,10 +217,12 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
           <dl>
             <div><dt>用途</dt><dd>{selectedDefinition.purpose}</dd></div>
             <div><dt>用法</dt><dd>{selectedDefinition.usage}</dd></div>
+            <div><dt>限制</dt><dd>{selectedDefinition.limitations}</dd></div>
             <div><dt>输入</dt><dd>{formatPorts(selectedDefinition, 'input')}</dd></div>
             <div><dt>输出</dt><dd>{formatPorts(selectedDefinition, 'output')}</dd></div>
             <div><dt>执行</dt><dd>{selectedDefinition.executionMode}</dd></div>
             <div><dt>能力</dt><dd>{selectedDefinition.capabilities.join(' · ') || '本地'}</dd></div>
+            <div><dt>下游</dt><dd>{selectedDefinition.recommendedDownstreamModuleTypes.join(' · ') || '无'}</dd></div>
           </dl>
         </section>
       )}

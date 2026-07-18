@@ -9,10 +9,10 @@ afterEach(() => cleanup());
 
 describe('KnowledgeStatus', () => {
   it.each([
-    ['syncing', [], /syncing/i],
-    ['updated', [knowledgeState({ status: 'active', version: 4 })], /updated/i],
-    ['pending_review', [knowledgeState({ status: 'active', version: 4 })], /pending review/i, 1],
-    ['fallback', [knowledgeState({ status: 'fallback', version: 3, failure: 'Disk unavailable' })], /fallback/i],
+    ['syncing', [], /同步中/],
+    ['updated', [knowledgeState({ status: 'active', version: 4 })], /已更新/],
+    ['pending_review', [knowledgeState({ status: 'active', version: 4 })], /待审核/ , 1],
+    ['fallback', [knowledgeState({ status: 'fallback', version: 3, failure: 'Disk unavailable' })], /回退/],
   ])('renders %s status', (_name, knowledgeBases, expected, pendingReviewCount = 0) => {
     render(<KnowledgeStatus
       knowledgeBases={knowledgeBases}
@@ -38,7 +38,7 @@ describe('KnowledgeStatus', () => {
       }]}
     />);
 
-    expect(screen.getByRole('status')).toHaveTextContent(status);
+    expect(screen.getByRole('status')).toHaveTextContent(status === 'offline' ? '离线' : status === 'conflict' ? '冲突' : '已更新');
     expect(screen.getByText(/scene-skill@2/)).toBeVisible();
   });
   it('separates the status label from active knowledge detail with a stable status attribute', () => {
@@ -56,8 +56,8 @@ describe('KnowledgeStatus', () => {
 
     const status = screen.getByRole('status');
     expect(status).toHaveAttribute('data-knowledge-status', 'syncing');
-    expect(within(status).getByTestId('knowledge-status-label')).toHaveTextContent(/syncing/i);
-    expect(within(status).getByTestId('knowledge-status-detail')).toHaveTextContent(/No active knowledge/i);
+    expect(within(status).getByTestId('knowledge-status-label')).toHaveTextContent(/同步中/);
+    expect(within(status).getByTestId('knowledge-status-detail')).toHaveTextContent(/暂无已启用知识/);
   });
   it('prioritizes conflict over offline when different knowledge bases report both', () => {
     render(<KnowledgeStatus
@@ -80,7 +80,7 @@ describe('KnowledgeStatus', () => {
       ]}
     />);
 
-    expect(screen.getByRole('status')).toHaveTextContent(/conflict/i);
+    expect(screen.getByRole('status')).toHaveTextContent(/冲突/);
   });
   it('shows active version, update time, and the pinned run version', () => {
     render(<KnowledgeStatus
@@ -90,7 +90,7 @@ describe('KnowledgeStatus', () => {
 
     expect(screen.getByText(/scene-skill@9/)).toBeVisible();
     expect(screen.getByText(/2026-07-15/)).toBeVisible();
-    expect(screen.getByText(/Pinned/)).toHaveTextContent(`scene-skill@7:${'b'.repeat(12)}`);
+    expect(screen.getByText(/固定版本/)).toHaveTextContent(`scene-skill@7:${'b'.repeat(12)}`);
   });
 });
 

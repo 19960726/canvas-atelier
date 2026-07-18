@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MAX_GENERATION_REFERENCES } from './agent-knowledge-contract';
-import type { CanvasModulePortDefinition, CanvasModuleType } from './canvas-module';
+import type { CanvasModulePortDefinition, CanvasModuleType, LegacyCanvasModuleType } from './canvas-module';
 import { getCanvasModuleDefinition } from './canvas-module';
 import type { CanvasEdge, CanvasModuleNode, CanvasNode, CanvasProject } from './project-schema';
 import type { RuntimeProfileId } from './runtime-profile';
@@ -36,14 +36,19 @@ const canvasModuleTypeSchema = z.custom<CanvasModuleType>((value) => {
   message: 'Unknown canvas module type',
 });
 
-const moduleConfigSchema = z.record(z.unknown()).superRefine((config, context) => {
-  if (containsProtectedModuleConfig(config)) {
+function protectedModuleRecordSchema(label: 'config' | 'job' | 'result') {
+  return z.record(z.unknown()).superRefine((payload, context) => {
+    if (!containsProtectedModuleConfig(payload)) return;
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'Module config contains protected payload',
+      message: `Module ${label} contains protected payload`,
     });
-  }
-});
+  });
+}
+
+const moduleConfigSchema = protectedModuleRecordSchema('config');
+const moduleJobSchema = protectedModuleRecordSchema('job');
+const moduleResultSchema = protectedModuleRecordSchema('result');
 
 function isManagedProjectAssetId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{16}$/u.test(value);
@@ -54,6 +59,8 @@ const moduleNodeDataSchema = z.object({
   moduleVersion: z.literal(1),
   config: moduleConfigSchema,
   execution: moduleExecutionSummarySchema,
+  job: moduleJobSchema.optional(),
+  result: moduleResultSchema.optional(),
 }).strict().superRefine(({ config, moduleType }, context) => {
   if (moduleType === 'image_input' || moduleType === 'upload_image') {
     if (config.assetId !== undefined && !isManagedProjectAssetId(config.assetId)) {
@@ -126,16 +133,87 @@ export function migrateCanvasProjectGraph(input: unknown): unknown {
 
   const project = input as Record<string, unknown>;
   const hasOwnGraphVersion = Object.prototype.hasOwnProperty.call(project, 'graphVersion');
-  if (!hasOwnGraphVersion || project.graphVersion === undefined) {
-    return {
-      ...project,
-      graphVersion: 2,
-    };
-  }
-  if (project.graphVersion !== 2) {
+  if (hasOwnGraphVersion && project.graphVersion !== undefined && project.graphVersion !== 2) {
     throw new Error(`Unsupported graphVersion: ${String(project.graphVersion)}`);
   }
-  return project;
+
+  const nodes = Array.isArray(project.nodes) ? project.nodes : null;
+  const legacyNodeTypes = new Map<string, LegacyCanvasModuleType>();
+  let hasLegacyNodes = false;
+  if (nodes) {
+    for (const candidate of nodes) {
+      const legacyType = readLegacyModuleType(candidate);
+      const id = readNodeId(candidate);
+      if (!legacyType || !id) continue;
+      legacyNodeTypes.set(id, legacyType);
+      hasLegacyNodes = true;
+    }
+  }
+
+  if (hasOwnGraphVersion && project.graphVersion === 2 && !hasLegacyNodes) return project;
+
+  return {
+    ...project,
+    graphVersion: 2,
+    ...(nodes ? { nodes: nodes.map(migrateModuleNode) } : {}),
+    ...(Array.isArray(project.edges)
+      ? { edges: project.edges.map((edge) => migrateLegacyEdge(edge, legacyNodeTypes)) }
+      : {}),
+  };
+}
+
+const LEGACY_MODULE_MIGRATIONS: Readonly<Record<LegacyCanvasModuleType, CanvasModuleType>> = Object.freeze({
+  image_generation_v1: 'image_generation',
+  image_generation_v2: 'image_generation',
+  video_analysis: 'reverse_agent',
+});
+
+function readLegacyModuleType(value: unknown): LegacyCanvasModuleType | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const data = (value as Record<string, unknown>).data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const moduleType = (data as Record<string, unknown>).moduleType;
+  return moduleType === 'image_generation_v1' || moduleType === 'image_generation_v2' || moduleType === 'video_analysis'
+    ? moduleType
+    : null;
+}
+
+function readNodeId(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const id = (value as Record<string, unknown>).id;
+  return typeof id === 'string' ? id : null;
+}
+
+function migrateModuleNode(value: unknown): unknown {
+  const legacyType = readLegacyModuleType(value);
+  if (!legacyType || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const node = value as Record<string, unknown>;
+  const data = node.data as Record<string, unknown>;
+  return {
+    ...node,
+    data: {
+      ...data,
+      moduleType: LEGACY_MODULE_MIGRATIONS[legacyType],
+      config: cloneRecord(data.config),
+      execution: cloneRecord(data.execution),
+      ...(data.job === undefined ? {} : { job: cloneRecord(data.job) }),
+      ...(data.result === undefined ? {} : { result: cloneRecord(data.result) }),
+    },
+  };
+}
+
+function cloneRecord(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneRecord);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, cloneRecord(entry)]));
+}
+
+function migrateLegacyEdge(value: unknown, legacyNodeTypes: ReadonlyMap<string, LegacyCanvasModuleType>): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const edge = value as Record<string, unknown>;
+  const sourceType = typeof edge.source === 'string' ? legacyNodeTypes.get(edge.source) : undefined;
+  if (sourceType !== 'video_analysis' || edge.sourcePortId !== 'camera') return edge;
+  return { ...edge, sourcePortId: 'timeline' };
 }
 
 export interface GraphValidationIssue {
@@ -164,7 +242,11 @@ export function canConnectCanvasPorts(
   if (source.direction !== 'output' || target.direction !== 'input') {
     return { ok: false, code: 'DIRECTION', message: 'Connections require output to input' };
   }
-  if (source.dataType !== target.dataType && !(source.dataType === 'image_asset' && target.dataType === 'image_list')) {
+  if (
+    source.dataType !== target.dataType
+    && !(source.dataType === 'image_asset' && target.dataType === 'image_list')
+    && !(source.dataType === 'video_asset' && target.dataType === 'video_ranges')
+  ) {
     return { ok: false, code: 'TYPE_MISMATCH', message: `${source.dataType} cannot connect to ${target.dataType}` };
   }
   return { ok: true };

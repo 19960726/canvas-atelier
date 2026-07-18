@@ -138,11 +138,11 @@ export function ReversePromptAgent({
     <section className="reverse-agent" aria-label="反推 Agent">
       <header className="reverse-agent__header reverse-agent__skill-controls">
         <div className="reverse-agent__skill">
-          <span>场景 Skill</span>
-          <strong>场景生成 Skill</strong>
+          <span>场景技能 / Scene Skill</span>
+          <strong>场景生成技能 / Scene Generation Skill</strong>
         </div>
         <div className="reverse-agent__tools">
-          <button type="button" aria-label="编辑 Skill" title="编辑 Skill" disabled={!onEditSkill} onClick={onEditSkill}><Pencil size={14} /></button>
+          <button type="button" aria-label="编辑技能 / Edit Skill" title="编辑技能" disabled={!onEditSkill} onClick={onEditSkill}><Pencil size={14} /></button>
           <button type="button" aria-label="更多操作" title="更多操作" disabled={!onMoreSkill} onClick={onMoreSkill}><MoreHorizontal size={15} /></button>
         </div>
       </header>

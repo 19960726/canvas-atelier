@@ -40,7 +40,7 @@ describe('parseCanvasProject', () => {
             config: { note: 'slash prose / not a file path' },
           },
         },
-        createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 }),
+        createCanvasModuleNode('generator', 'image_generation', { x: 320, y: 0 }),
       ],
       edges: [{
         id: 'edge-1',

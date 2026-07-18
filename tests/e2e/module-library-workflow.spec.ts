@@ -7,17 +7,17 @@ test('creates and connects executable modules from the library', async ({ page }
   await page.getByTestId('tool-modules').click();
   await page.getByRole('searchbox', { name: '搜索模块' }).fill('prompt');
   await page.getByRole('button', { name: '查看 文本提示词 / Text Prompt' }).dblclick();
-  await page.getByRole('searchbox', { name: '搜索模块' }).fill('generation v1');
-  await page.getByRole('button', { name: '查看 图像生成 v1 / Image Generation v1' }).dblclick();
+  await page.getByRole('searchbox', { name: '搜索模块' }).fill('image generation');
+  await page.getByRole('button', { name: '查看 图片生成 / Image Generation' }).dblclick();
 
   const edgeCountBeforeConnect = (await e2eState(page)).edgeCount;
   await expect(page.locator('[data-module-type="text_prompt"]')).toHaveCount(1);
-  await expect(page.locator('[data-module-type="image_generation_v1"]')).toHaveCount(1);
+  await expect(page.locator('[data-module-type="image_generation"]')).toHaveCount(1);
 
   await page.evaluate(() => window.__NOVUS_E2E__?.connectModules(
     'text_prompt',
     'prompt',
-    'image_generation_v1',
+    'image_generation',
     'prompt',
   ));
 

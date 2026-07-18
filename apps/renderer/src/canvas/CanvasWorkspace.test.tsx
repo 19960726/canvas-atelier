@@ -40,7 +40,7 @@ afterEach(() => {
 describe('CanvasWorkspace', () => {
   it('validates module connections synchronously before React Flow offers them', () => {
     const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });
-    const generator = createCanvasModuleNode('generator', 'image_generation_v1', { x: 320, y: 0 });
+    const generator = createCanvasModuleNode('generator', 'image_generation', { x: 320, y: 0 });
     const ghost = { ...generator, id: 'ghost-generator' };
     const nodes = [prompt, generator, ghost].map((node) => ({
       id: node.id,
@@ -628,8 +628,8 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '开始反推' }));
 
     await waitFor(() => expect(getLease).toHaveBeenCalledTimes(1));
-    expect(screen.getByText('scene-skill@7 updated 2026-07-15T08:00:00.000Z')).toBeInTheDocument();
-    expect(screen.getByText(/Pinned scene-skill@7/)).toBeInTheDocument();
+    expect(screen.getByText('scene-skill@7 · 更新于 2026-07-15T08:00:00.000Z')).toBeInTheDocument();
+    expect(screen.getByText(/固定版本 \/ Pinned scene-skill@7/)).toBeInTheDocument();
   });
 
   it('clears an uncommitted workspace preview when reference dragging is cancelled', () => {
@@ -662,11 +662,11 @@ describe('CanvasWorkspace', () => {
     render(<CanvasWorkspace />);
     fireEvent.dragStart(screen.getByText('Scene'));
     fireEvent.dragOver(screen.getByText('Product'));
-    expect(screen.getByRole('button', { name: 'Move Scene up' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '上移 Scene / Move Scene up' })).toBeDisabled();
 
     fireEvent.dragEnd(screen.getByText('Scene'));
 
-    expect(screen.getByRole('button', { name: 'Move Product up' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '上移 Product / Move Product up' })).toBeDisabled();
     expect(commit).not.toHaveBeenCalled();
   });
   it('shares persisted reference order and structured citations with reverse prompt', async () => {
@@ -724,7 +724,7 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     expect(screen.getByLabelText('向 Agent 发送消息')).toHaveValue('');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move Product up' }));
+    fireEvent.click(screen.getByRole('button', { name: '上移 Product / Move Product up' }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole('button', { name: 'Mention image' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Product' }));

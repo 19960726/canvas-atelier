@@ -62,8 +62,8 @@ for (const viewport of viewports) {
       'agent-panel',
       'job-strip',
     ]);
-    await page.evaluate(() => window.__NOVUS_E2E__?.createModule('image_generation_v2', { x: 440, y: 120 }));
-    await expect(page.locator('[data-module-type="image_generation_v2"]')).toHaveCSS('width', '264px');
+    await page.evaluate(() => window.__NOVUS_E2E__?.createModule('image_generation', { x: 440, y: 120 }));
+    await expect(page.locator('[data-module-type="image_generation"]')).toHaveCSS('width', '264px');
 
     await page.evaluate(() => window.__NOVUS_E2E__?.seedModuleStressGraph(100, 150));
     const stressState = await e2eState(page);
