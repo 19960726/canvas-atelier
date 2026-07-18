@@ -25,7 +25,12 @@ export interface ApprovedSnapshotUploadClient {
   uploadApprovedSnapshot(
     snapshot: KnowledgeSnapshot,
     options: { readonly idempotencyKey: string },
-  ): Promise<unknown>;
+  ): Promise<ApprovedSnapshotUploadResult>;
+}
+
+export interface ApprovedSnapshotUploadResult {
+  readonly accepted: boolean;
+  readonly duplicate?: boolean;
 }
 
 export interface ApprovedSnapshotSyncClient extends ApprovedSnapshotUploadClient, ApprovedSnapshotPullClient {}
@@ -152,7 +157,14 @@ export class ApprovedSnapshotOutbox {
             };
           }
           try {
-            await client.uploadApprovedSnapshot(snapshot, { idempotencyKey: job.id });
+            const result = await client.uploadApprovedSnapshot(snapshot, { idempotencyKey: job.id });
+            if (!result.accepted && result.duplicate !== true) {
+              return {
+                ok: false,
+                reason: 'approved_snapshot_not_accepted',
+                retryable: true,
+              };
+            }
             return { ok: true };
           } catch (error) {
             return {

@@ -75,6 +75,7 @@ export type {
   ApprovedSnapshotSyncEnvironment,
   ApprovedSnapshotSyncClient,
   ApprovedSnapshotUploadClient,
+  ApprovedSnapshotUploadResult,
 } from './approved-snapshot-outbox.js';
 export { ApprovedSnapshotPullCoordinator } from './approved-snapshot-pull.js';
 export type {

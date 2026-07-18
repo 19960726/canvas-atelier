@@ -115,6 +115,43 @@ describe('ApprovedSnapshotOutbox', () => {
     }));
   });
 
+  it('keeps an explicitly rejected snapshot durable until the remote reports an accepted duplicate', async () => {
+    const fixture = await createApprovedOutboxFixture(tempRoots);
+    let now = Date.parse('2026-07-15T10:02:00.000Z');
+    const outbox = new ApprovedSnapshotOutbox({
+      appDataRoot: fixture.appDataRoot,
+      now: () => now,
+      random: () => 0.25,
+      store: fixture.store,
+    });
+    await outbox.enqueueApprovedSnapshot(fixture.firstSnapshot);
+
+    const rejected = await outbox.drainApprovedSnapshots({
+      uploadApprovedSnapshot: async () => ({
+        accepted: false,
+        duplicate: false,
+      }),
+    });
+    expect(rejected.processedJobIds).toEqual([]);
+    expect(rejected.state.jobs).toEqual([
+      expect.objectContaining({
+        attemptCount: 1,
+        lastError: 'approved_snapshot_not_accepted',
+        status: 'retry_wait',
+      }),
+    ]);
+
+    now += 2_000;
+    const duplicate = await outbox.drainApprovedSnapshots({
+      uploadApprovedSnapshot: async () => ({
+        accepted: false,
+        duplicate: true,
+      }),
+    });
+    expect(duplicate.processedJobIds).toHaveLength(1);
+    expect(duplicate.state.jobs).toEqual([]);
+  });
+
   it('drains approved snapshot outbox at startup and when the online-gated retry boundary opens', async () => {
     let tick: (() => void) | undefined;
     const clearInterval = vi.fn();
