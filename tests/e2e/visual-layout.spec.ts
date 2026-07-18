@@ -4,6 +4,7 @@ import {
   assertLocatorInside,
   assertNoTrackedRegionsOverlap,
   captureLayoutScreenshot,
+  e2eState,
   expectVisibleMainRegion,
   medianPanZoomFrameInterval,
   openApp,
@@ -56,6 +57,26 @@ for (const viewport of viewports) {
     await expect(knowledge.getByTestId('knowledge-status-detail')).toBeVisible();
 
     const panZoomMetrics = await medianPanZoomFrameInterval(page);
+
+    await page.getByRole('button', { name: 'Modules' }).click();
+    await assertNoTrackedRegionsOverlap(page, [
+      'module-library',
+      'agent-panel',
+      'job-strip',
+    ]);
+    await page.evaluate(() => window.__NOVUS_E2E__?.createModule('image_generation_v2', { x: 440, y: 120 }));
+    await expect(page.locator('[data-module-type="image_generation_v2"]')).toHaveCSS('width', '264px');
+
+    await page.evaluate(() => window.__NOVUS_E2E__?.seedModuleStressGraph(100, 150));
+    const stressState = await e2eState(page);
+    expect(stressState.moduleTypes.filter((type) => type === 'image_input')).toHaveLength(50);
+    expect(stressState.moduleTypes.filter((type) => type === 'reverse_agent')).toHaveLength(50);
+    expect(stressState.edgeCount).toBeGreaterThanOrEqual(150);
+    await expectVisibleMainRegion(page);
+    const moduleBox = await page.locator('[data-module-type="image_input"]').first().boundingBox();
+    expect(moduleBox, `stress module geometry at ${viewport.name}`).not.toBeNull();
+    expect(moduleBox!.width, `stress module width at ${viewport.name}`).toBeGreaterThan(200);
+    await captureLayoutScreenshot(page, testInfo, `renderer-module-stress-${viewport.name}`);
 
     await page.getByTestId('tool-placement').click();
     await assertNoTrackedRegionsOverlap(page, [

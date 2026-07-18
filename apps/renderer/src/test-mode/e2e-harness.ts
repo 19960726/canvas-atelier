@@ -5,10 +5,13 @@ import type {
 } from '@agent-canvas/desktop-core';
 import {
   createSkillPromotionCandidateFingerprint,
+  createCanvasModuleNode,
   reviewSkillPromotionCandidate,
   rollbackSkillPromotionCandidate,
   skillPromotionCandidateSchema,
+  type CanvasModuleType,
   type CanvasProject,
+  type CanvasModuleNode,
   type ModelJob,
   type ProjectMemoryEntry,
   type ProjectTransaction,
@@ -101,6 +104,24 @@ export function installRendererE2EHarness(): void {
     failNextModelJobEnqueue() {
       runtime.failNextModelJobEnqueue = true;
     },
+    get commitCount() {
+      return runtime.commitLog.length;
+    },
+    async connectModules(sourceType, sourcePortId, targetType, targetPortId) {
+      const state = useAppStore.getState();
+      const source = findModuleNodeByType(state.project, sourceType);
+      const target = findModuleNodeByType(state.project, targetType);
+      if (!source || !target) return false;
+      return state.connectModulePorts({
+        source: source.id,
+        sourceHandle: sourcePortId,
+        target: target.id,
+        targetHandle: targetPortId,
+      });
+    },
+    async createModule(moduleType, position = { x: 240, y: 180 }) {
+      return useAppStore.getState().addModuleNode(moduleType, position);
+    },
     async seedSkillSyncDivergence() {
       await seedSkillSyncDivergence(runtime);
       useAppStore.setState({
@@ -109,10 +130,17 @@ export function installRendererE2EHarness(): void {
       });
       publishKnowledge(runtime);
     },
+    async seedModuleStressGraph(nodeCount, edgeCount) {
+      return seedModuleStressGraph(nodeCount, edgeCount);
+    },
     getState() {
       const state = useAppStore.getState();
       return {
         commitCount: runtime.commitLog.length,
+        edgeCount: state.project.edges.length,
+        moduleTypes: state.project.nodes
+          .filter((node): node is CanvasModuleNode => node.type === 'module')
+          .map((node) => node.data.moduleType),
         modelJobs: state.modelJobs.map((job) => ({
           conversationId: job.conversationId,
           id: job.id,
@@ -124,6 +152,15 @@ export function installRendererE2EHarness(): void {
         projectNodeTypes: state.project.nodes.map((node) => node.type),
         skillSyncWrites: runtime.skillSyncWrites.map((write) => ({ ...write })),
       };
+    },
+    async simulateModuleDrag(moduleType, delta) {
+      const state = useAppStore.getState();
+      const node = findModuleNodeByType(state.project, moduleType);
+      if (!node) return false;
+      return state.commitNodePosition(node.id, {
+        x: node.position.x + delta,
+        y: node.position.y + delta,
+      });
     },
   };
 }
@@ -144,6 +181,59 @@ function createRuntimeState(): RuntimeState {
   };
   runtime.storage = createE2EModelJobStorage(runtime);
   return runtime;
+}
+
+function findModuleNodeByType(project: CanvasProject, moduleType: CanvasModuleType): CanvasModuleNode | null {
+  const node = project.nodes.find((candidate): candidate is CanvasModuleNode => (
+    candidate.type === 'module' && candidate.data.moduleType === moduleType
+  ));
+  return node ?? null;
+}
+
+async function seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean> {
+  const boundedNodeCount = Math.max(2, Math.min(100, Math.floor(nodeCount)));
+  const boundedEdgeCount = Math.max(0, Math.min(150, Math.floor(edgeCount)));
+  const imageCount = Math.floor(boundedNodeCount / 2);
+  const reverseCount = boundedNodeCount - imageCount;
+  const nodes = [
+    ...Array.from({ length: imageCount }, (_, index) => (
+      createCanvasModuleNode(`stress-image-${index}`, 'image_input', {
+        x: (index % 10) * 300,
+        y: Math.floor(index / 10) * 180,
+      })
+    )),
+    ...Array.from({ length: reverseCount }, (_, index) => (
+      createCanvasModuleNode(`stress-reverse-${index}`, 'reverse_agent', {
+        x: 1800 + (index % 10) * 300,
+        y: Math.floor(index / 10) * 180,
+      })
+    )),
+  ];
+  const targetOrders = new Map<string, number>();
+  const edges = Array.from({ length: boundedEdgeCount }, (_, index) => {
+    const sourceIndex = index % imageCount;
+    const targetIndex = Math.floor(index / imageCount) * 17 + index;
+    const targetId = `stress-reverse-${targetIndex % reverseCount}`;
+    const order = targetOrders.get(targetId) ?? 0;
+    targetOrders.set(targetId, order + 1);
+    return {
+      id: `stress-edge-${index}`,
+      source: `stress-image-${sourceIndex}`,
+      sourcePortId: 'image',
+      target: targetId,
+      targetPortId: 'references',
+      order,
+    };
+  });
+
+  return useAppStore.getState().commitProjectTransaction({
+    id: `e2e-stress-graph-${boundedNodeCount}-${boundedEdgeCount}`,
+    label: 'Seed E2E module stress graph',
+    operations: [
+      ...nodes.map((node) => ({ kind: 'canvas' as const, operation: { kind: 'create_node' as const, node } })),
+      ...edges.map((edge) => ({ kind: 'canvas' as const, operation: { kind: 'create_edge' as const, edge } })),
+    ],
+  }, { kind: 'system' });
 }
 
 function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesktop {
@@ -572,8 +662,18 @@ function createE2EStalePrepareError(message: string): Error & { code: string; re
 declare global {
   interface Window {
     __NOVUS_E2E__?: {
+      commitCount: number;
+      connectModules(
+        sourceType: CanvasModuleType,
+        sourcePortId: string,
+        targetType: CanvasModuleType,
+        targetPortId: string,
+      ): Promise<boolean>;
+      createModule(moduleType: CanvasModuleType, position?: { x: number; y: number }): Promise<boolean>;
       getState(): {
         commitCount: number;
+        edgeCount: number;
+        moduleTypes: CanvasModuleType[];
         modelJobs: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount' | 'status'>>;
         modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
         projectNodeTypes: string[];
@@ -587,6 +687,8 @@ declare global {
       nonce: string;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
+      seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;
+      simulateModuleDrag(moduleType: CanvasModuleType, delta: number): Promise<boolean>;
     };
   }
 }

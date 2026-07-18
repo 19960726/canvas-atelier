@@ -1,6 +1,7 @@
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { expect } from './e2e-test';
 import type { GeneratedImageFixture } from './fixtures';
+import type { CanvasModuleType } from '@agent-canvas/domain';
 
 export interface PanZoomFrameMetrics {
   medianFrameMs: number;
@@ -9,6 +10,8 @@ export interface PanZoomFrameMetrics {
 
 type E2EState = {
   commitCount: number;
+  edgeCount: number;
+  moduleTypes: CanvasModuleType[];
   modelJobs: Array<{
     conversationId: string;
     id: string;
@@ -177,11 +180,21 @@ function intersectionArea(
 declare global {
   interface Window {
     __NOVUS_E2E__?: {
+      commitCount: number;
+      connectModules(
+        sourceType: CanvasModuleType,
+        sourcePortId: string,
+        targetType: CanvasModuleType,
+        targetPortId: string,
+      ): Promise<boolean>;
+      createModule(moduleType: CanvasModuleType, position?: { x: number; y: number }): Promise<boolean>;
       getState(): E2EState;
       nonce: string;
       failNextModelJobEnqueue(): void;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
+      seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;
+      simulateModuleDrag(moduleType: CanvasModuleType, delta: number): Promise<boolean>;
     };
   }
 }
