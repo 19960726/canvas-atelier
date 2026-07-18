@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
@@ -216,6 +216,50 @@ async function readPackageJson(shell: DesktopShell): Promise<BuildPackageJson> {
   return JSON.parse(await readFile(join(workspaceRoot, shell.appDir, 'package.json'), 'utf8')) as BuildPackageJson;
 }
 
+async function seedStaleDistArtifacts(shell: DesktopShell): Promise<void> {
+  const seedResult = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      `
+const { mkdir, writeFile } = require('node:fs/promises');
+const { resolve } = require('node:path');
+
+const workspaceRoot = process.argv[1];
+const appDir = process.argv[2];
+const label = process.argv[3];
+
+(async () => {
+  const distRoot = resolve(workspaceRoot, appDir, 'dist');
+  await mkdir(resolve(distRoot, 'nested'), { recursive: true });
+  await writeFile(resolve(distRoot, 'main.js'), 'stale ' + label + ' desktop main', 'utf8');
+  await writeFile(resolve(distRoot, 'nested', 'stale.js'), 'stale ' + label + ' nested file', 'utf8');
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : String(error));
+  process.exit(1);
+});
+      `,
+      workspaceRoot,
+      shell.appDir,
+      shell.label,
+    ],
+    {
+      cwd: workspaceRoot,
+      encoding: 'utf8',
+    },
+  );
+
+  expect(seedResult.status, `${seedResult.stderr}\n${seedResult.stdout}`).toBe(0);
+}
+
+async function expectMissing(path: string): Promise<void> {
+  await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
+}
+
+async function expectPresent(path: string): Promise<void> {
+  await expect(access(path)).resolves.toBeUndefined();
+}
+
 async function withTempPackage(
   shell: DesktopShell,
   packageJson: BuildPackageJson,
@@ -272,6 +316,27 @@ function spawnArtifactLoad(entryPath: string) {
 
 describe('desktop runtime entry contract', () => {
   for (const shell of desktopShells) {
+    it(`${shell.label} cleans stale dist artifacts before building desktop outputs`, async () => {
+      await seedStaleDistArtifacts(shell);
+
+      const buildResult = runWorkspaceBuild(shell.packageName);
+      expect(buildResult.status, buildResult.stderr || buildResult.stdout).toBe(0);
+
+      await expectMissing(join(workspaceRoot, shell.appDir, 'dist', 'main.js'));
+      await expectMissing(join(workspaceRoot, shell.appDir, 'dist', 'nested', 'stale.js'));
+
+      for (const artifact of [
+        'main.cjs',
+        'snapshot-worker-entry.cjs',
+        'preload.js',
+        'safe-preload.js',
+        'safe-mode.js',
+        'safe-mode.html',
+      ]) {
+        await expectPresent(join(workspaceRoot, shell.appDir, 'dist', artifact));
+      }
+    });
+
     it(`${shell.label} builds a self-contained CommonJS desktop main that loads under the Electron contract`, async () => {
       const packageJson = await readPackageJson(shell);
 
