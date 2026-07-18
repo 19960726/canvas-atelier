@@ -1,296 +1,179 @@
 # Novus Atelier Formal Canvas, History, and Cache Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Every production behavior follows RED -> GREEN -> refactor, each task is committed independently, and each task receives spec-compliance plus code-quality review.
+**Goal:** Deliver an original bilingual infinite-canvas desktop app with durable projects, controlled capability-routed execution, unified image generation and Reverse Agent workflows, generation history, safe storage/cache controls, and approved cross-device growth.
 
-**Goal:** Deliver a professional bilingual infinite-canvas desktop application with dual themes, an original Windows icon chain, clean startup, typed visual modules, durable projects, generation history, user-configurable storage/cache locations, knowledge-grounded image/video reverse analysis, and approved cross-device growth.
+**Architecture:** Domain owns strict schemas and migrations. Desktop-core owns managed assets, provider execution, confined filesystem/process bridges, history, cache, and durable acknowledgement. The renderer uses narrow typed preload APIs only. Reference software is observation-only and can inform public capability categories only; it must never supply source, UI, branding, secrets, credentials, endpoints, private model IDs, or trade dress.
 
-**Architecture:** Preserve the existing domain/desktop-core/renderer boundaries. Domain owns strict schemas and typed module contracts, desktop-core owns filesystem, provider, history, cache, migration, and durable-ACK behavior, and the renderer consumes only narrow preload bridges. Reference software is observation-only and may inform capability mapping, never code, secrets, branding, UI, or trade dress.
+**Compatibility:** Electron 22, Node 16, ES2019, React 18, TypeScript, Zustand, React Flow, Zod, Vitest, Playwright, Lucide, and existing electron-builder configuration.
 
-**Tech Stack:** TypeScript, React 18, Zustand, React Flow, Zod, Vitest, Playwright, Electron 22-compatible shared code, Node 16, ES2019, Lucide, electron-builder configuration.
+## Global constraints
 
-## Global Constraints
-
-- Work only in `E:\画布项目\.worktrees\canvas-agent-mvp` on `feature/canvas-agent-mvp`; never modify `E:\画布项目` main checkout.
-- Shared behavior must remain compatible with Electron 22, Node 16, and ES2019.
-- Renderer has no arbitrary filesystem, process, credential, token, keychain, or unrestricted network access.
-- Pointer move, pan, zoom, connection preview, sort preview, and transient drag state are never persisted.
-- Show “已保存” only after a durable main-process ACK.
-- Durable data, logs, snapshots, packages, and tests must not contain API keys, Authorization, Base64 originals, object URLs, raw provider payloads, or private absolute paths.
-- CanvasForge / 桥豆麻衣酱 is observation-only; do not unpack, decompile, copy source/UI/branding, extract credentials, or reproduce trade dress.
-- `.superpowers/sdd/*` is never committed.
-- Do not run pack, portable, or installer commands until every functional, performance, security, Windows, Figma, and user-acceptance gate is complete.
-- Every task uses RED -> GREEN -> self-review -> focused verification -> commit -> independent task review. Critical and Important findings must be fixed and re-reviewed before continuing.
+- Work only in `E:\画布项目\.worktrees\canvas-agent-mvp` on `feature/canvas-agent-mvp`; do not modify the main checkout.
+- The renderer has no arbitrary filesystem, process, credential, token, keychain, or unrestricted-network access.
+- Pointer move, pan, zoom, connection preview, sort preview, and transient drag state never persist. `已保存` appears only after durable main-process acknowledgement.
+- Durable data, logs, snapshots, packages, and tests contain no API keys, authorization headers, Base64 originals, object URLs, raw provider payloads, or private absolute paths.
+- Use only public/compatible providers and user-authorized credentials. Do not unpack/decompile reference software, inspect credentials, copy source/UI/copy/branding, or reproduce private endpoints.
+- New behavior follows RED → GREEN → refactor, focused verification, self-review, and a task commit. The release task receives independent full-branch review.
+- Do not run pack, portable, or installer commands until all functional, performance, security, Windows, Figma, and user-acceptance gates have evidence.
 
 ---
 
-### Task 0: Baseline, Approved Design Spec, and Reference Capability Matrix
+### Task 0: Baseline, approved design, and public capability matrix
 
-**Files:**
-- Create: `docs/superpowers/specs/2026-07-18-formal-canvas-history-cache-design.md`
-- Create: `docs/research/canvasforge-module-compatibility.md`
-- Update ignored ledger: `.superpowers/sdd/progress.md`
+**Requirements:** Record current evidence without discarding unrelated work; document all approved module, reverse, history, cache, security, performance, and release decisions. Map publicly visible authorized categories—image, text, storyboard, painting/mask, video, Agent, Comfy, compare, local redraw, music, and speech—to original Novus contracts and safety boundaries. Music and speech have planned capability-routed modules. Reproduce the provider cross-process lock test five focused times before production changes.
 
-**Requirements:**
-- Record the current dirty UI/icon draft by status, base SHA, diff stat, and untracked-file hashes in ignored evidence without discarding it.
-- Document the approved UI, module, reverse-analysis, history, cache, persistence, performance, security, and release decisions with no TBD/TODO placeholders.
-- Map the visible reference categories (image, text, storyboard, painting/mask, video, Agent, Comfy UI, compare, local redraw) to original Novus modules, typed ports, execution modes, and safety boundaries.
-- Explicitly state that music and speech are researched but disabled in this delivery.
-- Reproduce the existing provider cross-process lock test at least five focused runs; record whether it is flaky or deterministic. Do not change production code without an independent failing regression test.
-
-**Verification:**
-- `git diff --check`
-- `npm test -- packages/desktop-core/src/provider-bridge.test.ts -t "uses cross-process file locking"`
+**Verification:** `git diff --check`; focused provider lock test.
 
 **Commit:** `docs: specify formal canvas productization`
 
 ---
 
-### Task 1: Dual-Theme Tokens and Complete Product Icon Chain
+### Task 1: Dual-theme tokens and complete product icon chain
 
-**Files:**
-- Modify renderer theme/tokens and shell styles under `apps/renderer/src/styles/`.
-- Modify `apps/desktop-modern/src/main.ts`, `apps/desktop-legacy/src/main.ts`, and both builder configurations.
-- Create the single brand SVG source plus generated PNG sizes 16/24/32/48/64/128/256/512 and multi-frame ICO assets.
-- Complete icon and theme contract tests.
+**Requirements:** Implement system/light/dark semantic tokens, original geometric-N icon assets, and distinct Lucide module icon treatments while preserving existing packaged-renderer layout contracts.
 
-**Requirements:**
-- Themes are `system`, `light`, and `dark`; system is the default and device-local override is persisted without changing project data.
-- Light/dark themes share semantic tokens and WCAG-visible focus/disabled/error states.
-- Brand icon is an original geometric N formed by canvas nodes/connections, legible at 16px, with no emoji or copied mark.
-- Every executable canvas module resolves to a real Lucide icon; no duplicate semantic signatures for distinct modules unless explicitly differentiated by a visible badge.
-- Development BrowserWindow and future Windows build config use valid shared icons while preserving the existing packaged renderer layout contract.
-
-**Verification:**
-- Focused icon/theme tests, root typecheck, both desktop configuration contract tests, renderer build, `git diff --check`.
+**Verification:** Focused icon/theme and desktop-configuration tests; typecheck; renderer build; `git diff --check`.
 
 **Commit:** `feat: establish Novus themes and icon system`
 
 ---
 
-### Task 2: Clean Startup, Recovery Choice, and Bilingual Module Activation
+### Task 2: Clean startup, recovery choice, and bilingual activation
 
-**Files:**
-- Modify renderer initial state/hydration and workspace/module-library components.
-- Extend domain module labels/search metadata without changing stable internal type IDs.
-- Add focused renderer and desktop recovery tests.
+**Requirements:** Start with an untitled zero-node project; offer recovery only by explicit choice; provide restrained empty-canvas actions; implement Chinese-primary module library/search activation; and retain safe unnamed-dirty-project close behavior.
 
-**Requirements:**
-- Normal startup presents an untitled project with zero nodes and zero edges.
-- An abnormal-close recovery candidate is shown only as an explicit user choice; normal startup never auto-opens the recent project.
-- The empty canvas shows restrained actions for open project, new workflow, and module activation.
-- Module library uses Chinese primary names, English secondary names, Chinese descriptions, categories, favorites, recent items, and bilingual search.
-- Single click selects/describes; double click creates exactly one node at viewport center; drag creates at the drop point; browsing never persists.
-- Closing an unnamed dirty project exposes save/discard/cancel through the existing safe desktop boundary.
-
-**Verification:**
-- Focused App/store/workspace/module/recovery tests, typecheck, renderer build, visual E2E for empty startup and double-click creation.
+**Verification:** Focused startup, module, recovery, typecheck/build, and visual E2E tests.
 
 **Commit:** `feat: add clean startup and bilingual modules`
 
 ---
 
-### Task 3: Complete Professional Module Catalog and Node Workbench
+### Task 3: Unified module catalog, migrations, and node workbench
 
-**Files:**
-- Extend `packages/domain/src/canvas-module.ts` and migrations/tests.
-- Update module icon/node/rendering components and workbench styles.
-- Update visual-layout/module-library E2E coverage.
+**Requirements:** Replace user-visible V1/V2 image generation entries with exactly one `图片生成 / Image Generation` module; preserve `image_generation_v1` and `image_generation_v2` only as migrations, with no loss of ordered references, mask/pose, route, configuration, job, or result identity. Replace visible image/text and video reverse entries with exactly one `Agent 反推 / Reverse Agent` node that accepts ordered image assets, video ranges, text/tasks, line-art, and approved knowledge/project memory; preserve `video_analysis` and video-reverse only as migrations. Add contracts for storyboard, drawing mask, compare, local redraw, controlled Comfy, music, speech, and line-art analysis, with typed ports and explicit confirmation/execution/error states. Build original bilingual node presentation and an Agent dock that reflows the safe canvas area.
 
-**Requirements:**
-- Add original typed modules for storyboard sheet/chart, drawing-mask, compare images, local redraw, Comfy workflow, and video reverse analysis.
-- Keep current image/upload/library/text/generation/editor/OpenPose/Agent/material/output modules backward compatible.
-- Each module documents purpose, usage, limitations, capabilities, typed inputs/outputs, and recommended downstream connections.
-- Nodes show Chinese primary/English secondary labels, category, real icon, configuration, state, typed ports, model route, results, and actionable errors.
-- Remove `IMG` text placeholders; use proper empty-media visuals.
-- Agent is a collapsible dock that reflows the safe canvas area instead of covering ports/nodes.
+**Verification:** Domain module/migration and catalog-uniqueness tests; renderer node/module tests; light/dark visual E2E at 1366x768, 1440x900, and 1920x1080.
 
-**Verification:**
-- Domain module/migration tests, renderer node/module tests, 1366x768/1440x900/1920x1080 visual E2E in light and dark themes.
-
-**Commit:** `feat: complete professional canvas modules`
+**Commit:** `feat: unify Novus module catalog`
 
 ---
 
-### Task 4: Durable Project Semantics and 300/500 Canvas Performance
+### Task 4: Durable project semantics, free placement, and 300/500 performance
 
-**Files:**
-- Extend project schemas/repository only where required by new modules and assets.
-- Update canvas culling, thumbnail loading, store selectors, and performance tests.
+**Requirements:** Persist only stable transactions for nodes, edges, configuration, managed assets, results, jobs, knowledge, conversations, and growth candidates. Keep Reverse Agent, image generation, and result nodes freely draggable after completion or failure. Make reference reordering show ordinals/responsibilities and persist exactly one drop transaction; execution snapshots freeze order for that run only. Connections never auto-layout; optional layout is undoable; locks are explicit and reversible. Exercise recoverable disk/full, read-only, missing asset, duplicate-open, corrupt snapshot, and abnormal-exit paths and the 300-node/500-edge scenario under 250 ms interaction-stall threshold.
 
-**Requirements:**
-- Persist node/edge/configuration/assets/results/jobs/knowledge references/growth candidates only at stable transaction boundaries.
-- Project images/videos remain managed assets referenced by opaque IDs; no Base64 project originals.
-- Disk-full, read-only, missing-asset, duplicate-open, corrupt-snapshot, and abnormal-exit behaviors are explicit and recoverable.
-- Stress acceptance uses 300 nodes, 500 edges, real thumbnail shapes, long bilingual titles, mixed execution states, module library, and Agent dock.
-- No measured interaction long stall over 250ms in the conservative automated scenario.
+**Verification:** Persistence/recovery, drag/order/snapshot/lock, performance, Playwright stress, typecheck/build, scan, and diff-check suites.
 
-**Verification:**
-- Persistence/recovery suites, performance suite, 300/500 Playwright stress, typecheck/build, scan, diff check.
-
-**Commit:** `perf: harden large durable canvas projects`
+**Commit:** `perf: harden durable canvas projects`
 
 ---
 
-### Task 5: Generation History Domain and Desktop Store
+### Task 5: Generation history domain and desktop store
 
-**Files:**
-- Add strict generation-history schemas to domain.
-- Add desktop-core history index/store with confined files, atomic metadata, pagination/filtering, favorites, project-reference counts, and redaction.
-- Add narrow preload/bridge contracts and tests.
+**Requirements:** Add strict history schemas and confined atomic store with pagination, filters, favorites, project references, safe reuse/comparison/export, trash/restore/purge, and redaction. History remains durable and separate from cache.
 
-**Requirements:**
-- Entries expose opaque IDs, timestamp, project label/id, provider/model display metadata, status, dimensions, file size, sanitized prompt summary/parameters, favorite, availability, and reference count.
-- History is authoritative and never a disposable cache.
-- Support list/filter/page, favorite, add/copy to project library, reuse-safe parameters, compare selection, export through picker, soft-delete, restore, and purge.
-- Provider URLs, credentials, raw payloads, Base64, object URLs, and private paths never cross IPC or enter history metadata.
-
-**Verification:**
-- Domain/store/bridge contract tests, restart durability, concurrent updates, redaction and confinement tests.
+**Verification:** Domain/store/bridge contract, restart, concurrency, redaction, and confinement tests.
 
 **Commit:** `feat: add durable generation history`
 
 ---
 
-### Task 6: Storage Locations, Cache Inventory, and Safe Migration
+### Task 6: Storage locations, cache inventory, and safe migration
 
-**Files:**
-- Add desktop-core storage-settings, cache-inventory, cleanup-preview, and migration services.
-- Add strict bridge/preload contracts and settings UI.
+**Requirements:** Add app-owned history/cache locations; reject roots, project/install locations, network shares, symlinks, junctions, and reparse points. Provide capacity/hash-verified atomic migration with rollback; cache inventory and 10 GB LRU cleanup previews; and protect projects, history, favorites, knowledge, memory, and referenced assets.
 
-**Requirements:**
-- Separate protected history location from disposable cache location; both are user-configurable local directories.
-- Reject drive/system roots, project directories, install directories, network shares, symlinks, junctions, and other reparse points.
-- Destination must be app-owned through an ownership marker.
-- Migration validates space, copies, verifies size/hash, atomically switches configuration, and retains the old location until success; failure rolls back without data loss.
-- Cache categories: thumbnails, canvas previews, video-analysis frames, provider temporary downloads, failed/cancelled job residue, rebuildable model/knowledge indexes, and disposable Chromium cache.
-- Default quota is 10GB; automatic cleanup selects LRU entries older than 30 days or over quota.
-- Cleanup preview returns count/bytes/protected references. Cleanup never deletes projects, history, favorites, knowledge, memory, or referenced assets.
-
-**Verification:**
-- Path rejection matrix, migration interruption/disk-full/hash-mismatch rollback, concurrent cleanup, preview/actual byte agreement, Windows path tests.
+**Verification:** Path rejection, migration interruption/disk-full/hash-mismatch, concurrency, preview/actual-byte, and Windows-path tests.
 
 **Commit:** `feat: add safe storage and cache controls`
 
 ---
 
-### Task 7: Generation History and Cache Management UI
+### Task 7: Generation history and cache-management UI
 
-**Files:**
-- Add renderer history workspace, trash, filters, storage settings, and cache cleanup components.
-- Add renderer state/client bindings and Playwright workflows.
+**Requirements:** Provide history filters, previews, reuse, comparison, export, batch favorite/delete/restore, totals, and seven-day trash; provide settings paths, bytes, quota, migration/cleanup progress, reveal/change location, cleanup preview, and confirmed cleanup. Show exact destructive scope and disable conflicting actions.
 
-**Requirements:**
-- History supports date/project/model/status/favorite filters, previews, add to canvas/library, reuse, compare, export, batch favorite/delete/restore, and usage totals.
-- Deleted history enters app-controlled trash for seven days; immediate purge requires explicit confirmation.
-- Project-referenced copies survive history deletion.
-- Settings show history/cache paths, category bytes, total bytes, last/next cleanup, quota, migration/cleanup progress, reveal-location, change-location, preview, and execute cleanup.
-- Destructive actions show exact item count/bytes/reference impact and remain disabled while conflicting migrations/cleanups run.
-
-**Verification:**
-- Renderer component tests and full history/cache Playwright flow including restore and path-migration failure.
+**Verification:** Renderer tests and full history/cache Playwright flow, including restore and migration failure.
 
 **Commit:** `feat: add history and storage workspace`
 
 ---
 
-### Task 8: Capability-Based Provider Routing and Controlled Comfy Adapter
+### Task 8: Dynamic capability routing and controlled Comfy adapter
 
-**Files:**
-- Extend provider profile capability contracts and dynamic registry.
-- Add controlled Comfy workflow schemas, sanitizer, provider bridge, and module execution adapter.
+**Requirements:** Build inventory-driven profiles for chat, vision, structured output, image generation/edit, pose, long video, Comfy, music generation, speech synthesis, and speech/audio analysis. Profiles declare display identity, provider, route/model id, modalities, output, structured-output support, Chinese capability, limits, async behavior, and available cost metadata. Recommend compatible routes, permit compatible override at confirmation, freeze the revision for execution, and expose incompatible profiles with reasons. Keep public/compatible provider contracts only; sanitize Comfy imports and keep all tokens, raw task IDs/payloads, arbitrary URLs, and filesystem access out of the renderer.
 
-**Requirements:**
-- Capabilities cover chat, vision, structured output, long video, image generation/edit, pose, and Comfy workflow.
-- Recommender selects a compatible route but confirmation UI permits explicit override and freezes the route.
-- Renderer never receives provider tokens, raw task IDs, arbitrary URLs, or filesystem access.
-- Comfy workflow import rejects credentials, absolute paths, scripts, unknown/custom nodes outside the allowlist, and protected payloads.
-- Timeout, auth, rate-limit, cancel, retry, polling, ACK, and stale-result behavior remain durable and sanitized.
+**Verification:** Provider/Comfy domain, desktop bridge, confirmation, redaction, scan, typecheck, and build tests.
 
-**Verification:**
-- Provider/Comfy domain and desktop bridge tests, renderer confirmation tests, scan, typecheck/build.
-
-**Commit:** `feat: add capability routing and safe Comfy workflows`
+**Commit:** `feat: add dynamic capability routing`
 
 ---
 
-### Task 9: Knowledge-Grounded Image/Text Reverse Agent
+### Task 9: Unified Reverse Agent, conversation workbench, Skills, and quality loop
 
-**Files:**
-- Extend reverse-analysis domain schemas and desktop/provider orchestration.
-- Replace renderer draft-only analysis with provider-capable structured preview/materialization.
+**Requirements:** Implement the dedicated right-dock `反推 / Reverse` conversation workbench opened from the unified node. Bind durable conversation state to project/node revision, ordered managed references, Skill/version, approved knowledge snapshot, project-memory ids, prompt-library source, route, and run identity. Use field order route, compatibility mode, Skill/version, prompt source, `角色 / Role`, `任务需求 / Task Requirements`, managed references, structured preview; support managed `@image` and `@video-range` mentions, progress stages, field-level follow-up diffs, and current-run-only replace/continue. Implement Scene Keyword, Poster/KV, Line-art Material & Color, Product Commercial, Composition & Camera, Material & Lighting, Ecommerce Detail, and Effects Skills with structured evidence/citations/confidence, full effects taxonomy, line-art region/material/control constraints, and poster/KV recommendations.
 
-**Requirements:**
-- Default commercial/e-commerce template plus general-visual and film templates.
-- Bind project/node revisions, ordered inputs, approved knowledge lease/citations, project memory, model route, execution identity, and nonce.
-- Output subject, scene depth, props, materials, lighting, camera/composition, color, effects, post, typography, positive prompt, negative constraints, reproduction steps, evidence source, and confidence.
-- Distinguish image evidence, knowledge rule, and model inference.
-- Preview first; only explicit confirmation materializes prompt/constraint/generation nodes.
-- Reject mismatched route, input order, knowledge version, execution identity, or nonce.
+Every run gets new identity, nonce, input fingerprint, knowledge version, Skill version, and frozen route. Mark earlier output stale on a new run; reject mismatched results; set `suspected_stale_output` and block materialization when changed inputs return identical normalized keywords; allow same-input reruns. Route mixed media only to fully compatible profiles or show a composite plan. Require confirmation before paid work or materializing prompt, poster/KV, storyboard, generation, edit, compare, or local-redraw nodes. Add structured brief fields, KEEP/CHANGE/NEVER, estimated bounded spending, scored review, compare/targeted redraw, and local approved-failure learning candidates.
 
-**Verification:**
-- Domain schemas, orchestration, renderer preview/materialization, stale-result, redaction, and knowledge-citation integration tests.
+**Verification:** Image-only, video-only, mixed-media, ordered-reference, migration, capability mismatch/composite-plan, stale/fresh, late-result, same-input rerun, Skill/version, knowledge-citation, confirmation, quality-loop, durability, redaction, renderer, and E2E tests.
 
-**Commit:** `feat: add knowledge-grounded reverse analysis`
+**Commit:** `feat: add unified reverse agent workbench`
 
 ---
 
-### Task 10: Video Reverse Analysis and Storyboard Materialization
+### Task 10: Long-video Reverse Agent orchestration and storyboard materialization
 
-**Files:**
-- Add video-analysis schemas/orchestration, chunk/timeline aggregation, renderer node UI, and materialization tests.
+**Requirements:** Implement long-video chunking/timeline aggregation for the unified Reverse Agent with video revision/range binding, partial success, segment retry, replacement invalidation, cancellation, stale-result isolation, and confirmed storyboard/prompt/shot-node materialization. It is not a separate user-visible video-reverse module.
 
-**Requirements:**
-- Bind video revision and time ranges; route only to long-video-capable profiles.
-- Output shot timeline, camera motion, composition, scene/prop changes, materials, lighting, effects, transitions, rhythm, keyframes, audio-visual relationship, and confidence/citations.
-- Support partial success, retry by segment, replacement invalidation, cancellation, and stale-result isolation.
-- Explicit confirmation materializes storyboard sheet/chart, prompts, and optional shot-level generation nodes.
+**Verification:** Chunk aggregation, partial failure, cancellation/retry, stale result, materialization, and E2E workflows.
 
-**Verification:**
-- Chunk aggregation, partial failure, cancellation/retry, stale results, renderer materialization, and E2E workflow.
-
-**Commit:** `feat: add video reverse breakdowns`
+**Commit:** `feat: add long-video reverse orchestration`
 
 ---
 
-### Task 11: Per-Run Growth Candidates and Cross-Device Approval
+### Task 11: Per-run growth candidates and cross-device approval
 
-**Files:**
-- Extend feedback/candidate schemas and renderer/desktop integration for image/video reverse usage signals.
+**Requirements:** Capture nonblocking sanitized run goals, knowledge versions, routes, output summaries, accepted edits, reruns, deletions, failures, corrections, prevention rules, and evidence. Sync only user-approved sanitized knowledge; never sync raw images/videos, history, or private conversation/prompt text. Retain rejected, conflicted, and offline work until authoritative acceptance.
 
-**Requirements:**
-- Every reverse run records sanitized goal, knowledge version, route, output summary, accepted edits, reruns, deletion, and failure causes as a local candidate.
-- Candidate capture never blocks the active workflow.
-- Only explicitly approved sanitized snapshots enter the existing durable outbox/cross-device pull flow.
-- Raw images/videos/history files/private prompts never sync.
-- Queue clears only on authoritative `accepted:true`; rejected/conflicted/offline tasks remain durable.
-
-**Verification:**
-- Image and video candidate integration, approval/rejection, offline restart, duplicate/conflict, dual-device HTTP integration, security scan.
+**Verification:** Reverse and quality-loop candidate integration, approval/rejection, offline restart, duplicate/conflict, dual-device HTTP, and security-scan tests.
 
 **Commit:** `feat: grow reverse knowledge across devices`
 
 ---
 
-### Task 12: Full Acceptance, Documentation, and Whole-Branch Review
+### Task 12: Prompt library and user-owned prompt import
 
-**Files:**
-- Extend Playwright helpers/specs and compatibility evidence only as required.
-- Update `.superpowers/sdd/progress.md` with exact commits, tests, screenshots, reviews, and remaining external gates.
+**Requirements:** Build an original editable common-prompt library for generation and Reverse Agent workflows. Include the approved capability-equivalent template families with stable ids/versions, Chinese-primary metadata, compatible capabilities/models, parameter fields, previewed diffs, and user/project scopes. Support apply, duplicate, edit, favorite, organize, approve into project knowledge, and validated user-owned/exported JSON, CSV, and text import. Never bundle proprietary prompt text; imports and applications never spend until confirmation.
 
-**Requirements:**
-- Full Vitest, typecheck, build, Playwright, scan, and diff check.
-- Light/dark screenshots at 1366x768, 1440x900, and 1920x1080 for empty canvas, module library, real history, storage settings, reverse preview, video timeline, and 300/500 stress.
-- Inspect screenshots for nonempty intended views, readable ports, no panel overlap, no placeholder art, and professional restrained desktop quality.
-- Independent final reviewer checks the full implementation range; fix and re-review all Critical/Important findings.
-- Record Figma editable frames and physical Windows/user acceptance as external gates when unavailable; never claim them complete without evidence.
-- Do not package.
+**Verification:** Domain/import validation, copyright-boundary, migration, renderer diff/confirmation, project-scope, redaction, and E2E tests.
 
-**Verification:**
-- `npm test`
-- `npm run typecheck`
-- `npm run build`
-- `npm run e2e`
-- `npm run scan:e2e`
-- `git diff --check`
+**Commit:** `feat: add original prompt library`
+
+---
+
+### Task 13: Standard Photoshop 2019+ image-result handoff
+
+**Requirements:** Add `在 Photoshop 中打开 / Open in Photoshop` for managed PNG/JPEG/WebP results. Pass opaque asset IDs only; desktop-core validates and exports confined temporary/project copies, detects standard registered installations where available, validates a user-selected compatible executable, launches via a narrow bridge, and tracks copies as disposable cache. Do not inspect licensing, bypass activation, modify executables, or implement crack-specific behavior. Layered PSD/document exchange remains outside this task.
+
+**Verification:** Missing/multiple installs, cancellation, invalid executable/path, launch failure, temporary-copy cleanup, original protection, and renderer-path-leakage tests.
+
+**Commit:** `feat: add Photoshop result handoff`
+
+---
+
+### Task 14: Music and speech capability modules
+
+**Requirements:** Implement the explicit music-generation, speech-synthesis, and speech/audio-analysis module execution adapters promised by the dynamic capability contracts. Use compatible public providers, route only compatible profiles, confirm cost and job count, freeze execution snapshots, surface safe cancellation/retry/error states, and retain sanitized durable results. No private reference endpoints, credentials, or model IDs enter code or renderer data.
+
+**Verification:** Capability routing, confirmation, execution/error/cancel/retry, snapshot/redaction, provider-contract, and E2E tests.
+
+**Commit:** `feat: add music and speech capability modules`
+
+---
+
+### Task 15: Full acceptance, documentation, and whole-branch review
+
+**Requirements:** Run full Vitest, typecheck, build, Playwright, scans, and diff check. Capture light/dark evidence at 1366x768, 1440x900, and 1920x1080 for empty canvas, catalog, history, storage, unified image generation, Reverse Agent workbench, long-video timeline, prompt library, Photoshop action, music/speech states, and 300/500 stress. Inspect intended nonempty views, ports, overlap, placeholder art, and desktop quality. Record Figma and physical Windows/user acceptance as external gates unless evidence exists. Obtain independent whole-branch review and resolve Critical/Important findings. Do not package.
+
+**Verification:** `npm test`; `npm run typecheck`; `npm run build`; `npm run e2e`; `npm run scan:e2e`; `git diff --check`.
 
 **Commit:** `test: verify formal Novus Atelier workflows`
