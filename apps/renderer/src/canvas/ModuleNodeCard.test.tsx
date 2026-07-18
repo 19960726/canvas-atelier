@@ -44,6 +44,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('Prompt')).toBeVisible();
     expect(screen.getByText('Result')).toBeVisible();
     expect(screen.getByText('Idle')).toBeVisible();
+    expect(document.querySelector('.module-node__icon')).toHaveAttribute('data-icon-category', 'generation');
+    expect(document.querySelector('.module-node__icon svg')).toHaveAttribute('width', '18');
   });
 
   it('keeps selection visible without changing the module identity', () => {
@@ -76,6 +78,20 @@ describe('ModuleNodeCard', () => {
     expect(document.querySelector('input[type="file"]')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Replace image' }));
     expect(importImageForModule).toHaveBeenCalledWith('image-input');
+  });
+
+  it('uses a real image icon instead of a text placeholder for an empty image input', () => {
+    const node = createCanvasModuleNode('image-input', 'image_input', { x: 0, y: 0 });
+
+    render(
+      <ReactFlowProvider>
+        <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+      </ReactFlowProvider>,
+    );
+
+    const preview = document.querySelector('.module-node__asset-preview');
+    expect(preview).not.toHaveTextContent('IMG');
+    expect(preview?.querySelector('svg')).not.toBeNull();
   });
 
   it('renders an ordered canvas-library selection with stable move controls', () => {

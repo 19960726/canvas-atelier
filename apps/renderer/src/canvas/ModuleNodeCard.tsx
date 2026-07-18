@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
+import { Image as ImageIcon } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -98,7 +99,7 @@ interface ModuleNodeCardProps {
 
 export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected }: ModuleNodeCardProps) {
   const definition = getCanvasModuleDefinition(data.moduleType);
-  const Icon = resolveCanvasModuleIcon(definition.iconKey);
+  const Icon = resolveCanvasModuleIcon(definition.type);
   const inputs = definition.ports.filter((port) => port.direction === 'input');
   const outputs = definition.ports.filter((port) => port.direction === 'output');
   const projectImages = useAppStore((state) => state.projectImages);
@@ -125,7 +126,13 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       data-module-type={definition.type}
     >
       <header className="module-node__header">
-        <span className="module-node__icon" aria-hidden="true"><Icon size={16} /></span>
+        <span
+          className="module-node__icon"
+          data-icon-category={definition.category}
+          aria-hidden="true"
+        >
+          <Icon size={18} strokeWidth={1.8} />
+        </span>
         <span className="module-node__heading">
           <small>{categoryLabels[definition.category]}</small>
           <strong>{definition.displayName}</strong>
@@ -192,7 +199,9 @@ function ProjectImageControl({
   return (
     <div className="module-node__image-control nodrag nopan" onPointerDown={(event) => event.stopPropagation()}>
       <div className="module-node__asset-preview">
-        {previewUrl ? <img src={previewUrl} alt="" draggable={false} /> : <span aria-hidden="true">IMG</span>}
+        {previewUrl
+          ? <img src={previewUrl} alt="" draggable={false} />
+          : <span className="module-node__asset-icon" aria-hidden="true"><ImageIcon size={19} /></span>}
         <span className="module-node__asset-copy">
           <strong>{asset?.label ?? 'No managed image'}</strong>
           <small>{asset ? formatAssetDimensions(asset) : 'Choose or import a project image'}</small>

@@ -140,12 +140,14 @@ async function expectShellLayout(input: {
   expect(await fileExists(input.rendererPathHelperPath)).toBe(true);
   if (!(await fileExists(input.rendererPathHelperPath))) return;
 
-  const builder = parseSimpleYaml(await readFile(input.builderPath, 'utf8'));
+  const builderSource = await readFile(input.builderPath, 'utf8');
+  const builder = parseSimpleYaml(builderSource);
   expect(readYamlString(builder, 'artifactName')).toBe(input.artifactName);
   expect(readYamlString(builder, 'directories.output')).toBe(input.output);
   expect(readYamlStringArray(builder, 'files')).toContain('dist/**');
-  expect(readYamlString(builder, 'extraResources.from')).toBe('../renderer/dist');
-  expect(readYamlString(builder, 'extraResources.to')).toBe('renderer/dist');
+  const extraResources = parseYamlObjectList(builderSource, 'extraResources');
+  expect(extraResources).toContainEqual({ from: '../renderer/dist', to: 'renderer/dist' });
+  expect(extraResources).toContainEqual({ from: 'build/icon.ico', to: 'icon.ico' });
 
   const mainSource = await readFile(input.mainPath, 'utf8');
   expect(mainSource).toContain("from './renderer-path'");
@@ -159,10 +161,45 @@ async function expectShellLayout(input: {
   expect(packagedRendererPath).toBe(normalize(resolve(currentDir, '../../renderer/dist/index.html')));
 
   const packagedResourcesRoot = normalize(resolve(currentDir, '..', '..'));
+  const rendererResource = extraResources.find((resource) => resource.from === '../renderer/dist');
+  expect(rendererResource).toBeDefined();
   const packagedExtraResourcePath = normalize(
-    resolve(packagedResourcesRoot, readYamlString(builder, 'extraResources.to'), 'index.html'),
+    resolve(packagedResourcesRoot, rendererResource?.to ?? '', 'index.html'),
   );
   expect(packagedExtraResourcePath).toBe(normalize(resolve(currentDir, '../../renderer/dist/index.html')));
+}
+
+function parseYamlObjectList(source: string, section: string): Array<Record<string, string>> {
+  const result: Array<Record<string, string>> = [];
+  let inSection = false;
+  let current: Record<string, string> | null = null;
+
+  for (const rawLine of source.split(/\r?\n/u)) {
+    const indent = rawLine.length - rawLine.trimStart().length;
+    const trimmed = rawLine.trim();
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue;
+    if (indent === 0) {
+      if (trimmed === `${section}:`) {
+        inSection = true;
+        continue;
+      }
+      if (inSection) break;
+      continue;
+    }
+    if (!inSection) continue;
+
+    const item = trimmed.startsWith('- ') ? trimmed.slice(2) : trimmed;
+    if (trimmed.startsWith('- ')) {
+      current = {};
+      result.push(current);
+    }
+    if (current === null) continue;
+    const separator = item.indexOf(':');
+    if (separator < 0) continue;
+    current[item.slice(0, separator).trim()] = item.slice(separator + 1).trim();
+  }
+
+  return result;
 }
 
 function parseSimpleYaml(source: string): Record<string, string | string[]> {

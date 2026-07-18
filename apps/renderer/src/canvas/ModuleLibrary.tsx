@@ -128,7 +128,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
         aria-labelledby={`module-category-tab-${category}`}
       >
         {filteredDefinitions.map((definition) => {
-          const Icon = resolveCanvasModuleIcon(definition.iconKey);
+          const Icon = resolveCanvasModuleIcon(definition.type);
           return (
             <button
               key={definition.type}
@@ -140,7 +140,13 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
               onKeyDown={(event) => activateModule(event, definition.type, onCreate)}
               onDragStart={(event) => writeModuleDragPayload(event, definition.type)}
             >
-              <span className="module-library__item-icon" aria-hidden="true"><Icon size={15} /></span>
+              <span
+                className="module-library__item-icon"
+                data-icon-category={definition.category}
+                aria-hidden="true"
+              >
+                <Icon size={17} strokeWidth={1.8} />
+              </span>
               <span className="module-library__item-copy">
                 <strong>{definition.displayName}</strong>
                 <small>{definition.category}</small>

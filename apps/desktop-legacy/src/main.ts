@@ -38,6 +38,9 @@ import { resolveRendererHtmlPath } from './renderer-path';
 
 const runtimeChannel = 'legacy' as const;
 const currentDir = __dirname;
+const appIconPath = app.isPackaged
+  ? join(process.resourcesPath, 'icon.ico')
+  : join(currentDir, '..', 'build', 'icon.ico');
 const rendererHtmlPath = resolveRendererHtmlPath(currentDir);
 const preloadPath = join(currentDir, 'preload.js');
 const safeModePreloadPath = join(currentDir, 'safe-preload.js');
@@ -289,6 +292,7 @@ function createDesktopWindow(preload: string): BrowserWindow {
     minWidth: 1100,
     minHeight: 720,
     show: false,
+    icon: appIconPath,
     backgroundColor: '#0a0d14',
     webPreferences: {
       contextIsolation: true,

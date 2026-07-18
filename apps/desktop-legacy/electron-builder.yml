@@ -2,9 +2,14 @@ appId: com.novus.atelier.legacy
 productName: Novus Atelier
 directories:
   output: dist-builder/desktop-legacy
+  buildResources: build
 files:
   - dist/**
 extraResources:
-  from: ../renderer/dist
-  to: renderer/dist
+  - from: ../renderer/dist
+    to: renderer/dist
+  - from: build/icon.ico
+    to: icon.ico
+win:
+  icon: icon.ico
 artifactName: AgentCanvas-Win7-x64-${version}.exe

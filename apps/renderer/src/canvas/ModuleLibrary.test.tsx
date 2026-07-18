@@ -12,10 +12,13 @@ describe('ModuleLibrary', () => {
 
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search modules' }), { target: { value: 'pose' } });
 
-    expect(screen.getByRole('button', { name: 'Add OpenPose' })).toBeVisible();
+    const openPose = screen.getByRole('button', { name: 'Add OpenPose' });
+    expect(openPose).toBeVisible();
+    expect(openPose.querySelector('.module-library__item-icon')).toHaveAttribute('data-icon-category', 'editing');
+    expect(openPose.querySelector('.module-library__item-icon svg')).toHaveAttribute('width', '17');
     expect(screen.queryByRole('button', { name: 'Add Text Prompt' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add OpenPose' }));
+    fireEvent.click(openPose);
 
     expect(onCreate).toHaveBeenCalledWith('openpose');
   });

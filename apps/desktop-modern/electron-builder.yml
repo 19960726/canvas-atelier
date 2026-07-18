@@ -2,9 +2,14 @@ appId: com.novus.atelier.modern
 productName: Novus Atelier
 directories:
   output: dist-builder/desktop-modern
+  buildResources: build
 files:
   - dist/**
 extraResources:
-  from: ../renderer/dist
-  to: renderer/dist
+  - from: ../renderer/dist
+    to: renderer/dist
+  - from: build/icon.ico
+    to: icon.ico
+win:
+  icon: icon.ico
 artifactName: AgentCanvas-Win10-11-x64-${version}.exe

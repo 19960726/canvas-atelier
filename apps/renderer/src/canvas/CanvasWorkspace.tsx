@@ -44,6 +44,8 @@ import { ModuleLibrary, MODULE_DRAG_MIME } from './ModuleLibrary';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
 import { ReferenceOrderList } from '../references/ReferenceOrderList';
+import { ThemeControl } from '../theme/ThemeControl';
+import { useThemePreference } from '../theme/theme';
 import { nodeTypes, toFlowEdges, toFlowNodes } from './node-types';
 import { useInteractionQuality } from './use-interaction-quality';
 import { useCanvasDraft } from './use-canvas-draft';
@@ -215,6 +217,7 @@ export function calculateModulePlacement(
 }
 
 export function CanvasWorkspace() {
+  const theme = useThemePreference();
   const project = useAppStore((state) => state.project);
   const activeTool = useAppStore((state) => state.activeTool);
   const agentPanelCollapsed = useAppStore((state) => state.agentPanelCollapsed);
@@ -627,6 +630,7 @@ export function CanvasWorkspace() {
           <button className="icon-button" type="button" aria-label="适合画布" title="适合画布"><Maximize2 size={16} /></button>
         </div>
         <div className="topbar__actions">
+          <ThemeControl theme={theme} />
           <span className="model-status"><span className="status-dot" /> Comfly 已配置</span>
           <button className="run-button" type="button"><Play size={15} fill="currentColor" />运行方案</button>
         </div>
@@ -672,6 +676,7 @@ export function CanvasWorkspace() {
 
       <main ref={handleCanvasStageRef} className="canvas-stage" role="application" aria-label="无限画布" data-testid="canvas-stage" onDragOverCapture={handleCanvasDragOver} onDropCapture={handleCanvasDrop}>
         <ReactFlow
+          colorMode={theme.resolvedTheme}
           nodes={viewportCulling.nodes}
           edges={viewportCulling.edges}
           nodeTypes={nodeTypes}
@@ -699,8 +704,8 @@ export function CanvasWorkspace() {
           }}
           proOptions={{ hideAttribution: true }}
         >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#c8d0d7" />
-          <MiniMap pannable zoomable nodeColor="#0f766e" maskColor="rgba(236, 240, 243, 0.76)" />
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--canvas-grid)" />
+          <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
           <Controls showInteractive={false} />
         </ReactFlow>
         {moduleLibraryOpen && (

@@ -1,37 +1,41 @@
 import {
-  Box,
-  FileSearch,
-  FileText,
+  Aperture,
+  Bot,
+  Boxes,
+  Clapperboard,
+  FileVideo,
   Image,
-  Library,
-  MessageSquare,
-  Pencil,
-  Search,
-  Sparkles,
-  Upload,
-  Video,
+  ImageUp,
+  Images,
+  MessageSquareText,
+  PanelTop,
+  PenTool,
+  PersonStanding,
+  ScanSearch,
+  SlidersHorizontal,
+  WandSparkles,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { CanvasModuleType } from '@agent-canvas/domain';
 
 const moduleIconByType: Record<CanvasModuleType, LucideIcon> = {
   image_input: Image,
-  upload_image: Upload,
-  video_input: Video,
-  canvas_library: Library,
-  text_prompt: MessageSquare,
-  image_generation_v1: Sparkles,
-  image_generation_v2: Sparkles,
-  image_editor: Pencil,
-  openpose: Search,
-  reverse_agent: Search,
-  skill_agent: Sparkles,
-  detail_page_agent: FileSearch,
-  video_analysis: Video,
-  line_art_material: FileText,
-  result_output: Box,
+  upload_image: ImageUp,
+  video_input: Clapperboard,
+  canvas_library: Images,
+  text_prompt: MessageSquareText,
+  image_generation_v1: WandSparkles,
+  image_generation_v2: Aperture,
+  image_editor: SlidersHorizontal,
+  openpose: PersonStanding,
+  reverse_agent: ScanSearch,
+  skill_agent: Bot,
+  detail_page_agent: PanelTop,
+  video_analysis: FileVideo,
+  line_art_material: PenTool,
+  result_output: Boxes,
 };
 
-export function resolveCanvasModuleIcon(iconKey: string): LucideIcon {
-  return moduleIconByType[iconKey as CanvasModuleType] ?? Box;
+export function resolveCanvasModuleIcon(moduleType: CanvasModuleType): LucideIcon {
+  return moduleIconByType[moduleType];
 }
