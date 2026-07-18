@@ -3034,17 +3034,109 @@ describe('stable module graph commits', () => {
     });
 
     const pending = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
-    await expect(useAppStore.getState().restoreProjectSnapshot('snapshot-rejected')).rejects.toThrow('restore rejected');
+    const restore = useAppStore.getState().restoreProjectSnapshot('snapshot-rejected');
     const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
     commitResult.resolve({ ok: true, project: request.nextProject, revision: 1 });
 
     await expect(pending).resolves.toBe(true);
+    await expect(restore).rejects.toThrow('restore rejected');
     expect(useAppStore.getState()).toMatchObject({ desktopRevision: 1, saveStatus: 'saved' });
+  });
+
+  it('serializes desktop snapshot restore after an active durable commit succeeds', async () => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const initialProject = moduleGraphProject();
+    const restoredProject = { ...initialProject, name: 'Restored after active commit' };
+    const events: string[] = [];
+    const commit = vi.fn((request: ProjectCommitRequest) => {
+      events.push('commit');
+      return commitResult.promise.then((result) => {
+        events.push('commit-settled');
+        return result;
+      });
+    });
+    const restore = vi.fn(async () => {
+      events.push('restore');
+      return {
+        availableSnapshotIds: ['snapshot-after'],
+        lifecycle: 'durable' as const,
+        project: restoredProject,
+        revision: 7,
+        saveStatus: 'saved' as const,
+      };
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, restore }));
+    useAppStore.setState({
+      desktopRevision: 0,
+      persistenceMode: 'desktop',
+      project: initialProject,
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    const pendingCommit = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    const pendingRestore = useAppStore.getState().restoreProjectSnapshot('snapshot-after');
+    expect(restore).not.toHaveBeenCalled();
+    const request = commit.mock.calls[0]![0];
+    commitResult.resolve({ ok: true, project: request.nextProject, revision: 1 });
+
+    await expect(pendingCommit).resolves.toBe(true);
+    await pendingRestore;
+    expect(events).toEqual(['commit', 'commit-settled', 'restore']);
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: false,
+      desktopRevision: 7,
+      project: { name: 'Restored after active commit' },
+      saveStatus: 'saved',
+    });
+  });
+
+  it('blocks desktop snapshot restore after an active durable commit fails', async () => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const initialProject = moduleGraphProject();
+    const restore = vi.fn(async () => ({
+      availableSnapshotIds: ['snapshot-after'],
+      lifecycle: 'durable' as const,
+      project: { ...initialProject, name: 'Must not restore' },
+      revision: 7,
+      saveStatus: 'saved' as const,
+    }));
+    const commit = vi.fn().mockReturnValue(commitResult.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, restore }));
+    useAppStore.setState({
+      desktopRevision: 0,
+      persistenceMode: 'desktop',
+      project: initialProject,
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    const pendingCommit = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    const pendingRestore = useAppStore.getState().restoreProjectSnapshot('snapshot-after');
+    expect(restore).not.toHaveBeenCalled();
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    commitResult.resolve({
+      code: 'DISK_FULL',
+      ok: false,
+      project: request.previousProject,
+      revision: request.baseRevision,
+    });
+
+    await expect(pendingCommit).resolves.toBe(false);
+    await pendingRestore;
+    expect(restore).not.toHaveBeenCalled();
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: true,
+      desktopRevision: 0,
+      saveErrorCode: 'DISK_FULL',
+      saveStatus: 'error',
+    });
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
   });
 
   it.each(
     (['success', 'failure'] as const).flatMap((resultKind) => (
-      ['open', 'hydrate', 'new', 'reset', 'restore', 'close', 'discard', 'set_project'] as const
+      ['open', 'hydrate', 'new', 'reset', 'close', 'discard', 'set_project'] as const
     ).map((boundary) => ({ boundary, resultKind }))),
   )('ignores a delayed $resultKind commit result after the $boundary project boundary', async ({ boundary, resultKind }) => {
     const commitResult = deferred<ProjectCommitResult>();
@@ -3097,9 +3189,6 @@ describe('stable module graph commits', () => {
       case 'reset':
         resetAppStoreForTests({ project: 'empty' });
         break;
-      case 'restore':
-        await useAppStore.getState().restoreProjectSnapshot('snapshot-boundary');
-        break;
       case 'close':
         expect(await useAppStore.getState().closePersistence()).toBe(false);
         break;
@@ -3119,7 +3208,7 @@ describe('stable module graph commits', () => {
     expect(await pending).toBe(false);
     expect(useAppStore.getState().desktopRevision).not.toBe(1);
     expect(useAppStore.getState().project.name).not.toBe('Late ACK project');
-    if (boundary === 'open' || boundary === 'hydrate' || boundary === 'restore' || boundary === 'set_project') {
+    if (boundary === 'open' || boundary === 'hydrate' || boundary === 'set_project') {
       expect(useAppStore.getState().project.name).toBe(`Boundary ${boundary}`);
     }
     if (boundary === 'new' || boundary === 'reset') {
@@ -3275,10 +3364,10 @@ describe('stable module graph commits', () => {
     expect(useAppStore.getState().project.nodes.find((node) => node.id === 'generator')?.position).toEqual({ x: 320, y: 0 });
   });
 
-  it('uses the dedicated writable reload path and preserves conflict work until replacement succeeds', async () => {
+  it('retries writable reload after close failure and preserves conflict work until replacement succeeds', async () => {
     const durableProject = { ...moduleGraphProject(), name: 'Reloaded durable project' };
     const reloadDurableProject = vi.fn<() => Promise<ProjectHydrationResult | null>>()
-      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('close failed after partial cleanup'))
       .mockResolvedValueOnce({
         availableSnapshotIds: [],
         lifecycle: 'durable',

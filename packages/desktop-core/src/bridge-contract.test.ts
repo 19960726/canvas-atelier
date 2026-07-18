@@ -2036,6 +2036,74 @@ describe('desktop bridge contract', () => {
     }
   });
 
+  it('retains a partially closed bridge session so no-flush close can retry and reopen writable', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-close-retry-'));
+    const projectRoot = join(tempRoot, 'CloseRetry.novus-project');
+    const fileSystem = new NodeFileSystem();
+    const repository = new ProjectRepository({
+      createId: createSequentialId('close-retry'),
+      fileSystem,
+      now: () => new Date('2026-07-19T00:00:00.000Z'),
+      processId: 6523,
+    });
+    const initial = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: starterProject.id,
+      projectName: starterProject.name,
+    });
+    await repository.close(initial);
+    let rejectFirstClose = true;
+    const close = vi.fn(async (session: Parameters<ProjectRepository['close']>[0]) => {
+      await repository.close(session);
+      if (rejectFirstClose) {
+        rejectFirstClose = false;
+        throw Object.assign(new Error('Injected close completion failure'), {
+          code: 'DURABLE_WRITE_FAILED',
+          retryable: true,
+        });
+      }
+    });
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      fileSystem,
+      repository: {
+        close,
+        open: (root, options) => repository.open(root, options),
+        openJournalWriter: (session) => repository.openJournalWriter(session),
+        readCurrentProject: (session) => repository.readCurrentProject(session),
+        readCurrentRevision: (session) => repository.readCurrentRevision(session),
+      },
+      snapshotScheduler: {
+        consider: () => null,
+        flush: vi.fn(),
+      } as unknown as SnapshotScheduler,
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      await expect(handlers.closeProject({}, {
+        flush: false,
+        sessionId: opened!.sessionId,
+      })).rejects.toMatchObject({ code: 'DURABLE_WRITE_FAILED' });
+      await expect(handlers.closeProject({}, {
+        flush: false,
+        sessionId: opened!.sessionId,
+      })).resolves.toBeUndefined();
+      expect(close).toHaveBeenCalledTimes(2);
+      await expect(handlers.closeProject({}, {
+        flush: false,
+        sessionId: opened!.sessionId,
+      })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+
+      const reopened = await handlers.openProject({}, { mode: 'write' });
+      expect(reopened).toMatchObject({ mode: 'write', projectId: starterProject.id });
+      await handlers.closeProject({}, { flush: false, sessionId: reopened!.sessionId });
+    } finally {
+      await handlers.closeAllProjects();
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it('closes all active bridge sessions for main-process shutdown', async () => {
     const close = vi.fn(async () => undefined);
     const handlers = createDesktopBridgeHandlers({

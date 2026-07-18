@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  NodeFileSystem,
   ProjectRepository,
   SnapshotScheduler,
   createDesktopBridgeHandlers,
@@ -140,12 +141,113 @@ describe('durable project serialization integration', () => {
     await created.repository.close(restarted);
   });
 
-  async function createRealDurableHarness(initialProject: CanvasProject) {
+  it('serializes an active real journal commit before restore and keeps the restored writer replayable', async () => {
+    const initialProject = createDurableQueueProject();
+    const restoredPrompt = initialProject.nodes.find((node) => node.id === 'prompt-start')!;
+    const restoredProject = parseCanvasProject({
+      ...initialProject,
+      name: 'Restored durable snapshot',
+      nodes: initialProject.nodes.map((node) => node.id === restoredPrompt.id
+        ? { ...restoredPrompt, position: { x: 720, y: 180 } }
+        : node),
+    });
+    const commitEntered = deferred<void>();
+    const releaseCommit = deferred<void>();
+    const fileSystem = new RestoreJournalObserverFileSystem();
+    const created = await createRealDurableHarness(initialProject, {
+      fileSystem,
+      recoveryProject: restoredProject,
+      syncGate: {
+        async wait() {
+          commitEntered.resolve();
+          await releaseCommit.promise;
+        },
+      },
+    });
+    const plan = await created.handlers.getRecoveryPlan({}, { sessionId: created.sessionId });
+    const candidateId = plan.candidates[0]?.candidateId;
+    if (candidateId === undefined) throw new Error('Expected recovery candidate');
+    const firstMovedNode = {
+      ...initialProject.nodes.find((node) => node.id === 'prompt-start')!,
+      position: { x: 860, y: 210 },
+    };
+    const commitA = created.handlers.commit({}, {
+      baseRevision: 0,
+      kind: 'canvas',
+      projectId: initialProject.id,
+      sessionId: created.sessionId,
+      transaction: {
+        id: 'tx-before-restore',
+        label: 'Move before restore',
+        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: firstMovedNode } }],
+      },
+    });
+    await commitEntered.promise;
+
+    fileSystem.observeRestoreJournal = true;
+    const restore = created.handlers.restore({}, { candidateId, sessionId: created.sessionId });
+    const settled = Promise.allSettled([commitA, restore]);
+    const restoreTouchedJournalBeforeCommit = await Promise.race([
+      fileSystem.restoreJournalReplaced.promise.then(() => true),
+      delay(50).then(() => false),
+    ]);
+    releaseCommit.resolve();
+    const [commitResult, restoreResult] = await settled;
+
+    expect(restoreTouchedJournalBeforeCommit).toBe(false);
+    expect(commitResult.status).toBe('fulfilled');
+    expect(restoreResult).toMatchObject({
+      status: 'fulfilled',
+      value: { project: { name: 'Restored durable snapshot' }, restoredRevision: 0 },
+    });
+    const journalPath = join(created.projectRoot, 'journal', 'active.ndjson');
+    expect((await readValidJournal(journalPath, { baseRevision: 0, firstSequence: 1 })).records).toEqual([]);
+
+    const postRestoreNode = {
+      ...restoredProject.nodes.find((node) => node.id === 'prompt-start')!,
+      position: { x: 900, y: 260 },
+    };
+    await expect(created.handlers.commit({}, {
+      baseRevision: 0,
+      kind: 'canvas',
+      projectId: restoredProject.id,
+      sessionId: created.sessionId,
+      transaction: {
+        id: 'tx-after-restore',
+        label: 'Move after restore',
+        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: postRestoreNode } }],
+      },
+    })).resolves.toMatchObject({ revision: 1, transactionId: 'tx-after-restore' });
+    const journal = await readValidJournal(journalPath, { baseRevision: 0, firstSequence: 1 });
+    expect(journal.records.map((record) => record.transactionId)).toEqual(['tx-after-restore']);
+    expect(replayJournal(restoredProject, 0, journal.records)).toMatchObject({
+      project: { name: 'Restored durable snapshot' },
+      revision: 1,
+    });
+
+    await created.handlers.closeProject({}, { sessionId: created.sessionId });
+    const reopened = await created.repository.open(created.projectRoot, { mode: 'write' });
+    const reopenedProject = await created.repository.readCurrentProject(reopened);
+    expect(reopenedProject.name).toBe('Restored durable snapshot');
+    expect(reopenedProject.nodes.find((node) => node.id === 'prompt-start')?.position).toEqual({ x: 900, y: 260 });
+    await created.repository.close(reopened);
+  });
+
+  async function createRealDurableHarness(
+    initialProject: CanvasProject,
+    options: {
+      fileSystem?: NodeFileSystem;
+      recoveryProject?: CanvasProject;
+      syncGate?: { wait(): Promise<void> };
+    } = {},
+  ) {
     tempRoot = await mkdtemp(join(tmpdir(), 'durable-project-queue-'));
     const projectRoot = join(tempRoot, 'Queue.novus-project');
+    const fileSystem = options.fileSystem ?? new NodeFileSystem();
     const repository = new ProjectRepository({
       createId: sequentialId('queue-project'),
       deviceId: 'queue-test-device',
+      fileSystem,
     });
     const initialSession = await repository.create(projectRoot, {
       project: initialProject,
@@ -153,13 +255,53 @@ describe('durable project serialization integration', () => {
       projectName: initialProject.name,
     });
     await repository.close(initialSession);
+    const candidatePath = join(tempRoot, 'recovery-candidate.json');
+    if (options.recoveryProject !== undefined) {
+      await fileSystem.writeFile(candidatePath, JSON.stringify({
+        project: options.recoveryProject,
+        projectId: options.recoveryProject.id,
+        revision: 0,
+        snapshotId: 'snapshot-restored',
+      }), 'utf8');
+    }
+    let deferNextCommit = options.syncGate !== undefined;
+    const openJournalWriter = vi.fn(async (session: Parameters<ProjectRepository['openJournalWriter']>[0]) => {
+      const writer = await repository.openJournalWriter(session);
+      return {
+        commit: (request: Parameters<typeof writer.commit>[0]) => {
+          const syncGate = deferNextCommit ? options.syncGate : undefined;
+          deferNextCommit = false;
+          return writer.commit(request, syncGate === undefined ? {} : { syncGate });
+        },
+      };
+    });
     handlers = createDesktopBridgeHandlers({
       createId: sequentialId('queue-bridge'),
       dialogs: { chooseProjectRoot: async () => projectRoot },
+      fileSystem,
+      ...(options.recoveryProject === undefined ? {} : {
+        recoveryScanner: {
+          scan: async () => ({
+            action: 'choose_recovery' as const,
+            candidates: [{
+              path: candidatePath,
+              project: options.recoveryProject!,
+              revision: 0,
+              snapshotId: 'snapshot-restored',
+              tailStatus: 'complete' as const,
+            }],
+            issues: [],
+            projectId: options.recoveryProject!.id,
+            recoveredRevision: 0,
+            stableSnapshotId: 'snapshot-restored',
+            targetRevision: 0,
+          }),
+        },
+      }),
       repository: {
         close: (session) => repository.close(session),
         open: (root, options) => repository.open(root, options),
-        openJournalWriter: (session) => repository.openJournalWriter(session),
+        openJournalWriter,
         readCurrentProject: (session) => repository.readCurrentProject(session),
         readCurrentRevision: (session) => repository.readCurrentRevision(session),
       },
@@ -170,9 +312,24 @@ describe('durable project serialization integration', () => {
     });
     const opened = await handlers.openProject({}, { mode: 'write' });
     if (opened === null) throw new Error('Expected durable queue project to open');
-    return { handlers, opened, projectRoot, repository, sessionId: opened.sessionId };
+    return { handlers, opened, openJournalWriter, projectRoot, repository, sessionId: opened.sessionId };
   }
 });
+
+class RestoreJournalObserverFileSystem extends NodeFileSystem {
+  observeRestoreJournal = false;
+  readonly restoreJournalReplaced = deferred<void>();
+
+  override async rename(source: string, destination: string): Promise<void> {
+    await super.rename(source, destination);
+    if (
+      this.observeRestoreJournal
+      && destination.split('\\').join('/').endsWith('/journal/active.ndjson')
+    ) {
+      this.restoreJournalReplaced.resolve();
+    }
+  }
+}
 
 function createBridgePersistenceClient(
   harness: {
@@ -270,6 +427,10 @@ function deferred<T>() {
     reject = nextReject;
   });
   return { promise, reject, resolve };
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function readErrorCode(error: unknown): PersistenceErrorCode {

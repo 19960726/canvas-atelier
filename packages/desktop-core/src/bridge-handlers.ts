@@ -264,7 +264,9 @@ export interface DesktopIpcMainLike {
 
 interface BridgeSessionContext {
   assets: Map<string, ProjectImageAsset>;
+  closing: boolean;
   imageImportInFlight: boolean;
+  maintenanceTail: Promise<void>;
   recoveryRequired: boolean;
   session: OpenedProjectSession;
   sessionId: string;
@@ -367,7 +369,9 @@ export function createDesktopBridgeHandlers(
         summary = summarizeRecoveryPreview(sessionId, opened, candidate);
         sessions.set(sessionId, {
           assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+          closing: false,
           imageImportInFlight: false,
+          maintenanceTail: Promise.resolve(),
           recoveryCandidatePaths: new Map(),
           recoveryRequired: true,
           session: opened,
@@ -383,7 +387,9 @@ export function createDesktopBridgeHandlers(
         : null;
       sessions.set(sessionId, {
         assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+        closing: false,
         imageImportInFlight: false,
+        maintenanceTail: Promise.resolve(),
         recoveryCandidatePaths: new Map(),
         recoveryRequired: false,
         session: opened,
@@ -410,29 +416,31 @@ export function createDesktopBridgeHandlers(
       throw invalidRequest('Project assets can only be changed through the managed image bridge');
     }
     const session = requireWritableSession(sessions, validated.sessionId);
-    if (session.writer === null) {
-      throw createPersistenceError(
-        'CONCURRENT_WRITER',
-        true,
-        'Commit requires a writable desktop session',
-      );
-    }
     assertPublicBridgePayload(validated.transaction);
-    const currentProject = await repository.readCurrentProject(session.session);
-    try {
-      applyProjectTransaction(currentProject, validated.transaction);
-    } catch {
-      throw invalidRequest('Commit transaction is invalid for the current project');
-    }
+    return enqueueSessionMaintenance(session, async () => {
+      if (session.writer === null) {
+        throw createPersistenceError(
+          'CONCURRENT_WRITER',
+          true,
+          'Commit requires a writable desktop session',
+        );
+      }
+      const currentProject = await repository.readCurrentProject(session.session);
+      try {
+        applyProjectTransaction(currentProject, validated.transaction);
+      } catch {
+        throw invalidRequest('Commit transaction is invalid for the current project');
+      }
 
-    const ack = await session.writer.commit({
-      baseRevision: validated.baseRevision,
-      kind: validated.kind,
-      projectId: validated.projectId,
-      transaction: validated.transaction,
+      const ack = await session.writer.commit({
+        baseRevision: validated.baseRevision,
+        kind: validated.kind,
+        projectId: validated.projectId,
+        transaction: validated.transaction,
+      });
+      await flushScheduledSnapshotAfterCommit(session, ack, validated.kind);
+      return ack;
     });
-    await flushScheduledSnapshotAfterCommit(session, ack, validated.kind);
-    return ack;
   }
 
   async function createStablePoint(
@@ -441,14 +449,16 @@ export function createDesktopBridgeHandlers(
   ): Promise<StablePointBridgeResult> {
     const validated = validateSessionRequest(request);
     const session = requireWritableSession(sessions, validated.sessionId);
-    const flushed = await snapshotScheduler.flush(session.session, { reason: 'stable_point' });
-    session.session = await refreshSessionManifest(fileSystem, session.session);
-    return {
-      path: flushed.path,
-      reason: 'stable_point',
-      revision: flushed.revision,
-      snapshotId: flushed.snapshotId,
-    };
+    return enqueueSessionMaintenance(session, async () => {
+      const flushed = await snapshotScheduler.flush(session.session, { reason: 'stable_point' });
+      session.session = await refreshSessionManifest(fileSystem, session.session);
+      return {
+        path: flushed.path,
+        reason: 'stable_point',
+        revision: flushed.revision,
+        snapshotId: flushed.snapshotId,
+      };
+    });
   }
 
   async function getRecoveryPlan(
@@ -468,39 +478,41 @@ export function createDesktopBridgeHandlers(
     if (validated.candidateId === undefined) {
       throw createPersistenceError('INVALID_REQUEST', false, 'Restore candidate id is required');
     }
-    const mirrorPath = session.recoveryCandidatePaths.get(validated.candidateId);
-    if (mirrorPath === undefined) {
-      throw createPersistenceError('INVALID_REQUEST', false, 'Restore candidate is unavailable');
-    }
-    let restoredSession: OpenedProjectSession | null = null;
-    try {
-      const restoredManifest = await restoreRecoveryCandidate(fileSystem, createId, session, mirrorPath);
-      restoredSession = {
-        ...session.session,
-        manifest: restoredManifest,
-      };
-      let restoredWriter = session.writer;
-      if (restoredSession.mode === 'write') {
-        releaseJournalState(join(restoredSession.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), restoredManifest.projectId);
-        restoredWriter = await requireMethod(repository, 'openJournalWriter')(restoredSession);
+    return enqueueSessionMaintenance(session, async () => {
+      const mirrorPath = session.recoveryCandidatePaths.get(validated.candidateId!);
+      if (mirrorPath === undefined) {
+        throw createPersistenceError('INVALID_REQUEST', false, 'Restore candidate is unavailable');
       }
+      let restoredSession: OpenedProjectSession | null = null;
+      try {
+        const restoredManifest = await restoreRecoveryCandidate(fileSystem, createId, session, mirrorPath);
+        restoredSession = {
+          ...session.session,
+          manifest: restoredManifest,
+        };
+        let restoredWriter = session.writer;
+        if (restoredSession.mode === 'write') {
+          releaseJournalState(join(restoredSession.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), restoredManifest.projectId);
+          restoredWriter = await requireMethod(repository, 'openJournalWriter')(restoredSession);
+        }
 
-      const summary = await summarizeSession(repository, session.sessionId, restoredSession);
-      session.recoveryCandidatePaths.clear();
-      session.session = restoredSession;
-      session.writer = restoredWriter;
-      session.recoveryRequired = false;
-      session.assets = new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset]));
-      return {
-        ...summary,
-        restoredRevision: restoredManifest.stableSnapshotRevision,
-      };
-    } catch (error) {
-      if (restoredSession !== null) session.session = restoredSession;
-      session.writer = null;
-      session.recoveryRequired = true;
-      throw error;
-    }
+        const summary = await summarizeSession(repository, session.sessionId, restoredSession);
+        session.recoveryCandidatePaths.clear();
+        session.session = restoredSession;
+        session.writer = restoredWriter;
+        session.recoveryRequired = false;
+        session.assets = new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset]));
+        return {
+          ...summary,
+          restoredRevision: restoredManifest.stableSnapshotRevision,
+        };
+      } catch (error) {
+        if (restoredSession !== null) session.session = restoredSession;
+        session.writer = null;
+        session.recoveryRequired = true;
+        throw error;
+      }
+    });
   }
 
   async function exportPack(
@@ -553,7 +565,9 @@ export function createDesktopBridgeHandlers(
         : null;
       sessions.set(sessionId, {
         assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+        closing: false,
         imageImportInFlight: false,
+        maintenanceTail: Promise.resolve(),
         recoveryCandidatePaths: new Map(),
         recoveryRequired: false,
         session: opened,
@@ -913,15 +927,27 @@ export function createDesktopBridgeHandlers(
   async function closeProject(_event: unknown, request: unknown): Promise<void> {
     const validated = validateCloseProjectBridgeRequest(request);
     const session = requireSession(sessions, validated.sessionId);
-    sessions.delete(validated.sessionId);
-    await closeBridgeSession(session, { flush: validated.flush !== false });
+    session.closing = true;
+    try {
+      await enqueueSessionMaintenance(
+        session,
+        () => closeBridgeSession(session, { flush: validated.flush !== false }),
+      );
+      if (sessions.get(validated.sessionId) === session) {
+        sessions.delete(validated.sessionId);
+      }
+    } catch (error) {
+      session.closing = false;
+      throw error;
+    }
   }
 
   async function closeAllProjects(): Promise<void> {
     const activeSessions = [...sessions.values()];
     sessions.clear();
     for (const session of activeSessions) {
-      await closeBridgeSession(session);
+      session.closing = true;
+      await enqueueSessionMaintenance(session, () => closeBridgeSession(session));
     }
     await knowledgeRefreshService.stop();
   }
@@ -957,6 +983,15 @@ export function createDesktopBridgeHandlers(
       });
     }
     await requireMethod(repository, 'close')(session.session);
+  }
+
+  function enqueueSessionMaintenance<T>(
+    session: BridgeSessionContext,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const result = session.maintenanceTail.then(operation);
+    session.maintenanceTail = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   async function flushScheduledSnapshotAfterCommit(
@@ -1727,7 +1762,7 @@ function requireSession(
   sessionId: string,
 ): BridgeSessionContext {
   const session = sessions.get(sessionId);
-  if (session === undefined) {
+  if (session === undefined || session.closing) {
     throw createPersistenceError('INVALID_SESSION', false, 'Desktop session is not active');
   }
   return session;

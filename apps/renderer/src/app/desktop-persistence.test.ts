@@ -335,6 +335,44 @@ describe('desktop persistence', () => {
     expect(openProject).toHaveBeenCalledTimes(3);
   });
 
+  it('retries the same no-flush session close after close rejection before reopening writable', async () => {
+    const project = { ...createStarterProject(), name: 'Close retry project' };
+    const openProject = vi.fn()
+      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 3))
+      .mockResolvedValueOnce(createDesktopSession(project, 'second-session', 4));
+    const closeProject = vi.fn()
+      .mockRejectedValueOnce(new Error('close failed after partial cleanup'))
+      .mockResolvedValueOnce(undefined);
+    const bridge = {
+      closeProject,
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
+    await client.openProject?.();
+
+    await expect(client.reloadDurableProject?.()).rejects.toThrow('close failed after partial cleanup');
+    await expect(client.hydrate()).resolves.toMatchObject({
+      project: { name: 'Close retry project' },
+      revision: 3,
+      saveStatus: 'saved',
+    });
+    await expect(client.reloadDurableProject?.()).resolves.toMatchObject({
+      project: { name: 'Close retry project' },
+      revision: 4,
+      saveStatus: 'saved',
+    });
+
+    expect(closeProject).toHaveBeenCalledTimes(2);
+    expect(closeProject).toHaveBeenNthCalledWith(1, { sessionId: 'first-session', flush: false });
+    expect(closeProject).toHaveBeenNthCalledWith(2, { sessionId: 'first-session', flush: false });
+    expect(openProject).toHaveBeenCalledTimes(2);
+  });
+
   it('does not accept a read-only result as a successful durable reload', async () => {
     const project = { ...createStarterProject(), name: 'Reload lease project' };
     const openProject = vi.fn()

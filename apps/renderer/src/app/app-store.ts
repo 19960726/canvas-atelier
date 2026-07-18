@@ -1000,24 +1000,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   restoreProjectSnapshot: async (snapshotId) => {
     const state = get();
     if (state.persistenceMode === 'desktop') {
-      const restored = await projectPersistenceClient.restore(snapshotId);
-      const imageState = await readProjectImagesForHydration();
-      invalidateProjectPersistenceBoundary();
-      cancelPendingProjectSave();
-      clearPendingFailedProjectCommit();
-      set({
-        availableSnapshotIds: restored.availableSnapshotIds,
-        canReloadDurableProject: false,
-        canRetryProjectCommit: false,
-        desktopRevision: restored.revision,
-        project: restored.project,
-        projectLifecycle: restored.lifecycle,
-        projectCommitConflictCode: null,
-        recoveryRequired: restored.recoveryRequired === true,
-        ...imageState,
-        saveErrorCode: restored.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
-        saveStatus: restored.saveStatus,
-      });
+      await enqueueStableProjectOperation(set, get, async () => {
+        if (get().persistenceMode !== 'desktop') return false;
+        const restored = await projectPersistenceClient.restore(snapshotId);
+        const imageState = await readProjectImagesForHydration();
+        invalidateProjectPersistenceBoundary();
+        cancelPendingProjectSave();
+        clearPendingFailedProjectCommit();
+        set({
+          availableSnapshotIds: restored.availableSnapshotIds,
+          canReloadDurableProject: false,
+          canRetryProjectCommit: false,
+          desktopRevision: restored.revision,
+          project: restored.project,
+          projectLifecycle: restored.lifecycle,
+          projectCommitConflictCode: null,
+          recoveryRequired: restored.recoveryRequired === true,
+          ...imageState,
+          saveErrorCode: restored.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
+          saveStatus: restored.saveStatus,
+        });
+        return true;
+      }, { allowRecovery: true });
       return;
     }
 
@@ -1242,13 +1246,13 @@ function enqueueStableProjectOperation(
   set: (partial: Partial<AppState>) => void,
   get: () => AppState,
   operation: StableProjectOperation,
-  options: { allowPendingFailure?: boolean } = {},
+  options: { allowPendingFailure?: boolean; allowRecovery?: boolean } = {},
 ): Promise<boolean> {
   const generation = projectPersistenceGeneration;
   const run = async (): Promise<boolean> => {
     if (generation !== projectPersistenceGeneration) return false;
     if (!options.allowPendingFailure && pendingFailedProjectCommit !== null) return false;
-    if (get().projectCommitConflictCode !== null || get().recoveryRequired) return false;
+    if (get().projectCommitConflictCode !== null || (!options.allowRecovery && get().recoveryRequired)) return false;
     return operation((transaction, commitOptions = {}) => (
       commitProjectTransactionNow(transaction, commitOptions, set, get)
     ));
