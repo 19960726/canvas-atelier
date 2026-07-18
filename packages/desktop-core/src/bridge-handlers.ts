@@ -409,7 +409,7 @@ export function createDesktopBridgeHandlers(
     if (validated.transaction.operations.some((operation) => operation.kind === 'set_project_assets')) {
       throw invalidRequest('Project assets can only be changed through the managed image bridge');
     }
-    const session = requireSession(sessions, validated.sessionId);
+    const session = requireWritableSession(sessions, validated.sessionId);
     if (session.writer === null) {
       throw createPersistenceError(
         'CONCURRENT_WRITER',
@@ -464,7 +464,7 @@ export function createDesktopBridgeHandlers(
 
   async function restore(_event: unknown, request: unknown): Promise<RestoreBridgeResult> {
     const validated = validateRestoreBridgeRequest(request);
-    const session = requireWritableSession(sessions, validated.sessionId);
+    const session = requireWritableSession(sessions, validated.sessionId, { allowRecovery: true });
     if (validated.candidateId === undefined) {
       throw createPersistenceError('INVALID_REQUEST', false, 'Restore candidate id is required');
     }
@@ -472,26 +472,35 @@ export function createDesktopBridgeHandlers(
     if (mirrorPath === undefined) {
       throw createPersistenceError('INVALID_REQUEST', false, 'Restore candidate is unavailable');
     }
-    session.recoveryCandidatePaths.delete(validated.candidateId);
+    let restoredSession: OpenedProjectSession | null = null;
+    try {
+      const restoredManifest = await restoreRecoveryCandidate(fileSystem, createId, session, mirrorPath);
+      restoredSession = {
+        ...session.session,
+        manifest: restoredManifest,
+      };
+      let restoredWriter = session.writer;
+      if (restoredSession.mode === 'write') {
+        releaseJournalState(join(restoredSession.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), restoredManifest.projectId);
+        restoredWriter = await requireMethod(repository, 'openJournalWriter')(restoredSession);
+      }
 
-    const restoredManifest = await restoreRecoveryCandidate(fileSystem, createId, session, mirrorPath);
-    session.recoveryCandidatePaths.clear();
-    session.session = {
-      ...session.session,
-      manifest: restoredManifest,
-    };
-    session.recoveryRequired = false;
-    if (session.session.mode === 'write') {
-      releaseJournalState(join(session.session.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), session.session.manifest.projectId);
-      session.writer = await requireMethod(repository, 'openJournalWriter')(session.session);
+      const summary = await summarizeSession(repository, session.sessionId, restoredSession);
+      session.recoveryCandidatePaths.clear();
+      session.session = restoredSession;
+      session.writer = restoredWriter;
+      session.recoveryRequired = false;
+      session.assets = new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset]));
+      return {
+        ...summary,
+        restoredRevision: restoredManifest.stableSnapshotRevision,
+      };
+    } catch (error) {
+      if (restoredSession !== null) session.session = restoredSession;
+      session.writer = null;
+      session.recoveryRequired = true;
+      throw error;
     }
-
-    const summary = await summarizeSession(repository, session.sessionId, session.session);
-    session.assets = new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset]));
-    return {
-      ...summary,
-      restoredRevision: restoredManifest.stableSnapshotRevision,
-    };
   }
 
   async function exportPack(
@@ -1724,6 +1733,7 @@ function requireSession(
 function requireWritableSession(
   sessions: Map<string, BridgeSessionContext>,
   sessionId: string,
+  options: { readonly allowRecovery?: boolean } = {},
 ): BridgeSessionContext {
   const session = requireSession(sessions, sessionId);
   if (session.session.mode !== 'write') {
@@ -1731,6 +1741,13 @@ function requireWritableSession(
       'CONCURRENT_WRITER',
       true,
       'Desktop session is read-only',
+    );
+  }
+  if (session.recoveryRequired && options.allowRecovery !== true) {
+    throw createPersistenceError(
+      'RECOVERY_REQUIRED',
+      false,
+      'Recovery preview must be restored or discarded before writing',
     );
   }
   return session;

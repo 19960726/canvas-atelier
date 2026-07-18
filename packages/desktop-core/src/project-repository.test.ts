@@ -739,7 +739,11 @@ describe('ProjectRepository', () => {
     await expect(stat(destinationRoot)).rejects.toThrow();
   });
 
-  it('reports a corrupt stable snapshot as a typed sanitized recovery error', async () => {
+  it.each([
+    ['malformed JSON', (_snapshot: SnapshotEnvelope) => '{"schemaVersion":'],
+    ['invalid schema', (snapshot: SnapshotEnvelope) => JSON.stringify({ ...snapshot, schemaVersion: 99 })],
+    ['invalid checksum', (snapshot: SnapshotEnvelope) => JSON.stringify({ ...snapshot, projectSha256: 'invalid-checksum' })],
+  ])('reports a corrupt stable snapshot with %s as a typed sanitized recovery error', async (_caseName, serialize) => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'CorruptStableSnapshot.novus-project');
     const repository = createRepository({ processId: 11105 });
@@ -750,11 +754,36 @@ describe('ProjectRepository', () => {
     });
     const snapshotPath = join(projectRoot, ...session.manifest.stableSnapshotPath!.split('/'));
     const snapshot = await readJson<SnapshotEnvelope>(snapshotPath);
-    await writeFile(snapshotPath, `${JSON.stringify({ ...snapshot, projectSha256: 'invalid-checksum' })}\n`, 'utf8');
+    await writeFile(snapshotPath, `${serialize(snapshot)}\n`, 'utf8');
 
     const failure = await repository.readCurrentProject(session).catch((error: unknown) => error);
 
     expect(failure).toMatchObject({ code: 'CORRUPT_SNAPSHOT', retryable: false });
+    expect(JSON.stringify(failure)).not.toContain(projectRoot);
+  });
+
+  it.each([
+    ['EACCES', 'PERMISSION_DENIED', true],
+    ['EPERM', 'PERMISSION_DENIED', true],
+    ['EROFS', 'READ_ONLY_VOLUME', false],
+  ])('preserves stable snapshot read errno %s as %s', async (errno, expectedCode, retryable) => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, `StableRead-${errno}.novus-project`);
+    const owner = createRepository({ processId: 11106 });
+    const session = await owner.create(projectRoot, {
+      project: starterProject,
+      projectId: `project-stable-read-${errno.toLowerCase()}`,
+      projectName: `StableRead ${errno}`,
+    });
+    const snapshotPath = join(projectRoot, ...session.manifest.stableSnapshotPath!.split('/'));
+    const repository = createRepository({
+      fileSystem: new FailStableSnapshotReadFileSystem(snapshotPath, errno),
+      processId: 11107,
+    });
+
+    const failure = await repository.readCurrentProject(session).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: expectedCode, retryable });
     expect(JSON.stringify(failure)).not.toContain(projectRoot);
   });
 
@@ -1399,6 +1428,22 @@ class FailRenameFileSystem extends DelegatingFileSystem {
 class FailSyncFileSystem extends DelegatingFileSystem {
   override async open(path: string, flags: string): Promise<FileHandleLike> {
     return new FailSyncHandle(await super.open(path, flags));
+  }
+}
+
+class FailStableSnapshotReadFileSystem extends DelegatingFileSystem {
+  constructor(
+    private readonly snapshotPath: string,
+    private readonly errno: string,
+  ) {
+    super();
+  }
+
+  override async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+    if (samePath(path, this.snapshotPath)) {
+      throw Object.assign(new Error(`Injected ${this.errno} at ${path}`), { code: this.errno });
+    }
+    return super.readFile(path, encoding);
   }
 }
 

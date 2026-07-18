@@ -2057,6 +2057,12 @@ describe('desktop bridge contract', () => {
       stableSnapshotId: 'snapshot-recovered',
       targetRevision: 3,
     }));
+    const flush = vi.fn(async () => ({
+      path: 'snapshots/unexpected.json',
+      reason: 'stable_point' as const,
+      revision: 3,
+      snapshotId: 'unexpected',
+    }));
     const handlers = createDesktopBridgeHandlers({
       createId: createSequentialId('session'),
       dialogs: { chooseProjectRoot: vi.fn(async () => opened.root) },
@@ -2069,7 +2075,7 @@ describe('desktop bridge contract', () => {
       },
       snapshotScheduler: {
         consider: vi.fn(() => null),
-        flush: vi.fn(),
+        flush,
       } as unknown as SnapshotScheduler,
     });
 
@@ -2084,9 +2090,126 @@ describe('desktop bridge contract', () => {
     const plan = await handlers.getRecoveryPlan({}, { sessionId: result!.sessionId });
     expect(plan).toMatchObject({ action: 'choose_recovery', recoveredRevision: 3 });
     expect(plan.candidates).toHaveLength(1);
+    await expect(handlers.commit({}, {
+      ...makeCreatePromptRequest(starterProject.id, 'tx-preview-blocked', 3, 'prompt-preview-blocked'),
+      sessionId: result!.sessionId,
+    })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    await expect(handlers.createStablePoint({}, { sessionId: result!.sessionId }))
+      .rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
 
     await handlers.closeAllProjects();
     expect(close).toHaveBeenCalledOnce();
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { caseName: 'snapshot ENOSPC', errno: 'ENOSPC', expectedCode: 'DISK_FULL', failureStage: 'snapshot' as const },
+    { caseName: 'journal ENOSPC', errno: 'ENOSPC', expectedCode: 'DISK_FULL', failureStage: 'journal' as const },
+    { caseName: 'manifest ENOSPC', errno: 'ENOSPC', expectedCode: 'DISK_FULL', failureStage: 'manifest' as const },
+    { caseName: 'snapshot permission', errno: 'EACCES', expectedCode: 'PERMISSION_DENIED', failureStage: 'snapshot' as const },
+    { caseName: 'writer rebuild', expectedCode: 'DURABLE_WRITE_FAILED', failureStage: 'writer' as const },
+    { caseName: 'final summary', expectedCode: 'DURABLE_WRITE_FAILED', failureStage: 'summary' as const },
+  ])('retains the same recovery candidate token after a failed $caseName restore', async ({ errno, expectedCode, failureStage }) => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-recovery-retry-'));
+    const projectRoot = join(tempRoot, 'RetryRecovery.novus-project');
+    const candidatePath = join(tempRoot, 'candidate.json');
+    const openedSession = createOpenedSession(projectRoot);
+    const restoredProject = { ...starterProject, name: `Restored after ${failureStage}` };
+    await mkdir(join(projectRoot, 'snapshots'), { recursive: true });
+    await mkdir(join(projectRoot, 'journal'), { recursive: true });
+    await writeFile(join(projectRoot, 'project.novus.json'), `${JSON.stringify(openedSession.manifest)}\n`, 'utf8');
+    await writeFile(join(projectRoot, 'journal', 'active.ndjson'), '', 'utf8');
+    await writeFile(candidatePath, JSON.stringify({
+      project: restoredProject,
+      projectId: starterProject.id,
+      revision: 3,
+      snapshotId: 'snapshot-retry',
+    }), 'utf8');
+
+    const corruptError = Object.assign(new Error('Stable snapshot is corrupt'), {
+      code: 'CORRUPT_SNAPSHOT',
+      retryable: false,
+    });
+    const stageFailure = Object.assign(new Error(`Injected ${failureStage} restore failure`), {
+      code: 'DURABLE_WRITE_FAILED',
+      retryable: true,
+    });
+    const readCurrentProject = failureStage === 'summary'
+      ? vi.fn()
+        .mockRejectedValueOnce(corruptError)
+        .mockRejectedValueOnce(stageFailure)
+        .mockResolvedValue(restoredProject)
+      : vi.fn()
+        .mockRejectedValueOnce(corruptError)
+        .mockResolvedValue(restoredProject);
+    const openJournalWriter = failureStage === 'writer'
+      ? vi.fn()
+        .mockRejectedValueOnce(stageFailure)
+        .mockResolvedValue({ commit: vi.fn() })
+      : vi.fn(async () => ({ commit: vi.fn() }));
+    const fileSystem = failureStage === 'snapshot' || failureStage === 'journal' || failureStage === 'manifest'
+      ? new FailRestoreRenameOnceFileSystem(failureStage, errno!)
+      : new NodeFileSystem();
+    let id = 0;
+    const handlers = createDesktopBridgeHandlers({
+      createId: () => `recovery-retry-${++id}`,
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      fileSystem,
+      recoveryScanner: {
+        scan: vi.fn(async () => ({
+          action: 'choose_recovery' as const,
+          candidates: [{
+            path: candidatePath,
+            project: restoredProject,
+            projectId: starterProject.id,
+            revision: 3,
+            snapshotId: 'snapshot-retry',
+            tailStatus: 'complete' as const,
+          }],
+          issues: ['corrupt_snapshot'],
+          projectId: starterProject.id,
+          recoveredRevision: 3,
+          stableSnapshotId: 'snapshot-retry',
+          targetRevision: 3,
+        })),
+      },
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => openedSession),
+        openJournalWriter,
+        readCurrentProject,
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(async () => ({
+          path: 'snapshots/blocked.json',
+          reason: 'stable_point' as const,
+          revision: 3,
+          snapshotId: 'blocked',
+        })),
+      } as unknown as SnapshotScheduler,
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const plan = await handlers.getRecoveryPlan({}, { sessionId: opened!.sessionId });
+      const candidateId = plan.candidates[0]!.candidateId;
+      const firstFailure = await handlers.restore({}, { candidateId, sessionId: opened!.sessionId })
+        .catch((error: unknown) => error);
+      const stablePointWhileFailed = await handlers.createStablePoint({}, { sessionId: opened!.sessionId })
+        .catch((error: unknown) => error);
+      const retry = await handlers.restore({}, { candidateId, sessionId: opened!.sessionId })
+        .catch((error: unknown) => error);
+      const replay = await handlers.restore({}, { candidateId, sessionId: opened!.sessionId })
+        .catch((error: unknown) => error);
+
+      expect(firstFailure).toMatchObject({ code: expectedCode });
+      expect(retry).toMatchObject({ project: restoredProject, restoredRevision: 3 });
+      expect(stablePointWhileFailed).toMatchObject({ code: 'RECOVERY_REQUIRED' });
+      expect(replay).toMatchObject({ code: 'INVALID_REQUEST' });
+    } finally {
+      await rm(tempRoot, { force: true, recursive: true });
+    }
   });
 
   it('keeps opaque recovery candidate ids stable through one restore and rejects replay, foreign, stale, and invalid candidates', async () => {
@@ -2219,6 +2342,31 @@ function createOpenedSession(root = 'C:\\redacted\\Demo.novus-project'): OpenedP
     mode: 'write',
     root,
   };
+}
+
+class FailRestoreRenameOnceFileSystem extends NodeFileSystem {
+  private failed = false;
+
+  constructor(
+    private readonly stage: 'snapshot' | 'journal' | 'manifest',
+    private readonly errno: string,
+  ) {
+    super();
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    const normalized = destination.split('\\').join('/');
+    const matches = this.stage === 'snapshot'
+      ? /\/snapshots\/restored-[^/]+\.json$/u.test(normalized)
+      : this.stage === 'journal'
+        ? normalized.endsWith('/journal/active.ndjson')
+        : normalized.endsWith('/project.novus.json');
+    if (!this.failed && matches) {
+      this.failed = true;
+      throw Object.assign(new Error(`Injected ${this.errno} failure at ${destination}`), { code: this.errno });
+    }
+    await super.rename(source, destination);
+  }
 }
 
 function createKnowledgeStateSummary(): KnowledgeBaseStateSummary {

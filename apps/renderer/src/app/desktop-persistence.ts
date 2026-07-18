@@ -23,15 +23,16 @@ import { createUntitledProject } from './project-factory';
 export type PersistenceMode = 'browser' | 'desktop';
 export type ProjectSaveStatus = 'pending' | 'saving' | 'saved' | 'error' | 'read_only';
 export type ProjectLifecycle = 'untitled' | 'durable';
-export type ProjectCommitErrorCode = PersistenceErrorCode | 'BROWSER_PERSIST_FAILED';
+export type ProjectCommitErrorCode = PersistenceErrorCode | 'RECOVERY_REQUIRED' | 'BROWSER_PERSIST_FAILED';
 
 export interface ProjectHydrationResult {
   availableSnapshotIds: string[];
   lifecycle: ProjectLifecycle;
   mode: PersistenceMode;
   project: CanvasProject;
+  recoveryRequired?: boolean;
   revision: number;
-  saveStatus: Extract<ProjectSaveStatus, 'pending' | 'saved' | 'read_only'>;
+  saveStatus: Extract<ProjectSaveStatus, 'pending' | 'saved' | 'error' | 'read_only'>;
 }
 
 export interface ProjectCommitRequest {
@@ -66,8 +67,9 @@ export interface ProjectRestoreResult {
   availableSnapshotIds: string[];
   lifecycle: ProjectLifecycle;
   project: CanvasProject;
+  recoveryRequired?: boolean;
   revision: number;
-  saveStatus: Extract<ProjectSaveStatus, 'saved' | 'read_only'>;
+  saveStatus: Extract<ProjectSaveStatus, 'saved' | 'error' | 'read_only'>;
 }
 
 export interface ProjectImageImportResult {
@@ -197,6 +199,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   let mode: 'write' | 'read_only' = 'write';
   let currentProject = createUntitledProject();
   let revision = 0;
+  let recoveryRequired = false;
   let availableSnapshotIds: string[] = [];
   let recoveryCandidateIds = new Map<string, string>();
 
@@ -226,6 +229,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       mode = 'write';
       currentProject = createUntitledProject();
       revision = 0;
+      recoveryRequired = false;
       availableSnapshotIds = [];
       recoveryCandidateIds = new Map();
     },
@@ -236,11 +240,17 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         lifecycle: sessionId === null ? 'untitled' : 'durable',
         mode: 'desktop',
         project: currentProject,
+        recoveryRequired,
         revision,
-        saveStatus: sessionId === null ? 'pending' : mode === 'read_only' ? 'read_only' : 'saved',
+        saveStatus: sessionId === null
+          ? 'pending'
+          : recoveryRequired
+            ? 'error'
+            : mode === 'read_only' ? 'read_only' : 'saved',
       };
     },
     async openProject() {
+      if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
       const previousSessionId = sessionId;
       const selected = await bridge.openProject({ mode: 'write' });
       if (selected === null) return null;
@@ -250,6 +260,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       mode = selected.mode;
       currentProject = validateRecoveredProject(selected.project, currentProject);
       revision = selected.currentRevision ?? selected.stableSnapshotRevision;
+      recoveryRequired = selected.recoveryRequired === true;
       availableSnapshotIds = [];
       recoveryCandidateIds = new Map();
       availableSnapshotIds = await readDesktopRecoverySnapshotIds(selected.sessionId);
@@ -258,12 +269,14 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         lifecycle: 'durable',
         mode: 'desktop',
         project: currentProject,
+        recoveryRequired,
         revision,
-        saveStatus: mode === 'read_only' ? 'read_only' : 'saved',
+        saveStatus: recoveryRequired ? 'error' : mode === 'read_only' ? 'read_only' : 'saved',
       };
     },
     async importProjectImage(target) {
       if (sessionId === null) return null;
+      if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
       const result = await bridge.projectImages.importImage({ sessionId, target });
       if (result === null) return null;
       currentProject = validateRecoveredProject(result.project, currentProject);
@@ -291,16 +304,19 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
           ? previousRevision
           : result.restoredRevision;
         availableSnapshotIds = await readDesktopRecoverySnapshotIds();
+        recoveryRequired = false;
       }
       return {
         availableSnapshotIds,
         lifecycle: sessionId === null ? 'untitled' : 'durable',
         project: currentProject,
+        recoveryRequired,
         revision,
-        saveStatus: mode === 'read_only' ? 'read_only' : 'saved',
+        saveStatus: recoveryRequired ? 'error' : mode === 'read_only' ? 'read_only' : 'saved',
       };
     },
     async stablePoint() {
+      if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
       if (sessionId !== null && mode === 'write') {
         const result = await bridge.createStablePoint({ sessionId });
         revision = result.revision;
@@ -326,6 +342,14 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     if (mode === 'read_only') {
       return {
         code: 'CONCURRENT_WRITER',
+        ok: false,
+        project: currentProject,
+        revision,
+      };
+    }
+    if (recoveryRequired) {
+      return {
+        code: 'RECOVERY_REQUIRED',
         ok: false,
         project: currentProject,
         revision,

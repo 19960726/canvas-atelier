@@ -2,10 +2,12 @@ import type { ModelJob } from '@agent-canvas/domain';
 import { Loader2, RotateCcw, XCircle } from 'lucide-react';
 
 interface JobStripProps {
+  canReloadSave?: boolean;
   canRetrySave?: boolean;
   jobs: ModelJob[];
   saveState: 'pending' | 'saving' | 'saved' | 'error' | 'read_only';
   saveLabel: string;
+  onReloadSave?: () => void;
   onRetry: (jobId: string) => void;
   onRetrySave: () => void;
   onCancel: (jobId: string) => void;
@@ -13,7 +15,17 @@ interface JobStripProps {
 
 const activeStatuses = new Set<ModelJob['status']>(['queued', 'submitting', 'running']);
 
-export function JobStrip({ canRetrySave, jobs, saveState, saveLabel, onRetry, onRetrySave, onCancel }: JobStripProps) {
+export function JobStrip({
+  canReloadSave,
+  canRetrySave,
+  jobs,
+  saveState,
+  saveLabel,
+  onReloadSave,
+  onRetry,
+  onRetrySave,
+  onCancel,
+}: JobStripProps) {
   const activeJobs = jobs.filter((job) => activeStatuses.has(job.status));
   const queuedJobs = activeJobs.filter((job) => job.status === 'queued');
   const visibleJobs = jobs
@@ -61,7 +73,19 @@ export function JobStrip({ canRetrySave, jobs, saveState, saveLabel, onRetry, on
         ))}
       </div>
       <span className="job-strip__spacer" />
-      {(canRetrySave ?? saveState === 'error') && (
+      {canReloadSave && onReloadSave && (
+        <button
+          className="job-strip__save-retry"
+          data-testid="save-reload"
+          type="button"
+          aria-label="Reload durable project"
+          title="Reload durable project"
+          onClick={onReloadSave}
+        >
+          <RotateCcw size={13} />
+        </button>
+      )}
+      {(canRetrySave === true || (canRetrySave === undefined && !canReloadSave && saveState === 'error')) && (
         <button
           className="job-strip__save-retry"
           data-testid="save-retry"

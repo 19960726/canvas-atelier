@@ -75,6 +75,8 @@ let planSequence = 0;
 let referenceOrderCommitTail: Promise<void> | null = null;
 let moduleGraphCommitTail: Promise<void> | null = null;
 let pendingFailedProjectCommit: ProjectCommitRequest | null = null;
+let activeProjectCommitToken: ProjectCommitToken | null = null;
+let projectPersistenceGeneration = 0;
 let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
 let modelJobExecutorOverride: ModelJobExecutor | null = null;
@@ -96,7 +98,10 @@ const projectAutosave = createAutosaveController<CanvasProject>({
     });
   },
   delayMs: AUTOSAVE_IDLE_MS,
-  isReadOnly: () => useAppStore.getState().saveStatus === 'read_only',
+  isReadOnly: () => {
+    const state = useAppStore.getState();
+    return state.saveStatus === 'read_only' || state.recoveryRequired;
+  },
 });
 let pendingProjectFlushBoundary: Promise<boolean> | null = null;
 
@@ -110,6 +115,12 @@ interface PendingAgentConfirmation {
   planId: string;
   token: string;
   transactionId: string;
+}
+
+interface ProjectCommitToken {
+  readonly generation: number;
+  readonly projectId: string;
+  readonly request: ProjectCommitRequest;
 }
 
 interface SetProjectOptions {
@@ -145,7 +156,10 @@ interface AppState {
   persistenceMode: 'browser' | 'desktop';
   desktopRevision: number;
   availableSnapshotIds: string[];
+  canReloadDurableProject: boolean;
   canRetryProjectCommit: boolean;
+  projectCommitConflictCode: 'REVISION_CONFLICT' | 'CONCURRENT_WRITER' | null;
+  recoveryRequired: boolean;
   knowledgeBases: KnowledgeBaseStateSummary[];
   knowledgeSyncStatuses: KnowledgeSyncStatusSummary[];
   saveStatus: ProjectSaveStatus;
@@ -171,6 +185,7 @@ interface AppState {
   getKnowledgeLease: KnowledgeClient['getLease'];
   hydratePersistence: () => Promise<void>;
   openProject: () => Promise<boolean>;
+  reloadDurableProject: () => Promise<boolean>;
   newWorkflow: () => Promise<void>;
   importImageForModule: (nodeId: string) => Promise<boolean>;
   importPlacementReference: (
@@ -419,6 +434,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   closePersistence: async () => {
     if (get().projectLifecycle === 'untitled') return false;
+    if (get().recoveryRequired) return false;
+    const activeRequest = invalidateActiveProjectCommit();
+    if (activeRequest !== null) {
+      pendingFailedProjectCommit = activeRequest;
+      set({
+        canReloadDurableProject: false,
+        canRetryProjectCommit: true,
+        project: activeRequest.nextProject,
+        projectCommitConflictCode: null,
+        saveErrorCode: 'DURABLE_WRITE_FAILED',
+        saveStatus: 'error',
+      });
+      return false;
+    }
     const flushed = await flushPendingProjectSave(get, set, 'close');
     if (!flushed) return false;
     invalidateModelJobStoreGeneration();
@@ -434,9 +463,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   discardPersistence: async () => {
+    invalidateProjectPersistenceBoundary();
     cancelPendingProjectSave();
     clearPendingFailedProjectCommit();
-    set({ canRetryProjectCommit: false });
+    set({
+      canReloadDurableProject: false,
+      canRetryProjectCommit: false,
+      projectCommitConflictCode: null,
+    });
     invalidateModelJobStoreGeneration();
     modelJobStore?.stop();
     modelJobUnsubscribe?.();
@@ -444,6 +478,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     knowledgeClient.stop();
     try {
       await projectPersistenceClient.close();
+      set({
+        recoveryRequired: false,
+        saveErrorCode: null,
+        saveStatus: 'pending',
+      });
       return true;
     } catch {
       return false;
@@ -452,6 +491,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   commitProjectTransaction: async (transaction, options = {}) => {
     cancelPendingProjectSave();
     if (pendingFailedProjectCommit !== null) return false;
+    if (get().projectCommitConflictCode !== null || get().recoveryRequired) return false;
     const before = get().project;
     const nextProject = options.nextProject ?? applyProjectTransaction(before, transaction);
     const kind = options.kind ?? 'canvas';
@@ -468,12 +508,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       projectId: before.id,
       transaction,
     };
-    set({ canRetryProjectCommit: false, project: nextProject, saveErrorCode: null, saveStatus: 'saving' });
+    set({
+      canReloadDurableProject: false,
+      canRetryProjectCommit: false,
+      project: nextProject,
+      projectCommitConflictCode: null,
+      saveErrorCode: null,
+      saveStatus: 'saving',
+    });
     return executeProjectCommit(request, set, get);
   },
   retryFailedProjectCommit: async () => {
     const request = pendingFailedProjectCommit;
-    if (request === null || !get().canRetryProjectCommit || get().saveStatus === 'read_only') return false;
+    if (request === null || !get().canRetryProjectCommit || get().saveStatus === 'read_only' || get().recoveryRequired) return false;
     set({ canRetryProjectCommit: false, saveErrorCode: null, saveStatus: 'saving' });
     return executeProjectCommit(request, set, get, true);
   },
@@ -517,6 +564,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     knowledgeClient.getLease(runId, capability, references, citations)
   ),
   hydratePersistence: async () => {
+    invalidateProjectPersistenceBoundary();
     cancelPendingProjectSave();
     clearPendingFailedProjectCommit();
     const jobStore = getModelJobStore();
@@ -525,51 +573,68 @@ export const useAppStore = create<AppState>((set, get) => ({
     const modelJobs = await jobStore.listJobs();
     set({
       availableSnapshotIds: hydrated.availableSnapshotIds,
+      canReloadDurableProject: false,
       canRetryProjectCommit: false,
       desktopRevision: hydrated.revision,
       persistenceMode: hydrated.mode,
       project: hydrated.project,
       projectLifecycle: hydrated.lifecycle,
+      projectCommitConflictCode: null,
+      recoveryRequired: hydrated.recoveryRequired === true,
       ...imageState,
       confirmedModelJobs: countConfirmedModelJobs(modelJobs),
       modelJobs,
-      saveErrorCode: null,
+      saveErrorCode: hydrated.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
       saveStatus: hydrated.saveStatus,
     });
     recoverModelJobsInBackground(jobStore);
   },
   openProject: async () => {
+    if (get().recoveryRequired) return false;
     const openProject = projectPersistenceClient.openProject;
     if (openProject === undefined) return false;
+    invalidateProjectPersistenceBoundary();
     const opened = await openProject();
     if (opened === null) return false;
     clearPendingFailedProjectCommit();
     const imageState = await readProjectImagesForHydration();
     set({
       availableSnapshotIds: opened.availableSnapshotIds,
+      canReloadDurableProject: false,
       canRetryProjectCommit: false,
       desktopRevision: opened.revision,
       persistenceMode: opened.mode,
       project: opened.project,
       projectLifecycle: opened.lifecycle,
+      projectCommitConflictCode: null,
+      recoveryRequired: opened.recoveryRequired === true,
       ...imageState,
       projectImageImportingNodeId: null,
-      saveErrorCode: null,
+      saveErrorCode: opened.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
       saveStatus: opened.saveStatus,
       undoStack: [],
     });
     return true;
   },
+  reloadDurableProject: async () => {
+    if (!get().canReloadDurableProject) return false;
+    return get().openProject();
+  },
   newWorkflow: async () => {
+    if (get().recoveryRequired) return;
+    invalidateProjectPersistenceBoundary();
     cancelPendingProjectSave();
     await projectPersistenceClient.close().catch(() => undefined);
     clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds: [],
+      canReloadDurableProject: false,
       canRetryProjectCommit: false,
       desktopRevision: 0,
       project: createUntitledProject(),
       projectLifecycle: 'untitled',
+      projectCommitConflictCode: null,
+      recoveryRequired: false,
       projectImages: [],
       projectImageError: null,
       projectImageImportingNodeId: null,
@@ -626,9 +691,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveTool: (activeTool) => set({ activeTool }),
   toggleAgentPanel: () => set((state) => ({ agentPanelCollapsed: !state.agentPanelCollapsed })),
   setProject: (project, options = {}) => {
-    if (pendingFailedProjectCommit !== null) return;
+    if (pendingFailedProjectCommit !== null || get().recoveryRequired) return;
+    invalidateProjectPersistenceBoundary();
     set((state) => ({
+      canReloadDurableProject: false,
       project,
+      projectCommitConflictCode: null,
       saveErrorCode: null,
       saveStatus: state.saveStatus === 'read_only' ? 'read_only' : 'pending',
     }));
@@ -896,6 +964,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   restoreProjectSnapshot: async (snapshotId) => {
     const state = get();
+    invalidateProjectPersistenceBoundary();
     if (state.persistenceMode === 'desktop') {
       cancelPendingProjectSave();
       const restored = await projectPersistenceClient.restore(snapshotId);
@@ -903,12 +972,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const imageState = await readProjectImagesForHydration();
       set({
         availableSnapshotIds: restored.availableSnapshotIds,
+        canReloadDurableProject: false,
         canRetryProjectCommit: false,
         desktopRevision: restored.revision,
         project: restored.project,
         projectLifecycle: restored.lifecycle,
+        projectCommitConflictCode: null,
+        recoveryRequired: restored.recoveryRequired === true,
         ...imageState,
-        saveErrorCode: null,
+        saveErrorCode: restored.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
         saveStatus: restored.saveStatus,
       });
       return;
@@ -989,7 +1061,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
 async function importProjectImageWithTarget(target: ProjectImageImportTarget): Promise<boolean> {
   const before = useAppStore.getState();
-  if (before.projectImageImportingNodeId !== null || before.saveStatus === 'read_only' || before.canRetryProjectCommit) return false;
+  if (
+    before.projectImageImportingNodeId !== null
+    || before.saveStatus === 'read_only'
+    || before.canRetryProjectCommit
+    || before.recoveryRequired
+  ) return false;
   const node = before.project.nodes.find((candidate) => candidate.id === target.nodeId);
   if (node === undefined) return false;
   if (target.kind === 'module' && (
@@ -1131,6 +1208,7 @@ function enqueueModuleGraphCommit(operation: () => Promise<boolean>): Promise<bo
 }
 
 export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' } = { project: 'starter' }): void {
+  invalidateProjectPersistenceBoundary();
   cancelPendingProjectSave();
   clearPendingFailedProjectCommit();
   pendingProjectFlushBoundary = null;
@@ -1229,28 +1307,30 @@ async function executeProjectCommit(
   get: () => AppState,
   retryRequest = false,
 ): Promise<boolean> {
-  const result = await projectPersistenceClient.commit(request);
-  if (retryRequest
-    ? pendingFailedProjectCommit !== request
-    : pendingFailedProjectCommit !== null && pendingFailedProjectCommit !== request) return false;
-  if (!result.ok && result.code === 'REVISION_CONFLICT') {
-    clearPendingFailedProjectCommit();
-    const hydrated = await projectPersistenceClient.hydrate();
-    const imageState = await readProjectImagesForHydration();
-    set({
-      availableSnapshotIds: hydrated.availableSnapshotIds,
-      canRetryProjectCommit: false,
-      desktopRevision: hydrated.revision,
-      persistenceMode: hydrated.mode,
-      project: hydrated.project,
-      projectLifecycle: hydrated.lifecycle,
-      ...imageState,
-      saveErrorCode: result.code,
-      saveStatus: 'error',
-    });
-    return false;
+  const token = beginProjectCommit(request);
+  try {
+    const result = await projectPersistenceClient.commit(request);
+    if (!isActiveProjectCommit(token, get)) return false;
+    if (retryRequest
+      ? pendingFailedProjectCommit !== request
+      : pendingFailedProjectCommit !== null && pendingFailedProjectCommit !== request) return false;
+    if (!result.ok && (result.code === 'REVISION_CONFLICT' || result.code === 'CONCURRENT_WRITER')) {
+      clearPendingFailedProjectCommit();
+      set({
+        canReloadDurableProject: true,
+        canRetryProjectCommit: false,
+        desktopRevision: result.revision,
+        project: request.nextProject,
+        projectCommitConflictCode: result.code,
+        saveErrorCode: result.code,
+        saveStatus: 'error',
+      });
+      return false;
+    }
+    return applyCommitResult(set, get, result, request);
+  } finally {
+    if (activeProjectCommitToken === token) activeProjectCommitToken = null;
   }
-  return applyCommitResult(set, get, result, request);
 }
 
 function applyCommitResult(
@@ -1266,36 +1346,28 @@ function applyCommitResult(
     clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds,
+      canReloadDurableProject: false,
       canRetryProjectCommit: false,
       desktopRevision: result.revision,
       project: result.project,
+      projectCommitConflictCode: null,
       saveErrorCode: null,
       saveStatus: get().projectLifecycle === 'untitled' ? 'pending' : 'saved',
     });
     return true;
   }
 
-  if (result.code === 'CONCURRENT_WRITER') {
-    clearPendingFailedProjectCommit();
-    set({
-      availableSnapshotIds,
-      canRetryProjectCommit: false,
-      desktopRevision: result.revision,
-      project: result.project,
-      saveErrorCode: result.code,
-      saveStatus: 'read_only',
-    });
-  } else {
-    pendingFailedProjectCommit = request;
-    set({
-      availableSnapshotIds,
-      canRetryProjectCommit: true,
-      desktopRevision: result.revision,
-      project: request.nextProject,
-      saveErrorCode: result.code,
-      saveStatus: 'error',
-    });
-  }
+  pendingFailedProjectCommit = request;
+  set({
+    availableSnapshotIds,
+    canReloadDurableProject: false,
+    canRetryProjectCommit: true,
+    desktopRevision: result.revision,
+    project: request.nextProject,
+    projectCommitConflictCode: null,
+    saveErrorCode: result.code,
+    saveStatus: 'error',
+  });
   return false;
 }
 
@@ -1331,6 +1403,34 @@ function clearPendingFailedProjectCommit(): void {
   pendingFailedProjectCommit = null;
 }
 
+function beginProjectCommit(request: ProjectCommitRequest): ProjectCommitToken {
+  const token = {
+    generation: projectPersistenceGeneration,
+    projectId: request.projectId,
+    request,
+  };
+  activeProjectCommitToken = token;
+  return token;
+}
+
+function isActiveProjectCommit(token: ProjectCommitToken, get: () => AppState): boolean {
+  return activeProjectCommitToken === token
+    && token.generation === projectPersistenceGeneration
+    && token.request.projectId === token.projectId
+    && get().project === token.request.nextProject;
+}
+
+function invalidateActiveProjectCommit(): ProjectCommitRequest | null {
+  const request = activeProjectCommitToken?.request ?? null;
+  invalidateProjectPersistenceBoundary();
+  return request;
+}
+
+function invalidateProjectPersistenceBoundary(): void {
+  projectPersistenceGeneration += 1;
+  activeProjectCommitToken = null;
+}
+
 async function readProjectImagesForHydration(): Promise<Pick<AppState, 'projectImages' | 'projectImageError'>> {
   try {
     return {
@@ -1356,13 +1456,14 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'canRetryProjectCommit' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'canReloadDurableProject' | 'canRetryProjectCommit' | 'projectCommitConflictCode' | 'recoveryRequired' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   return {
     activeTool: 'select',
     agentPanelCollapsed: false,
     agentPlan: null,
     availableSnapshotIds: [],
+    canReloadDurableProject: false,
     canRetryProjectCommit: false,
     confirmedModelJobs: 0,
     desktopRevision: 0,
@@ -1371,6 +1472,8 @@ function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | '
     modelJobs: [],
     persistenceMode: desktopMode ? 'desktop' : 'browser',
     project: createUntitledProject(),
+    projectCommitConflictCode: null,
+    recoveryRequired: false,
     projectLifecycle: 'untitled',
     projectImages: [],
     projectImageError: null,
@@ -2256,6 +2359,7 @@ async function flushPendingProjectSave(
   set: (partial: Partial<AppState>) => void,
   reason: Exclude<AutosaveFlushReason, 'idle'>,
 ): Promise<boolean> {
+  if (get().recoveryRequired) return false;
   if (pendingFailedProjectCommit !== null) return false;
   if (pendingProjectFlushBoundary !== null) return pendingProjectFlushBoundary;
 

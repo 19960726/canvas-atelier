@@ -240,7 +240,7 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().saveStatus).toBe('saved');
   });
 
-  it('hydrates the last durable desktop state on REVISION_CONFLICT', async () => {
+  it('keeps local work dirty on REVISION_CONFLICT until explicit durable reload', async () => {
     const durableAsset = {
       assetId: '0123456789abcdef',
       byteSize: 42,
@@ -268,21 +268,23 @@ describe('project optimization memory', () => {
         edges: conflictingProject.edges,
       }],
     };
-    replaceProjectPersistenceClientForTests(createMockClient({
-      hydrate: async () => ({
+    const openProject = vi.fn(async () => ({
         availableSnapshotIds: [],
-        lifecycle: 'durable',
-        mode: 'desktop',
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
         project: durableProject,
         revision: 3,
-        saveStatus: 'saved',
-      }),
-      commit: vi.fn(async (): Promise<ProjectCommitResult> => ({
-        code: 'REVISION_CONFLICT',
-        ok: false,
-        project: durableProject,
-        revision: 3,
-      })),
+        saveStatus: 'saved' as const,
+      }));
+    const commit = vi.fn(async (): Promise<ProjectCommitResult> => ({
+      code: 'REVISION_CONFLICT',
+      ok: false,
+      project: durableProject,
+      revision: 3,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      openProject,
+      commit,
       listProjectImages: vi.fn(async () => [durableImage]),
     }));
     resetAppStoreForTests();
@@ -296,11 +298,89 @@ describe('project optimization memory', () => {
 
     await useAppStore.getState().commitProjectTransaction(transaction, { kind: 'canvas' });
 
-    expect(useAppStore.getState().project).toMatchObject({ id: durableProject.id, name: durableProject.name });
-    expect(useAppStore.getState().projectImages).toEqual([durableImage]);
+    expect(useAppStore.getState().project).toMatchObject({ id: conflictingProject.id, name: 'stale-local-draft' });
+    expect(useAppStore.getState().projectImages).toEqual([]);
     expect(useAppStore.getState().desktopRevision).toBe(3);
     expect(useAppStore.getState().saveStatus).toBe('error');
     expect(useAppStore.getState().saveErrorCode).toBe('REVISION_CONFLICT');
+    expect(useAppStore.getState().projectCommitConflictCode).toBe('REVISION_CONFLICT');
+    expect(useAppStore.getState().canReloadDurableProject).toBe(true);
+    expect(useAppStore.getState().canRetryProjectCommit).toBe(false);
+    expect(await useAppStore.getState().addModuleNode('text_prompt', { x: 20, y: 20 })).toBe(false);
+    expect(commit).toHaveBeenCalledOnce();
+
+    expect(await useAppStore.getState().reloadDurableProject()).toBe(true);
+    expect(openProject).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({
+      canReloadDurableProject: false,
+      desktopRevision: 3,
+      project: { name: durableProject.name },
+      projectCommitConflictCode: null,
+      projectImages: [durableImage],
+      saveStatus: 'saved',
+    });
+  });
+
+  it('blocks normal persistence boundaries until a recovery preview is restored or discarded', async () => {
+    const previewProject = { ...createStarterProject(), name: 'Recovery preview' };
+    const restoredProject = { ...previewProject, name: 'Recovered project' };
+    const close = vi.fn(async () => undefined);
+    const commit = vi.fn(async (): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: previewProject,
+      revision: 4,
+    }));
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['snapshot-recovery'],
+      project: previewProject,
+      revision: 3,
+    }));
+    const restore = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      project: restoredProject,
+      recoveryRequired: false,
+      revision: 3,
+      saveStatus: 'saved' as const,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      close,
+      commit,
+      openProject: async () => ({
+        availableSnapshotIds: ['snapshot-recovery'],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: previewProject,
+        recoveryRequired: true,
+        revision: 3,
+        saveStatus: 'error',
+      }),
+      restore,
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    expect(await useAppStore.getState().openProject()).toBe(true);
+    expect(useAppStore.getState()).toMatchObject({
+      recoveryRequired: true,
+      saveErrorCode: 'RECOVERY_REQUIRED',
+      saveStatus: 'error',
+    });
+    expect(await useAppStore.getState().addModuleNode('text_prompt', { x: 10, y: 10 })).toBe(false);
+    expect(await useAppStore.getState().flushProjectSave('blur')).toBe(false);
+    expect(await useAppStore.getState().closePersistence()).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    expect(stablePoint).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+
+    await useAppStore.getState().restoreProjectSnapshot('snapshot-recovery');
+    expect(restore).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({
+      project: { name: 'Recovered project' },
+      recoveryRequired: false,
+      saveErrorCode: null,
+      saveStatus: 'saved',
+    });
   });
 
   it('does not hydrate desktop initial state from browser localStorage', () => {
@@ -2305,7 +2385,17 @@ describe('project optimization memory', () => {
 
     await expect(Promise.all([first, second])).resolves.toEqual([false, false]);
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(useAppStore.getState().saveStatus).toBe('read_only');
+    expect(useAppStore.getState()).toMatchObject({
+      canReloadDurableProject: true,
+      canRetryProjectCommit: false,
+      projectCommitConflictCode: 'CONCURRENT_WRITER',
+      saveErrorCode: 'CONCURRENT_WRITER',
+      saveStatus: 'error',
+    });
+    const dirtyPlacement = useAppStore.getState().project.nodes.find((node) => node.id === placement.id);
+    expect(dirtyPlacement?.type === 'placement_preview'
+      ? dirtyPlacement.data.objects.map((object) => object.assetId)
+      : []).toEqual(['scene', 'product']);
   });
 
   it('hydrates a persisted reference order for reopening', async () => {
@@ -2836,6 +2926,98 @@ describe('stable module graph commits', () => {
       project: { name: 'Opened while retrying' },
       saveStatus: 'saved',
     });
+  });
+
+  it.each(
+    (['success', 'failure'] as const).flatMap((resultKind) => (
+      ['open', 'hydrate', 'new', 'reset', 'restore', 'close', 'discard', 'set_project'] as const
+    ).map((boundary) => ({ boundary, resultKind }))),
+  )('ignores a delayed $resultKind commit result after the $boundary project boundary', async ({ boundary, resultKind }) => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const initialProject = moduleGraphProject();
+    const boundaryProject = { ...moduleGraphProject(), name: `Boundary ${boundary}` };
+    const close = vi.fn(async () => undefined);
+    const durableResult = {
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      mode: 'desktop' as const,
+      project: boundaryProject,
+      revision: 9,
+      saveStatus: 'saved' as const,
+    };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      close,
+      commit: vi.fn().mockReturnValue(commitResult.promise),
+      hydrate: async () => durableResult,
+      openProject: async () => durableResult,
+      restore: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        project: boundaryProject,
+        revision: 9,
+        saveStatus: 'saved',
+      }),
+      stablePoint: async () => ({ availableSnapshotIds: [], project: initialProject, revision: 0 }),
+    }));
+    useAppStore.setState({
+      desktopRevision: 0,
+      persistenceMode: 'desktop',
+      project: initialProject,
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    const pending = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    expect(useAppStore.getState().saveStatus).toBe('saving');
+
+    switch (boundary) {
+      case 'open':
+        expect(await useAppStore.getState().openProject()).toBe(true);
+        break;
+      case 'hydrate':
+        await useAppStore.getState().hydratePersistence();
+        break;
+      case 'new':
+        await useAppStore.getState().newWorkflow();
+        break;
+      case 'reset':
+        resetAppStoreForTests({ project: 'empty' });
+        break;
+      case 'restore':
+        await useAppStore.getState().restoreProjectSnapshot('snapshot-boundary');
+        break;
+      case 'close':
+        expect(await useAppStore.getState().closePersistence()).toBe(false);
+        break;
+      case 'discard':
+        expect(await useAppStore.getState().discardPersistence()).toBe(true);
+        break;
+      case 'set_project':
+        useAppStore.getState().setProject(boundaryProject, { schedulePersist: false });
+        break;
+    }
+
+    const request = (useAppStore.getState().saveStatus === 'saving' ? initialProject : boundaryProject);
+    commitResult.resolve(resultKind === 'success'
+      ? { ok: true, project: { ...request, name: 'Late ACK project' }, revision: 1 }
+      : { code: 'DISK_FULL', ok: false, project: initialProject, revision: 0 });
+
+    expect(await pending).toBe(false);
+    expect(useAppStore.getState().desktopRevision).not.toBe(1);
+    expect(useAppStore.getState().project.name).not.toBe('Late ACK project');
+    if (boundary === 'open' || boundary === 'hydrate' || boundary === 'restore' || boundary === 'set_project') {
+      expect(useAppStore.getState().project.name).toBe(`Boundary ${boundary}`);
+    }
+    if (boundary === 'new' || boundary === 'reset') {
+      expect(useAppStore.getState().projectLifecycle).toBe('untitled');
+    }
+    if (boundary === 'close') {
+      expect(useAppStore.getState()).toMatchObject({
+        canRetryProjectCommit: true,
+        saveErrorCode: 'DURABLE_WRITE_FAILED',
+        saveStatus: 'error',
+      });
+    }
   });
 
   it('serializes rapid stable graph operations against the latest acknowledged revision and continues after failure', async () => {

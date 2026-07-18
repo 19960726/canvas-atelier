@@ -245,7 +245,9 @@ export function CanvasWorkspace() {
   const modelJobs = useAppStore((state) => state.modelJobs);
   const saveStatus = useAppStore((state) => state.saveStatus);
   const saveErrorCode = useAppStore((state) => state.saveErrorCode);
+  const canReloadDurableProject = useAppStore((state) => state.canReloadDurableProject);
   const canRetryProjectCommit = useAppStore((state) => state.canRetryProjectCommit);
+  const recoveryRequired = useAppStore((state) => state.recoveryRequired);
   const projectImages = useAppStore((state) => state.projectImages);
   const projectImageError = useAppStore((state) => state.projectImageError);
   const refreshProjectImages = useAppStore((state) => state.refreshProjectImages);
@@ -269,6 +271,8 @@ export function CanvasWorkspace() {
   const retryModelJob = useAppStore((state) => state.retryModelJob);
   const cancelModelJob = useAppStore((state) => state.cancelModelJob);
   const retryFailedProjectCommit = useAppStore((state) => state.retryFailedProjectCommit);
+  const reloadDurableProject = useAppStore((state) => state.reloadDurableProject);
+  const discardPersistence = useAppStore((state) => state.discardPersistence);
   const openProject = useAppStore((state) => state.openProject);
   const newWorkflow = useAppStore((state) => state.newWorkflow);
   const [agentMessage, setAgentMessage] = useState<ImageMentionValue>({ text: '', citations: [] });
@@ -734,7 +738,7 @@ export function CanvasWorkspace() {
           <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
           <Controls showInteractive={false} />
         </ReactFlow>
-        {project.nodes.length === 0 && (
+        {project.nodes.length === 0 && !recoveryRequired && (
           <section className="canvas-empty-state" role="region" aria-label="空白画布操作">
             <div>
               <strong>从空白画布开始</strong>
@@ -747,7 +751,33 @@ export function CanvasWorkspace() {
             </div>
           </section>
         )}
-        {availableSnapshotIds.length > 0 && (
+        {recoveryRequired && (
+          <section
+            className="recovery-choice"
+            role="alert"
+            aria-label="需要恢复项目"
+            data-testid="recovery-required"
+          >
+            <span>当前内容是恢复预览。恢复或放弃此会话前，不会写入项目文件。</span>
+            {availableSnapshotIds.length > 0 && (
+              <button
+                type="button"
+                data-testid="recovery-restore"
+                onClick={() => { void restoreProjectSnapshot(availableSnapshotIds[0]!); }}
+              >
+                恢复此版本
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="recovery-discard"
+              onClick={() => { void discardPersistence(); }}
+            >
+              放弃并关闭
+            </button>
+          </section>
+        )}
+        {!recoveryRequired && availableSnapshotIds.length > 0 && (
           <section className="recovery-choice" role="region" aria-label="恢复选择">
             <span>发现异常关闭后的可恢复稳定点，当前项目尚未自动替换。</span>
             <button type="button" onClick={() => { void restoreProjectSnapshot(availableSnapshotIds[0]!); }}>选择恢复</button>
@@ -912,10 +942,12 @@ export function CanvasWorkspace() {
       </aside>
 
       <JobStrip
+        canReloadSave={canReloadDurableProject}
         canRetrySave={canRetryProjectCommit}
         jobs={modelJobs}
         saveState={saveStatus}
         saveLabel={saveStatusLabel(saveStatus, saveErrorCode)}
+        onReloadSave={() => { void reloadDurableProject(); }}
         onRetrySave={() => { void retryFailedProjectCommit(); }}
         onRetry={(jobId) => { void retryModelJob(jobId); }}
         onCancel={(jobId) => { void cancelModelJob(jobId); }}
@@ -941,6 +973,7 @@ function modelRouteTestId(route: string): string {
 }
 function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'read_only', errorCode: string | null): string {
   if (status === 'saved') return '本地稳定点已保存';
+  if (errorCode === 'RECOVERY_REQUIRED') return '需要先恢复或放弃恢复预览';
   if (errorCode === 'REVISION_CONFLICT') return '桌面项目已更新，已重新载入最新版本';
   if (status === 'read_only') return '只读模式，等待当前写入者释放';
   if (status === 'error') return '本地保存失败';

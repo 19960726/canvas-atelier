@@ -57,6 +57,104 @@ describe('desktop persistence', () => {
     expect(hydrated.availableSnapshotIds).toEqual([]);
     expect(hydrated.lifecycle).toBe('untitled');
     expect(hydrated.saveStatus).toBe('pending');
+    expect(hydrated.recoveryRequired).not.toBe(true);
+  });
+
+  it('propagates an explicit recovery-required preview instead of presenting it as saved', async () => {
+    const previewProject = { ...createStarterProject(), name: 'Recovery preview' };
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(
+        previewProject.id,
+        'snapshot-recovery',
+        'candidate-recovery',
+        3,
+      )),
+      openProject: vi.fn(async () => ({
+        ...createDesktopSession(previewProject, 'recovery-session', 3),
+        recoveryRequired: true as const,
+      })),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    const opened = await client.openProject?.();
+    const hydrated = await client.hydrate();
+
+    expect(opened).toMatchObject({
+      project: previewProject,
+      recoveryRequired: true,
+      saveStatus: 'error',
+    });
+    expect(hydrated).toMatchObject({
+      recoveryRequired: true,
+      saveStatus: 'error',
+    });
+  });
+
+  it('allows only restore or close-without-flush while a recovery preview is unresolved', async () => {
+    const previewProject = { ...createStarterProject(), name: 'Recovery preview' };
+    const restoredProject = { ...previewProject, name: 'Recovered durable project' };
+    const commit = vi.fn(async () => ({
+      committedAt: '2026-07-19T00:00:00.000Z',
+      projectId: previewProject.id,
+      revision: 4,
+      sequence: 4,
+      transactionId: 'tx-recovery-blocked',
+    }));
+    const createStablePoint = vi.fn(async () => ({
+      path: 'redacted-path',
+      reason: 'stable_point' as const,
+      revision: 3,
+      snapshotId: 'stable-3',
+    }));
+    const restore = vi.fn(async () => ({
+      ...createDesktopSession(restoredProject, 'recovery-session', 3),
+      restoredRevision: 3,
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit,
+      createStablePoint,
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(
+        previewProject.id,
+        'snapshot-recovery',
+        'candidate-recovery',
+        3,
+      )),
+      openProject: vi.fn(async () => ({
+        ...createDesktopSession(previewProject, 'recovery-session', 3),
+        recoveryRequired: true as const,
+      })),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore,
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const blocked = await client.commit({
+      baseRevision: 3,
+      kind: 'canvas',
+      nextProject: { ...previewProject, name: 'Must not commit preview' },
+      previousProject: previewProject,
+      projectId: previewProject.id,
+      transaction: { id: 'tx-recovery-blocked', label: 'Blocked recovery commit', operations: [] },
+    });
+
+    expect(blocked).toMatchObject({ code: 'RECOVERY_REQUIRED', ok: false, project: previewProject, revision: 3 });
+    await expect(client.stablePoint()).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    expect(commit).not.toHaveBeenCalled();
+    expect(createStablePoint).not.toHaveBeenCalled();
+
+    await expect(client.restore('snapshot-recovery')).resolves.toMatchObject({
+      project: restoredProject,
+      recoveryRequired: false,
+      saveStatus: 'saved',
+    });
+    expect(restore).toHaveBeenCalledWith({ candidateId: 'candidate-recovery', sessionId: 'recovery-session' });
   });
 
   it('keeps startup image reads and initial untitled edits in memory without opening or committing a hidden desktop session', async () => {

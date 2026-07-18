@@ -113,6 +113,7 @@ export async function writeAtomic(
     closed = true;
     await fileSystem.rename(tempPath, targetPath);
   } catch (error) {
+    const primaryError = normalizePersistenceError(error, 'Atomic project write failed');
     if (handle !== null && !closed) {
       try {
         await handle.close();
@@ -121,7 +122,11 @@ export async function writeAtomic(
       }
     }
 
-    await fileSystem.rm(tempPath, { force: true });
-    throw normalizePersistenceError(error, 'Atomic project write failed');
+    try {
+      await fileSystem.rm(tempPath, { force: true });
+    } catch {
+      // Preserve the primary sanitized persistence failure.
+    }
+    throw primaryError;
   }
 }

@@ -826,16 +826,46 @@ describe('CanvasWorkspace', () => {
     }]);
     expect(review).not.toHaveBeenCalled();
   });
-  it('shows a specific notice after desktop revision conflicts', () => {
+  it('keeps conflict work visible and offers explicit durable reload', () => {
+    const reloadDurableProject = vi.fn(async () => true);
     resetAppStoreForTests();
     useAppStore.setState({
+      canReloadDurableProject: true,
+      projectCommitConflictCode: 'REVISION_CONFLICT',
+      reloadDurableProject,
       saveErrorCode: 'REVISION_CONFLICT',
       saveStatus: 'error',
     });
 
     render(<CanvasWorkspace />);
 
+    fireEvent.click(screen.getByTestId('save-reload'));
+    expect(reloadDurableProject).toHaveBeenCalledOnce();
+
     expect(screen.getByText('桌面项目已更新，已重新载入最新版本')).toBeInTheDocument();
+  });
+
+  it('shows only recovery and discard actions for a recovery-required preview', () => {
+    const restoreProjectSnapshot = vi.fn(async () => undefined);
+    const discardPersistence = vi.fn(async () => true);
+    resetAppStoreForTests();
+    useAppStore.setState({
+      availableSnapshotIds: ['snapshot-recovery'],
+      discardPersistence,
+      recoveryRequired: true,
+      restoreProjectSnapshot,
+      saveErrorCode: 'RECOVERY_REQUIRED',
+      saveStatus: 'error',
+    });
+
+    render(<CanvasWorkspace />);
+
+    expect(screen.getByTestId('recovery-required')).toBeVisible();
+    fireEvent.click(screen.getByTestId('recovery-restore'));
+    fireEvent.click(screen.getByTestId('recovery-discard'));
+    expect(restoreProjectSnapshot).toHaveBeenCalledWith('snapshot-recovery');
+    expect(discardPersistence).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId('save-retry')).not.toBeInTheDocument();
   });
 
   it('previews, confirms, and undoes an Agent canvas plan as one transaction', async () => {

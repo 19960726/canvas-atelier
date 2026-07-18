@@ -24,6 +24,7 @@ import {
   type JournalWriterSessionOptions,
 } from './journal-writer.js';
 import { readSnapshotEnvelope } from './snapshot-scheduler.js';
+import { normalizePersistenceError } from './persistence-error.js';
 
 type ProjectState = Record<string, unknown>;
 type ProcessLiveness = boolean | 'unknown';
@@ -452,8 +453,22 @@ export class ProjectRepository {
     let snapshot: SnapshotEnvelope;
     try {
       snapshot = await readSnapshotEnvelope(join(root, ...snapshotPath.split('/')), this.fileSystem);
-    } catch {
-      throw createPersistenceError('CORRUPT_SNAPSHOT', false, 'Stable snapshot is unavailable or corrupt');
+    } catch (error) {
+      if (isPersistenceError(error)) {
+        if (error.code === 'CORRUPT_SNAPSHOT' && !/stable snapshot/iu.test(error.message)) {
+          error.message = `Stable ${error.message.toLowerCase()}`;
+        }
+        throw error;
+      }
+      if (hasFilesystemErrno(error)) {
+        throw normalizePersistenceError(error, 'Stable snapshot read failed');
+      }
+      throw createPersistenceError(
+        'CORRUPT_SNAPSHOT',
+        false,
+        'Stable snapshot is unavailable or corrupt',
+        error,
+      );
     }
 
     if (!isValidStableSnapshotEnvelope(snapshot, manifest)) {
@@ -853,6 +868,14 @@ function isPersistenceError(error: unknown): error is Error & { code: unknown; r
 
 function isErrno(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+
+function hasFilesystemErrno(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && typeof error.code === 'string'
+    && /^E[A-Z0-9_]+$/u.test(error.code);
 }
 
 function defaultProcessAlive(processId: number): ProcessLiveness {
