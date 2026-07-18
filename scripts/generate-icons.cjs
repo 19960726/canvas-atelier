@@ -1,5 +1,6 @@
+const { createHash } = require('node:crypto');
 const { mkdir, readFile, writeFile } = require('node:fs/promises');
-const { dirname, join, resolve } = require('node:path');
+const { dirname, join, relative, resolve, sep } = require('node:path');
 const { deflateSync } = require('node:zlib');
 
 const { app, BrowserWindow } = require('electron');
@@ -7,6 +8,7 @@ const { app, BrowserWindow } = require('electron');
 const workspaceRoot = resolve(__dirname, '..');
 const sourcePath = join(workspaceRoot, 'assets', 'brand', 'novus-atelier-icon.svg');
 const generatedRoot = join(workspaceRoot, 'assets', 'brand', 'generated');
+const manifestPath = join(generatedRoot, 'novus-atelier-icon-manifest.json');
 const previewPath = join(workspaceRoot, 'assets', 'brand', 'novus-atelier-icon.png');
 const shellIconPaths = [
   join(workspaceRoot, 'apps', 'desktop-modern', 'build', 'icon.ico'),
@@ -33,7 +35,8 @@ app.whenReady()
 
 async function generateIcons() {
   console.log('Reading Novus SVG source');
-  const svgSource = await readFile(sourcePath, 'utf8');
+  const svgBuffer = await readFile(sourcePath);
+  const svgSource = svgBuffer.toString('utf8');
   console.log('Rasterizing Novus SVG source');
   const raster = await renderSvg(svgSource);
   const svgImage = raster.image;
@@ -44,22 +47,54 @@ async function generateIcons() {
     for (const iconPath of shellIconPaths) await mkdir(dirname(iconPath), { recursive: true });
 
     const pngBySize = new Map();
+    const outputEntries = [];
     for (const size of pngSizes) {
       const png = nativeImageToPng(svgImage.resize({ height: size, quality: 'best', width: size }), size);
       if (png.length === 0) throw new Error(`Electron returned an empty ${size}px PNG`);
       pngBySize.set(size, png);
-      await writeFile(join(generatedRoot, `novus-atelier-${size}.png`), png);
+      const pngPath = join(generatedRoot, `novus-atelier-${size}.png`);
+      await writeFile(pngPath, png);
+      outputEntries.push(createBinaryHashEntry(pngPath, png));
     }
 
-    await writeFile(previewPath, requirePng(pngBySize, 512));
+    const previewPng = requirePng(pngBySize, 512);
+    await writeFile(previewPath, previewPng);
+    outputEntries.push(createBinaryHashEntry(previewPath, previewPng));
     const ico = createPngBackedIco(icoSizes.map((size) => ({
       png: requirePng(pngBySize, size),
       size,
     })));
-    for (const iconPath of shellIconPaths) await writeFile(iconPath, ico);
+    for (const iconPath of shellIconPaths) {
+      await writeFile(iconPath, ico);
+      outputEntries.push(createBinaryHashEntry(iconPath, ico));
+    }
+
+    const generatorSource = await readFile(__filename, 'utf8');
+    const manifest = {
+      schemaVersion: 1,
+      source: createTextHashEntry(sourcePath, svgSource),
+      generator: createTextHashEntry(__filename, generatorSource),
+      outputs: outputEntries,
+    };
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   } finally {
     raster.window.destroy();
   }
+}
+
+function createBinaryHashEntry(path, buffer) {
+  return {
+    path: toManifestPath(path),
+    sha256: createHash('sha256').update(buffer).digest('hex'),
+  };
+}
+
+function createTextHashEntry(path, source) {
+  return createBinaryHashEntry(path, Buffer.from(source.replace(/\r\n/g, '\n'), 'utf8'));
+}
+
+function toManifestPath(path) {
+  return relative(workspaceRoot, path).split(sep).join('/');
 }
 
 async function renderSvg(svgSource) {

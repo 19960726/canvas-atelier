@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -20,6 +21,24 @@ describe('desktop application icon contract', () => {
     }
     expect(readPngDimensions(await readFile(join(brandRoot, 'novus-atelier-icon.png'))))
       .toEqual({ height: 512, width: 512 });
+  });
+
+  it('matches every tracked output to the generated source and output hash manifest', async () => {
+    const manifest = JSON.parse(await readFile(
+      join(workspaceRoot, 'assets', 'brand', 'generated', 'novus-atelier-icon-manifest.json'),
+      'utf8',
+    )) as IconManifest;
+
+    expect(manifest.schemaVersion).toBe(1);
+    await expectTextHashEntry(manifest.source);
+    await expectTextHashEntry(manifest.generator);
+    expect(manifest.outputs.map((output) => output.path)).toEqual([
+      ...[...requiredFrameSizes, 512].map((size) => `assets/brand/generated/novus-atelier-${size}.png`),
+      'assets/brand/novus-atelier-icon.png',
+      'apps/desktop-modern/build/icon.ico',
+      'apps/desktop-legacy/build/icon.ico',
+    ]);
+    for (const output of manifest.outputs) await expectHashEntry(output);
   });
 
   for (const shell of shells) {
@@ -70,7 +89,30 @@ function parsePngBackedIco(buffer: Buffer): Array<{ readonly height: number; rea
     const imageSize = buffer.readUInt32LE(entryOffset + 8);
     const imageOffset = buffer.readUInt32LE(entryOffset + 12);
     expect(buffer.subarray(imageOffset, imageOffset + pngSignature.length)).toEqual(pngSignature);
+    expect(readPngDimensions(buffer.subarray(imageOffset, imageOffset + imageSize))).toEqual({ height, width });
     expect(imageOffset + imageSize).toBeLessThanOrEqual(buffer.length);
     return { height, width };
   });
+}
+
+interface HashEntry {
+  readonly path: string;
+  readonly sha256: string;
+}
+
+interface IconManifest {
+  readonly schemaVersion: 1;
+  readonly source: HashEntry;
+  readonly generator: HashEntry;
+  readonly outputs: readonly HashEntry[];
+}
+
+async function expectHashEntry(entry: HashEntry): Promise<void> {
+  const buffer = await readFile(join(workspaceRoot, ...entry.path.split('/')));
+  expect(createHash('sha256').update(buffer).digest('hex')).toBe(entry.sha256);
+}
+
+async function expectTextHashEntry(entry: HashEntry): Promise<void> {
+  const source = await readFile(join(workspaceRoot, ...entry.path.split('/')), 'utf8');
+  expect(createHash('sha256').update(source.replace(/\r\n/g, '\n')).digest('hex')).toBe(entry.sha256);
 }

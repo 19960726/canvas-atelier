@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "path": "assets/brand/novus-atelier-icon.svg",
+    "sha256": "59ee2490e48615a45b7f22bbb88f874002065987ed7967fabee18946f685faf6"
+  },
+  "generator": {
+    "path": "scripts/generate-icons.cjs",
+    "sha256": "7859d5f7004c066252de4be3224cc5bb00f61f5154cb619fea66ef5f70a5b5ff"
+  },
+  "outputs": [
+    {
+      "path": "assets/brand/generated/novus-atelier-16.png",
+      "sha256": "26e9d2a0e19ba9bab83c38d04b25a42318606cb4a00da90de81767f363328324"
+    },
+    {
+      "path": "assets/brand/generated/novus-atelier-24.png",
+      "sha256": "354b80ae587530e6e68763c7b90c20b0d3fbfdbf3e287446b6126575df14c5d9"
+    },
+    {
+      "path": "assets/brand/generated/novus-atelier-32.png",
+      "sha256": "1074e0e4f497cfb818834169fa100bf90d31dd76d093ef5378d7e04650a5ab77"
+    },
+    {
+      "path": "assets/brand/generated/novus-atelier-48.png",
+      "sha256": "9da54024991eba810cd559fd703880b28f75c90dc03d003c5413bc3d9e8aac77"
+    },
+    {
+      "path": "assets/brand/generated/novus-atelier-64.png",
+      "sha256": "183931d8b2c8d6bccc7ee82d6dc6475177908873da356f4f5b85fec10a509b95"
+    },
+    {
+      "path": "assets/brand/generated/novus-atelier-128.png",
+      "sha256": "5e5b5c77e6d30e996f071000415f41b06de59df44eee722a8d2a2960516d4a5f"
+    },
+    {
+      "path": "assets/brand/generated/novus-atelier-256.png",
+      "sha256": "0f0381221620b5849a3f7fe6d93eed47bd0b6a2dce9d05539c7a32c5ce1456b3"
+    },
+    {
+      "path": "assets/brand/generated/novus-atelier-512.png",
+      "sha256": "777dfa75e9602ee6039a38499737ca4cbe679abb2074ed72bcc3983a70ee06d7"
+    },
+    {
+      "path": "assets/brand/novus-atelier-icon.png",
+      "sha256": "777dfa75e9602ee6039a38499737ca4cbe679abb2074ed72bcc3983a70ee06d7"
+    },
+    {
+      "path": "apps/desktop-modern/build/icon.ico",
+      "sha256": "81e5c178311a68cd743b162965856b2b3d10646f9c00a9d46165b71adc1eaa9f"
+    },
+    {
+      "path": "apps/desktop-legacy/build/icon.ico",
+      "sha256": "81e5c178311a68cd743b162965856b2b3d10646f9c00a9d46165b71adc1eaa9f"
+    }
+  ]
+}

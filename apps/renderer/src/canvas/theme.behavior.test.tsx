@@ -17,6 +17,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   document.documentElement.removeAttribute('data-theme');
 });
 
@@ -67,6 +68,49 @@ describe('renderer theme behavior', () => {
     expect(document.documentElement).toHaveAttribute('data-theme', 'light');
   });
 
+  it('removes the system media listener when an explicit override is selected', () => {
+    const media = installMatchMedia(false);
+
+    render(<CanvasWorkspace />);
+    expect(media.listenerCount()).toBe(1);
+
+    fireEvent.change(screen.getByRole('combobox', { name: '主题 Theme' }), {
+      target: { value: 'dark' },
+    });
+
+    expect(media.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function));
+    expect(media.listenerCount()).toBe(0);
+    act(() => media.setMatches(false));
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  });
+
+  it('falls back to system mode when device-local theme reads fail', () => {
+    installMatchMedia(true);
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable');
+    });
+
+    render(<CanvasWorkspace />);
+
+    expect(screen.getByRole('combobox', { name: '主题 Theme' })).toHaveValue('system');
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  });
+
+  it('still applies an override when device-local theme writes fail', () => {
+    installMatchMedia(false);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage quota exceeded');
+    });
+
+    render(<CanvasWorkspace />);
+    fireEvent.change(screen.getByRole('combobox', { name: '主题 Theme' }), {
+      target: { value: 'dark' },
+    });
+
+    expect(screen.getByRole('combobox', { name: '主题 Theme' })).toHaveValue('dark');
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  });
+
   it('keeps the override device-local without mutating project state', () => {
     installMatchMedia(false);
     const projectBefore = useAppStore.getState().project;
@@ -107,6 +151,7 @@ function installMatchMedia(initialMatches: boolean) {
 
   return {
     addEventListener,
+    listenerCount: () => listeners.size,
     removeEventListener,
     setMatches(nextMatches: boolean) {
       matches = nextMatches;
