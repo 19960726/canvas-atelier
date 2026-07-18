@@ -264,7 +264,7 @@ export interface DesktopIpcMainLike {
 
 interface BridgeSessionContext {
   assets: Map<string, ProjectImageAsset>;
-  closing: boolean;
+  closeState: 'open' | 'closing' | 'retry_only';
   imageImportInFlight: boolean;
   maintenanceTail: Promise<void>;
   recoveryRequired: boolean;
@@ -369,7 +369,7 @@ export function createDesktopBridgeHandlers(
         summary = summarizeRecoveryPreview(sessionId, opened, candidate);
         sessions.set(sessionId, {
           assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
-          closing: false,
+          closeState: 'open',
           imageImportInFlight: false,
           maintenanceTail: Promise.resolve(),
           recoveryCandidatePaths: new Map(),
@@ -387,7 +387,7 @@ export function createDesktopBridgeHandlers(
         : null;
       sessions.set(sessionId, {
         assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
-        closing: false,
+        closeState: 'open',
         imageImportInFlight: false,
         maintenanceTail: Promise.resolve(),
         recoveryCandidatePaths: new Map(),
@@ -565,7 +565,7 @@ export function createDesktopBridgeHandlers(
         : null;
       sessions.set(sessionId, {
         assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
-        closing: false,
+        closeState: 'open',
         imageImportInFlight: false,
         maintenanceTail: Promise.resolve(),
         recoveryCandidatePaths: new Map(),
@@ -926,8 +926,8 @@ export function createDesktopBridgeHandlers(
   }
   async function closeProject(_event: unknown, request: unknown): Promise<void> {
     const validated = validateCloseProjectBridgeRequest(request);
-    const session = requireSession(sessions, validated.sessionId);
-    session.closing = true;
+    const session = requireSessionForClose(sessions, validated.sessionId);
+    session.closeState = 'closing';
     try {
       await enqueueSessionMaintenance(
         session,
@@ -937,7 +937,7 @@ export function createDesktopBridgeHandlers(
         sessions.delete(validated.sessionId);
       }
     } catch (error) {
-      session.closing = false;
+      session.closeState = 'retry_only';
       throw error;
     }
   }
@@ -946,7 +946,7 @@ export function createDesktopBridgeHandlers(
     const activeSessions = [...sessions.values()];
     sessions.clear();
     for (const session of activeSessions) {
-      session.closing = true;
+      session.closeState = 'closing';
       await enqueueSessionMaintenance(session, () => closeBridgeSession(session));
     }
     await knowledgeRefreshService.stop();
@@ -1762,7 +1762,18 @@ function requireSession(
   sessionId: string,
 ): BridgeSessionContext {
   const session = sessions.get(sessionId);
-  if (session === undefined || session.closing) {
+  if (session === undefined || session.closeState !== 'open') {
+    throw createPersistenceError('INVALID_SESSION', false, 'Desktop session is not active');
+  }
+  return session;
+}
+
+function requireSessionForClose(
+  sessions: Map<string, BridgeSessionContext>,
+  sessionId: string,
+): BridgeSessionContext {
+  const session = sessions.get(sessionId);
+  if (session === undefined || session.closeState === 'closing') {
     throw createPersistenceError('INVALID_SESSION', false, 'Desktop session is not active');
   }
   return session;

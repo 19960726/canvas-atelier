@@ -2053,7 +2053,19 @@ describe('desktop bridge contract', () => {
     });
     await repository.close(initial);
     let rejectFirstClose = true;
+    let enterFirstClose!: () => void;
+    let releaseFirstClose!: () => void;
+    const firstCloseEntered = new Promise<void>((resolve) => {
+      enterFirstClose = resolve;
+    });
+    const firstCloseGate = new Promise<void>((resolve) => {
+      releaseFirstClose = resolve;
+    });
     const close = vi.fn(async (session: Parameters<ProjectRepository['close']>[0]) => {
+      if (rejectFirstClose) {
+        enterFirstClose();
+        await firstCloseGate;
+      }
       await repository.close(session);
       if (rejectFirstClose) {
         rejectFirstClose = false;
@@ -2063,28 +2075,59 @@ describe('desktop bridge contract', () => {
         });
       }
     });
+    const writerCommit = vi.fn();
+    const flush = vi.fn();
     const handlers = createDesktopBridgeHandlers({
       dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
       fileSystem,
       repository: {
         close,
         open: (root, options) => repository.open(root, options),
-        openJournalWriter: (session) => repository.openJournalWriter(session),
+        openJournalWriter: async (session) => {
+          const writer = await repository.openJournalWriter(session);
+          writerCommit.mockImplementation((request) => writer.commit(request));
+          return { commit: writerCommit };
+        },
         readCurrentProject: (session) => repository.readCurrentProject(session),
         readCurrentRevision: (session) => repository.readCurrentRevision(session),
       },
       snapshotScheduler: {
         consider: () => null,
-        flush: vi.fn(),
+        flush,
       } as unknown as SnapshotScheduler,
     });
 
     try {
       const opened = await handlers.openProject({}, { mode: 'write' });
+      const firstClose = handlers.closeProject({}, {
+        flush: false,
+        sessionId: opened!.sessionId,
+      });
+      const firstCloseResult = expect(firstClose).rejects.toMatchObject({ code: 'DURABLE_WRITE_FAILED' });
+      await firstCloseEntered;
       await expect(handlers.closeProject({}, {
         flush: false,
         sessionId: opened!.sessionId,
-      })).rejects.toMatchObject({ code: 'DURABLE_WRITE_FAILED' });
+      })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+      expect(close).toHaveBeenCalledTimes(1);
+      releaseFirstClose();
+      await firstCloseResult;
+
+      const rename = vi.spyOn(fileSystem, 'rename');
+      await expect(handlers.commit({}, {
+        ...makeCreatePromptRequest(starterProject.id, 'tx-after-failed-close', opened!.currentRevision, 'prompt-after-close'),
+        sessionId: opened!.sessionId,
+      })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+      await expect(handlers.createStablePoint({}, {
+        sessionId: opened!.sessionId,
+      })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+      await expect(handlers.restore({}, {
+        candidateId: 'candidate-after-failed-close',
+        sessionId: opened!.sessionId,
+      })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+      expect(writerCommit).not.toHaveBeenCalled();
+      expect(flush).not.toHaveBeenCalled();
+      expect(rename).not.toHaveBeenCalled();
       await expect(handlers.closeProject({}, {
         flush: false,
         sessionId: opened!.sessionId,
