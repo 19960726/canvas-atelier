@@ -435,12 +435,14 @@ export function CanvasWorkspace() {
 
   const handleCanvasDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
     if (!Array.from(event.dataTransfer.types).includes(MODULE_DRAG_MIME)) return;
+    if (!isCanvasModuleDropSurface(event.target, event.currentTarget)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
   }, []);
 
   const handleCanvasDrop = useCallback((event: React.DragEvent<HTMLElement>) => {
     if (!Array.from(event.dataTransfer.types).includes(MODULE_DRAG_MIME)) return;
+    if (!isCanvasModuleDropSurface(event.target, event.currentTarget)) return;
     const rawType = event.dataTransfer.getData(MODULE_DRAG_MIME);
     if (!rawType) return;
     let moduleType: CanvasModuleType;
@@ -905,6 +907,13 @@ function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'rea
 function sameStringList(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
+
+function isCanvasModuleDropSurface(target: EventTarget | null, stage: HTMLElement): boolean {
+  if (!(target instanceof Element)) return false;
+  const pane = target.closest('.react-flow__pane');
+  return pane !== null && stage.contains(pane);
+}
+
 async function analyzeReversePromptDraft(run: ReversePromptRun): Promise<ReversePromptResult> {
   const freshKeyword = `会话新词-${run.nonce.slice(0, 8)}`;
   return {

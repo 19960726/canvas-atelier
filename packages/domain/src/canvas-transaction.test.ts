@@ -115,6 +115,22 @@ describe('canvas transactions', () => {
     expect(project).toEqual(snapshot);
   });
 
+  it('rejects an exact duplicate binding on a many-input port', () => {
+    const project = moduleProjectWithTwoReferences();
+    const snapshot = JSON.parse(JSON.stringify(project)) as CanvasProject;
+
+    expect(() => applyTransaction(project, {
+      id: 'duplicate-binding',
+      label: 'Duplicate reference binding',
+      operations: [{
+        kind: 'create_edge',
+        edge: moduleEdge('edge-duplicate', 'image-a', 'image', 'reverse', 'references', 2),
+      }],
+    })).toThrow(/duplicate.*binding/i);
+
+    expect(project).toEqual(snapshot);
+  });
+
   it('reorders many-input edges and creates an exact inverse', () => {
     const project = moduleProjectWithTwoReferences();
     const result = applyTransaction(project, {

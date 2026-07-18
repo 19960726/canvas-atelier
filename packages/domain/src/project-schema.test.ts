@@ -106,6 +106,29 @@ describe('parseCanvasProject', () => {
     })).toThrow(/Unrecognized key/);
   });
 
+  it('rejects camelCase credential keys in module config', () => {
+    const moduleNode = createCanvasModuleNode('unsafe-camel-credentials', 'text_prompt', { x: 0, y: 0 });
+
+    for (const protectedKey of ['accessToken', 'refreshToken', 'clientSecret']) {
+      expect(() => parseCanvasProject({
+        version: 1,
+        graphVersion: 2,
+        id: 'p1',
+        name: 'unsafe credential graph',
+        nodes: [{
+          ...moduleNode,
+          data: {
+            ...moduleNode.data,
+            config: {
+              [protectedKey]: 'credential-value',
+            },
+          },
+        }],
+        edges: [],
+      }), protectedKey).toThrow(/protected/i);
+    }
+  });
+
   it('rejects private absolute POSIX-like paths in module config', () => {
     const moduleNode = createCanvasModuleNode('unsafe-paths', 'text_prompt', { x: 0, y: 0 });
     const protectedValues = [

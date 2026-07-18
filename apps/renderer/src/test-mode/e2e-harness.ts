@@ -153,15 +153,6 @@ export function installRendererE2EHarness(): void {
         skillSyncWrites: runtime.skillSyncWrites.map((write) => ({ ...write })),
       };
     },
-    async simulateModuleDrag(moduleType, delta) {
-      const state = useAppStore.getState();
-      const node = findModuleNodeByType(state.project, moduleType);
-      if (!node) return false;
-      return state.commitNodePosition(node.id, {
-        x: node.position.x + delta,
-        y: node.position.y + delta,
-      });
-    },
   };
 }
 
@@ -688,7 +679,6 @@ declare global {
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
       seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;
-      simulateModuleDrag(moduleType: CanvasModuleType, delta: number): Promise<boolean>;
     };
   }
 }

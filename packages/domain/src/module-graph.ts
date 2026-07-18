@@ -397,5 +397,9 @@ function containsProtectedString(value: string, key?: string): boolean {
 }
 
 function isProtectedKeyName(key: string): boolean {
-  return /(?:^|_)(?:api[_ -]?key|authorization|token|secret|password)(?:$|_)/i.test(key);
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[\s-]+/g, '_')
+    .toLowerCase();
+  return /(?:^|_)(?:api_?key|authorization|token|secret|password)(?:$|_)/.test(normalized);
 }

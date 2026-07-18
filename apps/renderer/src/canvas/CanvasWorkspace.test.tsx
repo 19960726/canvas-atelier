@@ -238,6 +238,32 @@ describe('CanvasWorkspace', () => {
     expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module')).toHaveLength(0);
   });
 
+  it('ignores valid module drops released over the module library overlay', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests();
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: 'Modules' }));
+    const library = screen.getByTestId('module-library');
+    fireEvent.drop(library, {
+      clientX: 140,
+      clientY: 180,
+      dataTransfer: {
+        types: [MODULE_DRAG_MIME],
+        getData: vi.fn(() => 'text_prompt'),
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module')).toHaveLength(0);
+  });
+
   it('creates a valid dropped module at the React Flow drop position', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -249,7 +275,9 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     const getData = vi.fn((mime: string) => mime === MODULE_DRAG_MIME ? 'text_prompt' : 'foreign');
-    fireEvent.drop(screen.getByTestId('canvas-stage'), {
+    const pane = screen.getByTestId('canvas-stage').querySelector<HTMLElement>('.react-flow__pane');
+    expect(pane).not.toBeNull();
+    fireEvent.drop(pane!, {
       clientX: 320,
       clientY: 240,
       dataTransfer: {

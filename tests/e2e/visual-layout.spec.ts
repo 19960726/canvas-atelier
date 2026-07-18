@@ -56,8 +56,6 @@ for (const viewport of viewports) {
     await expect(knowledge).toBeVisible();
     await expect(knowledge.getByTestId('knowledge-status-detail')).toBeVisible();
 
-    const panZoomMetrics = await medianPanZoomFrameInterval(page);
-
     await page.getByRole('button', { name: 'Modules' }).click();
     await assertNoTrackedRegionsOverlap(page, [
       'module-library',
@@ -73,9 +71,13 @@ for (const viewport of viewports) {
     expect(stressState.moduleTypes.filter((type) => type === 'reverse_agent')).toHaveLength(50);
     expect(stressState.edgeCount).toBeGreaterThanOrEqual(150);
     await expectVisibleMainRegion(page);
+    expect(await page.locator('[data-module-type="image_input"], [data-module-type="reverse_agent"]').count())
+      .toBeGreaterThan(1);
+    expect(await page.locator('.react-flow__edge').count()).toBeGreaterThan(0);
     const moduleBox = await page.locator('[data-module-type="image_input"]').first().boundingBox();
     expect(moduleBox, `stress module geometry at ${viewport.name}`).not.toBeNull();
     expect(moduleBox!.width, `stress module width at ${viewport.name}`).toBeGreaterThan(200);
+    const panZoomMetrics = await medianPanZoomFrameInterval(page);
     await captureLayoutScreenshot(page, testInfo, `renderer-module-stress-${viewport.name}`);
 
     await page.getByTestId('tool-placement').click();

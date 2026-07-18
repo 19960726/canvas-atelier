@@ -112,6 +112,14 @@ export function applyTransaction(
         if (!draft.nodes.some((node) => node.id === edge.target)) {
           throw new Error(`target node does not exist: ${edge.target}`);
         }
+        if ((edge.sourcePortId !== undefined || edge.targetPortId !== undefined) && draft.edges.some((candidate) => (
+          candidate.source === edge.source
+          && candidate.sourcePortId === edge.sourcePortId
+          && candidate.target === edge.target
+          && candidate.targetPortId === edge.targetPortId
+        ))) {
+          throw new Error(`duplicate edge binding: ${edge.source}:${edge.sourcePortId ?? ''} -> ${edge.target}:${edge.targetPortId ?? ''}`);
+        }
         const previousIssues = validateCanvasModuleGraph(draft);
         draft.edges.push(edge);
         rejectNewGraphIssues(previousIssues, validateCanvasModuleGraph(draft), edge.id);

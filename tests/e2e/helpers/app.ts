@@ -194,7 +194,6 @@ declare global {
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
       seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;
-      simulateModuleDrag(moduleType: CanvasModuleType, delta: number): Promise<boolean>;
     };
   }
 }
