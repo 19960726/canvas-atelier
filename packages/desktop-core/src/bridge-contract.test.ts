@@ -175,10 +175,10 @@ describe('desktop bridge contract', () => {
     expect(listener).toHaveBeenCalledOnce();
     expect(listener).toHaveBeenCalledWith({ requestId: 'close-request-123456' });
 
-    expect(api.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', ok: true })).toBe(true);
-    expect(api.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', ok: true, token: 'secret' } as never)).toBe(false);
+    expect(api.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', phase: 'save_started' })).toBe(true);
+    expect(api.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', phase: 'completed', outcome: 'saved', token: 'secret' } as never)).toBe(false);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeFlushAck, { requestId: 'close-request-123456', ok: true });
+    expect(send).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeFlushAck, { requestId: 'close-request-123456', phase: 'save_started' });
   });
   it('invokes the close-choice channel with strict requests and defaults malformed responses to cancel', async () => {
     const invoke = vi.fn(async () => 'discard');
@@ -2009,7 +2009,7 @@ describe('desktop bridge contract', () => {
     await expect(handlers.closeProject({}, { sessionId: second!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
   });
 
-  it('returns the restored desktop-owned project after recovery restore', async () => {
+  it('keeps opaque recovery candidate ids stable through one restore and rejects replay, foreign, stale, and invalid candidates', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-'));
     const projectRoot = join(tempRoot, 'Demo.novus-project');
     await mkdir(join(projectRoot, 'snapshots'), { recursive: true });
@@ -2017,6 +2017,7 @@ describe('desktop bridge contract', () => {
     const session = createOpenedSession(projectRoot);
     const restoredProject = { ...starterProject, name: 'Restored Project' };
     const candidatePath = join(tempRoot, 'candidate.json');
+    const invalidCandidatePath = join(tempRoot, 'invalid-candidate.json');
     await writeFile(join(projectRoot, 'project.novus.json'), `${JSON.stringify(session.manifest)}\n`, 'utf8');
     await writeFile(candidatePath, JSON.stringify({
       project: restoredProject,
@@ -2024,23 +2025,46 @@ describe('desktop bridge contract', () => {
       revision: 3,
       snapshotId: 'snapshot-after',
     }), 'utf8');
+    await writeFile(invalidCandidatePath, JSON.stringify({
+      project: { ...restoredProject, nodes: [{ id: 'broken', type: 'reference' }] },
+      projectId: starterProject.id,
+      revision: 4,
+      snapshotId: 'snapshot-invalid',
+    }), 'utf8');
+    const createId = vi.fn()
+      .mockReturnValueOnce('session-opaque')
+      .mockReturnValueOnce('candidate-valid-first')
+      .mockReturnValueOnce('candidate-invalid-first')
+      .mockReturnValueOnce('restore-internal-id')
+      .mockReturnValueOnce('candidate-valid-second')
+      .mockReturnValueOnce('candidate-invalid-second');
     const handlers = createDesktopBridgeHandlers({
       appDataRoot: 'C:\\redacted\\AppData',
-      createId: () => 'candidate-1',
+      createId,
       dialogs: {
         chooseProjectRoot: vi.fn(async () => projectRoot),
       },
       recoveryScanner: {
         scan: vi.fn(async () => ({
           action: 'choose_recovery' as const,
-          candidates: [{
-            path: candidatePath,
-            project: restoredProject,
-            projectId: starterProject.id,
-            revision: 3,
-            snapshotId: 'snapshot-after',
-            tailStatus: 'complete' as const,
-          }],
+          candidates: [
+            {
+              path: candidatePath,
+              project: restoredProject,
+              projectId: starterProject.id,
+              revision: 3,
+              snapshotId: 'snapshot-after',
+              tailStatus: 'complete' as const,
+            },
+            {
+              path: invalidCandidatePath,
+              project: { ...restoredProject, nodes: [{ id: 'broken', type: 'reference' }] } as unknown as CanvasProject,
+              projectId: starterProject.id,
+              revision: 4,
+              snapshotId: 'snapshot-invalid',
+              tailStatus: 'complete' as const,
+            },
+          ],
           issues: [],
           projectId: starterProject.id,
           recoveredRevision: null,
@@ -2062,10 +2086,25 @@ describe('desktop bridge contract', () => {
 
     try {
       const opened = await handlers.openProject({}, { mode: 'write' });
-      await expect(handlers.restore({}, { candidateId: 'candidate-1', sessionId: opened!.sessionId })).resolves.toMatchObject({
+      const firstPlan = await handlers.getRecoveryPlan({}, { sessionId: opened!.sessionId });
+      expect(firstPlan.candidates.map((candidate) => candidate.candidateId)).toEqual([
+        'candidate-valid-first',
+        'candidate-invalid-first',
+      ]);
+      await expect(handlers.restore({}, { candidateId: 'candidate-foreign', sessionId: opened!.sessionId })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      await expect(handlers.restore({}, { candidateId: 'candidate-valid-first', sessionId: opened!.sessionId })).resolves.toMatchObject({
         project: restoredProject,
         restoredRevision: 3,
       });
+      await expect(handlers.restore({}, { candidateId: 'candidate-valid-first', sessionId: opened!.sessionId })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+
+      const secondPlan = await handlers.getRecoveryPlan({}, { sessionId: opened!.sessionId });
+      expect(secondPlan.candidates.map((candidate) => candidate.candidateId)).toEqual([
+        'candidate-valid-second',
+        'candidate-invalid-second',
+      ]);
+      await expect(handlers.restore({}, { candidateId: 'candidate-invalid-first', sessionId: opened!.sessionId })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      await expect(handlers.restore({}, { candidateId: 'candidate-invalid-second', sessionId: opened!.sessionId })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
     } finally {
       await rm(tempRoot, { force: true, recursive: true });
     }

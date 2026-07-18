@@ -431,14 +431,17 @@ export function createDesktopBridgeHandlers(
   async function restore(_event: unknown, request: unknown): Promise<RestoreBridgeResult> {
     const validated = validateRestoreBridgeRequest(request);
     const session = requireWritableSession(sessions, validated.sessionId);
-    const plan = await getRecoveryPlan({}, { sessionId: validated.sessionId });
-    const candidateSummary = selectRecoveryCandidate(plan, validated.candidateId);
-    const mirrorPath = session.recoveryCandidatePaths.get(candidateSummary.candidateId);
+    if (validated.candidateId === undefined) {
+      throw createPersistenceError('INVALID_REQUEST', false, 'Restore candidate id is required');
+    }
+    const mirrorPath = session.recoveryCandidatePaths.get(validated.candidateId);
     if (mirrorPath === undefined) {
       throw createPersistenceError('INVALID_REQUEST', false, 'Restore candidate is unavailable');
     }
+    session.recoveryCandidatePaths.delete(validated.candidateId);
 
     const restoredManifest = await restoreRecoveryCandidate(fileSystem, createId, session, mirrorPath);
+    session.recoveryCandidatePaths.clear();
     session.session = {
       ...session.session,
       manifest: restoredManifest,
@@ -1788,9 +1791,14 @@ function parseRecoveryCandidateMirror(value: unknown, projectId: string): Recove
     throw createPersistenceError('INVALID_REQUEST', false, 'Recovery candidate payload is invalid');
   }
 
-  parseCanvasProject(project);
+  let parsedProject: CanvasProject;
+  try {
+    parsedProject = parseCanvasProject(project);
+  } catch {
+    throw createPersistenceError('INVALID_REQUEST', false, 'Recovery candidate project is invalid');
+  }
   return {
-    project,
+    project: parsedProject,
     projectId,
     revision,
     snapshotId,

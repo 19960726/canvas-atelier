@@ -55,6 +55,25 @@ describe('ModuleLibrary', () => {
     expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores repeated Enter and coalesces overlapping Enter or double-click activation', async () => {
+    let finishCreation!: (created: boolean) => void;
+    const pendingCreation = new Promise<boolean>((resolve) => { finishCreation = resolve; });
+    const onCreate = vi.fn(() => pendingCreation);
+    render(<ModuleLibrary onCreate={onCreate} />);
+    const row = screen.getByRole('button', { name: '查看 文本提示词 / Text Prompt' });
+
+    fireEvent.keyDown(row, { key: 'Enter', repeat: true });
+    expect(onCreate).not.toHaveBeenCalled();
+
+    fireEvent.doubleClick(row);
+    fireEvent.keyDown(row, { key: 'Enter' });
+    fireEvent.doubleClick(row);
+    expect(onCreate).toHaveBeenCalledTimes(1);
+
+    finishCreation(true);
+    await pendingCreation;
+  });
+
   it('keeps category and device-local favorite browsing outside project creation', () => {
     const onCreate = vi.fn();
     render(<ModuleLibrary onCreate={onCreate} />);

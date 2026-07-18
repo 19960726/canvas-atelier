@@ -88,6 +88,7 @@ describe('project image store actions', () => {
     const restoredProject = imageProject([], [assetRecordB]);
     const restore = vi.fn(async () => ({
       availableSnapshotIds: ['snapshot-restored'],
+      lifecycle: 'durable' as const,
       project: restoredProject,
       revision: 9,
       saveStatus: 'saved' as const,
@@ -175,6 +176,7 @@ function persistenceClient(overrides: Partial<ProjectPersistenceClient> = {}): P
     })),
     hydrate: vi.fn(async (): Promise<ProjectHydrationResult> => ({
       availableSnapshotIds: [],
+      lifecycle: 'durable',
       mode: 'desktop',
       project: imageProject([]),
       revision: 0,

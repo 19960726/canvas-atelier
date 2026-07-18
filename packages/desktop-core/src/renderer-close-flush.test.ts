@@ -17,41 +17,63 @@ describe('renderer close-flush coordinator', () => {
     expect(harness.sendCloseFlushRequest).toHaveBeenCalledWith({ requestId: 'close-request-1' });
     expect(harness.closeAllProjects).not.toHaveBeenCalled();
 
-    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', ok: true })).resolves.toBe(true);
+    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'save_started' })).resolves.toBe(true);
+    expect(harness.scheduledMs).toBe(CLOSE_FLUSH_TIMEOUT_MS);
+    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'completed', outcome: 'saved' })).resolves.toBe(true);
     await closing;
 
-    expect(harness.calls).toEqual(['send:close-request-1', 'closeAllProjects', 'finalize:ack']);
+    expect(harness.calls).toEqual(['send:close-request-1', 'closeAllProjects', 'finalize:saved']);
   });
 
-  it('falls back to main-process close when renderer ACK is false, times out, or renderer becomes unavailable', async () => {
-    const nack = createHarness({ requestIds: ['close-request-nack'] });
-    const nackClosing = nack.coordinator.requestClose(nack.closeEvent);
-    await expect(nack.coordinator.handleCloseFlushAck({ requestId: 'close-request-nack', ok: false })).resolves.toBe(true);
-    await nackClosing;
-    expect(nack.calls).toEqual(['send:close-request-nack', 'closeAllProjects', 'finalize:nack']);
+  it('starts the timeout only after save begins and aborts on failure, timeout, or renderer unavailability', async () => {
+    const failed = createHarness({ requestIds: ['close-request-failed', 'close-request-retry'] });
+    const failedClosing = failed.coordinator.requestClose(failed.closeEvent);
+    expect(failed.scheduledMs).toBe(0);
+    await failed.coordinator.handleCloseFlushAck({ requestId: 'close-request-failed', phase: 'save_started' });
+    await expect(failed.coordinator.handleCloseFlushAck({ requestId: 'close-request-failed', phase: 'completed', outcome: 'failed' })).resolves.toBe(true);
+    await failedClosing;
+    expect(failed.closeAllProjects).not.toHaveBeenCalled();
+    expect(failed.finalizeClose).not.toHaveBeenCalled();
 
-    const timeout = createHarness({ requestIds: ['close-request-timeout'] });
+    const retry = failed.coordinator.requestClose({ preventDefault: vi.fn() });
+    await failed.coordinator.handleCloseFlushAck({ requestId: 'close-request-retry', phase: 'save_started' });
+    await failed.coordinator.handleCloseFlushAck({ requestId: 'close-request-retry', phase: 'completed', outcome: 'saved' });
+    await retry;
+    expect(failed.calls).toContain('finalize:saved');
+
+    const timeout = createHarness({ requestIds: ['close-request-timeout', 'close-request-timeout-retry'] });
     const timeoutClosing = timeout.coordinator.requestClose(timeout.closeEvent);
+    expect(timeout.scheduledMs).toBe(0);
+    await timeout.coordinator.handleCloseFlushAck({ requestId: 'close-request-timeout', phase: 'save_started' });
     expect(timeout.scheduledMs).toBe(CLOSE_FLUSH_TIMEOUT_MS);
     timeout.flushTimeout();
     await timeoutClosing;
-    expect(timeout.calls).toEqual(['send:close-request-timeout', 'closeAllProjects', 'finalize:timeout']);
+    expect(timeout.closeAllProjects).not.toHaveBeenCalled();
+    const timeoutRetry = timeout.coordinator.requestClose({ preventDefault: vi.fn() });
+    await timeout.coordinator.handleCloseFlushAck({ requestId: 'close-request-timeout-retry', phase: 'completed', outcome: 'discarded' });
+    await timeoutRetry;
+    expect(timeout.calls).toContain('finalize:discarded');
 
     const crashed = createHarness({ requestIds: ['close-request-crash'] });
     const crashClosing = crashed.coordinator.requestClose(crashed.closeEvent);
     await expect(crashed.coordinator.rendererUnavailable()).resolves.toBe(true);
     await crashClosing;
-    expect(crashed.calls).toEqual(['send:close-request-crash', 'closeAllProjects', 'finalize:unavailable']);
+    expect(crashed.closeAllProjects).not.toHaveBeenCalled();
+    expect(crashed.finalizeClose).not.toHaveBeenCalled();
   });
 
-  it('aborts coordinated close on an explicit cancel decision and permits a later close attempt', async () => {
+  it('does not time out while the user is deciding, then cancels and permits a later discard', async () => {
     const harness = createHarness({ requestIds: ['close-request-cancel', 'close-request-after-cancel'] });
     const cancelled = harness.coordinator.requestClose(harness.closeEvent);
 
+    expect(harness.scheduledMs).toBe(0);
+    harness.flushTimeout();
+    expect(harness.closeAllProjects).not.toHaveBeenCalled();
+
     await expect(harness.coordinator.handleCloseFlushAck({
       requestId: 'close-request-cancel',
-      ok: false,
-      cancelled: true,
+      phase: 'completed',
+      outcome: 'cancelled',
     })).resolves.toBe(true);
     await cancelled;
 
@@ -59,9 +81,10 @@ describe('renderer close-flush coordinator', () => {
     expect(harness.finalizeClose).not.toHaveBeenCalled();
 
     const closing = harness.coordinator.requestClose({ preventDefault: vi.fn() });
-    await harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-after-cancel', ok: true });
+    await harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-after-cancel', phase: 'completed', outcome: 'discarded' });
     await closing;
     expect(harness.closeAllProjects).toHaveBeenCalledOnce();
+    expect(harness.calls).toContain('finalize:discarded');
   });
 
   it('coalesces duplicate close attempts into one renderer request', async () => {
@@ -73,7 +96,7 @@ describe('renderer close-flush coordinator', () => {
     expect(second).toBe(first);
     expect(harness.sendCloseFlushRequest).toHaveBeenCalledTimes(1);
 
-    await harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', ok: true });
+    await harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'completed', outcome: 'discarded' });
     await first;
 
     expect(harness.closeAllProjects).toHaveBeenCalledOnce();
@@ -84,33 +107,35 @@ describe('renderer close-flush coordinator', () => {
     const harness = createHarness();
     const closing = harness.coordinator.requestClose(harness.closeEvent);
 
-    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'other-request', ok: true })).resolves.toBe(false);
-    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', ok: true, token: 'secret' })).resolves.toBe(false);
+    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'other-request', phase: 'completed', outcome: 'saved' })).resolves.toBe(false);
+    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'completed', outcome: 'saved', token: 'secret' })).resolves.toBe(false);
     expect(harness.closeAllProjects).not.toHaveBeenCalled();
 
-    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', ok: true })).resolves.toBe(true);
-    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', ok: true })).resolves.toBe(false);
+    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'save_started' })).resolves.toBe(true);
+    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'save_started' })).resolves.toBe(false);
+    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'completed', outcome: 'saved' })).resolves.toBe(true);
+    await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'completed', outcome: 'saved' })).resolves.toBe(false);
     await closing;
 
-    expect(harness.calls).toEqual(['send:close-request-1', 'closeAllProjects', 'finalize:ack']);
+    expect(harness.calls).toEqual(['send:close-request-1', 'closeAllProjects', 'finalize:saved']);
   });
 
   it('strictly validates close-flush payloads without paths or secrets', () => {
     expect(parseCloseFlushRequest({ requestId: 'close-request-123456' })).toEqual({
       requestId: 'close-request-123456',
     });
-    expect(parseCloseFlushAck({ requestId: 'close-request-123456', ok: true })).toEqual({
-      ok: true,
+    expect(parseCloseFlushAck({ requestId: 'close-request-123456', phase: 'save_started' })).toEqual({
+      phase: 'save_started',
       requestId: 'close-request-123456',
     });
-    expect(parseCloseFlushAck({ requestId: 'close-request-123456', ok: false, cancelled: true })).toEqual({
-      cancelled: true,
-      ok: false,
+    expect(parseCloseFlushAck({ requestId: 'close-request-123456', phase: 'completed', outcome: 'cancelled' })).toEqual({
+      outcome: 'cancelled',
+      phase: 'completed',
       requestId: 'close-request-123456',
     });
     expect(parseCloseFlushRequest({ requestId: 'close-request-123456', path: 'C:\\Users\\Private\\draft.json' })).toBeNull();
-    expect(parseCloseFlushAck({ requestId: 'close-request-123456', ok: true, Authorization: 'Bearer secret' })).toBeNull();
-    expect(parseCloseFlushAck({ requestId: '../project', ok: true })).toBeNull();
+    expect(parseCloseFlushAck({ requestId: 'close-request-123456', phase: 'completed', outcome: 'saved', Authorization: 'Bearer secret' })).toBeNull();
+    expect(parseCloseFlushAck({ requestId: '../project', phase: 'completed', outcome: 'saved' })).toBeNull();
   });
 });
 

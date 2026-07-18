@@ -51,6 +51,32 @@ describe('project optimization memory', () => {
     expect(first.project.name).not.toBe('不应自动恢复的浏览器项目');
   });
 
+  it('keeps untitled edits pending in memory and switches lifecycle identity only after explicit open', async () => {
+    const durableProject = { ...createStarterProject(), name: '未命名画布' };
+    const openProject = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      mode: 'desktop' as const,
+      project: durableProject,
+      revision: 6,
+      saveStatus: 'saved' as const,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ openProject }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    expect(useAppStore.getState().projectLifecycle).toBe('untitled');
+    expect(await useAppStore.getState().addModuleNode('text_prompt', { x: 120, y: 120 })).toBe(true);
+    expect(useAppStore.getState().saveStatus).toBe('pending');
+
+    expect(await useAppStore.getState().openProject()).toBe(true);
+    expect(openProject).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({
+      projectLifecycle: 'durable',
+      project: { name: '未命名画布' },
+      saveStatus: 'saved',
+    });
+  });
+
   it('shows saved only after desktop acknowledgement', async () => {
     const transaction: ProjectTransaction = {
       id: 'tx-await-ack',
@@ -204,6 +230,7 @@ describe('project optimization memory', () => {
     replaceProjectPersistenceClientForTests(createMockClient({
       hydrate: async () => ({
         availableSnapshotIds: [],
+        lifecycle: 'durable',
         mode: 'desktop',
         project: durableProject,
         revision: 3,
@@ -254,6 +281,7 @@ describe('project optimization memory', () => {
     const restoredProject = { ...createStarterProject(), name: 'desktop-restored' };
     const restore = vi.fn(async () => ({
       availableSnapshotIds: ['desktop-snapshot-after'],
+      lifecycle: 'durable' as const,
       project: restoredProject,
       revision: 9,
       saveStatus: 'saved' as const,
@@ -1230,6 +1258,7 @@ describe('project optimization memory', () => {
     replaceProjectPersistenceClientForTests(createMockClient({
       hydrate: async () => ({
         availableSnapshotIds: ['snapshot-hydrated'],
+        lifecycle: 'durable',
         mode: 'desktop',
         project: durableProject,
         revision: 12,
@@ -1340,6 +1369,7 @@ describe('project optimization memory', () => {
       commit,
       hydrate: async () => ({
         availableSnapshotIds: [],
+        lifecycle: 'durable',
         mode: 'desktop',
         project: durableProject,
         revision: 41,
@@ -1385,6 +1415,7 @@ describe('project optimization memory', () => {
     replaceProjectPersistenceClientForTests(createMockClient({
       hydrate: async () => ({
         availableSnapshotIds: [],
+        lifecycle: 'durable',
         mode: 'desktop',
         project: durableProject,
         revision: 7,
@@ -2147,6 +2178,7 @@ describe('project optimization memory', () => {
     });
     const hydrate = vi.fn(async () => ({
       availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
       mode: 'desktop' as const,
       project: durableProject,
       revision,
@@ -2257,6 +2289,7 @@ describe('project optimization memory', () => {
     replaceProjectPersistenceClientForTests(createMockClient({
       hydrate: async () => ({
         availableSnapshotIds: [],
+        lifecycle: 'durable',
         mode: 'desktop',
         project: durableProject,
         revision: 5,
@@ -2973,6 +3006,7 @@ function createImmediateBrowserClient(): ProjectPersistenceClient {
 function createMockClient(overrides: Partial<ProjectPersistenceClient>): ProjectPersistenceClient {
   const hydrate = overrides.hydrate ?? (async () => ({
     availableSnapshotIds: [],
+    lifecycle: 'durable' as const,
     mode: 'desktop',
     project: createStarterProject(),
     revision: 0,
@@ -3002,12 +3036,14 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient>): Project
       };
     },
     hydrate,
+    openProject: overrides.openProject,
     importProjectImage: overrides.importProjectImage ?? (async () => null),
     listProjectImages: overrides.listProjectImages ?? (async () => []),
     restore: overrides.restore ?? (async () => {
       const result = await hydrate();
       return {
         availableSnapshotIds: result.availableSnapshotIds,
+        lifecycle: result.lifecycle,
         project: result.project,
         revision: result.revision,
         saveStatus: result.saveStatus === 'read_only' ? 'read_only' : 'saved',

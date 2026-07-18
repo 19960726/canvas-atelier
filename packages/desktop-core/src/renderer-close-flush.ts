@@ -55,24 +55,29 @@ export function createRendererCloseFlushCoordinator({
   let pendingRequest: {
     readonly requestId: string;
     readonly resolve: (reason: CloseFlushCompletionReason) => void;
-    readonly timeoutHandle: unknown;
+    timeoutHandle: unknown | null;
   } | null = null;
 
   const completePending = (reason: CloseFlushCompletionReason): boolean => {
     if (pendingRequest === null) return false;
     const pending = pendingRequest;
     pendingRequest = null;
-    clearTimeoutFn(pending.timeoutHandle);
+    if (pending.timeoutHandle !== null) clearTimeoutFn(pending.timeoutHandle);
     pending.resolve(reason);
     return true;
   };
 
   const waitForRenderer = (requestId: string): Promise<CloseFlushCompletionReason> => new Promise((resolve) => {
-    const timeoutHandle = setTimeoutFn(() => {
+    pendingRequest = { requestId, resolve, timeoutHandle: null };
+  });
+
+  const startPendingTimeout = (): boolean => {
+    if (pendingRequest === null || pendingRequest.timeoutHandle !== null) return false;
+    pendingRequest.timeoutHandle = setTimeoutFn(() => {
       completePending('timeout');
     }, timeoutMs);
-    pendingRequest = { requestId, resolve, timeoutHandle };
-  });
+    return true;
+  };
 
   const finishClose = async (reason: CloseFlushCompletionReason): Promise<void> => {
     try {
@@ -97,7 +102,7 @@ export function createRendererCloseFlushCoordinator({
         reason = 'unavailable';
       }
     }
-    if (reason === 'cancel') return;
+    if (reason !== 'saved' && reason !== 'discarded') return;
     await finishClose(reason);
   };
 
@@ -107,7 +112,11 @@ export function createRendererCloseFlushCoordinator({
       if (ack === null || pendingRequest === null || ack.requestId !== pendingRequest.requestId) {
         return false;
       }
-      return completePending(ack.cancelled === true ? 'cancel' : ack.ok ? 'ack' : 'nack');
+      if (ack.phase === 'save_started') return startPendingTimeout();
+      const reason: CloseFlushCompletionReason = ack.outcome === 'cancelled'
+        ? 'cancel'
+        : ack.outcome;
+      return completePending(reason);
     },
     async rendererUnavailable() {
       return completePending('unavailable');

@@ -23,30 +23,42 @@ export function App() {
     if (lifecycle === undefined) return;
 
     closeFlushUnsubscribe = lifecycle.subscribeCloseFlushRequest(async (request) => {
-      let ok = false;
       try {
         const state = useAppStore.getState();
-        const needsUntitledChoice = state.project.name === '未命名画布' && state.saveStatus !== 'saved';
-        if (needsUntitledChoice && lifecycle.chooseCloseDecision !== undefined) {
+        if (state.projectLifecycle === 'untitled') {
+          if (lifecycle.chooseCloseDecision === undefined) {
+            lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'completed', outcome: 'failed' });
+            return;
+          }
           const decision = await lifecycle.chooseCloseDecision({
-            dirty: true,
+            dirty: state.saveStatus !== 'saved',
             projectName: state.project.name,
             untitled: true,
           });
           if (decision === 'cancel') {
-            lifecycle.ackCloseFlush({ cancelled: true, requestId: request.requestId, ok: false });
+            lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'completed', outcome: 'cancelled' });
             return;
           }
-          ok = decision === 'discard'
-            ? await state.discardPersistence()
-            : await state.closePersistence();
-        } else {
-          ok = await state.closePersistence();
+          if (decision === 'discard') {
+            const discarded = await state.discardPersistence();
+            lifecycle.ackCloseFlush({
+              requestId: request.requestId,
+              phase: 'completed',
+              outcome: discarded ? 'discarded' : 'failed',
+            });
+            return;
+          }
         }
+        lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'save_started' });
+        const saved = await state.closePersistence();
+        lifecycle.ackCloseFlush({
+          requestId: request.requestId,
+          phase: 'completed',
+          outcome: saved ? 'saved' : 'failed',
+        });
       } catch {
-        ok = false;
+        lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'completed', outcome: 'failed' });
       }
-      lifecycle.ackCloseFlush({ requestId: request.requestId, ok });
     });
   }, []);
 

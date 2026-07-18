@@ -29,10 +29,11 @@ describe('legacy desktop close coordinator', () => {
     expect(closeEvent.preventDefault).toHaveBeenCalledOnce();
     expect(calls).toEqual(['send:legacy-close-request-1']);
 
-    await coordinator.handleCloseFlushAck({ requestId: 'legacy-close-request-1', ok: true });
+    await coordinator.handleCloseFlushAck({ requestId: 'legacy-close-request-1', phase: 'save_started' });
+    await coordinator.handleCloseFlushAck({ requestId: 'legacy-close-request-1', phase: 'completed', outcome: 'saved' });
     await closing;
 
-    expect(calls).toEqual(['send:legacy-close-request-1', 'closeAllProjects', 'finalize:ack']);
+    expect(calls).toEqual(['send:legacy-close-request-1', 'closeAllProjects', 'finalize:saved']);
   });
 
   it('wires main window close and before-quit through the renderer close-flush request/ack channels', async () => {

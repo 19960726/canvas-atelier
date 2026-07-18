@@ -168,6 +168,23 @@ describe('renderer autosave', () => {
     expect(useAppStore.getState().saveErrorCode).toBe('INVALID_REQUEST');
   });
 
+  it('keeps an untitled workflow pending after an in-memory autosave and stable-point boundary', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 0,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.getState().setProject({ ...useAppStore.getState().project, name: 'Renamed untitled draft' });
+
+    await expect(useAppStore.getState().flushProjectSave('blur')).resolves.toBe(true);
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().projectLifecycle).toBe('untitled');
+    expect(useAppStore.getState().saveStatus).toBe('pending');
+  });
+
   it('creates a stable point and succeeds when close flush has no pending or in-flight draft', async () => {
     const commit = vi.fn();
     const stablePoint = vi.fn(async () => ({
@@ -199,6 +216,7 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient> = {}): Pr
     commit: overrides.commit ?? (async ({ nextProject }) => ({ ok: true, project: nextProject, revision: 1 })),
     hydrate: overrides.hydrate ?? (async () => ({
       availableSnapshotIds: [],
+      lifecycle: 'durable',
       mode: 'browser',
       project: createStarterProject(),
       revision: 0,
@@ -208,6 +226,7 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient> = {}): Pr
     listProjectImages: overrides.listProjectImages ?? (async () => []),
     restore: overrides.restore ?? (async () => ({
       availableSnapshotIds: [],
+      lifecycle: 'durable',
       project: createStarterProject(),
       revision: 0,
       saveStatus: 'saved',

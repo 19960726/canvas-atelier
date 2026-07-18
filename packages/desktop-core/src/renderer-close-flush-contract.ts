@@ -6,13 +6,16 @@ export interface CloseFlushRequest {
   readonly requestId: string;
 }
 
-export interface CloseFlushAck {
-  readonly ok: boolean;
-  readonly cancelled?: boolean;
+export type CloseFlushAck = {
+  readonly phase: 'save_started';
   readonly requestId: string;
-}
+} | {
+  readonly outcome: 'saved' | 'discarded' | 'cancelled' | 'failed';
+  readonly phase: 'completed';
+  readonly requestId: string;
+};
 
-export type CloseFlushCompletionReason = 'ack' | 'cancel' | 'nack' | 'timeout' | 'unavailable';
+export type CloseFlushCompletionReason = 'saved' | 'discarded' | 'cancel' | 'failed' | 'timeout' | 'unavailable';
 
 const requestIdSchema = z.string()
   .min(8)
@@ -23,15 +26,17 @@ const closeFlushRequestSchema = z.object({
   requestId: requestIdSchema,
 }).strict();
 
-const closeFlushAckSchema = z.object({
-  cancelled: z.boolean().optional(),
-  ok: z.boolean(),
-  requestId: requestIdSchema,
-}).strict().superRefine((value, context) => {
-  if (value.cancelled === true && value.ok) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Cancelled close cannot be acknowledged as successful' });
-  }
-});
+const closeFlushAckSchema = z.discriminatedUnion('phase', [
+  z.object({
+    phase: z.literal('save_started'),
+    requestId: requestIdSchema,
+  }).strict(),
+  z.object({
+    outcome: z.enum(['saved', 'discarded', 'cancelled', 'failed']),
+    phase: z.literal('completed'),
+    requestId: requestIdSchema,
+  }).strict(),
+]);
 
 export function parseCloseFlushRequest(payload: unknown): CloseFlushRequest | null {
   const parsed = closeFlushRequestSchema.safeParse(payload);
@@ -40,8 +45,5 @@ export function parseCloseFlushRequest(payload: unknown): CloseFlushRequest | nu
 
 export function parseCloseFlushAck(payload: unknown): CloseFlushAck | null {
   const parsed = closeFlushAckSchema.safeParse(payload);
-  if (!parsed.success) return null;
-  return parsed.data.cancelled === true
-    ? { cancelled: true, ok: parsed.data.ok, requestId: parsed.data.requestId }
-    : { ok: parsed.data.ok, requestId: parsed.data.requestId };
+  return parsed.success ? parsed.data : null;
 }

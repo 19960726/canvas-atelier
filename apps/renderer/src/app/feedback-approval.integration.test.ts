@@ -210,6 +210,7 @@ function createImmediatePersistence(): ProjectPersistenceClient {
     commit: async (request) => ({ ok: true, project: request.nextProject, revision: 1 }),
     hydrate: async () => ({
       availableSnapshotIds: [],
+      lifecycle: 'durable',
       mode: 'browser',
       project: createStarterProject(),
       revision: 0,
@@ -219,6 +220,7 @@ function createImmediatePersistence(): ProjectPersistenceClient {
     listProjectImages: async () => [],
     restore: async () => ({
       availableSnapshotIds: [],
+      lifecycle: 'durable',
       project: createStarterProject(),
       revision: 0,
       saveStatus: 'saved',

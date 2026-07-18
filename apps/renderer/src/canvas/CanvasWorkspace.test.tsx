@@ -549,6 +549,7 @@ describe('CanvasWorkspace', () => {
   it('uses desktop snapshot ids from the store for memory restore actions', async () => {
     const restore = vi.fn(async () => ({
       availableSnapshotIds: ['desktop-after'],
+      lifecycle: 'durable' as const,
       project: createStarterProject(),
       revision: 4,
       saveStatus: 'saved' as const,
@@ -1064,6 +1065,7 @@ function createImmediateBrowserClient(
   let hydratedProject = createStarterProject();
   const hydrate = overrides.hydrate ?? (async (): Promise<ProjectHydrationResult> => ({
     availableSnapshotIds: [],
+    lifecycle: 'durable',
     mode: 'browser',
     project: hydratedProject,
     revision: 0,
@@ -1082,6 +1084,7 @@ function createImmediateBrowserClient(
       const result = await hydrate();
       return {
         availableSnapshotIds: result.availableSnapshotIds,
+        lifecycle: result.lifecycle,
         project: result.project,
         revision: result.revision,
         saveStatus: result.saveStatus === 'read_only' ? 'read_only' : 'saved',

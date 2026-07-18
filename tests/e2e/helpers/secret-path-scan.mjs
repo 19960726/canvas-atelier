@@ -88,7 +88,7 @@ const allowedFindings = [
   {
     file: "tests/e2e/helpers/secret-path-scan.mjs",
     name: "scanner implementation hash",
-    hash: "a964ef448a41b754b480cf11123e85aab4b61fcfebe9584ee5ab7742a5e75bb3",
+    hash: "951ef82f24c1bf98b1b171baa54eebe9ec18e159ccbf36d2be715e8a02b987bd",
   },
   {
     file: "apps/renderer/src/styles/theme-tokens.test.ts",
@@ -516,6 +516,15 @@ if (findings.length > 0) {
 console.log(`secret/path scan passed (${included.join(', ')})`);
 
 function scan(path) {
+  try {
+    scanExisting(path);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return;
+    throw error;
+  }
+}
+
+function scanExisting(path) {
   const info = statSync(path);
   const name = basename(path);
   if (info.isDirectory()) {

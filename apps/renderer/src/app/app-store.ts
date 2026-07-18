@@ -43,6 +43,7 @@ import {
   createProjectPersistenceClient,
   type ProjectCommitRequest,
   type ProjectCommitResult,
+  type ProjectLifecycle,
   type ProjectPersistenceClient,
   type ProjectSaveStatus,
 } from './desktop-persistence';
@@ -135,6 +136,7 @@ interface RecordUserFeedbackInput {
 }
 interface AppState {
   project: CanvasProject;
+  projectLifecycle: ProjectLifecycle;
   projectImages: ProjectImageAssetSummary[];
   projectImageError: string | null;
   projectImageImportingNodeId: string | null;
@@ -395,6 +397,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return get().commitProjectTransaction(transaction, { nextProject });
   }),
   closePersistence: async () => {
+    if (get().projectLifecycle === 'untitled') return false;
     const flushed = await flushPendingProjectSave(get, set, 'close');
     if (!flushed) return false;
     invalidateModelJobStoreGeneration();
@@ -451,6 +454,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         desktopRevision: hydrated.revision,
         persistenceMode: hydrated.mode,
         project: hydrated.project,
+        projectLifecycle: hydrated.lifecycle,
         projectImages,
         saveErrorCode: result.code,
         saveStatus: 'error',
@@ -510,6 +514,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       desktopRevision: hydrated.revision,
       persistenceMode: hydrated.mode,
       project: hydrated.project,
+      projectLifecycle: hydrated.lifecycle,
       projectImages,
       projectImageError: null,
       confirmedModelJobs: countConfirmedModelJobs(modelJobs),
@@ -530,6 +535,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       desktopRevision: opened.revision,
       persistenceMode: opened.mode,
       project: opened.project,
+      projectLifecycle: opened.lifecycle,
       projectImages,
       projectImageError: null,
       projectImageImportingNodeId: null,
@@ -546,6 +552,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       availableSnapshotIds: [],
       desktopRevision: 0,
       project: createUntitledProject(),
+      projectLifecycle: 'untitled',
       projectImages: [],
       projectImageError: null,
       projectImageImportingNodeId: null,
@@ -875,6 +882,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         availableSnapshotIds: restored.availableSnapshotIds,
         desktopRevision: restored.revision,
         project: restored.project,
+        projectLifecycle: restored.lifecycle,
         projectImages,
         projectImageError: null,
         saveErrorCode: null,
@@ -1005,6 +1013,7 @@ async function importProjectImageWithTarget(target: ProjectImageImportTarget): P
           desktopRevision: hydrated.revision,
           persistenceMode: hydrated.mode,
           project: hydrated.project,
+          projectLifecycle: hydrated.lifecycle,
           projectImages,
           projectImageError: code,
           projectImageImportingNodeId: null,
@@ -1116,7 +1125,7 @@ export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' }
   const state = createInitialState();
   useAppStore.setState(options.project === 'empty'
     ? state
-    : { ...state, project: createStarterProject(), saveStatus: 'pending' });
+    : { ...state, project: createStarterProject(), projectLifecycle: 'durable', saveStatus: 'pending' });
 }
 
 function getModuleNode(nodes: readonly CanvasProject['nodes'][number][], nodeId: string): CanvasModuleNode | undefined {
@@ -1204,7 +1213,7 @@ function applyCommitResult(
       desktopRevision: result.revision,
       project: result.project,
       saveErrorCode: null,
-      saveStatus: 'saved',
+      saveStatus: get().projectLifecycle === 'untitled' ? 'pending' : 'saved',
     });
     return true;
   }
@@ -1258,7 +1267,7 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   return {
     activeTool: 'select',
@@ -1272,6 +1281,7 @@ function createInitialState(): Pick<AppState, 'project' | 'projectImages' | 'pro
     modelJobs: [],
     persistenceMode: desktopMode ? 'desktop' : 'browser',
     project: createUntitledProject(),
+    projectLifecycle: 'untitled',
     projectImages: [],
     projectImageError: null,
     projectImageImportingNodeId: null,
@@ -2127,7 +2137,9 @@ async function flushPendingProjectSave(
       desktopRevision: stablePoint.revision,
       project: saved ? stablePoint.project : state.project,
       saveErrorCode: null,
-      saveStatus: saved || state.saveStatus === 'saved' ? 'saved' : state.saveStatus,
+      saveStatus: state.projectLifecycle === 'untitled'
+        ? 'pending'
+        : saved || state.saveStatus === 'saved' ? 'saved' : state.saveStatus,
     });
     return true;
   })();

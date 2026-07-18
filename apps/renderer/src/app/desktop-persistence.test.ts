@@ -23,6 +23,7 @@ describe('desktop persistence', () => {
     const hydrated = await createBrowserPersistenceClient().hydrate();
 
     expect(hydrated.project).toMatchObject({ name: '未命名画布', nodes: [], edges: [] });
+    expect(hydrated.lifecycle).toBe('untitled');
     expect(hydrated.saveStatus).toBe('pending');
   });
 
@@ -54,7 +55,71 @@ describe('desktop persistence', () => {
     expect(openProject).not.toHaveBeenCalled();
     expect(hydrated.project).toMatchObject({ name: '未命名画布', nodes: [], edges: [] });
     expect(hydrated.availableSnapshotIds).toEqual([]);
+    expect(hydrated.lifecycle).toBe('untitled');
     expect(hydrated.saveStatus).toBe('pending');
+  });
+
+  it('keeps startup image reads and initial untitled edits in memory without opening or committing a hidden desktop session', async () => {
+    const openProject = vi.fn();
+    const commit = vi.fn();
+    const list = vi.fn();
+    const importImage = vi.fn();
+    const bridge = {
+      closeProject: vi.fn(),
+      commit,
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(),
+      openProject,
+      projectImages: { importImage, list },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    const hydrated = await client.hydrate();
+    const edited = { ...hydrated.project, name: 'Renamed in-memory draft' };
+
+    await expect(client.listProjectImages()).resolves.toEqual([]);
+    await expect(client.importProjectImage({ kind: 'module', nodeId: 'module-1' })).resolves.toBeNull();
+    const result = await client.commit({
+      baseRevision: 0,
+      kind: 'canvas',
+      nextProject: edited,
+      previousProject: hydrated.project,
+      projectId: hydrated.project.id,
+      transaction: { id: 'tx-untitled-memory', label: 'Edit untitled', operations: [] },
+    });
+
+    expect(result).toMatchObject({ ok: true, project: edited, revision: 0 });
+    expect(openProject).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(importImage).not.toHaveBeenCalled();
+  });
+
+  it('uses the explicit open path every time and switches to the newly selected durable project', async () => {
+    const firstProject = { ...createStarterProject(), name: 'First durable project' };
+    const secondProject = { ...createStarterProject(), id: 'second-project', name: '未命名画布' };
+    const openProject = vi.fn()
+      .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3))
+      .mockResolvedValueOnce(createDesktopSession(secondProject, 'second-session', 7));
+    const closeProject = vi.fn(async () => undefined);
+    const bridge = {
+      closeProject,
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: secondProject.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    const first = await client.openProject?.();
+    const second = await client.openProject?.();
+
+    expect(openProject).toHaveBeenCalledTimes(2);
+    expect(closeProject).toHaveBeenCalledWith({ sessionId: 'first-session' });
+    expect(first).toMatchObject({ lifecycle: 'durable', project: { name: 'First durable project' }, revision: 3 });
+    expect(second).toMatchObject({ lifecycle: 'durable', project: { id: 'second-project', name: '未命名画布' }, revision: 7 });
   });
 
   it('removes a v2 localStorage bundle only after desktop import acknowledgement', async () => {
@@ -386,3 +451,16 @@ describe('desktop persistence', () => {
     });
   });
 });
+
+function createDesktopSession(project: ReturnType<typeof createStarterProject>, sessionId: string, revision: number) {
+  return {
+    currentRevision: revision,
+    mode: 'write' as const,
+    project,
+    projectId: project.id,
+    projectName: project.name,
+    sessionId,
+    stableSnapshotId: null,
+    stableSnapshotRevision: revision,
+  };
+}

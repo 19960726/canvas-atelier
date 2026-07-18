@@ -47,6 +47,7 @@ describe('App persistence hydration', () => {
     const desktopProject = { ...createStarterProject(), name: 'Desktop Hydrated Project' };
     const hydrate = vi.fn(async () => ({
       availableSnapshotIds: ['desktop-after'],
+      lifecycle: 'durable' as const,
       mode: 'desktop' as const,
       project: desktopProject,
       revision: 8,
@@ -81,6 +82,7 @@ describe('App persistence hydration', () => {
     const close = vi.fn(async () => {});
     const hydrate = vi.fn(async () => ({
       availableSnapshotIds: ['strict-snapshot'],
+      lifecycle: 'durable' as const,
       mode: 'desktop' as const,
       project: hydratedProject,
       revision: 15,
@@ -138,11 +140,14 @@ describe('App persistence hydration', () => {
 
     await listeners[listeners.length - 1]?.({ requestId: 'close-request-strict-1' });
 
-    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(2));
     expect(commit).toHaveBeenCalledTimes(1);
     expect(stablePoint).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
-    expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-strict-1', ok: true });
+    expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-strict-1', phase: 'save_started' }],
+      [{ requestId: 'close-request-strict-1', phase: 'completed', outcome: 'saved' }],
+    ]);
   });
 
   it('ACKs close-flush false when the pending durable save fails', async () => {
@@ -173,12 +178,84 @@ describe('App persistence hydration', () => {
 
     await listeners[listeners.length - 1]?.({ requestId: 'close-request-failed-1' });
 
-    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(2));
     expect(commit).toHaveBeenCalledTimes(1);
     expect(stablePoint).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
     expect(useAppStore.getState().saveErrorCode).toBe('INVALID_REQUEST');
-    expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-failed-1', ok: false });
+    expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-failed-1', phase: 'save_started' }],
+      [{ requestId: 'close-request-failed-1', phase: 'completed', outcome: 'failed' }],
+    ]);
+  });
+
+  it('treats an explicitly opened durable project named 未命名画布 as durable lifecycle state', async () => {
+    const durableProject = { ...createStarterProject(), name: '未命名画布' };
+    const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
+    const ackCloseFlush = vi.fn();
+    const chooseCloseDecision = vi.fn(async () => 'cancel' as const);
+    window.novusDesktop = {
+      lifecycle: {
+        ackCloseFlush,
+        chooseCloseDecision,
+        subscribeCloseFlushRequest: vi.fn((listener) => {
+          listeners.push(listener);
+          return vi.fn();
+        }),
+      },
+    } as unknown as typeof window.novusDesktop;
+    replaceProjectPersistenceClientForTests(createHydrationClient({
+      hydrate: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: durableProject,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      })),
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(useAppStore.getState().project.name).toBe('未命名画布'));
+    useAppStore.getState().setProject({ ...durableProject, graphVersion: 2 });
+    await listeners[0]?.({ requestId: 'close-request-durable-name' });
+
+    expect(chooseCloseDecision).not.toHaveBeenCalled();
+    expect(ackCloseFlush).toHaveBeenLastCalledWith({ requestId: 'close-request-durable-name', phase: 'completed', outcome: 'saved' });
+  });
+
+  it('keeps a renamed untitled project on the untitled close-choice path', async () => {
+    const renamedUntitled = { ...createStarterProject(), name: 'Renamed draft', nodes: [], edges: [] };
+    const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
+    const ackCloseFlush = vi.fn();
+    const chooseCloseDecision = vi.fn(async () => 'cancel' as const);
+    window.novusDesktop = {
+      lifecycle: {
+        ackCloseFlush,
+        chooseCloseDecision,
+        subscribeCloseFlushRequest: vi.fn((listener) => {
+          listeners.push(listener);
+          return vi.fn();
+        }),
+      },
+    } as unknown as typeof window.novusDesktop;
+    replaceProjectPersistenceClientForTests(createHydrationClient({
+      hydrate: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'untitled' as const,
+        mode: 'desktop' as const,
+        project: renamedUntitled,
+        revision: 0,
+        saveStatus: 'pending' as const,
+      })),
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(useAppStore.getState().project.name).toBe('Renamed draft'));
+    await listeners[0]?.({ requestId: 'close-request-renamed-untitled' });
+
+    expect(chooseCloseDecision).toHaveBeenCalledWith({ dirty: true, projectName: 'Renamed draft', untitled: true });
+    expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-renamed-untitled', phase: 'completed', outcome: 'cancelled' });
   });
 
   it('uses the desktop Save Discard Cancel choice for an unnamed dirty project and aborts on cancel', async () => {
@@ -196,7 +273,17 @@ describe('App persistence hydration', () => {
         }),
       },
     } as unknown as typeof window.novusDesktop;
-    replaceProjectPersistenceClientForTests(createHydrationClient({ close }));
+    replaceProjectPersistenceClientForTests(createHydrationClient({
+      close,
+      hydrate: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'untitled' as const,
+        mode: 'desktop' as const,
+        project: { ...createStarterProject(), name: '未命名画布', nodes: [], edges: [] },
+        revision: 0,
+        saveStatus: 'pending' as const,
+      })),
+    }));
     resetAppStoreForTests({ project: 'empty' });
 
     render(<App />);
@@ -205,7 +292,7 @@ describe('App persistence hydration', () => {
 
     expect(chooseCloseDecision).toHaveBeenCalledWith({ dirty: true, projectName: '未命名画布', untitled: true });
     expect(close).not.toHaveBeenCalled();
-    expect(ackCloseFlush).toHaveBeenCalledWith({ cancelled: true, ok: false, requestId: 'close-request-cancel-1' });
+    expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-cancel-1', phase: 'completed', outcome: 'cancelled' });
   });
 });
 
@@ -236,6 +323,7 @@ function createHydrationClient(overrides: Partial<ProjectPersistenceClient> = {}
     })),
     hydrate: overrides.hydrate ?? (async () => ({
       availableSnapshotIds: [],
+      lifecycle: 'durable',
       mode: 'browser',
       project: createStarterProject(),
       revision: 0,
@@ -245,6 +333,7 @@ function createHydrationClient(overrides: Partial<ProjectPersistenceClient> = {}
     listProjectImages: overrides.listProjectImages ?? (async () => []),
     restore: overrides.restore ?? (async () => ({
       availableSnapshotIds: [],
+      lifecycle: 'durable',
       project: createStarterProject(),
       revision: 0,
       saveStatus: 'saved',

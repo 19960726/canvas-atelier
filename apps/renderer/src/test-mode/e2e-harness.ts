@@ -460,6 +460,7 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
     async hydrate(): Promise<ProjectHydrationResult> {
       return {
         availableSnapshotIds: [],
+        lifecycle: 'durable',
         mode: 'browser',
         project: runtime.currentProject,
         revision: runtime.revision,
@@ -478,6 +479,7 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
     async restore(): Promise<ProjectRestoreResult> {
       return {
         availableSnapshotIds: [],
+        lifecycle: 'durable',
         project: runtime.currentProject,
         revision: runtime.revision,
         saveStatus: 'saved',

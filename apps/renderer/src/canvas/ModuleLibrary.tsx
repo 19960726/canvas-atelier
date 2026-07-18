@@ -50,6 +50,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
   const [selectedModuleType, setSelectedModuleType] = useState<CanvasModuleType | null>(null);
   const [preferences, setPreferences] = useState(() => readModulePreferences());
   const categoryTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const activationInFlight = useRef(new Set<CanvasModuleType>());
   const definitions = useMemo(() => listCanvasModuleDefinitions(), []);
   const filteredDefinitions = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -77,8 +78,14 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
     : definitions.find((definition) => definition.type === selectedModuleType) ?? null;
 
   const createModule = async (moduleType: CanvasModuleType) => {
-    const created = await Promise.resolve(onCreate(moduleType));
-    if (created === true) setPreferences(recordRecentModule(moduleType));
+    if (activationInFlight.current.has(moduleType)) return;
+    activationInFlight.current.add(moduleType);
+    try {
+      const created = await Promise.resolve(onCreate(moduleType));
+      if (created === true) setPreferences(recordRecentModule(moduleType));
+    } finally {
+      activationInFlight.current.delete(moduleType);
+    }
   };
 
   const moveCategory = (currentIndex: number, direction: 'first' | 'last' | 'next' | 'previous') => {
@@ -162,6 +169,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
               onClick={() => setSelectedModuleType(definition.type)}
               onDoubleClick={() => { void createModule(definition.type); }}
               onKeyDown={(event) => {
+                if (event.repeat) return;
                 if (event.key === 'Enter') {
                   event.preventDefault();
                   void createModule(definition.type);
