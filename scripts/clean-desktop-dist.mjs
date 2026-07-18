@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { lstat, mkdir, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +33,50 @@ function isRetriableFsError(error) {
   ));
 }
 
+function isMissingPathError(error) {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
+}
+
+function samePath(left, right) {
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
+async function resolveRegularDirectory(targetPath, label) {
+  const stats = await lstat(targetPath);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`Refusing to clean through redirected ${label}`);
+  }
+  return realpath(targetPath);
+}
+
+async function assertConfinedDistTarget() {
+  const appsRoot = resolve(repoRoot, 'apps');
+  const realRepoRoot = await resolveRegularDirectory(repoRoot, 'repository root');
+  const realAppsRoot = await resolveRegularDirectory(appsRoot, 'apps directory');
+  const realShellRoot = await resolveRegularDirectory(shellRoot, 'desktop shell directory');
+
+  if (!samePath(realRepoRoot, repoRoot)) {
+    throw new Error('Refusing to clean through redirected repository ancestors');
+  }
+  if (!samePath(realAppsRoot, resolve(realRepoRoot, 'apps'))) {
+    throw new Error('Refusing to clean through redirected apps directory');
+  }
+  if (!samePath(realShellRoot, resolve(realRepoRoot, 'apps', shellName))) {
+    throw new Error('Refusing to clean through redirected desktop shell directory');
+  }
+
+  try {
+    const realDistRoot = await resolveRegularDirectory(distRoot, 'desktop dist directory');
+    if (!samePath(realDistRoot, resolve(realShellRoot, 'dist'))) {
+      throw new Error('Refusing to clean redirected desktop dist directory');
+    }
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+}
+
 async function rmWithRetry(targetPath) {
   const delays = [50, 100, 200, 400, 800];
 
@@ -50,5 +94,6 @@ async function rmWithRetry(targetPath) {
   }
 }
 
+await assertConfinedDistTarget();
 await rmWithRetry(distRoot);
 await mkdir(distRoot, { recursive: true });

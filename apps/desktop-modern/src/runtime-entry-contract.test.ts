@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { access, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
@@ -315,6 +315,43 @@ function spawnArtifactLoad(entryPath: string) {
 }
 
 describe('desktop runtime entry contract', () => {
+  it('refuses redirected shell and dist directories without deleting external sentinels', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'canvas-agent-dist-confinement-'));
+    try {
+      for (const redirect of ['shell', 'dist'] as const) {
+        const fixtureRoot = join(tempRoot, redirect, 'repo');
+        const externalRoot = join(tempRoot, redirect, 'external');
+        const cleanerPath = join(fixtureRoot, 'scripts', 'clean-desktop-dist.mjs');
+        const shellRoot = join(fixtureRoot, 'apps', 'desktop-modern');
+        await mkdir(join(fixtureRoot, 'scripts'), { recursive: true });
+        await mkdir(join(fixtureRoot, 'apps'), { recursive: true });
+        await cp(join(workspaceRoot, 'scripts', 'clean-desktop-dist.mjs'), cleanerPath);
+
+        const sentinelPath = redirect === 'shell'
+          ? join(externalRoot, 'dist', 'sentinel.txt')
+          : join(externalRoot, 'sentinel.txt');
+        await mkdir(resolve(sentinelPath, '..'), { recursive: true });
+        await writeFile(sentinelPath, 'must survive redirected cleanup', 'utf8');
+
+        if (redirect === 'shell') {
+          await symlink(externalRoot, shellRoot, process.platform === 'win32' ? 'junction' : 'dir');
+        } else {
+          await mkdir(shellRoot, { recursive: true });
+          await symlink(externalRoot, join(shellRoot, 'dist'), process.platform === 'win32' ? 'junction' : 'dir');
+        }
+
+        const result = spawnSync(process.execPath, [cleanerPath, 'desktop-modern'], {
+          cwd: fixtureRoot,
+          encoding: 'utf8',
+        });
+        expect(result.status, `${result.stderr}\n${result.stdout}`).not.toBe(0);
+        await expectPresent(sentinelPath);
+      }
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   for (const shell of desktopShells) {
     it(`${shell.label} cleans stale dist artifacts before building desktop outputs`, async () => {
       await seedStaleDistArtifacts(shell);
