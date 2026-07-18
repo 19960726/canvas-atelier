@@ -40,6 +40,12 @@ export type ProjectImageAsset = z.infer<typeof projectImageAssetSchema>;
 function containsProtectedAssetLabel(value: string): boolean {
   return /authorization\s*:/i.test(value)
     || /\bbearer\s+[a-z0-9._~+/=\-]{8,}/i.test(value)
+    || /\b(?:api[_ -]?key|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|token|secret|password)\s*[:=]\s*\S+/i.test(value)
+    || /\bsk-[a-z0-9_-]{8,}\b/i.test(value)
+    || /\bAIza[0-9a-z_-]{20,}\b/i.test(value)
+    || /\bAKIA[0-9A-Z]{16}\b/.test(value)
+    || /\bgh[pousr]_[a-z0-9]{20,}\b/i.test(value)
+    || /\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/i.test(value)
     || /data:image\/[a-z0-9.+-]+;base64,/i.test(value)
     || /blob:[^\s"'`]+/i.test(value)
     || /file:\/\/[^\s"'`]+/i.test(value)

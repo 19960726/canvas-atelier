@@ -73,6 +73,35 @@ describe('AssetStore', () => {
     )).resolves.toBeNull();
   });
 
+  it('lists a durable catalog without hashing complete files and defers integrity checks to resolution', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const store = new AssetStore();
+    const catalog = Array.from({ length: 32 }, (_, index) => {
+      const assetId = index.toString(16).padStart(16, '0');
+      return {
+        assetId,
+        byteSize: pngBytes.length,
+        extension: 'png' as const,
+        height: 3,
+        mediaType: 'image/png' as const,
+        sha256: `${assetId}${'0'.repeat(48)}`,
+        width: 2,
+      };
+    });
+    await Promise.all(catalog.map((asset) => (
+      writeFile(join(projectRoot, 'assets', `${asset.assetId}.png`), pngBytes)
+    )));
+
+    await expect(store.list(projectRoot, catalog)).resolves.toHaveLength(catalog.length);
+    await expect(store.resolvePath(
+      projectRoot,
+      catalog[0]!.assetId,
+      catalog[0]!.extension,
+      catalog[0]!.sha256,
+      catalog[0]!.byteSize,
+    )).resolves.toBeNull();
+  });
+
   it('rejects redirected asset directories before listing, resolving, or writing files', async () => {
     const projectRoot = await createProjectRoot(tempRoots);
     const assetsRoot = join(projectRoot, 'assets');

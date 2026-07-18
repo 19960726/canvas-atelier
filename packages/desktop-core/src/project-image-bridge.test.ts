@@ -160,6 +160,31 @@ describe('project image bridge', () => {
           }],
         },
       })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      const forgedNode = placementResult!.project.nodes.find((node) => node.id === 'image-input');
+      expect(forgedNode?.type).toBe('module');
+      await expect(handlers.commit({}, {
+        baseRevision: 2,
+        kind: 'canvas',
+        projectId: 'image-project',
+        sessionId: opened!.sessionId,
+        transaction: {
+          id: 'renderer-forged-image-reference',
+          label: 'Renderer forged image reference',
+          operations: [{
+            kind: 'canvas',
+            operation: {
+              kind: 'update_node',
+              node: {
+                ...forgedNode!,
+                data: {
+                  ...(forgedNode! as Extract<CanvasProject['nodes'][number], { type: 'module' }>).data,
+                  config: { assetId: 'fedcba9876543210' },
+                },
+              },
+            },
+          }],
+        },
+      })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
       await expect(handlers.resolveProjectImagePath(
         result!.asset.displayUrl.replace(opened!.sessionId, 'unknown-session'),
       )).resolves.toBeNull();
@@ -243,6 +268,49 @@ describe('project image bridge', () => {
     await expect(firstImport).resolves.toBeNull();
     expect(chooseProjectImage).toHaveBeenCalledTimes(1);
     await handlers.closeAllProjects();
+  });
+
+  it('replaces protected source filenames before the asset label reaches the durable journal', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-image-label-');
+    const projectRoot = join(tempRoot, 'Images.novus-project');
+    const protectedValue = ['sk', 'live-secret-value'].join('-');
+    const sourcePath = join(tempRoot, `clientSecret=${protectedValue}.png`);
+    await writeFile(sourcePath, pngBytes);
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6143 });
+    const created = await repository.create(projectRoot, {
+      project: imageProject(),
+      projectId: 'image-project',
+      projectName: 'Image Project',
+    });
+    await repository.close(created);
+    const handlers = createDesktopBridgeHandlers({
+      createId: sequentialId('bridge'),
+      dialogs: {
+        chooseProjectImage: vi.fn(async () => sourcePath),
+        chooseProjectRoot: vi.fn(async () => projectRoot),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(),
+      },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.importProjectImage({}, {
+        sessionId: opened!.sessionId,
+        target: { kind: 'module', nodeId: 'image-input' },
+      });
+      const journal = await readFile(join(projectRoot, 'journal', 'active.ndjson'), 'utf8');
+
+      expect(result!.asset.label).toMatch(/^Image [a-f0-9]{8}$/u);
+      expect(JSON.stringify(result)).not.toContain(protectedValue);
+      expect(journal).not.toContain(protectedValue);
+      expect(journal).not.toContain('clientSecret');
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');
+    }
   });
 
   it('quarantines a newly written image when the durable target transaction is not acknowledged', async () => {

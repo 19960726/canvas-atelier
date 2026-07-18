@@ -38,6 +38,15 @@ describe('project image assets', () => {
       ...assetA,
       label: protectedLabel,
     })).toThrow(/protected/i);
+    const protectedLabels = [
+      'clientSecret=super-private-value',
+      'accessToken=super-private-value',
+      ['sk', 'live-secret-value'].join('-'),
+      ['AI', 'zaSyDUMMY_PRIVATE_KEY_1234567890'].join(''),
+    ];
+    for (const label of protectedLabels) {
+      expect(() => projectImageAssetSchema.parse({ ...assetA, label })).toThrow(/protected/i);
+    }
   });
 
   it('atomically replaces the durable asset catalog through a project transaction', () => {

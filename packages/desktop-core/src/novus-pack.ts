@@ -5,7 +5,7 @@ import { basename, dirname, extname, join, posix } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
 import archiver from 'archiver';
-import { parseCanvasProject, type CanvasProject, type ProjectImageAsset } from '@agent-canvas/domain';
+import { parseCanvasProject, type CanvasProject } from '@agent-canvas/domain';
 import yauzl from 'yauzl';
 
 import { canonicalJson, sha256Canonical } from './canonical-json.js';
@@ -18,6 +18,7 @@ import {
 import { createPersistenceError, writeInitialJournalCommitBoundary } from './journal-writer.js';
 import { NodeFileSystem } from './file-system.js';
 import { readSnapshotEnvelope } from './snapshot-scheduler.js';
+import { AssetStore } from './asset-store.js';
 
 export interface NovusPackExportResult {
   readonly inventory: readonly NovusPackInventoryEntry[];
@@ -87,6 +88,11 @@ interface ZipPathTrieNode {
   terminalFile: boolean;
 }
 
+interface PackageSourceEntry {
+  readonly path: string;
+  readonly sourcePath: string;
+}
+
 const PACKAGE_MANIFEST_PATH = 'novus-package.json';
 const DEFAULT_LIMITS: NovusPackLimits = {
   maxCompressionRatio: 200,
@@ -124,13 +130,16 @@ export class NovusPackExporter {
       join(projectRoot, ...manifest.stableSnapshotPath.split('/')),
       manifest,
     );
-    const assetPaths = await resolveReferencedAssetPaths(projectRoot, snapshot.project);
-    const candidatePaths = [
-      'project.novus.json',
-      manifest.stableSnapshotPath,
-      ...assetPaths,
+    const assetEntries = await resolveReferencedAssetEntries(projectRoot, snapshot.project);
+    const candidateEntries: PackageSourceEntry[] = [
+      { path: 'project.novus.json', sourcePath: join(projectRoot, 'project.novus.json') },
+      {
+        path: manifest.stableSnapshotPath,
+        sourcePath: join(projectRoot, ...manifest.stableSnapshotPath.split('/')),
+      },
+      ...assetEntries,
     ];
-    const inventory = await Promise.all(candidatePaths.map((path) => inventoryEntry(projectRoot, path)));
+    const inventory = await Promise.all(candidateEntries.map((entry) => inventoryEntry(entry)));
     const packageManifest: NovusPackageManifest = {
       createdAt: new Date().toISOString(),
       format: 'novuspack',
@@ -143,13 +152,13 @@ export class NovusPackExporter {
     };
     const allEntries = [
       { bytes: Buffer.from(`${canonicalJson(packageManifest)}\n`), path: PACKAGE_MANIFEST_PATH },
-      ...candidatePaths.map((path) => ({ path })),
+      ...candidateEntries,
     ];
     const tempPath = join(dirname(destinationPath), `.${basename(destinationPath)}.tmp-${randomBytes(8).toString('hex')}`);
 
     try {
       await mkdir(dirname(destinationPath), { recursive: true });
-      await writeArchive(projectRoot, tempPath, allEntries);
+      await writeArchive(tempPath, allEntries);
       await this.faultHook('during_export');
       await validatePackageArchive(tempPath, DEFAULT_LIMITS);
       await rename(tempPath, destinationPath);
@@ -229,9 +238,8 @@ export function redactNovusPackDiagnostics(input: string): string {
 }
 
 async function writeArchive(
-  projectRoot: string,
   destinationPath: string,
-  entries: ReadonlyArray<{ readonly bytes?: Buffer; readonly path: string }>,
+  entries: ReadonlyArray<{ readonly bytes?: Buffer; readonly path: string; readonly sourcePath?: string }>,
 ): Promise<void> {
   const archive = archiver('zip', { forceZip64: true, zlib: { level: 9 } });
   const output = createWriteStream(destinationPath);
@@ -240,8 +248,10 @@ async function writeArchive(
   for (const entry of entries) {
     if (entry.bytes !== undefined) {
       archive.append(entry.bytes, { name: entry.path });
+    } else if (entry.sourcePath !== undefined) {
+      archive.file(entry.sourcePath, { name: entry.path });
     } else {
-      archive.file(join(projectRoot, ...entry.path.split('/')), { name: entry.path });
+      throw packageValidationError('Package source entry is unavailable');
     }
   }
 
@@ -725,39 +735,33 @@ async function readPackageSnapshotEnvelope(
   return { ...value, project };
 }
 
-async function resolveReferencedAssetPaths(projectRoot: string, project: CanvasProject): Promise<string[]> {
+async function resolveReferencedAssetEntries(
+  projectRoot: string,
+  project: CanvasProject,
+): Promise<PackageSourceEntry[]> {
   const catalogById = new Map((project.assets ?? []).map((asset) => [asset.assetId, asset]));
-  const paths: string[] = [];
+  const assetStore = new AssetStore();
+  const entries: PackageSourceEntry[] = [];
   for (const assetId of [...collectAssetIds(project)].sort()) {
     const catalogAsset = catalogById.get(assetId);
-    const assetPath = catalogAsset === undefined
-      ? await findAssetPath(projectRoot, assetId)
-      : await validateCatalogAssetFile(projectRoot, catalogAsset);
-    if (assetPath === null) {
+    const sourcePath = catalogAsset === undefined
+      ? await assetStore.resolvePath(projectRoot, assetId)
+      : await assetStore.resolvePath(
+        projectRoot,
+        assetId,
+        catalogAsset.extension,
+        catalogAsset.sha256,
+        catalogAsset.byteSize,
+      );
+    if (sourcePath === null) {
       throw packageValidationError(`Project is missing asset ${redactNovusPackDiagnostics(assetId)}`);
     }
-    paths.push(assetPath);
+    const extension = catalogAsset?.extension ?? extname(sourcePath).slice(1).toLowerCase();
+    const path = `assets/${assetId}.${extension}`;
+    validatePackagePath(path);
+    entries.push({ path, sourcePath });
   }
-  return paths;
-}
-
-async function validateCatalogAssetFile(projectRoot: string, asset: ProjectImageAsset): Promise<string> {
-  const relativePath = `assets/${asset.assetId}.${asset.extension}`;
-  let bytes: Buffer;
-  try {
-    bytes = await readFile(join(projectRoot, ...relativePath.split('/')));
-  } catch {
-    throw packageValidationError(
-      `Project is missing catalogued asset ${redactNovusPackDiagnostics(asset.assetId)}`,
-    );
-  }
-  const sha256 = createHash('sha256').update(bytes).digest('hex');
-  if (bytes.length !== asset.byteSize || sha256 !== asset.sha256) {
-    throw packageValidationError(
-      `Project catalogued asset integrity failed for ${redactNovusPackDiagnostics(asset.assetId)}`,
-    );
-  }
-  return relativePath;
+  return entries;
 }
 
 function validateReferencedAssetInventory(
@@ -793,16 +797,6 @@ function validateReferencedAssetInventory(
   }
 }
 
-async function findAssetPath(projectRoot: string, assetId: string): Promise<string | null> {
-  for (const extension of ['png', 'jpg', 'gif', 'webp']) {
-    const relativePath = `assets/${assetId}.${extension}`;
-    if (await exists(join(projectRoot, ...relativePath.split('/')))) {
-      return relativePath;
-    }
-  }
-  return null;
-}
-
 function collectAssetIds(value: unknown): ReadonlySet<string> {
   const ids = new Set<string>();
   visit(value);
@@ -827,12 +821,12 @@ function collectAssetIds(value: unknown): ReadonlySet<string> {
   }
 }
 
-async function inventoryEntry(projectRoot: string, path: string): Promise<NovusPackInventoryEntry> {
-  validatePackagePath(path);
-  const bytes = await readFile(join(projectRoot, ...path.split('/')));
+async function inventoryEntry(entry: PackageSourceEntry): Promise<NovusPackInventoryEntry> {
+  validatePackagePath(entry.path);
+  const bytes = await readFile(entry.sourcePath);
   return {
     byteSize: bytes.length,
-    path,
+    path: entry.path,
     sha256: createHash('sha256').update(bytes).digest('hex'),
   };
 }

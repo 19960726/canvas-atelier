@@ -16,6 +16,16 @@ export interface AssetMetadata {
   readonly width: number | null;
 }
 
+export interface AssetCatalogMetadata {
+  readonly assetId: string;
+  readonly byteSize: number;
+  readonly extension: AssetExtension;
+  readonly height: number | null;
+  readonly mediaType: AssetMediaType;
+  readonly sha256: string;
+  readonly width: number | null;
+}
+
 export interface StageAssetOptions {
   readonly commitReference?: (asset: AssetMetadata) => Promise<void>;
   readonly expectedSha256?: string;
@@ -37,7 +47,35 @@ const MEDIA_BY_EXTENSION: Record<AssetExtension, AssetMediaType> = {
 };
 
 export class AssetStore {
-  async list(projectRoot: string): Promise<AssetMetadata[]> {
+  async list(
+    projectRoot: string,
+    catalog?: readonly AssetCatalogMetadata[],
+  ): Promise<AssetMetadata[]> {
+    if (catalog !== undefined) {
+      const assets: AssetMetadata[] = [];
+      for (const expected of catalog) {
+        const resolvedPath = await this.resolvePath(
+          projectRoot,
+          expected.assetId,
+          expected.extension,
+          undefined,
+          expected.byteSize,
+        );
+        if (resolvedPath === null) continue;
+        assets.push({
+          byteSize: expected.byteSize,
+          extension: expected.extension,
+          height: expected.height,
+          id: expected.assetId,
+          mediaType: expected.mediaType,
+          relativePath: `assets/${expected.assetId}.${expected.extension}`,
+          sha256: expected.sha256,
+          width: expected.width,
+        });
+      }
+      return assets;
+    }
+
     const assetsRoot = await resolveConfinedProjectDirectory(projectRoot, ['assets'], false);
     if (assetsRoot === null) return [];
     let entries;

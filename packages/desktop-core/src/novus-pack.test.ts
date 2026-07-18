@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -80,6 +80,19 @@ describe('NovusPack export and import', () => {
     await mutateAsset(projectRoot, asset);
 
     await expect(new NovusPackExporter().exportRevision(projectRoot, join(tempRoot, 'rejected.novuspack')))
+      .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+  });
+
+  it('refuses to export managed images through a redirected assets directory', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const { asset, projectRoot } = await createProjectFixture(tempRoot);
+    const redirectedRoot = join(tempRoot, 'redirected-assets');
+    await mkdir(redirectedRoot);
+    await writeFile(join(redirectedRoot, `${asset.id}.png`), asset.bytes);
+    await rm(join(projectRoot, 'assets'), { recursive: true });
+    await symlink(redirectedRoot, join(projectRoot, 'assets'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    await expect(new NovusPackExporter().exportRevision(projectRoot, join(tempRoot, 'redirected.novuspack')))
       .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
   });
 

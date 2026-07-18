@@ -115,7 +115,7 @@ interface ProjectRepositoryLike {
 }
 
 interface ProjectAssetStoreLike {
-  list(projectRoot: string): Promise<AssetMetadata[]>;
+  list(projectRoot: string, catalog?: readonly ProjectImageAsset[]): Promise<AssetMetadata[]>;
   resolvePath(
     projectRoot: string,
     assetId: string,
@@ -382,6 +382,13 @@ export function createDesktopBridgeHandlers(
         'Commit requires a writable desktop session',
       );
     }
+    assertPublicBridgePayload(validated.transaction);
+    const currentProject = await repository.readCurrentProject(session.session);
+    try {
+      applyProjectTransaction(currentProject, validated.transaction);
+    } catch {
+      throw invalidRequest('Commit transaction is invalid for the current project');
+    }
 
     const ack = await session.writer.commit({
       baseRevision: validated.baseRevision,
@@ -585,7 +592,10 @@ export function createDesktopBridgeHandlers(
     const validated = validateListProjectImagesBridgeRequest(request);
     const session = requireSession(sessions, validated.sessionId);
     const project = await repository.readCurrentProject(session.session);
-    const storedAssets = new Map((await assetStore.list(session.session.root)).map((asset) => [asset.id, asset]));
+    const storedAssets = new Map((await assetStore.list(
+      session.session.root,
+      project.assets ?? [],
+    )).map((asset) => [asset.id, asset]));
     const summaries = (project.assets ?? [])
       .filter((asset) => storedAssetMatchesProjectAsset(storedAssets.get(asset.assetId), asset))
       .map((asset) => createProjectImageSummary(
@@ -2239,9 +2249,13 @@ function collectStrings(value: unknown): string[] {
 function containsProtectedBridgeText(value: string): boolean {
   return /authorization\s*:/i.test(value)
     || /\bbearer\s+[a-z0-9._~+/=\-]{8,}/i.test(value)
-    || /\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/i.test(value)
+    || /\b(?:api[_ -]?key|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|token|secret|password)\s*[:=]\s*\S+/i.test(value)
     || /\bsk-[a-z0-9_-]{8,}\b/i.test(value)
     || /\bgithub_pat_[a-z0-9_]+\b/i.test(value)
+    || /\bAIza[0-9a-z_-]{20,}\b/i.test(value)
+    || /\bAKIA[0-9A-Z]{16}\b/.test(value)
+    || /\bgh[pousr]_[a-z0-9]{20,}\b/i.test(value)
+    || /\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/i.test(value)
     || /data:image\/[a-z0-9.+-]+;base64,/i.test(value)
     || /[A-Za-z]:\\/.test(value)
     || /\\\\[^\\\s]+\\/.test(value)
