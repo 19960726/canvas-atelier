@@ -19,7 +19,7 @@ import {
 
 import type { CommitRequest } from './contracts';
 import { ApprovedSnapshotPullCoordinator } from './approved-snapshot-pull';
-import { releaseJournalState } from './journal-writer';
+import { readValidJournal, releaseJournalState } from './journal-writer';
 import { KnowledgeRefreshService } from './knowledge-refresh-service';
 import { ManagedKnowledgeStore } from './managed-knowledge-store';
 import { NodeFileSystem } from './file-system';
@@ -1973,6 +1973,65 @@ describe('desktop bridge contract', () => {
       expect(await readFile(join(projectRoot, 'journal', 'active.ndjson'), 'utf8')).toBe('');
       await expect(access(join(projectRoot, 'recovery', 'project.lock'))).rejects.toThrow();
     } finally {
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('releases a dirty write session without snapshot flush when durable reload requests no flush', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-reload-release-'));
+    const projectRoot = join(tempRoot, 'ReloadRelease.novus-project');
+    const fileSystem = new NodeFileSystem();
+    const repository = new ProjectRepository({
+      createId: createSequentialId('reload-release'),
+      fileSystem,
+      now: () => new Date('2026-07-19T00:00:00.000Z'),
+      processId: 6522,
+    });
+    const initial = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: starterProject.id,
+      projectName: starterProject.name,
+    });
+    await repository.close(initial);
+
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      fileSystem,
+      repository: {
+        close: (session) => repository.close(session),
+        open: (root, options) => repository.open(root, options),
+        openJournalWriter: (session) => repository.openJournalWriter(session),
+        readCurrentProject: (session) => repository.readCurrentProject(session),
+        readCurrentRevision: (session) => repository.readCurrentRevision(session),
+      },
+      snapshotScheduler: new SnapshotScheduler({
+        fileSystem,
+        worker: (input) => SnapshotScheduler.defaultWorker(input),
+      }),
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      await handlers.commit({}, {
+        ...makeCreatePromptRequest(starterProject.id, 'tx-reload-release', opened!.currentRevision, 'prompt-reload-release'),
+        sessionId: opened!.sessionId,
+      });
+      await handlers.closeProject({}, { flush: false, sessionId: opened!.sessionId });
+
+      const manifest = JSON.parse(await readFile(join(projectRoot, 'project.novus.json'), 'utf8')) as {
+        cleanClose: boolean;
+        stableSnapshotRevision: number;
+      };
+      const journal = await readValidJournal(join(projectRoot, 'journal', 'active.ndjson'));
+      expect(manifest).toMatchObject({ cleanClose: true, stableSnapshotRevision: 0 });
+      expect(journal.records.map((record) => record.transactionId)).toEqual(['tx-reload-release']);
+      await expect(access(join(projectRoot, 'recovery', 'project.lock'))).rejects.toThrow();
+
+      const reopened = await handlers.openProject({}, { mode: 'write' });
+      expect(reopened).toMatchObject({ mode: 'write', currentRevision: 1 });
+      await handlers.closeProject({}, { flush: false, sessionId: reopened!.sessionId });
+    } finally {
+      await handlers.closeAllProjects();
       await rm(tempRoot, { force: true, recursive: true });
     }
   });

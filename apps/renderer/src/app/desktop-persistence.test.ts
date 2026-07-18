@@ -5,6 +5,7 @@ import {
   createDesktopPersistenceClient,
   migrateLegacyProject,
   type LegacyProjectImportClient,
+  type ProjectHydrationResult,
 } from './desktop-persistence';
 import { PROJECT_STORAGE_KEY } from './project-persistence';
 
@@ -218,6 +219,147 @@ describe('desktop persistence', () => {
     expect(closeProject).toHaveBeenCalledWith({ sessionId: 'first-session' });
     expect(first).toMatchObject({ lifecycle: 'durable', project: { name: 'First durable project' }, revision: 3 });
     expect(second).toMatchObject({ lifecycle: 'durable', project: { id: 'second-project', name: '未命名画布' }, revision: 7 });
+  });
+
+  it.each(['hydrate', 'open', 'restore', 'reload', 'close'] as const)(
+    'does not let a prior session successful commit acknowledgement cross the %s boundary',
+    async (boundary) => {
+      const result = await runDesktopCommitBoundaryRace(boundary, 'success');
+
+      expect(result.commitResult).toMatchObject({
+        ok: true,
+        project: { name: 'Late first project edit' },
+        revision: 4,
+      });
+      expect(result.hydrated).toMatchObject({
+        lifecycle: result.expectedLifecycle,
+        project: result.expectedProject === null
+          ? expect.not.objectContaining({ name: 'Late first project edit' })
+          : { id: result.expectedProject.id, name: result.expectedProject.name },
+        revision: result.expectedRevision,
+      });
+    },
+  );
+
+  it.each(['hydrate', 'open', 'restore', 'reload', 'close'] as const)(
+    'does not let a prior session failed commit result cross the %s boundary',
+    async (boundary) => {
+      const result = await runDesktopCommitBoundaryRace(boundary, 'failure');
+
+      expect(result.commitResult).toMatchObject({ code: 'DISK_FULL', ok: false });
+      expect(result.hydrated).toMatchObject({
+        lifecycle: result.expectedLifecycle,
+        project: result.expectedProject === null
+          ? expect.not.objectContaining({ name: 'Late first project edit' })
+          : { id: result.expectedProject.id, name: result.expectedProject.name },
+        revision: result.expectedRevision,
+      });
+    },
+  );
+
+  it('releases the current lease without flush before reopening the durable project as writable', async () => {
+    const project = { ...createStarterProject(), name: 'Reload writable project' };
+    const events: string[] = [];
+    const openProject = vi.fn(async () => {
+      events.push('open:write');
+      return openProject.mock.calls.length === 1
+        ? createDesktopSession(project, 'first-session', 3)
+        : createDesktopSession(project, 'second-session', 4);
+    });
+    const closeProject = vi.fn(async (request: { sessionId: string; flush?: boolean }) => {
+      events.push(`close:${request.sessionId}:${request.flush === false ? 'no-flush' : 'flush'}`);
+    });
+    const commit = vi.fn(async (request: { projectId: string; transaction: { id: string } }) => ({
+      committedAt: '2026-07-19T00:00:00.000Z',
+      projectId: request.projectId,
+      revision: 5,
+      sequence: 5,
+      transactionId: request.transaction.id,
+    }));
+    const bridge = {
+      closeProject,
+      commit,
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
+    await client.openProject?.();
+    events.length = 0;
+
+    expect.soft(client.reloadDurableProject).toBeTypeOf('function');
+    if (client.reloadDurableProject === undefined) return;
+    const reloaded = await client.reloadDurableProject();
+
+    expect(events).toEqual(['close:first-session:no-flush', 'open:write']);
+    expect(reloaded).toMatchObject({ lifecycle: 'durable', project: { name: 'Reload writable project' }, revision: 4, saveStatus: 'saved' });
+    const edited = { ...project, name: 'Saved after reload' };
+    await expect(client.commit({
+      baseRevision: 4,
+      kind: 'canvas',
+      nextProject: edited,
+      previousProject: project,
+      projectId: project.id,
+      transaction: { id: 'tx-after-reload', label: 'Save after reload', operations: [] },
+    })).resolves.toMatchObject({ ok: true, revision: 5 });
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'second-session' }));
+  });
+
+  it('can retry writable reload after open rejection without closing the released session twice', async () => {
+    const project = { ...createStarterProject(), name: 'Reload retry project' };
+    const openProject = vi.fn()
+      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 3))
+      .mockRejectedValueOnce(new Error('reload open rejected'))
+      .mockResolvedValueOnce(createDesktopSession(project, 'second-session', 4));
+    const closeProject = vi.fn(async () => undefined);
+    const bridge = {
+      closeProject,
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
+    await client.openProject?.();
+
+    expect.soft(client.reloadDurableProject).toBeTypeOf('function');
+    if (client.reloadDurableProject === undefined) return;
+    await expect(client.reloadDurableProject()).rejects.toThrow('reload open rejected');
+    await expect(client.reloadDurableProject()).resolves.toMatchObject({ revision: 4, saveStatus: 'saved' });
+    expect(closeProject).toHaveBeenCalledTimes(1);
+    expect(closeProject).toHaveBeenCalledWith({ sessionId: 'first-session', flush: false });
+    expect(openProject).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not accept a read-only result as a successful durable reload', async () => {
+    const project = { ...createStarterProject(), name: 'Reload lease project' };
+    const openProject = vi.fn()
+      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 3))
+      .mockResolvedValueOnce({ ...createDesktopSession(project, 'read-only-session', 3), mode: 'read_only' as const })
+      .mockResolvedValueOnce(createDesktopSession(project, 'second-session', 4));
+    const closeProject = vi.fn(async () => undefined);
+    const bridge = {
+      closeProject,
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
+    await client.openProject?.();
+
+    expect.soft(client.reloadDurableProject).toBeTypeOf('function');
+    if (client.reloadDurableProject === undefined) return;
+    await expect(client.reloadDurableProject()).resolves.toBeNull();
+    await expect(client.reloadDurableProject()).resolves.toMatchObject({ revision: 4, saveStatus: 'saved' });
+    expect(closeProject).toHaveBeenNthCalledWith(1, { sessionId: 'first-session', flush: false });
+    expect(closeProject).toHaveBeenNthCalledWith(2, { sessionId: 'read-only-session', flush: false });
   });
 
   it('clears prior recovery candidates when the selected project recovery plan fails', async () => {
@@ -679,6 +821,128 @@ describe('desktop persistence', () => {
     });
   });
 });
+
+interface ReloadableDesktopClient {
+  reloadDurableProject?: () => Promise<ProjectHydrationResult | null>;
+}
+
+type DesktopCommitBoundary = 'close' | 'hydrate' | 'open' | 'reload' | 'restore';
+type DesktopCommitOutcome = 'failure' | 'success';
+
+async function runDesktopCommitBoundaryRace(
+  boundary: DesktopCommitBoundary,
+  outcome: DesktopCommitOutcome,
+) {
+  const firstProject = { ...createStarterProject(), name: 'First durable project' };
+  const editedFirstProject = { ...firstProject, name: 'Late first project edit' };
+  const replacementProject = boundary === 'open'
+    ? { ...createStarterProject(), id: 'second-project', name: 'Opened replacement project' }
+    : { ...firstProject, name: boundary === 'reload' ? 'Reloaded durable project' : 'Restored durable project' };
+  type CommitAck = {
+    committedAt: string;
+    projectId: string;
+    revision: number;
+    sequence: number;
+    transactionId: string;
+  };
+  let resolveCommit!: (ack: CommitAck) => void;
+  let rejectCommit!: (error: Error & { code: string }) => void;
+  const commitPromise = new Promise<CommitAck>((resolve, reject) => {
+    resolveCommit = resolve;
+    rejectCommit = reject;
+  });
+  const commit = vi.fn(() => commitPromise);
+  const openProject = vi.fn()
+    .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3));
+  if (boundary === 'open') {
+    openProject.mockResolvedValueOnce(createDesktopSession(replacementProject, 'second-session', 7));
+  } else if (boundary === 'reload') {
+    openProject.mockResolvedValueOnce(createDesktopSession(replacementProject, 'reloaded-session', 7));
+  }
+  const bridge = {
+    closeProject: vi.fn(async () => undefined),
+    commit,
+    createStablePoint: vi.fn(),
+    getRecoveryPlan: vi.fn(async ({ sessionId }: { sessionId: string }) => {
+      if (boundary === 'restore' && sessionId === 'first-session') {
+        return createRecoveryPlan(firstProject.id, 'snapshot-after', 'candidate-after', 7);
+      }
+      return {
+        action: 'auto_recover' as const,
+        candidates: [],
+        issues: [],
+        projectId: sessionId === 'second-session' ? replacementProject.id : firstProject.id,
+        recoveredRevision: null,
+        stableSnapshotId: null,
+        targetRevision: null,
+      };
+    }),
+    openProject,
+    projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+    restore: vi.fn(async () => ({
+      ...createDesktopSession(replacementProject, 'first-session', 7),
+      restoredRevision: 7,
+    })),
+  };
+  const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
+  await client.openProject?.();
+  const pendingCommitResult = client.commit({
+    baseRevision: 3,
+    kind: 'canvas',
+    nextProject: editedFirstProject,
+    previousProject: firstProject,
+    projectId: firstProject.id,
+    transaction: { id: 'tx-late-first-ack', label: 'Late first acknowledgement', operations: [] },
+  });
+  await vi.waitFor(() => {
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'first-session' }));
+  });
+
+  switch (boundary) {
+    case 'hydrate':
+      await client.hydrate();
+      break;
+    case 'open':
+      await client.openProject?.();
+      break;
+    case 'restore':
+      await client.restore('snapshot-after');
+      break;
+    case 'reload':
+      await client.reloadDurableProject?.();
+      break;
+    case 'close':
+      await client.close();
+      break;
+  }
+
+  if (outcome === 'success') {
+    resolveCommit({
+      committedAt: '2026-07-19T00:00:00.000Z',
+      projectId: firstProject.id,
+      revision: 4,
+      sequence: 4,
+      transactionId: 'tx-late-first-ack',
+    });
+  } else {
+    const error = new Error('Durable write failed') as Error & { code: string };
+    error.code = 'DISK_FULL';
+    rejectCommit(error);
+  }
+
+  const commitResult = await pendingCommitResult;
+  const hydrated = await client.hydrate();
+  const expectedProject = boundary === 'hydrate'
+    ? firstProject
+    : boundary === 'close' ? null : replacementProject;
+  return {
+    commitResult,
+    expectedLifecycle: boundary === 'close' ? 'untitled' as const : 'durable' as const,
+    expectedProject,
+    expectedRevision: boundary === 'hydrate' ? 3 : boundary === 'close' ? 0 : 7,
+    hydrated,
+  };
+}
 
 function createDesktopSession(project: ReturnType<typeof createStarterProject>, sessionId: string, revision: number) {
   return {

@@ -17,6 +17,7 @@ import { createBrowserPersistenceClient } from './desktop-persistence';
 import type {
   ProjectCommitRequest,
   ProjectCommitResult,
+  ProjectHydrationResult,
   ProjectPersistenceClient,
 } from './desktop-persistence';
 import { PROJECT_STORAGE_KEY, loadPersistedProjectBundle } from './project-persistence';
@@ -268,7 +269,7 @@ describe('project optimization memory', () => {
         edges: conflictingProject.edges,
       }],
     };
-    const openProject = vi.fn(async () => ({
+    const reloadDurableProject = vi.fn(async () => ({
         availableSnapshotIds: [],
         lifecycle: 'durable' as const,
         mode: 'desktop' as const,
@@ -283,9 +284,9 @@ describe('project optimization memory', () => {
       revision: 3,
     }));
     replaceProjectPersistenceClientForTests(createMockClient({
-      openProject,
       commit,
       listProjectImages: vi.fn(async () => [durableImage]),
+      reloadDurableProject,
     }));
     resetAppStoreForTests();
 
@@ -310,7 +311,7 @@ describe('project optimization memory', () => {
     expect(commit).toHaveBeenCalledOnce();
 
     expect(await useAppStore.getState().reloadDurableProject()).toBe(true);
-    expect(openProject).toHaveBeenCalledOnce();
+    expect(reloadDurableProject).toHaveBeenCalledOnce();
     expect(useAppStore.getState()).toMatchObject({
       canReloadDurableProject: false,
       desktopRevision: 3,
@@ -2928,6 +2929,119 @@ describe('stable module graph commits', () => {
     });
   });
 
+  it.each(['success', 'failure'] as const)(
+    'keeps the active commit boundary intact after an open cancel and applies the delayed %s acknowledgement',
+    async (resultKind) => {
+      const commitResult = deferred<ProjectCommitResult>();
+      const commit = vi.fn().mockReturnValue(commitResult.promise);
+      replaceProjectPersistenceClientForTests(createMockClient({
+        commit,
+        openProject: async () => null,
+      }));
+      const initialProject = moduleGraphProject();
+      useAppStore.setState({
+        desktopRevision: 0,
+        persistenceMode: 'desktop',
+        project: initialProject,
+        projectLifecycle: 'durable',
+        saveStatus: 'saved',
+      });
+
+      const pending = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+      expect(await useAppStore.getState().openProject()).toBe(false);
+      const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+      commitResult.resolve(resultKind === 'success'
+        ? { ok: true, project: request.nextProject, revision: 1 }
+        : { code: 'DISK_FULL', ok: false, project: request.previousProject, revision: 0 });
+
+      expect(await pending).toBe(resultKind === 'success');
+      expect(useAppStore.getState().project.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
+      expect(useAppStore.getState()).toMatchObject(resultKind === 'success'
+        ? { canRetryProjectCommit: false, desktopRevision: 1, saveStatus: 'saved' }
+        : { canRetryProjectCommit: true, desktopRevision: 0, saveErrorCode: 'DISK_FULL', saveStatus: 'error' });
+    },
+  );
+
+  it('keeps the active commit boundary intact after an open rejection', async () => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValue(commitResult.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      openProject: async () => { throw new Error('open rejected'); },
+    }));
+    useAppStore.setState({ project: moduleGraphProject(), saveStatus: 'saved' });
+
+    const pending = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    await expect(useAppStore.getState().openProject()).rejects.toThrow('open rejected');
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    commitResult.resolve({ ok: true, project: request.nextProject, revision: 1 });
+
+    await expect(pending).resolves.toBe(true);
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 1, saveStatus: 'saved' });
+  });
+
+  it('keeps the active commit boundary intact after a hydrate rejection', async () => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValue(commitResult.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => { throw new Error('hydrate rejected'); },
+    }));
+    useAppStore.setState({ project: moduleGraphProject(), saveStatus: 'saved' });
+
+    const pending = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    await expect(useAppStore.getState().hydratePersistence()).rejects.toThrow('hydrate rejected');
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    commitResult.resolve({ ok: true, project: request.nextProject, revision: 1 });
+
+    await expect(pending).resolves.toBe(true);
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 1, saveStatus: 'saved' });
+  });
+
+  it('keeps the active commit boundary intact after a stale browser restore request', async () => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValue(commitResult.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    localStorage.clear();
+    useAppStore.setState({
+      persistenceMode: 'browser',
+      project: moduleGraphProject(),
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    const pending = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    await useAppStore.getState().restoreProjectSnapshot('missing-browser-snapshot');
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    commitResult.resolve({ ok: true, project: request.nextProject, revision: 1 });
+
+    await expect(pending).resolves.toBe(true);
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 1, saveStatus: 'saved' });
+  });
+
+  it('keeps the active commit boundary intact after a desktop restore rejection', async () => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValue(commitResult.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      restore: async () => { throw new Error('restore rejected'); },
+    }));
+    useAppStore.setState({
+      persistenceMode: 'desktop',
+      project: moduleGraphProject(),
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    const pending = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    await expect(useAppStore.getState().restoreProjectSnapshot('snapshot-rejected')).rejects.toThrow('restore rejected');
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    commitResult.resolve({ ok: true, project: request.nextProject, revision: 1 });
+
+    await expect(pending).resolves.toBe(true);
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 1, saveStatus: 'saved' });
+  });
+
   it.each(
     (['success', 'failure'] as const).flatMap((resultKind) => (
       ['open', 'hydrate', 'new', 'reset', 'restore', 'close', 'discard', 'set_project'] as const
@@ -3051,6 +3165,174 @@ describe('stable module graph commits', () => {
     expect(await second).toBe(true);
   });
 
+  it('serializes a module edit and reference reorder through one stable project operation queue', async () => {
+    const firstAck = deferred<ProjectCommitResult>();
+    const commit = vi.fn()
+      .mockReturnValueOnce(firstAck.promise)
+      .mockImplementation(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: request.nextProject,
+        revision: request.baseRevision + 1,
+      }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project: moduleGraphProjectWithPlacementReferences(), saveStatus: 'saved' });
+
+    const move = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    const reorder = useAppStore.getState().commitReferenceOrder(['scene', 'product']);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(readPlacementAssetIds(useAppStore.getState().project)).toEqual(['product', 'scene']);
+
+    const firstRequest = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    firstAck.resolve({ ok: true, project: firstRequest.nextProject, revision: 1 });
+    await waitForStore(() => commit.mock.calls.length === 2);
+
+    const secondRequest = commit.mock.calls[1]![0] as ProjectCommitRequest;
+    expect(secondRequest.baseRevision).toBe(1);
+    expect(secondRequest.previousProject.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
+    expect(readPlacementAssetIds(secondRequest.nextProject)).toEqual(['scene', 'product']);
+    await expect(Promise.all([move, reorder])).resolves.toEqual([true, true]);
+  });
+
+  it('serializes two direct durable callers and rebuilds the second project from the first acknowledgement', async () => {
+    const firstAck = deferred<ProjectCommitResult>();
+    const commit = vi.fn()
+      .mockReturnValueOnce(firstAck.promise)
+      .mockImplementation(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: request.nextProject,
+        revision: request.baseRevision + 1,
+      }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const project = moduleGraphProject();
+    useAppStore.setState({ project, saveStatus: 'saved' });
+    const prompt = project.nodes.find((node) => node.id === 'prompt')!;
+    const generator = project.nodes.find((node) => node.id === 'generator')!;
+    const firstTransaction: ProjectTransaction = {
+      id: 'direct-a',
+      label: 'Move prompt directly',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: { ...prompt, position: { x: 20, y: 30 } } } }],
+    };
+    const secondTransaction: ProjectTransaction = {
+      id: 'direct-b',
+      label: 'Move generator directly',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: { ...generator, position: { x: 420, y: 30 } } } }],
+    };
+
+    const first = useAppStore.getState().commitProjectTransaction(firstTransaction);
+    const second = useAppStore.getState().commitProjectTransaction(secondTransaction);
+    expect(commit).toHaveBeenCalledTimes(1);
+
+    const firstRequest = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    firstAck.resolve({ ok: true, project: firstRequest.nextProject, revision: 1 });
+    await waitForStore(() => commit.mock.calls.length === 2);
+
+    const secondRequest = commit.mock.calls[1]![0] as ProjectCommitRequest;
+    expect(secondRequest.baseRevision).toBe(1);
+    expect(secondRequest.previousProject.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
+    expect(secondRequest.nextProject.nodes.find((node) => node.id === 'generator')?.position).toEqual({ x: 420, y: 30 });
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+  });
+
+  it('does not execute queued durable builders after the first stable operation fails', async () => {
+    const firstResult = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValue(firstResult.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const project = moduleGraphProjectWithPlacementReferences();
+    useAppStore.setState({ project, saveStatus: 'saved' });
+    const generator = project.nodes.find((node) => node.id === 'generator')!;
+    const directTransaction: ProjectTransaction = {
+      id: 'queued-direct-c',
+      label: 'Queued direct generator move',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: { ...generator, position: { x: 520, y: 60 } } } }],
+    };
+
+    const first = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    const second = useAppStore.getState().commitReferenceOrder(['scene', 'product']);
+    const third = useAppStore.getState().commitProjectTransaction(directTransaction);
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(readPlacementAssetIds(useAppStore.getState().project)).toEqual(['product', 'scene']);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'generator')?.position).toEqual({ x: 320, y: 0 });
+
+    const failedRequest = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    firstResult.resolve({
+      code: 'DISK_FULL',
+      ok: false,
+      project: failedRequest.previousProject,
+      revision: failedRequest.baseRevision,
+    });
+
+    await expect(Promise.all([first, second, third])).resolves.toEqual([false, false, false]);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: true,
+      saveErrorCode: 'DISK_FULL',
+      saveStatus: 'error',
+    });
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
+    expect(readPlacementAssetIds(useAppStore.getState().project)).toEqual(['product', 'scene']);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'generator')?.position).toEqual({ x: 320, y: 0 });
+  });
+
+  it('uses the dedicated writable reload path and preserves conflict work until replacement succeeds', async () => {
+    const durableProject = { ...moduleGraphProject(), name: 'Reloaded durable project' };
+    const reloadDurableProject = vi.fn<() => Promise<ProjectHydrationResult | null>>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: durableProject,
+        revision: 7,
+        saveStatus: 'saved',
+      });
+    const openProject = vi.fn(async () => null);
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: request.nextProject,
+      revision: request.baseRevision + 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, openProject, reloadDurableProject }));
+    const localConflictProject = {
+      ...moduleGraphProject(),
+      nodes: moduleGraphProject().nodes.map((node) => node.id === 'prompt'
+        ? { ...node, position: { x: 20, y: 30 } }
+        : node),
+    };
+    useAppStore.setState({
+      canReloadDurableProject: true,
+      desktopRevision: 4,
+      persistenceMode: 'desktop',
+      project: localConflictProject,
+      projectCommitConflictCode: 'REVISION_CONFLICT',
+      saveErrorCode: 'REVISION_CONFLICT',
+      saveStatus: 'error',
+    });
+
+    expect(await useAppStore.getState().reloadDurableProject()).toBe(false);
+    expect(useAppStore.getState()).toMatchObject({
+      canReloadDurableProject: true,
+      projectCommitConflictCode: 'REVISION_CONFLICT',
+      saveStatus: 'error',
+    });
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
+
+    expect(await useAppStore.getState().reloadDurableProject()).toBe(true);
+    expect(reloadDurableProject).toHaveBeenCalledTimes(2);
+    expect(openProject).not.toHaveBeenCalled();
+    expect(useAppStore.getState()).toMatchObject({
+      canReloadDurableProject: false,
+      desktopRevision: 7,
+      project: { name: 'Reloaded durable project' },
+      projectCommitConflictCode: null,
+      saveStatus: 'saved',
+    });
+    expect(await useAppStore.getState().commitNodePosition('prompt', { x: 60, y: 70 })).toBe(true);
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ baseRevision: 7 }));
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 8, saveStatus: 'saved' });
+  });
+
   it('reorders a many-input module port and rejects non-permutations without persistence', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -3130,6 +3412,35 @@ function moduleGraphProjectWithReferences(): CanvasProject {
       { id: 'edge-b', source: 'image-b', sourcePortId: 'image', target: 'reverse', targetPortId: 'references', order: 1 },
     ],
   });
+}
+
+function moduleGraphProjectWithPlacementReferences(): CanvasProject {
+  const project = moduleGraphProject();
+  const placement = project.nodes.find((node) => node.type === 'placement_preview');
+  if (!placement || placement.type !== 'placement_preview') throw new Error('Missing placement preview');
+  const template = placement.data.objects[0]!;
+  return parseCanvasProject({
+    ...project,
+    nodes: project.nodes.map((node) => node.id === placement.id
+      ? {
+          ...placement,
+          data: {
+            ...placement.data,
+            objects: [
+              { ...template, id: 'product', assetId: 'product', name: 'Product' },
+              { ...template, id: 'scene', assetId: 'scene', name: 'Scene', role: 'scene_composition' as const },
+            ],
+          },
+        }
+      : node),
+  });
+}
+
+function readPlacementAssetIds(project: CanvasProject): string[] {
+  const placement = project.nodes.find((node) => node.type === 'placement_preview');
+  return placement?.type === 'placement_preview'
+    ? placement.data.objects.map((object) => object.assetId)
+    : [];
 }
 
 function moduleGraphProjectWithEmptyReferences(): CanvasProject {
@@ -3279,7 +3590,11 @@ function createImmediateBrowserClient(): ProjectPersistenceClient {
   return createBrowserPersistenceClient();
 }
 
-function createMockClient(overrides: Partial<ProjectPersistenceClient>): ProjectPersistenceClient {
+type ReloadableTestProjectPersistenceClient = ProjectPersistenceClient & {
+  reloadDurableProject?: () => Promise<ProjectHydrationResult | null>;
+};
+
+function createMockClient(overrides: Partial<ReloadableTestProjectPersistenceClient>): ReloadableTestProjectPersistenceClient {
   const hydrate = overrides.hydrate ?? (async () => ({
     availableSnapshotIds: [],
     lifecycle: 'durable' as const,
@@ -3313,6 +3628,7 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient>): Project
     },
     hydrate,
     openProject: overrides.openProject,
+    reloadDurableProject: overrides.reloadDurableProject,
     importProjectImage: overrides.importProjectImage ?? (async () => null),
     listProjectImages: overrides.listProjectImages ?? (async () => []),
     restore: overrides.restore ?? (async () => {

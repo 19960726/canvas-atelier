@@ -911,10 +911,10 @@ export function createDesktopBridgeHandlers(
     return activated;
   }
   async function closeProject(_event: unknown, request: unknown): Promise<void> {
-    const validated = validateSessionRequest(request);
+    const validated = validateCloseProjectBridgeRequest(request);
     const session = requireSession(sessions, validated.sessionId);
     sessions.delete(validated.sessionId);
-    await closeBridgeSession(session);
+    await closeBridgeSession(session, { flush: validated.flush !== false });
   }
 
   async function closeAllProjects(): Promise<void> {
@@ -945,8 +945,11 @@ export function createDesktopBridgeHandlers(
     resolveProjectImagePath,
   };
 
-  async function closeBridgeSession(session: BridgeSessionContext): Promise<void> {
-    if (session.session.mode === 'write' && !session.recoveryRequired) {
+  async function closeBridgeSession(
+    session: BridgeSessionContext,
+    options: { flush?: boolean } = {},
+  ): Promise<void> {
+    if (options.flush !== false && session.session.mode === 'write' && !session.recoveryRequired) {
       await flushScheduledSnapshot(session, {
         closing: true,
         lastTransactionKind: undefined,
@@ -1926,6 +1929,17 @@ function validateOpenProjectBridgeRequest(value: unknown): OpenProjectBridgeRequ
   const record = expectPlainRecord(value);
   return {
     mode: parseMode(record.mode),
+  };
+}
+
+function validateCloseProjectBridgeRequest(value: unknown): CloseProjectBridgeRequest {
+  const record = expectPlainRecord(value);
+  if (record.flush !== undefined && record.flush !== false) {
+    throw createPersistenceError('INVALID_REQUEST', false, 'Close flush must be false when provided');
+  }
+  return {
+    ...(record.flush === false ? { flush: false as const } : {}),
+    sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
   };
 }
 

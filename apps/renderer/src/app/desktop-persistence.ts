@@ -83,6 +83,7 @@ export interface ProjectPersistenceClient {
   commit(request: ProjectCommitRequest): Promise<ProjectCommitResult>;
   hydrate(): Promise<ProjectHydrationResult>;
   openProject?(): Promise<ProjectHydrationResult | null>;
+  reloadDurableProject?(): Promise<ProjectHydrationResult | null>;
   importProjectImage(target: ProjectImageImportTarget): Promise<ProjectImageImportResult | null>;
   listProjectImages(): Promise<ProjectImageAssetSummary[]>;
   restore(snapshotId: string): Promise<ProjectRestoreResult>;
@@ -202,6 +203,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   let recoveryRequired = false;
   let availableSnapshotIds: string[] = [];
   let recoveryCandidateIds = new Map<string, string>();
+  let clientGeneration = 0;
 
   const importClient: LegacyProjectImportClient = {
     async createFromLegacyBundle(bundle) {
@@ -223,7 +225,16 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   return {
     async close() {
       if (sessionId === null) return;
-      await bridge.closeProject({ sessionId });
+      const closingSessionId = sessionId;
+      const closingProjectId = projectId;
+      const closingGeneration = clientGeneration;
+      await bridge.closeProject({ sessionId: closingSessionId });
+      if (
+        sessionId !== closingSessionId
+        || projectId !== closingProjectId
+        || clientGeneration !== closingGeneration
+      ) return;
+      clientGeneration += 1;
       sessionId = null;
       projectId = null;
       mode = 'write';
@@ -235,6 +246,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     },
     commit: desktopCommit,
     async hydrate() {
+      clientGeneration += 1;
       return {
         availableSnapshotIds: sessionId === null ? [] : availableSnapshotIds,
         lifecycle: sessionId === null ? 'untitled' : 'durable',
@@ -255,24 +267,37 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       const selected = await bridge.openProject({ mode: 'write' });
       if (selected === null) return null;
       if (previousSessionId !== null) await bridge.closeProject({ sessionId: previousSessionId });
-      sessionId = selected.sessionId;
-      projectId = selected.projectId;
-      mode = selected.mode;
-      currentProject = validateRecoveredProject(selected.project, currentProject);
-      revision = selected.currentRevision ?? selected.stableSnapshotRevision;
-      recoveryRequired = selected.recoveryRequired === true;
-      availableSnapshotIds = [];
-      recoveryCandidateIds = new Map();
-      availableSnapshotIds = await readDesktopRecoverySnapshotIds(selected.sessionId);
-      return {
-        availableSnapshotIds,
-        lifecycle: 'durable',
-        mode: 'desktop',
-        project: currentProject,
-        recoveryRequired,
-        revision,
-        saveStatus: recoveryRequired ? 'error' : mode === 'read_only' ? 'read_only' : 'saved',
-      };
+      return adoptSelectedSession(selected);
+    },
+    async reloadDurableProject() {
+      if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
+      const previousSessionId = sessionId;
+      if (previousSessionId !== null) {
+        await bridge.closeProject({
+          flush: false,
+          sessionId: previousSessionId,
+        } as Parameters<DesktopBridgeApi['closeProject']>[0] & { readonly flush: false });
+        if (sessionId === previousSessionId) {
+          clientGeneration += 1;
+          sessionId = null;
+          projectId = null;
+          mode = 'write';
+          recoveryRequired = false;
+          availableSnapshotIds = [];
+          recoveryCandidateIds = new Map();
+        }
+      }
+
+      const selected = await bridge.openProject({ mode: 'write' });
+      if (selected === null) return null;
+      if (selected.mode !== 'write' || selected.recoveryRequired === true) {
+        await bridge.closeProject({
+          flush: false,
+          sessionId: selected.sessionId,
+        } as Parameters<DesktopBridgeApi['closeProject']>[0] & { readonly flush: false });
+        return null;
+      }
+      return adoptSelectedSession(selected);
     },
     async importProjectImage(target) {
       if (sessionId === null) return null;
@@ -296,9 +321,27 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         if (candidateId === undefined) {
           throw createImportError('INVALID_REQUEST');
         }
+        const restoreSessionId = sessionId;
+        const restoreProjectId = projectId;
+        const restoreGeneration = clientGeneration;
         const previousProject = currentProject;
         const previousRevision = revision;
-        const result = await bridge.restore({ candidateId, sessionId });
+        const result = await bridge.restore({ candidateId, sessionId: restoreSessionId });
+        if (
+          sessionId !== restoreSessionId
+          || projectId !== restoreProjectId
+          || clientGeneration !== restoreGeneration
+        ) {
+          return {
+            availableSnapshotIds,
+            lifecycle: sessionId === null ? 'untitled' : 'durable',
+            project: currentProject,
+            recoveryRequired,
+            revision,
+            saveStatus: readDesktopSaveStatus(),
+          };
+        }
+        clientGeneration += 1;
         currentProject = validateRecoveredProject(result.project, previousProject);
         revision = currentProject === previousProject && result.project !== previousProject
           ? previousRevision
@@ -330,6 +373,30 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     },
   };
 
+  async function adoptSelectedSession(
+    selected: NonNullable<Awaited<ReturnType<DesktopBridgeApi['openProject']>>>,
+  ): Promise<ProjectHydrationResult> {
+    clientGeneration += 1;
+    sessionId = selected.sessionId;
+    projectId = selected.projectId;
+    mode = selected.mode;
+    currentProject = validateRecoveredProject(selected.project, currentProject);
+    revision = selected.currentRevision ?? selected.stableSnapshotRevision;
+    recoveryRequired = selected.recoveryRequired === true;
+    availableSnapshotIds = [];
+    recoveryCandidateIds = new Map();
+    availableSnapshotIds = await readDesktopRecoverySnapshotIds(selected.sessionId);
+    return {
+      availableSnapshotIds,
+      lifecycle: 'durable',
+      mode: 'desktop',
+      project: currentProject,
+      recoveryRequired,
+      revision,
+      saveStatus: recoveryRequired ? 'error' : mode === 'read_only' ? 'read_only' : 'saved',
+    };
+  }
+
   async function desktopCommit(request: ProjectCommitRequest): Promise<ProjectCommitResult> {
     if (sessionId === null || projectId === null) {
       currentProject = validateRecoveredProject(request.nextProject, request.previousProject);
@@ -355,20 +422,33 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         revision,
       };
     }
+    const commitSessionId = sessionId;
+    const commitProjectId = projectId;
+    const commitGeneration = clientGeneration;
     try {
       const ack = await bridge.commit({
         baseRevision: request.baseRevision,
         kind: request.kind,
-        projectId,
-        sessionId,
+        projectId: commitProjectId,
+        sessionId: commitSessionId,
         transaction: request.transaction,
       });
-      currentProject = validateRecoveredProject(request.nextProject, currentProject);
-      revision = ack.revision;
+      const acknowledgedProject = validateRecoveredProject(
+        request.nextProject,
+        clientGeneration === commitGeneration ? currentProject : request.previousProject,
+      );
+      if (
+        sessionId === commitSessionId
+        && projectId === commitProjectId
+        && clientGeneration === commitGeneration
+      ) {
+        currentProject = acknowledgedProject;
+        revision = ack.revision;
+      }
       return {
         ok: true,
-        project: currentProject,
-        revision,
+        project: acknowledgedProject,
+        revision: ack.revision,
       };
     } catch (error) {
       const code = readErrorCode(error);
@@ -394,6 +474,10 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       recoveryCandidateIds = new Map();
       return [];
     }
+  }
+
+  function readDesktopSaveStatus(): Extract<ProjectSaveStatus, 'error' | 'read_only' | 'saved'> {
+    return recoveryRequired ? 'error' : mode === 'read_only' ? 'read_only' : 'saved';
   }
 }
 

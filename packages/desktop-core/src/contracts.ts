@@ -210,6 +210,7 @@ export interface ImportPackBridgeResult extends BridgeSessionSummary {
 }
 
 export interface CloseProjectBridgeRequest {
+  readonly flush?: false;
   readonly sessionId: string;
 }
 

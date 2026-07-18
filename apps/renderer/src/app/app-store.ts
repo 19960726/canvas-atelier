@@ -72,8 +72,7 @@ import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
 import { runtimeProfile } from './runtime-profile';
 
 let planSequence = 0;
-let referenceOrderCommitTail: Promise<void> | null = null;
-let moduleGraphCommitTail: Promise<void> | null = null;
+let stableProjectCommitTail: Promise<void> | null = null;
 let pendingFailedProjectCommit: ProjectCommitRequest | null = null;
 let activeProjectCommitToken: ProjectCommitToken | null = null;
 let projectPersistenceGeneration = 0;
@@ -90,13 +89,14 @@ let pendingAgentConfirmation: PendingAgentConfirmation | null = null;
 let pendingAgentJobRetry: Promise<void> | null = null;
 const AGENT_MODEL_CONVERSATION_ID = 'agent-conversation-shared';
 const projectAutosave = createAutosaveController<CanvasProject>({
-  commit: async (draft) => {
-    const state = useAppStore.getState();
-    return state.commitProjectTransaction(createIdleSyncTransaction(draft.project), {
-      kind: 'system',
-      nextProject: draft.project,
-    });
-  },
+  commit: async (draft) => enqueueStableProjectOperation(
+    (partial) => useAppStore.setState(partial),
+    () => useAppStore.getState(),
+    async (commitNow) => {
+      const project = draft.project;
+      return commitNow(createIdleSyncTransaction(project), { kind: 'system', nextProject: project });
+    },
+  ),
   delayMs: AUTOSAVE_IDLE_MS,
   isReadOnly: () => {
     const state = useAppStore.getState();
@@ -131,6 +131,17 @@ interface CommitProjectTransactionOptions {
   kind?: ProjectCommitRequest['kind'];
   nextProject?: CanvasProject;
 }
+
+interface CommitProjectTransactionNowOptions extends CommitProjectTransactionOptions {
+  retryRequest?: ProjectCommitRequest;
+}
+
+type CommitProjectTransactionNow = (
+  transaction: ProjectTransaction,
+  options?: CommitProjectTransactionNowOptions,
+) => Promise<boolean>;
+
+type StableProjectOperation = (commitNow: CommitProjectTransactionNow) => boolean | Promise<boolean>;
 
 interface RecordUserFeedbackInput {
   title: string;
@@ -245,16 +256,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
   },
-  addModuleNode: (moduleType, position) => enqueueModuleGraphCommit(async () => {
+  addModuleNode: (moduleType, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const suffix = `${Date.now()}-${planSequence++}`;
     const node = createCanvasModuleNode(`module-${moduleType}-${suffix}`, moduleType, position);
-    return get().commitProjectTransaction({
+    return commitNow({
       id: `add-module-${suffix}`,
       label: `Add ${getCanvasModuleDefinition(moduleType).displayName}`,
       operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
     });
   }),
-  connectModulePorts: (connection) => enqueueModuleGraphCommit(async () => {
+  connectModulePorts: (connection) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     const sourceId = connection?.source;
     const targetId = connection?.target;
@@ -302,12 +313,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     try {
       const nextProject = applyProjectTransaction(state.project, transaction);
-      return get().commitProjectTransaction(transaction, { nextProject });
+      return commitNow(transaction, { nextProject });
     } catch {
       return false;
     }
   }),
-  commitNodePosition: (nodeId, position) => enqueueModuleGraphCommit(async () => {
+  commitNodePosition: (nodeId, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     if (!isNonEmptyString(nodeId) || !isFinitePosition(position)) return false;
     const node = state.project.nodes.find((candidate) => candidate.id === nodeId);
@@ -323,12 +334,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     try {
       const nextProject = applyProjectTransaction(state.project, transaction);
-      return get().commitProjectTransaction(transaction, { nextProject });
+      return commitNow(transaction, { nextProject });
     } catch {
       return false;
     }
   }),
-  toggleNodeLock: (nodeId) => enqueueModuleGraphCommit(async () => {
+  toggleNodeLock: (nodeId) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     if (!isNonEmptyString(nodeId)) return false;
     const node = state.project.nodes.find((candidate) => candidate.id === nodeId);
@@ -341,9 +352,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
     };
     const nextProject = applyProjectTransaction(state.project, transaction);
-    return get().commitProjectTransaction(transaction, { nextProject });
+    return commitNow(transaction, { nextProject });
   }),
-  reorderModuleInput: (targetNodeId, targetPortId, edgeIds) => enqueueModuleGraphCommit(async () => {
+  reorderModuleInput: (targetNodeId, targetPortId, edgeIds) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     if (!isNonEmptyString(targetNodeId) || !isNonEmptyString(targetPortId)
       || !edgeIds.every(isNonEmptyString)) return false;
@@ -384,12 +395,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     try {
       const nextProject = applyProjectTransaction(state.project, transaction);
-      return get().commitProjectTransaction(transaction, { nextProject });
+      return commitNow(transaction, { nextProject });
     } catch {
       return false;
     }
   }),
-  selectProjectImageForModule: (nodeId, assetId) => enqueueModuleGraphCommit(async () => {
+  selectProjectImageForModule: (nodeId, assetId) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     const node = getModuleNode(state.project.nodes, nodeId);
     const asset = (state.project.assets ?? []).find((candidate) => candidate.assetId === assetId);
@@ -405,9 +416,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
     };
     const nextProject = applyProjectTransaction(state.project, transaction);
-    return get().commitProjectTransaction(transaction, { nextProject });
+    return commitNow(transaction, { nextProject });
   }),
-  setCanvasLibrarySelection: (nodeId, assetIds) => enqueueModuleGraphCommit(async () => {
+  setCanvasLibrarySelection: (nodeId, assetIds) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     const node = getModuleNode(state.project.nodes, nodeId);
     if (!node || node.data.moduleType !== 'canvas_library') return false;
@@ -430,7 +441,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
     };
     const nextProject = applyProjectTransaction(state.project, transaction);
-    return get().commitProjectTransaction(transaction, { nextProject });
+    return commitNow(transaction, { nextProject });
   }),
   closePersistence: async () => {
     if (get().projectLifecycle === 'untitled') return false;
@@ -488,45 +499,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false;
     }
   },
-  commitProjectTransaction: async (transaction, options = {}) => {
-    cancelPendingProjectSave();
-    if (pendingFailedProjectCommit !== null) return false;
-    if (get().projectCommitConflictCode !== null || get().recoveryRequired) return false;
-    const before = get().project;
-    const nextProject = options.nextProject ?? applyProjectTransaction(before, transaction);
-    const kind = options.kind ?? 'canvas';
-    if (get().saveStatus === 'read_only') {
-      set({ project: before, saveErrorCode: 'CONCURRENT_WRITER', saveStatus: 'read_only' });
-      return false;
-    }
-
-    const request: ProjectCommitRequest = {
-      baseRevision: get().desktopRevision,
-      kind,
-      nextProject,
-      previousProject: before,
-      projectId: before.id,
-      transaction,
-    };
-    set({
-      canReloadDurableProject: false,
-      canRetryProjectCommit: false,
-      project: nextProject,
-      projectCommitConflictCode: null,
-      saveErrorCode: null,
-      saveStatus: 'saving',
-    });
-    return executeProjectCommit(request, set, get);
-  },
-  retryFailedProjectCommit: async () => {
-    const request = pendingFailedProjectCommit;
-    if (request === null || !get().canRetryProjectCommit || get().saveStatus === 'read_only' || get().recoveryRequired) return false;
-    set({ canRetryProjectCommit: false, saveErrorCode: null, saveStatus: 'saving' });
-    return executeProjectCommit(request, set, get, true);
-  },
+  commitProjectTransaction: (transaction, options = {}) => enqueueStableProjectOperation(
+    set,
+    get,
+    (commitNow) => commitNow(transaction, options),
+  ),
+  retryFailedProjectCommit: () => enqueueStableProjectOperation(
+    set,
+    get,
+    async (commitNow) => {
+      const request = pendingFailedProjectCommit;
+      if (request === null || !get().canRetryProjectCommit || get().saveStatus === 'read_only' || get().recoveryRequired) return false;
+      return commitNow(request.transaction, { retryRequest: request });
+    },
+    { allowPendingFailure: true },
+  ),
   commitReferenceOrder: (assetIds) => {
     const requestedAssetIds = [...assetIds];
-    return enqueueReferenceOrderCommit(async () => {
+    return enqueueStableProjectOperation(set, get, async (commitNow) => {
       const state = get();
       const placementNode = state.project.nodes.find((node) => node.type === 'placement_preview');
       if (!placementNode || placementNode.type !== 'placement_preview') return false;
@@ -554,7 +544,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         label: 'Reorder Agent references',
         operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
       };
-      return get().commitProjectTransaction(transaction, { kind: 'canvas', nextProject });
+      return commitNow(transaction, { kind: 'canvas', nextProject });
     });
   },
   configureKnowledgeBase: async (knowledgeBaseId, displayName) => {
@@ -564,13 +554,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     knowledgeClient.getLease(runId, capability, references, citations)
   ),
   hydratePersistence: async () => {
-    invalidateProjectPersistenceBoundary();
-    cancelPendingProjectSave();
-    clearPendingFailedProjectCommit();
     const jobStore = getModelJobStore();
     const hydrated = await projectPersistenceClient.hydrate();
     const imageState = await readProjectImagesForHydration();
     const modelJobs = await jobStore.listJobs();
+    invalidateProjectPersistenceBoundary();
+    cancelPendingProjectSave();
+    clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds: hydrated.availableSnapshotIds,
       canReloadDurableProject: false,
@@ -593,11 +583,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().recoveryRequired) return false;
     const openProject = projectPersistenceClient.openProject;
     if (openProject === undefined) return false;
-    invalidateProjectPersistenceBoundary();
     const opened = await openProject();
     if (opened === null) return false;
-    clearPendingFailedProjectCommit();
     const imageState = await readProjectImagesForHydration();
+    invalidateProjectPersistenceBoundary();
+    cancelPendingProjectSave();
+    clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds: opened.availableSnapshotIds,
       canReloadDurableProject: false,
@@ -618,7 +609,36 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   reloadDurableProject: async () => {
     if (!get().canReloadDurableProject) return false;
-    return get().openProject();
+    const reloadDurableProject = projectPersistenceClient.reloadDurableProject;
+    if (reloadDurableProject === undefined) return false;
+    let opened;
+    try {
+      opened = await reloadDurableProject();
+    } catch {
+      return false;
+    }
+    if (opened === null || opened.recoveryRequired === true || opened.saveStatus !== 'saved') return false;
+    const imageState = await readProjectImagesForHydration();
+    invalidateProjectPersistenceBoundary();
+    cancelPendingProjectSave();
+    clearPendingFailedProjectCommit();
+    set({
+      availableSnapshotIds: opened.availableSnapshotIds,
+      canReloadDurableProject: false,
+      canRetryProjectCommit: false,
+      desktopRevision: opened.revision,
+      persistenceMode: opened.mode,
+      project: opened.project,
+      projectLifecycle: opened.lifecycle,
+      projectCommitConflictCode: null,
+      recoveryRequired: false,
+      ...imageState,
+      projectImageImportingNodeId: null,
+      saveErrorCode: null,
+      saveStatus: 'saved',
+      undoStack: [],
+    });
+    return true;
   },
   newWorkflow: async () => {
     if (get().recoveryRequired) return;
@@ -797,7 +817,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
 
-      const latestState = get();
       const confirmedPlan = modelProfile
         ? {
             ...requestedPlan,
@@ -819,25 +838,37 @@ export const useAppStore = create<AppState>((set, get) => ({
           : current
       ));
       if (!isActiveAgentConfirmation(get(), confirmation, ['committing'])) return;
-      const result = confirmDomainPlan(latestState.project, {
-        ...committingPlan,
+      const committed: { value: {
+          memoryEntry: ProjectMemoryEntry;
+          project: CanvasProject;
+          result: ReturnType<typeof confirmDomainPlan>;
+        } | null } = { value: null };
+      const saved = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+        if (!isActiveAgentConfirmation(get(), confirmation, ['committing'])) return false;
+        const latestState = get();
+        const result = confirmDomainPlan(latestState.project, {
+          ...committingPlan,
+        });
+        const memoryEntry = createOptimizationMemory(latestState.project, result.project, committingPlan, now);
+        const project = {
+          ...result.project,
+          projectMemory: appendProjectMemoryEntry(result.project.projectMemory, memoryEntry),
+        };
+        const transaction = buildProjectTransaction({
+          canvasTransaction: committingPlan.transaction,
+          label: committingPlan.transaction.label,
+          memoryEntry,
+          transactionId: committingPlan.transaction.id,
+        });
+        const persisted = await commitNow(transaction, { kind: 'agent', nextProject: project });
+        if (persisted) committed.value = { memoryEntry, project, result };
+        return persisted;
       });
-      const memoryEntry = createOptimizationMemory(latestState.project, result.project, committingPlan, now);
-      const project = {
-        ...result.project,
-        projectMemory: appendProjectMemoryEntry(result.project.projectMemory, memoryEntry),
-      };
-      const transaction = buildProjectTransaction({
-        canvasTransaction: committingPlan.transaction,
-        label: committingPlan.transaction.label,
-        memoryEntry,
-        transactionId: committingPlan.transaction.id,
-      });
-      const saved = await get().commitProjectTransaction(transaction, { kind: 'agent', nextProject: project });
-      if (!saved) {
+      if (!saved || committed.value === null) {
         restoreWaitingPlanAfterCommitFailure(set, confirmation, committingPlan);
         return;
       }
+      const { memoryEntry, project, result } = committed.value;
       if (!isActiveCommittedAgentConfirmation(get(), confirmation, committingPlan, project)) return;
 
       let modelJobs = get().modelJobs;
@@ -887,25 +918,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     await prepareSkillCandidateReviewForStore(get, set, candidateId, { markPreparing: true });
   },
   promoteProjectMemory: async (memoryId) => {
-    const state = get();
-    if (state.project.skillPromotionCandidates.some((candidate) => candidate.sourceProjectMemoryId === memoryId)) return;
-    const memory = state.project.projectMemory.find((entry) => entry.id === memoryId);
-    if (!memory || !isPromotableMemory(state.project.projectMemory, memory)) return;
+    let candidateId: string | null = null;
+    const committed = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+      const state = get();
+      if (state.project.skillPromotionCandidates.some((candidate) => candidate.sourceProjectMemoryId === memoryId)) return false;
+      const memory = state.project.projectMemory.find((entry) => entry.id === memoryId);
+      if (!memory || !isPromotableMemory(state.project.projectMemory, memory)) return false;
 
-    const candidate = markSkillCandidatePreparing(withPromotionKnowledgeTarget(createSkillPromotionCandidate(memory, {
-      candidateId: `skill-candidate-${Date.now()}-${planSequence++}`,
-      createdAt: new Date().toISOString(),
-    }), state.knowledgeBases), new Date().toISOString());
-    const candidates = [...state.project.skillPromotionCandidates, candidate];
-    const project = { ...state.project, skillPromotionCandidates: candidates };
-    const transaction: ProjectTransaction = {
-      id: `skill-promotion-${candidate.id}`,
-      label: 'Promote project memory candidate',
-      operations: [{ kind: 'set_skill_candidates', candidates }],
-    };
-    const committed = await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
-    if (!committed) return;
-    await prepareSkillCandidateReviewForStore(get, set, candidate.id, { markPreparing: false });
+      const candidate = markSkillCandidatePreparing(withPromotionKnowledgeTarget(createSkillPromotionCandidate(memory, {
+        candidateId: `skill-candidate-${Date.now()}-${planSequence++}`,
+        createdAt: new Date().toISOString(),
+      }), state.knowledgeBases), new Date().toISOString());
+      candidateId = candidate.id;
+      const candidates = [...state.project.skillPromotionCandidates, candidate];
+      const project = { ...state.project, skillPromotionCandidates: candidates };
+      const transaction: ProjectTransaction = {
+        id: `skill-promotion-${candidate.id}`,
+        label: 'Promote project memory candidate',
+        operations: [{ kind: 'set_skill_candidates', candidates }],
+      };
+      return commitNow(transaction, { kind: 'system', nextProject: project });
+    });
+    if (!committed || candidateId === null) return;
+    await prepareSkillCandidateReviewForStore(get, set, candidateId, { markPreparing: false });
   },
   retryModelJob: async (jobId) => {
     await getModelJobStore().retryJob(jobId);
@@ -921,7 +956,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     return pendingAgentJobRetry;
   },
-  recordUserFeedback: async (input) => {
+  recordUserFeedback: (input) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     if (containsProtectedRendererPayload(input)) return false;
     const state = get();
     const previousRevision = state.project.projectMemory[state.project.projectMemory.length - 1]?.projectRevision ?? 0;
@@ -960,16 +995,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         { kind: 'set_skill_candidates', candidates: skillPromotionCandidates },
       ],
     };
-    return get().commitProjectTransaction(transaction, { kind: 'agent', nextProject: project });
-  },
+    return commitNow(transaction, { kind: 'agent', nextProject: project });
+  }),
   restoreProjectSnapshot: async (snapshotId) => {
     const state = get();
-    invalidateProjectPersistenceBoundary();
     if (state.persistenceMode === 'desktop') {
-      cancelPendingProjectSave();
       const restored = await projectPersistenceClient.restore(snapshotId);
-      clearPendingFailedProjectCommit();
       const imageState = await readProjectImagesForHydration();
+      invalidateProjectPersistenceBoundary();
+      cancelPendingProjectSave();
+      clearPendingFailedProjectCommit();
       set({
         availableSnapshotIds: restored.availableSnapshotIds,
         canReloadDurableProject: false,
@@ -986,135 +1021,162 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const bundle = loadPersistedProjectBundle();
-    const snapshot = bundle?.snapshots.find((entry) => entry.id === snapshotId);
-    if (!snapshot || snapshot.project.id !== state.project.id) return;
+    const candidateBundle = loadPersistedProjectBundle();
+    const candidateSnapshot = candidateBundle?.snapshots.find((entry) => entry.id === snapshotId);
+    if (!candidateSnapshot || candidateSnapshot.project.id !== state.project.id) return;
+    await enqueueStableProjectOperation(set, get, async (commitNow) => {
+      const browserState = get();
+      const bundle = loadPersistedProjectBundle();
+      const snapshot = bundle?.snapshots.find((entry) => entry.id === snapshotId);
+      if (!snapshot || snapshot.project.id !== browserState.project.id) return false;
 
-    const currentProject = sanitizeProjectSkillPromotionCandidates(state.project);
-    const snapshotMemoryIds = new Set(snapshot.project.projectMemory.map((memory) => memory.id));
-    const supersedesMemoryIds = currentProject.projectMemory
-      .filter((memory) => !snapshotMemoryIds.has(memory.id))
-      .map((memory) => memory.id);
-    const restored = {
-      ...snapshot.project,
-      projectMemory: currentProject.projectMemory,
-      skillPromotionCandidates: currentProject.skillPromotionCandidates,
-    };
-    const memoryEntry = createSnapshotRestoreMemory(restored, snapshotId, supersedesMemoryIds, new Date().toISOString());
-    const projectMemory = appendProjectMemoryEntry(restored.projectMemory, memoryEntry);
-    const project = {
-      ...restored,
-      projectMemory,
-      skillPromotionCandidates: filterValidSkillPromotionCandidates(
-        restored.id,
+      const currentProject = sanitizeProjectSkillPromotionCandidates(browserState.project);
+      const snapshotMemoryIds = new Set(snapshot.project.projectMemory.map((memory) => memory.id));
+      const supersedesMemoryIds = currentProject.projectMemory
+        .filter((memory) => !snapshotMemoryIds.has(memory.id))
+        .map((memory) => memory.id);
+      const restored = {
+        ...snapshot.project,
+        projectMemory: currentProject.projectMemory,
+        skillPromotionCandidates: currentProject.skillPromotionCandidates,
+      };
+      const memoryEntry = createSnapshotRestoreMemory(restored, snapshotId, supersedesMemoryIds, new Date().toISOString());
+      const projectMemory = appendProjectMemoryEntry(restored.projectMemory, memoryEntry);
+      const project = {
+        ...restored,
         projectMemory,
-        restored.skillPromotionCandidates,
-      ),
-    };
-    const transaction: ProjectTransaction = {
-      id: `restore-${snapshotId}`,
-      label: 'Restore project snapshot',
-      operations: [
-        { kind: 'replace_canvas_state', nodes: project.nodes, edges: project.edges },
-        { kind: 'append_project_memory', entry: memoryEntry },
-        { kind: 'set_skill_candidates', candidates: project.skillPromotionCandidates },
-      ],
-    };
-    const saved = await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
-    if (!saved) return;
-    set({ agentPlan: null, undoStack: [] });
+        skillPromotionCandidates: filterValidSkillPromotionCandidates(
+          restored.id,
+          projectMemory,
+          restored.skillPromotionCandidates,
+        ),
+      };
+      const transaction: ProjectTransaction = {
+        id: `restore-${snapshotId}`,
+        label: 'Restore project snapshot',
+        operations: [
+          { kind: 'replace_canvas_state', nodes: project.nodes, edges: project.edges },
+          { kind: 'append_project_memory', entry: memoryEntry },
+          { kind: 'set_skill_candidates', candidates: project.skillPromotionCandidates },
+        ],
+      };
+      const saved = await commitNow(transaction, { kind: 'system', nextProject: project });
+      if (saved) set({ agentPlan: null, undoStack: [] });
+      return saved;
+    });
   },
   undo: async () => {
-    const state = get();
-    const undoEntry = state.undoStack[state.undoStack.length - 1];
-    if (!undoEntry) return;
+    await enqueueStableProjectOperation(set, get, async (commitNow) => {
+      const state = get();
+      const undoEntry = state.undoStack[state.undoStack.length - 1];
+      if (!undoEntry) return false;
 
-    const currentProject = sanitizeProjectSkillPromotionCandidates(state.project);
-    const reverted = revertTransaction(currentProject, undoEntry.transaction);
-    const now = new Date().toISOString();
-    const memoryEntry = createUndoMemory(reverted, undoEntry.memoryId, undoEntry.transaction.id, now);
-    const projectMemory = appendProjectMemoryEntry(reverted.projectMemory, memoryEntry);
-    const project = {
-      ...reverted,
-      projectMemory,
-      skillPromotionCandidates: filterValidSkillPromotionCandidates(
-        reverted.id,
+      const currentProject = sanitizeProjectSkillPromotionCandidates(state.project);
+      const reverted = revertTransaction(currentProject, undoEntry.transaction);
+      const now = new Date().toISOString();
+      const memoryEntry = createUndoMemory(reverted, undoEntry.memoryId, undoEntry.transaction.id, now);
+      const projectMemory = appendProjectMemoryEntry(reverted.projectMemory, memoryEntry);
+      const project = {
+        ...reverted,
         projectMemory,
-        reverted.skillPromotionCandidates,
-      ),
-    };
-    const transaction = buildProjectTransaction({
-      canvasTransaction: undoEntry.transaction,
-      candidates: project.skillPromotionCandidates,
-      label: undoEntry.transaction.label,
-      memoryEntry,
-      transactionId: undoEntry.transaction.id,
+        skillPromotionCandidates: filterValidSkillPromotionCandidates(
+          reverted.id,
+          projectMemory,
+          reverted.skillPromotionCandidates,
+        ),
+      };
+      const transaction = buildProjectTransaction({
+        canvasTransaction: undoEntry.transaction,
+        candidates: project.skillPromotionCandidates,
+        label: undoEntry.transaction.label,
+        memoryEntry,
+        transactionId: undoEntry.transaction.id,
+      });
+      const saved = await commitNow(transaction, { kind: 'system', nextProject: project });
+      if (saved) {
+        set((current) => ({
+          agentPlan: null,
+          undoStack: current.undoStack.slice(0, -1),
+        }));
+      }
+      return saved;
     });
-    const saved = await get().commitProjectTransaction(transaction, { kind: 'system', nextProject: project });
-    if (!saved) return;
-    set((current) => ({
-      agentPlan: null,
-      undoStack: current.undoStack.slice(0, -1),
-    }));
   },
 }));
 
 async function importProjectImageWithTarget(target: ProjectImageImportTarget): Promise<boolean> {
-  const before = useAppStore.getState();
-  if (
-    before.projectImageImportingNodeId !== null
-    || before.saveStatus === 'read_only'
-    || before.canRetryProjectCommit
-    || before.recoveryRequired
-  ) return false;
-  const node = before.project.nodes.find((candidate) => candidate.id === target.nodeId);
-  if (node === undefined) return false;
-  if (target.kind === 'module' && (
-    node.type !== 'module'
-    || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')
-  )) return false;
-  if (target.kind === 'placement_reference' && node.type !== 'placement_preview') return false;
+  return enqueueStableProjectOperation(
+    (partial) => useAppStore.setState(partial),
+    () => useAppStore.getState(),
+    async () => {
+      const generation = projectPersistenceGeneration;
+      const before = useAppStore.getState();
+      if (
+        before.projectImageImportingNodeId !== null
+        || before.saveStatus === 'read_only'
+        || before.canRetryProjectCommit
+        || before.recoveryRequired
+      ) return false;
+      const node = before.project.nodes.find((candidate) => candidate.id === target.nodeId);
+      if (node === undefined) return false;
+      if (target.kind === 'module' && (
+        node.type !== 'module'
+        || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')
+      )) return false;
+      if (target.kind === 'placement_reference' && node.type !== 'placement_preview') return false;
 
-  const previousSaveStatus = before.saveStatus;
-  useAppStore.setState({
-    projectImageError: null,
-    projectImageImportingNodeId: target.nodeId,
-    saveErrorCode: null,
-    saveStatus: 'saving',
-  });
-  try {
-    const result = await projectPersistenceClient.importProjectImage(target);
-    if (result === null) {
+      const previousSaveStatus = before.saveStatus;
       useAppStore.setState({
-        projectImageImportingNodeId: null,
-        saveStatus: previousSaveStatus,
+        projectImageError: null,
+        projectImageImportingNodeId: target.nodeId,
+        saveErrorCode: null,
+        saveStatus: 'saving',
       });
-      return false;
-    }
-    const current = useAppStore.getState();
-    useAppStore.setState({
-      desktopRevision: result.revision,
-      project: result.project,
-      projectImages: upsertProjectImageSummary(current.projectImages, result.asset),
-      projectImageError: null,
-      projectImageImportingNodeId: null,
-      saveErrorCode: null,
-      saveStatus: 'saved',
-    });
-    return true;
-  } catch (error) {
-    const code = readErrorCode(error);
-    if (code === 'REVISION_CONFLICT') {
-      const hydrated = await projectPersistenceClient.hydrate().catch(() => null);
-      if (hydrated !== null) {
-        const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
+      try {
+        const result = await projectPersistenceClient.importProjectImage(target);
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        if (result === null) {
+          useAppStore.setState({
+            projectImageImportingNodeId: null,
+            saveStatus: previousSaveStatus,
+          });
+          return false;
+        }
+        const current = useAppStore.getState();
         useAppStore.setState({
-          availableSnapshotIds: hydrated.availableSnapshotIds,
-          desktopRevision: hydrated.revision,
-          persistenceMode: hydrated.mode,
-          project: hydrated.project,
-          projectLifecycle: hydrated.lifecycle,
-          projectImages,
+          desktopRevision: result.revision,
+          project: result.project,
+          projectImages: upsertProjectImageSummary(current.projectImages, result.asset),
+          projectImageError: null,
+          projectImageImportingNodeId: null,
+          saveErrorCode: null,
+          saveStatus: 'saved',
+        });
+        return true;
+      } catch (error) {
+        const code = readErrorCode(error);
+        if (code === 'REVISION_CONFLICT') {
+          const hydrated = await projectPersistenceClient.hydrate().catch(() => null);
+          if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+          if (hydrated !== null) {
+            const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
+            useAppStore.setState({
+              availableSnapshotIds: hydrated.availableSnapshotIds,
+              desktopRevision: hydrated.revision,
+              persistenceMode: hydrated.mode,
+              project: hydrated.project,
+              projectLifecycle: hydrated.lifecycle,
+              projectImages,
+              projectImageError: code,
+              projectImageImportingNodeId: null,
+              saveErrorCode: code,
+              saveStatus: 'error',
+            });
+            return false;
+          }
+        }
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        useAppStore.setState({
           projectImageError: code,
           projectImageImportingNodeId: null,
           saveErrorCode: code,
@@ -1122,15 +1184,8 @@ async function importProjectImageWithTarget(target: ProjectImageImportTarget): P
         });
         return false;
       }
-    }
-    useAppStore.setState({
-      projectImageError: code,
-      projectImageImportingNodeId: null,
-      saveErrorCode: code,
-      saveStatus: 'error',
-    });
-    return false;
-  }
+    },
+  );
 }
 
 function upsertProjectImageSummary(
@@ -1183,28 +1238,78 @@ export function replaceModelJobStorageForTests(storage: ModelJobStorage): void {
   modelJobStore = null;
 }
 
-function enqueueReferenceOrderCommit(operation: () => Promise<boolean>): Promise<boolean> {
-  const result = referenceOrderCommitTail === null
-    ? operation()
-    : referenceOrderCommitTail.then(operation);
-  const tail = result.then(() => undefined, () => undefined);
-  referenceOrderCommitTail = tail;
-  void tail.finally(() => {
-    if (referenceOrderCommitTail === tail) referenceOrderCommitTail = null;
+function enqueueStableProjectOperation(
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+  operation: StableProjectOperation,
+  options: { allowPendingFailure?: boolean } = {},
+): Promise<boolean> {
+  const generation = projectPersistenceGeneration;
+  const run = async (): Promise<boolean> => {
+    if (generation !== projectPersistenceGeneration) return false;
+    if (!options.allowPendingFailure && pendingFailedProjectCommit !== null) return false;
+    if (get().projectCommitConflictCode !== null || get().recoveryRequired) return false;
+    return operation((transaction, commitOptions = {}) => (
+      commitProjectTransactionNow(transaction, commitOptions, set, get)
+    ));
+  };
+  const result = stableProjectCommitTail === null
+    ? run()
+    : stableProjectCommitTail.then(run);
+  let tail: Promise<void>;
+  const settled = result.finally(() => {
+    if (stableProjectCommitTail === tail) stableProjectCommitTail = null;
   });
-  return result;
+  tail = settled.then(() => undefined, () => undefined);
+  stableProjectCommitTail = tail;
+  return settled;
 }
 
-function enqueueModuleGraphCommit(operation: () => Promise<boolean>): Promise<boolean> {
-  const result = moduleGraphCommitTail === null
-    ? operation()
-    : moduleGraphCommitTail.then(operation);
-  const tail = result.then(() => undefined, () => undefined);
-  moduleGraphCommitTail = tail;
-  void tail.finally(() => {
-    if (moduleGraphCommitTail === tail) moduleGraphCommitTail = null;
+async function commitProjectTransactionNow(
+  transaction: ProjectTransaction,
+  options: CommitProjectTransactionNowOptions,
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+): Promise<boolean> {
+  cancelPendingProjectSave();
+  if (options.retryRequest !== undefined) {
+    const request = options.retryRequest;
+    if (
+      pendingFailedProjectCommit !== request
+      || !get().canRetryProjectCommit
+      || get().saveStatus === 'read_only'
+      || get().recoveryRequired
+    ) return false;
+    set({ canRetryProjectCommit: false, saveErrorCode: null, saveStatus: 'saving' });
+    return executeProjectCommit(request, set, get, true);
+  }
+  if (pendingFailedProjectCommit !== null) return false;
+  if (get().projectCommitConflictCode !== null || get().recoveryRequired) return false;
+  const before = get().project;
+  const nextProject = options.nextProject ?? applyProjectTransaction(before, transaction);
+  const kind = options.kind ?? 'canvas';
+  if (get().saveStatus === 'read_only') {
+    set({ project: before, saveErrorCode: 'CONCURRENT_WRITER', saveStatus: 'read_only' });
+    return false;
+  }
+
+  const request: ProjectCommitRequest = {
+    baseRevision: get().desktopRevision,
+    kind,
+    nextProject,
+    previousProject: before,
+    projectId: before.id,
+    transaction,
+  };
+  set({
+    canReloadDurableProject: false,
+    canRetryProjectCommit: false,
+    project: nextProject,
+    projectCommitConflictCode: null,
+    saveErrorCode: null,
+    saveStatus: 'saving',
   });
-  return result;
+  return executeProjectCommit(request, set, get);
 }
 
 export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' } = { project: 'starter' }): void {
@@ -1214,8 +1319,7 @@ export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' }
   pendingProjectFlushBoundary = null;
   clearPendingAgentConfirmation();
   pendingAgentJobRetry = null;
-  referenceOrderCommitTail = null;
-  moduleGraphCommitTail = null;
+  stableProjectCommitTail = null;
   invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
   modelJobUnsubscribe?.();
@@ -1429,6 +1533,7 @@ function invalidateActiveProjectCommit(): ProjectCommitRequest | null {
 function invalidateProjectPersistenceBoundary(): void {
   projectPersistenceGeneration += 1;
   activeProjectCommitToken = null;
+  stableProjectCommitTail = null;
 }
 
 async function readProjectImagesForHydration(): Promise<Pick<AppState, 'projectImages' | 'projectImageError'>> {
@@ -1747,17 +1852,19 @@ async function prepareSkillCandidateReviewForStore(
   options: { markPreparing: boolean },
 ): Promise<void> {
   if (options.markPreparing) {
-    const state = get();
-    const candidate = findPreparingCandidate(state.project.skillPromotionCandidates, candidateId);
-    if (candidate === null) return;
-    const preparing = markSkillCandidatePreparing(candidate, new Date().toISOString());
-    const candidates = replaceSkillCandidate(state.project.skillPromotionCandidates, preparing);
-    const project = { ...state.project, skillPromotionCandidates: candidates };
-    const committed = await get().commitProjectTransaction({
-      id: `prepare-skill-preview-${candidateId}-${Date.now()}`,
-      label: 'Prepare skill candidate preview',
-      operations: [{ kind: 'set_skill_candidates', candidates }],
-    }, { kind: 'system', nextProject: project });
+    const committed = await enqueueStableProjectOperation(set, get, async (commitNow) => {
+      const state = get();
+      const candidate = findPreparingCandidate(state.project.skillPromotionCandidates, candidateId);
+      if (candidate === null) return false;
+      const preparing = markSkillCandidatePreparing(candidate, new Date().toISOString());
+      const candidates = replaceSkillCandidate(state.project.skillPromotionCandidates, preparing);
+      const project = { ...state.project, skillPromotionCandidates: candidates };
+      return commitNow({
+        id: `prepare-skill-preview-${candidateId}-${Date.now()}`,
+        label: 'Prepare skill candidate preview',
+        operations: [{ kind: 'set_skill_candidates', candidates }],
+      }, { kind: 'system', nextProject: project });
+    });
     if (!committed) return;
   }
 
@@ -1808,6 +1915,7 @@ async function prepareSkillCandidateReviewForStore(
     if (isStaleSkillPreparationError(error)) return;
     await persistSkillCandidatePreparationFailure(
       get,
+      set,
       candidateId,
       baseRevision,
       candidateFingerprint,
@@ -1818,23 +1926,26 @@ async function prepareSkillCandidateReviewForStore(
 
 async function persistSkillCandidatePreparationFailure(
   get: () => AppState,
+  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState> | AppState)) => void,
   candidateId: string,
   baseRevision: number,
   candidateFingerprint: string,
   error: string,
 ): Promise<void> {
-  const state = get();
-  if (!canApplyPreparedSkillCandidate(state, candidateId, baseRevision, candidateFingerprint)) return;
-  const candidate = state.project.skillPromotionCandidates.find((item) => item.id === candidateId);
-  if (candidate === undefined) return;
-  const failed = markSkillCandidatePreparationFailed(candidate, error);
-  const candidates = replaceSkillCandidate(state.project.skillPromotionCandidates, failed);
-  const project = { ...state.project, skillPromotionCandidates: candidates };
-  await get().commitProjectTransaction({
-    id: `prepare-skill-preview-failed-${candidateId}-${Date.now()}`,
-    label: 'Record skill candidate preview failure',
-    operations: [{ kind: 'set_skill_candidates', candidates }],
-  }, { kind: 'system', nextProject: project });
+  await enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    if (!canApplyPreparedSkillCandidate(state, candidateId, baseRevision, candidateFingerprint)) return false;
+    const candidate = state.project.skillPromotionCandidates.find((item) => item.id === candidateId);
+    if (candidate === undefined) return false;
+    const failed = markSkillCandidatePreparationFailed(candidate, error);
+    const candidates = replaceSkillCandidate(state.project.skillPromotionCandidates, failed);
+    const project = { ...state.project, skillPromotionCandidates: candidates };
+    return commitNow({
+      id: `prepare-skill-preview-failed-${candidateId}-${Date.now()}`,
+      label: 'Record skill candidate preview failure',
+      operations: [{ kind: 'set_skill_candidates', candidates }],
+    }, { kind: 'system', nextProject: project });
+  });
 }
 
 function findPreparingCandidate(candidates: SkillPromotionCandidate[], candidateId: string): SkillPromotionCandidate | null {
@@ -2369,18 +2480,23 @@ async function flushPendingProjectSave(
     if (get().saveStatus === 'read_only') return saved;
     if (hadDraft && !saved) return false;
 
-    const stablePoint = await projectPersistenceClient.stablePoint();
-    const state = get();
-    set({
-      availableSnapshotIds: stablePoint.availableSnapshotIds,
-      desktopRevision: stablePoint.revision,
-      project: saved ? stablePoint.project : state.project,
-      saveErrorCode: null,
-      saveStatus: state.projectLifecycle === 'untitled'
-        ? 'pending'
-        : saved || state.saveStatus === 'saved' ? 'saved' : state.saveStatus,
+    return enqueueStableProjectOperation(set, get, async () => {
+      const generation = projectPersistenceGeneration;
+      const projectId = get().project.id;
+      const stablePoint = await projectPersistenceClient.stablePoint();
+      if (generation !== projectPersistenceGeneration || get().project.id !== projectId) return false;
+      const state = get();
+      set({
+        availableSnapshotIds: stablePoint.availableSnapshotIds,
+        desktopRevision: stablePoint.revision,
+        project: saved ? stablePoint.project : state.project,
+        saveErrorCode: null,
+        saveStatus: state.projectLifecycle === 'untitled'
+          ? 'pending'
+          : saved || state.saveStatus === 'saved' ? 'saved' : state.saveStatus,
+      });
+      return true;
     });
-    return true;
   })();
   const trackedFlushBoundary = flushBoundary.finally(() => {
     if (pendingProjectFlushBoundary === trackedFlushBoundary) pendingProjectFlushBoundary = null;
