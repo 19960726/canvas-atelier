@@ -8,10 +8,24 @@ export interface PanZoomFrameMetrics {
   markCount: number;
 }
 
+export interface InteractionStallEvidence {
+  edgeCount: number;
+  maxStallMs: number;
+  measurementSupported: boolean;
+  nodeCount: number;
+  observerTypes: string[];
+  operation: string;
+  sampleCount: number;
+  theme: 'light' | 'dark';
+  viewport: string;
+  zeroSample: boolean;
+}
+
 type E2EState = {
   commitCount: number;
   durableProjectContainsTransientImageUrl: boolean;
   edgeCount: number;
+  nodeCount: number;
   moduleTypes: CanvasModuleType[];
   modelJobs: Array<{
     conversationId: string;
@@ -171,6 +185,99 @@ export async function medianPanZoomFrameInterval(page: Page): Promise<PanZoomFra
   };
 }
 
+export async function startInteractionStallObserver(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const previous = window.__NOVUS_STALL_OBSERVER__;
+    previous?.observers.forEach((observer) => observer.disconnect());
+    const state: NonNullable<typeof window.__NOVUS_STALL_OBSERVER__> = {
+      entries: [],
+      observers: [],
+      observerTypes: [],
+      windows: [],
+    };
+    const recordEntries = (entries: PerformanceEntry[]) => {
+      for (const entry of entries) {
+        state.entries.push({
+          duration: entry.duration,
+          entryType: entry.entryType,
+          startTime: entry.startTime,
+        });
+      }
+    };
+    const record = (list: PerformanceObserverEntryList) => recordEntries(list.getEntries());
+    try {
+      const observer = new PerformanceObserver(record);
+      observer.observe({ type: 'longtask', buffered: true });
+      state.observers.push(observer);
+      state.observerTypes.push('longtask');
+    } catch {
+      // Event Timing remains available on browser variants without Long Tasks.
+    }
+    try {
+      const observer = new PerformanceObserver(record);
+      observer.observe({ type: 'event', buffered: true, durationThreshold: 16 } as PerformanceObserverInit);
+      state.observers.push(observer);
+      state.observerTypes.push('event');
+    } catch {
+      // Long Tasks remain available on browser variants without Event Timing.
+    }
+    window.__NOVUS_STALL_OBSERVER__ = state;
+  });
+}
+
+export async function measureInteractionStalls(
+  page: Page,
+  operation: string,
+  action: () => Promise<void>,
+): Promise<void> {
+  const startTime = await page.evaluate(() => performance.now());
+  await action();
+  await page.evaluate(async ({ operationName, operationStart }) => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    window.__NOVUS_STALL_OBSERVER__?.windows.push({
+      operation: operationName,
+      startTime: operationStart,
+      endTime: performance.now(),
+    });
+  }, { operationName: operation, operationStart: startTime });
+}
+
+export async function finishInteractionStallObserver(
+  page: Page,
+  graph: Pick<InteractionStallEvidence, 'edgeCount' | 'nodeCount' | 'theme' | 'viewport'>,
+): Promise<InteractionStallEvidence[]> {
+  const operations = await page.evaluate(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const state = window.__NOVUS_STALL_OBSERVER__;
+    if (!state) return [];
+    for (const observer of state.observers) {
+      for (const entry of observer.takeRecords()) {
+        state.entries.push({
+          duration: entry.duration,
+          entryType: entry.entryType,
+          startTime: entry.startTime,
+        });
+      }
+      observer.disconnect();
+    }
+    return state.windows.map((windowEntry) => {
+      const durations = state.entries
+        .filter((entry) => entry.startTime <= windowEntry.endTime
+          && entry.startTime + entry.duration >= windowEntry.startTime)
+        .map((entry) => entry.duration);
+      return {
+        maxStallMs: durations.length === 0 ? 0 : Math.max(...durations),
+        measurementSupported: state.observerTypes.length > 0,
+        observerTypes: [...state.observerTypes],
+        operation: windowEntry.operation,
+        sampleCount: durations.length,
+        zeroSample: durations.length === 0,
+      };
+    });
+  });
+  return operations.map((operation) => ({ ...graph, ...operation }));
+}
+
 export async function expectVisibleMainRegion(page: Page): Promise<void> {
   await expect(page.getByTestId('canvas-stage')).toBeVisible();
   const visibleArea = await page.getByTestId('canvas-stage').evaluate((element) => {
@@ -223,6 +330,12 @@ declare global {
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
       seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;
+    };
+    __NOVUS_STALL_OBSERVER__?: {
+      entries: Array<{ duration: number; entryType: string; startTime: number }>;
+      observers: PerformanceObserver[];
+      observerTypes: string[];
+      windows: Array<{ endTime: number; operation: string; startTime: number }>;
     };
   }
 }

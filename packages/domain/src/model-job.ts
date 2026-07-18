@@ -20,6 +20,8 @@ export const modelJobSchema = z.object({
   displayName: z.string().min(1).optional(),
   conversationId: z.string().min(1).optional(),
   referenceAssetIds: z.array(idSchema).default([]),
+  referenceSnapshotRevision: z.number().int().nonnegative().optional(),
+  referenceSnapshotFingerprint: z.string().regex(/^[a-f0-9]{16}$/u).optional(),
   prompt: z.string().optional(),
   progress: z.number().min(0).max(1).optional(),
   createdAt: z.string().datetime().optional(),
@@ -47,6 +49,8 @@ export interface ConfirmedModelJobInput {
   modelId: string;
   conversationId: string;
   referenceAssetIds: string[];
+  referenceSnapshotRevision?: number;
+  referenceSnapshotFingerprint?: string;
   prompt?: string;
   createdAt?: string;
   queueIndex?: number;

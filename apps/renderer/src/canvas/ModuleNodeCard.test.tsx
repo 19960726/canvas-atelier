@@ -29,6 +29,30 @@ afterEach(() => {
 });
 
 describe('ModuleNodeCard', () => {
+  it('offers an explicit reversible position lock control without coupling it to execution state', () => {
+    const baseNode = createCanvasModuleNode('reverse', 'reverse_agent', { x: 0, y: 0 });
+    const node = { ...baseNode, data: { ...baseNode.data, execution: { state: 'running' as const } } };
+    const toggleNodeLock = vi.fn(async () => true);
+    useAppStore.setState({ toggleNodeLock });
+
+    const { rerender } = render(
+      <ReactFlowProvider>
+        <ModuleNodeCard id={node.id} data={{ ...node.data, locked: false }} selected={false} />
+      </ReactFlowProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '锁定位置 / Lock position' }));
+    expect(toggleNodeLock).toHaveBeenCalledWith('reverse');
+
+    rerender(
+      <ReactFlowProvider>
+        <ModuleNodeCard id={node.id} data={{ ...node.data, locked: true }} selected={false} />
+      </ReactFlowProvider>,
+    );
+    expect(screen.getByRole('button', { name: '解锁位置 / Unlock position' })).toBeVisible();
+    expect(screen.getByText('运行中')).toBeVisible();
+  });
+
   it('renders stable typed handles from the registry', () => {
     const node = createCanvasModuleNode('generator', 'image_generation', { x: 0, y: 0 });
 

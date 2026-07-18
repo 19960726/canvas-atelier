@@ -2009,6 +2009,86 @@ describe('desktop bridge contract', () => {
     await expect(handlers.closeProject({}, { sessionId: second!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
   });
 
+  it('releases an acquired write session when open initialization fails before registration', async () => {
+    const projectRoot = ['C:', 'redacted', 'OpenFailure.novus-project'].join(String.fromCharCode(92));
+    const opened = createOpenedSession(projectRoot);
+    const close = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => opened.root) },
+      repository: {
+        close,
+        open: vi.fn(async () => opened),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => { throw new Error('summary unavailable'); }),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(),
+      } as unknown as SnapshotScheduler,
+    });
+
+    await expect(handlers.openProject({}, { mode: 'write' })).rejects.toThrow(/summary unavailable/i);
+    expect(close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledWith(opened);
+  });
+
+  it('opens a corrupt stable snapshot as an explicit recovery preview with valid candidates', async () => {
+    const projectRoot = ['C:', 'redacted', 'CorruptRecovery.novus-project'].join(String.fromCharCode(92));
+    const candidatePath = ['C:', 'redacted', 'candidate.json'].join(String.fromCharCode(92));
+    const opened = createOpenedSession(projectRoot);
+    const recoveredProject = { ...starterProject, name: 'Recovered preview' };
+    const close = vi.fn(async () => undefined);
+    const corruptError = Object.assign(new Error('Stable snapshot is corrupt'), {
+      code: 'CORRUPT_SNAPSHOT',
+      retryable: false,
+    });
+    const scan = vi.fn(async () => ({
+      action: 'choose_recovery' as const,
+      candidates: [{
+        path: candidatePath,
+        project: recoveredProject,
+        revision: 3,
+        snapshotId: 'snapshot-recovered',
+        tailStatus: 'complete' as const,
+      }],
+      issues: ['corrupt_snapshot'],
+      projectId: starterProject.id,
+      recoveredRevision: 3,
+      stableSnapshotId: 'snapshot-recovered',
+      targetRevision: 3,
+    }));
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('session'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => opened.root) },
+      recoveryScanner: { scan },
+      repository: {
+        close,
+        open: vi.fn(async () => opened),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => { throw corruptError; }),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(),
+      } as unknown as SnapshotScheduler,
+    });
+
+    const result = await handlers.openProject({}, { mode: 'write' });
+    expect(result).toMatchObject({
+      currentRevision: 3,
+      project: recoveredProject,
+      recoveryRequired: true,
+      stableSnapshotId: 'snapshot-recovered',
+      stableSnapshotRevision: 3,
+    });
+    const plan = await handlers.getRecoveryPlan({}, { sessionId: result!.sessionId });
+    expect(plan).toMatchObject({ action: 'choose_recovery', recoveredRevision: 3 });
+    expect(plan.candidates).toHaveLength(1);
+
+    await handlers.closeAllProjects();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('keeps opaque recovery candidate ids stable through one restore and rejects replay, foreign, stale, and invalid candidates', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-'));
     const projectRoot = join(tempRoot, 'Demo.novus-project');

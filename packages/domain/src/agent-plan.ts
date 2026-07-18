@@ -30,6 +30,13 @@ export interface AgentPlanConfirmations {
   models?: string;
 }
 
+export interface ExecutionReferenceSnapshot {
+  readonly schemaVersion: 1;
+  readonly projectRevision: number;
+  readonly fingerprint: string;
+  readonly references: readonly Readonly<import('./knowledge-context').OrderedReference>[];
+}
+
 export interface AgentCanvasPlan {
   id: string;
   state: AgentPlanState;
@@ -42,6 +49,7 @@ export interface AgentCanvasPlan {
   modelRouteDisplayName?: string;
   modelId?: string;
   modelConversationId?: string;
+  referenceSnapshot?: ExecutionReferenceSnapshot;
   jobCount: number;
 }
 

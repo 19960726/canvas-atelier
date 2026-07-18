@@ -265,6 +265,7 @@ export interface DesktopIpcMainLike {
 interface BridgeSessionContext {
   assets: Map<string, ProjectImageAsset>;
   imageImportInFlight: boolean;
+  recoveryRequired: boolean;
   session: OpenedProjectSession;
   sessionId: string;
   recoveryCandidatePaths: Map<string, string>;
@@ -352,22 +353,55 @@ export function createDesktopBridgeHandlers(
     }
 
     const opened = await requireMethod(repository, 'open')(root, { mode: validated.mode });
-    const writer = opened.mode === 'write'
-      ? await requireMethod(repository, 'openJournalWriter')(opened)
-      : null;
     const sessionId = createId();
-    const summary = await summarizeSession(repository, sessionId, opened);
-    sessions.set(sessionId, {
-      assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
-      imageImportInFlight: false,
-      recoveryCandidatePaths: new Map(),
-      session: opened,
-      sessionId,
-      writer,
-    });
-    await reconcileStagedKnowledgeTransitionsForProject(opened);
+    let registered = false;
+    try {
+      let summary: BridgeSessionSummary;
+      try {
+        summary = await summarizeSession(repository, sessionId, opened);
+      } catch (error) {
+        if (!hasPersistenceErrorCode(error, 'CORRUPT_SNAPSHOT')) throw error;
+        const scan = await recoveryScanner.scan(opened.root);
+        const candidate = selectHighestCompleteRecoveryCandidate(scan, opened.manifest.projectId);
+        if (candidate === null) throw error;
+        summary = summarizeRecoveryPreview(sessionId, opened, candidate);
+        sessions.set(sessionId, {
+          assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+          imageImportInFlight: false,
+          recoveryCandidatePaths: new Map(),
+          recoveryRequired: true,
+          session: opened,
+          sessionId,
+          writer: null,
+        });
+        registered = true;
+        return summary;
+      }
 
-    return summary;
+      const writer = opened.mode === 'write'
+        ? await requireMethod(repository, 'openJournalWriter')(opened)
+        : null;
+      sessions.set(sessionId, {
+        assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+        imageImportInFlight: false,
+        recoveryCandidatePaths: new Map(),
+        recoveryRequired: false,
+        session: opened,
+        sessionId,
+        writer,
+      });
+      registered = true;
+      await reconcileStagedKnowledgeTransitionsForProject(opened);
+      return summary;
+    } catch (error) {
+      if (registered) sessions.delete(sessionId);
+      try {
+        await requireMethod(repository, 'close')(opened);
+      } catch {
+        // Preserve the open initialization failure for the caller.
+      }
+      throw error;
+    }
   }
 
   async function commit(_event: unknown, request: unknown): Promise<CommitAck> {
@@ -446,7 +480,8 @@ export function createDesktopBridgeHandlers(
       ...session.session,
       manifest: restoredManifest,
     };
-    if (session.writer !== null) {
+    session.recoveryRequired = false;
+    if (session.session.mode === 'write') {
       releaseJournalState(join(session.session.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), session.session.manifest.projectId);
       session.writer = await requireMethod(repository, 'openJournalWriter')(session.session);
     }
@@ -500,25 +535,38 @@ export function createDesktopBridgeHandlers(
 
     const result = await packImporter.importTo(packagePath, destinationRoot);
     const opened = await requireMethod(repository, 'open')(result.projectRoot, { mode: validated.mode });
-    const writer = opened.mode === 'write'
-      ? await requireMethod(repository, 'openJournalWriter')(opened)
-      : null;
     const sessionId = createId();
-    const summary = await summarizeSession(repository, sessionId, opened);
-    sessions.set(sessionId, {
-      assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
-      imageImportInFlight: false,
-      recoveryCandidatePaths: new Map(),
-      session: opened,
-      sessionId,
-      writer,
-    });
-    await reconcileStagedKnowledgeTransitionsForProject(opened);
+    let registered = false;
+    try {
+      const summary = await summarizeSession(repository, sessionId, opened);
+      const writer = opened.mode === 'write'
+        ? await requireMethod(repository, 'openJournalWriter')(opened)
+        : null;
+      sessions.set(sessionId, {
+        assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+        imageImportInFlight: false,
+        recoveryCandidatePaths: new Map(),
+        recoveryRequired: false,
+        session: opened,
+        sessionId,
+        writer,
+      });
+      registered = true;
+      await reconcileStagedKnowledgeTransitionsForProject(opened);
 
-    return {
-      ...summary,
-      importedRevision: result.importedRevision,
-    };
+      return {
+        ...summary,
+        importedRevision: result.importedRevision,
+      };
+    } catch (error) {
+      if (registered) sessions.delete(sessionId);
+      try {
+        await requireMethod(repository, 'close')(opened);
+      } catch {
+        // Preserve the import initialization failure for the caller.
+      }
+      throw error;
+    }
   }
 
   async function importProjectImage(
@@ -596,11 +644,20 @@ export function createDesktopBridgeHandlers(
     const validated = validateListProjectImagesBridgeRequest(request);
     const session = requireSession(sessions, validated.sessionId);
     const project = await repository.readCurrentProject(session.session);
-    const storedAssets = new Map((await assetStore.list(
+    const projectAssets = project.assets ?? [];
+    const storedAssetList = await assetStore.list(
       session.session.root,
-      project.assets ?? [],
-    )).map((asset) => [asset.id, asset]));
-    const summaries = (project.assets ?? [])
+      projectAssets,
+    );
+    if (storedAssetList.length !== projectAssets.length) {
+      throw createPersistenceError(
+        'MISSING_ASSET',
+        true,
+        'A managed project asset is missing or failed integrity verification',
+      );
+    }
+    const storedAssets = new Map(storedAssetList.map((asset) => [asset.id, asset]));
+    const summaries = projectAssets
       .filter((asset) => storedAssetMatchesProjectAsset(storedAssets.get(asset.assetId), asset))
       .map((asset) => createProjectImageSummary(
         asset,
@@ -880,7 +937,7 @@ export function createDesktopBridgeHandlers(
   };
 
   async function closeBridgeSession(session: BridgeSessionContext): Promise<void> {
-    if (session.session.mode === 'write') {
+    if (session.session.mode === 'write' && !session.recoveryRequired) {
       await flushScheduledSnapshot(session, {
         closing: true,
         lastTransactionKind: undefined,
@@ -1587,6 +1644,49 @@ async function summarizeSession(
     stableSnapshotId: session.manifest.stableSnapshotId,
     stableSnapshotRevision: session.manifest.stableSnapshotRevision,
   };
+}
+
+function summarizeRecoveryPreview(
+  sessionId: string,
+  session: OpenedProjectSession,
+  candidate: RecoveryCandidate,
+): BridgeSessionSummary {
+  return {
+    currentRevision: candidate.revision,
+    mode: session.mode,
+    project: candidate.project,
+    projectId: session.manifest.projectId,
+    projectName: session.manifest.projectName,
+    recoveryRequired: true,
+    sessionId,
+    stableSnapshotId: candidate.snapshotId,
+    stableSnapshotRevision: candidate.revision,
+  };
+}
+
+function selectHighestCompleteRecoveryCandidate(
+  scan: RecoveryScanResult,
+  projectId: string,
+): RecoveryCandidate | null {
+  const candidates = [...scan.candidates]
+    .filter((candidate) => candidate.tailStatus === 'complete')
+    .sort((left, right) => right.revision - left.revision || left.snapshotId.localeCompare(right.snapshotId));
+  for (const candidate of candidates) {
+    try {
+      const project = parseCanvasProject(candidate.project);
+      if (project.id === projectId && scan.projectId === projectId) return { ...candidate, project };
+    } catch {
+      // Continue to the next complete candidate.
+    }
+  }
+  return null;
+}
+
+function hasPersistenceErrorCode(error: unknown, code: PersistenceError['code']): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === code;
 }
 
 async function readCurrentRevision(

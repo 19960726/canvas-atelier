@@ -19,6 +19,8 @@ export interface ModelJobRequest {
   displayName: string;
   modelId: string;
   referenceAssetIds: string[];
+  referenceSnapshotRevision?: number;
+  referenceSnapshotFingerprint?: string;
 }
 
 export interface EnqueueConfirmedJobsInput {

@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Image as ImageIcon } from 'lucide-react';
+import { Image as ImageIcon, LockKeyhole, LockOpen } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -97,7 +97,7 @@ const ModulePort = memo(function ModulePort({ port }: ModulePortProps) {
 
 interface ModuleNodeCardProps {
   id: string;
-  data: CanvasModuleNodeData;
+  data: CanvasModuleNodeData & { locked?: boolean };
   selected?: boolean;
 }
 
@@ -112,6 +112,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const importImageForModule = useAppStore((state) => state.importImageForModule);
   const selectProjectImageForModule = useAppStore((state) => state.selectProjectImageForModule);
   const setCanvasLibrarySelection = useAppStore((state) => state.setCanvasLibrarySelection);
+  const toggleNodeLock = useAppStore((state) => state.toggleNodeLock);
   const [libraryQuery, setLibraryQuery] = useState('');
   const hasImageControls = data.moduleType === 'image_input'
     || data.moduleType === 'upload_image'
@@ -146,6 +147,19 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           <strong>{definition.primaryName}</strong>
           <span>{definition.secondaryName}</span>
         </span>
+        <button
+          type="button"
+          className="module-node__lock nodrag"
+          aria-label={data.locked ? '解锁位置 / Unlock position' : '锁定位置 / Lock position'}
+          title={data.locked ? '解锁位置 / Unlock position' : '锁定位置 / Lock position'}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            void toggleNodeLock(id);
+          }}
+        >
+          {data.locked ? <LockKeyhole size={14} /> : <LockOpen size={14} />}
+        </button>
       </header>
       {data.moduleType === 'image_input' || data.moduleType === 'upload_image' ? (
         <ProjectImageControl

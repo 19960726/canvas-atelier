@@ -3,7 +3,7 @@ import { constants, createReadStream } from 'node:fs';
 import { access, lstat, mkdir, open, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, extname, isAbsolute, join, parse, relative } from 'node:path';
 
-import { createPersistenceError } from './journal-writer.js';
+import { createPersistenceError, normalizePersistenceError } from './journal-writer.js';
 
 export interface AssetMetadata {
   readonly byteSize: number;
@@ -216,7 +216,7 @@ export class AssetStore {
         await handle.close().catch(() => undefined);
       }
       await rm(tempPath, { force: true }).catch(() => undefined);
-      throw error;
+      throw normalizePersistenceError(error, 'Managed project asset write failed');
     }
   }
 }

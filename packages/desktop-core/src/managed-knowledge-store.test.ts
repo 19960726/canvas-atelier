@@ -193,7 +193,11 @@ describe('ManagedKnowledgeStore', () => {
     });
     const next = createSnapshot('# version 2', 2);
 
-    await expect(failingStore.publish(next)).rejects.toThrow(/current metadata/i);
+    await expect(failingStore.publish(next)).rejects.toMatchObject({
+      code: 'DURABLE_WRITE_FAILED',
+      message: 'Atomic project write failed: durable storage operation failed',
+      retryable: true,
+    });
 
     const snapshotPath = join(
       appDataRoot,
@@ -497,7 +501,11 @@ describe('ManagedKnowledgeStore', () => {
       expectedActiveContentHash: first.contentHash,
       sourceDeviceId: 'device-a',
       stagedAt: '2026-07-16T01:00:00.000Z',
-    })).rejects.toThrow(/injected staged transition failure/i);
+    })).rejects.toMatchObject({
+      code: 'DURABLE_WRITE_FAILED',
+      message: 'Atomic project write failed: durable storage operation failed',
+      retryable: true,
+    });
 
     const restarted = new ManagedKnowledgeStore({ appDataRoot });
     await expect(restarted.hasUnresolvedKnowledgeTransition('scene-skill')).resolves.toBe(true);

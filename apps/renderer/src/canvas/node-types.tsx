@@ -136,7 +136,8 @@ export function toFlowNodes(nodes: readonly CanvasNode[]): Node<CanvasFlowNodeDa
     id: node.id,
     type: node.type,
     position: node.position,
-    data: getViewData(node),
+    draggable: node.locked !== true,
+    data: { ...getViewData(node), locked: node.locked === true },
   }));
 }
 

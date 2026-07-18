@@ -432,6 +432,22 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByLabelText('上传材质光照参考')).toBeInTheDocument();
   });
 
+  it('keeps a missing managed asset error visible until the user retries image hydration', async () => {
+    const listProjectImages = vi.fn(async () => []);
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ listProjectImages }));
+    resetAppStoreForTests();
+    useAppStore.setState({ projectImageError: 'MISSING_ASSET', projectImages: [] });
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByLabelText('摆放预览'));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('MISSING_ASSET');
+    fireEvent.click(screen.getByRole('button', { name: '重试项目图片加载' }));
+
+    await waitFor(() => expect(listProjectImages).toHaveBeenCalledOnce());
+    expect(screen.queryByText('MISSING_ASSET')).not.toBeInTheDocument();
+  });
+
   it('imports a confined managed reference without allocating renderer object URLs', async () => {
     const project = createStarterProject();
     const placement = project.nodes.find((node) => node.type === 'placement_preview');

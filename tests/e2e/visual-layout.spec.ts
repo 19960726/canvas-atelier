@@ -56,7 +56,7 @@ for (const viewport of viewports) {
     await expect(knowledge).toBeVisible();
     await expect(knowledge.getByTestId('knowledge-status-detail')).toBeVisible();
 
-    await page.getByRole('button', { name: 'Modules' }).click();
+    await page.getByTestId('tool-modules').click();
     await assertNoTrackedRegionsOverlap(page, [
       'module-library',
       'agent-panel',

@@ -31,6 +31,18 @@ describe('ReferenceOrderList', () => {
     expect(onCommitOrder).toHaveBeenCalledWith(['scene', 'product', 'prop']);
   });
 
+  it('shows stable ordinals and visible reference responsibilities', () => {
+    render(<ReferenceOrderList references={references} onPreviewOrder={vi.fn()} onCommitOrder={vi.fn()} />);
+
+    const items = screen.getAllByTestId('reference-order-item');
+    expect(items[0]).toHaveTextContent('01');
+    expect(items[0]).toHaveTextContent('产品 / Product');
+    expect(items[1]).toHaveTextContent('02');
+    expect(items[1]).toHaveTextContent('场景 / Scene');
+    expect(items[2]).toHaveTextContent('03');
+    expect(items[2]).toHaveTextContent('道具 / Prop');
+  });
+
   it('restores persisted order when a drag ends outside a valid drop target', () => {
     const onPreviewOrder = vi.fn();
     const onCommitOrder = vi.fn();

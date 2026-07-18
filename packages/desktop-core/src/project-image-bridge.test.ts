@@ -229,6 +229,51 @@ describe('project image bridge', () => {
     expect(chooseProjectImage).not.toHaveBeenCalled();
   });
 
+  it('reports a referenced but missing managed asset explicitly without leaking its project path', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-image-missing-');
+    const projectRoot = join(tempRoot, 'MissingImage.novus-project');
+    const missingAssetId = '0123456789abcdef';
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6144 });
+    const created = await repository.create(projectRoot, {
+      project: {
+        ...imageProject(),
+        assets: [{
+          assetId: missingAssetId,
+          byteSize: pngBytes.length,
+          extension: 'png',
+          height: 3,
+          label: 'Missing managed image',
+          mediaType: 'image/png',
+          origin: 'imported',
+          sha256: `${missingAssetId}${'0'.repeat(48)}`,
+          width: 2,
+        }],
+      },
+      projectId: 'image-project-missing',
+      projectName: 'MissingImage',
+    });
+    await repository.close(created);
+    const handlers = createDesktopBridgeHandlers({
+      createId: sequentialId('bridge'),
+      dialogs: {
+        chooseProjectImage: vi.fn(async () => null),
+        chooseProjectRoot: vi.fn(async () => projectRoot),
+      },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const failure = await handlers.listProjectImages({}, { sessionId: opened!.sessionId })
+        .catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({ code: 'MISSING_ASSET', retryable: true });
+      expect(JSON.stringify(failure)).not.toContain(projectRoot);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project-missing');
+    }
+  });
+
   it('rejects concurrent image pickers for the same project session', async () => {
     let resolvePicker!: (path: string | null) => void;
     const picker = new Promise<string | null>((resolve) => { resolvePicker = resolve; });
@@ -342,7 +387,11 @@ describe('project image bridge', () => {
     await expect(handlers.importProjectImage({}, {
       sessionId: opened!.sessionId,
       target: { kind: 'module', nodeId: 'image-input' },
-    })).rejects.toThrow(/journal append failed/);
+    })).rejects.toMatchObject({
+      code: 'DURABLE_WRITE_FAILED',
+      message: 'Managed project asset write failed: durable storage operation failed',
+      retryable: true,
+    });
 
     expect(await readdir(join(projectRoot, 'assets'))).toEqual([]);
     expect(await readdir(join(projectRoot, 'recovery', 'quarantine'))).toHaveLength(1);

@@ -53,6 +53,7 @@ import {
   type ModelJobExecutor,
   type ModelJobStorage,
 } from '../jobs/job-store';
+import { createDurableCanvasStressProject } from './stress-project';
 
 const installedFlag = '__NOVUS_E2E_INSTALLED__';
 const fixedNow = '2026-07-16T09:00:00.000Z';
@@ -192,13 +193,14 @@ export function installRendererE2EHarness(): void {
       publishKnowledge(runtime);
     },
     async seedModuleStressGraph(nodeCount, edgeCount) {
-      return seedModuleStressGraph(nodeCount, edgeCount);
+      return seedModuleStressGraph(runtime, nodeCount, edgeCount);
     },
     getState() {
       const state = useAppStore.getState();
       return {
         commitCount: runtime.commitLog.length,
         edgeCount: state.project.edges.length,
+        nodeCount: state.project.nodes.length,
         moduleTypes: state.project.nodes
           .filter((node): node is CanvasModuleNode => node.type === 'module')
           .map((node) => node.data.moduleType),
@@ -358,7 +360,31 @@ function sanitizeE2EImageLabel(value: string): string {
   return label || 'Managed image';
 }
 
-async function seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean> {
+async function seedModuleStressGraph(runtime: RuntimeState, nodeCount: number, edgeCount: number): Promise<boolean> {
+  if (Math.floor(nodeCount) === 300 && Math.floor(edgeCount) === 500) {
+    const fixture = createDurableCanvasStressProject();
+    const transaction: ProjectTransaction = {
+      id: 'e2e-durable-stress-graph-300-500',
+      label: 'Seed durable 300 node 500 edge acceptance graph',
+      operations: [
+        { kind: 'set_project_assets', assets: fixture.project.assets ?? [] },
+        { kind: 'replace_canvas_state', nodes: fixture.project.nodes, edges: fixture.project.edges },
+      ],
+    };
+    const committed = await useAppStore.getState().commitProjectTransaction(transaction, {
+      kind: 'system',
+      nextProject: fixture.project,
+    });
+    if (!committed) return false;
+    runtime.currentProject = useAppStore.getState().project;
+    runtime.projectImages = (runtime.currentProject.assets ?? []).map((asset) => createE2EProjectImageSummary(
+      runtime.currentProject,
+      asset,
+    ));
+    useAppStore.setState({ projectImages: runtime.projectImages });
+    return true;
+  }
+
   const boundedNodeCount = Math.max(2, Math.min(100, Math.floor(nodeCount)));
   const boundedEdgeCount = Math.max(0, Math.min(150, Math.floor(edgeCount)));
   const imageCount = Math.floor(boundedNodeCount / 2);
@@ -857,6 +883,7 @@ declare global {
         commitCount: number;
         durableProjectContainsTransientImageUrl: boolean;
         edgeCount: number;
+        nodeCount: number;
         moduleTypes: CanvasModuleType[];
         modelJobs: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount' | 'status'>>;
         modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;

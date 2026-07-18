@@ -108,6 +108,7 @@ export interface RecoveryPlan {
 
 export type PersistenceErrorCode =
   | 'DISK_FULL'
+  | 'DURABLE_WRITE_FAILED'
   | 'PERMISSION_DENIED'
   | 'READ_ONLY_VOLUME'
   | 'REVISION_CONFLICT'
@@ -134,6 +135,7 @@ export interface BridgeSessionSummary {
   readonly stableSnapshotId: string | null;
   readonly stableSnapshotRevision: number;
   readonly project: CanvasProject;
+  readonly recoveryRequired?: true;
 }
 
 export interface OpenProjectBridgeRequest {

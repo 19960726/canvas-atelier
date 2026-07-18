@@ -316,7 +316,11 @@ describe('JournalWriter', () => {
       now: () => baseNow,
     });
 
-    await expect(writer.commit(makeRequest('tx-write-fails'))).rejects.toThrow(/injected write failure/i);
+    await expect(writer.commit(makeRequest('tx-write-fails'))).rejects.toMatchObject({
+      code: 'DURABLE_WRITE_FAILED',
+      message: 'Project journal write failed: durable storage operation failed',
+      retryable: true,
+    });
 
     const recovered = await JournalWriter.open({
       activeJournalPath: activeJournal,
@@ -334,6 +338,27 @@ describe('JournalWriter', () => {
     ]);
   });
 
+  it('returns a sanitized DISK_FULL error and preserves the last durable journal on ENOSPC', async () => {
+    const { activeJournal } = await createJournalFile(tempRoots);
+    const privatePath = ['C:', 'Users', 'Private', 'Novus', 'journal', 'active.ndjson']
+      .join(String.fromCharCode(92));
+    const writer = await JournalWriter.open({
+      activeJournalPath: activeJournal,
+      baseRevision: 0,
+      fileSystem: new FailWriteFileSystem(activeJournal, 'ENOSPC', `no space left at ${privatePath}`),
+      nextSequence: 1,
+      projectId: 'project-journal',
+      now: () => baseNow,
+    });
+
+    const failure = await writer.commit(makeRequest('tx-disk-full')).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'DISK_FULL', retryable: true });
+    expect(JSON.stringify(failure)).not.toContain(privatePath);
+    expect(await readFile(activeJournal, 'utf8')).toBe('');
+    expect((await readValidJournal(activeJournal)).records).toEqual([]);
+  });
+
   it('rolls back a complete append when sync fails so restart does not replay it', async () => {
     const { activeJournal } = await createJournalFile(tempRoots);
     const writer = await JournalWriter.open({
@@ -345,9 +370,11 @@ describe('JournalWriter', () => {
       now: () => baseNow,
     });
 
-    await expect(writer.commit(makeRequest('tx-sync-fails'))).rejects.toThrow(
-      /injected sync failure/i,
-    );
+    await expect(writer.commit(makeRequest('tx-sync-fails'))).rejects.toMatchObject({
+      code: 'DURABLE_WRITE_FAILED',
+      message: 'Project journal write failed: durable storage operation failed',
+      retryable: true,
+    });
     expect(await readFile(activeJournal, 'utf8')).toBe('');
 
     resetJournalWriterRegistryForTests();
@@ -609,8 +636,13 @@ class FailWriteFileSystem implements FileSystem {
   private readonly delegate = new NodeFileSystem();
   private readonly targetPath: string;
 
-  constructor(targetPath: string) {
+  private readonly errorCode?: string;
+  private readonly errorMessage?: string;
+
+  constructor(targetPath: string, errorCode?: string, errorMessage?: string) {
     this.targetPath = targetPath;
+    this.errorCode = errorCode;
+    this.errorMessage = errorMessage;
   }
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
@@ -620,7 +652,7 @@ class FailWriteFileSystem implements FileSystem {
   async open(path: string, flags: string): Promise<FileHandleLike> {
     const handle = await this.delegate.open(path, flags);
     if (samePath(path, this.targetPath) && isJournalAppendFlag(flags)) {
-      return new FailWriteHandle(handle);
+      return new FailWriteHandle(handle, this.errorCode, this.errorMessage);
     }
     return handle;
   }
@@ -660,9 +692,13 @@ class FailWriteFileSystem implements FileSystem {
 
 class FailWriteHandle implements FileHandleLike {
   private readonly handle: FileHandleLike;
+  private readonly errorCode?: string;
+  private readonly errorMessage?: string;
 
-  constructor(handle: FileHandleLike) {
+  constructor(handle: FileHandleLike, errorCode?: string, errorMessage?: string) {
     this.handle = handle;
+    this.errorCode = errorCode;
+    this.errorMessage = errorMessage;
   }
 
   async close(): Promise<void> {
@@ -678,7 +714,9 @@ class FailWriteHandle implements FileHandleLike {
   }
 
   async writeFile(_data: string | Uint8Array): Promise<void> {
-    throw new Error('injected write failure');
+    const error = new Error(this.errorMessage ?? 'injected write failure') as Error & { code?: string };
+    if (this.errorCode !== undefined) error.code = this.errorCode;
+    throw error;
   }
 }
 

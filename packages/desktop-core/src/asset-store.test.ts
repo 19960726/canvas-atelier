@@ -214,7 +214,11 @@ describe('AssetStore', () => {
         throw new Error('journal append failed');
       },
       originalName: 'reference.png',
-    })).rejects.toThrow(/journal append failed/);
+    })).rejects.toMatchObject({
+      code: 'DURABLE_WRITE_FAILED',
+      message: 'Managed project asset write failed: durable storage operation failed',
+      retryable: true,
+    });
 
     expect(await readdir(join(projectRoot, 'assets'))).toEqual([]);
     const quarantineFiles = await readdir(join(projectRoot, 'recovery', 'quarantine'));

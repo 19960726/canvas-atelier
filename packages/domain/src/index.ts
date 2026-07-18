@@ -86,7 +86,7 @@ export type {
 } from './project-schema';
 export type { ConfirmedModelJobInput, ModelJobStatus } from './model-job';
 
-export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation } from './agent-plan';
+export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation, ExecutionReferenceSnapshot } from './agent-plan';
 export type { RuntimeProfile, RuntimeProfileId } from './runtime-profile';
 export type {
   CanvasModuleDefinition,

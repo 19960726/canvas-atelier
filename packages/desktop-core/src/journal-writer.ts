@@ -20,6 +20,9 @@ import {
   type PersistenceErrorCode,
 } from './contracts.js';
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
+import { createPersistenceError, normalizePersistenceError } from './persistence-error.js';
+
+export { createPersistenceError, normalizePersistenceError } from './persistence-error.js';
 
 export interface JournalReadResult {
   readonly records: JournalRecord[];
@@ -288,7 +291,7 @@ export class JournalWriter {
         }
       }
 
-      throw error;
+      throw normalizePersistenceError(error, 'Project journal write failed');
     } finally {
       if (handle !== null) {
         try {
@@ -696,28 +699,6 @@ export function replayJournal(
   }
 
   return { project, revision };
-}
-
-export function createPersistenceError(
-  code: PersistenceErrorCode,
-  retryable: boolean,
-  message: string,
-  cause?: unknown,
-): PersistenceError {
-  const error = new Error(message) as PersistenceError & { cause?: unknown };
-  error.name = 'PersistenceError';
-  Object.defineProperty(error, 'code', {
-    enumerable: true,
-    value: code,
-  });
-  Object.defineProperty(error, 'retryable', {
-    enumerable: true,
-    value: retryable,
-  });
-  if (cause !== undefined) {
-    error.cause = cause;
-  }
-  return error;
 }
 
 function parseJournalLine(line: string): JournalRecord {

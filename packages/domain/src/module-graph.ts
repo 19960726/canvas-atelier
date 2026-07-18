@@ -139,6 +139,7 @@ const moduleNodeDataSchema = z.object({
 export const moduleNodeSchema = z.object({
   id: idSchema,
   position: positionSchema,
+  locked: z.boolean().optional(),
   type: z.literal('module'),
   data: moduleNodeDataSchema,
 }).strict();

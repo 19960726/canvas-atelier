@@ -96,6 +96,7 @@ export function ReferenceOrderList({
             onDragEnd={cancelDrag}
           >
             <GripVertical size={13} aria-hidden="true" />
+            <b className="reference-order__ordinal">{String(index + 1).padStart(2, '0')}</b>
             <div className="reference-order__thumb" aria-hidden="true" style={thumbnailStyle}>
               {renderThumbnail(resolveThumbnailUrl?.(reference.assetId), reference.label)}
             </div>

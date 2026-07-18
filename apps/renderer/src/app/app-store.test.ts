@@ -116,6 +116,38 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().desktopRevision).toBe(4);
   });
 
+  it('keeps a typed missing-asset error visible after hydration and clears it only after a successful retry', async () => {
+    const missingAssetError = Object.assign(new Error('Managed asset is unavailable'), {
+      code: 'MISSING_ASSET',
+      retryable: true,
+    });
+    const listProjectImages = vi.fn()
+      .mockRejectedValueOnce(missingAssetError)
+      .mockResolvedValueOnce([]);
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: createStarterProject(),
+        revision: 4,
+        saveStatus: 'saved' as const,
+      })),
+      listProjectImages,
+    }));
+    resetAppStoreForTests();
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(useAppStore.getState().project.id).toBe('local-project');
+    expect(useAppStore.getState().projectImages).toEqual([]);
+    expect(useAppStore.getState().projectImageError).toBe('MISSING_ASSET');
+
+    await useAppStore.getState().refreshProjectImages();
+    expect(listProjectImages).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().projectImageError).toBeNull();
+  });
+
   it('uses one durable transaction to create a module node', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -176,13 +208,19 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module')).toHaveLength(2);
   });
 
-  it('continues module creation after a failed commit', async () => {
-    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
-      if (request.baseRevision === 0) {
-        return { code: 'INVALID_REQUEST', ok: false, project: request.previousProject, revision: 1 };
-      }
-      return { ok: true, project: request.nextProject, revision: 2 };
-    });
+  it('blocks later module commits until the failed durable transaction is retried', async () => {
+    const commit = vi.fn()
+      .mockImplementationOnce(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        code: 'DISK_FULL',
+        ok: false,
+        project: request.previousProject,
+        revision: request.baseRevision,
+      }))
+      .mockImplementationOnce(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: request.nextProject,
+        revision: request.baseRevision + 1,
+      }));
     replaceProjectPersistenceClientForTests(createMockClient({ commit }));
     resetAppStoreForTests();
 
@@ -190,12 +228,15 @@ describe('project optimization memory', () => {
     const second = useAppStore.getState().addModuleNode('openpose', { x: 420, y: 120 });
 
     expect(await first).toBe(false);
-    expect(await second).toBe(true);
-    expect(commit).toHaveBeenCalledTimes(2);
-    expect(commit.mock.calls[1]![0].baseRevision).toBe(1);
+    expect(await second).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().project.nodes.filter((node) => node.type === 'module')).toMatchObject([
-      { data: { moduleType: 'openpose' } },
+      { data: { moduleType: 'text_prompt' } },
     ]);
+
+    expect(await useAppStore.getState().retryFailedProjectCommit()).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]![0]).toEqual(commit.mock.calls[0]![0]);
     expect(useAppStore.getState().saveStatus).toBe('saved');
   });
 
@@ -2724,13 +2765,19 @@ describe('stable module graph commits', () => {
     expect(useAppStore.getState().saveStatus).toBe('saved');
   });
 
-  it('commits a changed node position once, no-ops unchanged positions, and rolls back failed commits', async () => {
-    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
-      code: 'INVALID_REQUEST',
-      ok: false,
-      project: request.previousProject,
-      revision: request.baseRevision + 1,
-    }));
+  it('keeps a failed node position dirty and retries the same durable transaction explicitly', async () => {
+    const commit = vi.fn()
+      .mockImplementationOnce(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        code: 'DISK_FULL',
+        ok: false,
+        project: request.previousProject,
+        revision: request.baseRevision,
+      }))
+      .mockImplementationOnce(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: request.nextProject,
+        revision: request.baseRevision + 1,
+      }));
     replaceProjectPersistenceClientForTests(createMockClient({ commit }));
     const project = moduleGraphProject();
     useAppStore.setState({ project, saveStatus: 'saved' });
@@ -2740,8 +2787,55 @@ describe('stable module graph commits', () => {
 
     expect(await useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 })).toBe(false);
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 0, y: 0 });
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
     expect(useAppStore.getState().saveStatus).toBe('error');
+    expect(useAppStore.getState().canRetryProjectCommit).toBe(true);
+
+    expect(await useAppStore.getState().retryFailedProjectCommit()).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]![0].transaction).toEqual(commit.mock.calls[0]![0].transaction);
+    expect(commit.mock.calls[1]![0].nextProject.nodes.find((node: { id: string }) => node.id === 'prompt')?.position)
+      .toEqual({ x: 20, y: 30 });
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+    expect(useAppStore.getState().canRetryProjectCommit).toBe(false);
+  });
+
+  it('does not let a delayed failed-commit retry replace a newly opened project', async () => {
+    const retryAck = deferred<ProjectCommitResult>();
+    const openedProject = { ...moduleGraphProject(), name: 'Opened while retrying' };
+    const commit = vi.fn()
+      .mockImplementationOnce(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        code: 'DISK_FULL',
+        ok: false,
+        project: request.previousProject,
+        revision: request.baseRevision,
+      }))
+      .mockReturnValueOnce(retryAck.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      openProject: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: openedProject,
+        revision: 9,
+        saveStatus: 'saved',
+      }),
+    }));
+    useAppStore.setState({ project: moduleGraphProject(), saveStatus: 'saved' });
+
+    expect(await useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 })).toBe(false);
+    const retry = useAppStore.getState().retryFailedProjectCommit();
+    expect(await useAppStore.getState().openProject()).toBe(true);
+
+    retryAck.resolve({ ok: true, project: commit.mock.calls[1]![0].nextProject, revision: 1 });
+    expect(await retry).toBe(false);
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: false,
+      desktopRevision: 9,
+      project: { name: 'Opened while retrying' },
+      saveStatus: 'saved',
+    });
   });
 
   it('serializes rapid stable graph operations against the latest acknowledged revision and continues after failure', async () => {

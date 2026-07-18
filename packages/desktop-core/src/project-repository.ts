@@ -453,11 +453,11 @@ export class ProjectRepository {
     try {
       snapshot = await readSnapshotEnvelope(join(root, ...snapshotPath.split('/')), this.fileSystem);
     } catch {
-      throw new Error('Invalid stable snapshot envelope');
+      throw createPersistenceError('CORRUPT_SNAPSHOT', false, 'Stable snapshot is unavailable or corrupt');
     }
 
     if (!isValidStableSnapshotEnvelope(snapshot, manifest)) {
-      throw new Error('Invalid stable snapshot envelope');
+      throw createPersistenceError('CORRUPT_SNAPSHOT', false, 'Stable snapshot checksum or schema is invalid');
     }
 
     return snapshot.project;

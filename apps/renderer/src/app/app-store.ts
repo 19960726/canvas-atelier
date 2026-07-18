@@ -59,6 +59,7 @@ import {
   type KnowledgeClient,
 } from './knowledge-client';
 import { loadPersistedProjectBundle } from './project-persistence';
+import { createExecutionReferenceSnapshot } from './execution-reference-snapshot';
 import {
   createInMemoryModelJobStorage,
   createModelJobStore,
@@ -73,6 +74,7 @@ import { runtimeProfile } from './runtime-profile';
 let planSequence = 0;
 let referenceOrderCommitTail: Promise<void> | null = null;
 let moduleGraphCommitTail: Promise<void> | null = null;
+let pendingFailedProjectCommit: ProjectCommitRequest | null = null;
 let projectPersistenceClient = createProjectPersistenceClient();
 let knowledgeClient = createKnowledgeClient();
 let modelJobExecutorOverride: ModelJobExecutor | null = null;
@@ -143,6 +145,7 @@ interface AppState {
   persistenceMode: 'browser' | 'desktop';
   desktopRevision: number;
   availableSnapshotIds: string[];
+  canRetryProjectCommit: boolean;
   knowledgeBases: KnowledgeBaseStateSummary[];
   knowledgeSyncStatuses: KnowledgeSyncStatusSummary[];
   saveStatus: ProjectSaveStatus;
@@ -157,9 +160,11 @@ interface AppState {
   closePersistence: () => Promise<boolean>;
   discardPersistence: () => Promise<boolean>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
+  retryFailedProjectCommit: () => Promise<boolean>;
   addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
   connectModulePorts: (connection: Connection) => Promise<boolean>;
   commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
+  toggleNodeLock: (nodeId: string) => Promise<boolean>;
   reorderModuleInput: (targetNodeId: string, targetPortId: string, edgeIds: string[]) => Promise<boolean>;
   commitReferenceOrder: (assetIds: string[]) => Promise<boolean>;
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
@@ -292,6 +297,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!isNonEmptyString(nodeId) || !isFinitePosition(position)) return false;
     const node = state.project.nodes.find((candidate) => candidate.id === nodeId);
     if (!node) return false;
+    if (node.locked === true) return false;
     if (node.position.x === position.x && node.position.y === position.y) return true;
 
     const nextNode = { ...node, position };
@@ -306,6 +312,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch {
       return false;
     }
+  }),
+  toggleNodeLock: (nodeId) => enqueueModuleGraphCommit(async () => {
+    const state = get();
+    if (!isNonEmptyString(nodeId)) return false;
+    const node = state.project.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) return false;
+    const nextNode = { ...node, locked: node.locked !== true };
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const transaction: ProjectTransaction = {
+      id: `toggle-node-lock-${nodeId}-${suffix}`,
+      label: nextNode.locked ? 'Lock canvas node position' : 'Unlock canvas node position',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    const nextProject = applyProjectTransaction(state.project, transaction);
+    return get().commitProjectTransaction(transaction, { nextProject });
   }),
   reorderModuleInput: (targetNodeId, targetPortId, edgeIds) => enqueueModuleGraphCommit(async () => {
     const state = get();
@@ -414,6 +435,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   discardPersistence: async () => {
     cancelPendingProjectSave();
+    clearPendingFailedProjectCommit();
+    set({ canRetryProjectCommit: false });
     invalidateModelJobStoreGeneration();
     modelJobStore?.stop();
     modelJobUnsubscribe?.();
@@ -428,6 +451,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   commitProjectTransaction: async (transaction, options = {}) => {
     cancelPendingProjectSave();
+    if (pendingFailedProjectCommit !== null) return false;
     const before = get().project;
     const nextProject = options.nextProject ?? applyProjectTransaction(before, transaction);
     const kind = options.kind ?? 'canvas';
@@ -436,33 +460,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false;
     }
 
-    set({ project: nextProject, saveErrorCode: null, saveStatus: 'saving' });
-    const result = await projectPersistenceClient.commit({
+    const request: ProjectCommitRequest = {
       baseRevision: get().desktopRevision,
       kind,
       nextProject,
       previousProject: before,
       projectId: before.id,
       transaction,
-    });
-
-    if (!result.ok && result.code === 'REVISION_CONFLICT') {
-      const hydrated = await projectPersistenceClient.hydrate();
-      const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
-      set({
-        availableSnapshotIds: hydrated.availableSnapshotIds,
-        desktopRevision: hydrated.revision,
-        persistenceMode: hydrated.mode,
-        project: hydrated.project,
-        projectLifecycle: hydrated.lifecycle,
-        projectImages,
-        saveErrorCode: result.code,
-        saveStatus: 'error',
-      });
-      return false;
-    }
-
-    return applyCommitResult(set, get, result);
+    };
+    set({ canRetryProjectCommit: false, project: nextProject, saveErrorCode: null, saveStatus: 'saving' });
+    return executeProjectCommit(request, set, get);
+  },
+  retryFailedProjectCommit: async () => {
+    const request = pendingFailedProjectCommit;
+    if (request === null || !get().canRetryProjectCommit || get().saveStatus === 'read_only') return false;
+    set({ canRetryProjectCommit: false, saveErrorCode: null, saveStatus: 'saving' });
+    return executeProjectCommit(request, set, get, true);
   },
   commitReferenceOrder: (assetIds) => {
     const requestedAssetIds = [...assetIds];
@@ -505,18 +518,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   ),
   hydratePersistence: async () => {
     cancelPendingProjectSave();
+    clearPendingFailedProjectCommit();
     const jobStore = getModelJobStore();
     const hydrated = await projectPersistenceClient.hydrate();
-    const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
+    const imageState = await readProjectImagesForHydration();
     const modelJobs = await jobStore.listJobs();
     set({
       availableSnapshotIds: hydrated.availableSnapshotIds,
+      canRetryProjectCommit: false,
       desktopRevision: hydrated.revision,
       persistenceMode: hydrated.mode,
       project: hydrated.project,
       projectLifecycle: hydrated.lifecycle,
-      projectImages,
-      projectImageError: null,
+      ...imageState,
       confirmedModelJobs: countConfirmedModelJobs(modelJobs),
       modelJobs,
       saveErrorCode: null,
@@ -529,15 +543,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (openProject === undefined) return false;
     const opened = await openProject();
     if (opened === null) return false;
-    const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
+    clearPendingFailedProjectCommit();
+    const imageState = await readProjectImagesForHydration();
     set({
       availableSnapshotIds: opened.availableSnapshotIds,
+      canRetryProjectCommit: false,
       desktopRevision: opened.revision,
       persistenceMode: opened.mode,
       project: opened.project,
       projectLifecycle: opened.lifecycle,
-      projectImages,
-      projectImageError: null,
+      ...imageState,
       projectImageImportingNodeId: null,
       saveErrorCode: null,
       saveStatus: opened.saveStatus,
@@ -548,8 +563,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   newWorkflow: async () => {
     cancelPendingProjectSave();
     await projectPersistenceClient.close().catch(() => undefined);
+    clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds: [],
+      canRetryProjectCommit: false,
       desktopRevision: 0,
       project: createUntitledProject(),
       projectLifecycle: 'untitled',
@@ -609,6 +626,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveTool: (activeTool) => set({ activeTool }),
   toggleAgentPanel: () => set((state) => ({ agentPanelCollapsed: !state.agentPanelCollapsed })),
   setProject: (project, options = {}) => {
+    if (pendingFailedProjectCommit !== null) return;
     set((state) => ({
       project,
       saveErrorCode: null,
@@ -668,6 +686,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const requestedPlan = {
       ...initialPlan,
       state: 'confirming' as const,
+      referenceSnapshot: createExecutionReferenceSnapshot(
+        collectExecutionReferences(state.project),
+        state.desktopRevision,
+      ),
       confirmations: {
         ...initialPlan.confirmations,
         canvas: now,
@@ -877,14 +899,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (state.persistenceMode === 'desktop') {
       cancelPendingProjectSave();
       const restored = await projectPersistenceClient.restore(snapshotId);
-      const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
+      clearPendingFailedProjectCommit();
+      const imageState = await readProjectImagesForHydration();
       set({
         availableSnapshotIds: restored.availableSnapshotIds,
+        canRetryProjectCommit: false,
         desktopRevision: restored.revision,
         project: restored.project,
         projectLifecycle: restored.lifecycle,
-        projectImages,
-        projectImageError: null,
+        ...imageState,
         saveErrorCode: null,
         saveStatus: restored.saveStatus,
       });
@@ -966,7 +989,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
 async function importProjectImageWithTarget(target: ProjectImageImportTarget): Promise<boolean> {
   const before = useAppStore.getState();
-  if (before.projectImageImportingNodeId !== null || before.saveStatus === 'read_only') return false;
+  if (before.projectImageImportingNodeId !== null || before.saveStatus === 'read_only' || before.canRetryProjectCommit) return false;
   const node = before.project.nodes.find((candidate) => candidate.id === target.nodeId);
   if (node === undefined) return false;
   if (target.kind === 'module' && (
@@ -1109,6 +1132,7 @@ function enqueueModuleGraphCommit(operation: () => Promise<boolean>): Promise<bo
 
 export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' } = { project: 'starter' }): void {
   cancelPendingProjectSave();
+  clearPendingFailedProjectCommit();
   pendingProjectFlushBoundary = null;
   clearPendingAgentConfirmation();
   pendingAgentJobRetry = null;
@@ -1199,17 +1223,50 @@ function createModuleEdgeId(
   return `${base}-${suffix}`;
 }
 
+async function executeProjectCommit(
+  request: ProjectCommitRequest,
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+  retryRequest = false,
+): Promise<boolean> {
+  const result = await projectPersistenceClient.commit(request);
+  if (retryRequest
+    ? pendingFailedProjectCommit !== request
+    : pendingFailedProjectCommit !== null && pendingFailedProjectCommit !== request) return false;
+  if (!result.ok && result.code === 'REVISION_CONFLICT') {
+    clearPendingFailedProjectCommit();
+    const hydrated = await projectPersistenceClient.hydrate();
+    const imageState = await readProjectImagesForHydration();
+    set({
+      availableSnapshotIds: hydrated.availableSnapshotIds,
+      canRetryProjectCommit: false,
+      desktopRevision: hydrated.revision,
+      persistenceMode: hydrated.mode,
+      project: hydrated.project,
+      projectLifecycle: hydrated.lifecycle,
+      ...imageState,
+      saveErrorCode: result.code,
+      saveStatus: 'error',
+    });
+    return false;
+  }
+  return applyCommitResult(set, get, result, request);
+}
+
 function applyCommitResult(
   set: (partial: Partial<AppState>) => void,
   get: () => AppState,
   result: ProjectCommitResult,
+  request: ProjectCommitRequest,
 ): boolean {
   const availableSnapshotIds = get().persistenceMode === 'browser'
     ? readAvailableSnapshotIds()
     : get().availableSnapshotIds;
   if (result.ok) {
+    clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds,
+      canRetryProjectCommit: false,
       desktopRevision: result.revision,
       project: result.project,
       saveErrorCode: null,
@@ -1218,13 +1275,27 @@ function applyCommitResult(
     return true;
   }
 
-  set({
-    availableSnapshotIds,
-    desktopRevision: result.revision,
-    project: result.project,
-    saveErrorCode: result.code,
-    saveStatus: result.code === 'CONCURRENT_WRITER' ? 'read_only' : 'error',
-  });
+  if (result.code === 'CONCURRENT_WRITER') {
+    clearPendingFailedProjectCommit();
+    set({
+      availableSnapshotIds,
+      canRetryProjectCommit: false,
+      desktopRevision: result.revision,
+      project: result.project,
+      saveErrorCode: result.code,
+      saveStatus: 'read_only',
+    });
+  } else {
+    pendingFailedProjectCommit = request;
+    set({
+      availableSnapshotIds,
+      canRetryProjectCommit: true,
+      desktopRevision: result.revision,
+      project: request.nextProject,
+      saveErrorCode: result.code,
+      saveStatus: 'error',
+    });
+  }
   return false;
 }
 
@@ -1256,6 +1327,24 @@ function cancelPendingProjectSave(): void {
   projectAutosave.cancel();
 }
 
+function clearPendingFailedProjectCommit(): void {
+  pendingFailedProjectCommit = null;
+}
+
+async function readProjectImagesForHydration(): Promise<Pick<AppState, 'projectImages' | 'projectImageError'>> {
+  try {
+    return {
+      projectImages: await projectPersistenceClient.listProjectImages(),
+      projectImageError: null,
+    };
+  } catch (error) {
+    return {
+      projectImages: [],
+      projectImageError: readErrorCode(error),
+    };
+  }
+}
+
 function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   return {
     id: `idle-sync-${Date.now()}-${planSequence++}`,
@@ -1267,13 +1356,14 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'canRetryProjectCommit' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   return {
     activeTool: 'select',
     agentPanelCollapsed: false,
     agentPlan: null,
     availableSnapshotIds: [],
+    canRetryProjectCommit: false,
     confirmedModelJobs: 0,
     desktopRevision: 0,
     knowledgeBases: [],
@@ -1384,6 +1474,8 @@ function buildModelJobRequests(
 ): ModelJobRequest[] {
   const promptNode = project.nodes.find((node) => node.type === 'prompt');
   const prompt = promptNode?.type === 'prompt' ? promptNode.data.prompt : plan.transaction.label;
+  const referenceSnapshot = plan.referenceSnapshot
+    ?? createExecutionReferenceSnapshot(collectExecutionReferences(project), 0);
   return Array.from({ length: Math.max(0, plan.jobCount) }, (_, index) => ({
     id: `model-job-${plan.id}-${index}`,
     promptNodeId: promptNode?.id ?? 'prompt-start',
@@ -1392,7 +1484,9 @@ function buildModelJobRequests(
     modelRoute: profile.modelRoute,
     displayName: profile.displayName,
     modelId: profile.modelId ?? profile.modelRoute,
-    referenceAssetIds: collectReferenceAssetIds(project),
+    referenceAssetIds: referenceSnapshot.references.map((reference) => reference.assetId),
+    referenceSnapshotRevision: referenceSnapshot.projectRevision,
+    referenceSnapshotFingerprint: referenceSnapshot.fingerprint,
   }));
 }
 
@@ -1834,17 +1928,34 @@ function isActiveCommittedAgentConfirmation(
 
 function createAgentConfirmationFingerprint(state: AppState, plan: AgentCanvasPlan): string {
   return JSON.stringify({
-    desktopRevision: state.desktopRevision,
-    project: state.project,
+    project: createExecutionSemanticProjectIdentity(state.project),
     transactionId: plan.transaction.id,
   });
 }
 
 function createAgentCommittedFingerprint(project: CanvasProject, plan: AgentCanvasPlan): string {
   return JSON.stringify({
-    project,
+    project: createExecutionSemanticProjectIdentity(project),
     transactionId: plan.transaction.id,
   });
+}
+
+function createExecutionSemanticProjectIdentity(project: CanvasProject): unknown {
+  return {
+    ...project,
+    nodes: project.nodes.map((node) => {
+      const { position: _position, locked: _locked, ...semanticNode } = node;
+      if (semanticNode.type !== 'placement_preview') return semanticNode;
+      return {
+        ...semanticNode,
+        data: {
+          ...semanticNode.data,
+          objects: [...semanticNode.data.objects].sort((left, right) => left.id.localeCompare(right.id)),
+        },
+      };
+    }),
+    edges: [...project.edges].sort((left, right) => left.id.localeCompare(right.id)),
+  };
 }
 
 function appendUndoEntry(undoStack: UndoEntry[], entry: UndoEntry): UndoEntry[] {
@@ -1979,6 +2090,29 @@ function collectReferenceAssetIds(project: CanvasProject): string[] {
     return [];
   });
   return [...new Set(assetIds)];
+}
+
+function collectExecutionReferences(project: CanvasProject): OrderedReference[] {
+  const placement = project.nodes.find((node) => node.type === 'placement_preview');
+  const placementReferences = placement?.type === 'placement_preview'
+    ? placement.data.objects
+      .filter((object) => !object.assetId.startsWith('starter-'))
+      .map((object, position) => ({
+        assetId: object.assetId,
+        label: object.name?.trim() || object.assetId,
+        role: object.role,
+        position,
+      }))
+    : [];
+  if (placementReferences.length > 0) return placementReferences;
+  return project.nodes.flatMap((node) => node.type === 'reference'
+    ? [{
+        assetId: node.data.assetId,
+        label: node.data.assetId,
+        role: node.data.role,
+        position: 0,
+      }]
+    : []).map((reference, position) => ({ ...reference, position }));
 }
 
 function filterValidSkillPromotionCandidates(
@@ -2122,6 +2256,7 @@ async function flushPendingProjectSave(
   set: (partial: Partial<AppState>) => void,
   reason: Exclude<AutosaveFlushReason, 'idle'>,
 ): Promise<boolean> {
+  if (pendingFailedProjectCommit !== null) return false;
   if (pendingProjectFlushBoundary !== null) return pendingProjectFlushBoundary;
 
   const hadDraft = projectAutosave.hasPending() || projectAutosave.hasInFlight();

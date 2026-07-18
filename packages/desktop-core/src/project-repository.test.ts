@@ -739,6 +739,25 @@ describe('ProjectRepository', () => {
     await expect(stat(destinationRoot)).rejects.toThrow();
   });
 
+  it('reports a corrupt stable snapshot as a typed sanitized recovery error', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'CorruptStableSnapshot.novus-project');
+    const repository = createRepository({ processId: 11105 });
+    const session = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-corrupt-stable-snapshot',
+      projectName: 'CorruptStableSnapshot',
+    });
+    const snapshotPath = join(projectRoot, ...session.manifest.stableSnapshotPath!.split('/'));
+    const snapshot = await readJson<SnapshotEnvelope>(snapshotPath);
+    await writeFile(snapshotPath, `${JSON.stringify({ ...snapshot, projectSha256: 'invalid-checksum' })}\n`, 'utf8');
+
+    const failure = await repository.readCurrentProject(session).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'CORRUPT_SNAPSHOT', retryable: false });
+    expect(JSON.stringify(failure)).not.toContain(projectRoot);
+  });
+
   it('saveAs opens the destination as the writable owner even from a read-only source session', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const sourceRoot = join(tempRoot, 'Source.novus-project');
@@ -935,7 +954,11 @@ describe('ProjectRepository', () => {
         projectId: 'project-manifest-rollback',
         projectName: 'ManifestRollback',
       }),
-    ).rejects.toThrow(/injected rename failure/i);
+    ).rejects.toMatchObject({
+      code: 'DURABLE_WRITE_FAILED',
+      message: 'Atomic project write failed: durable storage operation failed',
+      retryable: true,
+    });
 
     await expect(stat(projectRoot)).rejects.toThrow();
   });
@@ -992,7 +1015,11 @@ describe('ProjectRepository', () => {
       await writeFile(targetPath, 'old-value', 'utf8');
     }
 
-    await expect(writeAtomic(fileSystem, targetPath, 'new-value')).rejects.toThrow(/injected/i);
+    await expect(writeAtomic(fileSystem, targetPath, 'new-value')).rejects.toMatchObject({
+      code: 'DURABLE_WRITE_FAILED',
+      message: 'Atomic project write failed: durable storage operation failed',
+      retryable: true,
+    });
 
     if (failSync) {
       await expect(access(targetPath)).rejects.toThrow();

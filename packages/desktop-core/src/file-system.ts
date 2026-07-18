@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { link, lstat, open, readFile, readdir, realpath, rename, rm, stat, truncate, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { normalizePersistenceError } from './persistence-error.js';
 
 export interface FileHandleLike {
   close(): Promise<void>;
@@ -121,6 +122,6 @@ export async function writeAtomic(
     }
 
     await fileSystem.rm(tempPath, { force: true });
-    throw error;
+    throw normalizePersistenceError(error, 'Atomic project write failed');
   }
 }

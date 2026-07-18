@@ -245,8 +245,10 @@ export function CanvasWorkspace() {
   const modelJobs = useAppStore((state) => state.modelJobs);
   const saveStatus = useAppStore((state) => state.saveStatus);
   const saveErrorCode = useAppStore((state) => state.saveErrorCode);
+  const canRetryProjectCommit = useAppStore((state) => state.canRetryProjectCommit);
   const projectImages = useAppStore((state) => state.projectImages);
   const projectImageError = useAppStore((state) => state.projectImageError);
+  const refreshProjectImages = useAppStore((state) => state.refreshProjectImages);
   const availableSnapshotIds = useAppStore((state) => state.availableSnapshotIds);
   const knowledgeBases = useAppStore((state) => state.knowledgeBases);
   const knowledgeSyncStatuses = useAppStore((state) => state.knowledgeSyncStatuses);
@@ -266,6 +268,7 @@ export function CanvasWorkspace() {
   const importPlacementReference = useAppStore((state) => state.importPlacementReference);
   const retryModelJob = useAppStore((state) => state.retryModelJob);
   const cancelModelJob = useAppStore((state) => state.cancelModelJob);
+  const retryFailedProjectCommit = useAppStore((state) => state.retryFailedProjectCommit);
   const openProject = useAppStore((state) => state.openProject);
   const newWorkflow = useAppStore((state) => state.newWorkflow);
   const [agentMessage, setAgentMessage] = useState<ImageMentionValue>({ text: '', citations: [] });
@@ -687,7 +690,17 @@ export function CanvasWorkspace() {
         </button>
       </nav>
 
-      <main ref={handleCanvasStageRef} className="canvas-stage" role="application" aria-label="无限画布" data-testid="canvas-stage" onDragOverCapture={handleCanvasDragOver} onDropCapture={handleCanvasDrop}>
+      <main
+        ref={handleCanvasStageRef}
+        className="canvas-stage"
+        role="application"
+        aria-label="无限画布"
+        data-testid="canvas-stage"
+        data-graph-node-count={project.nodes.length}
+        data-graph-edge-count={project.edges.length}
+        onDragOverCapture={handleCanvasDragOver}
+        onDropCapture={handleCanvasDrop}
+      >
         <ReactFlow
           colorMode={theme.resolvedTheme}
           nodes={viewportCulling.nodes}
@@ -754,7 +767,20 @@ export function CanvasWorkspace() {
                 <LayoutTemplate size={17} />
                 <span><strong>摆放预览</strong><small>4:5 固定比例</small></span>
               </div>
-              {placementImportError && <span className="placement-reference-error" role="alert">{placementImportError}</span>}
+              {placementImportError && (
+                <span className="placement-reference-error" role="alert">
+                  {placementImportError}
+                  {projectImageError !== null && (
+                    <button
+                      type="button"
+                      aria-label="重试项目图片加载"
+                      onClick={() => { void refreshProjectImages(); }}
+                    >
+                      重试
+                    </button>
+                  )}
+                </span>
+              )}
               <button className="icon-button" type="button" aria-label="关闭摆放工作台" title="关闭摆放工作台" onClick={() => setActiveTool('select')}>
                 <X size={17} />
               </button>
@@ -886,9 +912,11 @@ export function CanvasWorkspace() {
       </aside>
 
       <JobStrip
+        canRetrySave={canRetryProjectCommit}
         jobs={modelJobs}
         saveState={saveStatus}
         saveLabel={saveStatusLabel(saveStatus, saveErrorCode)}
+        onRetrySave={() => { void retryFailedProjectCommit(); }}
         onRetry={(jobId) => { void retryModelJob(jobId); }}
         onCancel={(jobId) => { void cancelModelJob(jobId); }}
       />

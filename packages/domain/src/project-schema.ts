@@ -83,7 +83,7 @@ export const agentPlanSchema = z.object({
 }).strict();
 
 const positionSchema = z.object({ x: z.number(), y: z.number() }).strict();
-const nodeBase = { id: idSchema, position: positionSchema };
+const nodeBase = { id: idSchema, position: positionSchema, locked: z.boolean().optional() };
 
 const referenceNodeSchema = z.object({
   ...nodeBase,
