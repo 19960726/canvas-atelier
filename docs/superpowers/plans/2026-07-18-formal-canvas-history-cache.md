@@ -50,9 +50,9 @@
 
 ### Task 3: Unified module catalog, migrations, and node workbench
 
-**Requirements:** Replace user-visible V1/V2 image generation entries with exactly one `图片生成 / Image Generation` module; preserve `image_generation_v1` and `image_generation_v2` only as migrations, with no loss of ordered references, mask/pose, route, configuration, job, or result identity. Replace visible image/text and video reverse entries with exactly one `Agent 反推 / Reverse Agent` node that accepts ordered image assets, video ranges, text/tasks, line-art, and approved knowledge/project memory; preserve `video_analysis` and video-reverse only as migrations. Add contracts for storyboard, drawing mask, compare, local redraw, controlled Comfy, music, speech, and line-art analysis, with typed ports and explicit confirmation/execution/error states. Build original bilingual node presentation and an Agent dock that reflows the safe canvas area.
+**Requirements:** Replace user-visible V1/V2 image generation entries with exactly one `图片生成 / Image Generation` module; preserve `image_generation_v1` and `image_generation_v2` only as migrations, with no loss of ordered references, mask/pose, route, configuration, job, or result identity. Replace visible image/text and video analysis entries with exactly one `Agent 反推 / Reverse Agent` node that accepts ordered image assets, video ranges, text/tasks, line-art, and approved knowledge/project memory; migrate the verified legacy serialized `video_analysis` type to the unified node without loss of video ranges, results, or execution identity. Add contracts for storyboard, drawing mask, compare, local redraw, controlled Comfy, music, speech, and line-art analysis, with typed ports and explicit confirmation/execution/error states. Build original bilingual node presentation and an Agent dock that reflows the safe canvas area.
 
-**Verification:** Domain module/migration and catalog-uniqueness tests; renderer node/module tests; light/dark visual E2E at 1366x768, 1440x900, and 1920x1080.
+**Verification:** Domain module/migration tests for `image_generation_v1`, `image_generation_v2`, and `video_analysis`; catalog-uniqueness tests; renderer node/module tests; light/dark visual E2E at 1366x768, 1440x900, and 1920x1080.
 
 **Commit:** `feat: unify Novus module catalog`
 
@@ -112,9 +112,9 @@
 
 **Requirements:** Implement the dedicated right-dock `反推 / Reverse` conversation workbench opened from the unified node. Bind durable conversation state to project/node revision, ordered managed references, Skill/version, approved knowledge snapshot, project-memory ids, prompt-library source, route, and run identity. Use field order route, compatibility mode, Skill/version, prompt source, `角色 / Role`, `任务需求 / Task Requirements`, managed references, structured preview; support managed `@image` and `@video-range` mentions, progress stages, field-level follow-up diffs, and current-run-only replace/continue. Implement Scene Keyword, Poster/KV, Line-art Material & Color, Product Commercial, Composition & Camera, Material & Lighting, Ecommerce Detail, and Effects Skills with structured evidence/citations/confidence, full effects taxonomy, line-art region/material/control constraints, and poster/KV recommendations.
 
-Every run gets new identity, nonce, input fingerprint, knowledge version, Skill version, and frozen route. Mark earlier output stale on a new run; reject mismatched results; set `suspected_stale_output` and block materialization when changed inputs return identical normalized keywords; allow same-input reruns. Route mixed media only to fully compatible profiles or show a composite plan. Require confirmation before paid work or materializing prompt, poster/KV, storyboard, generation, edit, compare, or local-redraw nodes. Add structured brief fields, KEEP/CHANGE/NEVER, estimated bounded spending, scored review, compare/targeted redraw, and local approved-failure learning candidates.
+Every run gets new identity, nonce, input fingerprint, knowledge version, Skill version, and frozen route. Returned reverse results carry that exact nonce. Parser and orchestration reject a mismatch in nonce, run identity, input fingerprint, knowledge version, Skill version, or route. Mark earlier output stale on a new run; set `suspected_stale_output` and block materialization when changed inputs return identical normalized keywords; allow same-input reruns. Route mixed media only to fully compatible profiles or show a composite plan. Require confirmation before paid work or materializing prompt, poster/KV, storyboard, generation, edit, compare, or local-redraw nodes. Add structured brief fields, KEEP/CHANGE/NEVER, estimated bounded spending, scored review, compare/targeted redraw, and local approved-failure learning candidates.
 
-**Verification:** Image-only, video-only, mixed-media, ordered-reference, migration, capability mismatch/composite-plan, stale/fresh, late-result, same-input rerun, Skill/version, knowledge-citation, confirmation, quality-loop, durability, redaction, renderer, and E2E tests.
+**Verification:** Image-only, video-only, mixed-media, ordered-reference, `video_analysis` migration, capability mismatch/composite-plan, stale/fresh, late-result, nonce mismatch, same-input rerun, Skill/version, knowledge-citation, confirmation, quality-loop, durability, redaction, renderer, and E2E tests.
 
 **Commit:** `feat: add unified reverse agent workbench`
 
@@ -122,7 +122,7 @@ Every run gets new identity, nonce, input fingerprint, knowledge version, Skill 
 
 ### Task 10: Long-video Reverse Agent orchestration and storyboard materialization
 
-**Requirements:** Implement long-video chunking/timeline aggregation for the unified Reverse Agent with video revision/range binding, partial success, segment retry, replacement invalidation, cancellation, stale-result isolation, and confirmed storyboard/prompt/shot-node materialization. It is not a separate user-visible video-reverse module.
+**Requirements:** Implement long-video chunking/timeline aggregation for the unified Reverse Agent with video revision/range binding, partial success, segment retry, replacement invalidation, cancellation, stale-result isolation, and confirmed storyboard/prompt/shot-node materialization. It is not a separate user-visible video-analysis module.
 
 **Verification:** Chunk aggregation, partial failure, cancellation/retry, stale result, materialization, and E2E workflows.
 
