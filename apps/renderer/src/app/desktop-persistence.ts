@@ -250,7 +250,9 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       mode = selected.mode;
       currentProject = validateRecoveredProject(selected.project, currentProject);
       revision = selected.currentRevision ?? selected.stableSnapshotRevision;
-      availableSnapshotIds = await readDesktopRecoverySnapshotIds();
+      availableSnapshotIds = [];
+      recoveryCandidateIds = new Map();
+      availableSnapshotIds = await readDesktopRecoverySnapshotIds(selected.sessionId);
       return {
         availableSnapshotIds,
         lifecycle: 'durable',
@@ -355,15 +357,18 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     }
   }
 
-  async function readDesktopRecoverySnapshotIds(): Promise<string[]> {
-    if (sessionId === null) return availableSnapshotIds;
+  async function readDesktopRecoverySnapshotIds(requestedSessionId = sessionId): Promise<string[]> {
+    if (requestedSessionId === null) return availableSnapshotIds;
     try {
-      const plan = await bridge.getRecoveryPlan({ sessionId });
+      const plan = await bridge.getRecoveryPlan({ sessionId: requestedSessionId });
+      if (sessionId !== requestedSessionId) return availableSnapshotIds;
       const completeCandidates = plan.candidates.filter((candidate) => candidate.tailStatus === 'complete');
       recoveryCandidateIds = new Map(completeCandidates.map((candidate) => [candidate.snapshotId, candidate.candidateId]));
       return completeCandidates.map((candidate) => candidate.snapshotId);
     } catch {
-      return availableSnapshotIds;
+      if (sessionId !== requestedSessionId) return availableSnapshotIds;
+      recoveryCandidateIds = new Map();
+      return [];
     }
   }
 }

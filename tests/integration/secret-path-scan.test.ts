@@ -181,16 +181,84 @@ describe('secret/path scan coverage', () => {
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain('raw base64 image payload');
   });
+
+  it.each([
+    ['source', 'apps/renderer/src/race-private.ts'],
+    ['test', 'tests/race-private.test.ts'],
+    ['docs', 'docs/testing/race-private.md'],
+  ])('retries a %s file that disappears and reappears instead of silently skipping it', (_kind, relativePath) => {
+    const privatePath = ['C:', 'Users', 'Race', 'secret.txt'].join(String.fromCharCode(92));
+    const result = runScannerInIsolatedRoot(
+      relativePath,
+      `const leaked = ${JSON.stringify(privatePath)};\n`,
+      'restore',
+    );
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain(relativePath);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('private absolute path');
+  });
+
+  it('tolerates a disposable generated dist file being removed during the scan', () => {
+    const result = runScannerInIsolatedRoot(
+      'apps/renderer/dist/race-generated.js',
+      'const generated = true;\n',
+      'remove',
+    );
+
+    expect(result.status).toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('secret/path scan passed');
+  });
 });
 
-function runScannerInIsolatedRoot(relativePath: string, content: string) {
+function runScannerInIsolatedRoot(
+  relativePath: string,
+  content: string,
+  raceMode?: 'remove' | 'restore',
+) {
   const isolatedRoot = mkdtempSync(join(tmpdir(), 'novus-secret-scan-listed-'));
   isolatedRoots.push(isolatedRoot);
   const target = join(isolatedRoot, ...relativePath.split('/'));
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, content, 'utf8');
-  return spawnSync(process.execPath, [join(root, 'tests/e2e/helpers/secret-path-scan.mjs')], {
+  const scannerPath = join(root, 'tests/e2e/helpers/secret-path-scan.mjs');
+  const args = raceMode === undefined
+    ? [scannerPath]
+    : ['--require', createStatRaceHook(isolatedRoot, target, raceMode), scannerPath];
+  return spawnSync(process.execPath, args, {
     cwd: isolatedRoot,
     encoding: 'utf8',
   });
+}
+
+function createStatRaceHook(
+  isolatedRoot: string,
+  target: string,
+  raceMode: 'remove' | 'restore',
+): string {
+  const hookPath = join(isolatedRoot, '.secret-scan-stat-race.cjs');
+  writeFileSync(hookPath, `
+const fs = require('node:fs');
+const { syncBuiltinESMExports } = require('node:module');
+const targetPath = ${JSON.stringify(target)};
+const raceMode = ${JSON.stringify(raceMode)};
+const originalStatSync = fs.statSync;
+let injected = false;
+
+fs.statSync = function statSyncWithRace(path, ...args) {
+  if (!injected && String(path) === targetPath) {
+    injected = true;
+    const hiddenPath = targetPath + '.scan-race-hidden';
+    fs.renameSync(targetPath, hiddenPath);
+    if (raceMode === 'restore') fs.renameSync(hiddenPath, targetPath);
+    const error = new Error('simulated concurrent file disappearance');
+    error.code = 'ENOENT';
+    throw error;
+  }
+  return originalStatSync.call(fs, path, ...args);
+};
+
+syncBuiltinESMExports();
+`, 'utf8');
+  return hookPath;
 }

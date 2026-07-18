@@ -122,6 +122,136 @@ describe('desktop persistence', () => {
     expect(second).toMatchObject({ lifecycle: 'durable', project: { id: 'second-project', name: '未命名画布' }, revision: 7 });
   });
 
+  it('clears prior recovery candidates when the selected project recovery plan fails', async () => {
+    const firstProject = { ...createStarterProject(), name: 'First recovery project' };
+    const secondProject = { ...createStarterProject(), id: 'second-project', name: 'Second recovery project' };
+    const firstPlan = createRecoveryPlan(firstProject.id, 'first-after', 'candidate-first', 4);
+    const secondPlan = createRecoveryPlan(secondProject.id, 'second-after', 'candidate-second', 8);
+    const getRecoveryPlan = vi.fn()
+      .mockResolvedValueOnce(firstPlan)
+      .mockRejectedValueOnce(new Error('second recovery plan unavailable'))
+      .mockResolvedValue(secondPlan);
+    const restore = vi.fn(async () => ({
+      ...createDesktopSession(secondProject, 'second-session', 8),
+      restoredRevision: 8,
+      stableSnapshotId: 'second-after',
+      stableSnapshotRevision: 8,
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(async () => ({
+        path: 'redacted-path',
+        reason: 'stable_point' as const,
+        revision: 8,
+        snapshotId: 'stable-8',
+      })),
+      getRecoveryPlan,
+      openProject: vi.fn()
+        .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3))
+        .mockResolvedValueOnce(createDesktopSession(secondProject, 'second-session', 7)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore,
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    const first = await client.openProject?.();
+    const second = await client.openProject?.();
+
+    expect(first?.availableSnapshotIds).toEqual(['first-after']);
+    expect(second).toMatchObject({
+      availableSnapshotIds: [],
+      project: { id: secondProject.id, name: secondProject.name },
+      revision: 7,
+    });
+    await expect(client.restore('first-after')).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(restore).not.toHaveBeenCalled();
+
+    await expect(client.stablePoint()).resolves.toMatchObject({
+      availableSnapshotIds: ['second-after'],
+      project: { id: secondProject.id },
+      revision: 8,
+    });
+    await client.restore('second-after');
+    expect(restore).toHaveBeenCalledWith({ candidateId: 'candidate-second', sessionId: 'second-session' });
+  });
+
+  it('replaces recovery candidates instead of mixing them after a successful project switch', async () => {
+    const firstProject = { ...createStarterProject(), name: 'First recovery project' };
+    const secondProject = { ...createStarterProject(), id: 'second-project', name: 'Second recovery project' };
+    const getRecoveryPlan = vi.fn()
+      .mockResolvedValueOnce(createRecoveryPlan(firstProject.id, 'first-after', 'candidate-first', 4))
+      .mockResolvedValue(createRecoveryPlan(secondProject.id, 'second-after', 'candidate-second', 8));
+    const restore = vi.fn(async () => ({
+      ...createDesktopSession(secondProject, 'second-session', 8),
+      restoredRevision: 8,
+      stableSnapshotId: 'second-after',
+      stableSnapshotRevision: 8,
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan,
+      openProject: vi.fn()
+        .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3))
+        .mockResolvedValueOnce(createDesktopSession(secondProject, 'second-session', 7)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore,
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    await client.openProject?.();
+    const second = await client.openProject?.();
+
+    expect(second?.availableSnapshotIds).toEqual(['second-after']);
+    await expect(client.restore('first-after')).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(restore).not.toHaveBeenCalled();
+    await client.restore('second-after');
+    expect(restore).toHaveBeenCalledWith({ candidateId: 'candidate-second', sessionId: 'second-session' });
+  });
+
+  it('ignores a prior session recovery plan that completes after the project switch', async () => {
+    const firstProject = { ...createStarterProject(), name: 'First recovery project' };
+    const secondProject = { ...createStarterProject(), id: 'second-project', name: 'Second recovery project' };
+    let resolveFirstPlan!: (plan: ReturnType<typeof createRecoveryPlan>) => void;
+    const firstPlanPromise = new Promise<ReturnType<typeof createRecoveryPlan>>((resolve) => {
+      resolveFirstPlan = resolve;
+    });
+    const getRecoveryPlan = vi.fn(({ sessionId }: { sessionId: string }) => sessionId === 'first-session'
+      ? firstPlanPromise
+      : Promise.resolve(createRecoveryPlan(secondProject.id, 'second-after', 'candidate-second', 8)));
+    const restore = vi.fn();
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan,
+      openProject: vi.fn()
+        .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3))
+        .mockResolvedValueOnce(createDesktopSession(secondProject, 'second-session', 7)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore,
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    const firstOpen = client.openProject!();
+    await vi.waitFor(() => {
+      expect(getRecoveryPlan).toHaveBeenCalledWith({ sessionId: 'first-session' });
+    });
+    const second = await client.openProject!();
+    resolveFirstPlan(createRecoveryPlan(firstProject.id, 'first-after', 'candidate-first', 4));
+    await firstOpen;
+
+    expect(second?.availableSnapshotIds).toEqual(['second-after']);
+    await expect(client.hydrate()).resolves.toMatchObject({
+      availableSnapshotIds: ['second-after'],
+      project: { id: secondProject.id },
+    });
+    await expect(client.restore('first-after')).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(restore).not.toHaveBeenCalled();
+  });
+
   it('removes a v2 localStorage bundle only after desktop import acknowledgement', async () => {
     const legacyBundleJson = JSON.stringify({
       current: createStarterProject(),
@@ -462,5 +592,22 @@ function createDesktopSession(project: ReturnType<typeof createStarterProject>, 
     sessionId,
     stableSnapshotId: null,
     stableSnapshotRevision: revision,
+  };
+}
+
+function createRecoveryPlan(
+  projectId: string,
+  snapshotId: string,
+  candidateId: string,
+  revision: number,
+) {
+  return {
+    action: 'choose_recovery' as const,
+    candidates: [{ candidateId, revision, snapshotId, tailStatus: 'complete' as const }],
+    issues: [],
+    projectId,
+    recoveredRevision: null,
+    stableSnapshotId: null,
+    targetRevision: revision,
   };
 }
