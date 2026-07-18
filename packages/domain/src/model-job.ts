@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { containsProtectedPublicText } from './protected-public-text';
+
 const idSchema = z.string().min(1);
 
 export const modelJobStatusSchema = z.enum(['queued', 'submitting', 'running', 'completed', 'failed', 'cancelled']);
@@ -123,15 +125,7 @@ export function assertPublicModelJobPayload(value: unknown): void {
 
 export function containsProtectedRendererPayload(value: unknown): boolean {
   if (typeof value === 'string') {
-    return /data:image\/[^;]+;base64,/i.test(value)
-      || /base64,[a-z0-9+/=]{16,}/i.test(value)
-      || /authorization\s*:\s*\S+/i.test(value)
-      || /(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S{8,}/i.test(value)
-      || /\bsk-[a-z0-9_-]{8,}\b/i.test(value)
-      || /[a-zA-Z]:[\\/]/.test(value)
-      || /\\\\[^\\\s]+\\/.test(value)
-      || /file:\/\//i.test(value)
-      || /(?:^|\s)\/(?:Users|home|var|opt|tmp|private)\//.test(value);
+    return containsProtectedPublicText(value);
   }
   if (Array.isArray(value)) return value.some(containsProtectedRendererPayload);
   if (value && typeof value === 'object') return Object.values(value).some(containsProtectedRendererPayload);

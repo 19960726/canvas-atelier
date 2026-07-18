@@ -4,6 +4,7 @@ import { basename, extname, join } from 'node:path';
 import {
   parseCanvasProject,
   applyProjectTransaction,
+  containsProtectedRendererPayload,
   MAX_GENERATION_REFERENCES,
   projectImageAssetSchema,
   projectTransactionSchema,
@@ -2227,7 +2228,7 @@ function sanitizeSkillPromotionCandidate(candidate: SkillPromotionCandidate): Sk
 
 function assertPublicBridgePayload(value: unknown): void {
   for (const text of collectStrings(value)) {
-    if (containsProtectedBridgeText(text)) {
+    if (containsProtectedRendererPayload(text)) {
       throw invalidRequest('Public bridge payload contains protected content');
     }
   }
@@ -2244,22 +2245,6 @@ function collectStrings(value: unknown): string[] {
     return Object.values(value).flatMap(collectStrings);
   }
   return [];
-}
-
-function containsProtectedBridgeText(value: string): boolean {
-  return /authorization\s*:/i.test(value)
-    || /\bbearer\s+[a-z0-9._~+/=\-]{8,}/i.test(value)
-    || /\b(?:api[_ -]?key|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|token|secret|password)\s*[:=]\s*\S+/i.test(value)
-    || /\bsk-[a-z0-9_-]{8,}\b/i.test(value)
-    || /\bgithub_pat_[a-z0-9_]+\b/i.test(value)
-    || /\bAIza[0-9a-z_-]{20,}\b/i.test(value)
-    || /\bAKIA[0-9A-Z]{16}\b/.test(value)
-    || /\bgh[pousr]_[a-z0-9]{20,}\b/i.test(value)
-    || /\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/i.test(value)
-    || /data:image\/[a-z0-9.+-]+;base64,/i.test(value)
-    || /[A-Za-z]:\\/.test(value)
-    || /\\\\[^\\\s]+\\/.test(value)
-    || /(?:^|\s)\/(?:Users|home|var|etc)\//.test(value);
 }
 
 function parseKnowledgeStatus(value: unknown): KnowledgeBaseStateSummary['status'] {

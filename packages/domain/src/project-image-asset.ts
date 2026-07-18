@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { containsProtectedPublicText } from './protected-public-text';
+
 const contentAddressedAssetIdSchema = z.string().regex(/^[a-f0-9]{16}$/u, 'Asset id must be a content-addressed id');
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u, 'Asset hash must be a lowercase SHA-256 digest');
 
@@ -9,7 +11,7 @@ export const projectImageAssetSchema = z.object({
   extension: z.enum(['gif', 'jpg', 'png', 'webp']),
   height: z.number().int().positive().nullable(),
   label: z.string().trim().min(1).max(120).superRefine((label, context) => {
-    if (containsProtectedAssetLabel(label)) {
+    if (containsProtectedPublicText(label)) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: 'Asset label contains protected content' });
     }
   }),
@@ -36,20 +38,3 @@ export const projectImageAssetSchema = z.object({
 });
 
 export type ProjectImageAsset = z.infer<typeof projectImageAssetSchema>;
-
-function containsProtectedAssetLabel(value: string): boolean {
-  return /authorization\s*:/i.test(value)
-    || /\bbearer\s+[a-z0-9._~+/=\-]{8,}/i.test(value)
-    || /\b(?:api[_ -]?key|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|token|secret|password)\s*[:=]\s*\S+/i.test(value)
-    || /\bsk-[a-z0-9_-]{8,}\b/i.test(value)
-    || /\bAIza[0-9a-z_-]{20,}\b/i.test(value)
-    || /\bAKIA[0-9A-Z]{16}\b/.test(value)
-    || /\bgh[pousr]_[a-z0-9]{20,}\b/i.test(value)
-    || /\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b/i.test(value)
-    || /data:image\/[a-z0-9.+-]+;base64,/i.test(value)
-    || /blob:[^\s"'`]+/i.test(value)
-    || /file:\/\/[^\s"'`]+/i.test(value)
-    || /(?:^|[\s([{"'])(?:[a-zA-Z]:[\\/])/.test(value)
-    || /\\\\[^\\\s]+\\[^\s"'`]+/.test(value)
-    || /(?:^|[\s([{"'])\/(?:Users|home|var|opt|tmp|private|etc|root)\//.test(value);
-}

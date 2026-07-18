@@ -273,8 +273,9 @@ describe('project image bridge', () => {
   it('replaces protected source filenames before the asset label reaches the durable journal', async () => {
     const tempRoot = await createTempRoot(tempRoots, 'project-image-label-');
     const projectRoot = join(tempRoot, 'Images.novus-project');
-    const protectedValue = ['sk', 'live-secret-value'].join('-');
-    const sourcePath = join(tempRoot, `clientSecret=${protectedValue}.png`);
+    const protectedIdentifier = ['OPENAI', 'API', 'KEY'].join('_');
+    const protectedValue = 'private-value';
+    const sourcePath = join(tempRoot, `${protectedIdentifier}=${protectedValue}.png`);
     await writeFile(sourcePath, pngBytes);
     const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6143 });
     const created = await repository.create(projectRoot, {
@@ -306,7 +307,7 @@ describe('project image bridge', () => {
       expect(result!.asset.label).toMatch(/^Image [a-f0-9]{8}$/u);
       expect(JSON.stringify(result)).not.toContain(protectedValue);
       expect(journal).not.toContain(protectedValue);
-      expect(journal).not.toContain('clientSecret');
+      expect(journal).not.toContain(protectedIdentifier);
     } finally {
       await handlers.closeAllProjects();
       releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');

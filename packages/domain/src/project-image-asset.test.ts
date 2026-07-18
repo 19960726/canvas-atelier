@@ -41,6 +41,9 @@ describe('project image assets', () => {
     const protectedLabels = [
       'clientSecret=super-private-value',
       'accessToken=super-private-value',
+      `${['OPENAI', 'API', 'KEY'].join('_')}=super-private-value`,
+      `${['my', 'Client', 'Secret'].join('')}=super-private-value`,
+      `${['prod', 'access', 'token'].join('_')}=super-private-value`,
       ['sk', 'live-secret-value'].join('-'),
       ['AI', 'zaSyDUMMY_PRIVATE_KEY_1234567890'].join(''),
     ];
