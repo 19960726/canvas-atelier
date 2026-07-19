@@ -6,6 +6,7 @@ import {
   sanitizeModelJobError,
   transitionModelJob,
 } from '@agent-canvas/domain';
+import { createModelJobRunId } from './model-job-identity';
 
 const DEFAULT_POLL_CONCURRENCY = 4;
 const DEFAULT_MATERIALIZE_CONCURRENCY = 2;
@@ -129,6 +130,7 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
   const submittingJobs = new Set<string>();
   const pollingJobs = new Set<string>();
   const materializingJobs = new Set<string>();
+  const retryingJobs = new Map<string, Promise<void>>();
   let activeRun: Promise<void> | null = null;
   let stopped = false;
 
@@ -230,12 +232,38 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
         await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, now, pollingJobs, materializingJobs);
       });
     },
-    retryJob: async (id) => {
-      const job = await requireJob(storage, id);
-      if (job.status !== 'failed' && job.status !== 'cancelled') {
-        throw new Error(`model job cannot be retried from ${job.status}`);
-      }
-      await putJob(transitionModelJob(job, 'queued', { updatedAt: now(), progress: undefined }));
+    retryJob: (id) => {
+      const existing = retryingJobs.get(id);
+      if (existing !== undefined) return existing;
+      const operation = (async () => {
+        const job = await requireJob(storage, id);
+        if (job.status !== 'failed' && job.status !== 'cancelled') {
+          throw new Error(`model job cannot be retried from ${job.status}`);
+        }
+        const timestamp = now();
+        const retry = createConfirmedModelJob({
+          id: createModelJobRunId(),
+          confirmedAt: timestamp,
+          conversationId: requireRetryField(job.conversationId, 'conversationId'),
+          createdAt: timestamp,
+          displayName: requireRetryField(job.displayName, 'displayName'),
+          modelId: job.modelId,
+          modelRoute: requireRetryField(job.modelRoute, 'modelRoute'),
+          prompt: job.prompt,
+          promptNodeId: job.promptNodeId,
+          provider: requireRetryField(job.provider, 'provider'),
+          queueIndex: job.queueIndex,
+          referenceAssetIds: [...job.referenceAssetIds],
+          referenceSnapshotFingerprint: job.referenceSnapshotFingerprint,
+          referenceSnapshotRevision: job.referenceSnapshotRevision,
+        });
+        await bulkPutJobs([
+          { ...job, error: job.error === undefined ? undefined : sanitizeModelJobError(job.error) },
+          { ...retry, retryCount: job.retryCount + 1 },
+        ]);
+      })().finally(() => { retryingJobs.delete(id); });
+      retryingJobs.set(id, operation);
+      return operation;
     },
     cancelQueuedJob: async (id) => {
       const job = await requireJob(storage, id);
@@ -285,6 +313,13 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       };
     },
   };
+}
+
+function requireRetryField(value: string | undefined, fieldName: string): string {
+  if (value === undefined || value.length === 0) {
+    throw new Error(`${fieldName} is required to create a new model job run`);
+  }
+  return value;
 }
 
 async function submitJob(

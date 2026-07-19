@@ -58,6 +58,39 @@ afterEach(async () => {
 });
 
 describe('provider generation history production sink', () => {
+  it('fails closed when the trusted decoder is not supplied', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'provider-generation-history-'));
+    roots.push(root);
+    const appDataRoot = join(root, 'user-data');
+    await mkdir(appDataRoot);
+    const store = new GenerationHistoryStore({
+      historyRoot: join(appDataRoot, 'generation-history'),
+      ownedRoot: appDataRoot,
+    });
+    const Sink = (desktopCore as Record<string, unknown>).GenerationHistoryProviderSink as HistorySinkConstructor;
+
+    expect(() => new Sink({ store })).toThrow(/trusted image decoder/i);
+  });
+
+  it('uses the Electron nativeImage adapter as the final decoded-size authority', async () => {
+    const createDecoder = (desktopCore as Record<string, unknown>).createElectronTrustedImageDecoder as (nativeImage: {
+      createFromBuffer(buffer: Buffer): {
+        isEmpty(): boolean;
+        getSize(): { width: number; height: number };
+      };
+    }) => (bytes: Uint8Array, image: unknown) => boolean | Promise<boolean>;
+    const createFromBuffer = vi.fn(() => ({
+      isEmpty: () => false,
+      getSize: () => ({ width: 2, height: 3 }),
+    }));
+    const decoder = createDecoder({ createFromBuffer });
+    const inspected = { format: 'png', mediaType: 'image/png', width: 2, height: 3 };
+
+    expect(await decoder(pngBytes, inspected)).toBe(true);
+    expect(await decoder(pngBytes, { ...inspected, width: 4 })).toBe(false);
+    expect(createFromBuffer).toHaveBeenCalledWith(expect.any(Buffer));
+  });
+
   it('records queued, running, succeeded, failed, and cancelled jobs through the real provider service', async () => {
     expect(desktopCore).toHaveProperty('GenerationHistoryProviderSink');
     const Sink = (desktopCore as Record<string, unknown>).GenerationHistoryProviderSink as HistorySinkConstructor | undefined;
@@ -70,7 +103,7 @@ describe('provider generation history production sink', () => {
       historyRoot: join(appDataRoot, 'generation-history'),
       ownedRoot: appDataRoot,
     });
-    const sink = new Sink({ store });
+    const sink = new Sink({ store, trustedImageDecoder: async () => true });
     const submitEntered = deferred<void>();
     const firstSubmit = deferred<ComflyFetchResponse>();
     const rawTaskIds = [
@@ -353,6 +386,18 @@ describe('provider generation history production sink', () => {
     expect((await store.list({ filters: { trashState: 'all' } })).records[0]!.status).toBe('running');
   });
 
+  it('rejects images whose decoded RGBA footprint exceeds the trusted memory budget', async () => {
+    const { sink, store } = await createHistorySink();
+    const historyId = await sink.queued({
+      jobId: 'job-trusted-decoder-pixel-budget',
+      modelDisplayName: 'GPT Image',
+    });
+    await sink.running(historyId);
+
+    await expect(sink.succeeded(historyId, createMinimalGif(32_768, 32_768))).rejects.toThrow(/invalid/i);
+    expect((await store.list({ filters: { trashState: 'all' } })).records[0]!.status).toBe('running');
+  });
+
   it('reconciles a succeeded history terminal after restart when the provider later reports failure', async () => {
     const { appDataRoot, sink, store } = await createHistorySink();
     const rawTaskId = 'raw-provider-task-history-first-succeeded';
@@ -492,6 +537,176 @@ describe('provider generation history production sink', () => {
     expect(retryFetch).not.toHaveBeenCalled();
   });
 
+  it('keeps the paid-submission tombstone after terminal ACK and history deletion', async () => {
+    const { appDataRoot, sink, store } = await createHistorySink();
+    const rawTaskId = 'raw-provider-task-deleted-history-tombstone';
+    const firstFetch: ComflyFetch = vi.fn(async (url) => {
+      if (url.includes('/v1/images/generations')) return jsonResponse({ taskId: rawTaskId, status: 'queued' });
+      return jsonResponse({ taskId: rawTaskId, status: 'failed' });
+    });
+    const firstService = createProviderService(appDataRoot, firstFetch, sink);
+    const submitted = await firstService.submitImageJob({
+      jobId: 'job-provider-history-deleted-tombstone',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'private prompt',
+      conversationId: 'conversation-provider-history-deleted-tombstone',
+      referenceAssetIds: [],
+    });
+    await expect(firstService.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).resolves.toMatchObject({ status: 'failed' });
+    await firstService.ackImageJobTerminal({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+      status: 'failed',
+    });
+    const record = (await store.list({ filters: { trashState: 'all' } })).records[0]!;
+    await store.softDelete({
+      operationId: 'operation_trash_deleted_tombstone',
+      historyIds: [record.id],
+    });
+    await store.permanentlyDelete({
+      operationId: 'operation_delete_deleted_tombstone',
+      historyIds: [record.id],
+    });
+
+    const retryFetch: ComflyFetch = vi.fn(async () => {
+      throw new Error('paid provider request must remain tombstoned after history deletion');
+    });
+    const restarted = createProviderService(appDataRoot, retryFetch, sink);
+    await expect(restarted.submitImageJob({
+      jobId: 'job-provider-history-deleted-tombstone',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'private prompt retry',
+      conversationId: 'conversation-provider-history-deleted-tombstone-retry',
+      referenceAssetIds: [],
+    })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    expect(retryFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['queued', 'running'] as const)(
+    'does not submit another paid provider request when the same job id is already %s',
+    async (state) => {
+      const { appDataRoot, sink } = await createHistorySink();
+      const historyId = await sink.queued({
+        jobId: `job-provider-history-same-${state}`,
+        modelDisplayName: 'GPT Image',
+      });
+      if (state === 'running') await sink.running(historyId);
+      const retryFetch: ComflyFetch = vi.fn(async () => {
+        throw new Error('paid provider request must not be retried for reserved job id');
+      });
+      const retryService = createProviderService(appDataRoot, retryFetch, sink);
+
+      await expect(retryService.submitImageJob({
+        jobId: `job-provider-history-same-${state}`,
+        provider: 'comfly',
+        modelRoute: 'gpt-image',
+        prompt: 'private prompt retry',
+        conversationId: `conversation-provider-history-same-${state}`,
+        referenceAssetIds: [],
+      })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+      expect(retryFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows only one paid request when two services concurrently submit the same job id', async () => {
+    const { appDataRoot, sink } = await createHistorySink();
+    const submitEntered = deferred<void>();
+    const releaseSubmit = deferred<ComflyFetchResponse>();
+    const firstFetch: ComflyFetch = vi.fn(async () => {
+      submitEntered.resolve();
+      return releaseSubmit.promise;
+    });
+    const secondFetch: ComflyFetch = vi.fn(async () => {
+      throw new Error('concurrent duplicate must not reach paid provider request');
+    });
+    const firstService = createProviderService(appDataRoot, firstFetch, sink);
+    const secondService = createProviderService(appDataRoot, secondFetch, sink);
+    const request = {
+      jobId: 'job-provider-history-concurrent-reservation',
+      provider: 'comfly' as const,
+      modelRoute: 'gpt-image',
+      prompt: 'private prompt',
+      conversationId: 'conversation-provider-history-concurrent-reservation',
+      referenceAssetIds: [],
+    };
+
+    const first = firstService.submitImageJob(request);
+    await submitEntered.promise;
+    await expect(secondService.submitImageJob(request)).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+    });
+    releaseSubmit.resolve(jsonResponse({ taskId: 'raw-provider-task-concurrent-reservation', status: 'queued' }));
+    await expect(first).resolves.toMatchObject({ providerTaskId: expect.any(String) });
+    expect(firstFetch).toHaveBeenCalledTimes(1);
+    expect(secondFetch).not.toHaveBeenCalled();
+  });
+
+  it('enforces paid-submission idempotency even when no history sink is composed', async () => {
+    const { appDataRoot } = await createHistorySink();
+    const firstFetch: ComflyFetch = vi.fn(async () => jsonResponse({
+      taskId: 'raw-provider-task-no-history-sink',
+      status: 'queued',
+    }));
+    const firstService = createProviderService(appDataRoot, firstFetch, undefined);
+    await expect(firstService.submitImageJob({
+      jobId: 'job-provider-history-no-sink',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'private prompt',
+      conversationId: 'conversation-provider-history-no-sink',
+      referenceAssetIds: [],
+    })).resolves.toMatchObject({ providerTaskId: expect.any(String) });
+
+    const retryFetch: ComflyFetch = vi.fn(async () => {
+      throw new Error('duplicate without history sink must not reach paid provider request');
+    });
+    const restarted = createProviderService(appDataRoot, retryFetch, undefined);
+    await expect(restarted.submitImageJob({
+      jobId: 'job-provider-history-no-sink',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'private prompt retry',
+      conversationId: 'conversation-provider-history-no-sink-retry',
+      referenceAssetIds: [],
+    })).resolves.toMatchObject({ providerTaskId: expect.any(String) });
+    expect(retryFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['deprecated site-local', 'fec0::1234'],
+    ['IPv4-compatible private', '::192.168.1.1'],
+    ['local-use NAT64', '64:ff9b:1::c0a8:101'],
+  ])('rejects %s IPv6 result addresses before download', async (_label, address) => {
+    const { appDataRoot, sink } = await createHistorySink();
+    const rawTaskId = 'raw-provider-task-site-local-ipv6';
+    const resultUrl = 'https://site-local.example/generated.png';
+    const fetch: ComflyFetch = vi.fn(async (url) => {
+      if (url.includes('/v1/images/generations')) return jsonResponse({ taskId: rawTaskId, status: 'queued' });
+      if (url.includes(encodeURIComponent(rawTaskId))) {
+        return jsonResponse({ taskId: rawTaskId, status: 'succeeded', data: [{ url: resultUrl }] });
+      }
+      return binaryResponse(pngBytes);
+    });
+    const service = createProviderService(appDataRoot, fetch, sink, async () => [address]);
+    const submitted = await service.submitImageJob({
+      jobId: 'job-provider-history-site-local-ipv6',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'private prompt',
+      conversationId: 'conversation-provider-history-site-local-ipv6',
+      referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId }))
+      .resolves.toMatchObject({ status: 'failed' });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('wires one shared durable store into history handlers and the provider sink in both desktop mains', async () => {
     for (const mainPath of [
       join(process.cwd(), 'apps/desktop-modern/src/main.ts'),
@@ -521,7 +736,7 @@ async function createHistorySink(): Promise<{
     ownedRoot: appDataRoot,
   });
   const Sink = (desktopCore as Record<string, unknown>).GenerationHistoryProviderSink as HistorySinkConstructor;
-  return { appDataRoot, sink: new Sink({ store }), store };
+  return { appDataRoot, sink: new Sink({ store, trustedImageDecoder: async () => true }), store };
 }
 
 function createPng(width: number, height: number): Buffer {
@@ -545,6 +760,20 @@ function createDimensionMismatchPng(): Buffer {
   bytes.writeUInt32BE(4, 16);
   const typeAndData = bytes.subarray(12, 29);
   bytes.writeUInt32BE(crc32(typeAndData), 29);
+  return bytes;
+}
+
+function createMinimalGif(width: number, height: number): Buffer {
+  const bytes = Buffer.from([
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b,
+  ]);
+  bytes.writeUInt16LE(width, 6);
+  bytes.writeUInt16LE(height, 8);
+  bytes.writeUInt16LE(width, 24);
+  bytes.writeUInt16LE(height, 26);
   return bytes;
 }
 

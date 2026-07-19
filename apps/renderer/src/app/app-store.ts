@@ -69,6 +69,7 @@ import {
   type ModelJobStore,
 } from '../jobs/job-store';
 import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
+import { createModelJobRunId } from '../jobs/model-job-identity';
 import { runtimeProfile } from './runtime-profile';
 
 let planSequence = 0;
@@ -1688,8 +1689,8 @@ function buildModelJobRequests(
   const prompt = promptNode?.type === 'prompt' ? promptNode.data.prompt : plan.transaction.label;
   const referenceSnapshot = plan.referenceSnapshot
     ?? createExecutionReferenceSnapshot(collectExecutionReferences(project), 0);
-  return Array.from({ length: Math.max(0, plan.jobCount) }, (_, index) => ({
-    id: `model-job-${plan.id}-${index}`,
+  return Array.from({ length: Math.max(0, plan.jobCount) }, () => ({
+    id: createModelJobRunId(),
     promptNodeId: promptNode?.id ?? 'prompt-start',
     prompt,
     provider: profile.provider,

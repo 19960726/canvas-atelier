@@ -100,6 +100,11 @@ export interface GenerationHistoryAvailableAsset {
   readonly source: NodeJS.ReadableStream;
 }
 
+export interface GenerationHistoryMetadataReservation {
+  readonly created: boolean;
+  readonly record: GenerationHistoryRecord;
+}
+
 interface HistoryOperationReceipt {
   readonly kind:
     | 'ingest'
@@ -347,6 +352,40 @@ export class GenerationHistoryStore {
       });
       await this.writeIndexUnlocked(next, currentRaw);
       return stored;
+    });
+  }
+
+  async reserveMetadata(input: {
+    readonly operationId: string;
+    readonly record: GenerationHistoryRecord;
+  }): Promise<GenerationHistoryMetadataReservation> {
+    const operationId = parseOpaqueOperationId(input.operationId);
+    const requested = parseGenerationHistoryRecord(input.record);
+    if (requested.status !== 'queued' || requested.output !== null) {
+      throw historyError('HISTORY_INVALID_REQUEST', false, 'History reservation requires a queued metadata record');
+    }
+    const requestSha256 = sha256Canonical({ kind: 'metadata', record: requested });
+    return this.withLockedIndex(async (current, currentRaw) => {
+      const existing = current.records.find((record) => record.id === requested.id);
+      if (existing !== undefined) {
+        if (existing.job.jobId !== requested.job.jobId) {
+          throw historyError('HISTORY_INVALID_REQUEST', false, 'History reservation identity is invalid');
+        }
+        return Object.freeze({ created: false, record: existing });
+      }
+      const prior = findMatchingReceipt(current, operationId, 'metadata', requestSha256);
+      if (prior !== null) {
+        throw historyError('HISTORY_INVALID_REQUEST', false, 'Completed history reservation is unavailable');
+      }
+      const next = nextIndex(current, [...current.records, requested], {
+        kind: 'metadata',
+        operationId,
+        protectedIds: [],
+        recordIds: [requested.id],
+        requestSha256,
+      });
+      await this.writeIndexUnlocked(next, currentRaw);
+      return Object.freeze({ created: true, record: requested });
     });
   }
 
@@ -638,7 +677,7 @@ export class GenerationHistoryStore {
       const moves: HistoryAssetMove[] = [];
       try {
         for (const record of selected) {
-          if ((record.trash !== null) === trashed || record.output === null || record.output.availability !== 'available') continue;
+          if ((record.trash !== null) === trashed || record.output === null) continue;
           const move = await this.moveRecordAsset(record, trashed);
           if (move !== null) moves.push(move);
         }
@@ -686,17 +725,25 @@ export class GenerationHistoryStore {
       }
       const candidates = expiredOnly
         ? current.records.filter((record) => record.trash !== null
+          && isTerminalHistoryStatus(record.status)
           && Date.parse(record.trash.retentionDeadline) <= this.now())
           .sort((left, right) => Number(hasBlockingProjectReference(left)) - Number(hasBlockingProjectReference(right))
             || left.id.localeCompare(right.id))
           .slice(0, MAX_HISTORY_MUTATION_BATCH)
         : requireHistoryRecords(current, requestedIds);
+      if (!expiredOnly && candidates.some((record) => record.trash === null)) {
+        throw historyError('HISTORY_INVALID_REQUEST', false, 'History must enter trash before permanent deletion');
+      }
+      if (!expiredOnly && candidates.some((record) => !isTerminalHistoryStatus(record.status))) {
+        throw historyError('HISTORY_INVALID_REQUEST', false, 'Active provider history cannot be permanently deleted');
+      }
       const protectedIds = candidates.filter(hasBlockingProjectReference).map((record) => record.id);
       if (!expiredOnly && protectedIds.length > 0) {
         throw historyError('HISTORY_INVALID_REQUEST', false, 'Referenced history cannot be permanently deleted');
       }
       const deletable = candidates.filter((record) => !protectedIds.includes(record.id));
       const stagedMoves: HistoryAssetMove[] = [];
+      let indexCommitted = false;
       try {
         for (const record of deletable) {
           const staged = await this.stageRecordForDeletion(record);
@@ -709,10 +756,11 @@ export class GenerationHistoryStore {
           { kind, operationId, protectedIds, recordIds: purgedIds, requestSha256 },
         );
         await this.writeIndexUnlocked(next, currentRaw);
-        for (const move of stagedMoves) await this.removeConfinedFile(move.destination);
+        indexCommitted = true;
+        for (const move of stagedMoves) await this.removeConfinedFileStrict(move.destination);
         return Object.freeze({ protectedIds, purgedIds, revision: next.revision });
       } catch (error) {
-        await this.rollbackMoves(stagedMoves);
+        if (!indexCommitted) await this.rollbackMoves(stagedMoves);
         throw normalizeHistoryError(error, 'Generation history deletion failed');
       }
     });
@@ -793,8 +841,9 @@ export class GenerationHistoryStore {
     const destination = join(this.historyRoot, toTrash ? 'trash' : 'originals', fileName);
     const destinationState = await this.inspectOriginal(destination, record.output.sha256, record.output.byteSize);
     const sourceState = await this.inspectOriginal(source, record.output.sha256, record.output.byteSize);
-    if (destinationState === 'valid' && sourceState === 'missing') return null;
-    if (destinationState !== 'missing' || sourceState !== 'valid') {
+    if (destinationState !== 'missing' && sourceState === 'missing') return null;
+    if (destinationState === 'missing' && sourceState === 'missing') return null;
+    if (destinationState !== 'missing' || (sourceState !== 'valid' && sourceState !== 'corrupt')) {
       throw historyError('HISTORY_ASSET_CORRUPT', false, 'History original cannot cross the trash boundary safely');
     }
     try {
@@ -875,6 +924,7 @@ export class GenerationHistoryStore {
       try {
         await this.cleanupOwnedTemps();
         const index = await this.readOrCreateIndexUnlocked();
+        await this.reconcileLifecycleLocations(index.payload);
         await this.reconcileDeletionStages(index.payload);
         return await operation(index.payload, index.raw);
       } finally {
@@ -1132,13 +1182,27 @@ export class GenerationHistoryStore {
       const historyAssetId = match[1]!;
       const record = current.records.find((candidate) => candidate.output?.historyAssetId === historyAssetId);
       if (record?.output === undefined || record.output === null) {
-        await this.removeConfinedFile(stagePath);
+        await this.removeConfinedFileStrict(stagePath);
         continue;
       }
       const sourcePath = this.recordAssetPath(record);
       const stagedState = await this.inspectOriginal(stagePath, record.output.sha256, record.output.byteSize);
       const sourceState = await this.inspectOriginal(sourcePath, record.output.sha256, record.output.byteSize);
-      if (stagedState === 'valid' && sourceState === 'missing') {
+      if (stagedState !== 'missing' && sourceState === 'missing') {
+        await this.assertConfinedPathForWrite(stagePath);
+        await this.assertConfinedPathForWrite(sourcePath);
+        await this.fileSystem.rename(stagePath, sourcePath);
+        if (await this.inspectOriginal(sourcePath, record.output.sha256, record.output.byteSize) !== stagedState) {
+          throw historyError('HISTORY_ASSET_CORRUPT', false, 'History deletion recovery failed integrity verification');
+        }
+        continue;
+      }
+      if (stagedState !== 'missing' && sourceState === 'valid') {
+        await this.removeConfinedFileStrict(stagePath);
+        continue;
+      }
+      if (stagedState === 'valid' && sourceState === 'corrupt') {
+        await this.removeConfinedFileStrict(sourcePath);
         await this.assertConfinedPathForWrite(stagePath);
         await this.assertConfinedPathForWrite(sourcePath);
         await this.fileSystem.rename(stagePath, sourcePath);
@@ -1147,12 +1211,52 @@ export class GenerationHistoryStore {
         }
         continue;
       }
-      if (stagedState === 'valid' && sourceState === 'valid') {
-        await this.removeConfinedFile(stagePath);
+      if (stagedState === 'corrupt' && sourceState === 'corrupt') {
+        await this.removeConfinedFileStrict(stagePath);
         continue;
       }
       if (stagedState === 'missing') continue;
       throw historyError('HISTORY_ASSET_CORRUPT', false, 'History deletion recovery evidence is corrupt');
+    }
+  }
+
+  private async reconcileLifecycleLocations(current: HistoryIndexPayload): Promise<void> {
+    for (const record of current.records) {
+      if (record.output === null) continue;
+      const fileName = `${record.output.historyAssetId}.${record.output.format}`;
+      const expected = join(this.historyRoot, record.trash === null ? 'originals' : 'trash', fileName);
+      const alternate = join(this.historyRoot, record.trash === null ? 'trash' : 'originals', fileName);
+      const expectedPresence = await this.inspectConfinedFilePresence(expected);
+      const alternatePresence = await this.inspectConfinedFilePresence(alternate);
+      if (expectedPresence === 'missing' && alternatePresence === 'file') {
+        await this.assertConfinedPathForWrite(alternate);
+        await this.assertConfinedPathForWrite(expected);
+        await this.fileSystem.rename(alternate, expected);
+        continue;
+      }
+      if (expectedPresence === 'file' && alternatePresence === 'missing') continue;
+      if (expectedPresence === 'file' && alternatePresence === 'file') {
+        const expectedState = await this.inspectOriginal(expected, record.output.sha256, record.output.byteSize);
+        if (expectedState === 'valid') {
+          await this.removeConfinedFileStrict(alternate);
+          continue;
+        }
+        throw historyError('HISTORY_ASSET_CORRUPT', false, 'History lifecycle recovery found conflicting originals');
+      }
+      if (expectedPresence === 'invalid' || alternatePresence === 'invalid') {
+        throw historyError('HISTORY_ASSET_CORRUPT', false, 'History lifecycle recovery found an invalid original');
+      }
+    }
+  }
+
+  private async inspectConfinedFilePresence(path: string): Promise<'missing' | 'file' | 'invalid'> {
+    try {
+      await this.assertConfinedPathForRead(path);
+      return isRegularFile(await this.requireLstat(path)) ? 'file' : 'invalid';
+    } catch (error) {
+      if (isErrno(error, 'ENOENT')) return 'missing';
+      if (isHistoryError(error)) return 'invalid';
+      throw error;
     }
   }
 
@@ -1314,6 +1418,24 @@ export class GenerationHistoryStore {
       if (!isErrno(error, 'ENOENT')) {
         // Owned residue cleanup is best-effort after a typed primary failure.
       }
+    }
+  }
+
+  private async removeConfinedFileStrict(path: string): Promise<void> {
+    try {
+      await this.assertConfinedPathForRead(path);
+      const stats = await this.requireLstat(path);
+      if (!isRegularFile(stats)) {
+        throw historyError('HISTORY_ASSET_CORRUPT', false, 'Generation history cleanup target is invalid');
+      }
+      await this.assertConfinedPathForWrite(path);
+      await this.fileSystem.rm(path, { force: true });
+      if (await this.pathExists(path)) {
+        throw historyError('HISTORY_WRITE_FAILED', true, 'Generation history cleanup did not remove owned data');
+      }
+    } catch (error) {
+      if (isErrno(error, 'ENOENT')) return;
+      throw normalizeHistoryError(error, 'Generation history cleanup failed');
     }
   }
 

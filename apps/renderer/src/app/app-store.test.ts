@@ -504,6 +504,7 @@ describe('project optimization memory', () => {
     await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
 
     expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      id: expect.stringMatching(/^model-job-v2-/u),
       resultAssetId: 'asset-live-job',
       status: 'completed',
     });

@@ -25,6 +25,7 @@ import type {
   GenerationHistoryFailureCode,
   GenerationHistoryProviderSinkContract,
 } from './generation-history-provider-sink.js';
+import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
 import type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
 import {
   PROVIDER_BRIDGE_CHANNELS,
@@ -49,7 +50,6 @@ import {
   type SubmitImageJobBridgeResult,
   type UnlockProviderBridgeRequest,
 } from './provider-contracts.js';
-
 export type { ComflyFetch } from '@agent-canvas/provider-comfly';
 export {
   PROVIDER_BRIDGE_CHANNELS,
@@ -83,6 +83,7 @@ export type {
 export type { ProviderCredentialStore, SafeStorageAdapter } from './provider-credential-vault.js';
 const DEFAULT_COMFLY_BASE_URL = 'https://api.comfly.chat';
 const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CURRENT_GENERATION_JOB_ID_PREFIX = 'model-job-v2-';
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
 export type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
 interface ConfigurationSnapshot {
@@ -188,12 +189,19 @@ export function createComflyProviderService(options: {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;
       const snapshot = await captureRuntimeSnapshot();
       const profile = selectProfile(snapshot.profiles, validated.provider, validated.modelRoute);
-      const historyId = await options.historySink?.queued({
-        jobId: validated.jobId,
-        modelDisplayName: profile.displayName,
+      const historyId = deriveGenerationHistoryId(validated.jobId);
+      const submissionCreated = await providerTaskMappings.reserveSubmission({
+        currentIdentity: validated.jobId.startsWith(CURRENT_GENERATION_JOB_ID_PREFIX), historyId,
       });
-      if (historyId !== undefined && options.historySink !== undefined) {
-        const durableTerminal = await options.historySink.getTerminal(historyId);
+      if (!submissionCreated) {
+        const existingMapping = await providerTaskMappings.findByHistoryId(historyId);
+        if (existingMapping !== undefined) return { providerTaskId: existingMapping.publicTaskId };
+        let durableTerminal: GenerationHistoryDurableTerminal | null = null;
+        try {
+          durableTerminal = await options.historySink?.getTerminal(historyId) ?? null;
+        } catch {
+          // The provider submission tombstone remains authoritative after history deletion.
+        }
         if (durableTerminal !== null) {
           const publicTaskId = createPublicProviderTaskId();
           await providerTaskMappings.set(createHistoryTerminalMappingRecord(
@@ -204,6 +212,35 @@ export function createComflyProviderService(options: {
           ));
           return { providerTaskId: publicTaskId };
         }
+        throw createProviderBridgeError(
+          'PROVIDER_INVALID_RESPONSE',
+          'Generation job is already reserved; create a new run to submit again',
+        );
+      }
+      const reservation = await options.historySink?.reserveSubmission({
+        jobId: validated.jobId,
+        modelDisplayName: profile.displayName,
+      });
+      if (reservation !== undefined && reservation.historyId !== historyId) {
+        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generation history reservation identity is invalid');
+      }
+      if (reservation !== undefined && !reservation.created) {
+        const existingMapping = await providerTaskMappings.findByHistoryId(historyId);
+        if (existingMapping !== undefined) return { providerTaskId: existingMapping.publicTaskId };
+        if (reservation.terminal !== null) {
+          const publicTaskId = createPublicProviderTaskId();
+          await providerTaskMappings.set(createHistoryTerminalMappingRecord(
+            publicTaskId,
+            historyId,
+            reservation.terminal,
+            nowIso(),
+          ));
+          return { providerTaskId: publicTaskId };
+        }
+        throw createProviderBridgeError(
+          'PROVIDER_INVALID_RESPONSE',
+          'Generation job is already reserved; create a new run to submit again',
+        );
       }
       let parsed: ReturnType<typeof parseImageTaskResponse>;
       try {
@@ -214,7 +251,7 @@ export function createComflyProviderService(options: {
         }));
         parsed = parseImageTaskResponse(response);
       } catch (error) {
-        if (historyId !== undefined) {
+        if (options.historySink !== undefined) {
           await options.historySink?.failed(historyId, historyFailureCode(error));
         }
         throw error;
@@ -225,12 +262,12 @@ export function createComflyProviderService(options: {
         provider: 'comfly',
         publicTaskId,
         rawTaskId: parsed.taskId,
-        ...(historyId === undefined ? {} : { historyId }),
+        historyId,
         state: 'running',
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      if (historyId !== undefined) await options.historySink?.running(historyId);
+      if (options.historySink !== undefined) await options.historySink.running(historyId);
       return { providerTaskId: publicTaskId };
     },
     async pollImageJob(request) {
@@ -683,10 +720,13 @@ function isPublicProviderAddress(address: string): boolean {
 function createProviderResultAddressBlockList(): BlockList {
   const blockList = new BlockList();
   for (const [address, prefix] of [
-    ['::', 128],
+    ['::', 96],
     ['::1', 128],
     ['::ffff:0:0', 96],
+    ['64:ff9b::', 96],
+    ['64:ff9b:1::', 48],
     ['fc00::', 7],
+    ['fec0::', 10],
     ['fe80::', 10],
     ['ff00::', 8],
   ] as const) blockList.addSubnet(address, prefix, 'ipv6');

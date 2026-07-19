@@ -86,6 +86,10 @@ describe('generation history safe service', () => {
     const projectAssetPath = join(projectRoot, 'assets', `${copied.copies[0]!.projectAssetId}.png`);
     expect(await readFile(projectAssetPath)).toEqual(pngBytes);
 
+    await store.softDelete({
+      operationId: 'operation_trash_aaaaaaaa',
+      historyIds: [record.id],
+    });
     await store.permanentlyDelete({
       operationId: 'operation_delete_aaaaaaaa',
       historyIds: [record.id],

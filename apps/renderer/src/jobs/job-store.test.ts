@@ -726,9 +726,11 @@ describe('persistent model job store', () => {
   it('retries failed jobs, cancels queued jobs, and stores compact sanitized errors', async () => {
     const storage = createInMemoryModelJobStorage();
     const cancel = vi.fn(async () => {});
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `task-${job.id}` }));
+    const executor = createExecutor({ cancel, submit });
     const store = createModelJobStore({
       storage,
-      executor: createExecutor({ cancel }),
+      executor,
       commitProjectTransaction: vi.fn(),
       now: fixedNow,
     });
@@ -745,11 +747,82 @@ describe('persistent model job store', () => {
 
     await store.retryJob('job-fail');
     await store.cancelQueuedJob('job-cancel');
+    await store.retryJob('job-cancel');
 
-    expect(await storage.get('job-fail')).toMatchObject({ status: 'queued', retryCount: 1 });
+    const jobs = await store.listJobs();
+    const retries = jobs.filter((job) => job.id !== 'job-fail' && job.id !== 'job-cancel');
+    expect(await storage.get('job-fail')).toMatchObject({ status: 'failed', retryCount: 0 });
     expect(await storage.get('job-cancel')).toMatchObject({ status: 'cancelled' });
-    expect(JSON.stringify(await store.listJobs())).not.toMatch(/Authorization|C:\\\\Users|secret/i);
+    expect(retries).toHaveLength(2);
+    expect(new Set(retries.map((job) => job.id)).size).toBe(2);
+    expect(retries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: expect.stringMatching(/^model-job-v2-[a-f0-9]{32}$/u),
+        prompt: 'Generate a product image',
+        queueIndex: 0,
+        retryCount: 1,
+        status: 'queued',
+      }),
+      expect.objectContaining({
+        id: expect.stringMatching(/^model-job-v2-[a-f0-9]{32}$/u),
+        queueIndex: 1,
+        retryCount: 1,
+        status: 'queued',
+      }),
+    ]));
+    expect(JSON.stringify(jobs)).not.toMatch(/Authorization|C:\\\\Users|secret/i);
     expect(cancel).not.toHaveBeenCalled();
+
+    await store.processQueue();
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(submit.mock.calls.map(([job]) => job.id).sort()).toEqual(retries.map((job) => job.id).sort());
+  });
+
+  it('coalesces concurrent retries from the same terminal job into one paid run identity', async () => {
+    const baseStorage = createInMemoryModelJobStorage();
+    let blockRetryWrite = false;
+    let releaseRetryWrite!: () => void;
+    let markRetryWriteEntered!: () => void;
+    const retryWriteEntered = new Promise<void>((resolve) => { markRetryWriteEntered = resolve; });
+    const retryWriteGate = new Promise<void>((resolve) => { releaseRetryWrite = resolve; });
+    const storage = {
+      ...baseStorage,
+      bulkPut: async (jobs: ModelJob[]) => {
+        if (blockRetryWrite) {
+          blockRetryWrite = false;
+          markRetryWriteEntered();
+          await retryWriteGate;
+        }
+        await baseStorage.bulkPut(jobs);
+      },
+    };
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `task-${job.id}` }));
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({ submit }),
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-concurrent-retry' })],
+    });
+    await baseStorage.put({ ...(await baseStorage.get('job-concurrent-retry'))!, status: 'failed' });
+    blockRetryWrite = true;
+
+    const first = store.retryJob('job-concurrent-retry');
+    await retryWriteEntered;
+    const second = store.retryJob('job-concurrent-retry');
+    releaseRetryWrite();
+    await Promise.all([first, second]);
+
+    const retries = (await store.listJobs()).filter((job) => job.id !== 'job-concurrent-retry');
+    expect(retries).toHaveLength(1);
+    expect(retries[0]?.id).toMatch(/^model-job-v2-[a-f0-9]{32}$/u);
+    await store.processQueue();
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ id: retries[0]?.id }));
   });
 
   it('keeps one conversation while jobs use different dynamic routes', async () => {

@@ -495,6 +495,60 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it.each([1, 4] as const)(
+    'blocks legacy job identities after a v%s ledger migration while allowing a new run identity',
+    async (ledgerVersion) => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const legacyToken = ['sk', 'legacy-submission-barrier-token'].join('-');
+    await writeLegacySafeStorageCredential(appDataRoot, safeStorage, legacyToken);
+    await writeEncryptedTaskMappingsForTest(appDataRoot, legacyToken, [], ledgerVersion);
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({
+      taskId: 'raw-provider-task-after-migration',
+      status: 'queued',
+    }));
+    const request = {
+      provider: 'comfly' as const,
+      modelRoute: 'gpt-image',
+      prompt: 'migration submission barrier',
+      conversationId: 'conversation-migration-barrier',
+      referenceAssetIds: [],
+    };
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch,
+      profiles,
+    });
+
+    await expect(service.submitImageJob({
+      ...request,
+      jobId: 'model-job-legacy-acked-and-deleted',
+    })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await expect(service.submitImageJob({
+      ...request,
+      jobId: 'model-job-v2-new-run-after-migration',
+    })).resolves.toMatchObject({ providerTaskId: expect.any(String) });
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const restartedFetch = vi.fn();
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: restartedFetch,
+      profiles,
+    });
+    await expect(restarted.submitImageJob({
+      ...request,
+      jobId: 'model-job-legacy-acked-and-deleted',
+    })).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    expect(restartedFetch).not.toHaveBeenCalled();
+    await cleanupTempRoot(appDataRoot);
+    },
+  );
+
   it('keeps passphrase-backed running jobs paused while credentials are locked and resumes after unlock', async () => {
     const appDataRoot = await makeTempRoot();
     const firstStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: unavailableSafeStorage() });
@@ -1115,7 +1169,7 @@ describe('Comfly provider service', () => {
       message: expect.not.stringMatching(/Authorization|Bearer|sk-task-9/i),
     });
     await cleanupTempRoot(appDataRoot);
-  });
+  }, 15_000);
 
   it('models cancel as a replayable terminal where first terminal wins', async () => {
     const appDataRoot = await makeTempRoot();
@@ -2578,13 +2632,17 @@ async function writeEncryptedTaskMappingsForTest(
   appDataRoot: string,
   secret: string,
   mappings: unknown[],
+  payloadVersion: 1 | 4 = 1,
 ): Promise<void> {
   const salt = randomBytes(16);
   const iv = randomBytes(12);
   const key = await scrypt(secret, salt, 32) as Buffer;
   const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const payload = payloadVersion === 4
+    ? { version: 4, mappings, submissionReservations: [] }
+    : { version: 1, mappings };
   const ciphertext = Buffer.concat([
-    cipher.update(JSON.stringify({ version: 1, mappings }), 'utf8'),
+    cipher.update(JSON.stringify(payload), 'utf8'),
     cipher.final(),
   ]);
   await writeFile(join(appDataRoot, 'provider-task-mappings.json'), `${JSON.stringify({

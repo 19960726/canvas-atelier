@@ -42,6 +42,7 @@ export interface ProviderTaskMappingRecord {
 
 export interface ProviderTaskMappingStore {
   ackTerminal(publicTaskId: string, status: ProviderImageJobTerminalStatus): Promise<void>;
+  findByHistoryId(historyId: string): Promise<ProviderTaskMappingRecord | undefined>;
   gcTerminalTombstones(expireBeforeMs: number): Promise<void>;
   get(publicTaskId: string): Promise<ProviderTaskMappingRecord | undefined>;
   markCancelled(publicTaskId: string, now: string): Promise<ProviderTaskMappingRecord | undefined>;
@@ -50,6 +51,10 @@ export interface ProviderTaskMappingStore {
     result: Extract<PollImageJobBridgeResult, { status: 'completed' | 'failed' }>,
     now: string,
   ): Promise<ProviderTaskMappingRecord | undefined>;
+  reserveSubmission(input: {
+    readonly currentIdentity: boolean;
+    readonly historyId: string;
+  }): Promise<boolean>;
   set(record: ProviderTaskMappingRecord): Promise<void>;
 }
 
@@ -59,6 +64,13 @@ interface ProviderTaskMappingEnvelope {
   readonly ivHex: string;
   readonly authTagHex: string;
   readonly ciphertextHex: string;
+}
+
+interface ProviderTaskMappingPayload {
+  readonly legacySubmissionBarrier: boolean;
+  readonly mappings: readonly ProviderTaskMappingRecord[];
+  readonly submissionReservations: readonly string[];
+  readonly version: 1 | 2 | 3 | 4 | 5;
 }
 
 export function createProviderTaskMappingStore(options: {
@@ -74,32 +86,43 @@ export function createProviderTaskMappingStore(options: {
   return {
     ackTerminal: (publicTaskId, status) => enqueue(async () => {
       await withMappingLock(async () => {
-        const { mappings, usedFallback } = await readMappingsUnlocked();
+        const state = await readMappingsUnlocked();
+        const { mappings, submissionReservations } = state;
         const record = mappings.get(publicTaskId);
         if (record === undefined) {
-          if (usedFallback) await writeMappingsUnlocked(mappings);
+          if (state.needsRewrite) await writeMappingsUnlocked(state);
           return;
         }
         if (record.state === 'running' || record.state !== status) {
           throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider terminal ACK status does not match');
         }
         mappings.delete(publicTaskId);
-        await writeMappingsUnlocked(mappings);
+        await writeMappingsUnlocked(state);
       });
     }),
+    findByHistoryId: (historyId) => enqueue(async () => withMappingLock(async () => {
+      const state = await readMappingsUnlocked();
+      const { mappings } = state;
+      if (state.needsRewrite) await writeMappingsUnlocked(state);
+      return [...mappings.values()]
+        .filter((record) => record.historyId === historyId)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    })),
     gcTerminalTombstones: () => enqueue(async () => {
       await withMappingLock(async () => {
-        const { mappings, usedFallback } = await readMappingsUnlocked();
-        if (usedFallback) await writeMappingsUnlocked(mappings);
+        const state = await readMappingsUnlocked();
+        if (state.needsRewrite) await writeMappingsUnlocked(state);
       });
     }),
     get: (publicTaskId) => enqueue(async () => withMappingLock(async () => {
-      const { mappings, usedFallback } = await readMappingsUnlocked();
-      if (usedFallback) await writeMappingsUnlocked(mappings);
+      const state = await readMappingsUnlocked();
+      if (state.needsRewrite) await writeMappingsUnlocked(state);
+      const { mappings } = state;
       return mappings.get(publicTaskId);
     })),
     markCancelled: (publicTaskId, now) => enqueue(async () => withMappingLock(async () => {
-      const { mappings } = await readMappingsUnlocked();
+      const state = await readMappingsUnlocked();
+      const { mappings } = state;
       const record = mappings.get(publicTaskId);
       if (record === undefined) return undefined;
       if (record.state !== 'running') return record;
@@ -110,11 +133,12 @@ export function createProviderTaskMappingStore(options: {
         terminalAt: now,
       };
       mappings.set(publicTaskId, cancelled);
-      await writeMappingsUnlocked(mappings);
+      await writeMappingsUnlocked(state);
       return cancelled;
     })),
     markTerminal: (publicTaskId, result, now) => enqueue(async () => withMappingLock(async () => {
-      const { mappings } = await readMappingsUnlocked();
+      const state = await readMappingsUnlocked();
+      const { mappings } = state;
       const record = mappings.get(publicTaskId);
       if (record === undefined) return undefined;
       if (record.state !== 'running') return record;
@@ -126,14 +150,31 @@ export function createProviderTaskMappingStore(options: {
         ...(result.status === 'completed' ? { result: result.result } : { error: result.error }),
       };
       mappings.set(publicTaskId, terminal);
-      await writeMappingsUnlocked(mappings);
+      await writeMappingsUnlocked(state);
       return terminal;
+    })),
+    reserveSubmission: (input) => enqueue(async () => withMappingLock(async () => {
+      const parsedHistoryId = parseHistoryId(input.historyId);
+      const state = await readMappingsUnlocked();
+      const { submissionReservations } = state;
+      if (state.legacySubmissionBarrier && !input.currentIdentity) {
+        if (state.needsRewrite) await writeMappingsUnlocked(state);
+        throw createProviderBridgeError(
+          'PROVIDER_INVALID_RESPONSE',
+          'Legacy generation job identity cannot be submitted; create a new run',
+        );
+      }
+      if (submissionReservations.has(parsedHistoryId)) return false;
+      submissionReservations.add(parsedHistoryId);
+      await writeMappingsUnlocked(state);
+      return true;
     })),
     set: (record) => enqueue(async () => {
       await withMappingLock(async () => {
-        const { mappings } = await readMappingsUnlocked();
+        const state = await readMappingsUnlocked();
+        const { mappings } = state;
         mappings.set(record.publicTaskId, record);
-        await writeMappingsUnlocked(mappings);
+        await writeMappingsUnlocked(state);
       });
     }),
   };
@@ -171,7 +212,12 @@ export function createProviderTaskMappingStore(options: {
     }
   }
 
-  async function readMappingsUnlocked(): Promise<{ mappings: Map<string, ProviderTaskMappingRecord>; usedFallback: boolean }> {
+  async function readMappingsUnlocked(): Promise<{
+    legacySubmissionBarrier: boolean;
+    mappings: Map<string, ProviderTaskMappingRecord>;
+    needsRewrite: boolean;
+    submissionReservations: Set<string>;
+  }> {
     try {
       await assertConfinedProviderTaskPathForRead(fileSystem, options.appDataRoot, targetPath);
       const serialized = await fileSystem.readFile(targetPath, 'utf8');
@@ -179,12 +225,19 @@ export function createProviderTaskMappingStore(options: {
       const decrypted = await decryptWithMappingSecrets(envelope, await options.secretSupplier());
       const parsed = parseTaskMappingPayload(JSON.parse(decrypted.plaintext) as unknown);
       return {
-        mappings: new Map(parsed.map((record) => [record.publicTaskId, record])),
-        usedFallback: decrypted.usedFallback,
+        legacySubmissionBarrier: parsed.legacySubmissionBarrier,
+        mappings: new Map(parsed.mappings.map((record) => [record.publicTaskId, record])),
+        needsRewrite: decrypted.usedFallback || parsed.version !== 5,
+        submissionReservations: new Set(parsed.submissionReservations),
       };
     } catch (error) {
       if (isMissingFileError(error)) {
-        return { mappings: new Map(), usedFallback: false };
+        return {
+          legacySubmissionBarrier: false,
+          mappings: new Map(),
+          needsRewrite: false,
+          submissionReservations: new Set(),
+        };
       }
       if (isProviderBridgeError(error)) {
         throw error;
@@ -193,13 +246,19 @@ export function createProviderTaskMappingStore(options: {
     }
   }
 
-  async function writeMappingsUnlocked(mappings: Map<string, ProviderTaskMappingRecord>): Promise<void> {
+  async function writeMappingsUnlocked(state: {
+    readonly legacySubmissionBarrier: boolean;
+    readonly mappings: ReadonlyMap<string, ProviderTaskMappingRecord>;
+    readonly submissionReservations: ReadonlySet<string>;
+  }): Promise<void> {
     await fileSystem.mkdir(options.appDataRoot, { recursive: true });
     await assertConfinedProviderTaskPathForWrite(fileSystem, options.appDataRoot, targetPath);
     const secret = await options.secretSupplier();
     const envelope = await encryptSerializedPayload(JSON.stringify({
-      version: 3,
-      mappings: [...mappings.values()],
+      version: 5,
+      legacySubmissionBarrier: state.legacySubmissionBarrier,
+      mappings: [...state.mappings.values()],
+      submissionReservations: [...state.submissionReservations].sort(),
     }), secret.primary);
     try {
       await writeConfinedAtomicUpdate(fileSystem, {
@@ -238,12 +297,30 @@ function parseTaskMappingEnvelope(value: unknown): ProviderTaskMappingEnvelope {
   };
 }
 
-function parseTaskMappingPayload(value: unknown): ProviderTaskMappingRecord[] {
-  const record = expectStrictRecord(value, ['version', 'mappings']);
-  if ((record.version !== 1 && record.version !== 2 && record.version !== 3) || !Array.isArray(record.mappings)) {
+function parseTaskMappingPayload(value: unknown): ProviderTaskMappingPayload {
+  const record = expectStrictRecord(value, [
+    'version',
+    'legacySubmissionBarrier',
+    'mappings',
+    'submissionReservations',
+  ]);
+  if (
+    (
+      record.version !== 1
+      && record.version !== 2
+      && record.version !== 3
+      && record.version !== 4
+      && record.version !== 5
+    )
+    || !Array.isArray(record.mappings)
+    || ((record.version === 4 || record.version === 5) && !Array.isArray(record.submissionReservations))
+    || (record.version < 4 && record.submissionReservations !== undefined)
+    || (record.version === 5 && typeof record.legacySubmissionBarrier !== 'boolean')
+    || (record.version !== 5 && record.legacySubmissionBarrier !== undefined)
+  ) {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
   }
-  return record.mappings.map((entry) => {
+  const mappings = record.mappings.map((entry) => {
     const item = expectStrictRecord(entry, [
       'provider',
       'publicTaskId',
@@ -273,6 +350,20 @@ function parseTaskMappingPayload(value: unknown): ProviderTaskMappingRecord[] {
       ...(item.error === undefined ? {} : { error: validateProviderError(item.error) }),
     };
   });
+  const submissionReservations = record.version >= 4
+    ? (record.submissionReservations as unknown[]).map(parseHistoryId)
+    : mappings.flatMap((mapping) => mapping.historyId === undefined ? [] : [mapping.historyId]);
+  if (new Set(submissionReservations).size !== submissionReservations.length) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+  }
+  return {
+    version: record.version,
+    legacySubmissionBarrier: record.version < 5
+      ? true
+      : record.legacySubmissionBarrier as boolean,
+    mappings,
+    submissionReservations,
+  };
 }
 
 function parseHistoryId(value: unknown): string {

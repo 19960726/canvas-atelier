@@ -25,7 +25,18 @@ export type GenerationHistoryDurableTerminal =
   | { readonly status: 'failed' }
   | { readonly status: 'cancelled' };
 
+export interface GenerationHistorySubmissionReservation {
+  readonly created: boolean;
+  readonly historyId: string;
+  readonly status: GenerationHistoryRecord['status'];
+  readonly terminal: GenerationHistoryDurableTerminal | null;
+}
+
 export interface GenerationHistoryProviderSinkContract {
+  reserveSubmission(input: {
+    readonly jobId: string;
+    readonly modelDisplayName: string;
+  }): Promise<GenerationHistorySubmissionReservation>;
   queued(input: {
     readonly jobId: string;
     readonly modelDisplayName: string;
@@ -54,20 +65,21 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
   constructor(options: {
     readonly now?: () => number;
     readonly store: GenerationHistoryStore;
-    readonly trustedImageDecoder?: TrustedImageDecoder;
+    readonly trustedImageDecoder: TrustedImageDecoder;
   }) {
+    if (typeof options.trustedImageDecoder !== 'function') {
+      throw new Error('Trusted image decoder is required');
+    }
     this.now = options.now ?? Date.now;
     this.store = options.store;
-    this.trustedImageDecoder = options.trustedImageDecoder ?? trustedImageDecoderUnavailable;
+    this.trustedImageDecoder = options.trustedImageDecoder;
   }
 
-  async queued(input: {
+  async reserveSubmission(input: {
     readonly jobId: string;
     readonly modelDisplayName: string;
-  }): Promise<string> {
+  }): Promise<GenerationHistorySubmissionReservation> {
     const identities = deriveHistoryIdentities(input.jobId);
-    const existing = await this.getRecord(identities.historyId);
-    if (existing !== undefined) return identities.historyId;
     const timestamp = this.nowIso();
     const record = parseGenerationHistoryRecord({
       schemaVersion: GENERATION_HISTORY_SCHEMA_VERSION,
@@ -93,11 +105,23 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
       trash: null,
       termination: null,
     });
-    await this.store.upsertMetadata({
+    const reservation = await this.store.reserveMetadata({
       operationId: operationId(identities.historyId, 'queued'),
       record,
     });
-    return identities.historyId;
+    return Object.freeze({
+      created: reservation.created,
+      historyId: identities.historyId,
+      status: reservation.record.status,
+      terminal: terminalFromRecord(reservation.record),
+    });
+  }
+
+  async queued(input: {
+    readonly jobId: string;
+    readonly modelDisplayName: string;
+  }): Promise<string> {
+    return (await this.reserveSubmission(input)).historyId;
   }
 
   async running(historyId: string): Promise<void> {
@@ -255,6 +279,10 @@ function isHistoryRecordUnavailable(error: unknown): boolean {
     && error.code === 'HISTORY_INVALID_REQUEST';
 }
 
+export function deriveGenerationHistoryId(jobId: string): string {
+  return deriveHistoryIdentities(jobId).historyId;
+}
+
 function deriveHistoryIdentities(jobId: string): {
   readonly historyId: string;
   readonly jobId: string;
@@ -300,7 +328,15 @@ interface InspectedImage {
 
 function inspectImage(bytes: Buffer): InspectedImage {
   const image = inspectPng(bytes) ?? inspectGif(bytes) ?? inspectJpeg(bytes) ?? inspectWebp(bytes);
-  if (image === null || image.width <= 0 || image.height <= 0 || image.width > 32_768 || image.height > 32_768) {
+  if (
+    image === null
+    || image.width <= 0
+    || image.height <= 0
+    || image.width > 32_768
+    || image.height > 32_768
+    || !Number.isSafeInteger(image.width * image.height * 4)
+    || image.width * image.height * 4 > MAX_DECODED_IMAGE_BYTES
+  ) {
     throw new Error('Generated result was invalid');
   }
   return image;
@@ -470,10 +506,6 @@ function inspectJpeg(bytes: Buffer): InspectedImage | null {
     }
   }
   return null;
-}
-
-function trustedImageDecoderUnavailable(): boolean {
-  return true;
 }
 
 function isJpegStartOfFrame(marker: number): boolean {

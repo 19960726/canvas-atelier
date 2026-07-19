@@ -676,6 +676,49 @@ describe('generation history concurrent lifecycle', () => {
     })).resolves.toMatchObject({ protectedIds: [], purgedIds: [record.id] });
   });
 
+  it('requires active records to enter trash before permanent deletion', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const store = new Store(harness);
+    const record = historyRecord('history_aaaaaaaaaaaaaaaa', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_aaaaaaaa', record, source: chunks(pngBytes) });
+
+    await expect(store.permanentlyDelete({
+      operationId: 'operation_delete_active_aaaaaaaa',
+      historyIds: [record.id],
+    })).rejects.toMatchObject({ code: 'HISTORY_INVALID_REQUEST' });
+    expect((await store.list({ filters: { trashState: 'all' } })).records).toEqual([record]);
+    expect(await readdir(join(harness.historyRoot, 'originals'))).toEqual([
+      `${record.output!.historyAssetId}.png`,
+    ]);
+  });
+
+  it.each(['queued', 'running'] as const)(
+    'does not permanently delete a trashed %s provider lifecycle record',
+    async (status) => {
+      const Store = requireHistoryStore();
+      if (Store === null) return;
+      const harness = await createHarness();
+      const store = new Store(harness);
+      const record = providerLifecycleRecord('history_provider_lifecycle', status);
+      await store.upsertMetadata({
+        operationId: 'operation_provider_lifecycle',
+        record,
+      });
+      await store.softDelete({
+        operationId: 'operation_trash_provider_lifecycle',
+        historyIds: [record.id],
+      });
+
+      await expect(store.permanentlyDelete({
+        operationId: 'operation_delete_provider_lifecycle',
+        historyIds: [record.id],
+      })).rejects.toMatchObject({ code: 'HISTORY_INVALID_REQUEST' });
+      expect((await store.list({ filters: { trashState: 'all' } })).records).toHaveLength(1);
+    },
+  );
+
   it('restores within retention and purges expired files only after blocking references are removed', async () => {
     const Store = requireHistoryStore();
     if (Store === null) return;
@@ -753,7 +796,7 @@ describe('generation history concurrent lifecycle', () => {
     });
   });
 
-  it('removes a confined corrupt original when its history metadata is permanently deleted', async () => {
+  it('moves a confined corrupt original into trash and removes it on permanent deletion', async () => {
     const Store = requireHistoryStore();
     if (Store === null) return;
     const harness = await createHarness();
@@ -763,6 +806,14 @@ describe('generation history concurrent lifecycle', () => {
     const originalPath = join(harness.historyRoot, 'originals', `${record.output!.historyAssetId}.png`);
     await writeFile(originalPath, Buffer.from('corrupt'));
     expect((await store.list({ filters: { trashState: 'all' } })).records[0]!.output?.availability).toBe('corrupt');
+    await store.softDelete({
+      operationId: 'operation_trash_corrupt_aaaaaaaa',
+      historyIds: [record.id],
+    });
+    expect(await readdir(join(harness.historyRoot, 'originals'))).toEqual([]);
+    expect(await readdir(join(harness.historyRoot, 'trash'))).toEqual([
+      `${record.output!.historyAssetId}.png`,
+    ]);
 
     await store.permanentlyDelete({
       operationId: 'operation_delete_aaaaaaaa',
@@ -774,6 +825,70 @@ describe('generation history concurrent lifecycle', () => {
       .some((entry) => entry.startsWith('.history-purge-'))).toBe(false);
   });
 
+  it('repairs an interrupted trash move from the durable index in the same process and after restart', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const fileSystem = new InterruptedTrashMoveFileSystem();
+    const store = new Store({ ...harness, fileSystem });
+    const record = historyRecord('history_aaaaaaaaaaaaaaaa', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_aaaaaaaa', record, source: chunks(pngBytes) });
+    fileSystem.arm();
+
+    await expect(store.softDelete({
+      operationId: 'operation_trash_interrupted_aaaaaaaa',
+      historyIds: [record.id],
+    })).rejects.toMatchObject({ code: 'HISTORY_WRITE_FAILED' });
+    expect(await readdir(join(harness.historyRoot, 'originals'))).toEqual([]);
+    expect(await readdir(join(harness.historyRoot, 'trash'))).toEqual([
+      `${record.output!.historyAssetId}.png`,
+    ]);
+
+    fileSystem.disarm();
+    const persisted = (await store.list({ filters: { trashState: 'all' } })).records[0]!;
+    expect(persisted.trash).toBeNull();
+    expect(persisted.output?.availability).toBe('available');
+    expect(await readdir(join(harness.historyRoot, 'originals'))).toEqual([
+      `${record.output!.historyAssetId}.png`,
+    ]);
+    expect(await readdir(join(harness.historyRoot, 'trash'))).toEqual([]);
+    await expect(new Store(harness).list({ filters: { trashState: 'all' } }))
+      .resolves.toMatchObject({ records: [expect.objectContaining({ id: record.id, trash: null })] });
+  });
+
+  it('repairs an interrupted restore move in the same process', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const fileSystem = new InterruptedRestoreMoveFileSystem();
+    const store = new Store({ ...harness, fileSystem });
+    const record = historyRecord('history_restore_same_process', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_restore_same_process', record, source: chunks(pngBytes) });
+    await store.softDelete({
+      operationId: 'operation_trash_restore_same_process',
+      historyIds: [record.id],
+    });
+    fileSystem.arm();
+
+    await expect(store.restore({
+      operationId: 'operation_restore_same_process',
+      historyIds: [record.id],
+    })).rejects.toMatchObject({ code: 'HISTORY_WRITE_FAILED' });
+    expect(await readdir(join(harness.historyRoot, 'originals'))).toEqual([
+      `${record.output!.historyAssetId}.png`,
+    ]);
+    expect(await readdir(join(harness.historyRoot, 'trash'))).toEqual([]);
+
+    fileSystem.disarm();
+    const persisted = (await store.list({ filters: { trashState: 'all' } })).records[0]!;
+    expect(persisted.trash).not.toBeNull();
+    expect(persisted.output?.availability).toBe('available');
+    expect(await readdir(join(harness.historyRoot, 'originals'))).toEqual([]);
+    expect(await readdir(join(harness.historyRoot, 'trash'))).toEqual([
+      `${record.output!.historyAssetId}.png`,
+    ]);
+  });
+
   it('rolls back deletion staging on restart when the durable index still references the original', async () => {
     const Store = requireHistoryStore();
     if (Store === null) return;
@@ -782,23 +897,85 @@ describe('generation history concurrent lifecycle', () => {
     const store = new Store({ ...harness, fileSystem });
     const record = historyRecord('history_aaaaaaaaaaaaaaaa', pngBytes);
     await store.ingest({ operationId: 'operation_ingest_aaaaaaaa', record, source: chunks(pngBytes) });
+    await store.softDelete({ operationId: 'operation_trash_aaaaaaaa', historyIds: [record.id] });
     fileSystem.arm();
 
     await expect(store.permanentlyDelete({
       operationId: 'operation_delete_aaaaaaaa',
       historyIds: [record.id],
     })).rejects.toMatchObject({ code: 'HISTORY_WRITE_FAILED' });
-    expect(await readdir(join(harness.historyRoot, 'originals'))).toEqual([]);
+    expect(await readdir(join(harness.historyRoot, 'trash'))).toEqual([]);
     expect((await readdir(join(harness.historyRoot, 'recovery')))
       .some((entry) => entry.startsWith('.history-purge-'))).toBe(true);
 
     const reopened = new Store(harness);
-    expect((await reopened.list({ filters: { trashState: 'all' } })).records).toEqual([record]);
+    expect((await reopened.list({ filters: { trashState: 'all' } })).records[0]!.trash).not.toBeNull();
     expect(await readFile(join(
       harness.historyRoot,
-      'originals',
+      'trash',
       `${record.output!.historyAssetId}.png`,
     ))).toEqual(pngBytes);
+    expect((await readdir(join(harness.historyRoot, 'recovery')))
+      .some((entry) => entry.startsWith('.history-purge-'))).toBe(false);
+  });
+
+  it('restores a corrupt staged original after an interrupted permanent-delete index commit', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const fileSystem = new InterruptedDeletionFileSystem();
+    const store = new Store({ ...harness, fileSystem });
+    const record = historyRecord('history_corrupt_restart', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_corrupt_restart', record, source: chunks(pngBytes) });
+    const originalPath = join(harness.historyRoot, 'originals', `${record.output!.historyAssetId}.png`);
+    await writeFile(originalPath, Buffer.from('corrupt'));
+    await store.softDelete({
+      operationId: 'operation_trash_corrupt_restart',
+      historyIds: [record.id],
+    });
+    fileSystem.arm();
+
+    await expect(store.permanentlyDelete({
+      operationId: 'operation_delete_corrupt_restart',
+      historyIds: [record.id],
+    })).rejects.toMatchObject({ code: 'HISTORY_WRITE_FAILED' });
+
+    const reopened = new Store(harness);
+    const persisted = (await reopened.list({ filters: { trashState: 'all' } })).records[0]!;
+    expect(persisted.output?.availability).toBe('corrupt');
+    expect(await readFile(join(
+      harness.historyRoot,
+      'trash',
+      `${record.output!.historyAssetId}.png`,
+    ))).toEqual(Buffer.from('corrupt'));
+  });
+
+  it('does not report permanent deletion complete until staged cleanup succeeds', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const fileSystem = new FailingDeletionCleanupFileSystem();
+    const store = new Store({ ...harness, fileSystem });
+    const record = historyRecord('history_cleanup_retry', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_cleanup_retry', record, source: chunks(pngBytes) });
+    await store.softDelete({
+      operationId: 'operation_trash_cleanup_retry',
+      historyIds: [record.id],
+    });
+    fileSystem.arm();
+
+    await expect(store.permanentlyDelete({
+      operationId: 'operation_delete_cleanup_retry',
+      historyIds: [record.id],
+    })).rejects.toMatchObject({ code: 'HISTORY_WRITE_FAILED' });
+    expect((await readdir(join(harness.historyRoot, 'recovery')))
+      .some((entry) => entry.startsWith('.history-purge-'))).toBe(true);
+
+    fileSystem.disarm();
+    await expect(store.permanentlyDelete({
+      operationId: 'operation_delete_cleanup_retry',
+      historyIds: [record.id],
+    })).resolves.toMatchObject({ purgedIds: [record.id] });
     expect((await readdir(join(harness.historyRoot, 'recovery')))
       .some((entry) => entry.startsWith('.history-purge-'))).toBe(false);
   });
@@ -821,6 +998,37 @@ async function createHarness(): Promise<{ historyRoot: string; ownedRoot: string
 
 function historyRecord(id: string, bytes: Uint8Array): GenerationHistoryRecord {
   return historyRecordAt(id, bytes, '2026-07-18T12:00:00.000Z');
+}
+
+function providerLifecycleRecord(
+  id: string,
+  status: 'queued' | 'running',
+): GenerationHistoryRecord {
+  const timestamp = '2026-07-18T12:00:00.000Z';
+  return parseGenerationHistoryRecord({
+    schemaVersion: 1,
+    id,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    completedAt: null,
+    project: null,
+    job: { jobId: `job_${id}` },
+    status,
+    provider: {
+      displayName: 'Comfly',
+      modelDisplayName: 'Image Studio',
+      capabilityRevision: 'image-v3',
+    },
+    promptSummary: 'Image generation request',
+    parameters: {},
+    output: null,
+    favorite: false,
+    tags: [],
+    projectReferenceCount: 0,
+    projectReferences: [],
+    trash: null,
+    termination: null,
+  });
 }
 
 function historyRecordAt(id: string, bytes: Uint8Array, createdAt: string): GenerationHistoryRecord {
@@ -1072,6 +1280,128 @@ class InterruptedDeletionFileSystem implements FileSystem {
     if (this.armed && basename(destination).startsWith('.history-purge-')) this.staged = true;
   }
   async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> { await this.delegate.rm(path, options); }
+  async stat(path: string): Promise<FileStatLike> { return this.delegate.stat(path); }
+  async truncate(path: string, length: number): Promise<void> { await this.delegate.truncate!(path, length); }
+  async unlink(path: string): Promise<void> { await this.delegate.unlink(path); }
+  async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
+    await this.delegate.writeFile(path, data, encoding);
+  }
+}
+
+class InterruptedTrashMoveFileSystem implements FileSystem {
+  private readonly delegate = new NodeFileSystem();
+  private armed = false;
+  private movedToTrash = false;
+  private failedIndexWrite = false;
+
+  arm(): void { this.armed = true; }
+  disarm(): void { this.armed = false; }
+
+  async link(source: string, destination: string): Promise<void> { await this.delegate.link!(source, destination); }
+  async lstat(path: string): Promise<FileStatLike> { return this.delegate.lstat!(path); }
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> { await this.delegate.mkdir(path, options); }
+  async open(path: string, flags: string): Promise<FileHandleLike> {
+    if (
+      this.armed
+      && this.movedToTrash
+      && !this.failedIndexWrite
+      && basename(path).startsWith('.history.index.json.tmp-')
+    ) {
+      this.failedIndexWrite = true;
+      throw Object.assign(new Error('injected interrupted trash index write'), { code: 'EIO' });
+    }
+    return this.delegate.open(path, flags);
+  }
+  async readFile(path: string, encoding: BufferEncoding): Promise<string> { return this.delegate.readFile(path, encoding); }
+  async readFileBuffer(path: string): Promise<Uint8Array> { return this.delegate.readFileBuffer!(path); }
+  async readdir(path: string): Promise<string[]> { return this.delegate.readdir(path); }
+  async realpath(path: string): Promise<string> { return this.delegate.realpath!(path); }
+  async rename(source: string, destination: string): Promise<void> {
+    const sourceDirectory = basename(dirname(source));
+    const destinationDirectory = basename(dirname(destination));
+    if (this.armed && this.movedToTrash && sourceDirectory === 'trash' && destinationDirectory === 'originals') {
+      throw Object.assign(new Error('injected interrupted trash rollback'), { code: 'EIO' });
+    }
+    await this.delegate.rename(source, destination);
+    if (this.armed && sourceDirectory === 'originals' && destinationDirectory === 'trash') this.movedToTrash = true;
+  }
+  async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> { await this.delegate.rm(path, options); }
+  async stat(path: string): Promise<FileStatLike> { return this.delegate.stat(path); }
+  async truncate(path: string, length: number): Promise<void> { await this.delegate.truncate!(path, length); }
+  async unlink(path: string): Promise<void> { await this.delegate.unlink(path); }
+  async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
+    await this.delegate.writeFile(path, data, encoding);
+  }
+}
+
+class InterruptedRestoreMoveFileSystem implements FileSystem {
+  private readonly delegate = new NodeFileSystem();
+  private armed = false;
+  private movedToOriginals = false;
+  private failedIndexWrite = false;
+
+  arm(): void { this.armed = true; }
+  disarm(): void { this.armed = false; }
+
+  async link(source: string, destination: string): Promise<void> { await this.delegate.link!(source, destination); }
+  async lstat(path: string): Promise<FileStatLike> { return this.delegate.lstat!(path); }
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> { await this.delegate.mkdir(path, options); }
+  async open(path: string, flags: string): Promise<FileHandleLike> {
+    if (
+      this.armed
+      && this.movedToOriginals
+      && !this.failedIndexWrite
+      && basename(path).startsWith('.history.index.json.tmp-')
+    ) {
+      this.failedIndexWrite = true;
+      throw Object.assign(new Error('injected interrupted restore index write'), { code: 'EIO' });
+    }
+    return this.delegate.open(path, flags);
+  }
+  async readFile(path: string, encoding: BufferEncoding): Promise<string> { return this.delegate.readFile(path, encoding); }
+  async readFileBuffer(path: string): Promise<Uint8Array> { return this.delegate.readFileBuffer!(path); }
+  async readdir(path: string): Promise<string[]> { return this.delegate.readdir(path); }
+  async realpath(path: string): Promise<string> { return this.delegate.realpath!(path); }
+  async rename(source: string, destination: string): Promise<void> {
+    const sourceDirectory = basename(dirname(source));
+    const destinationDirectory = basename(dirname(destination));
+    if (this.armed && this.movedToOriginals && sourceDirectory === 'originals' && destinationDirectory === 'trash') {
+      throw Object.assign(new Error('injected interrupted restore rollback'), { code: 'EIO' });
+    }
+    await this.delegate.rename(source, destination);
+    if (this.armed && sourceDirectory === 'trash' && destinationDirectory === 'originals') this.movedToOriginals = true;
+  }
+  async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> { await this.delegate.rm(path, options); }
+  async stat(path: string): Promise<FileStatLike> { return this.delegate.stat(path); }
+  async truncate(path: string, length: number): Promise<void> { await this.delegate.truncate!(path, length); }
+  async unlink(path: string): Promise<void> { await this.delegate.unlink(path); }
+  async writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void> {
+    await this.delegate.writeFile(path, data, encoding);
+  }
+}
+
+class FailingDeletionCleanupFileSystem implements FileSystem {
+  private readonly delegate = new NodeFileSystem();
+  private armed = false;
+
+  arm(): void { this.armed = true; }
+  disarm(): void { this.armed = false; }
+
+  async link(source: string, destination: string): Promise<void> { await this.delegate.link!(source, destination); }
+  async lstat(path: string): Promise<FileStatLike> { return this.delegate.lstat!(path); }
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> { await this.delegate.mkdir(path, options); }
+  async open(path: string, flags: string): Promise<FileHandleLike> { return this.delegate.open(path, flags); }
+  async readFile(path: string, encoding: BufferEncoding): Promise<string> { return this.delegate.readFile(path, encoding); }
+  async readFileBuffer(path: string): Promise<Uint8Array> { return this.delegate.readFileBuffer!(path); }
+  async readdir(path: string): Promise<string[]> { return this.delegate.readdir(path); }
+  async realpath(path: string): Promise<string> { return this.delegate.realpath!(path); }
+  async rename(source: string, destination: string): Promise<void> { await this.delegate.rename(source, destination); }
+  async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    if (this.armed && basename(path).startsWith('.history-purge-')) {
+      throw Object.assign(new Error('injected deletion cleanup failure'), { code: 'EIO' });
+    }
+    await this.delegate.rm(path, options);
+  }
   async stat(path: string): Promise<FileStatLike> { return this.delegate.stat(path); }
   async truncate(path: string, length: number): Promise<void> { await this.delegate.truncate!(path, length); }
   async unlink(path: string): Promise<void> { await this.delegate.unlink(path); }
