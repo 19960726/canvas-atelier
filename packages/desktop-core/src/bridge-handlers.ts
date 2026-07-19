@@ -749,67 +749,72 @@ export function createDesktopBridgeHandlers(
   ): Promise<PrepareSkillCandidateReviewBridgeResult> {
     const validated = validatePrepareSkillCandidateReviewBridgeRequest(request);
     const session = requireSingleWritableProjectSession(sessions, validated.projectId);
-    const baseRevision = await readCurrentRevision(repository, session.session);
-    if (baseRevision !== validated.baseRevision) {
-      throw staleSkillPreparation('Skill candidate preparation base revision is stale');
-    }
-    const project = await repository.readCurrentProject(session.session);
-    if (project.id !== validated.projectId) {
-      throw invalidRequest('Project is not active');
-    }
+    return enqueueSessionMaintenance(session, async () => {
+      if (requireSingleWritableProjectSession(sessions, validated.projectId) !== session) {
+        throw invalidRequest('Project session changed before Skill preparation');
+      }
+      const baseRevision = await readCurrentRevision(repository, session.session);
+      if (baseRevision !== validated.baseRevision) {
+        throw staleSkillPreparation('Skill candidate preparation base revision is stale');
+      }
+      const project = await repository.readCurrentProject(session.session);
+      if (project.id !== validated.projectId) {
+        throw invalidRequest('Project is not active');
+      }
 
-    const candidate = requireCurrentPrepareCandidate(project, validated.candidateId, validated.candidateFingerprint);
-    assertPublicBridgePayload(candidate);
-    if (candidate.targetKnowledgeBaseId === undefined) {
-      throw invalidRequest('Skill candidate preparation requires a target knowledge base');
-    }
+      const candidate = requireCurrentPrepareCandidate(project, validated.candidateId, validated.candidateFingerprint);
+      assertPublicBridgePayload(candidate);
+      if (candidate.targetKnowledgeBaseId === undefined) {
+        throw invalidRequest('Skill candidate preparation requires a target knowledge base');
+      }
 
-    const active = await knowledgeStore.readActive(candidate.targetKnowledgeBaseId);
-    if (active === null) {
-      throw invalidRequest('Active knowledge snapshot is unavailable');
-    }
-    const reviewableCandidate = buildReviewableSkillCandidate(project, candidate, active);
-    if (reviewableCandidate === null || !reviewableCandidate.sourceRule || !reviewableCandidate.managedRule) {
-      throw invalidRequest('Skill candidate source and managed rule text are unavailable');
-    }
-    const latestRevision = await readCurrentRevision(repository, session.session);
-    if (latestRevision !== validated.baseRevision) {
-      throw staleSkillPreparation('Skill candidate preparation revision changed before commit');
-    }
-    const latestProject = await repository.readCurrentProject(session.session);
-    if (latestProject.id !== validated.projectId) {
-      throw invalidRequest('Project is not active');
-    }
-    requireCurrentPrepareCandidate(latestProject, validated.candidateId, validated.candidateFingerprint);
-    const reviewed = sanitizeSkillPromotionCandidate({
-      ...reviewableCandidate,
-      preparedManagedSnapshot: createPreparedManagedSnapshot(active),
-      reviewPreparationStatus: 'ready',
+      const active = await knowledgeStore.readActive(candidate.targetKnowledgeBaseId);
+      if (active === null) {
+        throw invalidRequest('Active knowledge snapshot is unavailable');
+      }
+      const reviewableCandidate = buildReviewableSkillCandidate(project, candidate, active);
+      if (reviewableCandidate === null || !reviewableCandidate.sourceRule || !reviewableCandidate.managedRule) {
+        throw invalidRequest('Skill candidate source and managed rule text are unavailable');
+      }
+      const latestRevision = await readCurrentRevision(repository, session.session);
+      if (latestRevision !== validated.baseRevision) {
+        throw staleSkillPreparation('Skill candidate preparation revision changed before commit');
+      }
+      const latestProject = await repository.readCurrentProject(session.session);
+      if (latestProject.id !== validated.projectId) {
+        throw invalidRequest('Project is not active');
+      }
+      requireCurrentPrepareCandidate(latestProject, validated.candidateId, validated.candidateFingerprint);
+      const reviewed = sanitizeSkillPromotionCandidate({
+        ...reviewableCandidate,
+        preparedManagedSnapshot: createPreparedManagedSnapshot(active),
+        reviewPreparationStatus: 'ready',
+      });
+      const nextCandidates = latestProject.skillPromotionCandidates.map((item) => (
+        item.id === reviewed.id ? reviewed : item
+      )).map(sanitizeSkillPromotionCandidate);
+      const transactionId = `prepare-skill-${candidate.id}-${Date.now()}`;
+      const ack = await requireBridgeWriter(session).commit({
+        baseRevision: validated.baseRevision,
+        kind: 'system',
+        projectId: validated.projectId,
+        transaction: {
+          id: transactionId,
+          label: `Prepare skill candidate ${reviewed.id}`,
+          operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
+        },
+      });
+      await flushScheduledSnapshotAfterCommit(session, ack, 'system');
+      const knowledgeState = sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
+        .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null;
+      return {
+        candidate: reviewed,
+        candidates: nextCandidates,
+        currentRevision: ack.revision,
+        knowledgeState,
+        projectId: validated.projectId,
+      };
     });
-    const nextCandidates = latestProject.skillPromotionCandidates.map((item) => (
-      item.id === reviewed.id ? reviewed : item
-    )).map(sanitizeSkillPromotionCandidate);
-    const transactionId = `prepare-skill-${candidate.id}-${Date.now()}`;
-    const ack = await requireBridgeWriter(session).commit({
-      baseRevision: validated.baseRevision,
-      kind: 'system',
-      projectId: validated.projectId,
-      transaction: {
-        id: transactionId,
-        label: `Prepare skill candidate ${reviewed.id}`,
-        operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
-      },
-    });
-    await flushScheduledSnapshotAfterCommit(session, ack, 'system');
-    const knowledgeState = sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
-      .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null;
-    return {
-      candidate: reviewed,
-      candidates: nextCandidates,
-      currentRevision: ack.revision,
-      knowledgeState,
-      projectId: validated.projectId,
-    };
   }
 
   async function reviewSkillCandidate(
@@ -818,81 +823,86 @@ export function createDesktopBridgeHandlers(
   ): Promise<ReviewSkillCandidateBridgeResult> {
     const validated = validateReviewSkillCandidateBridgeRequest(request);
     const session = requireSingleWritableProjectSession(sessions, validated.projectId);
-    const initialState = validated.decision === 'rolled_back'
-      ? null
-      : await readBoundSkillReviewState(session, validated);
-    const project = initialState?.project ?? await repository.readCurrentProject(session.session);
-    if (project.id !== validated.projectId) {
-      throw invalidRequest('Project is not active');
-    }
-
-    const candidate = initialState?.candidate ?? project.skillPromotionCandidates.find((item) => item.id === validated.candidateId);
-    if (candidate === undefined) {
-      throw invalidRequest('Skill candidate is unavailable');
-    }
-    assertPublicBridgePayload(candidate);
-
-    const transactionId = `review-skill-${candidate.id}-${Date.now()}`;
-    const latestState = validated.decision === 'rolled_back'
-      ? null
-      : await readBoundSkillReviewState(session, validated);
-    const preparedReview = validated.decision === 'rolled_back'
-      ? await prepareRollbackSkillCandidatesForBridge(project.skillPromotionCandidates, candidate, validated, transactionId)
-      : await prepareSkillCandidateReviewForBridge(latestState!.project, latestState!.candidate, validated, transactionId, latestState!.active);
-    const reviewed = sanitizeSkillPromotionCandidate(preparedReview.candidate);
-    const nextCandidates = preparedReview.candidates.map(sanitizeSkillPromotionCandidate);
-    const currentRevision = latestState?.revision ?? await readCurrentRevision(repository, session.session);
-    let committedRevision: number;
-    try {
-      const ack = await requireBridgeWriter(session).commit({
-        baseRevision: currentRevision,
-        kind: 'system',
-        projectId: validated.projectId,
-        transaction: {
-          id: transactionId,
-          label: `Review skill candidate ${reviewed.id}`,
-          operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
-        },
-      });
-      committedRevision = ack.revision;
-      await flushScheduledSnapshotAfterCommit(session, ack, 'system');
-    } catch (commitError) {
-      if (preparedReview.stagedTransitionId === undefined) {
-        throw commitError;
+    return enqueueSessionMaintenance(session, async () => {
+      if (requireSingleWritableProjectSession(sessions, validated.projectId) !== session) {
+        throw invalidRequest('Project session changed before Skill review');
       }
-      let durableProject: CanvasProject;
-      try {
-        durableProject = await repository.readCurrentProject(session.session);
-      } catch {
-        throw commitError;
-      }
-      const durableCandidate = durableProject.skillPromotionCandidates.find((item) => item.id === reviewed.id);
-      if (!isExactAcknowledgedReview(durableCandidate, reviewed, transactionId)) {
-        await discardPreparedReviewAfterCommitFailure(preparedReview.stagedTransitionId);
-        throw commitError;
-      }
-      try {
-        committedRevision = await readCurrentRevision(repository, session.session);
-      } catch {
-        throw commitError;
-      }
-    }
-
-    const activated = await completePreparedReviewAfterAck(preparedReview);
-    const knowledgeState = activated.knowledgeState ?? (
-      reviewed.targetKnowledgeBaseId === undefined
+      const initialState = validated.decision === 'rolled_back'
         ? null
-        : sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
-          .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null
-    );
+        : await readBoundSkillReviewState(session, validated);
+      const project = initialState?.project ?? await repository.readCurrentProject(session.session);
+      if (project.id !== validated.projectId) {
+        throw invalidRequest('Project is not active');
+      }
 
-    return {
-      candidate: sanitizeSkillPromotionCandidate(reviewed),
-      candidates: nextCandidates.map(sanitizeSkillPromotionCandidate),
-      currentRevision: committedRevision,
-      knowledgeState,
-      projectId: validated.projectId,
-    };
+      const candidate = initialState?.candidate ?? project.skillPromotionCandidates.find((item) => item.id === validated.candidateId);
+      if (candidate === undefined) {
+        throw invalidRequest('Skill candidate is unavailable');
+      }
+      assertPublicBridgePayload(candidate);
+
+      const transactionId = `review-skill-${candidate.id}-${Date.now()}`;
+      const latestState = validated.decision === 'rolled_back'
+        ? null
+        : await readBoundSkillReviewState(session, validated);
+      const preparedReview = validated.decision === 'rolled_back'
+        ? await prepareRollbackSkillCandidatesForBridge(project.skillPromotionCandidates, candidate, validated, transactionId)
+        : await prepareSkillCandidateReviewForBridge(latestState!.project, latestState!.candidate, validated, transactionId, latestState!.active);
+      const reviewed = sanitizeSkillPromotionCandidate(preparedReview.candidate);
+      const nextCandidates = preparedReview.candidates.map(sanitizeSkillPromotionCandidate);
+      const currentRevision = latestState?.revision ?? await readCurrentRevision(repository, session.session);
+      let committedRevision: number;
+      try {
+        const ack = await requireBridgeWriter(session).commit({
+          baseRevision: currentRevision,
+          kind: 'system',
+          projectId: validated.projectId,
+          transaction: {
+            id: transactionId,
+            label: `Review skill candidate ${reviewed.id}`,
+            operations: [{ kind: 'set_skill_candidates', candidates: nextCandidates }],
+          },
+        });
+        committedRevision = ack.revision;
+        await flushScheduledSnapshotAfterCommit(session, ack, 'system');
+      } catch (commitError) {
+        if (preparedReview.stagedTransitionId === undefined) {
+          throw commitError;
+        }
+        let durableProject: CanvasProject;
+        try {
+          durableProject = await repository.readCurrentProject(session.session);
+        } catch {
+          throw commitError;
+        }
+        const durableCandidate = durableProject.skillPromotionCandidates.find((item) => item.id === reviewed.id);
+        if (!isExactAcknowledgedReview(durableCandidate, reviewed, transactionId)) {
+          await discardPreparedReviewAfterCommitFailure(preparedReview.stagedTransitionId);
+          throw commitError;
+        }
+        try {
+          committedRevision = await readCurrentRevision(repository, session.session);
+        } catch {
+          throw commitError;
+        }
+      }
+
+      const activated = await completePreparedReviewAfterAck(preparedReview);
+      const knowledgeState = activated.knowledgeState ?? (
+        reviewed.targetKnowledgeBaseId === undefined
+          ? null
+          : sanitizeKnowledgeSummaries(await knowledgeStore.listStates())
+            .find((state) => state.knowledgeBaseId === reviewed.targetKnowledgeBaseId) ?? null
+      );
+
+      return {
+        candidate: sanitizeSkillPromotionCandidate(reviewed),
+        candidates: nextCandidates.map(sanitizeSkillPromotionCandidate),
+        currentRevision: committedRevision,
+        knowledgeState,
+        projectId: validated.projectId,
+      };
+    });
   }
 
   async function discardPreparedReviewAfterCommitFailure(stageId: string): Promise<void> {
@@ -1806,10 +1816,30 @@ function requireSingleWritableProjectSession(
   sessions: Map<string, BridgeSessionContext>,
   projectId: string,
 ): BridgeSessionContext {
-  const matches = [...sessions.values()].filter((context) => (
-    context.session.mode === 'write' &&
+  const projectSessions = [...sessions.values()].filter((context) => (
     context.session.manifest.projectId === projectId
   ));
+  const matches = projectSessions.filter((context) => (
+    context.session.mode === 'write'
+    && context.closeState === 'open'
+    && !context.recoveryRequired
+  ));
+  if (matches.length === 1) {
+    return matches[0]!;
+  }
+  if (projectSessions.some((context) => context.closeState !== 'open')) {
+    throw createPersistenceError('INVALID_SESSION', false, 'Desktop session is not active');
+  }
+  if (projectSessions.some((context) => context.recoveryRequired)) {
+    throw createPersistenceError(
+      'RECOVERY_REQUIRED',
+      false,
+      'Recovery preview must be restored or discarded before writing',
+    );
+  }
+  if (projectSessions.some((context) => context.session.mode !== 'write')) {
+    throw createPersistenceError('CONCURRENT_WRITER', true, 'Desktop session is read-only');
+  }
   if (matches.length !== 1) {
     throw invalidRequest('Expected exactly one active writable project session');
   }

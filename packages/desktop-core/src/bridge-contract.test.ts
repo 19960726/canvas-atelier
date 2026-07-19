@@ -508,6 +508,284 @@ describe('desktop bridge contract', () => {
 
     await expect(handlers.getKnowledgeState({}, undefined)).rejects.toThrow(/protected|public/i);
   });
+
+  it.each(
+    (['prepare', 'review'] as const).flatMap((api) => (
+      ['closing', 'retry_only', 'recovery'] as const
+    ).map((sessionState) => ({ api, sessionState }))),
+  )('fences project-id $api durable writes while the session is $sessionState', async ({ api, sessionState }) => {
+    const active = createKnowledgeSnapshot('Managed scene rule', 1);
+    const candidate = api === 'prepare'
+      ? createPendingSkillCandidate()
+      : createReadySkillCandidate(active);
+    const project = createProjectWithPendingSkillCandidate(candidate);
+    const openedSession = createOpenedSession();
+    const corruptError = Object.assign(new Error('Stable snapshot is corrupt'), {
+      code: 'CORRUPT_SNAPSHOT',
+      retryable: false,
+    });
+    const readCurrentProject = sessionState === 'recovery'
+      ? vi.fn()
+        .mockRejectedValueOnce(corruptError)
+        .mockResolvedValue(project)
+      : vi.fn(async () => project);
+    const writerCommit = vi.fn(async () => {
+      throw Object.assign(new Error('Writer must stay fenced'), {
+        code: 'DURABLE_WRITE_FAILED',
+        retryable: true,
+      });
+    });
+    const flush = vi.fn();
+    const stageApprovedSnapshot = vi.fn(async () => ({
+      stageId: 'stage-fenced',
+      snapshot: createKnowledgeSnapshot('Staged scene rule', 2),
+    }));
+    const stageRollback = vi.fn();
+    const activateStagedTransition = vi.fn();
+    const discardStagedTransition = vi.fn(async () => undefined);
+    const finalizeStagedTransition = vi.fn();
+    let closeAttempts = 0;
+    let enterClose!: () => void;
+    let releaseClose!: () => void;
+    const closeEntered = new Promise<void>((resolve) => {
+      enterClose = resolve;
+    });
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const close = vi.fn(async () => {
+      closeAttempts += 1;
+      if (sessionState === 'closing' && closeAttempts === 1) {
+        enterClose();
+        await closeGate;
+      }
+      if (sessionState === 'retry_only' && closeAttempts === 1) {
+        throw Object.assign(new Error('Injected close failure'), {
+          code: 'DURABLE_WRITE_FAILED',
+          retryable: true,
+        });
+      }
+    });
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('skill-fence'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => openedSession.root) },
+      knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+      knowledgeStore: {
+        activateStagedTransition,
+        configure: vi.fn(),
+        discardStagedTransition,
+        finalizeStagedTransition,
+        listStates: vi.fn(async () => [createKnowledgeStateSummary()]),
+        publish: vi.fn(),
+        readActive: vi.fn(async () => active),
+        rollback: vi.fn(),
+        stageApprovedSnapshot,
+        stageRollback,
+      },
+      recoveryScanner: {
+        scan: vi.fn(async () => ({
+          action: 'choose_recovery' as const,
+          candidates: [{
+            path: 'redacted-path',
+            project,
+            revision: 5,
+            snapshotId: 'skill-recovery-snapshot',
+            tailStatus: 'complete' as const,
+          }],
+          issues: ['corrupt_snapshot'],
+          projectId: project.id,
+          recoveredRevision: 5,
+          stableSnapshotId: 'skill-recovery-snapshot',
+          targetRevision: 5,
+        })),
+      },
+      repository: {
+        close,
+        open: vi.fn(async () => openedSession),
+        openJournalWriter: vi.fn(async () => ({ commit: writerCommit })),
+        readCurrentProject,
+        readCurrentRevision: vi.fn(async () => 5),
+      },
+      snapshotScheduler: { consider: () => null, flush } as unknown as SnapshotScheduler,
+    });
+    const opened = await handlers.openProject({}, { mode: 'write' });
+    if (opened === null) throw new Error('Expected project session');
+    let pendingClose: Promise<void> | null = null;
+    if (sessionState === 'closing') {
+      pendingClose = handlers.closeProject({}, { flush: false, sessionId: opened.sessionId });
+      await closeEntered;
+    } else if (sessionState === 'retry_only') {
+      await expect(handlers.closeProject({}, {
+        flush: false,
+        sessionId: opened.sessionId,
+      })).rejects.toMatchObject({ code: 'DURABLE_WRITE_FAILED' });
+    }
+
+    const invocation = api === 'prepare'
+      ? handlers.prepareSkillCandidateReview({}, {
+        baseRevision: 5,
+        candidateFingerprint: createSkillPromotionCandidateFingerprint(candidate),
+        candidateId: candidate.id,
+        projectId: project.id,
+      })
+      : handlers.reviewSkillCandidate({}, createBoundReviewRequest(candidate, active));
+    await expect(invocation).rejects.toMatchObject({
+      code: sessionState === 'recovery' ? 'RECOVERY_REQUIRED' : 'INVALID_SESSION',
+    });
+
+    expect(writerCommit).not.toHaveBeenCalled();
+    expect(flush).not.toHaveBeenCalled();
+    expect(stageApprovedSnapshot).not.toHaveBeenCalled();
+    expect(stageRollback).not.toHaveBeenCalled();
+    expect(activateStagedTransition).not.toHaveBeenCalled();
+    expect(discardStagedTransition).not.toHaveBeenCalled();
+    expect(finalizeStagedTransition).not.toHaveBeenCalled();
+
+    if (sessionState === 'closing') {
+      releaseClose();
+      await pendingClose;
+    } else if (sessionState === 'retry_only') {
+      await handlers.closeProject({}, { flush: false, sessionId: opened.sessionId });
+    } else {
+      await handlers.closeProject({}, { flush: false, sessionId: opened.sessionId });
+    }
+  });
+
+  it.each(['prepare', 'review'] as const)(
+    'serializes normal project-id %s durable and knowledge mutation before close cleanup',
+    async (api) => {
+      const active = createKnowledgeSnapshot('Managed scene rule', 1);
+      const candidate = api === 'prepare'
+        ? createPendingSkillCandidate()
+        : createReadySkillCandidate(active);
+      const project = createProjectWithPendingSkillCandidate(candidate);
+      const events: string[] = [];
+      let enterWriter!: () => void;
+      let releaseWriter!: () => void;
+      const writerEntered = new Promise<void>((resolve) => {
+        enterWriter = resolve;
+      });
+      const writerGate = new Promise<void>((resolve) => {
+        releaseWriter = resolve;
+      });
+      let enterActivation!: () => void;
+      let releaseActivation!: () => void;
+      const activationEntered = new Promise<void>((resolve) => {
+        enterActivation = resolve;
+      });
+      const activationGate = new Promise<void>((resolve) => {
+        releaseActivation = resolve;
+      });
+      let enterClose!: () => void;
+      const closeEntered = new Promise<void>((resolve) => {
+        enterClose = resolve;
+      });
+      const close = vi.fn(async () => {
+        events.push('close');
+        enterClose();
+      });
+      const writerCommit = vi.fn(async (request: CommitRequest) => {
+        events.push('writer');
+        if (api === 'prepare') {
+          enterWriter();
+          await writerGate;
+        }
+        events.push('writer-settled');
+        return {
+          committedAt: '2026-07-19T00:00:00.000Z',
+          projectId: project.id,
+          revision: 6,
+          sequence: 6,
+          transactionId: request.transaction.id,
+        };
+      });
+      const stagedSnapshot = createKnowledgeSnapshot('Staged scene rule', 2);
+      const stageApprovedSnapshot = vi.fn(async () => ({
+        stageId: 'stage-ordered',
+        snapshot: stagedSnapshot,
+      }));
+      const activateStagedTransition = vi.fn(async () => {
+        events.push('activate');
+        enterActivation();
+        await activationGate;
+        events.push('activate-settled');
+        return createKnowledgeStateSummary();
+      });
+      const enqueueApprovedSnapshot = vi.fn(async () => {
+        events.push('outbox');
+      });
+      const recordStagedTransitionOutboxIntent = vi.fn(async () => {
+        events.push('outbox-recorded');
+      });
+      const finalizeStagedTransition = vi.fn(async () => {
+        events.push('finalized');
+      });
+      const handlers = createDesktopBridgeHandlers({
+        approvedSnapshotOutbox: { enqueueApprovedSnapshot },
+        createId: createSequentialId('skill-order'),
+        dialogs: { chooseProjectRoot: vi.fn(async () => createOpenedSession().root) },
+        knowledgeRefreshService: createKnowledgeRefreshServiceStub(),
+        knowledgeStore: {
+          activateStagedTransition,
+          configure: vi.fn(),
+          finalizeStagedTransition,
+          listStates: vi.fn(async () => [createKnowledgeStateSummary()]),
+          readActive: vi.fn(async () => active),
+          recordStagedTransitionOutboxIntent,
+          stageApprovedSnapshot,
+        },
+        repository: {
+          close,
+          open: vi.fn(async () => createOpenedSession()),
+          openJournalWriter: vi.fn(async () => ({ commit: writerCommit })),
+          readCurrentProject: vi.fn(async () => project),
+          readCurrentRevision: vi.fn(async () => 5),
+        },
+        snapshotScheduler: { consider: () => null, flush: vi.fn() } as unknown as SnapshotScheduler,
+      });
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      if (opened === null) throw new Error('Expected project session');
+      const invocation = api === 'prepare'
+        ? handlers.prepareSkillCandidateReview({}, {
+          baseRevision: 5,
+          candidateFingerprint: createSkillPromotionCandidateFingerprint(candidate),
+          candidateId: candidate.id,
+          projectId: project.id,
+        })
+        : handlers.reviewSkillCandidate({}, createBoundReviewRequest(candidate, active));
+      if (api === 'prepare') {
+        await writerEntered;
+      } else {
+        await activationEntered;
+      }
+
+      const closing = handlers.closeProject({}, { flush: false, sessionId: opened.sessionId });
+      const closeStartedBeforeMutationSettled = await Promise.race([
+        closeEntered.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30)),
+      ]);
+      if (api === 'prepare') releaseWriter();
+      else releaseActivation();
+      await invocation;
+      await closing;
+
+      expect(closeStartedBeforeMutationSettled).toBe(false);
+      expect(events[events.length - 1]).toBe('close');
+      if (api === 'review') {
+        expect(events).toEqual([
+          'writer',
+          'writer-settled',
+          'activate',
+          'activate-settled',
+          'outbox',
+          'outbox-recorded',
+          'finalized',
+          'close',
+        ]);
+      }
+    },
+  );
+
   it('rejects missing active-project skill candidates with INVALID_REQUEST', async () => {
     const handlers = createDesktopBridgeHandlers({
       repository: {
