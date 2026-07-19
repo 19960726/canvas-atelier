@@ -56,6 +56,7 @@ describe('desktop bridge contract', () => {
       'exportPack',
       'getKnowledgeState',
       'getRecoveryPlan',
+      'history',
       'importPack',
       'lifecycle',
       'openProject',
@@ -82,6 +83,22 @@ describe('desktop bridge contract', () => {
     expect(createPreloadApi(mockInvoke).provider).not.toHaveProperty('fetch');
     expect(Object.keys(createPreloadApi(mockInvoke).projectImages).sort()).toEqual(['importImage', 'list']);
     expect(createPreloadApi(mockInvoke).projectImages).not.toHaveProperty('readFile');
+    expect(Object.keys(createPreloadApi(mockInvoke).history).sort()).toEqual([
+      'addProjectReferences',
+      'compare',
+      'copyToProject',
+      'exportSelected',
+      'getCapacity',
+      'getReusableSummary',
+      'list',
+      'permanentlyDelete',
+      'purgeExpired',
+      'restore',
+      'setFavorite',
+      'trash',
+    ]);
+    expect(createPreloadApi(mockInvoke).history).not.toHaveProperty('readFile');
+    expect(createPreloadApi(mockInvoke).history).not.toHaveProperty('choosePath');
     expect(Object.keys(createPreloadApi(mockInvoke).lifecycle).sort()).toEqual([
       'ackCloseFlush',
       'chooseCloseDecision',

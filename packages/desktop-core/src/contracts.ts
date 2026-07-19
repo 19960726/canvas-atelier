@@ -1,5 +1,7 @@
 import type {
   CanvasProject,
+  GenerationHistoryListRequest,
+  GenerationHistoryRecord,
   ProjectImageAsset,
   ProjectOperation,
   ProjectTransaction,
@@ -7,6 +9,18 @@ import type {
   SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
+import type {
+  GenerationHistoryComparisonDescriptor,
+  GenerationHistoryExportResult,
+  GenerationHistoryProjectCopyResult,
+  GenerationHistoryReusableSummary,
+} from './generation-history-service.js';
+import type {
+  GenerationHistoryCapacity,
+  GenerationHistoryListResult,
+  GenerationHistoryMutationResult,
+  GenerationHistoryPurgeResult,
+} from './generation-history-store.js';
 
 export const PROJECT_FORMAT_VERSION = 1;
 export const JOURNAL_SCHEMA_VERSION = 1;
@@ -241,6 +255,51 @@ export interface ImportProjectImageBridgeResult {
   readonly currentRevision: number;
   readonly project: CanvasProject;
 }
+
+export type ListGenerationHistoryBridgeRequest = GenerationHistoryListRequest;
+export type ListGenerationHistoryBridgeResult = GenerationHistoryListResult;
+export type GenerationHistoryCapacityBridgeResult = GenerationHistoryCapacity;
+
+export interface GenerationHistoryRecordBridgeRequest {
+  readonly historyId: string;
+}
+
+export interface GenerationHistoryBatchBridgeRequest {
+  readonly historyIds: readonly string[];
+  readonly operationId: string;
+}
+
+export interface SetGenerationHistoryFavoriteBridgeRequest extends GenerationHistoryBatchBridgeRequest {
+  readonly favorite: boolean;
+}
+
+export interface CompareGenerationHistoryBridgeRequest {
+  readonly historyIds: readonly string[];
+}
+
+export interface CopyGenerationHistoryToProjectBridgeRequest extends GenerationHistoryBatchBridgeRequest {
+  readonly sessionId: string;
+}
+
+export interface AddGenerationHistoryProjectReferencesBridgeRequest extends GenerationHistoryBatchBridgeRequest {
+  readonly sessionId: string;
+}
+
+export interface ExportGenerationHistoryBridgeRequest {
+  readonly historyIds: readonly string[];
+}
+
+export interface GenerationHistoryPurgeBridgeRequest {
+  readonly operationId: string;
+}
+
+export type GenerationHistoryMutationBridgeResult = GenerationHistoryMutationResult;
+export type GenerationHistoryPurgeBridgeResult = GenerationHistoryPurgeResult;
+export type GenerationHistoryReusableBridgeResult = GenerationHistoryReusableSummary;
+export type GenerationHistoryComparisonBridgeResult = readonly GenerationHistoryComparisonDescriptor[];
+export type CopyGenerationHistoryToProjectBridgeResult = GenerationHistoryProjectCopyResult;
+export type ExportGenerationHistoryBridgeResult = GenerationHistoryExportResult;
+export type GenerationHistorySafeRecord = GenerationHistoryRecord;
 
 export interface ConfigureKnowledgeBaseBridgeRequest {
   readonly knowledgeBaseId: string;

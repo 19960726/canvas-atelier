@@ -20,6 +20,7 @@ export const AGENT_CANVAS_CHANNELS = {
     cancelImageJob: BRIDGE_CHANNELS.provider.cancelImageJob,
     ackImageJobTerminal: BRIDGE_CHANNELS.provider.ackImageJobTerminal,
   },
+  history: BRIDGE_CHANNELS.history,
   skill: {
     configureKnowledgeBase: BRIDGE_CHANNELS.configureKnowledgeBase,
     getKnowledgeState: BRIDGE_CHANNELS.getKnowledgeState,

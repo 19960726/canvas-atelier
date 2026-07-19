@@ -12,11 +12,44 @@ import type { DesktopBridgeInvoke } from '@agent-canvas/desktop-core/preload-api
 import { AGENT_CANVAS_CHANNELS } from './channels.js';
 
 describe('agentCanvas preload compatibility bridge', () => {
+  it('exposes a narrow typed history namespace without filesystem or destination arguments', async () => {
+    const invoke = vi.fn(async () => ({ records: [], nextCursor: null, revision: 0, total: 0 })) as DesktopBridgeInvoke & ReturnType<typeof vi.fn>;
+    const api = createAgentCanvasApi(invoke) as unknown as Record<string, unknown>;
+
+    expect(api).toHaveProperty('history');
+    const history = api.history as Record<string, (...args: unknown[]) => Promise<unknown>> | undefined;
+    if (history === undefined) return;
+    expect(Object.keys(history).sort()).toEqual([
+      'addProjectReferences',
+      'compare',
+      'copyToProject',
+      'exportSelected',
+      'getCapacity',
+      'getReusableSummary',
+      'list',
+      'permanentlyDelete',
+      'purgeExpired',
+      'restore',
+      'setFavorite',
+      'trash',
+    ]);
+    const listHistory = history.list;
+    const exportHistory = history.exportSelected;
+    if (listHistory === undefined || exportHistory === undefined) return;
+    await listHistory({ pageSize: 25 });
+    await exportHistory({ historyIds: ['history_aaaaaaaaaaaaaaaa'] });
+    expect(invoke.mock.calls).toEqual([
+      [expect.stringContaining(':history:list'), { pageSize: 25 }],
+      [expect.stringContaining(':history:export-selected'), { historyIds: ['history_aaaaaaaaaaaaaaaa'] }],
+    ]);
+    expect(JSON.stringify(Object.keys(history))).not.toMatch(/path|file|directory|token|network|process|keychain/iu);
+  });
+
   it('exposes exact modern namespaces without filesystem, process, keychain, or token getters', () => {
     const api = createAgentCanvasApi(vi.fn(async () => undefined) as DesktopBridgeInvoke);
 
     expect(AGENT_CANVAS_PRELOAD_KEY).toBe('agentCanvas');
-    expect(Object.keys(api).sort()).toEqual(['assets', 'project', 'provider', 'secrets', 'skill']);
+    expect(Object.keys(api).sort()).toEqual(['assets', 'history', 'project', 'provider', 'secrets', 'skill']);
     expect(Object.keys(api.project).sort()).toEqual(['close', 'commit', 'open', 'recovery', 'restore', 'stable']);
     expect(Object.keys(api.assets).sort()).toEqual(['exportPack', 'importPack']);
     expect(Object.keys(api.provider).sort()).toEqual([

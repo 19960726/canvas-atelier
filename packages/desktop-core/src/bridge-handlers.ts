@@ -67,9 +67,28 @@ import {
   type SnapshotEnvelope,
   type StablePointBridgeRequest,
   type StablePointBridgeResult,
+  type AddGenerationHistoryProjectReferencesBridgeRequest,
+  type CompareGenerationHistoryBridgeRequest,
+  type CopyGenerationHistoryToProjectBridgeRequest,
+  type CopyGenerationHistoryToProjectBridgeResult,
+  type ExportGenerationHistoryBridgeRequest,
+  type ExportGenerationHistoryBridgeResult,
+  type GenerationHistoryBatchBridgeRequest,
+  type GenerationHistoryCapacityBridgeResult,
+  type GenerationHistoryComparisonBridgeResult,
+  type GenerationHistoryMutationBridgeResult,
+  type GenerationHistoryPurgeBridgeRequest,
+  type GenerationHistoryPurgeBridgeResult,
+  type GenerationHistoryRecordBridgeRequest,
+  type GenerationHistoryReusableBridgeResult,
+  type ListGenerationHistoryBridgeRequest,
+  type ListGenerationHistoryBridgeResult,
+  type SetGenerationHistoryFavoriteBridgeRequest,
 } from './contracts.js';
 import { AssetStore, type AssetMetadata } from './asset-store.js';
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
+import { GenerationHistoryService, type GenerationHistoryExportFileSummary } from './generation-history-service.js';
+import { GenerationHistoryStore } from './generation-history-store.js';
 import { createPersistenceError, releaseJournalState, writeInitialJournalCommitBoundary } from './journal-writer.js';
 import { KnowledgeRefreshService } from './knowledge-refresh-service.js';
 import {
@@ -214,6 +233,7 @@ export interface BridgeDialogAdapter {
   chooseImportDestination(): Promise<string | null>;
   chooseImportPackSource(): Promise<string | null>;
   chooseKnowledgeRoot(request: ConfigureKnowledgeBaseBridgeRequest): Promise<string | null>;
+  chooseHistoryExportDirectory(files: readonly GenerationHistoryExportFileSummary[]): Promise<string | null>;
   choosePackExportPath(session: BridgeSessionSummary): Promise<string | null>;
   chooseProjectImage(): Promise<string | null>;
   chooseProjectRoot(request: OpenProjectBridgeRequest): Promise<string | null>;
@@ -232,6 +252,9 @@ export interface DesktopBridgeHandlerDependencies {
   readonly knowledgeRefreshService?: KnowledgeRefreshServiceLike;
   readonly knowledgeStore?: KnowledgeStoreLike;
   readonly knowledgeSyncStatusProvider?: KnowledgeSyncStatusProviderLike;
+  readonly historyService?: GenerationHistoryService;
+  readonly historyIsNetworkPath?: (path: string) => boolean | Promise<boolean>;
+  readonly historyStore?: GenerationHistoryStore;
   readonly packExporter?: NovusPackExporterLike;
   readonly packImporter?: NovusPackImporterLike;
   readonly recoveryScanner?: RecoveryScannerLike;
@@ -251,6 +274,18 @@ export interface DesktopBridgeHandlers {
   importPack(event: unknown, request: unknown): Promise<ImportPackBridgeResult | null>;
   importProjectImage(event: unknown, request: unknown): Promise<ImportProjectImageBridgeResult | null>;
   listProjectImages(event: unknown, request: unknown): Promise<ProjectImageAssetSummary[]>;
+  listGenerationHistory(event: unknown, request: unknown): Promise<ListGenerationHistoryBridgeResult>;
+  getGenerationHistoryCapacity(event: unknown, request?: unknown): Promise<GenerationHistoryCapacityBridgeResult>;
+  setGenerationHistoryFavorite(event: unknown, request: unknown): Promise<GenerationHistoryMutationBridgeResult>;
+  getGenerationHistoryReusableSummary(event: unknown, request: unknown): Promise<GenerationHistoryReusableBridgeResult>;
+  compareGenerationHistory(event: unknown, request: unknown): Promise<GenerationHistoryComparisonBridgeResult>;
+  copyGenerationHistoryToProject(event: unknown, request: unknown): Promise<CopyGenerationHistoryToProjectBridgeResult>;
+  addGenerationHistoryProjectReferences(event: unknown, request: unknown): Promise<GenerationHistoryMutationBridgeResult[]>;
+  exportGenerationHistory(event: unknown, request: unknown): Promise<ExportGenerationHistoryBridgeResult>;
+  trashGenerationHistory(event: unknown, request: unknown): Promise<GenerationHistoryMutationBridgeResult>;
+  restoreGenerationHistory(event: unknown, request: unknown): Promise<GenerationHistoryMutationBridgeResult>;
+  permanentlyDeleteGenerationHistory(event: unknown, request: unknown): Promise<GenerationHistoryPurgeBridgeResult>;
+  purgeGenerationHistory(event: unknown, request: unknown): Promise<GenerationHistoryPurgeBridgeResult>;
   openProject(event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null>;
   prepareSkillCandidateReview(event: unknown, request: unknown): Promise<PrepareSkillCandidateReviewBridgeResult>;
   reviewSkillCandidate(event: unknown, request: unknown): Promise<ReviewSkillCandidateBridgeResult>;
@@ -344,6 +379,16 @@ export function createDesktopBridgeHandlers(
   const knowledgeRefreshService = dependencies.knowledgeRefreshService ?? new KnowledgeRefreshService({
     fileSystem,
     store: knowledgeStore as ManagedKnowledgeStore,
+  });
+  const historyStore = dependencies.historyStore ?? new GenerationHistoryStore({
+    historyRoot: join(dependencies.appDataRoot ?? process.cwd(), 'generation-history'),
+    ownedRoot: dependencies.appDataRoot ?? process.cwd(),
+    fileSystem,
+    isNetworkPath: dependencies.historyIsNetworkPath,
+  });
+  const historyService = dependencies.historyService ?? new GenerationHistoryService({
+    assetStore: assetStore instanceof AssetStore ? assetStore : undefined,
+    store: historyStore,
   });
   const sessions = new Map<string, BridgeSessionContext>();
 
@@ -718,6 +763,156 @@ export function createDesktopBridgeHandlers(
     );
   }
 
+  async function listGenerationHistory(
+    _event: unknown,
+    request: unknown,
+  ): Promise<ListGenerationHistoryBridgeResult> {
+    return historyStore.list(request);
+  }
+
+  async function getGenerationHistoryCapacity(
+    _event: unknown,
+    request?: unknown,
+  ): Promise<GenerationHistoryCapacityBridgeResult> {
+    if (request !== undefined) throw invalidHistoryRequest('History capacity request does not accept a payload');
+    return historyStore.getCapacity();
+  }
+
+  async function setGenerationHistoryFavorite(
+    _event: unknown,
+    request: unknown,
+  ): Promise<GenerationHistoryMutationBridgeResult> {
+    return historyStore.setFavorite(validateHistoryFavoriteRequest(request));
+  }
+
+  async function getGenerationHistoryReusableSummary(
+    _event: unknown,
+    request: unknown,
+  ): Promise<GenerationHistoryReusableBridgeResult> {
+    const validated = validateHistoryRecordRequest(request);
+    return historyService.getReusableSummary(validated.historyId);
+  }
+
+  async function compareGenerationHistory(
+    _event: unknown,
+    request: unknown,
+  ): Promise<GenerationHistoryComparisonBridgeResult> {
+    const validated = validateHistoryComparisonRequest(request);
+    return historyService.compare(validated.historyIds);
+  }
+
+  async function copyGenerationHistoryToProject(
+    _event: unknown,
+    request: unknown,
+  ): Promise<CopyGenerationHistoryToProjectBridgeResult> {
+    const validated = validateHistoryProjectBatchRequest(request);
+    const session = requireWritableSession(sessions, validated.sessionId);
+    return enqueueSessionMaintenance(session, async () => {
+      const currentSession = requireWritableSession(sessions, validated.sessionId);
+      const writer = requireBridgeWriter(currentSession);
+      return historyService.copyToProject({
+        historyIds: validated.historyIds,
+        operationId: validated.operationId,
+        projectDisplayLabel: currentSession.session.manifest.projectName,
+        projectId: currentSession.session.manifest.projectId,
+        projectRoot: currentSession.session.root,
+        commitProjectAsset: async (storedAsset, historyRecord) => {
+          const currentProject = await repository.readCurrentProject(currentSession.session);
+          const projectAsset = createHistoryProjectImageAsset(storedAsset, historyRecord.id);
+          const existing = (currentProject.assets ?? []).find((asset) => asset.assetId === projectAsset.assetId);
+          if (existing !== undefined && existing.sha256 === projectAsset.sha256) {
+            currentSession.assets.set(existing.assetId, existing);
+            return;
+          }
+          const currentRevision = await readCurrentRevision(repository, currentSession.session);
+          const transaction: ProjectTransaction = {
+            id: `history-copy-${sha256Canonical({
+              operationId: validated.operationId,
+              historyId: historyRecord.id,
+            }).slice(0, 32)}`,
+            label: 'Copy generation history asset into project',
+            operations: [{
+              kind: 'set_project_assets',
+              assets: upsertProjectImageAsset(currentProject.assets ?? [], projectAsset),
+            }],
+          };
+          const ack = await writer.commit({
+            baseRevision: currentRevision,
+            kind: 'canvas',
+            projectId: currentProject.id,
+            transaction,
+          });
+          currentSession.assets.set(projectAsset.assetId, projectAsset);
+          await flushScheduledSnapshotAfterCommit(currentSession, ack, 'canvas');
+        },
+      });
+    });
+  }
+
+  async function addGenerationHistoryProjectReferences(
+    _event: unknown,
+    request: unknown,
+  ): Promise<GenerationHistoryMutationBridgeResult[]> {
+    const validated = validateHistoryProjectBatchRequest(request);
+    const session = requireWritableSession(sessions, validated.sessionId);
+    return enqueueSessionMaintenance(session, async () => {
+      const currentSession = requireWritableSession(sessions, validated.sessionId);
+      const results: GenerationHistoryMutationBridgeResult[] = [];
+      for (const historyId of validated.historyIds) {
+        const suffix = sha256Canonical({ operationId: validated.operationId, historyId }).slice(0, 24);
+        results.push(await historyStore.addProjectReferences({
+          historyId,
+          operationId: `operation_projectref_${suffix}`,
+          references: [{
+            referenceId: `reference_${suffix}`,
+            projectId: currentSession.session.manifest.projectId,
+            projectDisplayLabel: currentSession.session.manifest.projectName,
+          }],
+        }));
+      }
+      return results;
+    });
+  }
+
+  async function exportGenerationHistory(
+    _event: unknown,
+    request: unknown,
+  ): Promise<ExportGenerationHistoryBridgeResult> {
+    const validated = validateHistoryExportRequest(request);
+    return historyService.exportSelected({
+      historyIds: validated.historyIds,
+      chooseDestination: (files) => dialogs.chooseHistoryExportDirectory(files),
+    });
+  }
+
+  async function trashGenerationHistory(
+    _event: unknown,
+    request: unknown,
+  ): Promise<GenerationHistoryMutationBridgeResult> {
+    return historyStore.softDelete(validateHistoryBatchRequest(request));
+  }
+
+  async function restoreGenerationHistory(
+    _event: unknown,
+    request: unknown,
+  ): Promise<GenerationHistoryMutationBridgeResult> {
+    return historyStore.restore(validateHistoryBatchRequest(request));
+  }
+
+  async function permanentlyDeleteGenerationHistory(
+    _event: unknown,
+    request: unknown,
+  ): Promise<GenerationHistoryPurgeBridgeResult> {
+    return historyStore.permanentlyDelete(validateHistoryBatchRequest(request));
+  }
+
+  async function purgeGenerationHistory(
+    _event: unknown,
+    request: unknown,
+  ): Promise<GenerationHistoryPurgeBridgeResult> {
+    return historyStore.purgeExpired(validateHistoryPurgeRequest(request));
+  }
+
   async function configureKnowledgeBase(
     _event: unknown,
     request: unknown,
@@ -984,12 +1179,24 @@ export function createDesktopBridgeHandlers(
     getRecoveryPlan,
     importPack,
     importProjectImage,
+    addGenerationHistoryProjectReferences,
+    compareGenerationHistory,
+    copyGenerationHistoryToProject,
+    exportGenerationHistory,
+    getGenerationHistoryCapacity,
+    getGenerationHistoryReusableSummary,
+    listGenerationHistory,
     listProjectImages,
     openProject,
     prepareSkillCandidateReview,
     reviewSkillCandidate,
+    permanentlyDeleteGenerationHistory,
+    purgeGenerationHistory,
+    restoreGenerationHistory,
     restore,
     resolveProjectImagePath,
+    setGenerationHistoryFavorite,
+    trashGenerationHistory,
   };
 
   async function closeBridgeSession(
@@ -1499,6 +1706,18 @@ export function registerDesktopBridgeHandlers(
   ipcMain.handle(BRIDGE_CHANNELS.getKnowledgeState, handlers.getKnowledgeState);
   ipcMain.handle(BRIDGE_CHANNELS.prepareSkillCandidateReview, handlers.prepareSkillCandidateReview);
   ipcMain.handle(BRIDGE_CHANNELS.reviewSkillCandidate, handlers.reviewSkillCandidate);
+  ipcMain.handle(BRIDGE_CHANNELS.history.list, handlers.listGenerationHistory);
+  ipcMain.handle(BRIDGE_CHANNELS.history.capacity, handlers.getGenerationHistoryCapacity);
+  ipcMain.handle(BRIDGE_CHANNELS.history.setFavorite, handlers.setGenerationHistoryFavorite);
+  ipcMain.handle(BRIDGE_CHANNELS.history.reuse, handlers.getGenerationHistoryReusableSummary);
+  ipcMain.handle(BRIDGE_CHANNELS.history.compare, handlers.compareGenerationHistory);
+  ipcMain.handle(BRIDGE_CHANNELS.history.copyToProject, handlers.copyGenerationHistoryToProject);
+  ipcMain.handle(BRIDGE_CHANNELS.history.addProjectReferences, handlers.addGenerationHistoryProjectReferences);
+  ipcMain.handle(BRIDGE_CHANNELS.history.exportSelected, handlers.exportGenerationHistory);
+  ipcMain.handle(BRIDGE_CHANNELS.history.trash, handlers.trashGenerationHistory);
+  ipcMain.handle(BRIDGE_CHANNELS.history.restore, handlers.restoreGenerationHistory);
+  ipcMain.handle(BRIDGE_CHANNELS.history.permanentlyDelete, handlers.permanentlyDeleteGenerationHistory);
+  ipcMain.handle(BRIDGE_CHANNELS.history.purgeExpired, handlers.purgeGenerationHistory);
 }
 
 function withDialogDefaults(dialogs: Partial<BridgeDialogAdapter> | undefined): BridgeDialogAdapter {
@@ -1506,6 +1725,7 @@ function withDialogDefaults(dialogs: Partial<BridgeDialogAdapter> | undefined): 
     chooseImportDestination: dialogs?.chooseImportDestination ?? (async () => null),
     chooseImportPackSource: dialogs?.chooseImportPackSource ?? (async () => null),
     chooseKnowledgeRoot: dialogs?.chooseKnowledgeRoot ?? (async () => null),
+    chooseHistoryExportDirectory: dialogs?.chooseHistoryExportDirectory ?? (async () => null),
     choosePackExportPath: dialogs?.choosePackExportPath ?? (async () => null),
     chooseProjectImage: dialogs?.chooseProjectImage ?? (async () => null),
     chooseProjectRoot: dialogs?.chooseProjectRoot ?? (async () => null),
@@ -1577,6 +1797,20 @@ function createImportedProjectImageAsset(storedAsset: AssetMetadata, sourcePath:
   return parsed.success
     ? parsed.data
     : projectImageAssetSchema.parse({ ...base, label: `Image ${storedAsset.id.slice(0, 8)}` });
+}
+
+function createHistoryProjectImageAsset(storedAsset: AssetMetadata, historyId: string): ProjectImageAsset {
+  return projectImageAssetSchema.parse({
+    assetId: storedAsset.id,
+    byteSize: storedAsset.byteSize,
+    extension: storedAsset.extension,
+    height: storedAsset.height,
+    label: `History ${historyId.slice(-8)}`,
+    mediaType: storedAsset.mediaType,
+    origin: 'generated',
+    sha256: storedAsset.sha256,
+    width: storedAsset.width,
+  });
 }
 
 function createProjectImageImportTransaction(
@@ -2094,6 +2328,85 @@ function validateListProjectImagesBridgeRequest(value: unknown): ListProjectImag
   const request = { sessionId: parseNonEmptyString(record.sessionId, 'sessionId') };
   assertPublicBridgePayload(request);
   return request;
+}
+
+function validateHistoryRecordRequest(value: unknown): GenerationHistoryRecordBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertHistoryExactKeys(record, ['historyId'], 'Generation history record request');
+  return { historyId: parseHistoryBridgeId(record.historyId) };
+}
+
+function validateHistoryBatchRequest(value: unknown): GenerationHistoryBatchBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertHistoryExactKeys(record, ['historyIds', 'operationId'], 'Generation history batch request');
+  return {
+    historyIds: parseHistoryBridgeIds(record.historyIds, 1, 100),
+    operationId: parseHistoryBridgeId(record.operationId),
+  };
+}
+
+function validateHistoryFavoriteRequest(value: unknown): SetGenerationHistoryFavoriteBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertHistoryExactKeys(record, ['favorite', 'historyIds', 'operationId'], 'Generation history favorite request');
+  if (typeof record.favorite !== 'boolean') throw invalidHistoryRequest('History favorite value is invalid');
+  return {
+    favorite: record.favorite,
+    historyIds: parseHistoryBridgeIds(record.historyIds, 1, 100),
+    operationId: parseHistoryBridgeId(record.operationId),
+  };
+}
+
+function validateHistoryComparisonRequest(value: unknown): CompareGenerationHistoryBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertHistoryExactKeys(record, ['historyIds'], 'Generation history comparison request');
+  return { historyIds: parseHistoryBridgeIds(record.historyIds, 2, 20) };
+}
+
+function validateHistoryProjectBatchRequest(value: unknown): CopyGenerationHistoryToProjectBridgeRequest & AddGenerationHistoryProjectReferencesBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertHistoryExactKeys(record, ['historyIds', 'operationId', 'sessionId'], 'Generation history project request');
+  return {
+    historyIds: parseHistoryBridgeIds(record.historyIds, 1, 100),
+    operationId: parseHistoryBridgeId(record.operationId),
+    sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+  };
+}
+
+function validateHistoryExportRequest(value: unknown): ExportGenerationHistoryBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertHistoryExactKeys(record, ['historyIds'], 'Generation history export request');
+  return { historyIds: parseHistoryBridgeIds(record.historyIds, 1, 100) };
+}
+
+function validateHistoryPurgeRequest(value: unknown): GenerationHistoryPurgeBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertHistoryExactKeys(record, ['operationId'], 'Generation history purge request');
+  return { operationId: parseHistoryBridgeId(record.operationId) };
+}
+
+function parseHistoryBridgeIds(value: unknown, minimum: number, maximum: number): string[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > maximum) {
+    throw invalidHistoryRequest('Generation history selection is invalid');
+  }
+  const ids = value.map(parseHistoryBridgeId);
+  if (new Set(ids).size !== ids.length) throw invalidHistoryRequest('Generation history selection contains duplicates');
+  return ids;
+}
+
+function parseHistoryBridgeId(value: unknown): string {
+  if (typeof value === 'string' && /^[a-z][a-z0-9_-]{7,95}$/u.test(value)) return value;
+  throw invalidHistoryRequest('Generation history identity is invalid');
+}
+
+function invalidHistoryRequest(message: string): Error & { readonly code: 'HISTORY_INVALID_REQUEST'; readonly retryable: false } {
+  return Object.assign(new Error(message), { code: 'HISTORY_INVALID_REQUEST' as const, retryable: false as const });
+}
+
+function assertHistoryExactKeys(record: Record<string, unknown>, allowedKeys: readonly string[], label: string): void {
+  const allowed = new Set(allowedKeys);
+  if (Object.keys(record).some((key) => !allowed.has(key))) {
+    throw invalidHistoryRequest(`${label} contains unsupported fields`);
+  }
 }
 
 function validateRestoreBridgeRequest(value: unknown): RestoreBridgeRequest {

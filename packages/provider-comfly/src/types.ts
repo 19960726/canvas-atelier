@@ -11,6 +11,7 @@ export interface ComflyFetchResponse {
   readonly ok: boolean;
   readonly status: number;
   json(): Promise<unknown>;
+  arrayBuffer?(): Promise<ArrayBuffer>;
 }
 
 export interface ComflyFetchInit {
@@ -18,6 +19,7 @@ export interface ComflyFetchInit {
   readonly headers?: Record<string, string>;
   readonly body?: string;
   readonly signal?: AbortSignal;
+  readonly trustedResolvedAddress?: string;
 }
 
 export type ComflyFetch = (url: string, init?: ComflyFetchInit) => Promise<ComflyFetchResponse>;

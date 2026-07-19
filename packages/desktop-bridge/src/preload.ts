@@ -18,6 +18,7 @@ export function createAgentCanvasApi(
 ): AgentCanvasApi {
   const legacy = createPreloadApi(invoke, subscribe);
   return {
+    history: legacy.history,
     project: {
       open: (request) => legacy.openProject(request),
       commit: (request) => legacy.commit(request),

@@ -1,22 +1,27 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, safeStorage, shell } from 'electron';
 
 import {
   BRIDGE_CHANNELS,
   ApprovedSnapshotOutbox,
   ApprovedSnapshotPullCoordinator,
   KnowledgeRefreshService,
+  GenerationHistoryProviderSink,
+  GenerationHistoryStore,
   ManagedKnowledgeStore,
   createComflyProviderService,
   createDesktopBridgeHandlers,
   createElectronNetComflyFetch,
+  createElectronTrustedImageDecoder,
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
   createProviderBridgeHandlers,
+  isHistoryNetworkPath,
   createPersistenceError,
   createSecureProviderCredentialStore,
   parseCloseChoiceRequest,
@@ -85,6 +90,13 @@ app.on('second-instance', () => {
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   const fileSystem = new NodeFileSystem();
+  const appDataRoot = app.getPath('userData');
+  const generationHistoryStore = new GenerationHistoryStore({
+    historyRoot: join(appDataRoot, 'generation-history'),
+    ownedRoot: appDataRoot,
+    fileSystem,
+    isNetworkPath: isHistoryNetworkPath,
+  });
   const snapshotScheduler = new SnapshotScheduler({
     fileSystem,
     worker: createBundledSnapshotWorkerRunner(snapshotWorkerEntryPath),
@@ -132,6 +144,8 @@ app.whenReady().then(async () => {
     knowledgeRefreshService,
     knowledgeStore,
     knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator,
+    historyIsNetworkPath: isHistoryNetworkPath,
+    historyStore: generationHistoryStore,
     snapshotScheduler,
   });
   registerProjectImageProtocol(desktopHandlers);
@@ -165,6 +179,12 @@ app.whenReady().then(async () => {
       safeStorage,
     }),
     fetch: createElectronNetComflyFetch(net),
+    historySink: new GenerationHistoryProviderSink({
+      store: generationHistoryStore,
+      trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
+    }),
+    resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
+      .map((entry) => entry.address),
   })));
   ipcMain.on(diagnosticsChannel, (_event, message) => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
@@ -420,6 +440,14 @@ async function handleSafeModeCommand(command: string): Promise<void> {
 
 function createDialogAdapter(): BridgeDialogAdapter {
   return {
+    async chooseHistoryExportDirectory(files) {
+      const result = await dialog.showOpenDialog({
+        defaultPath: app.getPath('documents'),
+        properties: ['openDirectory', 'createDirectory'],
+        title: `Export ${files.length} history image${files.length === 1 ? '' : 's'}`,
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    },
     async chooseImportDestination() {
       const result = await dialog.showSaveDialog({
         defaultPath: join(app.getPath('documents'), 'Imported Project.novus-project'),

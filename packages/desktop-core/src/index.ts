@@ -51,6 +51,23 @@ export type {
   SnapshotEnvelope,
   StablePointBridgeRequest,
   StablePointBridgeResult,
+  AddGenerationHistoryProjectReferencesBridgeRequest,
+  CompareGenerationHistoryBridgeRequest,
+  CopyGenerationHistoryToProjectBridgeRequest,
+  CopyGenerationHistoryToProjectBridgeResult,
+  ExportGenerationHistoryBridgeRequest,
+  ExportGenerationHistoryBridgeResult,
+  GenerationHistoryBatchBridgeRequest,
+  GenerationHistoryCapacityBridgeResult,
+  GenerationHistoryComparisonBridgeResult,
+  GenerationHistoryMutationBridgeResult,
+  GenerationHistoryPurgeBridgeRequest,
+  GenerationHistoryPurgeBridgeResult,
+  GenerationHistoryRecordBridgeRequest,
+  GenerationHistoryReusableBridgeResult,
+  ListGenerationHistoryBridgeRequest,
+  ListGenerationHistoryBridgeResult,
+  SetGenerationHistoryFavoriteBridgeRequest,
 } from './contracts.js';
 
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
@@ -84,6 +101,38 @@ export type {
   ApprovedSnapshotPullStore,
 } from './approved-snapshot-pull.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
+export { GenerationHistoryStore } from './generation-history-store.js';
+export type {
+  GenerationHistoryListResult,
+  GenerationHistoryAvailableAsset,
+  GenerationHistoryCapacity,
+  GenerationHistoryMutationResult,
+  GenerationHistoryProjectReferenceInput,
+  GenerationHistoryPurgeResult,
+  GenerationHistoryStoreError,
+  GenerationHistoryStoreErrorCode,
+  GenerationHistoryStoreOptions,
+  IngestGenerationHistoryInput,
+} from './generation-history-store.js';
+export { GenerationHistoryService } from './generation-history-service.js';
+export type {
+  GenerationHistoryComparisonDescriptor,
+  GenerationHistoryExportFileSummary,
+  GenerationHistoryExportResult,
+  GenerationHistoryProjectCopyResult,
+  GenerationHistoryReusableSummary,
+  GenerationHistoryServiceOptions,
+} from './generation-history-service.js';
+export { GenerationHistoryProviderSink, createElectronTrustedImageDecoder } from './generation-history-provider-sink.js';
+export type {
+  ElectronNativeImageLike,
+  GenerationHistoryDurableTerminal,
+  GenerationHistoryFailureCode,
+  GenerationHistoryProviderSinkContract,
+  TrustedImageDecoder,
+} from './generation-history-provider-sink.js';
+export { isHistoryNetworkPath } from './history-network-path.js';
+export type { HistoryNetworkPathOptions } from './history-network-path.js';
 export { shutdownDesktopServices } from './desktop-shutdown.js';
 export type { DesktopShutdownServices } from './desktop-shutdown.js';
 export {
@@ -211,6 +260,7 @@ export type {
   DesktopBridgeInvoke,
   DesktopBridgeSend,
   DesktopBridgeSubscribe,
+  DesktopGenerationHistoryBridgeApi,
   DesktopProjectImageBridgeApi,
   SafeModeBridgeApi,
 } from './preload-api.js';

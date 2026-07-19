@@ -7,6 +7,7 @@ export interface FileHandleLike {
   close(): Promise<void>;
   sync(): Promise<void>;
   truncate?(length: number): Promise<void>;
+  write?(data: Uint8Array): Promise<unknown>;
   writeFile(data: string | Uint8Array): Promise<void>;
 }
 
@@ -15,6 +16,7 @@ export interface FileStatLike {
   readonly mtimeMs?: number;
   isDirectory(): boolean;
   isFile(): boolean;
+  isReparsePoint?(): boolean;
   isSymbolicLink?(): boolean;
 }
 

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { BlockList, isIP } from 'node:net';
 
 import {
   ComflyClient,
@@ -19,6 +20,11 @@ import {
 } from './provider-task-ledger.js';
 import { createProviderConfigurationStore } from './provider-configuration-store.js';
 import { createElectronNetComflyFetch } from './electron-net-fetch.js';
+import type {
+  GenerationHistoryDurableTerminal,
+  GenerationHistoryFailureCode,
+  GenerationHistoryProviderSinkContract,
+} from './generation-history-provider-sink.js';
 import type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
 import {
   PROVIDER_BRIDGE_CHANNELS,
@@ -98,6 +104,8 @@ export function createComflyProviderService(options: {
   readonly now?: () => number;
   readonly terminalTombstoneTtlMs?: number;
   readonly timeoutMs?: number;
+  readonly historySink?: GenerationHistoryProviderSinkContract;
+  readonly resolveResultHost?: (hostname: string) => Promise<readonly string[]>;
 }): ProviderService {
   let configurationCache: ConfigurationSnapshot = {
     profiles: sanitizeProfiles(options.profiles ?? DEFAULT_PROVIDER_PROFILES),
@@ -180,22 +188,49 @@ export function createComflyProviderService(options: {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;
       const snapshot = await captureRuntimeSnapshot();
       const profile = selectProfile(snapshot.profiles, validated.provider, validated.modelRoute);
-      const response = await translateProviderCall(() => createClient(snapshot).generateImage({
-        model: profile.modelId ?? profile.modelRoute,
-        prompt: validated.prompt,
-        async: true,
-      }));
-      const parsed = parseImageTaskResponse(response);
+      const historyId = await options.historySink?.queued({
+        jobId: validated.jobId,
+        modelDisplayName: profile.displayName,
+      });
+      if (historyId !== undefined && options.historySink !== undefined) {
+        const durableTerminal = await options.historySink.getTerminal(historyId);
+        if (durableTerminal !== null) {
+          const publicTaskId = createPublicProviderTaskId();
+          await providerTaskMappings.set(createHistoryTerminalMappingRecord(
+            publicTaskId,
+            historyId,
+            durableTerminal,
+            nowIso(),
+          ));
+          return { providerTaskId: publicTaskId };
+        }
+      }
+      let parsed: ReturnType<typeof parseImageTaskResponse>;
+      try {
+        const response = await translateProviderCall(() => createClient(snapshot).generateImage({
+          model: profile.modelId ?? profile.modelRoute,
+          prompt: validated.prompt,
+          async: true,
+        }));
+        parsed = parseImageTaskResponse(response);
+      } catch (error) {
+        if (historyId !== undefined) {
+          await options.historySink?.failed(historyId, historyFailureCode(error));
+        }
+        throw error;
+      }
       const publicTaskId = createPublicProviderTaskId();
       const timestamp = nowIso();
       await providerTaskMappings.set({
         provider: 'comfly',
         publicTaskId,
         rawTaskId: parsed.taskId,
+        ...(historyId === undefined ? {} : { historyId }),
         state: 'running',
         createdAt: timestamp,
         updatedAt: timestamp,
       });
+      if (historyId !== undefined) await options.historySink?.running(historyId);
       return { providerTaskId: publicTaskId };
     },
     async pollImageJob(request) {
@@ -215,6 +250,12 @@ export function createComflyProviderService(options: {
       if (task.state !== 'running') {
         return terminalMappingToPollResult(task);
       }
+      if (task.historyId !== undefined && options.historySink !== undefined) {
+        const durableTerminal = await options.historySink.getTerminal(task.historyId);
+        if (durableTerminal !== null) {
+          return await commitHistoryTerminal(validated.providerTaskId, durableTerminal);
+        }
+      }
       const snapshot = await captureRuntimeSnapshot();
       let response: unknown;
       try {
@@ -226,7 +267,24 @@ export function createComflyProviderService(options: {
         if (isCredentialsLocked(error)) return blockedCredentialsPollResult();
         throw error;
       }
-      const result = mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
+      const mapped = mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
+      let result = mapped.publicResult;
+      if (task.historyId !== undefined && options.historySink !== undefined) {
+        let effective: GenerationHistoryDurableTerminal | null = null;
+        if (result.status === 'completed') {
+          try {
+            const bytes = await downloadProviderResult(mapped.resultUrl);
+            effective = await options.historySink.succeeded(task.historyId, bytes);
+          } catch {
+            effective = await options.historySink.failed(task.historyId, 'invalid_result');
+          }
+        } else if (result.status === 'failed') {
+          effective = await options.historySink.failed(task.historyId, 'provider_failed');
+        } else if (result.status === 'cancelled') {
+          effective = await options.historySink.cancelled(task.historyId, 'cancelled_by_system');
+        }
+        if (effective !== null) result = historyTerminalToPollResult(validated.provider, validated.providerTaskId, effective);
+      }
       if (result.status === 'completed' || result.status === 'failed') {
         const terminal = await providerTaskMappings.markTerminal(validated.providerTaskId, result, nowIso());
         return terminal === undefined ? result : terminalMappingToPollResult(terminal);
@@ -241,6 +299,16 @@ export function createComflyProviderService(options: {
       await gcTerminalTombstones();
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request) as CancelImageJobBridgeRequest;
       assertSupportedProvider(validated.provider);
+      const current = await providerTaskMappings.get(validated.providerTaskId);
+      if (current === undefined || current.provider !== validated.provider) {
+        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+      }
+      if (current.state !== 'running') return terminalMappingToCancelResult(current);
+      if (current.historyId !== undefined && options.historySink !== undefined) {
+        const prior = await options.historySink.getTerminal(current.historyId);
+        const effective = prior ?? await options.historySink.cancelled(current.historyId, 'cancelled_by_user');
+        return terminalMappingToCancelResult(await commitHistoryTerminalRecord(validated.providerTaskId, effective));
+      }
       const terminal = await providerTaskMappings.markCancelled(validated.providerTaskId, nowIso());
       if (terminal === undefined || terminal.provider !== validated.provider) {
         throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
@@ -288,6 +356,100 @@ export function createComflyProviderService(options: {
 
   function nowIso(): string {
     return new Date(nowMs()).toISOString();
+  }
+
+  async function downloadProviderResult(rawUrl: string | undefined): Promise<Uint8Array> {
+    const url = parseSafeProviderResultUrl(rawUrl);
+    if (options.resolveResultHost === undefined) {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+    }
+    let addresses: readonly string[];
+    try {
+      addresses = await options.resolveResultHost(url.hostname);
+    } catch {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+    }
+    if (addresses.length === 0 || addresses.some((address) => !isPublicProviderAddress(address))) {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+    }
+    const response = await options.fetch(url.toString(), { trustedResolvedAddress: addresses[0] });
+    if (!response.ok || response.arrayBuffer === undefined) {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  async function commitHistoryTerminal(
+    publicTaskId: string,
+    terminal: GenerationHistoryDurableTerminal,
+  ): Promise<PollImageJobBridgeResult> {
+    return terminalMappingToPollResult(await commitHistoryTerminalRecord(publicTaskId, terminal));
+  }
+
+  async function commitHistoryTerminalRecord(
+    publicTaskId: string,
+    terminal: GenerationHistoryDurableTerminal,
+  ): Promise<ProviderTaskMappingRecord> {
+    if (terminal.status === 'cancelled') {
+      const committed = await providerTaskMappings.markCancelled(publicTaskId, nowIso());
+      if (committed === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+      return committed;
+    }
+    const result = historyTerminalToPollResult('comfly', publicTaskId, terminal);
+    if (result.status !== 'completed' && result.status !== 'failed') {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+    }
+    const committed = await providerTaskMappings.markTerminal(publicTaskId, result, nowIso());
+    if (committed === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+    return committed;
+  }
+
+  function createHistoryTerminalMappingRecord(
+    publicTaskId: string,
+    historyId: string,
+    terminal: GenerationHistoryDurableTerminal,
+    now: string,
+  ): ProviderTaskMappingRecord {
+    if (terminal.status === 'cancelled') {
+      return {
+        provider: 'comfly',
+        publicTaskId,
+        rawTaskId: `history-terminal-${publicTaskId}`,
+        historyId,
+        state: 'cancelled',
+        createdAt: now,
+        updatedAt: now,
+        terminalAt: now,
+      };
+    }
+    const result = historyTerminalToPollResult('comfly', publicTaskId, terminal);
+    if (result.status === 'completed') {
+      return {
+        provider: 'comfly',
+        publicTaskId,
+        rawTaskId: `history-terminal-${publicTaskId}`,
+        historyId,
+        state: 'completed',
+        createdAt: now,
+        updatedAt: now,
+        terminalAt: now,
+        result: result.result,
+      };
+    }
+    if (result.status !== 'failed') {
+      throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
+    }
+    return {
+      provider: 'comfly',
+      publicTaskId,
+      rawTaskId: `history-terminal-${publicTaskId}`,
+      historyId,
+      state: 'failed',
+      createdAt: now,
+      updatedAt: now,
+      terminalAt: now,
+      error: result.error,
+    };
   }
 }
 
@@ -428,23 +590,23 @@ function mapImageTaskPollResult(
   publicTaskId: string,
   rawTaskId: string,
   value: unknown,
-): PollImageJobBridgeResult {
+): { readonly publicResult: PollImageJobBridgeResult; readonly resultUrl?: string } {
   const task = parseImageTaskResponse(value);
   if (task.taskId !== rawTaskId) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task response');
   }
   const status = task.status.toLowerCase();
   if (status === 'queued' || status === 'pending' || status === 'running' || status === 'processing') {
-    return { status: 'running', progress: undefined };
+    return { publicResult: { status: 'running', progress: undefined } };
   }
   if (status === 'failed' || status === 'error') {
-    return {
+    return { publicResult: {
       status: 'failed',
       error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_ERROR', 'Provider image task failed', true)),
-    };
+    } };
   }
   if (status === 'cancelled' || status === 'canceled') {
-    return { status: 'cancelled' };
+    return { publicResult: { status: 'cancelled' } };
   }
   if (status !== 'succeeded' && status !== 'completed' && status !== 'success') {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task status');
@@ -458,14 +620,90 @@ function mapImageTaskPollResult(
     throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned a protected image payload');
   }
   return {
-    status: 'completed',
-    progress: 1,
-    result: {
-      assetId: createProviderResultAssetId(provider, publicTaskId),
-      ...(first.width === undefined ? {} : { width: parseFiniteNumber(first.width, 'width') }),
-      ...(first.height === undefined ? {} : { height: parseFiniteNumber(first.height, 'height') }),
+    publicResult: {
+      status: 'completed',
+      progress: 1,
+      result: {
+        assetId: createProviderResultAssetId(provider, publicTaskId),
+        ...(first.width === undefined ? {} : { width: parseFiniteNumber(first.width, 'width') }),
+        ...(first.height === undefined ? {} : { height: parseFiniteNumber(first.height, 'height') }),
+      },
     },
+    ...(typeof first.url === 'string' ? { resultUrl: first.url } : {}),
   };
+}
+
+function historyFailureCode(error: unknown): GenerationHistoryFailureCode {
+  if (isProviderBridgeError(error) && (error.code === 'PROVIDER_INVALID_RESPONSE' || error.code === 'PROTECTED_PAYLOAD')) {
+    return 'invalid_result';
+  }
+  return 'provider_unavailable';
+}
+
+function parseSafeProviderResultUrl(value: string | undefined): URL {
+  if (value === undefined) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+  }
+  const hostname = url.hostname.toLowerCase().replace(/\.$/u, '').replace(/^\[|\]$/gu, '');
+  if (
+    url.protocol !== 'https:'
+    || url.username !== ''
+    || url.password !== ''
+    || hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local')
+    || isIpLiteral(hostname)
+  ) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
+  }
+  return url;
+}
+
+function isIpLiteral(hostname: string): boolean {
+  if (hostname.includes(':')) return true;
+  const parts = hostname.split('.');
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/u.test(part) && Number(part) <= 255);
+}
+
+const providerResultAddressBlockList = createProviderResultAddressBlockList();
+
+function isPublicProviderAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 0) return false;
+  if (family === 4) return isPublicIpv4Address(address);
+  return !providerResultAddressBlockList.check(address, 'ipv6');
+}
+
+function createProviderResultAddressBlockList(): BlockList {
+  const blockList = new BlockList();
+  for (const [address, prefix] of [
+    ['::', 128],
+    ['::1', 128],
+    ['::ffff:0:0', 96],
+    ['fc00::', 7],
+    ['fe80::', 10],
+    ['ff00::', 8],
+  ] as const) blockList.addSubnet(address, prefix, 'ipv6');
+  return blockList;
+}
+
+function isPublicIpv4Address(address: string): boolean {
+  const octets = address.split('.').map(Number);
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
+  const [first, second] = octets as [number, number, number, number];
+  if (first === 0 || first === 10 || first === 127 || first >= 224) return false;
+  if (first === 100 && second >= 64 && second <= 127) return false;
+  if (first === 169 && second === 254) return false;
+  if (first === 172 && second >= 16 && second <= 31) return false;
+  if (first === 192 && (second === 0 || second === 168)) return false;
+  if (first === 198 && (second === 18 || second === 19)) return false;
+  return true;
 }
 
 function createPublicProviderTaskId(): string {
@@ -477,6 +715,31 @@ function createProviderResultAssetId(_provider: string, publicTaskId: string): s
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
   }
   return `provider-result-${publicTaskId}`;
+}
+
+function historyTerminalToPollResult(
+  provider: string,
+  publicTaskId: string,
+  terminal: GenerationHistoryDurableTerminal,
+): PollImageJobBridgeResult {
+  if (terminal.status === 'succeeded') {
+    return {
+      status: 'completed',
+      progress: 1,
+      result: {
+        assetId: createProviderResultAssetId(provider, publicTaskId),
+        width: terminal.width,
+        height: terminal.height,
+      },
+    };
+  }
+  if (terminal.status === 'failed') {
+    return {
+      status: 'failed',
+      error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_ERROR', 'Provider image task failed', true)),
+    };
+  }
+  return { status: 'cancelled' };
 }
 
 function blockedCredentialsPollResult(): PollImageJobBridgeResult {

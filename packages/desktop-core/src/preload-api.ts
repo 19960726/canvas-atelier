@@ -25,6 +25,23 @@ import type {
   StablePointBridgeRequest,
   StablePointBridgeResult,
   ProjectImageAssetSummary,
+  AddGenerationHistoryProjectReferencesBridgeRequest,
+  CompareGenerationHistoryBridgeRequest,
+  CopyGenerationHistoryToProjectBridgeRequest,
+  CopyGenerationHistoryToProjectBridgeResult,
+  ExportGenerationHistoryBridgeRequest,
+  ExportGenerationHistoryBridgeResult,
+  GenerationHistoryBatchBridgeRequest,
+  GenerationHistoryCapacityBridgeResult,
+  GenerationHistoryComparisonBridgeResult,
+  GenerationHistoryMutationBridgeResult,
+  GenerationHistoryPurgeBridgeRequest,
+  GenerationHistoryPurgeBridgeResult,
+  GenerationHistoryRecordBridgeRequest,
+  GenerationHistoryReusableBridgeResult,
+  ListGenerationHistoryBridgeRequest,
+  ListGenerationHistoryBridgeResult,
+  SetGenerationHistoryFavoriteBridgeRequest,
 } from './contracts.js';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
@@ -79,6 +96,20 @@ export const BRIDGE_CHANNELS = {
   prepareSkillCandidateReview: 'novus-desktop:prepare-skill-candidate-review',
   reviewSkillCandidate: 'novus-desktop:review-skill-candidate',
   restore: 'novus-desktop:restore',
+  history: {
+    list: 'novus-desktop:history:list',
+    capacity: 'novus-desktop:history:capacity',
+    setFavorite: 'novus-desktop:history:set-favorite',
+    reuse: 'novus-desktop:history:reuse',
+    compare: 'novus-desktop:history:compare',
+    copyToProject: 'novus-desktop:history:copy-to-project',
+    addProjectReferences: 'novus-desktop:history:add-project-references',
+    exportSelected: 'novus-desktop:history:export-selected',
+    trash: 'novus-desktop:history:trash',
+    restore: 'novus-desktop:history:restore',
+    permanentlyDelete: 'novus-desktop:history:permanently-delete',
+    purgeExpired: 'novus-desktop:history:purge-expired',
+  },
   provider: PROVIDER_BRIDGE_CHANNELS,
 } as const;
 
@@ -106,6 +137,22 @@ export interface DesktopBridgeApi {
   lifecycle: DesktopLifecycleBridgeApi;
   provider: DesktopProviderBridgeApi;
   projectImages: DesktopProjectImageBridgeApi;
+  history: DesktopGenerationHistoryBridgeApi;
+}
+
+export interface DesktopGenerationHistoryBridgeApi {
+  list(request: ListGenerationHistoryBridgeRequest): Promise<ListGenerationHistoryBridgeResult>;
+  getCapacity(): Promise<GenerationHistoryCapacityBridgeResult>;
+  setFavorite(request: SetGenerationHistoryFavoriteBridgeRequest): Promise<GenerationHistoryMutationBridgeResult>;
+  getReusableSummary(request: GenerationHistoryRecordBridgeRequest): Promise<GenerationHistoryReusableBridgeResult>;
+  compare(request: CompareGenerationHistoryBridgeRequest): Promise<GenerationHistoryComparisonBridgeResult>;
+  copyToProject(request: CopyGenerationHistoryToProjectBridgeRequest): Promise<CopyGenerationHistoryToProjectBridgeResult>;
+  addProjectReferences(request: AddGenerationHistoryProjectReferencesBridgeRequest): Promise<GenerationHistoryMutationBridgeResult[]>;
+  exportSelected(request: ExportGenerationHistoryBridgeRequest): Promise<ExportGenerationHistoryBridgeResult>;
+  trash(request: GenerationHistoryBatchBridgeRequest): Promise<GenerationHistoryMutationBridgeResult>;
+  restore(request: GenerationHistoryBatchBridgeRequest): Promise<GenerationHistoryMutationBridgeResult>;
+  permanentlyDelete(request: GenerationHistoryBatchBridgeRequest): Promise<GenerationHistoryPurgeBridgeResult>;
+  purgeExpired(request: GenerationHistoryPurgeBridgeRequest): Promise<GenerationHistoryPurgeBridgeResult>;
 }
 
 export interface DesktopProjectImageBridgeApi {
@@ -211,6 +258,44 @@ export function createPreloadApi(
       },
       list(request) {
         return invoke<ProjectImageAssetSummary[]>(BRIDGE_CHANNELS.listProjectImages, request);
+      },
+    },
+    history: {
+      list(request) {
+        return invoke<ListGenerationHistoryBridgeResult>(BRIDGE_CHANNELS.history.list, request);
+      },
+      getCapacity() {
+        return invoke<GenerationHistoryCapacityBridgeResult>(BRIDGE_CHANNELS.history.capacity);
+      },
+      setFavorite(request) {
+        return invoke<GenerationHistoryMutationBridgeResult>(BRIDGE_CHANNELS.history.setFavorite, request);
+      },
+      getReusableSummary(request) {
+        return invoke<GenerationHistoryReusableBridgeResult>(BRIDGE_CHANNELS.history.reuse, request);
+      },
+      compare(request) {
+        return invoke<GenerationHistoryComparisonBridgeResult>(BRIDGE_CHANNELS.history.compare, request);
+      },
+      copyToProject(request) {
+        return invoke<CopyGenerationHistoryToProjectBridgeResult>(BRIDGE_CHANNELS.history.copyToProject, request);
+      },
+      addProjectReferences(request) {
+        return invoke<GenerationHistoryMutationBridgeResult[]>(BRIDGE_CHANNELS.history.addProjectReferences, request);
+      },
+      exportSelected(request) {
+        return invoke<ExportGenerationHistoryBridgeResult>(BRIDGE_CHANNELS.history.exportSelected, request);
+      },
+      trash(request) {
+        return invoke<GenerationHistoryMutationBridgeResult>(BRIDGE_CHANNELS.history.trash, request);
+      },
+      restore(request) {
+        return invoke<GenerationHistoryMutationBridgeResult>(BRIDGE_CHANNELS.history.restore, request);
+      },
+      permanentlyDelete(request) {
+        return invoke<GenerationHistoryPurgeBridgeResult>(BRIDGE_CHANNELS.history.permanentlyDelete, request);
+      },
+      purgeExpired(request) {
+        return invoke<GenerationHistoryPurgeBridgeResult>(BRIDGE_CHANNELS.history.purgeExpired, request);
       },
     },
     lifecycle: {

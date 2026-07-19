@@ -31,6 +31,7 @@ export interface ProviderTaskMappingRecord {
   readonly provider: 'comfly';
   readonly publicTaskId: string;
   readonly rawTaskId: string;
+  readonly historyId?: string;
   readonly state: ProviderTaskMappingState;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -197,7 +198,7 @@ export function createProviderTaskMappingStore(options: {
     await assertConfinedProviderTaskPathForWrite(fileSystem, options.appDataRoot, targetPath);
     const secret = await options.secretSupplier();
     const envelope = await encryptSerializedPayload(JSON.stringify({
-      version: 2,
+      version: 3,
       mappings: [...mappings.values()],
     }), secret.primary);
     try {
@@ -239,7 +240,7 @@ function parseTaskMappingEnvelope(value: unknown): ProviderTaskMappingEnvelope {
 
 function parseTaskMappingPayload(value: unknown): ProviderTaskMappingRecord[] {
   const record = expectStrictRecord(value, ['version', 'mappings']);
-  if ((record.version !== 1 && record.version !== 2) || !Array.isArray(record.mappings)) {
+  if ((record.version !== 1 && record.version !== 2 && record.version !== 3) || !Array.isArray(record.mappings)) {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
   }
   return record.mappings.map((entry) => {
@@ -247,6 +248,7 @@ function parseTaskMappingPayload(value: unknown): ProviderTaskMappingRecord[] {
       'provider',
       'publicTaskId',
       'rawTaskId',
+      'historyId',
       'state',
       'createdAt',
       'updatedAt',
@@ -262,6 +264,7 @@ function parseTaskMappingPayload(value: unknown): ProviderTaskMappingRecord[] {
       provider: parseProvider(item.provider),
       publicTaskId: parseNonEmptyString(item.publicTaskId, 'publicTaskId'),
       rawTaskId: parseNonEmptyString(item.rawTaskId, 'rawTaskId'),
+      ...(item.historyId === undefined ? {} : { historyId: parseHistoryId(item.historyId) }),
       state,
       createdAt,
       updatedAt,
@@ -270,6 +273,14 @@ function parseTaskMappingPayload(value: unknown): ProviderTaskMappingRecord[] {
       ...(item.error === undefined ? {} : { error: validateProviderError(item.error) }),
     };
   });
+}
+
+function parseHistoryId(value: unknown): string {
+  const historyId = parseNonEmptyString(value, 'historyId');
+  if (!/^history_[a-f0-9]{48}$/u.test(historyId)) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+  }
+  return historyId;
 }
 
 function parseMappingState(value: unknown): ProviderTaskMappingState {

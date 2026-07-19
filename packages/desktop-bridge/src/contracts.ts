@@ -33,10 +33,12 @@ import type {
   AckImageJobTerminalBridgeRequest,
   AckImageJobTerminalBridgeResult,
   UnlockProviderBridgeRequest,
+  DesktopGenerationHistoryBridgeApi,
 } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 
 export interface AgentCanvasApi {
+  readonly history: DesktopGenerationHistoryBridgeApi;
   readonly project: {
     open(request: OpenProjectBridgeRequest): Promise<OpenProjectBridgeResult | null>;
     commit(request: CommitBridgeRequest): Promise<CommitAck>;

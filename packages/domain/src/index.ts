@@ -45,6 +45,29 @@ export {
 export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
 export { projectImageAssetSchema } from './project-image-asset';
 export type { ProjectImageAsset } from './project-image-asset';
+export {
+  GENERATION_HISTORY_SCHEMA_VERSION,
+  GENERATION_HISTORY_TRASH_RETENTION_MS,
+  MAX_GENERATION_HISTORY_PAGE_SIZE,
+  MAX_GENERATION_HISTORY_PROJECT_REFERENCES,
+  MAX_GENERATION_HISTORY_TAGS,
+  containsProtectedHistoryValue,
+  filterAndSortGenerationHistory,
+  generationHistoryAvailabilitySchema,
+  generationHistoryListRequestSchema,
+  generationHistoryParameterSchema,
+  generationHistoryRecordSchema,
+  generationHistoryStatusSchema,
+  parseGenerationHistoryListRequest,
+  parseGenerationHistoryRecord,
+} from './generation-history';
+export type {
+  GenerationHistoryAvailability,
+  GenerationHistoryListRequest,
+  GenerationHistoryParameterSummary,
+  GenerationHistoryRecord,
+  GenerationHistoryStatus,
+} from './generation-history';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
 export { parseCanvasProject } from './project-schema';
 export {
