@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCanvasModuleNode, type CanvasProject } from '@agent-canvas/domain';
 
+import type { AssetMetadata } from './asset-store';
 import { createDesktopBridgeHandlers } from './bridge-handlers';
+import type { CommitRequest } from './contracts';
 import { releaseJournalState } from './journal-writer';
 import { createPreloadApi, BRIDGE_CHANNELS, type DesktopBridgeInvoke } from './preload-api';
 import { ProjectRepository, type OpenedProjectSession } from './project-repository';
@@ -315,6 +317,325 @@ describe('project image bridge', () => {
     await handlers.closeAllProjects();
   });
 
+  it.each(['closed', 'retry_only'] as const)(
+    'fences a deferred image picker after the session becomes %s',
+    async (sessionState) => {
+      const tempRoot = await createTempRoot(tempRoots, `project-image-${sessionState}-picker-`);
+      const sourcePath = join(tempRoot, 'product.png');
+      await writeFile(sourcePath, pngBytes);
+      const picker = deferred<string | null>();
+      const chooseProjectImage = vi.fn(() => picker.promise);
+      const writerCommit = vi.fn(async (request: CommitRequest) => ({
+        committedAt: '2026-07-19T00:00:00.000Z',
+        projectId: 'image-project',
+        revision: 1,
+        sequence: 1,
+        transactionId: request.transaction.id,
+      }));
+      const stageAndCommit = vi.fn(async (
+        _root: string,
+        _source: NodeJS.ReadableStream,
+        options: { readonly commitReference?: (asset: AssetMetadata) => Promise<void> },
+      ) => {
+        (_source as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+        const asset = storedAsset();
+        await options.commitReference?.(asset);
+        return asset;
+      });
+      const flush = vi.fn();
+      let closeCalls = 0;
+      const close = vi.fn(async () => {
+        closeCalls += 1;
+        if (sessionState === 'retry_only' && closeCalls === 1) {
+          throw Object.assign(new Error('Injected partial close failure'), {
+            code: 'DURABLE_WRITE_FAILED',
+            retryable: true,
+          });
+        }
+      });
+      const handlers = createDesktopBridgeHandlers({
+        assetStore: {
+          list: vi.fn(async () => []),
+          resolvePath: vi.fn(async () => null),
+          stageAndCommit,
+        },
+        createId: sequentialId('bridge'),
+        dialogs: {
+          chooseProjectImage,
+          chooseProjectRoot: vi.fn(async () => 'fixture/Images.novus-project'),
+        },
+        repository: {
+          close,
+          open: vi.fn(async () => openedSession('write')),
+          openJournalWriter: vi.fn(async () => ({ commit: writerCommit })),
+          readCurrentProject: vi.fn(async () => imageProject()),
+          readCurrentRevision: vi.fn(async () => 0),
+        },
+        snapshotScheduler: {
+          consider: vi.fn(() => null),
+          flush,
+        },
+      });
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      if (opened === null) throw new Error('Expected project session');
+      const importing = handlers.importProjectImage({}, {
+        sessionId: opened.sessionId,
+        target: { kind: 'module', nodeId: 'image-input' },
+      });
+      await vi.waitFor(() => expect(chooseProjectImage).toHaveBeenCalledTimes(1));
+
+      if (sessionState === 'retry_only') {
+        await expect(handlers.closeProject({}, {
+          flush: false,
+          sessionId: opened.sessionId,
+        })).rejects.toMatchObject({ code: 'DURABLE_WRITE_FAILED' });
+      } else {
+        await handlers.closeProject({}, { flush: false, sessionId: opened.sessionId });
+      }
+      picker.resolve(sourcePath);
+
+      try {
+        const outcome = await importing.catch((error: unknown) => error);
+        expect.soft(outcome).toMatchObject({ code: 'INVALID_SESSION' });
+        expect.soft(stageAndCommit).not.toHaveBeenCalled();
+        expect.soft(writerCommit).not.toHaveBeenCalled();
+        expect.soft(flush).not.toHaveBeenCalled();
+      } finally {
+        await handlers.closeAllProjects().catch(() => undefined);
+      }
+    },
+  );
+
+  it.each(['restored', 'recovery_required'] as const)(
+    'rejects a deferred image import after the session becomes %s',
+    async (sessionState) => {
+      const tempRoot = await createTempRoot(tempRoots, `project-image-${sessionState}-`);
+      const projectRoot = join(tempRoot, 'Images.novus-project');
+      const sourcePath = join(tempRoot, 'product.png');
+      const mirrorPath = join(tempRoot, 'recovery-candidate.json');
+      await writeFile(sourcePath, pngBytes);
+      await writeFile(mirrorPath, sessionState === 'restored'
+        ? `${JSON.stringify({
+          project: imageProject(),
+          projectId: 'image-project',
+          revision: 0,
+          snapshotId: 'recovery-image-0',
+        })}\n`
+        : '{}\n');
+      const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6150 });
+      const created = await repository.create(projectRoot, {
+        project: imageProject(),
+        projectId: 'image-project',
+        projectName: 'Image Project',
+      });
+      await repository.close(created);
+      const picker = deferred<string | null>();
+      const chooseProjectImage = vi.fn(() => picker.promise);
+      const writerCommit = vi.fn();
+      const stageAndCommit = vi.fn(async (
+        _root: string,
+        _source: NodeJS.ReadableStream,
+        options: { readonly commitReference?: (asset: AssetMetadata) => Promise<void> },
+      ) => {
+        (_source as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+        const asset = storedAsset();
+        await options.commitReference?.(asset);
+        return asset;
+      });
+      const flush = vi.fn();
+      const handlers = createDesktopBridgeHandlers({
+        assetStore: {
+          list: vi.fn(async () => []),
+          resolvePath: vi.fn(async () => null),
+          stageAndCommit,
+        },
+        createId: sequentialId('bridge'),
+        dialogs: {
+          chooseProjectImage,
+          chooseProjectRoot: vi.fn(async () => projectRoot),
+        },
+        recoveryScanner: {
+          scan: vi.fn(async () => ({
+            action: 'choose_recovery' as const,
+            candidates: [{
+              path: mirrorPath,
+              project: imageProject(),
+              revision: 0,
+              snapshotId: 'recovery-image-0',
+              tailStatus: 'complete' as const,
+            }],
+            issues: ['corrupt_snapshot'],
+            projectId: 'image-project',
+            recoveredRevision: 0,
+            stableSnapshotId: 'recovery-image-0',
+            targetRevision: 0,
+          })),
+        },
+        repository: {
+          close: repository.close.bind(repository),
+          open: repository.open.bind(repository),
+          openJournalWriter: vi.fn(async (session) => {
+            const writer = await repository.openJournalWriter(session);
+            return {
+              commit: async (request: CommitRequest) => {
+                writerCommit(request);
+                return writer.commit(request);
+              },
+            };
+          }),
+          readCurrentProject: repository.readCurrentProject.bind(repository),
+          readCurrentRevision: repository.readCurrentRevision.bind(repository),
+        },
+        snapshotScheduler: {
+          consider: vi.fn(() => null),
+          flush,
+        },
+      });
+
+      try {
+        const opened = await handlers.openProject({}, { mode: 'write' });
+        if (opened === null) throw new Error('Expected project session');
+        const importing = handlers.importProjectImage({}, {
+          sessionId: opened.sessionId,
+          target: { kind: 'module', nodeId: 'image-input' },
+        });
+        await vi.waitFor(() => expect(chooseProjectImage).toHaveBeenCalledTimes(1));
+        const recoveryPlan = await handlers.getRecoveryPlan({}, { sessionId: opened.sessionId });
+        const candidateId = recoveryPlan.candidates[0]?.candidateId;
+        if (candidateId === undefined) throw new Error('Expected recovery candidate');
+        if (sessionState === 'restored') {
+          await handlers.restore({}, { candidateId, sessionId: opened.sessionId });
+        } else {
+          await expect(handlers.restore({}, {
+            candidateId,
+            sessionId: opened.sessionId,
+          })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+        }
+        picker.resolve(sourcePath);
+
+        const outcome = await importing.catch((error: unknown) => error);
+        expect.soft(outcome).toMatchObject({
+          code: sessionState === 'restored' ? 'INVALID_SESSION' : 'RECOVERY_REQUIRED',
+        });
+        expect.soft(stageAndCommit).not.toHaveBeenCalled();
+        expect.soft(writerCommit).not.toHaveBeenCalled();
+        expect.soft(flush).not.toHaveBeenCalled();
+      } finally {
+        await handlers.closeAllProjects().catch(() => undefined);
+        releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');
+      }
+    },
+  );
+
+  it('serializes a managed image import through snapshot completion before close cleanup', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-image-close-order-');
+    const projectRoot = join(tempRoot, 'Images.novus-project');
+    const sourcePath = join(tempRoot, 'product.png');
+    await writeFile(sourcePath, pngBytes);
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6151 });
+    const created = await repository.create(projectRoot, {
+      project: imageProject(),
+      projectId: 'image-project',
+      projectName: 'Image Project',
+    });
+    await repository.close(created);
+    const picker = deferred<string | null>();
+    const stageGate = deferred<void>();
+    const stageEntered = deferred<void>();
+    const closeGate = deferred<void>();
+    const closeEntered = deferred<void>();
+    const events: string[] = [];
+    const stageAndCommit = vi.fn(async (
+      _root: string,
+      _source: NodeJS.ReadableStream,
+      options: { readonly commitReference?: (asset: AssetMetadata) => Promise<void> },
+    ) => {
+      (_source as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+      events.push('stage');
+      stageEntered.resolve();
+      await stageGate.promise;
+      const asset = storedAsset();
+      await options.commitReference?.(asset);
+      return asset;
+    });
+    const close = vi.fn(async (session: OpenedProjectSession) => {
+      events.push('close');
+      closeEntered.resolve();
+      await closeGate.promise;
+      await repository.close(session);
+    });
+    const flush = vi.fn(async () => {
+      events.push('flush');
+      return {
+        path: 'snapshots/image-import.json.gz',
+        reason: 'agent_transaction' as const,
+        revision: 1,
+        snapshotId: 'image-import',
+      };
+    });
+    const handlers = createDesktopBridgeHandlers({
+      assetStore: {
+        list: vi.fn(async () => []),
+        resolvePath: vi.fn(async () => null),
+        stageAndCommit,
+      },
+      createId: sequentialId('bridge'),
+      dialogs: {
+        chooseProjectImage: vi.fn(() => picker.promise),
+        chooseProjectRoot: vi.fn(async () => projectRoot),
+      },
+      repository: {
+        close,
+        open: repository.open.bind(repository),
+        openJournalWriter: vi.fn(async (session) => {
+          const writer = await repository.openJournalWriter(session);
+          return {
+            commit: async (request: CommitRequest) => {
+              events.push('writer');
+              return writer.commit(request);
+            },
+          };
+        }),
+        readCurrentProject: repository.readCurrentProject.bind(repository),
+        readCurrentRevision: repository.readCurrentRevision.bind(repository),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => ({ reason: 'agent_transaction' as const })),
+        flush,
+      },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      if (opened === null) throw new Error('Expected project session');
+      const importing = handlers.importProjectImage({}, {
+        sessionId: opened.sessionId,
+        target: { kind: 'module', nodeId: 'image-input' },
+      });
+      picker.resolve(sourcePath);
+      await stageEntered.promise;
+
+      const closing = handlers.closeProject({}, { flush: false, sessionId: opened.sessionId });
+      const closeStartedBeforeImportSettled = await Promise.race([
+        closeEntered.promise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30)),
+      ]);
+      stageGate.resolve();
+      const result = await importing;
+      closeGate.resolve();
+      await closing;
+
+      expect.soft(closeStartedBeforeImportSettled).toBe(false);
+      expect.soft(result).toMatchObject({ currentRevision: 1, project: { id: 'image-project' } });
+      expect.soft(events).toEqual(['stage', 'writer', 'flush', 'close']);
+    } finally {
+      stageGate.resolve();
+      closeGate.resolve();
+      await handlers.closeAllProjects().catch(() => undefined);
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');
+    }
+  });
+
   it('replaces protected source filenames before the asset label reaches the durable journal', async () => {
     const tempRoot = await createTempRoot(tempRoots, 'project-image-label-');
     const projectRoot = join(tempRoot, 'Images.novus-project');
@@ -455,6 +776,30 @@ function openedSession(mode: 'write' | 'read_only', root = 'fixture/Images.novus
 function sequentialId(prefix: string): () => string {
   let value = 0;
   return () => `${prefix}-${++value}`;
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function storedAsset(): AssetMetadata {
+  return {
+    byteSize: pngBytes.length,
+    extension: 'png',
+    height: 3,
+    id: '0123456789abcdef',
+    mediaType: 'image/png',
+    relativePath: 'assets/0123456789abcdef.png',
+    sha256: `0123456789abcdef${'0'.repeat(48)}`,
+    width: 2,
+  };
 }
 
 async function createTempRoot(tempRoots: string[], prefix: string): Promise<string> {

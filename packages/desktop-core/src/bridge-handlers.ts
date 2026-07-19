@@ -604,57 +604,68 @@ export function createDesktopBridgeHandlers(
     if (session.imageImportInFlight) {
       throw invalidRequest('A project image import is already in progress');
     }
+    const openedSession = session.session;
     session.imageImportInFlight = true;
     try {
-      await validateProjectImageTarget(repository, session, validated.target);
       const sourcePath = await dialogs.chooseProjectImage();
       if (sourcePath === null) return null;
+      return enqueueSessionMaintenance(session, async () => {
+        const currentSession = requireWritableSession(sessions, validated.sessionId);
+        if (currentSession !== session || currentSession.session !== openedSession) {
+          throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before image import');
+        }
+        if (currentSession.writer === null) {
+          throw createPersistenceError('CONCURRENT_WRITER', true, 'Image import requires a writable desktop session');
+        }
+        const writer = currentSession.writer;
+        await validateProjectImageTarget(repository, currentSession, validated.target);
 
-      const commitState: {
-        value?: { readonly ack: CommitAck; readonly asset: ProjectImageAsset; readonly project: CanvasProject };
-      } = {};
-      await assetStore.stageAndCommit(session.session.root, createReadStream(sourcePath), {
-        maxBytes: MAX_PROJECT_IMAGE_BYTES,
-        originalName: basename(sourcePath),
-        commitReference: async (storedAsset) => {
-          const currentProject = await repository.readCurrentProject(session.session);
-          const currentRevision = await readCurrentRevision(repository, session.session);
-          const projectAsset = createImportedProjectImageAsset(storedAsset, sourcePath);
-          const transaction = createProjectImageImportTransaction(
-            currentProject,
-            validated.target,
-            projectAsset,
-            createId,
-          );
-          const nextProject = applyProjectTransaction(currentProject, transaction);
-          const ack = await session.writer!.commit({
-            baseRevision: currentRevision,
-            kind: 'canvas',
-            projectId: currentProject.id,
-            transaction,
-          });
-          commitState.value = { ack, asset: projectAsset, project: nextProject };
-        },
+        const commitState: {
+          value?: { readonly ack: CommitAck; readonly asset: ProjectImageAsset; readonly project: CanvasProject };
+        } = {};
+        await assetStore.stageAndCommit(currentSession.session.root, createReadStream(sourcePath), {
+          maxBytes: MAX_PROJECT_IMAGE_BYTES,
+          originalName: basename(sourcePath),
+          commitReference: async (storedAsset) => {
+            const currentProject = await repository.readCurrentProject(currentSession.session);
+            const currentRevision = await readCurrentRevision(repository, currentSession.session);
+            const projectAsset = createImportedProjectImageAsset(storedAsset, sourcePath);
+            const transaction = createProjectImageImportTransaction(
+              currentProject,
+              validated.target,
+              projectAsset,
+              createId,
+            );
+            const nextProject = applyProjectTransaction(currentProject, transaction);
+            const ack = await writer.commit({
+              baseRevision: currentRevision,
+              kind: 'canvas',
+              projectId: currentProject.id,
+              transaction,
+            });
+            commitState.value = { ack, asset: projectAsset, project: nextProject };
+          },
+        });
+
+        const committed = commitState.value;
+        if (committed === undefined) {
+          throw invalidRequest('Image import did not reach its durable commit boundary');
+        }
+        currentSession.assets.set(committed.asset.assetId, committed.asset);
+        await flushScheduledSnapshotAfterCommit(currentSession, committed.ack, 'canvas');
+        const summary = createProjectImageSummary(
+          committed.asset,
+          currentSession.sessionId,
+          countProjectImageUsage(committed.project, committed.asset.assetId),
+        );
+        const result = {
+          asset: summary,
+          currentRevision: committed.ack.revision,
+          project: committed.project,
+        };
+        assertPublicBridgePayload(result);
+        return result;
       });
-
-      const committed = commitState.value;
-      if (committed === undefined) {
-        throw invalidRequest('Image import did not reach its durable commit boundary');
-      }
-      session.assets.set(committed.asset.assetId, committed.asset);
-      await flushScheduledSnapshotAfterCommit(session, committed.ack, 'canvas');
-      const summary = createProjectImageSummary(
-        committed.asset,
-        session.sessionId,
-        countProjectImageUsage(committed.project, committed.asset.assetId),
-      );
-      const result = {
-        asset: summary,
-        currentRevision: committed.ack.revision,
-        project: committed.project,
-      };
-      assertPublicBridgePayload(result);
-      return result;
     } finally {
       session.imageImportInFlight = false;
     }
