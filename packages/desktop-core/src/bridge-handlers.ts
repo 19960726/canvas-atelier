@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { basename, extname, join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import {
   parseCanvasProject,
@@ -8,6 +9,7 @@ import {
   MAX_GENERATION_REFERENCES,
   projectImageAssetSchema,
   projectTransactionSchema,
+  createCanvasModuleNode,
   createSkillPromotionCandidateFingerprint,
   reviewSkillPromotionCandidate,
   rollbackSkillPromotionCandidate,
@@ -44,6 +46,8 @@ import {
   type ImportPackBridgeResult,
   type ImportProjectImageBridgeRequest,
   type ImportProjectImageBridgeResult,
+  type PasteProjectClipboardImageBridgeRequest,
+  type PasteProjectClipboardImageBridgeResult,
   type KnowledgeStateBridgeResult,
   type KnowledgeSyncStatusSummary,
   type ListProjectImagesBridgeRequest,
@@ -55,6 +59,7 @@ import {
   type PersistenceError,
   type ProjectManifest,
   type ProjectImageAssetSummary,
+  type ProjectClipboardImageTarget,
   type ProjectImageImportTarget,
   type RecoveryCandidateBridgeSummary,
   type RecoveryPlanBridgeRequest,
@@ -86,6 +91,7 @@ import {
   type SetGenerationHistoryFavoriteBridgeRequest,
 } from './contracts.js';
 import { AssetStore, type AssetMetadata } from './asset-store.js';
+import type { ClipboardImageAdapter, TrustedClipboardImage } from './electron-clipboard-image.js';
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
 import { GenerationHistoryService, type GenerationHistoryExportFileSummary } from './generation-history-service.js';
 import { GenerationHistoryStore } from './generation-history-store.js';
@@ -242,6 +248,7 @@ export interface BridgeDialogAdapter {
 export interface DesktopBridgeHandlerDependencies {
   readonly appDataRoot?: string;
   readonly channel?: PersistenceChannel;
+  readonly clipboard?: ClipboardImageAdapter;
   readonly createId?: () => string;
   readonly dialogs?: Partial<BridgeDialogAdapter>;
   readonly fileSystem?: FileSystem;
@@ -273,6 +280,7 @@ export interface DesktopBridgeHandlers {
   getRecoveryPlan(event: unknown, request: unknown): Promise<RecoveryPlanBridgeResult>;
   importPack(event: unknown, request: unknown): Promise<ImportPackBridgeResult | null>;
   importProjectImage(event: unknown, request: unknown): Promise<ImportProjectImageBridgeResult | null>;
+  pasteProjectClipboardImage(event: unknown, request: unknown): Promise<PasteProjectClipboardImageBridgeResult | null>;
   listProjectImages(event: unknown, request: unknown): Promise<ProjectImageAssetSummary[]>;
   listGenerationHistory(event: unknown, request: unknown): Promise<ListGenerationHistoryBridgeResult>;
   getGenerationHistoryCapacity(event: unknown, request?: unknown): Promise<GenerationHistoryCapacityBridgeResult>;
@@ -354,6 +362,7 @@ export function createDesktopBridgeHandlers(
   const fileSystem = dependencies.fileSystem ?? new NodeFileSystem();
   const assetStore = dependencies.assetStore ?? new AssetStore();
   const createId = dependencies.createId ?? defaultId;
+  const clipboard = dependencies.clipboard ?? { readImage: async () => null };
   const dialogs = withDialogDefaults(dependencies.dialogs);
   const repository = withRepositoryDefaults(dependencies.repository, {
     channel: dependencies.channel ?? 'modern',
@@ -705,6 +714,76 @@ export function createDesktopBridgeHandlers(
         );
         const result = {
           asset: summary,
+          currentRevision: committed.ack.revision,
+          project: committed.project,
+        };
+        assertPublicBridgePayload(result);
+        return result;
+      });
+    } finally {
+      session.imageImportInFlight = false;
+    }
+  }
+
+  async function pasteProjectClipboardImage(
+    _event: unknown,
+    request: unknown,
+  ): Promise<PasteProjectClipboardImageBridgeResult | null> {
+    const validated = validatePasteProjectClipboardImageBridgeRequest(request);
+    const session = requireWritableSession(sessions, validated.sessionId);
+    if (session.writer === null) {
+      throw createPersistenceError('CONCURRENT_WRITER', true, 'Clipboard image paste requires a writable desktop session');
+    }
+    if (session.imageImportInFlight) {
+      throw invalidRequest('A project image import is already in progress');
+    }
+    session.imageImportInFlight = true;
+    try {
+      return enqueueSessionMaintenance(session, async () => {
+        const currentSession = requireWritableSession(sessions, validated.sessionId);
+        if (currentSession !== session || currentSession.writer === null) {
+          throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before clipboard image paste');
+        }
+        const existing = await readExistingClipboardImagePaste(assetStore, repository, currentSession, validated.target);
+        if (existing !== null) return existing;
+        const image = await clipboard.readImage();
+        if (image === null) return null;
+        const commitState: {
+          value?: { readonly ack: CommitAck; readonly asset: ProjectImageAsset; readonly project: CanvasProject };
+        } = {};
+        await assetStore.stageAndCommit(currentSession.session.root, Readable.from([image.bytes]), {
+          maxBytes: MAX_PROJECT_IMAGE_BYTES,
+          originalName: 'clipboard.png',
+          commitReference: async (storedAsset) => {
+            assertClipboardAssetMatches(storedAsset, image);
+            const currentProject = await repository.readCurrentProject(currentSession.session);
+            const currentRevision = await readCurrentRevision(repository, currentSession.session);
+            const projectAsset = createClipboardProjectImageAsset(storedAsset, image.label);
+            const transaction = createClipboardImagePasteTransaction(
+              currentProject,
+              validated.target,
+              projectAsset,
+            );
+            const nextProject = applyProjectTransaction(currentProject, transaction);
+            const ack = await currentSession.writer!.commit({
+              baseRevision: currentRevision,
+              kind: 'canvas',
+              projectId: currentProject.id,
+              transaction,
+            });
+            commitState.value = { ack, asset: projectAsset, project: nextProject };
+          },
+        });
+        const committed = commitState.value;
+        if (committed === undefined) throw invalidRequest('Clipboard image paste did not reach its durable commit boundary');
+        currentSession.assets.set(committed.asset.assetId, committed.asset);
+        await flushScheduledSnapshotAfterCommit(currentSession, committed.ack, 'canvas');
+        const result = {
+          asset: createProjectImageSummary(
+            committed.asset,
+            currentSession.sessionId,
+            countProjectImageUsage(committed.project, committed.asset.assetId),
+          ),
           currentRevision: committed.ack.revision,
           project: committed.project,
         };
@@ -1179,6 +1258,7 @@ export function createDesktopBridgeHandlers(
     getRecoveryPlan,
     importPack,
     importProjectImage,
+    pasteProjectClipboardImage,
     addGenerationHistoryProjectReferences,
     compareGenerationHistory,
     copyGenerationHistoryToProject,
@@ -1699,6 +1779,7 @@ export function registerDesktopBridgeHandlers(
   ipcMain.handle(BRIDGE_CHANNELS.exportPack, handlers.exportPack);
   ipcMain.handle(BRIDGE_CHANNELS.importPack, handlers.importPack);
   ipcMain.handle(BRIDGE_CHANNELS.importProjectImage, handlers.importProjectImage);
+  ipcMain.handle(BRIDGE_CHANNELS.pasteProjectClipboardImage, handlers.pasteProjectClipboardImage);
   ipcMain.handle(BRIDGE_CHANNELS.listProjectImages, handlers.listProjectImages);
   ipcMain.handle(BRIDGE_CHANNELS.closeProject, handlers.closeProject);
   ipcMain.handle(BRIDGE_CHANNELS.getRecoveryPlan, handlers.getRecoveryPlan);
@@ -1872,6 +1953,104 @@ function createProjectImageImportTransaction(
       { kind: 'canvas', operation: { kind: 'update_node', node: nextNode } },
     ],
   };
+}
+
+function createClipboardImagePasteTransaction(
+  project: CanvasProject,
+  target: ProjectClipboardImageTarget,
+  asset: ProjectImageAsset,
+): ProjectTransaction {
+  const identity = clipboardImagePasteIdentity(target.operationId);
+  const node = createCanvasModuleNode(identity.nodeId, 'image_input', target.position);
+  const boundNode = {
+    ...node,
+    data: {
+      ...node.data,
+      config: { ...node.data.config, assetId: asset.assetId },
+    },
+  };
+  return {
+    id: identity.transactionId,
+    label: 'Paste clipboard image',
+    operations: [
+      { kind: 'set_project_assets', assets: upsertProjectImageAsset(project.assets ?? [], asset) },
+      { kind: 'canvas', operation: { kind: 'create_node', node: boundNode } },
+    ],
+  };
+}
+
+async function readExistingClipboardImagePaste(
+  assetStore: ProjectAssetStoreLike,
+  repository: ProjectRepositoryLike,
+  session: BridgeSessionContext,
+  target: ProjectClipboardImageTarget,
+): Promise<PasteProjectClipboardImageBridgeResult | null> {
+  const identity = clipboardImagePasteIdentity(target.operationId);
+  const project = await repository.readCurrentProject(session.session);
+  const node = project.nodes.find((candidate) => candidate.id === identity.nodeId);
+  if (node === undefined) return null;
+  if (
+    node.type !== 'module'
+    || node.data.moduleType !== 'image_input'
+    || node.position.x !== target.position.x
+    || node.position.y !== target.position.y
+  ) {
+    throw invalidRequest('Clipboard operation identity is already bound to different canvas content');
+  }
+  const assetId = typeof node.data.config.assetId === 'string' ? node.data.config.assetId : null;
+  const asset = project.assets?.find((candidate) => candidate.assetId === assetId);
+  if (asset === undefined) throw invalidRequest('Clipboard operation receipt is missing its managed image asset');
+  const resolvedPath = await assetStore.resolvePath(
+    session.session.root,
+    asset.assetId,
+    asset.extension,
+    asset.sha256,
+    asset.byteSize,
+  );
+  if (resolvedPath === null) {
+    throw createPersistenceError('MISSING_ASSET', true, 'Clipboard operation receipt references a missing managed image');
+  }
+  session.assets.set(asset.assetId, asset);
+  const result = {
+    asset: createProjectImageSummary(asset, session.sessionId, countProjectImageUsage(project, asset.assetId)),
+    currentRevision: await readCurrentRevision(repository, session.session),
+    project,
+  };
+  assertPublicBridgePayload(result);
+  return result;
+}
+
+function clipboardImagePasteIdentity(operationId: string): { readonly nodeId: string; readonly transactionId: string } {
+  const suffix = sha256Canonical({ operationId }).slice(0, 24);
+  return {
+    nodeId: `clipboard-image-${suffix}`,
+    transactionId: `paste-clipboard-image-${suffix}`,
+  };
+}
+
+function assertClipboardAssetMatches(storedAsset: AssetMetadata, image: TrustedClipboardImage): void {
+  if (
+    storedAsset.mediaType !== 'image/png'
+    || storedAsset.extension !== 'png'
+    || storedAsset.width !== image.width
+    || storedAsset.height !== image.height
+  ) {
+    throw invalidRequest('Clipboard PNG metadata changed before durable import');
+  }
+}
+
+function createClipboardProjectImageAsset(storedAsset: AssetMetadata, label: string): ProjectImageAsset {
+  return projectImageAssetSchema.parse({
+    assetId: storedAsset.id,
+    byteSize: storedAsset.byteSize,
+    extension: storedAsset.extension,
+    height: storedAsset.height,
+    label,
+    mediaType: storedAsset.mediaType,
+    origin: 'imported',
+    sha256: storedAsset.sha256,
+    width: storedAsset.width,
+  });
 }
 
 function upsertProjectImageAsset(
@@ -2320,6 +2499,41 @@ function validateImportProjectImageBridgeRequest(value: unknown): ImportProjectI
   };
   assertPublicBridgePayload(request);
   return request;
+}
+
+function validatePasteProjectClipboardImageBridgeRequest(value: unknown): PasteProjectClipboardImageBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['sessionId', 'target'], 'Clipboard image paste request');
+  const target = expectPlainRecord(record.target);
+  assertExactKeys(target, ['kind', 'operationId', 'position'], 'Clipboard image paste target');
+  if (target.kind !== 'new_image_input') throw invalidRequest('Clipboard image paste target kind is invalid');
+  const position = expectPlainRecord(target.position);
+  assertExactKeys(position, ['x', 'y'], 'Clipboard image paste position');
+  const request = {
+    sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+    target: {
+      kind: 'new_image_input' as const,
+      operationId: parseClipboardOperationId(target.operationId),
+      position: {
+        x: parseBoundedCanvasCoordinate(position.x, 'target.position.x'),
+        y: parseBoundedCanvasCoordinate(position.y, 'target.position.y'),
+      },
+    },
+  };
+  assertPublicBridgePayload(request);
+  return request;
+}
+
+function parseClipboardOperationId(value: unknown): string {
+  if (typeof value === 'string' && /^clipboard_paste_[a-z0-9-]{4,72}$/u.test(value)) return value;
+  throw invalidRequest('Clipboard image paste operation identity is invalid');
+}
+
+function parseBoundedCanvasCoordinate(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 10_000_000) {
+    throw invalidRequest(`${field} must be a finite canvas coordinate`);
+  }
+  return value;
 }
 
 function validateListProjectImagesBridgeRequest(value: unknown): ListProjectImagesBridgeRequest {

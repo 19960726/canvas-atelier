@@ -49,7 +49,8 @@ describe('agentCanvas preload compatibility bridge', () => {
     const api = createAgentCanvasApi(vi.fn(async () => undefined) as DesktopBridgeInvoke);
 
     expect(AGENT_CANVAS_PRELOAD_KEY).toBe('agentCanvas');
-    expect(Object.keys(api).sort()).toEqual(['assets', 'history', 'project', 'provider', 'secrets', 'skill']);
+    expect(Object.keys(api).sort()).toEqual(['assets', 'clipboard', 'history', 'project', 'provider', 'secrets', 'skill']);
+    expect(Object.keys(api.clipboard).sort()).toEqual(['pasteImage']);
     expect(Object.keys(api.project).sort()).toEqual(['close', 'commit', 'open', 'recovery', 'restore', 'stable']);
     expect(Object.keys(api.assets).sort()).toEqual(['exportPack', 'importPack']);
     expect(Object.keys(api.provider).sort()).toEqual([

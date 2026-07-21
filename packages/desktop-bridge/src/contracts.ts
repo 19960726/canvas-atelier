@@ -34,6 +34,8 @@ import type {
   AckImageJobTerminalBridgeResult,
   UnlockProviderBridgeRequest,
   DesktopGenerationHistoryBridgeApi,
+  PasteProjectClipboardImageBridgeRequest,
+  PasteProjectClipboardImageBridgeResult,
 } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 
@@ -50,6 +52,9 @@ export interface AgentCanvasApi {
   readonly assets: {
     importPack(request: ImportPackBridgeRequest): Promise<ImportPackBridgeResult | null>;
     exportPack(request: ExportPackBridgeRequest): Promise<ExportPackBridgeResult | null>;
+  };
+  readonly clipboard: {
+    pasteImage(request: PasteProjectClipboardImageBridgeRequest): Promise<PasteProjectClipboardImageBridgeResult | null>;
   };
   readonly provider: {
     listProfiles(): Promise<ProviderBridgeProfile[]>;

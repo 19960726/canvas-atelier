@@ -85,6 +85,10 @@ export interface ProjectPersistenceClient {
   openProject?(): Promise<ProjectHydrationResult | null>;
   reloadDurableProject?(): Promise<ProjectHydrationResult | null>;
   importProjectImage(target: ProjectImageImportTarget): Promise<ProjectImageImportResult | null>;
+  pasteClipboardImage(input: {
+    readonly operationId: string;
+    readonly position: { readonly x: number; readonly y: number };
+  }): Promise<ProjectImageImportResult | null>;
   listProjectImages(): Promise<ProjectImageAssetSummary[]>;
   restore(snapshotId: string): Promise<ProjectRestoreResult>;
   stablePoint(): Promise<ProjectStablePointResult>;
@@ -159,6 +163,9 @@ export function createBrowserPersistenceClient(storage = getStorage()): ProjectP
       };
     },
     async importProjectImage() {
+      return null;
+    },
+    async pasteClipboardImage() {
       return null;
     },
     async listProjectImages() {
@@ -311,6 +318,25 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         project: currentProject,
         revision,
       };
+    },
+    async pasteClipboardImage(input) {
+      if (sessionId === null) return null;
+      if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
+      const request = {
+        sessionId,
+        target: { kind: 'new_image_input' as const, operationId: input.operationId, position: input.position },
+      };
+      let result;
+      try {
+        result = await bridge.projectImages.pasteClipboardImage(request);
+      } catch (error) {
+        if (!shouldRetryClipboardPaste(error)) throw error;
+        result = await bridge.projectImages.pasteClipboardImage(request);
+      }
+      if (result === null) return null;
+      currentProject = validateRecoveredProject(result.project, currentProject);
+      revision = result.currentRevision;
+      return { asset: result.asset, project: currentProject, revision };
     },
     async listProjectImages() {
       return sessionId === null ? [] : bridge.projectImages.list({ sessionId });
@@ -479,6 +505,15 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   function readDesktopSaveStatus(): Extract<ProjectSaveStatus, 'error' | 'read_only' | 'saved'> {
     return recoveryRequired ? 'error' : mode === 'read_only' ? 'read_only' : 'saved';
   }
+}
+
+function shouldRetryClipboardPaste(error: unknown): boolean {
+  if (!isRecord(error) || typeof error.code !== 'string') return true;
+  return error.code === 'DURABLE_WRITE_FAILED' || error.code === 'REVISION_CONFLICT';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 export async function migrateLegacyProject(

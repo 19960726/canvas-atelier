@@ -4,7 +4,7 @@ import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, net, protocol, safeStorage, shell } from 'electron';
 
 import {
   BRIDGE_CHANNELS,
@@ -16,6 +16,7 @@ import {
   ManagedKnowledgeStore,
   createComflyProviderService,
   createDesktopBridgeHandlers,
+  createElectronClipboardImageAdapter,
   createElectronNetComflyFetch,
   createElectronTrustedImageDecoder,
   createApprovedSnapshotSyncClientFromEnv,
@@ -137,6 +138,7 @@ app.whenReady().then(async () => {
   desktopHandlers = createDesktopBridgeHandlers({
     appDataRoot: app.getPath('userData'),
     channel: runtimeChannel,
+    clipboard: createElectronClipboardImageAdapter(clipboard),
     dialogs: createDialogAdapter(),
     approvedSnapshotOutbox,
     fileSystem,

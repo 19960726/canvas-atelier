@@ -13,6 +13,9 @@ export const AGENT_CANVAS_CHANNELS = {
     importPack: BRIDGE_CHANNELS.importPack,
     exportPack: BRIDGE_CHANNELS.exportPack,
   },
+  clipboard: {
+    pasteImage: BRIDGE_CHANNELS.pasteProjectClipboardImage,
+  },
   provider: {
     listProfiles: BRIDGE_CHANNELS.provider.listProfiles,
     submitImageJob: BRIDGE_CHANNELS.provider.submitImageJob,

@@ -23,6 +23,8 @@ export type {
   ImportPackBridgeResult,
   ImportProjectImageBridgeRequest,
   ImportProjectImageBridgeResult,
+  PasteProjectClipboardImageBridgeRequest,
+  PasteProjectClipboardImageBridgeResult,
   KnowledgeStateBridgeResult,
   KnowledgeSyncStatus,
   KnowledgeSyncStatusSummary,
@@ -37,6 +39,7 @@ export type {
   ProjectLock,
   ProjectManifest,
   ProjectImageAssetSummary,
+  ProjectClipboardImageTarget,
   ProjectImageImportTarget,
   RecoveryCandidateBridgeSummary,
   RecoveryPlanBridgeRequest,
@@ -73,6 +76,8 @@ export type {
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
 export { AssetStore } from './asset-store.js';
 export type { AssetMetadata, StageAssetOptions } from './asset-store.js';
+export { createElectronClipboardImageAdapter } from './electron-clipboard-image.js';
+export type { ClipboardImageAdapter, TrustedClipboardImage } from './electron-clipboard-image.js';
 export {
   PROJECT_ASSET_SCHEME,
   createProjectAssetDisplayUrl,

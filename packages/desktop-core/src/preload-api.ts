@@ -9,6 +9,8 @@ import type {
   ImportPackBridgeResult,
   ImportProjectImageBridgeRequest,
   ImportProjectImageBridgeResult,
+  PasteProjectClipboardImageBridgeRequest,
+  PasteProjectClipboardImageBridgeResult,
   KnowledgeStateBridgeResult,
   KnowledgeSyncStatusSummary,
   ListProjectImagesBridgeRequest,
@@ -89,6 +91,7 @@ export const BRIDGE_CHANNELS = {
   getRecoveryPlan: 'novus-desktop:get-recovery-plan',
   importPack: 'novus-desktop:import-pack',
   importProjectImage: 'novus-desktop:import-project-image',
+  pasteProjectClipboardImage: 'novus-desktop:paste-project-clipboard-image',
   knowledgeStateChanged: 'novus-desktop:knowledge-state-changed',
   knowledgeSyncStatusChanged: 'novus-desktop:knowledge-sync-status-changed',
   listProjectImages: 'novus-desktop:list-project-images',
@@ -158,6 +161,7 @@ export interface DesktopGenerationHistoryBridgeApi {
 export interface DesktopProjectImageBridgeApi {
   importImage(request: ImportProjectImageBridgeRequest): Promise<ImportProjectImageBridgeResult | null>;
   list(request: ListProjectImagesBridgeRequest): Promise<ProjectImageAssetSummary[]>;
+  pasteClipboardImage(request: PasteProjectClipboardImageBridgeRequest): Promise<PasteProjectClipboardImageBridgeResult | null>;
 }
 
 export interface DesktopLifecycleBridgeApi {
@@ -258,6 +262,9 @@ export function createPreloadApi(
       },
       list(request) {
         return invoke<ProjectImageAssetSummary[]>(BRIDGE_CHANNELS.listProjectImages, request);
+      },
+      pasteClipboardImage(request) {
+        return invoke<PasteProjectClipboardImageBridgeResult | null>(BRIDGE_CHANNELS.pasteProjectClipboardImage, request);
       },
     },
     history: {

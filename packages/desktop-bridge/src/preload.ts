@@ -31,6 +31,9 @@ export function createAgentCanvasApi(
       importPack: (request) => legacy.importPack(request),
       exportPack: (request) => legacy.exportPack(request),
     },
+    clipboard: {
+      pasteImage: (request) => legacy.projectImages.pasteClipboardImage(request),
+    },
     provider: {
       listProfiles: () => legacy.provider.listProfiles(),
       submitImageJob: (request) => legacy.provider.submitImageJob(request),

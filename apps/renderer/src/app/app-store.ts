@@ -200,6 +200,7 @@ interface AppState {
   reloadDurableProject: () => Promise<boolean>;
   newWorkflow: () => Promise<void>;
   importImageForModule: (nodeId: string) => Promise<boolean>;
+  pasteClipboardImage: (position: { readonly x: number; readonly y: number }) => Promise<boolean>;
   importPlacementReference: (
     nodeId: string,
     role: Exclude<ReferenceRole, 'placement_preview'>,
@@ -666,6 +667,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
   importImageForModule: (nodeId) => importProjectImageWithTarget({ kind: 'module', nodeId }),
+  pasteClipboardImage: (position) => pasteClipboardImageAt(position),
   importPlacementReference: (nodeId, role) => importProjectImageWithTarget({
     kind: 'placement_reference',
     nodeId,
@@ -1194,6 +1196,71 @@ async function importProjectImageWithTarget(target: ProjectImageImportTarget): P
   );
 }
 
+async function pasteClipboardImageAt(position: { readonly x: number; readonly y: number }): Promise<boolean> {
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return false;
+  const operationId = createClipboardPasteOperationId();
+  return enqueueStableProjectOperation(
+    (partial) => useAppStore.setState(partial),
+    () => useAppStore.getState(),
+    async () => {
+      const generation = projectPersistenceGeneration;
+      const before = useAppStore.getState();
+      if (
+        before.projectImageImportingNodeId !== null
+        || before.saveStatus === 'read_only'
+        || before.canRetryProjectCommit
+        || before.recoveryRequired
+      ) return false;
+      const previousSaveStatus = before.saveStatus;
+      useAppStore.setState({
+        projectImageError: null,
+        projectImageImportingNodeId: 'clipboard-image',
+        saveErrorCode: null,
+        saveStatus: 'saving',
+      });
+      try {
+        const result = await projectPersistenceClient.pasteClipboardImage({ operationId, position });
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        if (result === null) {
+          useAppStore.setState({ projectImageImportingNodeId: null, saveStatus: previousSaveStatus });
+          return false;
+        }
+        const current = useAppStore.getState();
+        useAppStore.setState({
+          desktopRevision: result.revision,
+          project: result.project,
+          projectImages: upsertProjectImageSummary(current.projectImages, result.asset),
+          projectImageError: null,
+          projectImageImportingNodeId: null,
+          saveErrorCode: null,
+          saveStatus: 'saved',
+        });
+        return true;
+      } catch (error) {
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        const code = readErrorCode(error);
+        useAppStore.setState({
+          projectImageError: code,
+          projectImageImportingNodeId: null,
+          saveErrorCode: code,
+          saveStatus: 'error',
+        });
+        return false;
+      }
+    },
+  );
+}
+
+function createClipboardPasteOperationId(): string {
+  const crypto = globalThis.crypto;
+  if (typeof crypto?.randomUUID === 'function') return `clipboard_paste_${crypto.randomUUID().toLocaleLowerCase()}`;
+  if (typeof crypto?.getRandomValues === 'function') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return `clipboard_paste_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+  }
+  return `clipboard_paste_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
 function upsertProjectImageSummary(
   assets: readonly ProjectImageAssetSummary[],
   asset: ProjectImageAssetSummary,
@@ -1205,8 +1272,8 @@ function upsertProjectImageSummary(
 
 type CompatibleProjectPersistenceClient = Omit<
   ProjectPersistenceClient,
-  'importProjectImage' | 'listProjectImages'
-> & Partial<Pick<ProjectPersistenceClient, 'importProjectImage' | 'listProjectImages'>>;
+  'importProjectImage' | 'listProjectImages' | 'pasteClipboardImage'
+> & Partial<Pick<ProjectPersistenceClient, 'importProjectImage' | 'listProjectImages' | 'pasteClipboardImage'>>;
 
 export function replaceProjectPersistenceClientForTests(client: CompatibleProjectPersistenceClient): void {
   projectPersistenceClient = withProjectImagePersistenceDefaults(client);
@@ -1217,6 +1284,7 @@ function withProjectImagePersistenceDefaults(client: CompatibleProjectPersistenc
     ...client,
     importProjectImage: client.importProjectImage ?? (async () => null),
     listProjectImages: client.listProjectImages ?? (async () => []),
+    pasteClipboardImage: client.pasteClipboardImage ?? (async () => null),
   };
 }
 

@@ -351,6 +351,44 @@ function importE2EProjectImage(
   return { asset: summary, project: runtime.currentProject, revision: runtime.revision };
 }
 
+function pasteE2EClipboardImage(
+  runtime: RuntimeState,
+  position: { readonly x: number; readonly y: number },
+): ProjectImageImportResult | null {
+  const pending = runtime.pendingImageImports.shift();
+  if (pending === undefined) return null;
+  runtime.assetSequence += 1;
+  const assetId = runtime.assetSequence.toString(16).padStart(16, '0');
+  const asset: ProjectImageAsset = {
+    assetId,
+    byteSize: pending.byteSize,
+    extension: 'png',
+    height: pending.height,
+    label: pending.label,
+    mediaType: pending.mediaType,
+    origin: 'imported',
+    sha256: assetId.repeat(4),
+    width: pending.width,
+  };
+  const node = createCanvasModuleNode(`clipboard-image-${runtime.assetSequence}`, 'image_input', position);
+  const boundNode = { ...node, data: { ...node.data, config: { assetId } } };
+  const assets = [...(runtime.currentProject.assets ?? []), asset];
+  const transaction: ProjectTransaction = {
+    id: `e2e-paste-clipboard-image-${assetId}`,
+    label: 'Paste clipboard image',
+    operations: [
+      { kind: 'set_project_assets', assets },
+      { kind: 'canvas', operation: { kind: 'create_node', node: boundNode } },
+    ],
+  };
+  runtime.currentProject = { ...runtime.currentProject, assets, nodes: [...runtime.currentProject.nodes, boundNode] };
+  runtime.revision += 1;
+  runtime.commitLog.push(transaction);
+  const summary = createE2EProjectImageSummary(runtime.currentProject, asset);
+  runtime.projectImages = [...runtime.projectImages, summary];
+  return { asset: summary, project: runtime.currentProject, revision: runtime.revision };
+}
+
 function createE2EProjectImageSummary(
   project: CanvasProject,
   asset: ProjectImageAsset,
@@ -539,6 +577,9 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
         ...asset,
         usageCount: JSON.stringify(runtime.currentProject.nodes).split(asset.assetId).length - 1,
       }));
+    },
+    async pasteClipboardImage(input) {
+      return pasteE2EClipboardImage(runtime, input.position);
     },
     async restore(): Promise<ProjectRestoreResult> {
       return {

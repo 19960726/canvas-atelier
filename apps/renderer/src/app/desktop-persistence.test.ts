@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCanvasModuleNode } from '@agent-canvas/domain';
 import { createStarterProject } from './app-store';
 import {
   createBrowserPersistenceClient,
@@ -12,6 +13,102 @@ import { PROJECT_STORAGE_KEY } from './project-persistence';
 describe('desktop persistence', () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+
+  it('pastes a clipboard image through the narrow desktop bridge without image payloads', async () => {
+    const project = createStarterProject();
+    const pastedProject = {
+      ...project,
+      graphVersion: 2 as const,
+      assets: [{
+        assetId: '0123456789abcdef', byteSize: 42, extension: 'png' as const, height: 50,
+        label: 'Clipboard image', mediaType: 'image/png' as const, origin: 'imported' as const,
+        sha256: `0123456789abcdef${'0'.repeat(48)}`, width: 25,
+      }],
+      edges: [],
+      nodes: [{
+          ...createCanvasModuleNode('clipboard-node', 'image_input', { x: 25, y: 50 }),
+          data: {
+            ...createCanvasModuleNode('clipboard-node', 'image_input', { x: 25, y: 50 }).data,
+            config: { assetId: '0123456789abcdef' },
+          },
+        }],
+    };
+    const pasteClipboardImage = vi.fn(async (request) => ({
+      asset: {
+        assetId: '0123456789abcdef', byteSize: 42, displayUrl: 'novus-asset://project/session/0123456789abcdef',
+        extension: 'png' as const, height: 50, label: 'Clipboard image', mediaType: 'image/png' as const,
+        origin: 'imported' as const, sha256: `0123456789abcdef${'0'.repeat(48)}`, usageCount: 1, width: 25,
+      },
+      currentRevision: 1,
+      project: pastedProject,
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const result = await client.pasteClipboardImage({
+      operationId: 'clipboard_paste_desktop',
+      position: { x: 25, y: 50 },
+    });
+
+    expect(pasteClipboardImage).toHaveBeenCalledWith({
+      sessionId: 'session',
+      target: { kind: 'new_image_input', operationId: 'clipboard_paste_desktop', position: { x: 25, y: 50 } },
+    });
+    expect(JSON.stringify(pasteClipboardImage.mock.calls)).not.toMatch(/bytes|base64|path|data:image/iu);
+    expect(result?.project.nodes.some((node) => node.id === 'clipboard-node')).toBe(true);
+  });
+
+  it('retries one ambiguous clipboard paste with the exact same operation identity', async () => {
+    const project = createStarterProject();
+    const result = {
+      asset: {
+        assetId: '0123456789abcdef', byteSize: 42, displayUrl: 'novus-asset://project/session/0123456789abcdef',
+        extension: 'png' as const, height: 50, label: 'Clipboard image', mediaType: 'image/png' as const,
+        origin: 'imported' as const, sha256: `0123456789abcdef${'0'.repeat(48)}`, usageCount: 1, width: 25,
+      },
+      currentRevision: 1,
+      project,
+    };
+    const pasteClipboardImage = vi.fn()
+      .mockRejectedValueOnce(new Error('IPC response lost'))
+      .mockResolvedValue(result);
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const input = { operationId: 'clipboard_paste_retry', position: { x: 10, y: 20 } };
+
+    await expect(client.pasteClipboardImage(input)).resolves.toMatchObject({ revision: 1 });
+    expect(pasteClipboardImage).toHaveBeenCalledTimes(2);
+    expect(pasteClipboardImage.mock.calls[0]).toEqual(pasteClipboardImage.mock.calls[1]);
+  });
+
+  it('does not retry a structured non-transient clipboard paste failure', async () => {
+    const project = createStarterProject();
+    const error = Object.assign(new Error('disk full'), { code: 'DISK_FULL', retryable: true });
+    const pasteClipboardImage = vi.fn(async () => { throw error; });
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    await expect(client.pasteClipboardImage({
+      operationId: 'clipboard_paste_diskfull',
+      position: { x: 10, y: 20 },
+    })).rejects.toBe(error);
+    expect(pasteClipboardImage).toHaveBeenCalledOnce();
   });
 
   it('keeps normal browser launch empty even when prior canvas content exists locally', async () => {

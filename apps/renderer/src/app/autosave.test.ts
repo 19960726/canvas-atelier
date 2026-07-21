@@ -224,6 +224,7 @@ function createMockClient(overrides: Partial<ProjectPersistenceClient> = {}): Pr
     })),
     importProjectImage: overrides.importProjectImage ?? (async () => null),
     listProjectImages: overrides.listProjectImages ?? (async () => []),
+    pasteClipboardImage: overrides.pasteClipboardImage ?? (async () => null),
     restore: overrides.restore ?? (async () => ({
       availableSnapshotIds: [],
       lifecycle: 'durable',

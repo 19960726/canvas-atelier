@@ -3721,6 +3721,7 @@ function createMockClient(overrides: Partial<ReloadableTestProjectPersistenceCli
     reloadDurableProject: overrides.reloadDurableProject,
     importProjectImage: overrides.importProjectImage ?? (async () => null),
     listProjectImages: overrides.listProjectImages ?? (async () => []),
+    pasteClipboardImage: overrides.pasteClipboardImage ?? (async () => null),
     restore: overrides.restore ?? (async () => {
       const result = await hydrate();
       return {

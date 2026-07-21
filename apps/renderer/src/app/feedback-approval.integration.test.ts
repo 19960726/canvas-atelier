@@ -218,6 +218,7 @@ function createImmediatePersistence(): ProjectPersistenceClient {
     }),
     importProjectImage: async () => null,
     listProjectImages: async () => [],
+    pasteClipboardImage: async () => null,
     restore: async () => ({
       availableSnapshotIds: [],
       lifecycle: 'durable',

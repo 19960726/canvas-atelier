@@ -236,9 +236,23 @@ export type ProjectImageImportTarget =
     readonly role: Exclude<ReferenceRole, 'placement_preview'>;
   };
 
+export interface ProjectClipboardImageTarget {
+  readonly kind: 'new_image_input';
+  readonly operationId: string;
+  readonly position: {
+    readonly x: number;
+    readonly y: number;
+  };
+}
+
 export interface ImportProjectImageBridgeRequest {
   readonly sessionId: string;
   readonly target: ProjectImageImportTarget;
+}
+
+export interface PasteProjectClipboardImageBridgeRequest {
+  readonly sessionId: string;
+  readonly target: ProjectClipboardImageTarget;
 }
 
 export interface ListProjectImagesBridgeRequest {
@@ -255,6 +269,8 @@ export interface ImportProjectImageBridgeResult {
   readonly currentRevision: number;
   readonly project: CanvasProject;
 }
+
+export type PasteProjectClipboardImageBridgeResult = ImportProjectImageBridgeResult;
 
 export type ListGenerationHistoryBridgeRequest = GenerationHistoryListRequest;
 export type ListGenerationHistoryBridgeResult = GenerationHistoryListResult;

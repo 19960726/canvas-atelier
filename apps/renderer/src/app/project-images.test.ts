@@ -52,6 +52,36 @@ describe('project image store actions', () => {
     });
   });
 
+  it('applies an atomic clipboard-image project result without a renderer canvas commit', async () => {
+    const project = imageProject([]);
+    const clipboardNode = createCanvasModuleNode('clipboard-image', 'image_input', { x: 120, y: 240 });
+    clipboardNode.data.config = { assetId: assetRecord.assetId };
+    const pastedProject = imageProject([clipboardNode], [assetRecord]);
+    const commit = vi.fn();
+    const pasteClipboardImage = vi.fn(async () => ({
+      asset: assetSummary,
+      project: pastedProject,
+      revision: 5,
+    }));
+    replaceProjectPersistenceClientForTests(persistenceClient({ commit, pasteClipboardImage }));
+    useAppStore.setState({ project, desktopRevision: 4, persistenceMode: 'desktop', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().pasteClipboardImage({ x: 120, y: 240 })).resolves.toBe(true);
+
+    expect(pasteClipboardImage).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(/^clipboard_paste_/u),
+      position: { x: 120, y: 240 },
+    });
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 5,
+      project: pastedProject,
+      projectImages: [assetSummary],
+      projectImageImportingNodeId: null,
+      saveStatus: 'saved',
+    });
+  });
+
   it('persists canvas-library selection order as one stable project transaction', async () => {
     const library = createCanvasModuleNode('library', 'canvas_library', { x: 0, y: 0 });
     const project = imageProject([library], [assetRecord, assetRecordB]);
@@ -184,6 +214,7 @@ function persistenceClient(overrides: Partial<ProjectPersistenceClient> = {}): P
     })),
     importProjectImage: vi.fn(async () => null),
     listProjectImages: vi.fn(async () => []),
+    pasteClipboardImage: vi.fn(async () => null),
     restore: vi.fn(),
     stablePoint: vi.fn(),
     ...overrides,

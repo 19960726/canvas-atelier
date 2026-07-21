@@ -323,6 +323,7 @@ export function CanvasWorkspace() {
   const draftNodes = canvasDraft.nodes;
   const [selectedFlowNodeIds, setSelectedFlowNodeIds] = useState<string[]>([]);
   const [activeFlowEdgeIds, setActiveFlowEdgeIds] = useState<string[]>([]);
+  const lastCanvasPointerRef = useRef<{ x: number; y: number } | null>(null);
   const interactionQuality = useInteractionQuality(runtimeProfile);
   const viewportCulling = useViewportCulling({
     activeEdgeIds: activeFlowEdgeIds,
@@ -467,6 +468,26 @@ export function CanvasWorkspace() {
     if (!quickInsert) return false;
     return addModuleNode(moduleType, quickInsert.position);
   }, [addModuleNode, quickInsert]);
+
+  useEffect(() => {
+    const handlePaste = (event: ClipboardEvent) => {
+      if (isEditablePasteTarget(event.target)) return;
+      if (!clipboardEventMayContainMedia(event)) return;
+      const stage = canvasStageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      const screenPosition = lastCanvasPointerRef.current ?? {
+        x: rect.left + (rect.width > 0 ? rect.width : stage.clientWidth || 1024) / 2,
+        y: rect.top + (rect.height > 0 ? rect.height : stage.clientHeight || 768) / 2,
+      };
+      const position = screenToFlowPosition(screenPosition);
+      if (!position) return;
+      event.preventDefault();
+      void useAppStore.getState().pasteClipboardImage(position);
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [screenToFlowPosition]);
 
   const handlePaneDoubleClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
     if (recoveryRequired) return;
@@ -799,6 +820,11 @@ export function CanvasWorkspace() {
         onDragOverCapture={handleCanvasDragOver}
         onDropCapture={handleCanvasDrop}
         onDoubleClickCapture={handlePaneDoubleClick}
+        onPointerMove={(event) => {
+          if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+            lastCanvasPointerRef.current = { x: event.clientX, y: event.clientY };
+          }
+        }}
       >
         <ReactFlow
           colorMode={theme.resolvedTheme}
@@ -1076,6 +1102,17 @@ export function CanvasWorkspace() {
       />
     </div>
   );
+}
+
+function isEditablePasteTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest('input, textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]') !== null;
+}
+
+function clipboardEventMayContainMedia(event: ClipboardEvent): boolean {
+  const types = event.clipboardData?.types;
+  if (!types || types.length === 0) return false;
+  return Array.from(types).some((type) => type === 'Files' || type.toLocaleLowerCase().startsWith('image/'));
 }
 
 function referenceStatus(count: number, emptyLabel: string): string {

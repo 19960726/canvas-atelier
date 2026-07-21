@@ -183,6 +183,34 @@ test('uses the same media-first hierarchy for image and video input nodes', asyn
   await captureLayoutScreenshot(page, testInfo, 'renderer-media-first-image-video-nodes');
 });
 
+test('pastes a clipboard image as one managed media node transaction', async ({ page }) => {
+  await openEmptyApp(page);
+  await queueProjectImageImport(
+    page,
+    makeReferenceImage('Clipboard concept.png', [58, 104, 148, 255], { width: 640, height: 360 }),
+  );
+  const stage = page.getByTestId('canvas-stage');
+  const stageBox = await stage.boundingBox();
+  expect(stageBox).not.toBeNull();
+  const pointer = { x: stageBox!.x + 420, y: stageBox!.y + 260 };
+  await page.mouse.move(pointer.x, pointer.y);
+  const before = await e2eState(page);
+
+  await page.evaluate(() => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([new Uint8Array([1])], 'clipboard.png', { type: 'image/png' }));
+    window.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+  });
+
+  const node = page.locator('[data-module-type="image_input"]');
+  await expect(node).toHaveCount(1);
+  await expect(node.getByRole('img', { name: 'Clipboard concept' })).toBeVisible();
+  await expect.poll(async () => (await e2eState(page)).commitCount).toBe(before.commitCount + 1);
+  const after = await e2eState(page);
+  expect(after.projectImages.map((asset) => asset.label)).toEqual(['Clipboard concept']);
+  expect(after.durableProjectContainsTransientImageUrl).toBe(false);
+});
+
 test('hand tool pans without moving modules or writing durable history', async ({ page }) => {
   await openEmptyApp(page);
   await page.evaluate(() => window.__NOVUS_E2E__?.createModule('image_input', { x: 360, y: 240 }));

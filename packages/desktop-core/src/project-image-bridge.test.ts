@@ -12,6 +12,7 @@ import type { CommitRequest } from './contracts';
 import { releaseJournalState } from './journal-writer';
 import { createPreloadApi, BRIDGE_CHANNELS, type DesktopBridgeInvoke } from './preload-api';
 import { ProjectRepository, type OpenedProjectSession } from './project-repository';
+import { createSolidPng } from './test/png-fixture';
 
 const pngBytes = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -21,6 +22,7 @@ const pngBytes = Buffer.from([
   0x7a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
   0x44, 0xae, 0x42, 0x60, 0x82,
 ]);
+const validClipboardPngBytes = createSolidPng();
 
 describe('project image bridge', () => {
   const tempRoots: string[] = [];
@@ -33,19 +35,253 @@ describe('project image bridge', () => {
     const invoke = vi.fn(async () => null) as DesktopBridgeInvoke;
     const api = createPreloadApi(invoke);
 
-    expect(Object.keys(api.projectImages).sort()).toEqual(['importImage', 'list']);
+    expect(Object.keys(api.projectImages).sort()).toEqual(['importImage', 'list', 'pasteClipboardImage']);
     expect(api.projectImages).not.toHaveProperty('readFile');
     await api.projectImages.importImage({
       sessionId: 'session-1',
       target: { kind: 'module', nodeId: 'image-input' },
     });
     await api.projectImages.list({ sessionId: 'session-1' });
+    await api.projectImages.pasteClipboardImage({
+      sessionId: 'session-1',
+      target: { kind: 'new_image_input', operationId: 'clipboard_paste_aaaaaaaa', position: { x: 120, y: 240 } },
+    });
 
     expect(invoke).toHaveBeenNthCalledWith(1, BRIDGE_CHANNELS.importProjectImage, {
       sessionId: 'session-1',
       target: { kind: 'module', nodeId: 'image-input' },
     });
     expect(invoke).toHaveBeenNthCalledWith(2, BRIDGE_CHANNELS.listProjectImages, { sessionId: 'session-1' });
+    expect(invoke).toHaveBeenNthCalledWith(3, BRIDGE_CHANNELS.pasteProjectClipboardImage, {
+      sessionId: 'session-1',
+      target: { kind: 'new_image_input', operationId: 'clipboard_paste_aaaaaaaa', position: { x: 120, y: 240 } },
+    });
+  });
+
+  it('atomically stores a trusted clipboard PNG and creates a bound image input node', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-clipboard-image-');
+    const projectRoot = join(tempRoot, 'Clipboard.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6141 });
+    const created = await repository.create(projectRoot, {
+      project: { ...imageProject(), id: 'clipboard-project', nodes: [] },
+      projectId: 'clipboard-project',
+      projectName: 'Clipboard Project',
+    });
+    await repository.close(created);
+    const readClipboardImage = vi.fn(async () => ({
+      bytes: validClipboardPngBytes,
+      height: 1,
+      label: 'Clipboard image',
+      width: 1,
+    }));
+    const handlers = createDesktopBridgeHandlers({
+      clipboard: { readImage: readClipboardImage },
+      createId: sequentialId('bridge'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.pasteProjectClipboardImage({}, {
+        sessionId: opened!.sessionId,
+        target: { kind: 'new_image_input', operationId: 'clipboard_paste_atomic', position: { x: 120.5, y: -240.25 } },
+      });
+
+      expect(readClipboardImage).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        currentRevision: 1,
+        asset: { height: 1, label: 'Clipboard image', mediaType: 'image/png', width: 1 },
+        project: {
+          assets: [expect.objectContaining({ label: 'Clipboard image', mediaType: 'image/png' })],
+          nodes: [expect.objectContaining({
+            type: 'module',
+            position: { x: 120.5, y: -240.25 },
+            data: expect.objectContaining({
+              moduleType: 'image_input',
+              config: { assetId: expect.stringMatching(/^[a-f0-9]{16}$/) },
+            }),
+          })],
+        },
+      });
+      expect(result).not.toHaveProperty('bytes');
+      expect(JSON.stringify(result)).not.toMatch(/"bytes"|base64|objectURL|[A-Z]:\\/iu);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-project');
+    }
+  });
+
+  it('replays the same clipboard operation after a post-commit snapshot failure without reading or creating twice', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-clipboard-retry-');
+    const projectRoot = join(tempRoot, 'Clipboard retry.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6139 });
+    const created = await repository.create(projectRoot, {
+      project: { ...imageProject(), id: 'clipboard-retry', nodes: [] },
+      projectId: 'clipboard-retry',
+      projectName: 'Clipboard Retry',
+    });
+    await repository.close(created);
+    const readImage = vi.fn(async () => ({ bytes: validClipboardPngBytes, height: 1, label: 'Clipboard image', width: 1 }));
+    const flush = vi.fn()
+      .mockRejectedValueOnce(new Error('snapshot response lost'))
+      .mockResolvedValue(undefined);
+    const handlers = createDesktopBridgeHandlers({
+      clipboard: { readImage },
+      createId: sequentialId('bridge'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => ({ reason: 'agent_transaction' as const })), flush },
+    });
+    const request = {
+      target: { kind: 'new_image_input' as const, operationId: 'clipboard_paste_retry', position: { x: 40, y: 80 } },
+    };
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      await expect(handlers.pasteProjectClipboardImage({}, { ...request, sessionId: opened!.sessionId }))
+        .rejects.toThrow('snapshot response lost');
+      const replayed = await handlers.pasteProjectClipboardImage({}, { ...request, sessionId: opened!.sessionId });
+
+      expect(readImage).toHaveBeenCalledOnce();
+      expect(replayed!.project.nodes).toHaveLength(1);
+      expect(replayed!.project.assets).toHaveLength(1);
+      expect(replayed!.currentRevision).toBe(1);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-retry');
+    }
+  });
+
+  it('replays a clipboard operation after restart without consulting the changed clipboard', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-clipboard-restart-');
+    const projectRoot = join(tempRoot, 'Clipboard restart.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6138 });
+    const created = await repository.create(projectRoot, {
+      project: { ...imageProject(), id: 'clipboard-restart', nodes: [] },
+      projectId: 'clipboard-restart',
+      projectName: 'Clipboard Restart',
+    });
+    await repository.close(created);
+    const request = {
+      target: { kind: 'new_image_input' as const, operationId: 'clipboard_paste_restart', position: { x: 20, y: 60 } },
+    };
+    const first = createDesktopBridgeHandlers({
+      clipboard: { readImage: vi.fn(async () => ({ bytes: validClipboardPngBytes, height: 1, label: 'Clipboard image', width: 1 })) },
+      createId: sequentialId('first'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+    const firstOpened = await first.openProject({}, { mode: 'write' });
+    await first.pasteProjectClipboardImage({}, { ...request, sessionId: firstOpened!.sessionId });
+    await first.closeAllProjects();
+    releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-restart');
+
+    const readImageAfterRestart = vi.fn(async () => null);
+    const second = createDesktopBridgeHandlers({
+      clipboard: { readImage: readImageAfterRestart },
+      createId: sequentialId('second'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+    try {
+      const reopened = await second.openProject({}, { mode: 'write' });
+      const replayed = await second.pasteProjectClipboardImage({}, { ...request, sessionId: reopened!.sessionId });
+
+      expect(readImageAfterRestart).not.toHaveBeenCalled();
+      expect(replayed!.project.nodes).toHaveLength(1);
+      expect(replayed!.currentRevision).toBe(1);
+    } finally {
+      await second.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-restart');
+    }
+  });
+
+  it('does not replay a clipboard receipt when its managed file is missing', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-clipboard-missing-');
+    const projectRoot = join(tempRoot, 'Clipboard missing.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6137 });
+    const created = await repository.create(projectRoot, {
+      project: { ...imageProject(), id: 'clipboard-missing', nodes: [] },
+      projectId: 'clipboard-missing',
+      projectName: 'Clipboard Missing',
+    });
+    await repository.close(created);
+    const request = {
+      target: { kind: 'new_image_input' as const, operationId: 'clipboard_paste_missing', position: { x: 15, y: 25 } },
+    };
+    const first = createDesktopBridgeHandlers({
+      clipboard: { readImage: vi.fn(async () => ({ bytes: validClipboardPngBytes, height: 1, label: 'Clipboard image', width: 1 })) },
+      createId: sequentialId('first'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+    const firstOpened = await first.openProject({}, { mode: 'write' });
+    const imported = await first.pasteProjectClipboardImage({}, { ...request, sessionId: firstOpened!.sessionId });
+    await first.closeAllProjects();
+    releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-missing');
+    await rm(join(projectRoot, 'assets', `${imported!.asset.assetId}.png`));
+
+    const readImageAfterRestart = vi.fn(async () => null);
+    const second = createDesktopBridgeHandlers({
+      clipboard: { readImage: readImageAfterRestart },
+      createId: sequentialId('second'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+    try {
+      const reopened = await second.openProject({}, { mode: 'write' });
+      await expect(second.pasteProjectClipboardImage({}, { ...request, sessionId: reopened!.sessionId }))
+        .rejects.toMatchObject({ code: 'MISSING_ASSET', retryable: true });
+      expect(readImageAfterRestart).not.toHaveBeenCalled();
+    } finally {
+      await second.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-missing');
+    }
+  });
+
+  it.each([
+    { x: Number.NaN, y: 0 },
+    { x: Number.POSITIVE_INFINITY, y: 0 },
+    { x: 10_000_001, y: 0 },
+  ])('rejects invalid clipboard node position before reading the clipboard', async (position) => {
+    const readImage = vi.fn(async () => null);
+    const handlers = createDesktopBridgeHandlers({ clipboard: { readImage } });
+
+    await expect(handlers.pasteProjectClipboardImage({}, {
+      sessionId: 'session-1',
+      target: { kind: 'new_image_input', operationId: 'clipboard_paste_invalid', position },
+    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(readImage).not.toHaveBeenCalled();
+  });
+
+  it('quarantines clipboard bytes when trusted dimensions do not match the decoded PNG', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-clipboard-mismatch-');
+    const projectRoot = join(tempRoot, 'Clipboard mismatch.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6140 });
+    const created = await repository.create(projectRoot, {
+      project: { ...imageProject(), id: 'clipboard-mismatch', nodes: [] },
+      projectId: 'clipboard-mismatch',
+      projectName: 'Clipboard Mismatch',
+    });
+    await repository.close(created);
+    const handlers = createDesktopBridgeHandlers({
+      clipboard: { readImage: vi.fn(async () => ({ bytes: validClipboardPngBytes, height: 2, label: 'Clipboard image', width: 1 })) },
+      createId: sequentialId('bridge'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      await expect(handlers.pasteProjectClipboardImage({}, {
+        sessionId: opened!.sessionId,
+        target: { kind: 'new_image_input', operationId: 'clipboard_paste_mismatch', position: { x: 0, y: 0 } },
+      })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      expect(await readdir(join(projectRoot, 'assets'))).toEqual([]);
+      expect(await readdir(join(projectRoot, 'recovery', 'quarantine'))).toHaveLength(1);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-mismatch');
+    }
   });
 
   it('imports through the main picker and durably commits catalog plus module reference without exposing paths', async () => {
