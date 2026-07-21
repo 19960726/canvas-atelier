@@ -649,6 +649,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds: [],
+      agentPanelCollapsed: true,
       canReloadDurableProject: false,
       canRetryProjectCommit: false,
       desktopRevision: 0,
@@ -1570,7 +1571,7 @@ function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | '
   const desktopMode = isDesktopBridgeAvailable();
   return {
     activeTool: 'select',
-    agentPanelCollapsed: false,
+    agentPanelCollapsed: true,
     agentPlan: null,
     availableSnapshotIds: [],
     canReloadDurableProject: false,

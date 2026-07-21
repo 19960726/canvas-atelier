@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
 import type { Connection, Edge, Node, Viewport } from '@xyflow/react';
-import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
+import type { ProviderBridgeProfile, ProviderConfigurationStatus } from '@agent-canvas/desktop-core';
 import type {
   AgentPlanState,
   CanvasModuleNode,
@@ -25,10 +25,10 @@ import {
   Maximize2,
   MessageSquare,
   MousePointer2,
-  PanelRightClose,
-  PanelRightOpen,
   Play,
   Redo2,
+  Settings,
+  Sparkles,
   Upload,
   Undo2,
   X,
@@ -40,7 +40,9 @@ import { PlanPreview } from '../agent/PlanPreview';
 import { ReversePromptAgent } from '../agent/ReversePromptAgent';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
 import { JobStrip } from '../jobs/JobStrip';
+import { SettingsDrawer } from '../settings/SettingsDrawer';
 import { ModuleLibrary, MODULE_DRAG_MIME } from './ModuleLibrary';
+import { QuickInsert } from './QuickInsert';
 import { recordRecentModule } from './module-preferences';
 import { PlacementBoard } from '../placement/PlacementBoard';
 import { PlacementInspector } from '../placement/PlacementInspector';
@@ -61,6 +63,11 @@ interface SubmittedAgentContext extends ImageMentionValue {
 interface CanvasFlowInstance {
   getViewport: () => Viewport;
   screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
+}
+
+interface QuickInsertState {
+  anchor: { x: number; y: number };
+  position: { x: number; y: number };
 }
 
 function isPlacementNode(node: CanvasNode): node is PlacementNode {
@@ -273,8 +280,6 @@ export function CanvasWorkspace() {
   const retryFailedProjectCommit = useAppStore((state) => state.retryFailedProjectCommit);
   const reloadDurableProject = useAppStore((state) => state.reloadDurableProject);
   const discardPersistence = useAppStore((state) => state.discardPersistence);
-  const openProject = useAppStore((state) => state.openProject);
-  const newWorkflow = useAppStore((state) => state.newWorkflow);
   const [agentMessage, setAgentMessage] = useState<ImageMentionValue>({ text: '', citations: [] });
   const [submittedAgentContext, setSubmittedAgentContext] = useState<SubmittedAgentContext | null>(null);
   const [referenceOrderPreview, setReferenceOrderPreview] = useState<string[] | null>(null);
@@ -288,6 +293,9 @@ export function CanvasWorkspace() {
   const canvasStageRef = useRef<HTMLElement | null>(null);
   const flowInstanceRef = useRef<CanvasFlowInstance | null>(null);
   const [moduleLibraryOpen, setModuleLibraryOpen] = useState(false);
+  const [quickInsert, setQuickInsert] = useState<QuickInsertState | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [providerStatus, setProviderStatus] = useState<ProviderConfigurationStatus | null>(null);
 
   const flowNodeState = useMemo(() => {
     const nodes = toFlowNodes(project.nodes);
@@ -324,6 +332,12 @@ export function CanvasWorkspace() {
     nodes: draftNodes,
     selectedNodeIds: selectedFlowNodeIds,
   });
+  const interactionNodes = useMemo(
+    () => activeTool === 'hand'
+      ? viewportCulling.nodes.map((node) => ({ ...node, draggable: false, selectable: false }))
+      : viewportCulling.nodes,
+    [activeTool, viewportCulling.nodes],
+  );
   const handleViewportInteraction = useCallback((event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
     globalThis.performance?.mark?.('novus-pan-zoom-frame');
     viewportCulling.handleViewportChange(event, viewport);
@@ -449,6 +463,34 @@ export function CanvasWorkspace() {
     return addModuleNode(moduleType, position);
   }, [addModuleNode, getSafeViewportCenter]);
 
+  const createQuickInsertModule = useCallback(async (moduleType: CanvasModuleType) => {
+    if (!quickInsert) return false;
+    return addModuleNode(moduleType, quickInsert.position);
+  }, [addModuleNode, quickInsert]);
+
+  const handlePaneDoubleClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    if (recoveryRequired) return;
+    if (!(event.target instanceof Element) || !event.target.classList.contains('react-flow__pane')) return;
+    const stage = canvasStageRef.current;
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    const clientX = Number.isFinite(event.clientX) ? event.clientX : rect.left + rect.width / 2;
+    const clientY = Number.isFinite(event.clientY) ? event.clientY : rect.top + rect.height / 2;
+    const position = screenToFlowPosition({ x: clientX, y: clientY });
+    if (!position) return;
+    const width = rect.width > 0 ? rect.width : stage.clientWidth || 1024;
+    const height = rect.height > 0 ? rect.height : stage.clientHeight || 768;
+    setModuleLibraryOpen(false);
+    setActiveTool('select');
+    setQuickInsert({
+      anchor: {
+        x: Math.max(12, Math.min(clientX - rect.left, width - 352)),
+        y: Math.max(12, Math.min(clientY - rect.top, height - 454)),
+      },
+      position,
+    });
+  }, [recoveryRequired, screenToFlowPosition, setActiveTool]);
+
   const handleCanvasDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
     if (!Array.from(event.dataTransfer.types).includes(MODULE_DRAG_MIME)) return;
     if (!isCanvasModuleDropSurface(event.target, event.currentTarget)) return;
@@ -482,14 +524,19 @@ export function CanvasWorkspace() {
 
   const activateCanvasTool = useCallback((tool: Parameters<typeof setActiveTool>[0]) => {
     setModuleLibraryOpen(false);
+    setQuickInsert(null);
+    if (tool === 'placement' && !agentPanelCollapsed) {
+      toggleAgentPanel();
+    }
     setActiveTool(tool);
-  }, [setActiveTool]);
+  }, [agentPanelCollapsed, setActiveTool, toggleAgentPanel]);
 
   const toggleModuleLibrary = useCallback(() => {
     if (moduleLibraryOpen) {
       setModuleLibraryOpen(false);
       return;
     }
+    setQuickInsert(null);
     setActiveTool('select');
     setModuleLibraryOpen(true);
   }, [moduleLibraryOpen, setActiveTool]);
@@ -517,6 +564,44 @@ export function CanvasWorkspace() {
     focusAgentTabOnChangeRef.current = false;
     document.getElementById(`agent-tab-${activeAgentTab}`)?.focus();
   }, [activeAgentTab]);
+
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (quickInsert !== null) {
+        setQuickInsert(null);
+        return;
+      }
+      if (settingsOpen) {
+        setSettingsOpen(false);
+        return;
+      }
+      if (!agentPanelCollapsed) toggleAgentPanel();
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [agentPanelCollapsed, quickInsert, settingsOpen, toggleAgentPanel]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const provider = window.novusDesktop?.provider;
+    if (!provider) {
+      setProviderStatus(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+    provider.getStatus()
+      .then((status) => {
+        if (!cancelled) setProviderStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setProviderStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -633,7 +718,7 @@ export function CanvasWorkspace() {
   };
 
   return (
-    <div data-testid="workspace" data-agent-collapsed={agentPanelCollapsed} className={`workspace${agentPanelCollapsed ? ' is-agent-collapsed' : ''}${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
+    <div data-testid="workspace" data-agent-collapsed={agentPanelCollapsed} className={`workspace${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
       <header className="topbar" data-testid="topbar" data-surface="chrome">
         <div className="product-mark" aria-label="Novus Atelier">
           <span className="product-mark__icon"><Box size={17} /></span>
@@ -651,8 +736,26 @@ export function CanvasWorkspace() {
         </div>
         <div className="topbar__actions">
           <ThemeControl theme={theme} />
-          <span className="model-status"><span className="status-dot" /> Comfly 已配置</span>
-          <button className="run-button" type="button"><Play size={15} fill="currentColor" />运行方案</button>
+          <span className="model-status">
+            <span className={`status-dot${providerStatus?.configured && !providerStatus.locked ? '' : ' is-idle'}`} />
+            {providerStatus?.configured ? (providerStatus.locked ? '模型已锁定' : '模型已配置') : '模型未配置'}
+          </span>
+          <button
+            className="icon-button"
+            type="button"
+            data-testid="settings-toggle"
+            aria-label={settingsOpen ? '关闭设置' : '打开设置'}
+            aria-pressed={settingsOpen}
+            title="设置"
+            onClick={() => {
+              setQuickInsert(null);
+              if (!settingsOpen && !agentPanelCollapsed) toggleAgentPanel();
+              setSettingsOpen((open) => !open);
+            }}
+          >
+            <Settings size={16} />
+          </button>
+          <button className="run-button" type="button" aria-label="运行方案"><Play size={15} fill="currentColor" /><span>运行方案</span></button>
         </div>
       </header>
 
@@ -683,15 +786,6 @@ export function CanvasWorkspace() {
           <Library size={18} />
         </button>
         <span className="toolrail__spacer" />
-        <button
-          className="tool-button"
-          type="button"
-          aria-label={agentPanelCollapsed ? '展开 Agent 面板' : '折叠 Agent 面板'}
-          title={agentPanelCollapsed ? '展开 Agent 面板' : '折叠 Agent 面板'}
-          onClick={toggleAgentPanel}
-        >
-          {agentPanelCollapsed ? <PanelRightOpen size={18} /> : <PanelRightClose size={18} />}
-        </button>
       </nav>
 
       <main
@@ -704,15 +798,18 @@ export function CanvasWorkspace() {
         data-graph-edge-count={project.edges.length}
         onDragOverCapture={handleCanvasDragOver}
         onDropCapture={handleCanvasDrop}
+        onDoubleClickCapture={handlePaneDoubleClick}
       >
         <ReactFlow
           colorMode={theme.resolvedTheme}
-          nodes={viewportCulling.nodes}
+          nodes={interactionNodes}
           edges={viewportCulling.edges}
           nodeTypes={nodeTypes}
           fitView
           minZoom={0.08}
           maxZoom={2.5}
+          nodesDraggable={activeTool !== 'hand'}
+          elementsSelectable={activeTool !== 'hand'}
           onInit={handleReactFlowInit}
           onMove={handleViewportInteraction}
           onMoveStart={handleViewportInteraction}
@@ -739,17 +836,7 @@ export function CanvasWorkspace() {
           <Controls showInteractive={false} />
         </ReactFlow>
         {project.nodes.length === 0 && !recoveryRequired && (
-          <section className="canvas-empty-state" role="region" aria-label="空白画布操作">
-            <div>
-              <strong>从空白画布开始</strong>
-              <span>打开已有项目，创建新工作流，或从模块库激活第一步。</span>
-            </div>
-            <div className="canvas-empty-state__actions">
-              <button type="button" onClick={() => { void openProject(); }}>打开项目</button>
-              <button type="button" onClick={() => { void newWorkflow(); }}>新建工作流</button>
-              <button type="button" onClick={() => setModuleLibraryOpen(true)}>双击模块</button>
-            </div>
-          </section>
+          <p className="canvas-empty-hint" role="status">双击空白处添加模块</p>
         )}
         {recoveryRequired && (
           <section
@@ -786,6 +873,29 @@ export function CanvasWorkspace() {
         {moduleLibraryOpen && (
           <ModuleLibrary onCreate={createModuleAtViewportCenter} onClose={() => setModuleLibraryOpen(false)} />
         )}
+        {quickInsert && (
+          <QuickInsert
+            anchor={quickInsert.anchor}
+            onCreate={createQuickInsertModule}
+            onClose={() => setQuickInsert(null)}
+          />
+        )}
+        <nav className="canvas-action-rail" aria-label="画布侧栏">
+          <button
+            className={`canvas-action-rail__button${agentPanelCollapsed ? '' : ' is-active'}`}
+            type="button"
+            data-testid="agent-toggle"
+            aria-label={agentPanelCollapsed ? '打开 Novus Agent' : '关闭 Novus Agent'}
+            aria-pressed={!agentPanelCollapsed}
+            title="Novus Agent"
+            onClick={toggleAgentPanel}
+          >
+            <Sparkles size={18} strokeWidth={1.8} />
+            {modelJobs.some((job) => job.status === 'submitting' || job.status === 'running') && (
+              <span className="canvas-action-rail__status is-running" aria-label="Agent 运行中" />
+            )}
+          </button>
+        </nav>
         <div className="canvas-context">
           <span>{activeTool === 'hand' ? '平移模式' : '编辑模式'}</span>
           <span>100%</span>
@@ -839,14 +949,14 @@ export function CanvasWorkspace() {
         )}
       </main>
 
-      <aside className="agent-panel" aria-label="Agent 面板" data-testid="agent-panel">
+      <aside className="agent-panel" aria-label="Novus Agent 工作台" data-testid="agent-panel" hidden={agentPanelCollapsed}>
         <div className="agent-panel__header">
           <div>
             <strong>Novus Agent</strong>
             <span>技能与知识工作台 / Skills & Knowledge</span>
           </div>
-          <button className="icon-button" type="button" aria-label="折叠 Agent 面板" title="折叠 Agent 面板" onClick={toggleAgentPanel}>
-            <PanelRightClose size={16} />
+          <button className="icon-button" type="button" aria-label="关闭 Novus Agent" title="关闭 Novus Agent" onClick={toggleAgentPanel}>
+            <X size={16} />
           </button>
         </div>
         <div className="agent-tabs" role="tablist" aria-label="Agent 视图">
@@ -856,39 +966,43 @@ export function CanvasWorkspace() {
         </div>
         <div className="agent-thread">
           <div id="agent-panel-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden={activeAgentTab !== 'conversation'}>
-            <ReferenceOrderList
-              references={orderedReferences}
-              thumbnailEdge={interactionQuality.thumbnailEdge}
-              onPreviewOrder={previewAgentReferenceOrder}
-              onCommitOrder={commitAgentReferenceOrder}
-              resolveThumbnailUrl={resolveReferenceThumbnailUrl}
-            />
-            <ReversePromptAgent
-              projectId={project.id}
-              references={submittedAgentContext?.references ?? orderedReferences}
-              citations={submittedAgentContext?.citations ?? activeCitations}
-              getApprovedMemorySnapshot={getApprovedMemorySnapshot}
-              getProjectMemoryIds={getProjectMemoryIds}
-              getKnowledgeLease={getKnowledgeLease}
-              knowledgeBases={knowledgeBases}
-              knowledgeSyncStatuses={knowledgeSyncStatuses}
-              pendingKnowledgeReviewCount={pendingKnowledgeReviewCount}
-              analyze={analyzeReversePromptDraft}
-              analysisMode="local_draft"
-              onFeedback={recordUserFeedback}
-            />
-            <div className="agent-message">
-              <span className="agent-avatar">A</span>
-              <div>
-                <strong>{agentPlan ? '方案已应用' : '准备开始'}</strong>
-                <p>{agentPlan ? '画布事务已确认，可使用顶部撤销恢复。' : '上传产品、场景和道具参考，我会先生成画布计划，确认后再调用模型。'}</p>
-              </div>
-            </div>
-            <section className="agent-summary" aria-label="当前参考职责">
-              <div className="summary-row"><span>产品身份</span><b>{referenceStatus(referenceCounts.product, '等待上传')}</b></div>
-              <div className="summary-row"><span>场景构图</span><b>{referenceStatus(referenceCounts.scene, '等待上传')}</b></div>
-              <div className="summary-row"><span>道具参考</span><b>{referenceStatus(referenceCounts.prop, '可选')}</b></div>
-            </section>
+            {(orderedReferences.length > 0 || submittedAgentContext !== null || agentPlan !== null) && (
+              <>
+                <ReferenceOrderList
+                  references={orderedReferences}
+                  thumbnailEdge={interactionQuality.thumbnailEdge}
+                  onPreviewOrder={previewAgentReferenceOrder}
+                  onCommitOrder={commitAgentReferenceOrder}
+                  resolveThumbnailUrl={resolveReferenceThumbnailUrl}
+                />
+                <ReversePromptAgent
+                  projectId={project.id}
+                  references={submittedAgentContext?.references ?? orderedReferences}
+                  citations={submittedAgentContext?.citations ?? activeCitations}
+                  getApprovedMemorySnapshot={getApprovedMemorySnapshot}
+                  getProjectMemoryIds={getProjectMemoryIds}
+                  getKnowledgeLease={getKnowledgeLease}
+                  knowledgeBases={knowledgeBases}
+                  knowledgeSyncStatuses={knowledgeSyncStatuses}
+                  pendingKnowledgeReviewCount={pendingKnowledgeReviewCount}
+                  analyze={analyzeReversePromptDraft}
+                  analysisMode="local_draft"
+                  onFeedback={recordUserFeedback}
+                />
+                <div className="agent-message">
+                  <span className="agent-avatar">A</span>
+                  <div>
+                    <strong>{agentPlan ? '方案已应用' : '准备开始'}</strong>
+                    <p>{agentPlan ? '画布事务已确认，可使用顶部撤销恢复。' : '参考已就绪，可以生成画布计划。'}</p>
+                  </div>
+                </div>
+                <section className="agent-summary" aria-label="当前参考职责">
+                  <div className="summary-row"><span>产品身份</span><b>{referenceStatus(referenceCounts.product, '等待上传')}</b></div>
+                  <div className="summary-row"><span>场景构图</span><b>{referenceStatus(referenceCounts.scene, '等待上传')}</b></div>
+                  <div className="summary-row"><span>道具参考</span><b>{referenceStatus(referenceCounts.prop, '可选')}</b></div>
+                </section>
+              </>
+            )}
           </div>
           <div id="agent-panel-plan" role="tabpanel" aria-labelledby="agent-tab-plan" hidden={activeAgentTab !== 'plan'}>
             {agentPlan !== null && isPlanPreviewVisible(agentPlan.state)
@@ -940,6 +1054,14 @@ export function CanvasWorkspace() {
           </div>
         )}
       </aside>
+
+      {settingsOpen && (
+        <SettingsDrawer
+          providerStatus={providerStatus}
+          onClose={() => setSettingsOpen(false)}
+          onProviderStatusChange={setProviderStatus}
+        />
+      )}
 
       <JobStrip
         canReloadSave={canReloadDurableProject}

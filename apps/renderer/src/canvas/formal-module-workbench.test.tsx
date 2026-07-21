@@ -29,10 +29,20 @@ describe('formal module discovery', () => {
     expect(screen.getAllByRole('button', { name: '查看 Agent 反推 / Reverse Agent' })).toHaveLength(1);
     expect(screen.queryByText('Video Reverse Analysis')).not.toBeInTheDocument();
   });
+
+  it.each(['Skill 助手', '知识分析', '线稿材质', 'line art', '详情页 Agent'])(
+    'routes former standalone Agent capability %s to the unified Reverse Agent entry',
+    (query) => {
+      render(<ModuleLibrary onCreate={vi.fn()} />);
+      fireEvent.change(screen.getByRole('searchbox', { name: '搜索模块' }), { target: { value: query } });
+      expect(screen.getAllByRole('button', { name: '查看 Agent 反推 / Reverse Agent' })).toHaveLength(1);
+      expect(screen.queryByRole('button', { name: /查看 (Skill 助手|线稿材质分析|详情页 Agent)/u })).not.toBeInTheDocument();
+    },
+  );
 });
 
 describe('formal module node presentation', () => {
-  it('renders capability-driven generation slots, route, state, stale result, and actionable error', () => {
+  it('renders a compact generation summary without verbose capability prose', () => {
     const node = createCanvasModuleNode('generation', 'image_generation' as never, { x: 0, y: 0 });
     node.data.config = {
       routeDisplayName: 'Compatible Image Route',
@@ -47,17 +57,16 @@ describe('formal module node presentation', () => {
 
     expect(screen.getAllByText('图片生成')[0]).toBeVisible();
     expect(screen.getByText('Image Generation')).toBeVisible();
-    expect(screen.getByText(/参考图 2/)).toBeVisible();
-    expect(screen.getByLabelText('生成能力槽位 / Generation capability slots')).toHaveTextContent('蒙版 / Mask');
-    expect(screen.getByLabelText('生成能力槽位 / Generation capability slots')).toHaveTextContent('姿态 / Pose');
-    expect(screen.getByLabelText('生成能力槽位 / Generation capability slots')).toHaveTextContent('当前模型不支持');
+    expect(screen.getByLabelText('生成摘要 / Generation summary')).toHaveTextContent(/参考\s*2/u);
+    expect(screen.getByLabelText('生成摘要 / Generation summary')).not.toHaveTextContent('当前模型不支持');
+    expect(screen.getByLabelText('生成摘要 / Generation summary')).not.toHaveTextContent('/ Mask');
     expect(screen.getByText(/Compatible Image Route/)).toBeVisible();
-    expect(screen.getByText(/结果已过期/)).toBeVisible();
+    expect(screen.getByText('已过期')).toBeVisible();
     expect(screen.getByRole('alert')).toHaveTextContent('模型不可用');
     expect(screen.getByRole('alert')).toHaveTextContent('选择兼容模型');
   });
 
-  it('renders ordered mixed media, ranges, Skill, knowledge version, and fresh reverse status', () => {
+  it('summarizes ordered mixed media without expanding every item into the node', () => {
     const node = createCanvasModuleNode('reverse', 'reverse_agent', { x: 0, y: 0 });
     node.data.config = {
       orderedMedia: [
@@ -75,15 +84,13 @@ describe('formal module node presentation', () => {
 
     renderCard(node);
 
-    expect(screen.getByText('01')).toBeVisible();
-    expect(screen.getByText('02')).toBeVisible();
-    expect(screen.getByText('03')).toBeVisible();
-    expect(screen.getByText('产品正面')).toBeVisible();
-    expect(screen.getByText('广告片')).toBeVisible();
-    expect(screen.getByText('00:01.500–00:06.250')).toBeVisible();
-    expect(screen.getByText(/产品商业片/)).toBeVisible();
-    expect(screen.getByText(/知识 v7/)).toBeVisible();
-    expect(screen.getByText(/结果为最新/)).toBeVisible();
+    const summary = screen.getByLabelText('反推摘要 / Reverse summary');
+    expect(summary).toHaveTextContent('产品商业片');
+    expect(summary).toHaveTextContent('3 项');
+    expect(summary).toHaveTextContent('知识 v7');
+    expect(summary).toHaveAttribute('title', expect.stringContaining('00:01.500–00:06.250'));
+    expect(screen.queryByText('产品正面')).not.toBeInTheDocument();
+    expect(screen.getByText('最新')).toBeVisible();
   });
 
   it.each([
@@ -95,7 +102,7 @@ describe('formal module node presentation', () => {
     renderCard(node);
     expect(screen.getByText(primary)).toBeVisible();
     expect(screen.getByText(secondary)).toBeVisible();
-    expect(screen.getByText('需要配置兼容模型 / Compatible model required')).toBeVisible();
+    expect(screen.getByText('未配置模型')).toBeVisible();
     expect(screen.queryByRole('button', { name: /运行|Run/u })).not.toBeInTheDocument();
   });
 
@@ -118,10 +125,8 @@ describe('formal module node presentation', () => {
     const node = migratedModuleNode('image_generation_v2');
     renderCard(node);
 
-    const summary = screen.getByLabelText('生成能力槽位 / Generation capability slots');
-    expect(summary).toHaveTextContent('参考图 2 / References');
-    expect(summary).toHaveTextContent('蒙版 / Mask可用 / Available');
-    expect(summary).toHaveTextContent('姿态 / Pose可用 / Available');
+    const summary = screen.getByLabelText('生成摘要 / Generation summary');
+    expect(summary).toHaveTextContent(/参考\s*2/u);
     expect(screen.getByText(/Legacy image route/)).toBeVisible();
   });
 
@@ -129,8 +134,9 @@ describe('formal module node presentation', () => {
     const node = migratedModuleNode('video_analysis');
     renderCard(node);
 
-    expect(screen.getByText('迁移视频')).toBeVisible();
-    expect(screen.getByText('00:01.200–00:04.200')).toBeVisible();
+    const summary = screen.getByLabelText('反推摘要 / Reverse summary');
+    expect(summary).toHaveTextContent('1 项');
+    expect(summary).toHaveAttribute('title', expect.stringContaining('00:01.200–00:04.200'));
     expect(screen.getByText(/Legacy vision route/)).toBeVisible();
   });
 });

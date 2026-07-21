@@ -143,7 +143,7 @@ const MODULE_COPY: Readonly<Record<CanvasModuleType, ModuleCopy>> = Object.freez
   local_redraw: copy('局部重绘', 'Local Redraw', '使用图片、蒙版和提示词生成局部修改结果。', '把明确的局部编辑意图转为生成结果。', '连接原图、蒙版和提示词，确认兼容模型后执行。', '必须同时提供图片、蒙版和提示词。', ['局部编辑', 'inpaint', 'local edit']),
   image_compare: copy('图片对比', 'Image Compare', '对比两张或更多受管图片并记录选择。', '支持结果评审、差异说明和首选图选择。', '连接至少两张图片，填写评审标准后进行对比。', '不会自动替用户做不可逆选择。', ['图像对比', 'compare images', 'comparison']),
   openpose: copy('姿态提取', 'OpenPose', '从图片中提取姿态结构数据。', '为可控生成提供人物姿态约束。', '连接人物图片，执行后将姿态输出到生成模块。', '仅适用于兼容姿态能力的模型路线。', ['姿势', '骨骼', 'open pose']),
-  reverse_agent: copy('Agent 反推', 'Reverse Agent', '按顺序分析图片、视频、文本任务与线稿。', '把多模态参考转为结构化分析和视频时间线。', '连接任意可分析输入，选择 Skill、知识版本与兼容路线后运行。', '创建节点时可为空；执行时至少需要一个可分析的媒体或文本输入。', ['反推', '反推提示词', 'reverse prompt', 'reference analysis', '视频反推', 'video analysis', 'video understanding']),
+  reverse_agent: copy('Agent 反推', 'Reverse Agent', '按顺序分析图片、视频、文本任务与线稿。', '把多模态参考转为结构化分析和视频时间线。', '连接任意可分析输入，选择 Skill、知识版本与兼容路线后运行。', '创建节点时可为空；执行时至少需要一个可分析的媒体或文本输入。', ['反推', '反推提示词', 'reverse prompt', 'reference analysis', '视频反推', 'video analysis', 'video understanding', 'Skill 助手', '技能助手', '知识分析', '详情页 Agent', '详情页', '电商分析', '线稿材质', '线稿材质分析', 'line art', 'material color']),
   skill_agent: copy('Skill 助手', 'Skill Agent', '结合项目知识分析并提出可复用建议。', '辅助整理工作流经验与技能候选。', '连接可选参考图并描述需要分析的问题。', '不会自动发布知识或执行付费模型。', ['技能助手', '知识分析']),
   detail_page_agent: copy('详情页 Agent', 'Detail Page Agent', '分析电商详情页的内容与视觉结构。', '规划商品详情页信息层级和视觉表达。', '连接商品参考素材并说明目标平台与受众。', '输出为建议和结构，不保证平台审核结果。', ['详情页', '电商分析']),
   storyboard_sheet: copy('分镜表', 'Storyboard Sheet', '把分析、时间线、提示词和图片整理为分镜文档。', '形成可检查的镜头清单与生成计划。', '连接分析或时间线，可选加入提示词和参考图。', '只创建分镜合同，不在本任务中批量执行模型。', ['故事板', '镜头表', 'storyboard']),

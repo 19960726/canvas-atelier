@@ -2,6 +2,7 @@ import { test, expect } from './helpers/e2e-test';
 import {
   e2eState,
   failNextModelJobEnqueue,
+  openAgentPanel,
   openApp,
   waitForModelSubmissions,
 } from './helpers/app';
@@ -9,6 +10,7 @@ import {
 test('Agent model queue failure stays visible and retries without another canvas commit', async ({ page }) => {
   await openApp(page);
   await failNextModelJobEnqueue(page);
+  await openAgentPanel(page);
 
   await page.getByTestId('model-route-image-generation').click();
   await page.getByTestId('agent-composer-input').fill('Queue failure should retry only model jobs');

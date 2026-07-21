@@ -1,9 +1,10 @@
 import { test, expect } from './helpers/e2e-test';
-import { e2eState, openApp, seedSkillSyncDivergence } from './helpers/app';
+import { e2eState, openAgentPanel, openApp, seedSkillSyncDivergence } from './helpers/app';
 
 test('Skill sync stays guarded until explicit Chinese confirmation', async ({ page }) => {
   await openApp(page);
   await seedSkillSyncDivergence(page);
+  await openAgentPanel(page);
 
   await page.getByTestId('agent-tab-memory').click();
   await expect(page.getByTestId('skill-candidate-review')).toBeVisible();

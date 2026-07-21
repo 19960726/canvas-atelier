@@ -134,8 +134,121 @@ describe('CanvasWorkspace', () => {
     render(<CanvasWorkspace />);
     expect(screen.getByRole('application', { name: '无限画布' })).toBeVisible();
     expect(screen.getByLabelText('选择工具')).toBeVisible();
-    expect(screen.getByLabelText('Agent 面板')).toBeVisible();
+    expect(screen.getByTestId('agent-panel')).not.toBeVisible();
+    expect(screen.getByRole('button', { name: '打开 Novus Agent' })).toBeVisible();
     expect(screen.getByLabelText('任务队列')).toBeVisible();
+  });
+
+  it('toggles the overlay Agent drawer without changing project or undo state', () => {
+    render(<CanvasWorkspace />);
+    const project = useAppStore.getState().project;
+    const undoStack = useAppStore.getState().undoStack;
+
+    fireEvent.click(screen.getByRole('button', { name: '打开 Novus Agent' }));
+    expect(screen.getByLabelText('Novus Agent 工作台')).toBeVisible();
+    expect(useAppStore.getState().project).toBe(project);
+    expect(useAppStore.getState().undoStack).toBe(undoStack);
+
+    fireEvent.click(screen.getByTestId('agent-toggle'));
+    expect(screen.getByTestId('agent-panel')).not.toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '打开 Novus Agent' }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.getByTestId('agent-panel')).not.toBeVisible();
+    expect(useAppStore.getState().project).toBe(project);
+    expect(useAppStore.getState().undoStack).toBe(undoStack);
+  });
+
+  it('configures provider credentials through the narrow desktop bridge without persisting the secret', async () => {
+    const configure = vi.fn(async () => ({
+      configured: true,
+      locked: false,
+      encryption: 'safeStorage' as const,
+    }));
+    window.novusDesktop = {
+      history: {
+        getCapacity: vi.fn(async () => ({
+          activeBytes: 1024,
+          activeCount: 2,
+          missingOrCorruptCount: 0,
+          trashBytes: 512,
+          trashCount: 1,
+        })),
+      },
+      provider: {
+        ackImageJobTerminal: vi.fn(),
+        cancelImageJob: vi.fn(),
+        configure,
+        getStatus: vi.fn(async () => ({
+          configured: false,
+          locked: false,
+          encryption: 'safeStorage' as const,
+        })),
+        listProfiles: vi.fn(async () => []),
+        pollImageJob: vi.fn(),
+        submitImageJob: vi.fn(),
+        unlock: vi.fn(),
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+    const project = useAppStore.getState().project;
+    const undoStack = useAppStore.getState().undoStack;
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: '打开设置' }));
+    fireEvent.change(screen.getByLabelText('API 密钥'), { target: { value: 'secret-provider-token' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存密钥' }));
+
+    await waitFor(() => expect(configure).toHaveBeenCalledWith({ token: 'secret-provider-token' }));
+    expect(screen.getByLabelText('API 密钥')).toHaveValue('');
+    expect(screen.getByText('API 密钥已保存到系统安全存储')).toBeVisible();
+    expect(useAppStore.getState().project).toBe(project);
+    expect(useAppStore.getState().undoStack).toBe(undoStack);
+    expect(JSON.stringify(useAppStore.getState())).not.toContain('secret-provider-token');
+  });
+
+  it('unlocks an existing provider credential without persisting the passphrase', async () => {
+    const unlock = vi.fn(async () => ({
+      configured: true,
+      locked: false,
+      encryption: 'passphrase' as const,
+    }));
+    window.novusDesktop = {
+      history: {
+        getCapacity: vi.fn(async () => ({
+          activeBytes: 0,
+          activeCount: 0,
+          missingOrCorruptCount: 0,
+          trashBytes: 0,
+          trashCount: 0,
+        })),
+      },
+      provider: {
+        ackImageJobTerminal: vi.fn(),
+        cancelImageJob: vi.fn(),
+        configure: vi.fn(),
+        getStatus: vi.fn(async () => ({
+          configured: true,
+          locked: true,
+          encryption: 'passphrase' as const,
+        })),
+        listProfiles: vi.fn(async () => []),
+        pollImageJob: vi.fn(),
+        submitImageJob: vi.fn(),
+        unlock,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    render(<CanvasWorkspace />);
+    await waitFor(() => expect(screen.getByText('模型已锁定')).toBeVisible());
+    fireEvent.click(screen.getByRole('button', { name: '打开设置' }));
+    fireEvent.change(screen.getByLabelText('本机保护密码'), { target: { value: 'local-passphrase' } });
+    fireEvent.click(screen.getByRole('button', { name: '解锁模型服务' }));
+
+    await waitFor(() => expect(unlock).toHaveBeenCalledWith({ passphrase: 'local-passphrase' }));
+    expect(screen.getByLabelText('本机保护密码')).toHaveValue('');
+    expect(screen.getByText('模型服务已解锁')).toBeVisible();
+    expect(JSON.stringify(useAppStore.getState())).not.toContain('local-passphrase');
   });
 
   it('opens the module library without persisting and creates only on explicit double click', async () => {
@@ -211,7 +324,7 @@ describe('CanvasWorkspace', () => {
     expect(node?.position).toEqual({ x: 517, y: 160 });
   });
 
-  it('shows accessible empty-canvas actions and removes them after a node exists', () => {
+  it('shows only a low-interruption empty-canvas hint and removes it after a node exists', () => {
     useAppStore.setState({
       project: {
         version: 1,
@@ -225,14 +338,100 @@ describe('CanvasWorkspace', () => {
     });
     const view = render(<CanvasWorkspace />);
 
-    expect(screen.getByRole('region', { name: '空白画布操作' })).toBeVisible();
-    expect(screen.getByRole('button', { name: '打开项目' })).toBeVisible();
-    expect(screen.getByRole('button', { name: '新建工作流' })).toBeVisible();
-    expect(screen.getByText('双击模块')).toBeVisible();
+    expect(screen.getByText('双击空白处添加模块')).toBeVisible();
+    expect(screen.queryByRole('button', { name: '打开项目' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '新建工作流' })).toBeNull();
 
     useAppStore.setState({ project: createStarterProject() });
     view.rerender(<CanvasWorkspace />);
-    expect(screen.queryByRole('region', { name: '空白画布操作' })).toBeNull();
+    expect(screen.queryByText('双击空白处添加模块')).toBeNull();
+  });
+
+  it('opens Quick Insert only from a blank-pane double click and creates once at the pointer position', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests({ project: 'empty' });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 700,
+      height: 600,
+      left: 50,
+      right: 1050,
+      toJSON: () => ({}),
+      top: 100,
+      width: 1000,
+      x: 50,
+      y: 100,
+    });
+
+    render(<CanvasWorkspace />);
+    const pane = screen.getByTestId('canvas-stage').querySelector<HTMLElement>('.react-flow__pane');
+    expect(pane).not.toBeNull();
+    fireEvent.doubleClick(pane!, { clientX: 420, clientY: 360 });
+
+    expect(screen.getByLabelText('快速插入模块')).toBeVisible();
+    expect(screen.getByLabelText('搜索快速插入模块')).toHaveFocus();
+    expect(screen.getByRole('list', { name: '可插入模块' })).toBeVisible();
+    expect(screen.queryByRole('listbox', { name: '可插入模块' })).toBeNull();
+    const allCategory = screen.getByRole('tab', { name: '全部' });
+    const favoriteCategory = screen.getByRole('tab', { name: '收藏' });
+    expect(allCategory).toHaveAttribute('tabindex', '0');
+    expect(favoriteCategory).toHaveAttribute('tabindex', '-1');
+    fireEvent.keyDown(allCategory, { key: 'ArrowRight' });
+    expect(favoriteCategory).toHaveFocus();
+    expect(favoriteCategory).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', favoriteCategory.id);
+    fireEvent.keyDown(favoriteCategory, { key: 'Home' });
+    expect(allCategory).toHaveFocus();
+    expect(allCategory).toHaveAttribute('aria-selected', 'true');
+    fireEvent.change(screen.getByLabelText('搜索快速插入模块'), { target: { value: 'Image Generation' } });
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByLabelText('搜索快速插入模块'), { key: 'Enter' });
+
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    const moduleNode = useAppStore.getState().project.nodes.find((node) => node.type === 'module');
+    expect(moduleNode).toMatchObject({
+      position: { x: 370, y: 260 },
+      data: { moduleType: 'image_generation' },
+    });
+    expect(screen.queryByLabelText('快速插入模块')).toBeNull();
+  });
+
+  it('keeps Quick Insert search, categories, favorites, and cancellation device-local', () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient({ commit }));
+    resetAppStoreForTests({ project: 'empty' });
+    render(<CanvasWorkspace />);
+    const pane = screen.getByTestId('canvas-stage').querySelector<HTMLElement>('.react-flow__pane');
+    expect(pane).not.toBeNull();
+    fireEvent.doubleClick(pane!, { clientX: 260, clientY: 220 });
+
+    fireEvent.change(screen.getByLabelText('搜索快速插入模块'), { target: { value: '提示词' } });
+    fireEvent.click(screen.getByRole('tab', { name: '输入' }));
+    fireEvent.click(screen.getByRole('button', { name: '收藏 文本提示词 / Text Prompt' }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭快速插入' }));
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.nodes).toHaveLength(0);
+    expect(screen.queryByLabelText('快速插入模块')).toBeNull();
+  });
+
+  it('does not open Quick Insert from nodes, controls, or the module library', () => {
+    render(<CanvasWorkspace />);
+    const node = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(node).not.toBeNull();
+    fireEvent.doubleClick(node!);
+    fireEvent.doubleClick(screen.getByLabelText('选择工具'));
+    fireEvent.click(screen.getByRole('button', { name: '模块库' }));
+    fireEvent.doubleClick(screen.getByTestId('module-library'));
+    expect(screen.queryByLabelText('快速插入模块')).toBeNull();
   });
 
   it('keeps module placement inside the unobscured canvas with at most four columns', () => {
@@ -265,8 +464,11 @@ describe('CanvasWorkspace', () => {
     resetAppStoreForTests();
 
     render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByTestId('agent-toggle'));
+    expect(screen.getByTestId('agent-panel')).toBeVisible();
     fireEvent.click(screen.getByTestId('tool-placement'));
     expect(screen.getByTestId('placement-workbench')).toBeVisible();
+    expect(screen.getByTestId('agent-panel')).not.toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: '模块库' }));
     expect(screen.getByTestId('module-library')).toBeVisible();
@@ -596,6 +798,7 @@ describe('CanvasWorkspace', () => {
     });
 
     render(<CanvasWorkspace />);
+    openAgent();
     fireEvent.click(screen.getByRole('tab', { name: '记忆' }));
     fireEvent.click(screen.getByRole('button', { name: /^恢复 Desktop Snapshot Memory$/ }));
 
@@ -641,6 +844,7 @@ describe('CanvasWorkspace', () => {
     });
 
     render(<CanvasWorkspace />);
+    openAgent();
     fireEvent.click(screen.getByRole('button', { name: '开始反推' }));
 
     await waitFor(() => expect(getLease).toHaveBeenCalledTimes(1));
@@ -676,6 +880,7 @@ describe('CanvasWorkspace', () => {
     });
 
     render(<CanvasWorkspace />);
+    openAgent();
     fireEvent.dragStart(screen.getByText('Scene'));
     fireEvent.dragOver(screen.getByText('Product'));
     expect(screen.getByRole('button', { name: '上移 Scene / Move Scene up' })).toBeDisabled();
@@ -724,6 +929,7 @@ describe('CanvasWorkspace', () => {
     });
 
     render(<CanvasWorkspace />);
+    openAgent();
     fireEvent.dragStart(screen.getByText('Scene'));
     fireEvent.dragOver(screen.getByText('Product'));
     expect(commit).not.toHaveBeenCalled();
@@ -800,6 +1006,7 @@ describe('CanvasWorkspace', () => {
     });
 
     render(<CanvasWorkspace />);
+    openAgent();
     const run = document.querySelector<HTMLButtonElement>('.reverse-agent__run');
     if (!run) throw new Error('Missing reverse prompt button');
     fireEvent.click(run);
@@ -876,6 +1083,7 @@ describe('CanvasWorkspace', () => {
     });
     installProviderProfilesForModelJobTests();
     render(<CanvasWorkspace />);
+    openAgent();
     await waitFor(() => expect(screen.getByTestId('model-route-image-generation')).toBeVisible());
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '制作一张高端产品海报' } });
     fireEvent.click(screen.getByLabelText('发送消息'));
@@ -917,6 +1125,7 @@ describe('CanvasWorkspace', () => {
     ]);
 
     render(<CanvasWorkspace />);
+    openAgent();
 
     await waitFor(() => expect(screen.getByTestId('model-route-image-generation')).toBeVisible());
     expect(screen.queryByTestId('model-route-image-edit-only-route')).not.toBeInTheDocument();
@@ -924,6 +1133,7 @@ describe('CanvasWorkspace', () => {
 
   it('cancels an Agent plan without showing it as applied', () => {
     render(<CanvasWorkspace />);
+    openAgent();
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '先预览，不要执行' } });
     fireEvent.click(screen.getByLabelText('发送消息'));
     fireEvent.click(screen.getByRole('button', { name: '取消方案' }));
@@ -963,6 +1173,7 @@ describe('CanvasWorkspace', () => {
     });
 
     render(<CanvasWorkspace />);
+    openAgent();
     fireEvent.click(screen.getByTestId('agent-tab-plan'));
 
     expect(screen.getByTestId('plan-job-retry-state')).toBeVisible();
@@ -1009,12 +1220,14 @@ describe('CanvasWorkspace', () => {
   });
   it('opens the dedicated project-memory timeline from the Agent memory tab', () => {
     render(<CanvasWorkspace />);
+    openAgent();
     fireEvent.click(screen.getByRole('tab', { name: '记忆' }));
     expect(screen.getByLabelText('项目记忆时间线')).toBeVisible();
   });
 
   it('keeps conversation, plan, and memory as distinct keyboard-navigable tab panels', () => {
     render(<CanvasWorkspace />);
+    openAgent();
     const tabs = screen.getAllByRole('tab');
     expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(3);
     for (const tab of tabs) {
@@ -1026,11 +1239,12 @@ describe('CanvasWorkspace', () => {
     fireEvent.keyDown(conversationTab, { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: '计划' })).toHaveFocus();
     expect(screen.getByText('暂无待确认计划')).toBeVisible();
-    expect(screen.getByLabelText('反推 Agent')).not.toBeVisible();
+    expect(screen.queryByLabelText('反推 Agent')).toBeNull();
   });
 
   it('moves focus to the Plan tab after submitting an Agent message', () => {
     render(<CanvasWorkspace />);
+    openAgent();
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '优化这张画布' } });
 
     fireEvent.click(screen.getByRole('button', { name: '发送消息' }));
@@ -1038,6 +1252,11 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByRole('tab', { name: '计划' })).toHaveFocus();
   });
 });
+
+function openAgent(): void {
+  fireEvent.click(screen.getByTestId('agent-toggle'));
+  expect(screen.getByTestId('agent-panel')).toBeVisible();
+}
 
 function createKnowledgeClient(overrides: Partial<KnowledgeClient> = {}): KnowledgeClient {
   return {

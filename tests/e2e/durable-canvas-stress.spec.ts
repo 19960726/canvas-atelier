@@ -5,6 +5,7 @@ import {
   e2eState,
   finishInteractionStallObserver,
   measureInteractionStalls,
+  openAgentPanel,
   openApp,
   startInteractionStallObserver,
 } from './helpers/app';
@@ -31,6 +32,8 @@ for (const theme of ['light', 'dark'] as const) {
       expect(graph.edgeCount).toBe(500);
       expect(graph.projectImages).toHaveLength(80);
 
+      await expect(page.getByTestId('agent-panel')).toBeHidden();
+      await openAgentPanel(page);
       await assertNoTrackedRegionsOverlap(page, ['module-library', 'agent-panel', 'job-strip']);
       await expect(page.getByTestId('module-library')).toBeVisible();
       await expect(page.getByTestId('agent-panel')).toBeVisible();
@@ -61,6 +64,7 @@ for (const theme of ['light', 'dark'] as const) {
       commitCount += 1;
 
       const pane = page.locator('.react-flow__pane');
+      await page.getByTestId('tool-hand').click();
       await measureInteractionStalls(page, 'pan', async () => {
         const box = await pane.boundingBox();
         expect(box).not.toBeNull();
@@ -77,6 +81,7 @@ for (const theme of ['light', 'dark'] as const) {
       });
       expect((await e2eState(page)).commitCount).toBe(commitCount);
 
+      await page.getByTestId('tool-select').click();
       await measureInteractionStalls(page, 'connection-preview', async () => {
         const handle = node.locator('.react-flow__handle.source').first();
         const handleBox = await handle.boundingBox();

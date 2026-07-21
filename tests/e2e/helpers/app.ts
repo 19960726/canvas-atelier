@@ -27,6 +27,11 @@ type E2EState = {
   edgeCount: number;
   nodeCount: number;
   moduleTypes: CanvasModuleType[];
+  modulePositions: Array<{
+    id: string;
+    moduleType: CanvasModuleType;
+    position: { x: number; y: number };
+  }>;
   modelJobs: Array<{
     conversationId: string;
     id: string;
@@ -52,12 +57,18 @@ type E2EState = {
     decision: string;
     projectId: string;
   }>;
+  undoDepth: number;
 };
 
+const previewDimensionsByPage = new WeakMap<Page, Array<{ height: number; width: number }>>();
+
 export async function openApp(page: Page): Promise<void> {
+  previewDimensionsByPage.set(page, []);
   await page.route('**/__novus_e2e_asset/*.svg', async (route) => {
+    const assetSequence = Number.parseInt(route.request().url().match(/([a-f0-9]{16})\.svg$/u)?.[1] ?? '0', 16);
+    const dimensions = previewDimensionsByPage.get(page)?.[assetSequence - 1] ?? { height: 120, width: 120 };
     await route.fulfill({
-      body: '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="10" fill="#dbeafe"/><path d="M18 67 38 45l13 14 9-10 18 18" fill="none" stroke="#2563eb" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="65" cy="30" r="9" fill="#0f766e"/></svg>',
+      body: `<svg xmlns="http://www.w3.org/2000/svg" width="${dimensions.width}" height="${dimensions.height}" viewBox="0 0 ${dimensions.width} ${dimensions.height}"><rect width="100%" height="100%" rx="8" fill="#dbeafe"/><path d="M${dimensions.width * 0.14} ${dimensions.height * 0.72} ${dimensions.width * 0.37} ${dimensions.height * 0.44}l${dimensions.width * 0.16} ${dimensions.height * 0.18} ${dimensions.width * 0.12}-${dimensions.height * 0.13} ${dimensions.width * 0.2} ${dimensions.height * 0.23}" fill="none" stroke="#2563eb" stroke-width="${Math.max(5, dimensions.width * 0.06)}" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${dimensions.width * 0.7}" cy="${dimensions.height * 0.3}" r="${Math.min(dimensions.width, dimensions.height) * 0.09}" fill="#0f766e"/></svg>`,
       contentType: 'image/svg+xml',
       headers: { 'cache-control': 'no-store' },
       status: 200,
@@ -72,7 +83,15 @@ export async function openApp(page: Page): Promise<void> {
 export async function openEmptyApp(page: Page): Promise<void> {
   await openApp(page);
   await page.evaluate(() => window.__NOVUS_E2E__!.resetEmpty());
-  await expect(page.getByRole('region', { name: '空白画布操作' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '双击空白处添加模块' })).toBeVisible();
+}
+
+export async function openAgentPanel(page: Page): Promise<void> {
+  const panel = page.getByTestId('agent-panel');
+  if (!(await panel.isVisible())) {
+    await page.getByTestId('agent-toggle').click();
+  }
+  await expect(panel).toBeVisible();
 }
 
 export async function uploadReference(page: Page, testId: string, fixture: GeneratedImageFixture): Promise<void> {
@@ -81,9 +100,24 @@ export async function uploadReference(page: Page, testId: string, fixture: Gener
 }
 
 export async function queueProjectImageImport(page: Page, fixture: GeneratedImageFixture): Promise<void> {
-  await page.evaluate(({ byteSize, label, mediaType }) => {
-    window.__NOVUS_E2E__!.queueProjectImageImport({ byteSize, label, mediaType });
-  }, { byteSize: fixture.buffer.byteLength, label: fixture.name, mediaType: fixture.mimeType });
+  const dimensions = {
+    height: clampE2EDimension(fixture.height),
+    width: clampE2EDimension(fixture.width),
+  };
+  previewDimensionsByPage.get(page)?.push(dimensions);
+  await page.evaluate(({ byteSize, height, label, mediaType, width }) => {
+    window.__NOVUS_E2E__!.queueProjectImageImport({ byteSize, height, label, mediaType, width });
+  }, {
+    byteSize: fixture.buffer.byteLength,
+    height: dimensions.height,
+    label: fixture.name,
+    mediaType: fixture.mimeType,
+    width: dimensions.width,
+  });
+}
+
+function clampE2EDimension(value: number): number {
+  return Math.max(1, Math.min(8192, Math.floor(value)));
 }
 
 export async function e2eState(page: Page): Promise<E2EState> {
@@ -325,7 +359,13 @@ declare global {
       }): Promise<boolean>;
       getState(): E2EState;
       nonce: string;
-      queueProjectImageImport(input: { byteSize: number; label: string; mediaType: 'image/png' }): void;
+      queueProjectImageImport(input: {
+        byteSize: number;
+        height: number;
+        label: string;
+        mediaType: 'image/png';
+        width: number;
+      }): void;
       failNextModelJobEnqueue(): void;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;

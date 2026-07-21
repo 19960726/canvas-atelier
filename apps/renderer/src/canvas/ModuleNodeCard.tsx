@@ -1,6 +1,6 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo, useState, type CSSProperties } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Image as ImageIcon, LockKeyhole, LockOpen } from 'lucide-react';
+import { Clapperboard, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Video } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -10,6 +10,7 @@ import {
 } from '@agent-canvas/domain';
 import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
 import { resolveCanvasModuleIcon } from './module-icons';
+import { formatMediaDisplayAspectRatio } from './media-display';
 import { useAppStore } from '../app/app-store';
 import { isRenderableManagedImageUrl } from '../app/managed-image-url';
 
@@ -26,27 +27,8 @@ const executionStateLabels: Record<CanvasModuleNodeData['execution']['state'], s
   cancelled: '已取消',
 };
 
-const executionModeLabels: Record<CanvasModuleDefinition['executionMode'], string> = {
-  local: '本地 / Local',
-  provider: '模型服务 / Provider',
-  agent: 'Agent',
-  composite: '组合 / Composite',
-};
-
 function formatExecutionState(state: CanvasModuleNodeData['execution']['state']): string {
   return executionStateLabels[state];
-}
-
-function summarizeModuleConfig(config: Record<string, unknown>): string {
-  const entries = Object.entries(config).filter(([, value]) => value !== undefined && value !== null && value !== '');
-  if (entries.length === 0) return '默认配置 / Default configuration';
-  return entries.slice(0, 2).map(([key, value]) => `${key}: ${formatConfigValue(value)}`).join('  |  ');
-}
-
-function formatConfigValue(value: unknown): string {
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return `${value.length} 项`;
-  return '已配置';
 }
 
 interface ModulePortProps {
@@ -75,10 +57,9 @@ const ModulePort = memo(function ModulePort({ port }: ModulePortProps) {
           data-port-shape={portShape}
         />
       )}
-      <span className="module-node__port-label">
+      <span className="module-node__port-label" title={`${port.primaryLabel} / ${port.secondaryLabel}`}>
         {port.primaryLabel}
-        <small>{port.secondaryLabel}</small>
-        {port.required ? null : <small aria-label="可选 / optional">可选</small>}
+        {port.required ? null : <small className="module-node__port-optional" aria-label="可选 / optional">选</small>}
       </span>
       {!isInput && (
         <Handle
@@ -117,6 +98,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const hasImageControls = data.moduleType === 'image_input'
     || data.moduleType === 'upload_image'
     || data.moduleType === 'canvas_library';
+  const hasMediaControls = hasImageControls || data.moduleType === 'video_input';
   const isProfessionalWorkbench = data.moduleType === 'image_generation'
     || data.moduleType === 'reverse_agent'
     || data.moduleType === 'music_generation'
@@ -127,12 +109,19 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       ? projectImages
       : projectImages.filter((asset) => asset.label.toLocaleLowerCase().includes(query));
   }, [libraryQuery, projectImages]);
+  const selectedImage = hasImageControls && typeof data.config.assetId === 'string'
+    ? projectImages.find((asset) => asset.assetId === data.config.assetId)
+    : undefined;
+  const mediaNodeStyle = selectedImage
+    ? { '--media-node-width': `${getMediaNodeWidth(selectedImage)}px` } as CSSProperties
+    : undefined;
 
   return (
     <article
-      className={`module-node${hasImageControls ? ' module-node--image-controls' : ''}${isProfessionalWorkbench ? ' module-node--workbench' : ''}${selected ? ' is-selected' : ''}`}
+      className={`module-node${hasMediaControls ? ' module-node--media-controls' : ''}${hasImageControls ? ' module-node--image-controls' : ''}${isProfessionalWorkbench ? ' module-node--workbench' : ''}${selected ? ' is-selected' : ''}`}
       data-testid="module-node-card"
       data-module-type={definition.type}
+      style={mediaNodeStyle}
     >
       <header className="module-node__header">
         <span
@@ -143,9 +132,8 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           <Icon size={18} strokeWidth={1.8} />
         </span>
         <span className="module-node__heading">
-          <small>{definition.categoryDisplay.primaryName} / {definition.categoryDisplay.secondaryName}</small>
           <strong>{definition.primaryName}</strong>
-          <span>{definition.secondaryName}</span>
+          <small>{definition.secondaryName}</small>
         </span>
         <button
           type="button"
@@ -171,6 +159,8 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           onImport={() => { void importImageForModule(id); }}
           onSelect={(assetId) => { void selectProjectImageForModule(id, assetId); }}
         />
+      ) : data.moduleType === 'video_input' ? (
+        <VideoInputControl config={data.config} />
       ) : data.moduleType === 'canvas_library' ? (
         <CanvasLibraryControl
           assets={filteredProjectImages}
@@ -182,15 +172,18 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           onSelectionChange={(assetIds) => { void setCanvasLibrarySelection(id, assetIds); }}
         />
       ) : data.moduleType === 'image_generation' ? (
-        <ImageGenerationSummary config={data.config} definition={definition} />
+        <ImageGenerationSummary config={data.config} />
       ) : data.moduleType === 'reverse_agent' ? (
-        <ReverseAgentSummary config={data.config} definition={definition} />
+        <ReverseAgentSummary config={data.config} />
       ) : data.moduleType === 'music_generation' || data.moduleType === 'speech_generation' ? (
-        <UnavailableCapabilitySummary definition={definition} />
+        <UnavailableCapabilitySummary />
       ) : (
         <GenericModuleSummary config={data.config} definition={definition} />
       )}
-      <div className="module-node__ports" aria-label="模块端口 / Module ports">
+      <div
+        className={`module-node__ports${inputs.length > 0 ? ' has-inputs' : ''}${outputs.length > 0 ? ' has-outputs' : ''}`}
+        aria-label="模块端口 / Module ports"
+      >
         <div className="module-node__ports-column module-node__ports-column--inputs">
           {inputs.map((port) => <ModulePort key={`${port.direction}:${port.id}`} port={port} />)}
         </div>
@@ -199,7 +192,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
         </div>
       </div>
       <footer className="module-node__footer">
-        <span>{executionModeLabels[definition.executionMode]} · {formatRoute(data.config)}</span>
+        <span>{formatExecutionMode(definition.executionMode)}</span>
         <b data-execution-state={data.execution.state}>{formatExecutionState(data.execution.state)}</b>
       </footer>
       <ModuleError config={data.config} />
@@ -207,70 +200,62 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   );
 });
 
-function ImageGenerationSummary({ config, definition }: { config: Record<string, unknown>; definition: CanvasModuleDefinition }) {
-  const enabled = readStringArray(config.enabledInputCapabilities);
+function ImageGenerationSummary({ config }: { config: Record<string, unknown> }) {
   const referenceCount = readStringArray(config.referenceAssetIds).length;
   return (
-    <section className="module-node__summary module-node__summary--structured" aria-label="生成能力槽位 / Generation capability slots">
-      <div className="module-node__meta-line"><strong>能力</strong><span>{formatCapabilities(definition)}</span></div>
-      <div className="module-node__slot-grid">
-        <CapabilitySlot label="提示词 / Prompt" state="required" />
-        <CapabilitySlot label={`参考图 ${referenceCount} / References`} state={enabled.includes('references') ? 'available' : 'unsupported'} />
-        <CapabilitySlot label="蒙版 / Mask" state={enabled.includes('mask') ? 'available' : 'unsupported'} />
-        <CapabilitySlot label="姿态 / Pose" state={enabled.includes('pose') ? 'available' : 'unsupported'} />
+    <section className="module-node__summary module-node__summary--compact" aria-label="生成摘要 / Generation summary">
+      <div className="module-node__compact-line">
+        <span title="模型路线 / Model route">{formatRoute(config)}</span>
+        <b>参考 {referenceCount}</b>
       </div>
       <ResultFreshness value={config.resultState} />
     </section>
   );
 }
 
-function CapabilitySlot({ label, state }: { label: string; state: 'required' | 'available' | 'unsupported' }) {
-  const stateLabel = state === 'required'
-    ? '必需 / Required'
-    : state === 'available'
-      ? '可用 / Available'
-      : '当前模型不支持 / Unsupported';
-  return <span className={`module-node__slot is-${state}`}><b>{label}</b><small>{stateLabel}</small></span>;
-}
-
-function ReverseAgentSummary({ config, definition }: { config: Record<string, unknown>; definition: CanvasModuleDefinition }) {
+function ReverseAgentSummary({ config }: { config: Record<string, unknown> }) {
   const media = readOrderedMedia(config.orderedMedia);
   const skillName = readNonEmptyString(config.skillName) ?? '自动识别';
   const mode = readNonEmptyString(config.mode) ?? 'auto';
   const knowledgeVersion = typeof config.knowledgeVersion === 'number' ? `知识 v${config.knowledgeVersion}` : '知识未绑定';
   return (
-    <section className="module-node__summary module-node__summary--structured" aria-label="反推媒体摘要 / Reverse media summary">
-      <div className="module-node__meta-line"><strong>Skill / 模式</strong><span>{skillName} · {mode}</span></div>
-      <div className="module-node__meta-line"><strong>能力 / 知识</strong><span>{formatCapabilities(definition)} · {knowledgeVersion}</span></div>
-      <div className="module-node__media-strip">
-        {media.length === 0 ? <small>等待图片、视频、文本任务或线稿输入</small> : media.map((item, index) => (
-          <span className={`module-node__media-item is-${item.kind}`} key={`${item.assetId}-${index}`}>
-            <b>{String(index + 1).padStart(2, '0')}</b>
-            <span>{item.label}</span>
-            {item.ranges.map((range) => <small key={`${range.startMs}-${range.endMs}`}>{formatRange(range.startMs, range.endMs)}</small>)}
-          </span>
-        ))}
+    <section
+      className="module-node__summary module-node__summary--compact"
+      aria-label="反推摘要 / Reverse summary"
+      title={formatMediaTooltip(media)}
+    >
+      <div className="module-node__compact-line">
+        <span>{skillName}</span>
+        <b>{media.length} 项</b>
+      </div>
+      <div className="module-node__compact-subline">
+        <span>{knowledgeVersion}</span>
+        <span title={`模式 ${mode} / Mode ${mode}`}>{formatRoute(config)}</span>
       </div>
       <ResultFreshness value={config.resultState} />
     </section>
   );
 }
 
-function UnavailableCapabilitySummary({ definition }: { definition: CanvasModuleDefinition }) {
+function UnavailableCapabilitySummary() {
   return (
-    <section className="module-node__summary module-node__summary--structured">
-      <div className="module-node__meta-line"><strong>能力</strong><span>{formatCapabilities(definition)}</span></div>
-      <div className="module-node__unavailable" role="status">需要配置兼容模型 / Compatible model required</div>
-      <small>本节点仅声明安全合同；未配置路线时不会创建运行任务。</small>
+    <section className="module-node__summary module-node__summary--compact">
+      <div className="module-node__compact-line">
+        <span>兼容路线</span>
+        <b className="module-node__unavailable" role="status" title="需要配置兼容模型 / Compatible model required">未配置模型</b>
+      </div>
     </section>
   );
 }
 
 function GenericModuleSummary({ config, definition }: { config: Record<string, unknown>; definition: CanvasModuleDefinition }) {
+  const configuredCount = Object.values(config).filter((value) => value !== undefined && value !== null && value !== '').length;
   return (
-    <section className="module-node__summary module-node__summary--structured">
-      <div className="module-node__meta-line"><strong>配置</strong><span>{summarizeModuleConfig(config)}</span></div>
-      <div className="module-node__meta-line"><strong>能力</strong><span>{formatCapabilities(definition)}</span></div>
+    <section className="module-node__summary module-node__summary--compact">
+      <div className="module-node__compact-line">
+        <span>{formatRoute(config)}</span>
+        <b>{configuredCount > 0 ? `${configuredCount} 项` : '待配置'}</b>
+      </div>
       <ResultFreshness value={config.resultState} />
     </section>
   );
@@ -286,34 +271,20 @@ function ModuleError({ config }: { config: Record<string, unknown> }) {
 }
 
 function ResultFreshness({ value }: { value: unknown }) {
-  if (value === 'stale') return <span className="module-node__freshness is-stale">结果已过期 / Stale result</span>;
-  if (value === 'fresh') return <span className="module-node__freshness is-fresh">结果为最新 / Fresh result</span>;
-  return <span className="module-node__freshness">暂无结果 / No result</span>;
-}
-
-function formatCapabilities(definition: CanvasModuleDefinition): string {
-  const labels: Readonly<Record<string, string>> = {
-    chat: '对话',
-    comfy_workflow: '受控 Comfy',
-    image_edit: '图片编辑',
-    image_generation: '图片生成',
-    line_art_material: '线稿材质',
-    local_redraw: '局部重绘',
-    mask_edit: '蒙版',
-    music_generation: '音乐',
-    pose: '姿态',
-    speech_synthesis: '语音',
-    storyboard: '分镜',
-    structured_comparison: '结构化对比',
-    structured_output: '结构化输出',
-    video_understanding: '视频理解',
-    vision: '视觉',
-  };
-  return definition.capabilities.map((capability) => labels[capability] ?? capability).join(' · ') || '本地';
+  if (value === 'stale') return <span className="module-node__freshness is-stale" title="结果已过期 / Stale result">已过期</span>;
+  if (value === 'fresh') return <span className="module-node__freshness is-fresh" title="结果为最新 / Fresh result">最新</span>;
+  return <span className="module-node__freshness" title="暂无结果 / No result">无结果</span>;
 }
 
 function formatRoute(config: Record<string, unknown>): string {
   return readNonEmptyString(config.routeDisplayName) ?? readNonEmptyString(config.route) ?? '未选择路线';
+}
+
+function formatExecutionMode(mode: CanvasModuleDefinition['executionMode']): string {
+  if (mode === 'provider') return '模型';
+  if (mode === 'agent') return 'Agent';
+  if (mode === 'composite') return '组合';
+  return '本地';
 }
 
 function getPortShape(dataType: CanvasModulePortDefinition['dataType']): 'circle' | 'diamond' | 'square' {
@@ -363,6 +334,14 @@ function formatRange(startMs: number, endMs: number): string {
   return `${formatTimestamp(startMs)}–${formatTimestamp(endMs)}`;
 }
 
+function formatMediaTooltip(media: readonly OrderedMediaSummary[]): string {
+  if (media.length === 0) return '等待图片、视频、文本任务或线稿输入';
+  return media.map((item, index) => {
+    const ranges = item.ranges.map((range) => formatRange(range.startMs, range.endMs)).join(', ');
+    return `${index + 1}. ${item.label}${ranges ? ` ${ranges}` : ''}`;
+  }).join('\n');
+}
+
 function formatTimestamp(milliseconds: number): string {
   const minutes = Math.floor(milliseconds / 60_000);
   const seconds = Math.floor((milliseconds % 60_000) / 1_000);
@@ -388,28 +367,75 @@ function ProjectImageControl({
   onSelect: (assetId: string) => void;
 }) {
   const asset = assets.find((candidate) => candidate.assetId === assetId);
-  const previewUrl = isRenderableManagedImageUrl(asset?.displayUrl) ? asset.displayUrl : null;
+  const previewUrl = isRenderableManagedImageUrl(asset?.displayUrl, asset?.assetId) ? asset.displayUrl : null;
   return (
     <div className="module-node__image-control nodrag nopan" onPointerDown={(event) => event.stopPropagation()}>
-      <div className="module-node__asset-preview">
-        {previewUrl
-          ? <img src={previewUrl} alt="" draggable={false} />
-          : <span className="module-node__asset-icon" aria-hidden="true"><ImageIcon size={19} /></span>}
-        <span className="module-node__asset-copy">
-          <strong>{asset?.label ?? '暂无受管图像'}</strong>
-          <small>{asset ? formatAssetDimensions(asset) : '选择或导入项目图像 / Choose or import'}</small>
-        </span>
-      </div>
-      {moduleType === 'image_input' && assets.length > 0 && (
-        <select aria-label="选择项目图像 / Choose project image" value={assetId ?? ''} onChange={(event) => onSelect(event.target.value)}>
-          <option value="" disabled>项目素材库 / Project library</option>
-          {assets.map((candidate) => <option key={candidate.assetId} value={candidate.assetId}>{candidate.label}</option>)}
-        </select>
+      {previewUrl && asset ? (
+        <div
+          className="module-node__media-frame"
+          style={{ aspectRatio: formatMediaDisplayAspectRatio(asset.width, asset.height) }}
+        >
+          <img src={previewUrl} alt={asset.label} draggable={false} />
+          <button
+            type="button"
+            className="module-node__media-action"
+            title="更换图像 / Replace image"
+            aria-label="更换图像 / Replace image"
+            disabled={importing}
+            onClick={onImport}
+          >
+            <ImageUp size={14} />
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="module-node__media-empty"
+          title="导入图像 / Import image"
+          aria-label="导入图像 / Import image"
+          disabled={importing}
+          onClick={onImport}
+        >
+          <span aria-hidden="true"><ImageIcon size={24} strokeWidth={1.6} /></span>
+          <strong>{importing ? '正在导入…' : '导入图片'}</strong>
+          <small>PNG · JPEG · GIF · WebP</small>
+        </button>
       )}
-      <button type="button" aria-label={asset ? '更换图像 / Replace image' : '导入图像 / Import image'} disabled={importing} onClick={onImport}>
-        {importing ? '正在导入…' : asset ? '更换图像' : '导入图像'}
-      </button>
+      {asset && (
+        <div className="module-node__media-meta">
+          <strong title={asset.label}>{asset.label}</strong>
+          <span className="module-node__media-tools">
+            <small>{formatAssetDimensions(asset)}</small>
+            {moduleType === 'image_input' && assets.length > 0 && (
+              <span className="module-node__media-picker" title="选择项目图像 / Choose project image">
+                <Images size={13} aria-hidden="true" />
+                <select aria-label="选择项目图像 / Choose project image" value={assetId ?? ''} onChange={(event) => onSelect(event.target.value)}>
+                  <option value="" disabled>项目素材库 / Project library</option>
+                  {assets.map((candidate) => <option key={candidate.assetId} value={candidate.assetId}>{candidate.label}</option>)}
+                </select>
+              </span>
+            )}
+          </span>
+        </div>
+      )}
       {error && <small className="module-node__asset-error" role="status">{error}</small>}
+    </div>
+  );
+}
+
+function VideoInputControl({ config }: { config: Record<string, unknown> }) {
+  const hasBoundAsset = readNonEmptyString(config.assetId) !== null;
+  return (
+    <div className="module-node__video-control nodrag nopan">
+      <div className="module-node__media-empty is-video" role="status">
+        <span aria-hidden="true"><Video size={25} strokeWidth={1.6} /></span>
+        <strong>{hasBoundAsset ? '已绑定受管视频' : '视频预览'}</strong>
+        <small>{hasBoundAsset ? '预览信息不可用' : 'MP4 导入尚未接入'}</small>
+      </div>
+      <div className="module-node__media-meta">
+        <strong>{hasBoundAsset ? '旧项目视频资产' : '等待安全视频合同'}</strong>
+        <small><Clapperboard size={11} aria-hidden="true" /> 00:00</small>
+      </div>
     </div>
   );
 }
@@ -442,13 +468,15 @@ function CanvasLibraryControl({
   };
   return (
     <div className="module-node__library-control nodrag nopan" onPointerDown={(event) => event.stopPropagation()}>
-      <input
-        type="search"
-        aria-label="搜索项目图像 / Search project images"
-        placeholder={`搜索 ${allAssetCount} 张图像`}
-        value={query}
-        onChange={(event) => onQueryChange(event.target.value)}
-      />
+      {allAssetCount > 0 && (
+        <input
+          type="search"
+          aria-label="搜索项目图像 / Search project images"
+          placeholder={`搜索 ${allAssetCount} 张图像`}
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+        />
+      )}
       <div className="module-node__library-assets">
         {assets.length === 0 ? <small>暂无项目图像</small> : assets.map((asset) => {
           const position = selectedPositions.get(asset.assetId);
@@ -491,4 +519,12 @@ function readAssetIds(value: unknown): string[] {
 
 function formatAssetDimensions(asset: ProjectImageAssetSummary): string {
   return asset.width === null || asset.height === null ? '尺寸不可用' : `${asset.width} × ${asset.height}`;
+}
+
+function getMediaNodeWidth(asset: ProjectImageAssetSummary): number {
+  if (asset.width === null || asset.height === null) return 232;
+  const ratio = asset.width / asset.height;
+  if (ratio < 0.8) return 188;
+  if (ratio > 1.45) return 260;
+  return 232;
 }

@@ -3,6 +3,7 @@ import {
   assertLocatorInside,
   assertNoTrackedRegionsOverlap,
   captureLayoutScreenshot,
+  openAgentPanel,
   openEmptyApp,
 } from './helpers/app';
 
@@ -107,18 +108,21 @@ for (const theme of ['light', 'dark'] as const) {
       await assertLocatorInside(reverseNode, reverseNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"]'), `reverse reference port ${viewport.name} ${theme}`);
       await assertLocatorInside(reverseNode, reverseNode.locator('.module-node__port-row[data-port-id="analysis"][data-port-direction="output"]'), `reverse analysis port ${viewport.name} ${theme}`);
       await expect(generationNode).toContainText('Compatible Image Route');
-      await expect(generationNode).toContainText('结果已过期 / Stale result');
+      await expect(generationNode).toContainText('已过期');
       await expect(generationNode.getByRole('alert')).toContainText('模型不可用');
       await expect(reverseNode).toContainText('Vision Composite');
-      await expect(reverseNode).toContainText('结果为最新 / Fresh result');
-      await expect(reverseNode).toContainText('00:01.500–00:06.250');
-      await assertNoTrackedRegionsOverlap(page, ['module-library', 'agent-panel', 'job-strip']);
+      await expect(reverseNode).toContainText('最新');
+      await expect(reverseNode.locator('.module-node__summary')).toHaveAttribute('title', /00:01.500–00:06.250/);
 
       const before = await canvas.boundingBox();
-      await page.getByTestId('agent-panel').getByRole('button', { name: '折叠 Agent 面板' }).click();
+      await expect(page.getByTestId('agent-panel')).toBeHidden();
+      await openAgentPanel(page);
       const after = await canvas.boundingBox();
-      expect(after!.width).toBeGreaterThan(before!.width + 300);
-      await page.getByTestId('toolrail').getByRole('button', { name: '展开 Agent 面板' }).click();
+      expect(after!.width).toBeCloseTo(before!.width, 0);
+      await assertNoTrackedRegionsOverlap(page, ['module-library', 'agent-panel', 'job-strip']);
+      await page.getByTestId('agent-panel').getByRole('button', { name: '关闭 Novus Agent' }).click();
+      await expect(page.getByTestId('agent-panel')).toBeHidden();
+      await openAgentPanel(page);
 
       await captureLayoutScreenshot(page, testInfo, `formal-module-workbench-${viewport.name}-${theme}`);
     });

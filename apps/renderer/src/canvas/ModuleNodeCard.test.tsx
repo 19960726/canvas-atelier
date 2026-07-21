@@ -66,10 +66,13 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('Image Generation')).toBeVisible();
     expect(document.querySelector('[data-port-id="prompt"][data-port-direction="input"]')).not.toBeNull();
     expect(document.querySelector('[data-port-id="result"][data-port-direction="output"]')).not.toBeNull();
-    expect(screen.getByText('提示词')).toBeVisible();
-    expect(screen.getByText('Prompt')).toBeVisible();
+    expect(screen.getByTitle('提示词 / Prompt')).toBeVisible();
+    expect(screen.queryByText('Prompt')).not.toBeInTheDocument();
+    expect(screen.getByTitle('提示词 / Prompt')).toHaveTextContent('提示词');
     expect(screen.getByText('结果')).toBeVisible();
     expect(screen.getByText('空闲')).toBeVisible();
+    expect(screen.queryByText('能力')).not.toBeInTheDocument();
+    expect(document.querySelector('.module-node__summary')).not.toHaveStyle({ overflow: 'auto' });
     expect(document.querySelector('.module-node__icon')).toHaveAttribute('data-icon-category', 'generation');
     expect(document.querySelector('.module-node__icon svg')).toHaveAttribute('width', '18');
   });
@@ -99,14 +102,18 @@ describe('ModuleNodeCard', () => {
       </ReactFlowProvider>,
     );
 
+    const media = screen.getByRole('img', { name: 'Product front' });
+    expect(media).toHaveAttribute('src', projectImage.displayUrl);
+    expect(media.closest('.module-node__media-frame')).toHaveStyle({ aspectRatio: '2 / 3' });
     expect(screen.getAllByText('Product front')).toHaveLength(2);
     expect(screen.getByText('2 × 3')).toBeVisible();
+    expect(document.querySelector('.module-node__asset-preview')).toBeNull();
     expect(document.querySelector('input[type="file"]')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '更换图像 / Replace image' }));
     expect(importImageForModule).toHaveBeenCalledWith('image-input');
   });
 
-  it('uses a real image icon instead of a text placeholder for an empty image input', () => {
+  it('uses a compact media-first empty state instead of a text-heavy image card', () => {
     const node = createCanvasModuleNode('image-input', 'image_input', { x: 0, y: 0 });
 
     render(
@@ -115,9 +122,53 @@ describe('ModuleNodeCard', () => {
       </ReactFlowProvider>,
     );
 
-    const preview = document.querySelector('.module-node__asset-preview');
-    expect(preview).not.toHaveTextContent('IMG');
+    const preview = document.querySelector('.module-node__media-empty');
+    expect(preview).toHaveTextContent('导入图片');
+    expect(preview).not.toHaveTextContent('暂无受管图像');
     expect(preview?.querySelector('svg')).not.toBeNull();
+    expect(screen.getByRole('button', { name: '导入图像 / Import image' })).toBeVisible();
+  });
+
+  it('renders video input as a media preview surface instead of a generic configuration summary', () => {
+    const node = createCanvasModuleNode('video-input', 'video_input', { x: 0, y: 0 });
+
+    render(
+      <ReactFlowProvider>
+        <ModuleNodeCard id={node.id} data={node.data} selected={false} />
+      </ReactFlowProvider>,
+    );
+
+    expect(document.querySelector('.module-node__video-control')).not.toBeNull();
+    expect(screen.getByText('视频预览')).toBeVisible();
+    expect(screen.getByText('MP4 导入尚未接入')).toBeVisible();
+    expect(screen.queryByText('导入视频')).not.toBeInTheDocument();
+    expect(screen.queryByText('待配置')).not.toBeInTheDocument();
+  });
+
+  it('bounds extreme image dimensions and distinguishes a legacy bound video asset', () => {
+    const imageNode = createCanvasModuleNode('extreme-image', 'image_input', { x: 0, y: 0 });
+    imageNode.data.config = { assetId: projectImage.assetId };
+    const videoNode = createCanvasModuleNode('legacy-video', 'video_input', { x: 0, y: 0 });
+    videoNode.data.config = { assetId: 'legacy-video-asset' };
+    useAppStore.setState({
+      projectImages: [{ ...projectImage, height: 8192, width: 1 }],
+    });
+
+    const { rerender } = render(
+      <ReactFlowProvider>
+        <ModuleNodeCard id={imageNode.id} data={imageNode.data} selected={false} />
+      </ReactFlowProvider>,
+    );
+
+    expect(document.querySelector('.module-node__media-frame')).toHaveStyle({ aspectRatio: '9 / 16' });
+
+    rerender(
+      <ReactFlowProvider>
+        <ModuleNodeCard id={videoNode.id} data={videoNode.data} selected={false} />
+      </ReactFlowProvider>,
+    );
+    expect(screen.getByText('已绑定受管视频')).toBeVisible();
+    expect(screen.getByText('预览信息不可用')).toBeVisible();
   });
 
   it('renders an ordered canvas-library selection with stable move controls', () => {
@@ -146,6 +197,6 @@ describe('ModuleNodeCard', () => {
       </ReactFlowProvider>,
     );
 
-    expect(screen.getByText('需要配置兼容模型 / Compatible model required')).toBeVisible();
+    expect(screen.getByText('未配置模型')).toBeVisible();
   });
 });

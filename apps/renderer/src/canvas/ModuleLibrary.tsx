@@ -5,11 +5,16 @@ import {
   X,
 } from 'lucide-react';
 import {
-  listCanvasModuleDefinitions,
   type CanvasModuleDefinition,
   type CanvasModuleType,
 } from '@agent-canvas/domain';
 import { resolveCanvasModuleIcon } from './module-icons';
+import {
+  listFilteredModuleDefinitions,
+  listDiscoverableModuleDefinitions,
+  moduleCatalogCategories,
+  type ModuleCatalogCategory,
+} from './module-catalog';
 import {
   readModulePreferences,
   recordRecentModule,
@@ -17,19 +22,6 @@ import {
 } from './module-preferences';
 
 export const MODULE_DRAG_MIME = 'application/x-novus-module';
-
-type LibraryCategory = 'all' | 'favorites' | 'recent' | CanvasModuleDefinition['category'];
-
-const categories: Array<{ id: LibraryCategory; label: string }> = [
-  { id: 'all', label: '全部 / All' },
-  { id: 'favorites', label: '收藏 / Favorites' },
-  { id: 'recent', label: '最近 / Recent' },
-  { id: 'input', label: '输入 / Input' },
-  { id: 'generation', label: '生成 / Generation' },
-  { id: 'editing', label: '编辑 / Editing' },
-  { id: 'analysis', label: '分析 / Analysis' },
-  { id: 'output', label: '输出 / Output' },
-];
 
 export function writeModuleDragPayload(
   event: React.DragEvent,
@@ -46,34 +38,16 @@ interface ModuleLibraryProps {
 
 export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
   const [query, setQuery] = useState('');
-  const [category, setCategory] = useState<LibraryCategory>('all');
+  const [category, setCategory] = useState<ModuleCatalogCategory>('all');
   const [selectedModuleType, setSelectedModuleType] = useState<CanvasModuleType | null>(null);
   const [preferences, setPreferences] = useState(() => readModulePreferences());
   const categoryTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const activationInFlight = useRef(new Set<CanvasModuleType>());
-  const definitions = useMemo(() => listCanvasModuleDefinitions(), []);
-  const filteredDefinitions = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    return definitions.filter((definition) => {
-      if (category === 'favorites' && !preferences.favorites.includes(definition.type)) return false;
-      if (category === 'recent' && !preferences.recents.includes(definition.type)) return false;
-      if (!['all', 'favorites', 'recent'].includes(category) && definition.category !== category) return false;
-      if (normalizedQuery.length === 0) return true;
-      return [
-        definition.primaryName,
-        definition.secondaryName,
-        definition.description,
-        definition.purpose,
-        definition.usage,
-        definition.limitations,
-        definition.categoryDisplay.primaryName,
-        definition.categoryDisplay.secondaryName,
-        ...definition.searchAliases,
-        ...definition.capabilities,
-      ]
-        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
-    });
-  }, [category, definitions, preferences.favorites, preferences.recents, query]);
+  const definitions = useMemo(() => listDiscoverableModuleDefinitions(), []);
+  const filteredDefinitions = useMemo(
+    () => listFilteredModuleDefinitions(query, category, preferences),
+    [category, preferences, query],
+  );
   const selectedDefinition = selectedModuleType === null
     ? null
     : definitions.find((definition) => definition.type === selectedModuleType) ?? null;
@@ -93,11 +67,11 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
     const nextIndex = direction === 'first'
       ? 0
       : direction === 'last'
-        ? categories.length - 1
+        ? moduleCatalogCategories.length - 1
         : direction === 'next'
-          ? (currentIndex + 1) % categories.length
-          : (currentIndex - 1 + categories.length) % categories.length;
-    const nextCategory = categories[nextIndex];
+          ? (currentIndex + 1) % moduleCatalogCategories.length
+          : (currentIndex - 1 + moduleCatalogCategories.length) % moduleCatalogCategories.length;
+    const nextCategory = moduleCatalogCategories[nextIndex];
     if (!nextCategory) return;
     setCategory(nextCategory.id);
     categoryTabRefs.current[nextIndex]?.focus();
@@ -127,7 +101,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
         />
       </label>
       <div className="module-library__categories" role="tablist" aria-label="模块分类">
-        {categories.map((item, index) => (
+        {moduleCatalogCategories.map((item, index) => (
           <button
             key={item.id}
             ref={(element) => { categoryTabRefs.current[index] = element; }}

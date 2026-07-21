@@ -4,13 +4,21 @@ export interface GeneratedImageFixture {
   name: string;
   mimeType: 'image/png';
   buffer: Buffer;
+  height: number;
+  width: number;
 }
 
-export function makeReferenceImage(name: string, rgba: [number, number, number, number]): GeneratedImageFixture {
+export function makeReferenceImage(
+  name: string,
+  rgba: [number, number, number, number],
+  dimensions: { height: number; width: number } = { height: 48, width: 48 },
+): GeneratedImageFixture {
   return {
     name,
     mimeType: 'image/png',
-    buffer: makeSolidPng(48, 48, rgba),
+    buffer: makeSolidPng(dimensions.width, dimensions.height, rgba),
+    height: dimensions.height,
+    width: dimensions.width,
   };
 }
 

@@ -2,6 +2,7 @@ import { test, expect } from './helpers/e2e-test';
 import {
   dragPlacementObject,
   e2eState,
+  openAgentPanel,
   openApp,
   uploadReference,
   waitForModelSubmissions,
@@ -35,6 +36,7 @@ test('reference placement and Agent plan require explicit canvas and model confi
   await page.mouse.up();
   await page.waitForFunction((before) => window.__NOVUS_E2E__!.getState().commitCount > before, commitCountBeforeDrag);
 
+  await openAgentPanel(page);
   await page.getByTestId('agent-tab-conversation').click();
   await page.getByTestId('image-mention-toggle').click();
   await page.locator('[data-testid="image-mention-item"][data-role="product_identity"]').click();

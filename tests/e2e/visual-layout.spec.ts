@@ -7,6 +7,7 @@ import {
   e2eState,
   expectVisibleMainRegion,
   medianPanZoomFrameInterval,
+  openAgentPanel,
   openApp,
 } from './helpers/app';
 
@@ -32,10 +33,10 @@ for (const viewport of viewports) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await openApp(page);
 
+    await expect(page.getByTestId('agent-panel')).toBeHidden();
     await assertNoTrackedRegionsOverlap(page, [
       'topbar',
       'toolrail',
-      'agent-panel',
       'job-strip',
       'canvas-stage',
     ]);
@@ -52,9 +53,8 @@ for (const viewport of viewports) {
     await expect(focusableFlowNode).toBeVisible();
     await expectCanvasNodeFocusRing(focusableFlowNode, `canvas node focus at ${viewport.name}`);
 
-    const knowledge = page.locator('[data-knowledge-status]').first();
-    await expect(knowledge).toBeVisible();
-    await expect(knowledge.getByTestId('knowledge-status-detail')).toBeVisible();
+    await openAgentPanel(page);
+    await expect(page.getByTestId('agent-composer-input')).toBeVisible();
 
     await page.getByTestId('tool-modules').click();
     await assertNoTrackedRegionsOverlap(page, [
@@ -63,7 +63,7 @@ for (const viewport of viewports) {
       'job-strip',
     ]);
     await page.evaluate(() => window.__NOVUS_E2E__?.createModule('image_generation', { x: 440, y: 120 }));
-    await expect(page.locator('[data-module-type="image_generation"]')).toHaveCSS('width', '264px');
+    await expect(page.locator('[data-module-type="image_generation"]')).toHaveCSS('width', '230px');
 
     await page.evaluate(() => window.__NOVUS_E2E__?.seedModuleStressGraph(100, 150));
     const stressState = await e2eState(page);
@@ -81,10 +81,10 @@ for (const viewport of viewports) {
     await captureLayoutScreenshot(page, testInfo, `renderer-module-stress-${viewport.name}`);
 
     await page.getByTestId('tool-placement').click();
+    await expect(page.getByTestId('agent-panel')).toBeHidden();
     await assertNoTrackedRegionsOverlap(page, [
       'topbar',
       'toolrail',
-      'agent-panel',
       'job-strip',
       'placement-workbench',
     ]);

@@ -68,7 +68,13 @@ interface RuntimeState {
   knowledgeStates: KnowledgeBaseStateSummary[];
   managedRules: Map<string, string>;
   modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
-  pendingImageImports: Array<{ byteSize: number; label: string; mediaType: 'image/png' }>;
+  pendingImageImports: Array<{
+    byteSize: number;
+    height: number;
+    label: string;
+    mediaType: 'image/png';
+    width: number;
+  }>;
   projectImages: ProjectImageAssetSummary[];
   providerProfiles: ProviderBridgeProfile[];
   revision: number;
@@ -141,8 +147,10 @@ export function installRendererE2EHarness(): void {
     queueProjectImageImport(input) {
       runtime.pendingImageImports.push({
         byteSize: Math.max(1, Math.min(256 * 1024 * 1024, Math.floor(input.byteSize))),
+        height: clampE2EDimension(input.height),
         label: sanitizeE2EImageLabel(input.label),
         mediaType: 'image/png',
+        width: clampE2EDimension(input.width),
       });
     },
     get commitCount() {
@@ -204,6 +212,9 @@ export function installRendererE2EHarness(): void {
         moduleTypes: state.project.nodes
           .filter((node): node is CanvasModuleNode => node.type === 'module')
           .map((node) => node.data.moduleType),
+        modulePositions: state.project.nodes
+          .filter((node): node is CanvasModuleNode => node.type === 'module')
+          .map((node) => ({ id: node.id, moduleType: node.data.moduleType, position: { ...node.position } })),
         modelJobs: state.modelJobs.map((job) => ({
           conversationId: job.conversationId,
           id: job.id,
@@ -222,6 +233,7 @@ export function installRendererE2EHarness(): void {
           .test(JSON.stringify(state.project)),
         projectNodeTypes: state.project.nodes.map((node) => node.type),
         skillSyncWrites: runtime.skillSyncWrites.map((write) => ({ ...write })),
+        undoDepth: state.undoStack.length,
       };
     },
   };
@@ -280,12 +292,12 @@ function importE2EProjectImage(
     assetId,
     byteSize: pending.byteSize,
     extension: 'png',
-    height: 48,
+    height: pending.height,
     label: pending.label,
     mediaType: pending.mediaType,
     origin: 'imported',
     sha256: assetId.repeat(4),
-    width: 48,
+    width: pending.width,
   };
   let nextNode: CanvasProject['nodes'][number];
   if (target.kind === 'module') {
@@ -358,6 +370,10 @@ function sanitizeE2EImageLabel(value: string): string {
     .trim()
     .slice(0, 120);
   return label || 'Managed image';
+}
+
+function clampE2EDimension(value: number): number {
+  return Math.max(1, Math.min(8192, Math.floor(value)));
 }
 
 async function seedModuleStressGraph(runtime: RuntimeState, nodeCount: number, edgeCount: number): Promise<boolean> {
@@ -885,6 +901,11 @@ declare global {
         edgeCount: number;
         nodeCount: number;
         moduleTypes: CanvasModuleType[];
+        modulePositions: Array<{
+          id: string;
+          moduleType: CanvasModuleType;
+          position: { x: number; y: number };
+        }>;
         modelJobs: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount' | 'status'>>;
         modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
         projectAssetIds: string[];
@@ -895,10 +916,17 @@ declare global {
           decision: string;
           projectId: string;
         }>;
+        undoDepth: number;
       };
       failNextModelJobEnqueue(): void;
       nonce: string;
-      queueProjectImageImport(input: { byteSize: number; label: string; mediaType: 'image/png' }): void;
+      queueProjectImageImport(input: {
+        byteSize: number;
+        height: number;
+        label: string;
+        mediaType: 'image/png';
+        width: number;
+      }): void;
       reset(): Promise<void>;
       resetEmpty(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;

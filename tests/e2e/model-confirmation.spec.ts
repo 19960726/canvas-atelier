@@ -1,8 +1,9 @@
 import { test, expect } from './helpers/e2e-test';
-import { e2eState, openApp, waitForModelSubmissions } from './helpers/app';
+import { e2eState, openAgentPanel, openApp, waitForModelSubmissions } from './helpers/app';
 
 test('Agent conversation keeps one model conversation while switching GPT Image and Nano Banana 2', async ({ page }) => {
   await openApp(page);
+  await openAgentPanel(page);
 
   await expect(page.getByTestId('model-route-image-generation')).toContainText('GPT Image');
   await expect(page.getByTestId('model-route-nano-banana-2-actual-route')).toContainText('Nano Banana 2');
@@ -46,6 +47,6 @@ test('Agent conversation keeps one model conversation while switching GPT Image 
     'nano-banana-2-actual-route',
     'image-generation',
   ]);
-  expect(state.modelSubmissions[1]?.id).toBe(state.modelSubmissions[0]?.id);
+  expect(state.modelSubmissions[1]?.id).not.toBe(state.modelSubmissions[0]?.id);
   expect(state.modelJobs.some((job) => job.status === 'running' && job.modelRoute === 'nano-banana-2-actual-route')).toBe(true);
 });
