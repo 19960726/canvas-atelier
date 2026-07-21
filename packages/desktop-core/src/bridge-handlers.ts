@@ -8,6 +8,7 @@ import {
   containsProtectedRendererPayload,
   MAX_GENERATION_REFERENCES,
   projectImageAssetSchema,
+  projectVideoAssetSchema,
   projectTransactionSchema,
   createCanvasModuleNode,
   createSkillPromotionCandidateFingerprint,
@@ -16,6 +17,8 @@ import {
   skillPromotionCandidateSchema,
   type CanvasProject,
   type ProjectImageAsset,
+  type ProjectAsset,
+  type ProjectVideoAsset,
   type ProjectTransaction,
   type PlacementObject,
   type ReferenceRole,
@@ -46,11 +49,16 @@ import {
   type ImportPackBridgeResult,
   type ImportProjectImageBridgeRequest,
   type ImportProjectImageBridgeResult,
+  type ImportProjectVideoBridgeRequest,
+  type ImportProjectVideoBridgeResult,
   type PasteProjectClipboardImageBridgeRequest,
   type PasteProjectClipboardImageBridgeResult,
+  type PasteProjectClipboardVideoBridgeRequest,
+  type PasteProjectClipboardVideoBridgeResult,
   type KnowledgeStateBridgeResult,
   type KnowledgeSyncStatusSummary,
   type ListProjectImagesBridgeRequest,
+  type ListProjectVideosBridgeRequest,
   type OpenProjectBridgeRequest,
   type OpenProjectBridgeResult,
   type PrepareSkillCandidateReviewBridgeRequest,
@@ -59,7 +67,9 @@ import {
   type PersistenceError,
   type ProjectManifest,
   type ProjectImageAssetSummary,
+  type ProjectVideoAssetSummary,
   type ProjectClipboardImageTarget,
+  type ProjectClipboardVideoTarget,
   type ProjectImageImportTarget,
   type RecoveryCandidateBridgeSummary,
   type RecoveryPlanBridgeRequest,
@@ -92,6 +102,8 @@ import {
 } from './contracts.js';
 import { AssetStore, type AssetMetadata } from './asset-store.js';
 import type { ClipboardImageAdapter, TrustedClipboardImage } from './electron-clipboard-image.js';
+import type { ClipboardVideoAdapter } from './electron-clipboard-video.js';
+import { openSafeLocalMp4Source, type SafeLocalMp4Source } from './local-video-source.js';
 import { NodeFileSystem, type FileSystem, writeAtomic } from './file-system.js';
 import { GenerationHistoryService, type GenerationHistoryExportFileSummary } from './generation-history-service.js';
 import { GenerationHistoryStore } from './generation-history-store.js';
@@ -141,11 +153,11 @@ interface ProjectRepositoryLike {
 }
 
 interface ProjectAssetStoreLike {
-  list(projectRoot: string, catalog?: readonly ProjectImageAsset[]): Promise<AssetMetadata[]>;
+  list(projectRoot: string, catalog?: readonly ProjectAsset[]): Promise<AssetMetadata[]>;
   resolvePath(
     projectRoot: string,
     assetId: string,
-    extension: ProjectImageAsset['extension'],
+    extension: ProjectAsset['extension'],
     sha256: string,
     byteSize: number,
   ): Promise<string | null>;
@@ -155,6 +167,7 @@ interface ProjectAssetStoreLike {
     options: {
       readonly commitReference?: (asset: AssetMetadata) => Promise<void>;
       readonly maxBytes?: number;
+      readonly mediaType?: string;
       readonly originalName?: string;
     },
   ): Promise<AssetMetadata>;
@@ -242,6 +255,7 @@ export interface BridgeDialogAdapter {
   chooseHistoryExportDirectory(files: readonly GenerationHistoryExportFileSummary[]): Promise<string | null>;
   choosePackExportPath(session: BridgeSessionSummary): Promise<string | null>;
   chooseProjectImage(): Promise<string | null>;
+  chooseProjectVideo(): Promise<string | null>;
   chooseProjectRoot(request: OpenProjectBridgeRequest): Promise<string | null>;
 }
 
@@ -249,10 +263,12 @@ export interface DesktopBridgeHandlerDependencies {
   readonly appDataRoot?: string;
   readonly channel?: PersistenceChannel;
   readonly clipboard?: ClipboardImageAdapter;
+  readonly clipboardVideo?: ClipboardVideoAdapter;
   readonly createId?: () => string;
   readonly dialogs?: Partial<BridgeDialogAdapter>;
   readonly fileSystem?: FileSystem;
   readonly importerIsolationRoot?: string;
+  readonly openVideoSource?: (sourcePath: string) => Promise<SafeLocalMp4Source | null>;
   readonly approvedSnapshotOutbox?: ApprovedSnapshotOutboxLike;
   readonly assetStore?: ProjectAssetStoreLike;
   readonly knowledgeConfigurationSync?: KnowledgeConfigurationSyncLike;
@@ -280,8 +296,11 @@ export interface DesktopBridgeHandlers {
   getRecoveryPlan(event: unknown, request: unknown): Promise<RecoveryPlanBridgeResult>;
   importPack(event: unknown, request: unknown): Promise<ImportPackBridgeResult | null>;
   importProjectImage(event: unknown, request: unknown): Promise<ImportProjectImageBridgeResult | null>;
+  importProjectVideo(event: unknown, request: unknown): Promise<ImportProjectVideoBridgeResult | null>;
   pasteProjectClipboardImage(event: unknown, request: unknown): Promise<PasteProjectClipboardImageBridgeResult | null>;
+  pasteProjectClipboardVideo(event: unknown, request: unknown): Promise<PasteProjectClipboardVideoBridgeResult | null>;
   listProjectImages(event: unknown, request: unknown): Promise<ProjectImageAssetSummary[]>;
+  listProjectVideos(event: unknown, request: unknown): Promise<ProjectVideoAssetSummary[]>;
   listGenerationHistory(event: unknown, request: unknown): Promise<ListGenerationHistoryBridgeResult>;
   getGenerationHistoryCapacity(event: unknown, request?: unknown): Promise<GenerationHistoryCapacityBridgeResult>;
   setGenerationHistoryFavorite(event: unknown, request: unknown): Promise<GenerationHistoryMutationBridgeResult>;
@@ -306,7 +325,7 @@ export interface DesktopIpcMainLike {
 }
 
 interface BridgeSessionContext {
-  assets: Map<string, ProjectImageAsset>;
+  assets: Map<string, ProjectAsset>;
   closeState: 'open' | 'closing' | 'retry_only';
   imageImportInFlight: boolean;
   maintenanceTail: Promise<void>;
@@ -345,6 +364,7 @@ interface RecoveryCandidateMirror {
 const PROJECT_MANIFEST_PATH = 'project.novus.json';
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const MAX_PROJECT_IMAGE_BYTES = 256 * 1024 * 1024;
+const MAX_PROJECT_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
 type ImportableReferenceRole = Exclude<ReferenceRole, 'placement_preview'>;
 const PROJECT_IMAGE_REFERENCE_LAYOUT: Record<
   ImportableReferenceRole,
@@ -363,6 +383,8 @@ export function createDesktopBridgeHandlers(
   const assetStore = dependencies.assetStore ?? new AssetStore();
   const createId = dependencies.createId ?? defaultId;
   const clipboard = dependencies.clipboard ?? { readImage: async () => null };
+  const clipboardVideo = dependencies.clipboardVideo ?? { readVideoPath: async () => null };
+  const openVideoSource = dependencies.openVideoSource ?? openSafeLocalMp4Source;
   const dialogs = withDialogDefaults(dependencies.dialogs);
   const repository = withRepositoryDefaults(dependencies.repository, {
     channel: dependencies.channel ?? 'modern',
@@ -746,6 +768,7 @@ export function createDesktopBridgeHandlers(
         }
         const existing = await readExistingClipboardImagePaste(assetStore, repository, currentSession, validated.target);
         if (existing !== null) return existing;
+        if (validated.target.reconcileOnly === true) return null;
         const image = await clipboard.readImage();
         if (image === null) return null;
         const commitState: {
@@ -795,6 +818,196 @@ export function createDesktopBridgeHandlers(
     }
   }
 
+  async function importProjectVideo(
+    _event: unknown,
+    request: unknown,
+  ): Promise<ImportProjectVideoBridgeResult | null> {
+    const validated = validateImportProjectVideoBridgeRequest(request);
+    const session = requireWritableSession(sessions, validated.sessionId);
+    if (session.writer === null) {
+      throw createPersistenceError('CONCURRENT_WRITER', true, 'Video import requires a writable desktop session');
+    }
+    if (session.imageImportInFlight) throw invalidRequest('A project asset import is already in progress');
+    const openedSession = session.session;
+    session.imageImportInFlight = true;
+    try {
+      const sourcePath = await dialogs.chooseProjectVideo();
+      if (sourcePath === null) return null;
+      return enqueueSessionMaintenance(session, async () => {
+        const currentSession = requireWritableSession(sessions, validated.sessionId);
+        if (currentSession !== session || currentSession.session !== openedSession || currentSession.writer === null) {
+          throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before video import');
+        }
+        const currentProject = await repository.readCurrentProject(currentSession.session);
+        const node = currentProject.nodes.find((candidate) => candidate.id === validated.target.nodeId);
+        if (node?.type !== 'module' || node.data.moduleType !== 'video_input') {
+          throw invalidRequest('Project video module target is not import-capable');
+        }
+        const source = await openVideoSource(sourcePath);
+        if (source === null) {
+          throw invalidRequest('Video source must be one regular local MP4 file within the size limit');
+        }
+        const writer = currentSession.writer;
+        const commitState: {
+          value?: { readonly asset: ProjectVideoAsset; readonly project: CanvasProject; readonly revision: number };
+        } = {};
+        try {
+          await assetStore.stageAndCommit(currentSession.session.root, source.stream, {
+            maxBytes: MAX_PROJECT_VIDEO_BYTES,
+            mediaType: 'video/mp4',
+            originalName: basename(sourcePath),
+            commitReference: async (storedAsset) => {
+              assertVideoSourceSizeUnchanged(storedAsset, source.byteSize);
+              const durableProject = await repository.readCurrentProject(currentSession.session);
+              const targetNode = durableProject.nodes.find((candidate) => candidate.id === validated.target.nodeId);
+              if (targetNode?.type !== 'module' || targetNode.data.moduleType !== 'video_input') {
+                throw invalidRequest('Project video module target changed before commit');
+              }
+              const asset = createImportedProjectVideoAsset(storedAsset);
+              const nextNode = {
+                ...targetNode,
+                data: { ...targetNode.data, config: { ...targetNode.data.config, assetId: asset.assetId } },
+              };
+              const transaction: ProjectTransaction = {
+                id: `import-project-video-${asset.assetId}-${createId()}`,
+                label: 'Import managed project video',
+                operations: [
+                  { kind: 'set_project_assets', assets: upsertProjectAsset(durableProject.assets ?? [], asset) },
+                  { kind: 'canvas', operation: { kind: 'update_node', node: nextNode } },
+                ],
+              };
+              const nextProject = applyProjectTransaction(durableProject, transaction);
+              const commitRequest = {
+                baseRevision: await readCurrentRevision(repository, currentSession.session),
+                kind: 'canvas',
+                projectId: durableProject.id,
+                transaction,
+              } as const;
+              const revision = await commitWithDurableReconciliation(
+                writer,
+                repository,
+                currentSession.session,
+                commitRequest,
+                nextProject,
+              );
+              commitState.value = { asset, project: nextProject, revision };
+            },
+          });
+        } finally {
+          await source.close().catch(() => undefined);
+        }
+        const committed = commitState.value;
+        if (committed === undefined) throw invalidRequest('Video import did not reach its durable commit boundary');
+        currentSession.assets.set(committed.asset.assetId, committed.asset);
+        await flushScheduledSnapshot(currentSession, {
+          closing: false,
+          lastTransactionKind: 'canvas',
+          revision: committed.revision,
+          stablePoint: false,
+        });
+        const result = {
+          asset: createProjectVideoSummary(
+            committed.asset,
+            currentSession.sessionId,
+            countProjectImageUsage(committed.project, committed.asset.assetId),
+          ),
+          currentRevision: committed.revision,
+          project: committed.project,
+        };
+        assertPublicBridgePayload(result);
+        return result;
+      });
+    } finally {
+      session.imageImportInFlight = false;
+    }
+  }
+
+  async function pasteProjectClipboardVideo(
+    _event: unknown,
+    request: unknown,
+  ): Promise<PasteProjectClipboardVideoBridgeResult | null> {
+    const validated = validatePasteProjectClipboardVideoBridgeRequest(request);
+    const session = requireWritableSession(sessions, validated.sessionId);
+    if (session.writer === null) {
+      throw createPersistenceError('CONCURRENT_WRITER', true, 'Clipboard video paste requires a writable desktop session');
+    }
+    if (session.imageImportInFlight) throw invalidRequest('A project asset import is already in progress');
+    session.imageImportInFlight = true;
+    try {
+      return enqueueSessionMaintenance(session, async () => {
+        const currentSession = requireWritableSession(sessions, validated.sessionId);
+        if (currentSession !== session || currentSession.writer === null) {
+          throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before clipboard video paste');
+        }
+        const existing = await readExistingClipboardVideoPaste(assetStore, repository, currentSession, validated.target);
+        if (existing !== null) return existing;
+        if (validated.target.reconcileOnly === true) return null;
+        const clipboardEntry = await clipboardVideo.readVideoPath();
+        if (clipboardEntry === null) return null;
+        const source = await openVideoSource(clipboardEntry.sourcePath);
+        if (source === null) {
+          throw invalidRequest('Video source must be one regular local MP4 file within the size limit');
+        }
+        const commitState: {
+          value?: { readonly asset: ProjectVideoAsset; readonly project: CanvasProject; readonly revision: number };
+        } = {};
+        try {
+          await assetStore.stageAndCommit(currentSession.session.root, source.stream, {
+            maxBytes: MAX_PROJECT_VIDEO_BYTES,
+            mediaType: 'video/mp4',
+            originalName: basename(clipboardEntry.sourcePath),
+            commitReference: async (storedAsset) => {
+              assertVideoSourceSizeUnchanged(storedAsset, source.byteSize);
+              const currentProject = await repository.readCurrentProject(currentSession.session);
+              const currentRevision = await readCurrentRevision(repository, currentSession.session);
+              const projectAsset = createImportedProjectVideoAsset(storedAsset);
+              const transaction = createClipboardVideoPasteTransaction(currentProject, validated.target, projectAsset);
+              const nextProject = applyProjectTransaction(currentProject, transaction);
+              const commitRequest = {
+                baseRevision: currentRevision,
+                kind: 'canvas',
+                projectId: currentProject.id,
+                transaction,
+              } as const;
+              const revision = await commitWithDurableReconciliation(
+                currentSession.writer!,
+                repository,
+                currentSession.session,
+                commitRequest,
+                nextProject,
+              );
+              commitState.value = { asset: projectAsset, project: nextProject, revision };
+            },
+          });
+        } finally {
+          await source.close().catch(() => undefined);
+        }
+        const committed = commitState.value;
+        if (committed === undefined) throw invalidRequest('Clipboard video paste did not reach its durable commit boundary');
+        currentSession.assets.set(committed.asset.assetId, committed.asset);
+        await flushScheduledSnapshot(currentSession, {
+          closing: false,
+          lastTransactionKind: 'canvas',
+          revision: committed.revision,
+          stablePoint: false,
+        });
+        const result = {
+          asset: createProjectVideoSummary(
+            committed.asset,
+            currentSession.sessionId,
+            countProjectImageUsage(committed.project, committed.asset.assetId),
+          ),
+          currentRevision: committed.revision,
+          project: committed.project,
+        };
+        assertPublicBridgePayload(result);
+        return result;
+      });
+    } finally {
+      session.imageImportInFlight = false;
+    }
+  }
+
   async function listProjectImages(
     _event: unknown,
     request: unknown,
@@ -816,13 +1029,36 @@ export function createDesktopBridgeHandlers(
     }
     const storedAssets = new Map(storedAssetList.map((asset) => [asset.id, asset]));
     const summaries = projectAssets
+      .filter(isProjectImageAsset)
       .filter((asset) => storedAssetMatchesProjectAsset(storedAssets.get(asset.assetId), asset))
       .map((asset) => createProjectImageSummary(
         asset,
         session.sessionId,
         countProjectImageUsage(project, asset.assetId),
       ));
-    session.assets = new Map(summaries.map((asset) => [asset.assetId, asset]));
+    session.assets = new Map(projectAssets.map((asset) => [asset.assetId, asset]));
+    assertPublicBridgePayload(summaries);
+    return summaries;
+  }
+
+  async function listProjectVideos(
+    _event: unknown,
+    request: unknown,
+  ): Promise<ProjectVideoAssetSummary[]> {
+    const validated = validateListProjectVideosBridgeRequest(request);
+    const session = requireSession(sessions, validated.sessionId);
+    const project = await repository.readCurrentProject(session.session);
+    const projectAssets = project.assets ?? [];
+    const storedAssetList = await assetStore.list(session.session.root, projectAssets);
+    if (storedAssetList.length !== projectAssets.length) {
+      throw createPersistenceError('MISSING_ASSET', true, 'A managed project asset is missing or failed integrity verification');
+    }
+    const storedAssets = new Map(storedAssetList.map((asset) => [asset.id, asset]));
+    const summaries = projectAssets
+      .filter(isProjectVideoAsset)
+      .filter((asset) => storedAssetMatchesProjectAsset(storedAssets.get(asset.assetId), asset))
+      .map((asset) => createProjectVideoSummary(asset, session.sessionId, countProjectImageUsage(project, asset.assetId)));
+    session.assets = new Map(projectAssets.map((asset) => [asset.assetId, asset]));
     assertPublicBridgePayload(summaries);
     return summaries;
   }
@@ -1258,7 +1494,9 @@ export function createDesktopBridgeHandlers(
     getRecoveryPlan,
     importPack,
     importProjectImage,
+    importProjectVideo,
     pasteProjectClipboardImage,
+    pasteProjectClipboardVideo,
     addGenerationHistoryProjectReferences,
     compareGenerationHistory,
     copyGenerationHistoryToProject,
@@ -1267,6 +1505,7 @@ export function createDesktopBridgeHandlers(
     getGenerationHistoryReusableSummary,
     listGenerationHistory,
     listProjectImages,
+    listProjectVideos,
     openProject,
     prepareSkillCandidateReview,
     reviewSkillCandidate,
@@ -1779,8 +2018,11 @@ export function registerDesktopBridgeHandlers(
   ipcMain.handle(BRIDGE_CHANNELS.exportPack, handlers.exportPack);
   ipcMain.handle(BRIDGE_CHANNELS.importPack, handlers.importPack);
   ipcMain.handle(BRIDGE_CHANNELS.importProjectImage, handlers.importProjectImage);
+  ipcMain.handle(BRIDGE_CHANNELS.importProjectVideo, handlers.importProjectVideo);
   ipcMain.handle(BRIDGE_CHANNELS.pasteProjectClipboardImage, handlers.pasteProjectClipboardImage);
+  ipcMain.handle(BRIDGE_CHANNELS.pasteProjectClipboardVideo, handlers.pasteProjectClipboardVideo);
   ipcMain.handle(BRIDGE_CHANNELS.listProjectImages, handlers.listProjectImages);
+  ipcMain.handle(BRIDGE_CHANNELS.listProjectVideos, handlers.listProjectVideos);
   ipcMain.handle(BRIDGE_CHANNELS.closeProject, handlers.closeProject);
   ipcMain.handle(BRIDGE_CHANNELS.getRecoveryPlan, handlers.getRecoveryPlan);
   ipcMain.handle(BRIDGE_CHANNELS.configureKnowledgeBase, handlers.configureKnowledgeBase);
@@ -1809,6 +2051,7 @@ function withDialogDefaults(dialogs: Partial<BridgeDialogAdapter> | undefined): 
     chooseHistoryExportDirectory: dialogs?.chooseHistoryExportDirectory ?? (async () => null),
     choosePackExportPath: dialogs?.choosePackExportPath ?? (async () => null),
     chooseProjectImage: dialogs?.chooseProjectImage ?? (async () => null),
+    chooseProjectVideo: dialogs?.chooseProjectVideo ?? (async () => null),
     chooseProjectRoot: dialogs?.chooseProjectRoot ?? (async () => null),
   };
 }
@@ -1878,6 +2121,31 @@ function createImportedProjectImageAsset(storedAsset: AssetMetadata, sourcePath:
   return parsed.success
     ? parsed.data
     : projectImageAssetSchema.parse({ ...base, label: `Image ${storedAsset.id.slice(0, 8)}` });
+}
+
+function createImportedProjectVideoAsset(storedAsset: AssetMetadata): ProjectVideoAsset {
+  const base = {
+    assetId: storedAsset.id,
+    byteSize: storedAsset.byteSize,
+    durationMs: null,
+    extension: storedAsset.extension,
+    height: storedAsset.height,
+    label: `Video ${storedAsset.id.slice(0, 8)}`,
+    mediaType: storedAsset.mediaType,
+    origin: 'imported' as const,
+    sha256: storedAsset.sha256,
+    width: storedAsset.width,
+  };
+  const parsed = projectVideoAssetSchema.safeParse(base);
+  return parsed.success
+    ? parsed.data
+    : projectVideoAssetSchema.parse({ ...base, label: `Video ${storedAsset.id.slice(0, 8)}` });
+}
+
+function assertVideoSourceSizeUnchanged(storedAsset: AssetMetadata, verifiedByteSize: number): void {
+  if (storedAsset.byteSize !== verifiedByteSize) {
+    throw invalidRequest('Video source changed while it was being imported');
+  }
 }
 
 function createHistoryProjectImageAsset(storedAsset: AssetMetadata, historyId: string): ProjectImageAsset {
@@ -1979,6 +2247,24 @@ function createClipboardImagePasteTransaction(
   };
 }
 
+function createClipboardVideoPasteTransaction(
+  project: CanvasProject,
+  target: ProjectClipboardVideoTarget,
+  asset: ProjectVideoAsset,
+): ProjectTransaction {
+  const identity = clipboardVideoPasteIdentity(target.operationId);
+  const node = createCanvasModuleNode(identity.nodeId, 'video_input', target.position);
+  const boundNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } };
+  return {
+    id: identity.transactionId,
+    label: 'Paste clipboard video',
+    operations: [
+      { kind: 'set_project_assets', assets: upsertProjectAsset(project.assets ?? [], asset) },
+      { kind: 'canvas', operation: { kind: 'create_node', node: boundNode } },
+    ],
+  };
+}
+
 async function readExistingClipboardImagePaste(
   assetStore: ProjectAssetStoreLike,
   repository: ProjectRepositoryLike,
@@ -1999,7 +2285,9 @@ async function readExistingClipboardImagePaste(
   }
   const assetId = typeof node.data.config.assetId === 'string' ? node.data.config.assetId : null;
   const asset = project.assets?.find((candidate) => candidate.assetId === assetId);
-  if (asset === undefined) throw invalidRequest('Clipboard operation receipt is missing its managed image asset');
+  if (asset === undefined || !isProjectImageAsset(asset)) {
+    throw invalidRequest('Clipboard operation receipt is missing its managed image asset');
+  }
   const resolvedPath = await assetStore.resolvePath(
     session.session.root,
     asset.assetId,
@@ -2025,6 +2313,57 @@ function clipboardImagePasteIdentity(operationId: string): { readonly nodeId: st
   return {
     nodeId: `clipboard-image-${suffix}`,
     transactionId: `paste-clipboard-image-${suffix}`,
+  };
+}
+
+async function readExistingClipboardVideoPaste(
+  assetStore: ProjectAssetStoreLike,
+  repository: ProjectRepositoryLike,
+  session: BridgeSessionContext,
+  target: ProjectClipboardVideoTarget,
+): Promise<PasteProjectClipboardVideoBridgeResult | null> {
+  const identity = clipboardVideoPasteIdentity(target.operationId);
+  const project = await repository.readCurrentProject(session.session);
+  const node = project.nodes.find((candidate) => candidate.id === identity.nodeId);
+  if (node === undefined) return null;
+  if (
+    node.type !== 'module'
+    || node.data.moduleType !== 'video_input'
+    || node.position.x !== target.position.x
+    || node.position.y !== target.position.y
+  ) {
+    throw invalidRequest('Clipboard video operation identity is already bound to different canvas content');
+  }
+  const assetId = typeof node.data.config.assetId === 'string' ? node.data.config.assetId : null;
+  const asset = project.assets?.find((candidate) => candidate.assetId === assetId);
+  if (asset === undefined || !isProjectVideoAsset(asset)) {
+    throw invalidRequest('Clipboard video operation receipt is missing its managed asset');
+  }
+  const resolvedPath = await assetStore.resolvePath(
+    session.session.root,
+    asset.assetId,
+    asset.extension,
+    asset.sha256,
+    asset.byteSize,
+  );
+  if (resolvedPath === null) {
+    throw createPersistenceError('MISSING_ASSET', true, 'Clipboard video operation references a missing managed asset');
+  }
+  session.assets.set(asset.assetId, asset);
+  const result = {
+    asset: createProjectVideoSummary(asset, session.sessionId, countProjectImageUsage(project, asset.assetId)),
+    currentRevision: await readCurrentRevision(repository, session.session),
+    project,
+  };
+  assertPublicBridgePayload(result);
+  return result;
+}
+
+function clipboardVideoPasteIdentity(operationId: string): { readonly nodeId: string; readonly transactionId: string } {
+  const suffix = sha256Canonical({ operationId }).slice(0, 24);
+  return {
+    nodeId: `clipboard-video-${suffix}`,
+    transactionId: `paste-clipboard-video-${suffix}`,
   };
 }
 
@@ -2054,12 +2393,22 @@ function createClipboardProjectImageAsset(storedAsset: AssetMetadata, label: str
 }
 
 function upsertProjectImageAsset(
-  assets: readonly ProjectImageAsset[],
+  assets: readonly ProjectAsset[],
   asset: ProjectImageAsset,
-): ProjectImageAsset[] {
+): ProjectAsset[] {
   const existing = assets.find((candidate) => candidate.assetId === asset.assetId);
   if (existing !== undefined && existing.sha256 !== asset.sha256) {
     throw invalidRequest('Project image id conflicts with existing catalog metadata');
+  }
+  return existing === undefined
+    ? [...assets, asset]
+    : assets.map((candidate) => candidate.assetId === asset.assetId ? asset : candidate);
+}
+
+function upsertProjectAsset(assets: readonly ProjectAsset[], asset: ProjectAsset): ProjectAsset[] {
+  const existing = assets.find((candidate) => candidate.assetId === asset.assetId);
+  if (existing !== undefined && existing.sha256 !== asset.sha256) {
+    throw invalidRequest('Project asset id conflicts with existing catalog metadata');
   }
   return existing === undefined
     ? [...assets, asset]
@@ -2078,9 +2427,21 @@ function createProjectImageSummary(
   };
 }
 
+function createProjectVideoSummary(
+  asset: ProjectVideoAsset,
+  sessionId: string,
+  usageCount: number,
+): ProjectVideoAssetSummary {
+  return {
+    ...asset,
+    displayUrl: createProjectAssetDisplayUrl(sessionId, asset.assetId),
+    usageCount,
+  };
+}
+
 function storedAssetMatchesProjectAsset(
   storedAsset: AssetMetadata | undefined,
-  projectAsset: ProjectImageAsset,
+  projectAsset: ProjectAsset,
 ): boolean {
   return storedAsset !== undefined
     && storedAsset.id === projectAsset.assetId
@@ -2088,6 +2449,14 @@ function storedAssetMatchesProjectAsset(
     && storedAsset.byteSize === projectAsset.byteSize
     && storedAsset.extension === projectAsset.extension
     && storedAsset.mediaType === projectAsset.mediaType;
+}
+
+function isProjectImageAsset(asset: ProjectAsset): asset is ProjectImageAsset {
+  return asset.mediaType.startsWith('image/');
+}
+
+function isProjectVideoAsset(asset: ProjectAsset): asset is ProjectVideoAsset {
+  return asset.mediaType === 'video/mp4';
 }
 
 function countProjectImageUsage(project: CanvasProject, assetId: string): number {
@@ -2177,6 +2546,32 @@ async function readCurrentRevision(
   return repository.readCurrentRevision === undefined
     ? session.manifest.stableSnapshotRevision
     : repository.readCurrentRevision(session);
+}
+
+async function commitWithDurableReconciliation(
+  writer: BridgeWriter,
+  repository: ProjectRepositoryLike,
+  session: OpenedProjectSession,
+  request: Omit<CommitBridgeRequest, 'sessionId'>,
+  expectedProject: CanvasProject,
+): Promise<number> {
+  try {
+    return (await writer.commit(request)).revision;
+  } catch (error) {
+    const [durableProject, durableRevision] = await Promise.all([
+      repository.readCurrentProject(session),
+      readCurrentRevision(repository, session),
+    ]).catch(() => [null, null] as const);
+    if (
+      durableProject === null
+      || durableRevision === null
+      || durableRevision !== request.baseRevision + 1
+      || sha256Canonical(durableProject) !== sha256Canonical(expectedProject)
+    ) {
+      throw error;
+    }
+    return durableRevision;
+  }
 }
 
 async function readActiveJournalBytes(
@@ -2501,12 +2896,29 @@ function validateImportProjectImageBridgeRequest(value: unknown): ImportProjectI
   return request;
 }
 
+function validateImportProjectVideoBridgeRequest(value: unknown): ImportProjectVideoBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['sessionId', 'target'], 'Project video import request');
+  const target = expectPlainRecord(record.target);
+  assertExactKeys(target, ['kind', 'nodeId'], 'Project video module target');
+  if (target.kind !== 'module') throw invalidRequest('Project video import target kind is invalid');
+  const request = {
+    sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+    target: { kind: 'module' as const, nodeId: parseNonEmptyString(target.nodeId, 'target.nodeId') },
+  };
+  assertPublicBridgePayload(request);
+  return request;
+}
+
 function validatePasteProjectClipboardImageBridgeRequest(value: unknown): PasteProjectClipboardImageBridgeRequest {
   const record = expectPlainRecord(value);
   assertExactKeys(record, ['sessionId', 'target'], 'Clipboard image paste request');
   const target = expectPlainRecord(record.target);
-  assertExactKeys(target, ['kind', 'operationId', 'position'], 'Clipboard image paste target');
+  assertExactKeys(target, ['kind', 'operationId', 'position', 'reconcileOnly'], 'Clipboard image paste target');
   if (target.kind !== 'new_image_input') throw invalidRequest('Clipboard image paste target kind is invalid');
+  if ('reconcileOnly' in target && target.reconcileOnly !== true) {
+    throw invalidRequest('Clipboard image reconcileOnly must be true when provided');
+  }
   const position = expectPlainRecord(target.position);
   assertExactKeys(position, ['x', 'y'], 'Clipboard image paste position');
   const request = {
@@ -2518,6 +2930,34 @@ function validatePasteProjectClipboardImageBridgeRequest(value: unknown): PasteP
         x: parseBoundedCanvasCoordinate(position.x, 'target.position.x'),
         y: parseBoundedCanvasCoordinate(position.y, 'target.position.y'),
       },
+      ...(target.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+    },
+  };
+  assertPublicBridgePayload(request);
+  return request;
+}
+
+function validatePasteProjectClipboardVideoBridgeRequest(value: unknown): PasteProjectClipboardVideoBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['sessionId', 'target'], 'Clipboard video paste request');
+  const target = expectPlainRecord(record.target);
+  assertExactKeys(target, ['kind', 'operationId', 'position', 'reconcileOnly'], 'Clipboard video paste target');
+  if (target.kind !== 'new_video_input') throw invalidRequest('Clipboard video paste target kind is invalid');
+  if ('reconcileOnly' in target && target.reconcileOnly !== true) {
+    throw invalidRequest('Clipboard video reconcileOnly must be true when provided');
+  }
+  const position = expectPlainRecord(target.position);
+  assertExactKeys(position, ['x', 'y'], 'Clipboard video paste position');
+  const request = {
+    sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+    target: {
+      kind: 'new_video_input' as const,
+      operationId: parseClipboardVideoOperationId(target.operationId),
+      position: {
+        x: parseBoundedCanvasCoordinate(position.x, 'target.position.x'),
+        y: parseBoundedCanvasCoordinate(position.y, 'target.position.y'),
+      },
+      ...(target.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
     },
   };
   assertPublicBridgePayload(request);
@@ -2527,6 +2967,11 @@ function validatePasteProjectClipboardImageBridgeRequest(value: unknown): PasteP
 function parseClipboardOperationId(value: unknown): string {
   if (typeof value === 'string' && /^clipboard_paste_[a-z0-9-]{4,72}$/u.test(value)) return value;
   throw invalidRequest('Clipboard image paste operation identity is invalid');
+}
+
+function parseClipboardVideoOperationId(value: unknown): string {
+  if (typeof value === 'string' && /^clipboard_video_[a-z0-9-]{4,72}$/u.test(value)) return value;
+  throw invalidRequest('Clipboard video paste operation identity is invalid');
 }
 
 function parseBoundedCanvasCoordinate(value: unknown, field: string): number {
@@ -2539,6 +2984,14 @@ function parseBoundedCanvasCoordinate(value: unknown, field: string): number {
 function validateListProjectImagesBridgeRequest(value: unknown): ListProjectImagesBridgeRequest {
   const record = expectPlainRecord(value);
   assertExactKeys(record, ['sessionId'], 'Project image list request');
+  const request = { sessionId: parseNonEmptyString(record.sessionId, 'sessionId') };
+  assertPublicBridgePayload(request);
+  return request;
+}
+
+function validateListProjectVideosBridgeRequest(value: unknown): ListProjectVideosBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['sessionId'], 'Project video list request');
   const request = { sessionId: parseNonEmptyString(record.sessionId, 'sessionId') };
   assertPublicBridgePayload(request);
   return request;

@@ -483,7 +483,7 @@ export function CanvasWorkspace() {
       const position = screenToFlowPosition(screenPosition);
       if (!position) return;
       event.preventDefault();
-      void useAppStore.getState().pasteClipboardImage(position);
+      void useAppStore.getState().pasteClipboardMedia(position);
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);

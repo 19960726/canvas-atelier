@@ -38,9 +38,9 @@ afterEach(() => {
 });
 
 describe('CanvasWorkspace', () => {
-  it('pastes a clipboard image at the last canvas pointer and ignores editable focus', async () => {
-    const pasteClipboardImage = vi.fn(async () => true);
-    useAppStore.setState({ pasteClipboardImage });
+  it('pastes clipboard files at the last canvas pointer and ignores editable focus', async () => {
+    const pasteClipboardMedia = vi.fn(async () => true);
+    useAppStore.setState({ pasteClipboardMedia });
     render(<CanvasWorkspace />);
     const stage = screen.getByTestId('canvas-stage');
     vi.spyOn(stage, 'getBoundingClientRect').mockReturnValue({
@@ -48,10 +48,10 @@ describe('CanvasWorkspace', () => {
     });
 
     fireEvent.pointerMove(stage, { clientX: 320, clientY: 240 });
-    const imagePaste = createEvent.paste(window, { clipboardData: { types: ['image/png'] } });
-    fireEvent(window, imagePaste);
-    expect(imagePaste.defaultPrevented).toBe(true);
-    await waitFor(() => expect(pasteClipboardImage).toHaveBeenCalledWith({ x: 320, y: 240 }));
+    const filePaste = createEvent.paste(window, { clipboardData: { types: ['Files'] } });
+    fireEvent(window, filePaste);
+    expect(filePaste.defaultPrevented).toBe(true);
+    await waitFor(() => expect(pasteClipboardMedia).toHaveBeenCalledWith({ x: 320, y: 240 }));
 
     const input = document.createElement('input');
     document.body.append(input);
@@ -59,23 +59,23 @@ describe('CanvasWorkspace', () => {
     const inputPaste = createEvent.paste(input, { clipboardData: { types: ['text/plain'] } });
     fireEvent(input, inputPaste);
     expect(inputPaste.defaultPrevented).toBe(false);
-    expect(pasteClipboardImage).toHaveBeenCalledTimes(1);
+    expect(pasteClipboardMedia).toHaveBeenCalledTimes(1);
     input.remove();
 
     const textPaste = createEvent.paste(window, { clipboardData: { types: ['text/plain'] } });
     fireEvent(window, textPaste);
     expect(textPaste.defaultPrevented).toBe(false);
-    expect(pasteClipboardImage).toHaveBeenCalledTimes(1);
+    expect(pasteClipboardMedia).toHaveBeenCalledTimes(1);
 
     const unknownPaste = createEvent.paste(window);
     fireEvent(window, unknownPaste);
     expect(unknownPaste.defaultPrevented).toBe(false);
-    expect(pasteClipboardImage).toHaveBeenCalledTimes(1);
+    expect(pasteClipboardMedia).toHaveBeenCalledTimes(1);
   });
 
   it('uses the viewport center for paste before the pointer enters the canvas', async () => {
-    const pasteClipboardImage = vi.fn(async () => false);
-    useAppStore.setState({ pasteClipboardImage });
+    const pasteClipboardMedia = vi.fn(async () => false);
+    useAppStore.setState({ pasteClipboardMedia });
     render(<CanvasWorkspace />);
     const stage = screen.getByTestId('canvas-stage');
     vi.spyOn(stage, 'getBoundingClientRect').mockReturnValue({
@@ -84,7 +84,7 @@ describe('CanvasWorkspace', () => {
 
     fireEvent.paste(window, { clipboardData: { types: ['image/png'] } });
 
-    await waitFor(() => expect(pasteClipboardImage).toHaveBeenCalledWith({ x: 400, y: 300 }));
+    await waitFor(() => expect(pasteClipboardMedia).toHaveBeenCalledWith({ x: 400, y: 300 }));
   });
   it('validates module connections synchronously before React Flow offers them', () => {
     const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });

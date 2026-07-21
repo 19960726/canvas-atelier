@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { appendProjectMemoryEntry, projectMemoryEntrySchema, skillPromotionCandidateSchema } from './project-memory';
 import { applyTransaction, canvasOperationSchema } from './canvas-transaction';
 import { canvasEdgeSchema, canvasNodeSchema, parseCanvasProject, type CanvasProject } from './project-schema';
-import { projectImageAssetSchema } from './project-image-asset';
+import { projectAssetSchema } from './project-asset';
 
 const canvasOperationProjectSchema = z.object({
   kind: z.literal('canvas'),
@@ -27,7 +27,7 @@ const replaceCanvasStateOperationSchema = z.object({
 
 const setProjectAssetsOperationSchema = z.object({
   kind: z.literal('set_project_assets'),
-  assets: z.array(projectImageAssetSchema),
+  assets: z.array(projectAssetSchema),
 }).strict();
 
 export const projectOperationSchema = z.discriminatedUnion('kind', [

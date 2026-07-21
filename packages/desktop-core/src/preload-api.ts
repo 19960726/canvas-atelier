@@ -9,11 +9,16 @@ import type {
   ImportPackBridgeResult,
   ImportProjectImageBridgeRequest,
   ImportProjectImageBridgeResult,
+  ImportProjectVideoBridgeRequest,
+  ImportProjectVideoBridgeResult,
   PasteProjectClipboardImageBridgeRequest,
   PasteProjectClipboardImageBridgeResult,
+  PasteProjectClipboardVideoBridgeRequest,
+  PasteProjectClipboardVideoBridgeResult,
   KnowledgeStateBridgeResult,
   KnowledgeSyncStatusSummary,
   ListProjectImagesBridgeRequest,
+  ListProjectVideosBridgeRequest,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
   PrepareSkillCandidateReviewBridgeRequest,
@@ -27,6 +32,7 @@ import type {
   StablePointBridgeRequest,
   StablePointBridgeResult,
   ProjectImageAssetSummary,
+  ProjectVideoAssetSummary,
   AddGenerationHistoryProjectReferencesBridgeRequest,
   CompareGenerationHistoryBridgeRequest,
   CopyGenerationHistoryToProjectBridgeRequest,
@@ -91,10 +97,13 @@ export const BRIDGE_CHANNELS = {
   getRecoveryPlan: 'novus-desktop:get-recovery-plan',
   importPack: 'novus-desktop:import-pack',
   importProjectImage: 'novus-desktop:import-project-image',
+  importProjectVideo: 'novus-desktop:import-project-video',
   pasteProjectClipboardImage: 'novus-desktop:paste-project-clipboard-image',
+  pasteProjectClipboardVideo: 'novus-desktop:paste-project-clipboard-video',
   knowledgeStateChanged: 'novus-desktop:knowledge-state-changed',
   knowledgeSyncStatusChanged: 'novus-desktop:knowledge-sync-status-changed',
   listProjectImages: 'novus-desktop:list-project-images',
+  listProjectVideos: 'novus-desktop:list-project-videos',
   openProject: 'novus-desktop:open-project',
   prepareSkillCandidateReview: 'novus-desktop:prepare-skill-candidate-review',
   reviewSkillCandidate: 'novus-desktop:review-skill-candidate',
@@ -140,7 +149,14 @@ export interface DesktopBridgeApi {
   lifecycle: DesktopLifecycleBridgeApi;
   provider: DesktopProviderBridgeApi;
   projectImages: DesktopProjectImageBridgeApi;
+  projectVideos: DesktopProjectVideoBridgeApi;
   history: DesktopGenerationHistoryBridgeApi;
+}
+
+export interface DesktopProjectVideoBridgeApi {
+  importVideo(request: ImportProjectVideoBridgeRequest): Promise<ImportProjectVideoBridgeResult | null>;
+  list(request: ListProjectVideosBridgeRequest): Promise<ProjectVideoAssetSummary[]>;
+  pasteClipboardVideo(request: PasteProjectClipboardVideoBridgeRequest): Promise<PasteProjectClipboardVideoBridgeResult | null>;
 }
 
 export interface DesktopGenerationHistoryBridgeApi {
@@ -265,6 +281,17 @@ export function createPreloadApi(
       },
       pasteClipboardImage(request) {
         return invoke<PasteProjectClipboardImageBridgeResult | null>(BRIDGE_CHANNELS.pasteProjectClipboardImage, request);
+      },
+    },
+    projectVideos: {
+      importVideo(request) {
+        return invoke<ImportProjectVideoBridgeResult | null>(BRIDGE_CHANNELS.importProjectVideo, request);
+      },
+      list(request) {
+        return invoke<ProjectVideoAssetSummary[]>(BRIDGE_CHANNELS.listProjectVideos, request);
+      },
+      pasteClipboardVideo(request) {
+        return invoke<PasteProjectClipboardVideoBridgeResult | null>(BRIDGE_CHANNELS.pasteProjectClipboardVideo, request);
       },
     },
     history: {

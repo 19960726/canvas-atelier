@@ -4,6 +4,7 @@ import type {
   PersistenceErrorCode,
   ProjectImageAssetSummary,
   ProjectImageImportTarget,
+  ProjectVideoAssetSummary,
 } from '@agent-canvas/desktop-core';
 import type { CanvasProject, ProjectTransaction } from '@agent-canvas/domain';
 import {
@@ -78,6 +79,12 @@ export interface ProjectImageImportResult {
   revision: number;
 }
 
+export interface ProjectVideoImportResult {
+  asset: ProjectVideoAssetSummary;
+  project: CanvasProject;
+  revision: number;
+}
+
 export interface ProjectPersistenceClient {
   close(): Promise<void>;
   commit(request: ProjectCommitRequest): Promise<ProjectCommitResult>;
@@ -85,11 +92,19 @@ export interface ProjectPersistenceClient {
   openProject?(): Promise<ProjectHydrationResult | null>;
   reloadDurableProject?(): Promise<ProjectHydrationResult | null>;
   importProjectImage(target: ProjectImageImportTarget): Promise<ProjectImageImportResult | null>;
+  importProjectVideo?(nodeId: string): Promise<ProjectVideoImportResult | null>;
   pasteClipboardImage(input: {
     readonly operationId: string;
     readonly position: { readonly x: number; readonly y: number };
+    readonly reconcileOnly?: true;
   }): Promise<ProjectImageImportResult | null>;
+  pasteClipboardVideo?(input: {
+    readonly operationId: string;
+    readonly position: { readonly x: number; readonly y: number };
+    readonly reconcileOnly?: true;
+  }): Promise<ProjectVideoImportResult | null>;
   listProjectImages(): Promise<ProjectImageAssetSummary[]>;
+  listProjectVideos?(): Promise<ProjectVideoAssetSummary[]>;
   restore(snapshotId: string): Promise<ProjectRestoreResult>;
   stablePoint(): Promise<ProjectStablePointResult>;
 }
@@ -165,10 +180,19 @@ export function createBrowserPersistenceClient(storage = getStorage()): ProjectP
     async importProjectImage() {
       return null;
     },
+    async importProjectVideo() {
+      return null;
+    },
     async pasteClipboardImage() {
       return null;
     },
+    async pasteClipboardVideo() {
+      return null;
+    },
     async listProjectImages() {
+      return [];
+    },
+    async listProjectVideos() {
       return [];
     },
     async restore(snapshotId) {
@@ -319,12 +343,29 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         revision,
       };
     },
+    async importProjectVideo(nodeId) {
+      if (sessionId === null) return null;
+      if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
+      const result = await bridge.projectVideos.importVideo({
+        sessionId,
+        target: { kind: 'module', nodeId },
+      });
+      if (result === null) return null;
+      currentProject = validateRecoveredProject(result.project, currentProject);
+      revision = result.currentRevision;
+      return { asset: result.asset, project: currentProject, revision };
+    },
     async pasteClipboardImage(input) {
       if (sessionId === null) return null;
       if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
       const request = {
         sessionId,
-        target: { kind: 'new_image_input' as const, operationId: input.operationId, position: input.position },
+        target: {
+          kind: 'new_image_input' as const,
+          operationId: input.operationId,
+          position: input.position,
+          ...(input.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+        },
       };
       let result;
       try {
@@ -338,8 +379,35 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       revision = result.currentRevision;
       return { asset: result.asset, project: currentProject, revision };
     },
+    async pasteClipboardVideo(input) {
+      if (sessionId === null) return null;
+      if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
+      const request = {
+        sessionId,
+        target: {
+          kind: 'new_video_input' as const,
+          operationId: input.operationId,
+          position: input.position,
+          ...(input.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+        },
+      };
+      let result;
+      try {
+        result = await bridge.projectVideos.pasteClipboardVideo(request);
+      } catch (error) {
+        if (!shouldRetryClipboardPaste(error)) throw error;
+        result = await bridge.projectVideos.pasteClipboardVideo(request);
+      }
+      if (result === null) return null;
+      currentProject = validateRecoveredProject(result.project, currentProject);
+      revision = result.currentRevision;
+      return { asset: result.asset, project: currentProject, revision };
+    },
     async listProjectImages() {
       return sessionId === null ? [] : bridge.projectImages.list({ sessionId });
+    },
+    async listProjectVideos() {
+      return sessionId === null ? [] : bridge.projectVideos.list({ sessionId });
     },
     async restore(snapshotId) {
       if (sessionId !== null && mode === 'write') {

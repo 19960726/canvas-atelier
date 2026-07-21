@@ -1,7 +1,7 @@
 import { MAX_GENERATION_REFERENCES, referenceRoleSchema } from './agent-knowledge-contract';
 import { modelJobSchema } from './model-job';
 import { canvasEdgeSchema, migrateCanvasProjectGraph, moduleNodeSchema } from './module-graph';
-import { projectImageAssetSchema } from './project-image-asset';
+import { projectAssetSchema } from './project-asset';
 import { projectMemoryEntrySchema, selectActiveProjectMemoryEntries, skillPromotionCandidateSchema } from './project-memory';
 import { z } from 'zod';
 
@@ -179,27 +179,28 @@ export const canvasProjectSchema = z.object({
   name: z.string().min(1),
   nodes: z.array(canvasNodeSchema),
   edges: z.array(canvasEdgeSchema),
-  assets: z.array(projectImageAssetSchema).optional(),
+  assets: z.array(projectAssetSchema).optional(),
   projectMemory: z.array(projectMemoryEntrySchema).default([]),
   skillPromotionCandidates: z.array(skillPromotionCandidateSchema).default([]),
 }).strict().superRefine((project, context) => {
-  const assetIds = new Set<string>();
+  const assetsById = new Map<string, z.infer<typeof projectAssetSchema>>();
   for (const [index, asset] of (project.assets ?? []).entries()) {
-    if (assetIds.has(asset.assetId)) {
+    if (assetsById.has(asset.assetId)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['assets', index, 'assetId'],
         message: 'Project asset ids must be unique',
       });
     }
-    assetIds.add(asset.assetId);
+    assetsById.set(asset.assetId, asset);
   }
 
   for (const [nodeIndex, node] of project.nodes.entries()) {
     if (node.type !== 'module') continue;
     if (node.data.moduleType === 'image_input' || node.data.moduleType === 'upload_image') {
       const assetId = node.data.config.assetId;
-      if (typeof assetId === 'string' && !assetIds.has(assetId)) {
+      const asset = typeof assetId === 'string' ? assetsById.get(assetId) : undefined;
+      if (typeof assetId === 'string' && (asset === undefined || !asset.mediaType.startsWith('image/'))) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['nodes', nodeIndex, 'data', 'config', 'assetId'],
@@ -208,9 +209,22 @@ export const canvasProjectSchema = z.object({
       }
       continue;
     }
+    if (node.data.moduleType === 'video_input') {
+      const assetId = node.data.config.assetId;
+      const asset = typeof assetId === 'string' ? assetsById.get(assetId) : undefined;
+      if (typeof assetId === 'string' && asset?.mediaType !== 'video/mp4') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['nodes', nodeIndex, 'data', 'config', 'assetId'],
+          message: 'Managed video module asset id must exist in the project catalog',
+        });
+      }
+      continue;
+    }
     if (node.data.moduleType !== 'canvas_library' || !Array.isArray(node.data.config.assetIds)) continue;
     node.data.config.assetIds.forEach((assetId, assetIndex) => {
-      if (typeof assetId === 'string' && !assetIds.has(assetId)) {
+      const asset = typeof assetId === 'string' ? assetsById.get(assetId) : undefined;
+      if (typeof assetId === 'string' && (asset === undefined || !asset.mediaType.startsWith('image/'))) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['nodes', nodeIndex, 'data', 'config', 'assetIds', assetIndex],

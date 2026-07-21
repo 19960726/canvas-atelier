@@ -45,6 +45,10 @@ export {
 export { applyProjectTransaction, projectOperationSchema, projectTransactionSchema } from './project-transaction';
 export { projectImageAssetSchema } from './project-image-asset';
 export type { ProjectImageAsset } from './project-image-asset';
+export { projectAssetSchema } from './project-asset';
+export type { ProjectAsset } from './project-asset';
+export { projectVideoAssetSchema } from './project-video-asset';
+export type { ProjectVideoAsset } from './project-video-asset';
 export {
   GENERATION_HISTORY_SCHEMA_VERSION,
   GENERATION_HISTORY_TRASH_RETENTION_MS,

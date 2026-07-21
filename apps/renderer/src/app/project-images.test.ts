@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCanvasModuleNode, type CanvasProject, type ProjectImageAsset } from '@agent-canvas/domain';
-import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
+import { createCanvasModuleNode, type CanvasProject, type ProjectImageAsset, type ProjectVideoAsset } from '@agent-canvas/domain';
+import type { ProjectImageAssetSummary, ProjectVideoAssetSummary } from '@agent-canvas/desktop-core';
 
 import {
   replaceProjectPersistenceClientForTests,
@@ -13,10 +13,12 @@ import type {
   ProjectHydrationResult,
   ProjectPersistenceClient,
   ProjectImageImportResult,
+  ProjectVideoImportResult,
 } from './desktop-persistence';
 
 describe('project image store actions', () => {
   beforeEach(() => {
+    localStorage.clear();
     resetAppStoreForTests();
   });
 
@@ -80,6 +82,183 @@ describe('project image store actions', () => {
       projectImageImportingNodeId: null,
       saveStatus: 'saved',
     });
+  });
+
+  it('applies a durable managed-video result to the video node and transient preview catalog', async () => {
+    const node = createCanvasModuleNode('video-input', 'video_input', { x: 0, y: 0 });
+    const project = imageProject([node]);
+    const importedNode = { ...node, data: { ...node.data, config: { assetId: videoAsset.assetId } } };
+    const importedProject = imageProject([importedNode], [videoAsset]);
+    const deferred = createDeferred<ProjectVideoImportResult | null>();
+    const client = persistenceClient({ importProjectVideo: vi.fn(() => deferred.promise) });
+    replaceProjectPersistenceClientForTests(client);
+    useAppStore.setState({ project, desktopRevision: 4, persistenceMode: 'desktop', saveStatus: 'saved' });
+
+    const pending = useAppStore.getState().importVideoForModule('video-input');
+    expect(useAppStore.getState().saveStatus).toBe('saving');
+    deferred.resolve({ asset: videoSummary, project: importedProject, revision: 5 });
+
+    await expect(pending).resolves.toBe(true);
+    expect(client.importProjectVideo).toHaveBeenCalledWith('video-input');
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 5,
+      project: importedProject,
+      projectVideos: [videoSummary],
+      saveStatus: 'saved',
+    });
+  });
+
+  it('pastes clipboard video before image fallback and applies one durable result', async () => {
+    const project = imageProject([]);
+    const node = createCanvasModuleNode('clipboard-video', 'video_input', { x: 80, y: 120 });
+    node.data.config = { assetId: videoAsset.assetId };
+    const pastedProject = imageProject([node], [videoAsset]);
+    const pasteClipboardVideo = vi.fn(async () => ({ asset: videoSummary, project: pastedProject, revision: 6 }));
+    const pasteClipboardImage = vi.fn();
+    replaceProjectPersistenceClientForTests(persistenceClient({ pasteClipboardImage, pasteClipboardVideo }));
+    useAppStore.setState({ project, desktopRevision: 5, persistenceMode: 'desktop', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().pasteClipboardMedia({ x: 80, y: 120 })).resolves.toBe(true);
+
+    expect(pasteClipboardVideo).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(/^clipboard_video_/u),
+      position: { x: 80, y: 120 },
+    });
+    expect(pasteClipboardImage).not.toHaveBeenCalled();
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 6,
+      project: pastedProject,
+      projectVideos: [videoSummary],
+      saveStatus: 'saved',
+    });
+  });
+
+  it('falls back to clipboard image only when no clipboard video exists', async () => {
+    const project = imageProject([]);
+    const imageNode = createCanvasModuleNode('clipboard-image', 'image_input', { x: 20, y: 30 });
+    imageNode.data.config = { assetId: assetRecord.assetId };
+    const pastedProject = imageProject([imageNode], [assetRecord]);
+    const pasteClipboardVideo = vi.fn(async () => null);
+    const pasteClipboardImage = vi.fn(async () => ({ asset: assetSummary, project: pastedProject, revision: 2 }));
+    replaceProjectPersistenceClientForTests(persistenceClient({ pasteClipboardImage, pasteClipboardVideo }));
+    useAppStore.setState({ project, desktopRevision: 1, persistenceMode: 'desktop', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().pasteClipboardMedia({ x: 20, y: 30 })).resolves.toBe(true);
+
+    expect(pasteClipboardVideo).toHaveBeenCalledOnce();
+    expect(pasteClipboardImage).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().projectImages).toEqual([assetSummary]);
+  });
+
+  it('persists clipboard media operation identities before the first desktop request', async () => {
+    const pendingVideo = createDeferred<ProjectVideoImportResult | null>();
+    const pasteClipboardVideo = vi.fn(() => pendingVideo.promise);
+    replaceProjectPersistenceClientForTests(persistenceClient({ pasteClipboardVideo }));
+    useAppStore.setState({
+      project: imageProject([]),
+      desktopRevision: 1,
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+    });
+
+    const pendingPaste = useAppStore.getState().pasteClipboardMedia({ x: 44, y: 55 });
+
+    expect(JSON.parse(localStorage.getItem('novus.pending-clipboard-media.v1') ?? 'null')).toMatchObject({
+      phase: 'video',
+      position: { x: 44, y: 55 },
+      projectId: 'image-project',
+      version: 1,
+      videoOperationId: expect.stringMatching(/^clipboard_video_/u),
+      imageOperationId: expect.stringMatching(/^clipboard_paste_/u),
+    });
+
+    pendingVideo.resolve(null);
+    await pendingPaste;
+  });
+
+  it('reconciles a pending clipboard video after renderer restart without rereading clipboard', async () => {
+    localStorage.setItem('novus.pending-clipboard-media.v1', JSON.stringify({
+      version: 1,
+      projectId: 'image-project',
+      position: { x: 12, y: 34 },
+      videoOperationId: 'clipboard_video_restart-ui',
+      imageOperationId: 'clipboard_paste_restart-ui',
+      phase: 'video',
+      createdAt: Date.now(),
+    }));
+    const pastedProject = imageProject([
+      Object.assign(createCanvasModuleNode('clipboard-video', 'video_input', { x: 12, y: 34 }), {
+        data: {
+          ...createCanvasModuleNode('clipboard-video', 'video_input', { x: 12, y: 34 }).data,
+          config: { assetId: videoAsset.assetId },
+        },
+      }),
+    ], [videoAsset]);
+    const pasteClipboardVideo = vi.fn(async () => ({ asset: videoSummary, project: pastedProject, revision: 2 }));
+    const pasteClipboardImage = vi.fn();
+    replaceProjectPersistenceClientForTests(persistenceClient({ pasteClipboardImage, pasteClipboardVideo }));
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(pasteClipboardVideo).toHaveBeenCalledWith({
+      operationId: 'clipboard_video_restart-ui',
+      position: { x: 12, y: 34 },
+      reconcileOnly: true,
+    });
+    expect(pasteClipboardImage).not.toHaveBeenCalled();
+    expect(localStorage.getItem('novus.pending-clipboard-media.v1')).toBeNull();
+    expect(useAppStore.getState().projectVideos).toEqual([videoSummary]);
+  });
+
+  it('does not call clipboard IPC when pending-operation storage cannot be written', async () => {
+    const pasteClipboardVideo = vi.fn();
+    const pasteClipboardImage = vi.fn();
+    replaceProjectPersistenceClientForTests(persistenceClient({ pasteClipboardImage, pasteClipboardVideo }));
+    useAppStore.setState({
+      project: imageProject([]),
+      desktopRevision: 1,
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage unavailable');
+    });
+
+    await expect(useAppStore.getState().pasteClipboardMedia({ x: 1, y: 2 })).resolves.toBe(false);
+
+    expect(pasteClipboardVideo).not.toHaveBeenCalled();
+    expect(pasteClipboardImage).not.toHaveBeenCalled();
+    setItem.mockRestore();
+  });
+
+  it('reconciles a direct clipboard image with its original operation id after renderer restart', async () => {
+    const firstPaste = vi.fn(async (_input: {
+      readonly operationId: string;
+      readonly position: { readonly x: number; readonly y: number };
+      readonly reconcileOnly?: true;
+    }) => { throw new Error('image ACK lost'); });
+    replaceProjectPersistenceClientForTests(persistenceClient({ pasteClipboardImage: firstPaste }));
+    useAppStore.setState({
+      project: imageProject([]),
+      desktopRevision: 1,
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().pasteClipboardImage({ x: 9, y: 10 })).resolves.toBe(false);
+    const originalOperationId = firstPaste.mock.calls[0]![0].operationId;
+    const pastedProject = imageProject([], [assetRecord]);
+    const replay = vi.fn(async () => ({ asset: assetSummary, project: pastedProject, revision: 2 }));
+    replaceProjectPersistenceClientForTests(persistenceClient({ pasteClipboardImage: replay }));
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(replay).toHaveBeenCalledWith({
+      operationId: originalOperationId,
+      position: { x: 9, y: 10 },
+      reconcileOnly: true,
+    });
+    expect(localStorage.getItem('novus.pending-clipboard-media.v1')).toBeNull();
   });
 
   it('persists canvas-library selection order as one stable project transaction', async () => {
@@ -179,9 +358,28 @@ const assetSummaryB: ProjectImageAssetSummary = {
   usageCount: 0,
 };
 
+const videoAsset: ProjectVideoAsset = {
+  assetId: 'aaaaaaaaaaaaaaaa',
+  byteSize: 2048,
+  durationMs: null,
+  extension: 'mp4',
+  height: null,
+  label: 'Turntable',
+  mediaType: 'video/mp4',
+  origin: 'imported',
+  sha256: 'a'.repeat(64),
+  width: null,
+};
+
+const videoSummary: ProjectVideoAssetSummary = {
+  ...videoAsset,
+  displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa',
+  usageCount: 1,
+};
+
 function imageProject(
   nodes: CanvasProject['nodes'],
-  assets: ProjectImageAsset[] = [],
+  assets: CanvasProject['assets'] = [],
 ): CanvasProject {
   return {
     version: 1,

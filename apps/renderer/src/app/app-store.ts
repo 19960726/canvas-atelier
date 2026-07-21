@@ -4,6 +4,7 @@ import type {
   KnowledgeSyncStatusSummary,
   ProjectImageAssetSummary,
   ProjectImageImportTarget,
+  ProjectVideoAssetSummary,
   ProviderBridgeProfile,
 } from '@agent-canvas/desktop-core';
 import {
@@ -78,6 +79,8 @@ let pendingFailedProjectCommit: ProjectCommitRequest | null = null;
 let activeProjectCommitToken: ProjectCommitToken | null = null;
 let projectPersistenceGeneration = 0;
 let projectPersistenceClient = createProjectPersistenceClient();
+const PENDING_CLIPBOARD_MEDIA_STORAGE_KEY = 'novus.pending-clipboard-media.v1';
+const PENDING_CLIPBOARD_MEDIA_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let knowledgeClient = createKnowledgeClient();
 let modelJobExecutorOverride: ModelJobExecutor | null = null;
 let pendingModelJobExecutorOverride: ModelJobExecutor | null = null;
@@ -163,6 +166,7 @@ interface AppState {
   project: CanvasProject;
   projectLifecycle: ProjectLifecycle;
   projectImages: ProjectImageAssetSummary[];
+  projectVideos: ProjectVideoAssetSummary[];
   projectImageError: string | null;
   projectImageImportingNodeId: string | null;
   persistenceMode: 'browser' | 'desktop';
@@ -200,7 +204,9 @@ interface AppState {
   reloadDurableProject: () => Promise<boolean>;
   newWorkflow: () => Promise<void>;
   importImageForModule: (nodeId: string) => Promise<boolean>;
+  importVideoForModule: (nodeId: string) => Promise<boolean>;
   pasteClipboardImage: (position: { readonly x: number; readonly y: number }) => Promise<boolean>;
+  pasteClipboardMedia: (position: { readonly x: number; readonly y: number }) => Promise<boolean>;
   importPlacementReference: (
     nodeId: string,
     role: Exclude<ReferenceRole, 'placement_preview'>,
@@ -579,6 +585,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveErrorCode: hydrated.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
       saveStatus: hydrated.saveStatus,
     });
+    if (hydrated.lifecycle === 'durable') await reconcilePendingClipboardMedia(hydrated.project.id);
     recoverModelJobsInBackground(jobStore);
   },
   openProject: async () => {
@@ -607,6 +614,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveStatus: opened.saveStatus,
       undoStack: [],
     });
+    await reconcilePendingClipboardMedia(opened.project.id);
     return true;
   },
   reloadDurableProject: async () => {
@@ -659,6 +667,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       projectCommitConflictCode: null,
       recoveryRequired: false,
       projectImages: [],
+      projectVideos: [],
       projectImageError: null,
       projectImageImportingNodeId: null,
       saveErrorCode: null,
@@ -667,7 +676,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
   importImageForModule: (nodeId) => importProjectImageWithTarget({ kind: 'module', nodeId }),
+  importVideoForModule: (nodeId) => importProjectVideoForModule(nodeId),
   pasteClipboardImage: (position) => pasteClipboardImageAt(position),
+  pasteClipboardMedia: (position) => pasteClipboardMediaAt(position),
   importPlacementReference: (nodeId, role) => importProjectImageWithTarget({
     kind: 'placement_reference',
     nodeId,
@@ -1167,14 +1178,14 @@ async function importProjectImageWithTarget(target: ProjectImageImportTarget): P
           const hydrated = await projectPersistenceClient.hydrate().catch(() => null);
           if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
           if (hydrated !== null) {
-            const projectImages = await projectPersistenceClient.listProjectImages().catch(() => []);
+            const assetState = await readProjectImagesForHydration();
             useAppStore.setState({
               availableSnapshotIds: hydrated.availableSnapshotIds,
               desktopRevision: hydrated.revision,
               persistenceMode: hydrated.mode,
               project: hydrated.project,
               projectLifecycle: hydrated.lifecycle,
-              projectImages,
+              ...assetState,
               projectImageError: code,
               projectImageImportingNodeId: null,
               saveErrorCode: code,
@@ -1196,9 +1207,7 @@ async function importProjectImageWithTarget(target: ProjectImageImportTarget): P
   );
 }
 
-async function pasteClipboardImageAt(position: { readonly x: number; readonly y: number }): Promise<boolean> {
-  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return false;
-  const operationId = createClipboardPasteOperationId();
+async function importProjectVideoForModule(nodeId: string): Promise<boolean> {
   return enqueueStableProjectOperation(
     (partial) => useAppStore.setState(partial),
     () => useAppStore.getState(),
@@ -1211,15 +1220,17 @@ async function pasteClipboardImageAt(position: { readonly x: number; readonly y:
         || before.canRetryProjectCommit
         || before.recoveryRequired
       ) return false;
+      const node = before.project.nodes.find((candidate) => candidate.id === nodeId);
+      if (node?.type !== 'module' || node.data.moduleType !== 'video_input') return false;
       const previousSaveStatus = before.saveStatus;
       useAppStore.setState({
         projectImageError: null,
-        projectImageImportingNodeId: 'clipboard-image',
+        projectImageImportingNodeId: nodeId,
         saveErrorCode: null,
         saveStatus: 'saving',
       });
       try {
-        const result = await projectPersistenceClient.pasteClipboardImage({ operationId, position });
+        const result = await projectPersistenceClient.importProjectVideo?.(nodeId) ?? null;
         if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
         if (result === null) {
           useAppStore.setState({ projectImageImportingNodeId: null, saveStatus: previousSaveStatus });
@@ -1229,7 +1240,7 @@ async function pasteClipboardImageAt(position: { readonly x: number; readonly y:
         useAppStore.setState({
           desktopRevision: result.revision,
           project: result.project,
-          projectImages: upsertProjectImageSummary(current.projectImages, result.asset),
+          projectVideos: upsertProjectVideoSummary(current.projectVideos, result.asset),
           projectImageError: null,
           projectImageImportingNodeId: null,
           saveErrorCode: null,
@@ -1251,6 +1262,311 @@ async function pasteClipboardImageAt(position: { readonly x: number; readonly y:
   );
 }
 
+async function pasteClipboardImageAt(position: { readonly x: number; readonly y: number }): Promise<boolean> {
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return false;
+  const operationId = createClipboardPasteOperationId();
+  const videoOperationId = createClipboardVideoOperationId();
+  return enqueueStableProjectOperation(
+    (partial) => useAppStore.setState(partial),
+    () => useAppStore.getState(),
+    async () => {
+      const generation = projectPersistenceGeneration;
+      const before = useAppStore.getState();
+      if (
+        before.projectImageImportingNodeId !== null
+        || before.saveStatus === 'read_only'
+        || before.canRetryProjectCommit
+        || before.recoveryRequired
+      ) return false;
+      const previousSaveStatus = before.saveStatus;
+      useAppStore.setState({
+        projectImageError: null,
+        projectImageImportingNodeId: 'clipboard-image',
+        saveErrorCode: null,
+        saveStatus: 'saving',
+      });
+      if (!persistPendingClipboardMedia({
+        version: 1,
+        projectId: before.project.id,
+        position,
+        videoOperationId,
+        imageOperationId: operationId,
+        phase: 'image',
+        createdAt: Date.now(),
+      })) {
+        useAppStore.setState({
+          projectImageImportingNodeId: null,
+          saveErrorCode: 'BROWSER_PERSIST_FAILED',
+          saveStatus: 'error',
+        });
+        return false;
+      }
+      try {
+        const result = await projectPersistenceClient.pasteClipboardImage({ operationId, position });
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        if (result === null) {
+          useAppStore.setState({ projectImageImportingNodeId: null, saveStatus: previousSaveStatus });
+          clearPendingClipboardMedia();
+          return false;
+        }
+        const current = useAppStore.getState();
+        useAppStore.setState({
+          desktopRevision: result.revision,
+          project: result.project,
+          projectImages: upsertProjectImageSummary(current.projectImages, result.asset),
+          projectImageError: null,
+          projectImageImportingNodeId: null,
+          saveErrorCode: null,
+          saveStatus: 'saved',
+        });
+        clearPendingClipboardMedia();
+        return true;
+      } catch (error) {
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        const code = readErrorCode(error);
+        useAppStore.setState({
+          projectImageError: code,
+          projectImageImportingNodeId: null,
+          saveErrorCode: code,
+          saveStatus: 'error',
+        });
+        return false;
+      }
+    },
+  );
+}
+
+async function pasteClipboardMediaAt(position: { readonly x: number; readonly y: number }): Promise<boolean> {
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return false;
+  const videoOperationId = createClipboardVideoOperationId();
+  const imageOperationId = createClipboardPasteOperationId();
+  return enqueueStableProjectOperation(
+    (partial) => useAppStore.setState(partial),
+    () => useAppStore.getState(),
+    async () => {
+      const generation = projectPersistenceGeneration;
+      const before = useAppStore.getState();
+      if (
+        before.projectImageImportingNodeId !== null
+        || before.saveStatus === 'read_only'
+        || before.canRetryProjectCommit
+        || before.recoveryRequired
+      ) return false;
+      const previousSaveStatus = before.saveStatus;
+      useAppStore.setState({
+        projectImageError: null,
+        projectImageImportingNodeId: 'clipboard-media',
+        saveErrorCode: null,
+        saveStatus: 'saving',
+      });
+      if (!persistPendingClipboardMedia({
+        version: 1,
+        projectId: before.project.id,
+        position,
+        videoOperationId,
+        imageOperationId,
+        phase: 'video',
+        createdAt: Date.now(),
+      })) {
+        useAppStore.setState({
+          projectImageImportingNodeId: null,
+          saveErrorCode: 'BROWSER_PERSIST_FAILED',
+          saveStatus: 'error',
+        });
+        return false;
+      }
+      try {
+        const videoResult = await projectPersistenceClient.pasteClipboardVideo?.({
+          operationId: videoOperationId,
+          position,
+        }) ?? null;
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        if (videoResult !== null) {
+          const current = useAppStore.getState();
+          useAppStore.setState({
+            desktopRevision: videoResult.revision,
+            project: videoResult.project,
+            projectVideos: upsertProjectVideoSummary(current.projectVideos, videoResult.asset),
+            projectImageError: null,
+            projectImageImportingNodeId: null,
+            saveErrorCode: null,
+            saveStatus: 'saved',
+          });
+          clearPendingClipboardMedia();
+          return true;
+        }
+        if (!persistPendingClipboardMedia({
+          version: 1,
+          projectId: before.project.id,
+          position,
+          videoOperationId,
+          imageOperationId,
+          phase: 'image',
+          createdAt: Date.now(),
+        })) {
+          useAppStore.setState({
+            projectImageImportingNodeId: null,
+            saveErrorCode: 'BROWSER_PERSIST_FAILED',
+            saveStatus: 'error',
+          });
+          return false;
+        }
+        const imageResult = await projectPersistenceClient.pasteClipboardImage({
+          operationId: imageOperationId,
+          position,
+        });
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        if (imageResult === null) {
+          useAppStore.setState({ projectImageImportingNodeId: null, saveStatus: previousSaveStatus });
+          clearPendingClipboardMedia();
+          return false;
+        }
+        const current = useAppStore.getState();
+        useAppStore.setState({
+          desktopRevision: imageResult.revision,
+          project: imageResult.project,
+          projectImages: upsertProjectImageSummary(current.projectImages, imageResult.asset),
+          projectImageError: null,
+          projectImageImportingNodeId: null,
+          saveErrorCode: null,
+          saveStatus: 'saved',
+        });
+        clearPendingClipboardMedia();
+        return true;
+      } catch (error) {
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        const code = readErrorCode(error);
+        useAppStore.setState({
+          projectImageError: code,
+          projectImageImportingNodeId: null,
+          saveErrorCode: code,
+          saveStatus: 'error',
+        });
+        return false;
+      }
+    },
+  );
+}
+
+interface PendingClipboardMediaOperation {
+  readonly createdAt: number;
+  readonly imageOperationId: string;
+  readonly phase: 'image' | 'video';
+  readonly position: { readonly x: number; readonly y: number };
+  readonly projectId: string;
+  readonly version: 1;
+  readonly videoOperationId: string;
+}
+
+async function reconcilePendingClipboardMedia(projectId: string): Promise<void> {
+  const pending = readPendingClipboardMedia();
+  if (pending === null) return;
+  if (pending.projectId !== projectId) {
+    clearPendingClipboardMedia();
+    return;
+  }
+  try {
+    if (pending.phase === 'video') {
+      const videoResult = await projectPersistenceClient.pasteClipboardVideo?.({
+        operationId: pending.videoOperationId,
+        position: pending.position,
+        reconcileOnly: true,
+      }) ?? null;
+      if (videoResult !== null) {
+        const current = useAppStore.getState();
+        useAppStore.setState({
+          desktopRevision: videoResult.revision,
+          project: videoResult.project,
+          projectVideos: upsertProjectVideoSummary(current.projectVideos, videoResult.asset),
+          projectImageError: null,
+          projectImageImportingNodeId: null,
+          saveErrorCode: null,
+          saveStatus: 'saved',
+        });
+        clearPendingClipboardMedia();
+        return;
+      }
+    }
+    const imageResult = await projectPersistenceClient.pasteClipboardImage({
+      operationId: pending.imageOperationId,
+      position: pending.position,
+      reconcileOnly: true,
+    });
+    if (imageResult !== null) {
+      const current = useAppStore.getState();
+      useAppStore.setState({
+        desktopRevision: imageResult.revision,
+        project: imageResult.project,
+        projectImages: upsertProjectImageSummary(current.projectImages, imageResult.asset),
+        projectImageError: null,
+        projectImageImportingNodeId: null,
+        saveErrorCode: null,
+        saveStatus: 'saved',
+      });
+    }
+    clearPendingClipboardMedia();
+  } catch {
+    // Retain only opaque operation identities so the next hydration can retry reconciliation.
+  }
+}
+
+function persistPendingClipboardMedia(pending: PendingClipboardMediaOperation): boolean {
+  try {
+    globalThis.localStorage?.setItem(PENDING_CLIPBOARD_MEDIA_STORAGE_KEY, JSON.stringify(pending));
+    return globalThis.localStorage?.getItem(PENDING_CLIPBOARD_MEDIA_STORAGE_KEY) === JSON.stringify(pending);
+  } catch {
+    return false;
+  }
+}
+
+function clearPendingClipboardMedia(): void {
+  try {
+    globalThis.localStorage?.removeItem(PENDING_CLIPBOARD_MEDIA_STORAGE_KEY);
+  } catch {
+    // Ignore unavailable renderer session storage.
+  }
+}
+
+function readPendingClipboardMedia(): PendingClipboardMediaOperation | null {
+  let parsed: unknown;
+  try {
+    const raw = globalThis.localStorage?.getItem(PENDING_CLIPBOARD_MEDIA_STORAGE_KEY);
+    if (raw === null || raw === undefined) return null;
+    parsed = JSON.parse(raw);
+  } catch {
+    clearPendingClipboardMedia();
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    clearPendingClipboardMedia();
+    return null;
+  }
+  const record = parsed as Record<string, unknown>;
+  const position = record.position;
+  const now = Date.now();
+  const valid = record.version === 1
+    && typeof record.projectId === 'string'
+    && typeof record.videoOperationId === 'string'
+    && /^clipboard_video_[a-z0-9-]{4,72}$/u.test(record.videoOperationId)
+    && typeof record.imageOperationId === 'string'
+    && /^clipboard_paste_[a-z0-9-]{4,72}$/u.test(record.imageOperationId)
+    && (record.phase === 'video' || record.phase === 'image')
+    && typeof record.createdAt === 'number'
+    && Number.isFinite(record.createdAt)
+    && record.createdAt <= now
+    && now - record.createdAt <= PENDING_CLIPBOARD_MEDIA_MAX_AGE_MS
+    && typeof position === 'object'
+    && position !== null
+    && !Array.isArray(position)
+    && Number.isFinite((position as Record<string, unknown>).x)
+    && Number.isFinite((position as Record<string, unknown>).y);
+  if (!valid) {
+    clearPendingClipboardMedia();
+    return null;
+  }
+  return parsed as PendingClipboardMediaOperation;
+}
+
 function createClipboardPasteOperationId(): string {
   const crypto = globalThis.crypto;
   if (typeof crypto?.randomUUID === 'function') return `clipboard_paste_${crypto.randomUUID().toLocaleLowerCase()}`;
@@ -1259,6 +1575,10 @@ function createClipboardPasteOperationId(): string {
     return `clipboard_paste_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
   }
   return `clipboard_paste_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function createClipboardVideoOperationId(): string {
+  return `clipboard_video_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
 function upsertProjectImageSummary(
@@ -1270,10 +1590,19 @@ function upsertProjectImageSummary(
     : [...assets, asset];
 }
 
+function upsertProjectVideoSummary(
+  assets: readonly ProjectVideoAssetSummary[],
+  asset: ProjectVideoAssetSummary,
+): ProjectVideoAssetSummary[] {
+  return assets.some((candidate) => candidate.assetId === asset.assetId)
+    ? assets.map((candidate) => candidate.assetId === asset.assetId ? asset : candidate)
+    : [...assets, asset];
+}
+
 type CompatibleProjectPersistenceClient = Omit<
   ProjectPersistenceClient,
-  'importProjectImage' | 'listProjectImages' | 'pasteClipboardImage'
-> & Partial<Pick<ProjectPersistenceClient, 'importProjectImage' | 'listProjectImages' | 'pasteClipboardImage'>>;
+  'importProjectImage' | 'importProjectVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'
+> & Partial<Pick<ProjectPersistenceClient, 'importProjectImage' | 'importProjectVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'>>;
 
 export function replaceProjectPersistenceClientForTests(client: CompatibleProjectPersistenceClient): void {
   projectPersistenceClient = withProjectImagePersistenceDefaults(client);
@@ -1283,8 +1612,11 @@ function withProjectImagePersistenceDefaults(client: CompatibleProjectPersistenc
   return {
     ...client,
     importProjectImage: client.importProjectImage ?? (async () => null),
+    importProjectVideo: client.importProjectVideo ?? (async () => null),
     listProjectImages: client.listProjectImages ?? (async () => []),
+    listProjectVideos: client.listProjectVideos ?? (async () => []),
     pasteClipboardImage: client.pasteClipboardImage ?? (async () => null),
+    pasteClipboardVideo: client.pasteClipboardVideo ?? (async () => null),
   };
 }
 
@@ -1610,15 +1942,21 @@ function invalidateProjectPersistenceBoundary(): void {
   stableProjectCommitTail = null;
 }
 
-async function readProjectImagesForHydration(): Promise<Pick<AppState, 'projectImages' | 'projectImageError'>> {
+async function readProjectImagesForHydration(): Promise<Pick<AppState, 'projectImages' | 'projectVideos' | 'projectImageError'>> {
   try {
+    const [projectImages, projectVideos] = await Promise.all([
+      projectPersistenceClient.listProjectImages(),
+      projectPersistenceClient.listProjectVideos?.() ?? Promise.resolve([]),
+    ]);
     return {
-      projectImages: await projectPersistenceClient.listProjectImages(),
+      projectImages,
+      projectVideos,
       projectImageError: null,
     };
   } catch (error) {
     return {
       projectImages: [],
+      projectVideos: [],
       projectImageError: readErrorCode(error),
     };
   }
@@ -1635,7 +1973,7 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'canReloadDurableProject' | 'canRetryProjectCommit' | 'projectCommitConflictCode' | 'recoveryRequired' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectVideos' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'canReloadDurableProject' | 'canRetryProjectCommit' | 'projectCommitConflictCode' | 'recoveryRequired' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   return {
     activeTool: 'select',
@@ -1655,6 +1993,7 @@ function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | '
     recoveryRequired: false,
     projectLifecycle: 'untitled',
     projectImages: [],
+    projectVideos: [],
     projectImageError: null,
     projectImageImportingNodeId: null,
     saveErrorCode: null,

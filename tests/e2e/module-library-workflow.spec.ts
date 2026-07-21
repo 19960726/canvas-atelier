@@ -1,5 +1,12 @@
 import { test, expect } from './helpers/e2e-test';
-import { captureLayoutScreenshot, e2eState, openApp, openEmptyApp, queueProjectImageImport } from './helpers/app';
+import {
+  captureLayoutScreenshot,
+  e2eState,
+  openApp,
+  openEmptyApp,
+  queueProjectImageImport,
+  queueProjectVideoImport,
+} from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
 
 test('creates and connects executable modules from the library', async ({ page }) => {
@@ -157,11 +164,17 @@ test('uses the same media-first hierarchy for image and video input nodes', asyn
     makeReferenceImage('Campaign frame.png', [21, 112, 105, 255], { width: 640, height: 360 }),
   );
   await imageNode.getByRole('button', { name: '导入图像 / Import image' }).click();
+  await queueProjectVideoImport(page, { label: 'Campaign turntable.mp4' });
+  const beforeVideoImport = await e2eState(page);
+  await videoNode.getByRole('button', { name: /Import video/u }).click();
 
   await expect(imageNode.locator('.module-node__media-frame')).toBeVisible();
   await expect(videoNode.locator('.module-node__video-control')).toBeVisible();
-  await expect(videoNode.getByText('视频预览')).toBeVisible();
-  await expect(videoNode.getByText('MP4 导入尚未接入')).toBeVisible();
+  await expect(videoNode.getByText('Campaign turntable')).toBeVisible();
+  await expect(videoNode.locator('video')).toHaveCount(1);
+  await expect(videoNode.locator('video')).toHaveAttribute('src', /\/__novus_e2e_asset\/[a-f0-9]{16}\.mp4$/u);
+  await expect.poll(async () => (await e2eState(page)).commitCount).toBe(beforeVideoImport.commitCount + 1);
+  expect((await e2eState(page)).projectVideos.map((asset) => asset.label)).toEqual(['Campaign turntable']);
   await expect(videoNode.getByText('待配置')).toHaveCount(0);
   await expect.poll(() => imageNode.locator('.module-node__media-meta small').evaluate((element) => (
     Number.parseFloat(getComputedStyle(element).fontSize)
@@ -181,6 +194,32 @@ test('uses the same media-first hierarchy for image and video input nodes', asyn
     (element.closest('.module-node__port-row') as HTMLElement).getBoundingClientRect().height
   ))).toBeGreaterThanOrEqual(24);
   await captureLayoutScreenshot(page, testInfo, 'renderer-media-first-image-video-nodes');
+});
+
+test('pastes a clipboard MP4 before falling back to clipboard image import', async ({ page }) => {
+  await openEmptyApp(page);
+  await queueProjectVideoImport(page, { label: 'Clipboard motion.mp4' });
+  const stage = page.getByTestId('canvas-stage');
+  const stageBox = await stage.boundingBox();
+  expect(stageBox).not.toBeNull();
+  const pointer = { x: stageBox!.x + 460, y: stageBox!.y + 280 };
+  await page.mouse.move(pointer.x, pointer.y);
+  const before = await e2eState(page);
+
+  await page.evaluate(() => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([new Uint8Array([1])], 'clipboard.mp4', { type: 'video/mp4' }));
+    window.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+  });
+
+  const node = page.locator('[data-module-type="video_input"]');
+  await expect(node).toHaveCount(1);
+  await expect(node.locator('video')).toHaveAttribute('src', /\/__novus_e2e_asset\/[a-f0-9]{16}\.mp4$/u);
+  await expect.poll(async () => (await e2eState(page)).commitCount).toBe(before.commitCount + 1);
+  const after = await e2eState(page);
+  expect(after.projectVideos.map((asset) => asset.label)).toEqual(['Clipboard motion']);
+  expect(after.projectImages).toEqual([]);
+  expect(after.durableProjectContainsTransientImageUrl).toBe(false);
 });
 
 test('pastes a clipboard image as one managed media node transaction', async ({ page }) => {

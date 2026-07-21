@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { createWriteStream } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -63,6 +64,130 @@ describe('NovusPack export and import', () => {
       }),
     ]));
     expect(entries.has(asset.relativePath)).toBe(true);
+  });
+
+  it('exports and imports a catalogued MP4 asset, then rejects the same project when the video is missing', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const { asset, projectRoot } = await createProjectFixture(tempRoot, { assetKind: 'video' });
+    const packagePath = join(tempRoot, 'video.novuspack');
+    const destination = join(tempRoot, 'ImportedVideo.novus-project');
+
+    await new NovusPackExporter().exportRevision(projectRoot, packagePath);
+    await new NovusPackImporter().importTo(packagePath, destination);
+
+    expect(await readFile(join(destination, ...asset.relativePath.split('/')))).toEqual(asset.bytes);
+    await rm(join(projectRoot, ...asset.relativePath.split('/')));
+    await expect(new NovusPackExporter().exportRevision(projectRoot, join(tempRoot, 'missing-video.novuspack')))
+      .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+  });
+
+  it('streams MP4 inventory hashing without reading the complete video into a Buffer', async () => {
+    vi.resetModules();
+    const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const tempRoot = await createTempRoot(tempRoots);
+    const { projectRoot } = await createProjectFixture(tempRoot, { assetKind: 'video' });
+    const destination = join(tempRoot, 'streamed-video.novuspack');
+    const readFileSpy = vi.fn(async (path: Parameters<typeof actualFs.readFile>[0], options?: Parameters<typeof actualFs.readFile>[1]) => {
+      if (String(path).toLowerCase().endsWith('.mp4')) {
+        throw new Error('MP4 inventory must not use readFile');
+      }
+      return actualFs.readFile(path, options as never);
+    });
+
+    vi.doMock('node:fs/promises', () => ({ ...actualFs, readFile: readFileSpy }));
+    try {
+      const { NovusPackExporter: MockedExporter } = await import('./novus-pack');
+
+      await expect(new MockedExporter().exportRevision(projectRoot, destination))
+        .resolves.toMatchObject({ packagePath: destination });
+      expect(readFileSpy.mock.calls.some(([path]) => String(path).toLowerCase().endsWith('.mp4'))).toBe(false);
+    } finally {
+      vi.doUnmock('node:fs/promises');
+      vi.resetModules();
+    }
+  });
+
+  it('rejects a package whose catalogued MP4 has self-consistent hashes but invalid box structure', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const destination = join(tempRoot, 'RejectedMalformedVideo.novus-project');
+    const malformedMp4 = Buffer.concat([
+      mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')),
+      mp4Box('mdat', Buffer.from([1, 2, 3, 4])),
+    ]);
+
+    await expect(new NovusPackImporter().importTo(
+      await createFixturePack(tempRoot, { assetBytes: malformedMp4, assetKind: 'video' }),
+      destination,
+    )).rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+
+    await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects MP4 catalog metadata above 4 GiB without allocating a giant fixture', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const destination = join(tempRoot, 'RejectedOversizedVideo.novus-project');
+
+    await expect(new NovusPackImporter().importTo(
+      await createFixturePack(tempRoot, {
+        assetKind: 'video',
+        catalogByteSize: (4 * 1024 * 1024 * 1024) + 1,
+      }),
+      destination,
+    )).rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+
+    await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects an oversized MP4 ZIP entry before opening its data stream', async () => {
+    vi.resetModules();
+    const tempRoot = await createTempRoot(tempRoots);
+    const destination = join(tempRoot, 'RejectedOversizedEntry.novus-project');
+    const openReadStream = vi.fn((_entry: unknown, callback: (error: Error) => void) => {
+      callback(new Error('oversized entry stream must not be opened'));
+    });
+    const zipfile = new EventEmitter() as EventEmitter & {
+      close: () => void;
+      openReadStream: typeof openReadStream;
+      readEntry: () => void;
+    };
+    let emittedEntry = false;
+    zipfile.close = vi.fn();
+    zipfile.openReadStream = openReadStream;
+    zipfile.readEntry = () => {
+      queueMicrotask(() => {
+        if (emittedEntry) {
+          zipfile.emit('end');
+          return;
+        }
+        emittedEntry = true;
+        zipfile.emit('entry', {
+          compressedSize: (4 * 1024 * 1024 * 1024) + 1,
+          externalFileAttributes: 0,
+          fileName: 'assets/oversized.mp4',
+          generalPurposeBitFlag: 0,
+          uncompressedSize: (4 * 1024 * 1024 * 1024) + 1,
+        });
+      });
+    };
+
+    vi.doMock('yauzl', () => ({
+      default: {
+        open: (_path: string, _options: unknown, callback: (error: Error | null, opened: unknown) => void) => {
+          callback(null, zipfile);
+        },
+      },
+    }));
+    try {
+      const { NovusPackImporter: MockedImporter } = await import('./novus-pack');
+
+      await expect(new MockedImporter().importTo('oversized-entry.novuspack', destination))
+        .rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+      expect(openReadStream).not.toHaveBeenCalled();
+      await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      vi.doUnmock('yauzl');
+      vi.resetModules();
+    }
   });
 
   it.each([
@@ -458,27 +583,69 @@ type ZipEntryInput = {
   readonly name: string;
 };
 
-async function createProjectFixture(tempRoot: string, options: { gzipSnapshot?: boolean } = {}): Promise<{
+function createMinimalMp4(): Buffer {
+  const movieHeader = Buffer.alloc(100);
+  movieHeader.writeUInt32BE(1_000, 12);
+  return Buffer.concat([
+    mp4Box('ftyp', Buffer.from('isom\0\0\0\0isomiso2mp41')),
+    mp4Box('moov', Buffer.concat([
+      mp4Box('mvhd', movieHeader),
+      mp4Box('trak', mp4Box('tkhd', Buffer.alloc(4))),
+    ])),
+    mp4Box('mdat', Buffer.from([0, 0, 0, 1])),
+  ]);
+}
+
+function mp4Box(type: string, payload: Uint8Array = new Uint8Array()): Buffer {
+  const value = Buffer.alloc(8 + payload.length);
+  value.writeUInt32BE(value.length, 0);
+  value.write(type, 4, 4, 'ascii');
+  Buffer.from(payload).copy(value, 8);
+  return value;
+}
+
+async function createProjectFixture(tempRoot: string, options: {
+  assetBytes?: Buffer;
+  assetKind?: 'image' | 'video';
+  catalogByteSize?: number;
+  gzipSnapshot?: boolean;
+} = {}): Promise<{
   asset: { bytes: Buffer; id: string; relativePath: string };
   projectRoot: string;
   snapshotPath: string;
 }> {
   const projectRoot = join(tempRoot, 'Source.novus-project');
-  const assetBytes = Buffer.from('asset-bytes');
+  const isVideo = options.assetKind === 'video';
+  const assetBytes = options.assetBytes ?? (isVideo ? createMinimalMp4() : Buffer.from('asset-bytes'));
+  const catalogByteSize = options.catalogByteSize ?? assetBytes.length;
   const assetId = sha256(assetBytes).slice(0, 16);
-  const assetRelativePath = `assets/${assetId}.png`;
-  const project = {
-    assets: [{
+  const assetRelativePath = `assets/${assetId}.${isVideo ? 'mp4' : 'png'}`;
+  const asset = isVideo
+    ? {
       assetId,
-      byteSize: assetBytes.length,
-      extension: 'png',
+      byteSize: catalogByteSize,
+      durationMs: null,
+      extension: 'mp4' as const,
       height: null,
-      label: 'Pack fixture image',
-      mediaType: 'image/png',
-      origin: 'imported',
+      label: 'Pack fixture video',
+      mediaType: 'video/mp4' as const,
+      origin: 'imported' as const,
       sha256: sha256(assetBytes),
       width: null,
-    }],
+    }
+    : {
+      assetId,
+      byteSize: catalogByteSize,
+      extension: 'png' as const,
+      height: null,
+      label: 'Pack fixture image',
+      mediaType: 'image/png' as const,
+      origin: 'imported' as const,
+      sha256: sha256(assetBytes),
+      width: null,
+    };
+  const project = {
+    assets: [asset],
     edges: [],
     id: 'project-pack',
     name: 'Packable',
@@ -512,7 +679,7 @@ async function createProjectFixture(tempRoot: string, options: { gzipSnapshot?: 
     activeJournalSegment: 'journal/active.ndjson',
     assetInventory: {
       assetCount: 1,
-      totalBytes: assetBytes.length,
+      totalBytes: catalogByteSize,
     },
     cleanClose: true,
     formatVersion: PROJECT_FORMAT_VERSION,
@@ -553,6 +720,9 @@ async function createFixturePack(
   tempRoot: string,
   options: {
     additionalEntries?: readonly ZipEntryInput[];
+    assetBytes?: Buffer;
+    assetKind?: 'image' | 'video';
+    catalogByteSize?: number;
     catalogMismatch?: 'wrong-extension' | 'wrong-hash' | 'wrong-size';
     corruptChecksum?: boolean;
     duplicateEntries?: readonly ZipEntryInput[];
@@ -560,7 +730,11 @@ async function createFixturePack(
     schemaVersion?: number;
   },
 ): Promise<string> {
-  const { asset, projectRoot } = await createProjectFixture(tempRoot);
+  const { asset, projectRoot } = await createProjectFixture(tempRoot, {
+    assetBytes: options.assetBytes,
+    assetKind: options.assetKind,
+    catalogByteSize: options.catalogByteSize,
+  });
   const entries = new Map<string, Buffer>();
   entries.set('project.novus.json', await readFile(join(projectRoot, 'project.novus.json')));
   entries.set('snapshots/revision-7-snapshot.json', await readFile(join(projectRoot, 'snapshots', 'revision-7-snapshot.json')));

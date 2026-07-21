@@ -62,6 +62,7 @@ describe('desktop bridge contract', () => {
       'openProject',
       'prepareSkillCandidateReview',
       'projectImages',
+      'projectVideos',
       'provider',
       'restore',
       'reviewSkillCandidate',

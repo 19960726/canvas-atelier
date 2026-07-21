@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { constants, createWriteStream } from 'node:fs';
+import { constants, createReadStream, createWriteStream } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, posix } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -18,7 +18,7 @@ import {
 import { createPersistenceError, writeInitialJournalCommitBoundary } from './journal-writer.js';
 import { NodeFileSystem } from './file-system.js';
 import { readSnapshotEnvelope } from './snapshot-scheduler.js';
-import { AssetStore } from './asset-store.js';
+import { AssetStore, MAX_MANAGED_MP4_BYTES, verifyAssetFile } from './asset-store.js';
 
 export interface NovusPackExportResult {
   readonly inventory: readonly NovusPackInventoryEntry[];
@@ -139,7 +139,10 @@ export class NovusPackExporter {
       },
       ...assetEntries,
     ];
-    const inventory = await Promise.all(candidateEntries.map((entry) => inventoryEntry(entry)));
+    const inventory: NovusPackInventoryEntry[] = [];
+    for (const entry of candidateEntries) {
+      inventory.push(await inventoryEntry(entry));
+    }
     const packageManifest: NovusPackageManifest = {
       createdAt: new Date().toISOString(),
       format: 'novuspack',
@@ -296,8 +299,8 @@ async function extractAndValidate(
       if (entryCount > limits.maxEntries) {
         throw packageValidationError('Package has too many entries');
       }
-      validateZipEntry(entry, limits);
       const safePath = validatePackagePath(entry.fileName);
+      validateZipEntry(entry, limits, safePath);
       validateZipPathCollision(pathTrie, safePath);
       if (safePath.endsWith('/')) {
         continue;
@@ -495,8 +498,22 @@ async function validateExtractedPackage(
     projectManifest,
   );
   validateReferencedAssetInventory(snapshot.project, inventoryByPath);
+  await validateCataloguedAssets(stagingRoot, snapshot.project);
 
   return packageManifest;
+}
+
+async function validateCataloguedAssets(stagingRoot: string, project: CanvasProject): Promise<void> {
+  for (const asset of project.assets ?? []) {
+    if (asset.mediaType !== 'video/mp4') continue;
+    const assetPath = join(stagingRoot, 'assets', `${asset.assetId}.${asset.extension}`);
+    const verified = await verifyAssetFile(assetPath, asset).catch(() => null);
+    if (verified === null) {
+      throw packageValidationError(
+        `Package catalogued asset validation failed for ${redactNovusPackDiagnostics(asset.assetId)}`,
+      );
+    }
+  }
 }
 
 async function initializeImportedProjectRuntime(stagingRoot: string): Promise<void> {
@@ -515,7 +532,7 @@ async function initializeImportedProjectRuntime(stagingRoot: string): Promise<vo
   await mkdir(join(stagingRoot, 'recovery'), { recursive: true });
 }
 
-function validateZipEntry(entry: yauzl.Entry, limits: NovusPackLimits): void {
+function validateZipEntry(entry: yauzl.Entry, limits: NovusPackLimits, safePath: string): void {
   if ((entry.generalPurposeBitFlag & 1) === 1) {
     throw packageValidationError('Encrypted package entries are not supported');
   }
@@ -525,6 +542,13 @@ function validateZipEntry(entry: yauzl.Entry, limits: NovusPackLimits): void {
   }
   if (entry.uncompressedSize > limits.maxEntryBytes) {
     throw packageValidationError('Package entry exceeds size limit');
+  }
+  if (
+    safePath.startsWith('assets/')
+    && extname(safePath).toLowerCase() === '.mp4'
+    && entry.uncompressedSize > MAX_MANAGED_MP4_BYTES
+  ) {
+    throw packageValidationError('Package video entry exceeds size limit');
   }
   if (entry.compressedSize === 0 && entry.uncompressedSize > 0) {
     throw packageValidationError('Package entry has invalid compression ratio');
@@ -784,6 +808,12 @@ function validateReferencedAssetInventory(
       continue;
     }
 
+    if (catalogAsset.mediaType === 'video/mp4' && catalogAsset.byteSize > MAX_MANAGED_MP4_BYTES) {
+      throw packageValidationError(
+        `Package catalogued video exceeds size limit for ${redactNovusPackDiagnostics(assetId)}`,
+      );
+    }
+
     const expectedPath = `assets/${catalogAsset.assetId}.${catalogAsset.extension}`;
     const inventoryEntry = inventoryByPath.get(expectedPath);
     if (inventoryEntry === undefined) {
@@ -823,11 +853,17 @@ function collectAssetIds(value: unknown): ReadonlySet<string> {
 
 async function inventoryEntry(entry: PackageSourceEntry): Promise<NovusPackInventoryEntry> {
   validatePackagePath(entry.path);
-  const bytes = await readFile(entry.sourcePath);
+  const hash = createHash('sha256');
+  let byteSize = 0;
+  for await (const rawChunk of createReadStream(entry.sourcePath, { highWaterMark: 1024 * 1024 })) {
+    const chunk = Buffer.from(rawChunk as Uint8Array);
+    byteSize += chunk.length;
+    hash.update(chunk);
+  }
   return {
-    byteSize: bytes.length,
+    byteSize,
     path: entry.path,
-    sha256: createHash('sha256').update(bytes).digest('hex'),
+    sha256: hash.digest('hex'),
   };
 }
 

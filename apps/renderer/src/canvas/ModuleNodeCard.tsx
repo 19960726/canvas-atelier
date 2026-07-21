@@ -8,7 +8,7 @@ import {
   type CanvasModuleNodeData,
   type CanvasModulePortDefinition,
 } from '@agent-canvas/domain';
-import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
+import type { ProjectImageAssetSummary, ProjectVideoAssetSummary } from '@agent-canvas/desktop-core';
 import { resolveCanvasModuleIcon } from './module-icons';
 import { formatMediaDisplayAspectRatio } from './media-display';
 import { useAppStore } from '../app/app-store';
@@ -88,9 +88,11 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const inputs = definition.ports.filter((port) => port.direction === 'input');
   const outputs = definition.ports.filter((port) => port.direction === 'output');
   const projectImages = useAppStore((state) => state.projectImages);
+  const projectVideos = useAppStore((state) => state.projectVideos);
   const projectImageError = useAppStore((state) => state.projectImageError);
   const importingNodeId = useAppStore((state) => state.projectImageImportingNodeId);
   const importImageForModule = useAppStore((state) => state.importImageForModule);
+  const importVideoForModule = useAppStore((state) => state.importVideoForModule);
   const selectProjectImageForModule = useAppStore((state) => state.selectProjectImageForModule);
   const setCanvasLibrarySelection = useAppStore((state) => state.setCanvasLibrarySelection);
   const toggleNodeLock = useAppStore((state) => state.toggleNodeLock);
@@ -111,6 +113,9 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   }, [libraryQuery, projectImages]);
   const selectedImage = hasImageControls && typeof data.config.assetId === 'string'
     ? projectImages.find((asset) => asset.assetId === data.config.assetId)
+    : undefined;
+  const selectedVideo = data.moduleType === 'video_input' && typeof data.config.assetId === 'string'
+    ? projectVideos.find((asset) => asset.assetId === data.config.assetId)
     : undefined;
   const mediaNodeStyle = selectedImage
     ? { '--media-node-width': `${getMediaNodeWidth(selectedImage)}px` } as CSSProperties
@@ -160,7 +165,11 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           onSelect={(assetId) => { void selectProjectImageForModule(id, assetId); }}
         />
       ) : data.moduleType === 'video_input' ? (
-        <VideoInputControl config={data.config} />
+        <VideoInputControl
+          asset={selectedVideo}
+          importing={importingNodeId === id}
+          onImport={() => { void importVideoForModule(id); }}
+        />
       ) : data.moduleType === 'canvas_library' ? (
         <CanvasLibraryControl
           assets={filteredProjectImages}
@@ -423,21 +432,46 @@ function ProjectImageControl({
   );
 }
 
-function VideoInputControl({ config }: { config: Record<string, unknown> }) {
-  const hasBoundAsset = readNonEmptyString(config.assetId) !== null;
+function VideoInputControl({
+  asset,
+  importing,
+  onImport,
+}: {
+  asset?: ProjectVideoAssetSummary;
+  importing: boolean;
+  onImport: () => void;
+}) {
   return (
     <div className="module-node__video-control nodrag nopan">
-      <div className="module-node__media-empty is-video" role="status">
-        <span aria-hidden="true"><Video size={25} strokeWidth={1.6} /></span>
-        <strong>{hasBoundAsset ? '已绑定受管视频' : '视频预览'}</strong>
-        <small>{hasBoundAsset ? '预览信息不可用' : 'MP4 导入尚未接入'}</small>
-      </div>
+      {asset ? (
+        <div className="module-node__media-frame is-video">
+          <video aria-label={asset.label} controls preload="metadata" src={asset.displayUrl} />
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="module-node__media-empty is-video"
+          aria-label="导入视频 / Import video"
+          disabled={importing}
+          onClick={onImport}
+        >
+          <span aria-hidden="true"><Video size={25} strokeWidth={1.6} /></span>
+          <strong>{importing ? '正在导入' : '导入 MP4'}</strong>
+          <small>受管视频 / Managed video</small>
+        </button>
+      )}
       <div className="module-node__media-meta">
-        <strong>{hasBoundAsset ? '旧项目视频资产' : '等待安全视频合同'}</strong>
-        <small><Clapperboard size={11} aria-hidden="true" /> 00:00</small>
+        <strong>{asset?.label ?? '视频素材'}</strong>
+        <small><Clapperboard size={11} aria-hidden="true" /> {asset ? formatBytes(asset.byteSize) : 'MP4'}</small>
       </div>
     </div>
   );
+}
+
+function formatBytes(byteSize: number): string {
+  if (byteSize < 1024) return `${byteSize} B`;
+  if (byteSize < 1024 * 1024) return `${Math.round(byteSize / 1024)} KB`;
+  return `${(byteSize / (1024 * 1024)).toFixed(byteSize < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
 function CanvasLibraryControl({

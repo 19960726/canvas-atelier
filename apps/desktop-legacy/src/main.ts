@@ -17,6 +17,7 @@ import {
   createComflyProviderService,
   createDesktopBridgeHandlers,
   createElectronClipboardImageAdapter,
+  createElectronClipboardVideoAdapter,
   createElectronNetComflyFetch,
   createElectronTrustedImageDecoder,
   createApprovedSnapshotSyncClientFromEnv,
@@ -138,7 +139,8 @@ app.whenReady().then(async () => {
   desktopHandlers = createDesktopBridgeHandlers({
     appDataRoot: app.getPath('userData'),
     channel: runtimeChannel,
-    clipboard: createElectronClipboardImageAdapter(clipboard),
+      clipboard: createElectronClipboardImageAdapter(clipboard),
+      clipboardVideo: createElectronClipboardVideoAdapter(clipboard),
     dialogs: createDialogAdapter(),
     approvedSnapshotOutbox,
     fileSystem,
@@ -480,14 +482,22 @@ function createDialogAdapter(): BridgeDialogAdapter {
       });
       return result.canceled || !result.filePath ? null : result.filePath;
     },
-    async chooseProjectImage() {
+      async chooseProjectImage() {
       const result = await dialog.showOpenDialog({
         filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
         properties: ['openFile'],
         title: 'Import project image',
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
-    },
+      },
+      async chooseProjectVideo() {
+        const result = await dialog.showOpenDialog({
+          filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+          properties: ['openFile'],
+          title: 'Import project video',
+        });
+        return result.canceled ? null : result.filePaths[0] ?? null;
+      },
     async chooseProjectRoot(request) {
       const result = await dialog.showOpenDialog({
         properties: ['openDirectory'],

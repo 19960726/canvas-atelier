@@ -3,6 +3,7 @@ import type {
   GenerationHistoryListRequest,
   GenerationHistoryRecord,
   ProjectImageAsset,
+  ProjectVideoAsset,
   ProjectOperation,
   ProjectTransaction,
   ReferenceRole,
@@ -243,6 +244,7 @@ export interface ProjectClipboardImageTarget {
     readonly x: number;
     readonly y: number;
   };
+  readonly reconcileOnly?: true;
 }
 
 export interface ImportProjectImageBridgeRequest {
@@ -255,11 +257,37 @@ export interface PasteProjectClipboardImageBridgeRequest {
   readonly target: ProjectClipboardImageTarget;
 }
 
+export interface ProjectClipboardVideoTarget {
+  readonly kind: 'new_video_input';
+  readonly operationId: string;
+  readonly position: { readonly x: number; readonly y: number };
+  readonly reconcileOnly?: true;
+}
+
+export interface PasteProjectClipboardVideoBridgeRequest {
+  readonly sessionId: string;
+  readonly target: ProjectClipboardVideoTarget;
+}
+
 export interface ListProjectImagesBridgeRequest {
   readonly sessionId: string;
 }
 
+export interface ImportProjectVideoBridgeRequest {
+  readonly sessionId: string;
+  readonly target: { readonly kind: 'module'; readonly nodeId: string };
+}
+
+export interface ListProjectVideosBridgeRequest {
+  readonly sessionId: string;
+}
+
 export interface ProjectImageAssetSummary extends ProjectImageAsset {
+  readonly displayUrl: string;
+  readonly usageCount: number;
+}
+
+export interface ProjectVideoAssetSummary extends ProjectVideoAsset {
   readonly displayUrl: string;
   readonly usageCount: number;
 }
@@ -271,6 +299,14 @@ export interface ImportProjectImageBridgeResult {
 }
 
 export type PasteProjectClipboardImageBridgeResult = ImportProjectImageBridgeResult;
+
+export interface ImportProjectVideoBridgeResult {
+  readonly asset: ProjectVideoAssetSummary;
+  readonly currentRevision: number;
+  readonly project: CanvasProject;
+}
+
+export type PasteProjectClipboardVideoBridgeResult = ImportProjectVideoBridgeResult;
 
 export type ListGenerationHistoryBridgeRequest = GenerationHistoryListRequest;
 export type ListGenerationHistoryBridgeResult = GenerationHistoryListResult;

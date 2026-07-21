@@ -112,6 +112,39 @@ describe('project image bridge', () => {
     }
   });
 
+  it('returns null for reconcile-only clipboard image when no durable operation exists', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-clipboard-image-reconcile-');
+    const projectRoot = join(tempRoot, 'Clipboard.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6148 });
+    const created = await repository.create(projectRoot, {
+      project: { ...imageProject(), id: 'clipboard-project', nodes: [] },
+      projectId: 'clipboard-project',
+      projectName: 'Clipboard Project',
+    });
+    await repository.close(created);
+    const readImage = vi.fn(async () => { throw new Error('clipboard must not be read'); });
+    const handlers = createDesktopBridgeHandlers({
+      clipboard: { readImage },
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+    });
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      await expect(handlers.pasteProjectClipboardImage({}, {
+        sessionId: opened!.sessionId,
+        target: {
+          kind: 'new_image_input',
+          operationId: 'clipboard_paste_reconcile-only',
+          position: { x: 1, y: 2 },
+          reconcileOnly: true,
+        },
+      })).resolves.toBeNull();
+      expect(readImage).not.toHaveBeenCalled();
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-project');
+    }
+  });
+
   it('replays the same clipboard operation after a post-commit snapshot failure without reading or creating twice', async () => {
     const tempRoot = await createTempRoot(tempRoots, 'project-clipboard-retry-');
     const projectRoot = join(tempRoot, 'Clipboard retry.novus-project');

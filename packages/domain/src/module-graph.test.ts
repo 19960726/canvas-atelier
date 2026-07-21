@@ -243,14 +243,25 @@ describe('validateCanvasModuleExecutionReadiness', () => {
   ] as const)('accepts a Reverse Agent with one analyzable %s input', (sourceType, sourcePortId, targetPortId) => {
     const source = createCanvasModuleNode('source', sourceType, { x: 0, y: 0 });
     source.data.config = sourceType === 'video_input'
-      ? { assetId: 'managed-video-1' }
+      ? { assetId: '0123456789abcdef' }
       : sourceType === 'text_prompt'
         ? { prompt: 'analyze this input' }
         : {};
     const reverse = createCanvasModuleNode('reverse', 'reverse_agent', { x: 320, y: 0 });
     const project = moduleProject([source, reverse], [
       moduleEdge('input', source.id, sourcePortId, reverse.id, targetPortId, 0),
-    ]);
+    ], sourceType === 'video_input' ? [{
+      assetId: '0123456789abcdef',
+      byteSize: 1024,
+      durationMs: null,
+      extension: 'mp4',
+      height: null,
+      label: 'Managed video',
+      mediaType: 'video/mp4',
+      origin: 'imported',
+      sha256: '0123456789abcdef'.repeat(4),
+      width: null,
+    }] : []);
 
     expect(validateCanvasModuleExecutionReadiness(project, reverse.id)).toEqual([]);
   });
@@ -342,7 +353,11 @@ function moduleEdge(
   return { id, source, sourcePortId, target, targetPortId, order };
 }
 
-function moduleProject(nodes: CanvasNode[], edges: CanvasEdge[]): CanvasProject {
+function moduleProject(
+  nodes: CanvasNode[],
+  edges: CanvasEdge[],
+  assets: CanvasProject['assets'] = [],
+): CanvasProject {
   return parseCanvasProject({
     version: 1,
     graphVersion: 2,
@@ -350,6 +365,7 @@ function moduleProject(nodes: CanvasNode[], edges: CanvasEdge[]): CanvasProject 
     name: 'module project',
     nodes,
     edges,
+    ...(assets.length === 0 ? {} : { assets }),
   });
 }
 

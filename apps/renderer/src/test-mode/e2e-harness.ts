@@ -2,6 +2,7 @@ import type {
   KnowledgeSyncStatusSummary,
   ProjectImageAssetSummary,
   ProjectImageImportTarget,
+  ProjectVideoAssetSummary,
   ProviderBridgeProfile,
   SubmitImageJobBridgeRequest,
 } from '@agent-canvas/desktop-core';
@@ -18,6 +19,7 @@ import {
   type ModelJob,
   type PlacementObject,
   type ProjectImageAsset,
+  type ProjectVideoAsset,
   type ProjectMemoryEntry,
   type ProjectTransaction,
   type SkillPromotionCandidate,
@@ -39,6 +41,7 @@ import type {
   ProjectCommitResult,
   ProjectHydrationResult,
   ProjectImageImportResult,
+  ProjectVideoImportResult,
   ProjectPersistenceClient,
   ProjectRestoreResult,
   ProjectStablePointResult,
@@ -75,7 +78,13 @@ interface RuntimeState {
     mediaType: 'image/png';
     width: number;
   }>;
+  pendingVideoImports: Array<{
+    byteSize: number;
+    label: string;
+    mediaType: 'video/mp4';
+  }>;
   projectImages: ProjectImageAssetSummary[];
+  projectVideos: ProjectVideoAssetSummary[];
   providerProfiles: ProviderBridgeProfile[];
   revision: number;
   skillSyncWrites: Array<{
@@ -111,7 +120,9 @@ export function installRendererE2EHarness(): void {
       runtime.managedRules = new Map();
       runtime.modelSubmissions = [];
       runtime.pendingImageImports = [];
+      runtime.pendingVideoImports = [];
       runtime.projectImages = [];
+      runtime.projectVideos = [];
       runtime.providerProfiles = createE2EProviderProfiles();
       runtime.skillSyncWrites = [];
       runtime.storage = createE2EModelJobStorage(runtime);
@@ -131,7 +142,9 @@ export function installRendererE2EHarness(): void {
       runtime.managedRules = new Map();
       runtime.modelSubmissions = [];
       runtime.pendingImageImports = [];
+      runtime.pendingVideoImports = [];
       runtime.projectImages = [];
+      runtime.projectVideos = [];
       runtime.providerProfiles = createE2EProviderProfiles();
       runtime.skillSyncWrites = [];
       runtime.storage = createE2EModelJobStorage(runtime);
@@ -151,6 +164,13 @@ export function installRendererE2EHarness(): void {
         label: sanitizeE2EImageLabel(input.label),
         mediaType: 'image/png',
         width: clampE2EDimension(input.width),
+      });
+    },
+    queueProjectVideoImport(input) {
+      runtime.pendingVideoImports.push({
+        byteSize: Math.max(1, Math.min(4 * 1024 * 1024 * 1024, Math.floor(input.byteSize))),
+        label: sanitizeE2EMediaLabel(input.label, 'Managed video'),
+        mediaType: 'video/mp4',
       });
     },
     get commitCount() {
@@ -229,6 +249,11 @@ export function installRendererE2EHarness(): void {
           displayUrl: asset.displayUrl,
           label: asset.label,
         })),
+        projectVideos: state.projectVideos.map((asset) => ({
+          assetId: asset.assetId,
+          displayUrl: asset.displayUrl,
+          label: asset.label,
+        })),
         durableProjectContainsTransientImageUrl: /(?:novus-asset:|\/__novus_e2e_asset\/|blob:|data:image)/u
           .test(JSON.stringify(state.project)),
         projectNodeTypes: state.project.nodes.map((node) => node.type),
@@ -250,7 +275,9 @@ function createRuntimeState(): RuntimeState {
     managedRules: new Map(),
     modelSubmissions: [],
     pendingImageImports: [],
+    pendingVideoImports: [],
     projectImages: [],
+    projectVideos: [],
     providerProfiles: createE2EProviderProfiles(),
     revision: 0,
     skillSyncWrites: [],
@@ -400,14 +427,104 @@ function createE2EProjectImageSummary(
   };
 }
 
+function importE2EProjectVideo(runtime: RuntimeState, nodeId: string): ProjectVideoImportResult | null {
+  const pending = runtime.pendingVideoImports.shift();
+  if (pending === undefined) return null;
+  const targetNode = runtime.currentProject.nodes.find((node) => node.id === nodeId);
+  if (targetNode?.type !== 'module' || targetNode.data.moduleType !== 'video_input') return null;
+
+  const asset = createE2EProjectVideoAsset(runtime, pending);
+  const boundNode = {
+    ...targetNode,
+    data: { ...targetNode.data, config: { ...targetNode.data.config, assetId: asset.assetId } },
+  };
+  return commitE2EProjectVideo(runtime, asset, {
+    id: `e2e-import-project-video-${asset.assetId}`,
+    label: 'Import managed E2E project video',
+    operations: [
+      { kind: 'set_project_assets', assets: [...(runtime.currentProject.assets ?? []), asset] },
+      { kind: 'canvas', operation: { kind: 'update_node', node: boundNode } },
+    ],
+  }, runtime.currentProject.nodes.map((node) => node.id === boundNode.id ? boundNode : node));
+}
+
+function pasteE2EClipboardVideo(
+  runtime: RuntimeState,
+  position: { readonly x: number; readonly y: number },
+): ProjectVideoImportResult | null {
+  const pending = runtime.pendingVideoImports.shift();
+  if (pending === undefined) return null;
+  const asset = createE2EProjectVideoAsset(runtime, pending);
+  const node = createCanvasModuleNode(`clipboard-video-${runtime.assetSequence}`, 'video_input', position);
+  const boundNode = { ...node, data: { ...node.data, config: { assetId: asset.assetId } } };
+  return commitE2EProjectVideo(runtime, asset, {
+    id: `e2e-paste-clipboard-video-${asset.assetId}`,
+    label: 'Paste clipboard video',
+    operations: [
+      { kind: 'set_project_assets', assets: [...(runtime.currentProject.assets ?? []), asset] },
+      { kind: 'canvas', operation: { kind: 'create_node', node: boundNode } },
+    ],
+  }, [...runtime.currentProject.nodes, boundNode]);
+}
+
+function createE2EProjectVideoAsset(
+  runtime: RuntimeState,
+  pending: RuntimeState['pendingVideoImports'][number],
+): ProjectVideoAsset {
+  runtime.assetSequence += 1;
+  const assetId = runtime.assetSequence.toString(16).padStart(16, '0');
+  return {
+    assetId,
+    byteSize: pending.byteSize,
+    durationMs: null,
+    extension: 'mp4',
+    height: null,
+    label: pending.label,
+    mediaType: pending.mediaType,
+    origin: 'imported',
+    sha256: assetId.repeat(4),
+    width: null,
+  };
+}
+
+function commitE2EProjectVideo(
+  runtime: RuntimeState,
+  asset: ProjectVideoAsset,
+  transaction: ProjectTransaction,
+  nodes: CanvasProject['nodes'],
+): ProjectVideoImportResult {
+  const assets = [...(runtime.currentProject.assets ?? []), asset];
+  runtime.currentProject = { ...runtime.currentProject, assets, nodes };
+  runtime.revision += 1;
+  runtime.commitLog.push(transaction);
+  const summary = createE2EProjectVideoSummary(runtime.currentProject, asset);
+  runtime.projectVideos = [...runtime.projectVideos, summary];
+  return { asset: summary, project: runtime.currentProject, revision: runtime.revision };
+}
+
+function createE2EProjectVideoSummary(
+  project: CanvasProject,
+  asset: ProjectVideoAsset,
+): ProjectVideoAssetSummary {
+  return {
+    ...asset,
+    displayUrl: `${window.location.origin}/__novus_e2e_asset/${asset.assetId}.mp4`,
+    usageCount: JSON.stringify(project.nodes).split(asset.assetId).length - 1,
+  };
+}
+
 function sanitizeE2EImageLabel(value: string): string {
+  return sanitizeE2EMediaLabel(value, 'Managed image');
+}
+
+function sanitizeE2EMediaLabel(value: string, fallback: string): string {
   const label = value
     .replace(/\.[A-Za-z0-9]{1,8}$/u, '')
     .replace(/[\u0000-\u001f\u007f]+/gu, ' ')
     .replace(/\s+/gu, ' ')
     .trim()
     .slice(0, 120);
-  return label || 'Managed image';
+  return label || fallback;
 }
 
 function clampE2EDimension(value: number): number {
@@ -431,10 +548,9 @@ async function seedModuleStressGraph(runtime: RuntimeState, nodeCount: number, e
     });
     if (!committed) return false;
     runtime.currentProject = useAppStore.getState().project;
-    runtime.projectImages = (runtime.currentProject.assets ?? []).map((asset) => createE2EProjectImageSummary(
-      runtime.currentProject,
-      asset,
-    ));
+    runtime.projectImages = (runtime.currentProject.assets ?? [])
+      .filter((asset): asset is ProjectImageAsset => asset.mediaType.startsWith('image/'))
+      .map((asset) => createE2EProjectImageSummary(runtime.currentProject, asset));
     useAppStore.setState({ projectImages: runtime.projectImages });
     return true;
   }
@@ -572,14 +688,26 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
     async importProjectImage(target) {
       return importE2EProjectImage(runtime, target);
     },
+    async importProjectVideo(nodeId) {
+      return importE2EProjectVideo(runtime, nodeId);
+    },
     async listProjectImages() {
       return runtime.projectImages.map((asset) => ({
         ...asset,
         usageCount: JSON.stringify(runtime.currentProject.nodes).split(asset.assetId).length - 1,
       }));
     },
+    async listProjectVideos() {
+      return runtime.projectVideos.map((asset) => ({
+        ...asset,
+        usageCount: JSON.stringify(runtime.currentProject.nodes).split(asset.assetId).length - 1,
+      }));
+    },
     async pasteClipboardImage(input) {
       return pasteE2EClipboardImage(runtime, input.position);
+    },
+    async pasteClipboardVideo(input) {
+      return pasteE2EClipboardVideo(runtime, input.position);
     },
     async restore(): Promise<ProjectRestoreResult> {
       return {
@@ -951,6 +1079,7 @@ declare global {
         modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
         projectAssetIds: string[];
         projectImages: Array<Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;
+        projectVideos: Array<Pick<ProjectVideoAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;
         projectNodeTypes: string[];
         skillSyncWrites: Array<{
           candidateId: string;
@@ -967,6 +1096,11 @@ declare global {
         label: string;
         mediaType: 'image/png';
         width: number;
+      }): void;
+      queueProjectVideoImport(input: {
+        byteSize: number;
+        label: string;
+        mediaType: 'video/mp4';
       }): void;
       reset(): Promise<void>;
       resetEmpty(): Promise<void>;

@@ -20,6 +20,21 @@ const projectImage = {
   width: 2,
 };
 
+const projectVideo = {
+  assetId: 'fedcba9876543210',
+  byteSize: 2048,
+  displayUrl: 'novus-asset://project/session/fedcba9876543210',
+  durationMs: null,
+  extension: 'mp4' as const,
+  height: null,
+  label: 'Product turntable',
+  mediaType: 'video/mp4' as const,
+  origin: 'imported' as const,
+  sha256: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+  usageCount: 1,
+  width: null,
+};
+
 beforeEach(() => {
   resetAppStoreForTests();
 });
@@ -129,8 +144,10 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('button', { name: '导入图像 / Import image' })).toBeVisible();
   });
 
-  it('renders video input as a media preview surface instead of a generic configuration summary', () => {
+  it('offers a confined MP4 import action for an empty video input', () => {
     const node = createCanvasModuleNode('video-input', 'video_input', { x: 0, y: 0 });
+    const importVideoForModule = vi.fn(async () => true);
+    useAppStore.setState({ importVideoForModule });
 
     render(
       <ReactFlowProvider>
@@ -139,19 +156,20 @@ describe('ModuleNodeCard', () => {
     );
 
     expect(document.querySelector('.module-node__video-control')).not.toBeNull();
-    expect(screen.getByText('视频预览')).toBeVisible();
-    expect(screen.getByText('MP4 导入尚未接入')).toBeVisible();
-    expect(screen.queryByText('导入视频')).not.toBeInTheDocument();
+    expect(screen.getByText('导入 MP4')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '导入视频 / Import video' }));
+    expect(importVideoForModule).toHaveBeenCalledWith('video-input');
     expect(screen.queryByText('待配置')).not.toBeInTheDocument();
   });
 
-  it('bounds extreme image dimensions and distinguishes a legacy bound video asset', () => {
+  it('bounds extreme image dimensions and renders a managed video preview', () => {
     const imageNode = createCanvasModuleNode('extreme-image', 'image_input', { x: 0, y: 0 });
     imageNode.data.config = { assetId: projectImage.assetId };
     const videoNode = createCanvasModuleNode('legacy-video', 'video_input', { x: 0, y: 0 });
-    videoNode.data.config = { assetId: 'legacy-video-asset' };
+    videoNode.data.config = { assetId: projectVideo.assetId };
     useAppStore.setState({
       projectImages: [{ ...projectImage, height: 8192, width: 1 }],
+      projectVideos: [projectVideo],
     });
 
     const { rerender } = render(
@@ -167,8 +185,11 @@ describe('ModuleNodeCard', () => {
         <ModuleNodeCard id={videoNode.id} data={videoNode.data} selected={false} />
       </ReactFlowProvider>,
     );
-    expect(screen.getByText('已绑定受管视频')).toBeVisible();
-    expect(screen.getByText('预览信息不可用')).toBeVisible();
+    const video = screen.getByLabelText('Product turntable');
+    expect(video).toHaveAttribute('src', projectVideo.displayUrl);
+    expect(video).toHaveAttribute('controls');
+    expect(screen.getByText('Product turntable')).toBeVisible();
+    expect(screen.getByText('2 KB')).toBeVisible();
   });
 
   it('renders an ordered canvas-library selection with stable move controls', () => {

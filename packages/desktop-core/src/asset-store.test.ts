@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AssetStore } from './asset-store';
+import { AssetStore, verifyAssetFile } from './asset-store';
 
 const pngBytes = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -46,6 +46,132 @@ describe('AssetStore', () => {
     expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(pngBytes);
   });
 
+  it('commits a structurally valid MP4 as a managed video asset', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const store = new AssetStore();
+    const mp4Bytes = createMinimalMp4();
+
+    const asset = await store.stageAndCommit(projectRoot, readableFrom(mp4Bytes), {
+      mediaType: 'video/mp4',
+      originalName: 'turntable.mp4',
+    });
+
+    expect(asset).toMatchObject({
+      byteSize: mp4Bytes.length,
+      extension: 'mp4',
+      height: null,
+      mediaType: 'video/mp4',
+      width: null,
+    });
+    expect(await readFile(join(projectRoot, asset.relativePath))).toEqual(mp4Bytes);
+  });
+
+  it('omits a catalogued MP4 when same-size bytes fail integrity verification', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const store = new AssetStore();
+    const mp4Bytes = createMinimalMp4();
+    const asset = await store.stageAndCommit(projectRoot, readableFrom(mp4Bytes), {
+      mediaType: 'video/mp4',
+      originalName: 'turntable.mp4',
+    });
+    const corrupted = Buffer.from(mp4Bytes);
+    corrupted[corrupted.length - 1] = corrupted[corrupted.length - 1]! ^ 1;
+    await writeFile(join(projectRoot, asset.relativePath), corrupted);
+
+    await expect(store.list(projectRoot, [{
+      assetId: asset.id,
+      byteSize: asset.byteSize,
+      extension: asset.extension,
+      height: asset.height,
+      mediaType: asset.mediaType,
+      sha256: asset.sha256,
+      width: asset.width,
+    }])).resolves.toEqual([]);
+  });
+
+  it('single-flights unchanged catalog verification and invalidates it after same-size replacement', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const expectedHash = sha256(pngBytes);
+    const assetId = expectedHash.slice(0, 16);
+    const assetPath = join(projectRoot, 'assets', `${assetId}.png`);
+    await writeFile(assetPath, pngBytes);
+    const catalog = [{
+      assetId,
+      byteSize: pngBytes.length,
+      extension: 'png' as const,
+      height: 3,
+      mediaType: 'image/png' as const,
+      sha256: expectedHash,
+      width: 2,
+    }];
+    const verify = vi.fn(verifyAssetFile);
+    const store = new AssetStore(verify);
+
+    const [first, second] = await Promise.all([
+      store.list(projectRoot, catalog),
+      store.list(projectRoot, catalog),
+    ]);
+    await expect(store.resolvePath(projectRoot, assetId, 'png', expectedHash, pngBytes.length))
+      .resolves.toBe(await realpath(assetPath));
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(verify).toHaveBeenCalledOnce();
+
+    const corrupted = Buffer.from(pngBytes);
+    corrupted[corrupted.length - 1] = corrupted[corrupted.length - 1]! ^ 1;
+    await writeFile(assetPath, corrupted);
+    await expect(store.resolvePath(projectRoot, assetId, 'png', expectedHash, pngBytes.length)).resolves.toBeNull();
+  });
+
+  it('single-flights concurrent verified path resolution', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const bytes = createMinimalMp4();
+    const expectedHash = sha256(bytes);
+    const assetId = expectedHash.slice(0, 16);
+    const assetPath = join(projectRoot, 'assets', `${assetId}.mp4`);
+    await writeFile(assetPath, bytes);
+    const inspect = vi.fn(async () => ({
+      byteSize: bytes.length,
+      extension: 'mp4' as const,
+      height: null,
+      id: assetId,
+      mediaType: 'video/mp4' as const,
+      relativePath: `assets/${assetId}.mp4`,
+      sha256: expectedHash,
+      width: null,
+    }));
+    const store = new AssetStore(verifyAssetFile, inspect);
+
+    const results = await Promise.all([
+      store.resolvePath(projectRoot, assetId, 'mp4', expectedHash, bytes.length),
+      store.resolvePath(projectRoot, assetId, 'mp4', expectedHash, bytes.length),
+    ]);
+
+    expect(results).toEqual([await realpath(assetPath), await realpath(assetPath)]);
+    expect(inspect).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['empty ftyp', Buffer.concat([mp4Box('ftyp'), validMoovBox(), mp4Box('mdat', Buffer.from([1]))])],
+    ['empty moov', Buffer.concat([mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')), mp4Box('moov'), mp4Box('mdat', Buffer.from([1]))])],
+    ['garbage moov payload', Buffer.concat([mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')), mp4Box('moov', Buffer.from('garbage')), mp4Box('mdat', Buffer.from([1]))])],
+    ['moov without trak', Buffer.concat([mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')), mp4Box('moov', validMvhdBox()), mp4Box('mdat', Buffer.from([1]))])],
+    ['missing moov', Buffer.concat([mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')), mp4Box('mdat', Buffer.from([1]))])],
+    ['missing mdat', Buffer.concat([mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')), mp4Box('moov')])],
+    ['truncated box', Buffer.concat([mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')), Buffer.from([0, 0, 0, 40, 0x6d, 0x6f, 0x6f, 0x76])])],
+    ['spoofed bytes', Buffer.from('not an mp4 file')],
+  ])('rejects invalid MP4 structure: %s', async (_label, bytes) => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const store = new AssetStore();
+
+    await expect(store.stageAndCommit(projectRoot, readableFrom(bytes), {
+      mediaType: 'video/mp4',
+      originalName: 'unsafe.mp4',
+    })).rejects.toMatchObject({ code: 'PACKAGE_VALIDATION_FAILED' });
+
+    expect(await readdir(join(projectRoot, 'assets'))).toEqual([]);
+  });
+
   it('enumerates verified managed images and resolves only content-addressed ids', async () => {
     const projectRoot = await createProjectRoot(tempRoots);
     const store = new AssetStore();
@@ -73,7 +199,7 @@ describe('AssetStore', () => {
     )).resolves.toBeNull();
   });
 
-  it('lists a durable catalog without hashing complete files and defers integrity checks to resolution', async () => {
+  it('omits durable catalog entries whose complete content hash does not match', async () => {
     const projectRoot = await createProjectRoot(tempRoots);
     const store = new AssetStore();
     const catalog = Array.from({ length: 32 }, (_, index) => {
@@ -92,7 +218,7 @@ describe('AssetStore', () => {
       writeFile(join(projectRoot, 'assets', `${asset.assetId}.png`), pngBytes)
     )));
 
-    await expect(store.list(projectRoot, catalog)).resolves.toHaveLength(catalog.length);
+    await expect(store.list(projectRoot, catalog)).resolves.toEqual([]);
     await expect(store.resolvePath(
       projectRoot,
       catalog[0]!.assetId,
@@ -338,4 +464,33 @@ async function createProjectRoot(tempRoots: string[]): Promise<string> {
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function createMinimalMp4(): Buffer {
+  return Buffer.concat([
+    mp4Box('ftyp', Buffer.from('isom\0\0\0\0isomiso2mp41')),
+    validMoovBox(),
+    mp4Box('mdat', Buffer.from([0, 0, 0, 1])),
+  ]);
+}
+
+function validMoovBox(): Buffer {
+  return mp4Box('moov', Buffer.concat([
+    validMvhdBox(),
+    mp4Box('trak', mp4Box('tkhd', Buffer.alloc(4))),
+  ]));
+}
+
+function validMvhdBox(): Buffer {
+  const payload = Buffer.alloc(100);
+  payload.writeUInt32BE(1_000, 12);
+  return mp4Box('mvhd', payload);
+}
+
+function mp4Box(type: string, payload: Uint8Array = new Uint8Array()): Buffer {
+  const box = Buffer.alloc(8 + payload.length);
+  box.writeUInt32BE(box.length, 0);
+  box.write(type, 4, 4, 'ascii');
+  Buffer.from(payload).copy(box, 8);
+  return box;
 }

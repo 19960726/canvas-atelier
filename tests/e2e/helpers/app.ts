@@ -51,6 +51,11 @@ type E2EState = {
     displayUrl: string;
     label: string;
   }>;
+  projectVideos: Array<{
+    assetId: string;
+    displayUrl: string;
+    label: string;
+  }>;
   projectNodeTypes: string[];
   skillSyncWrites: Array<{
     candidateId: string;
@@ -71,6 +76,36 @@ export async function openApp(page: Page): Promise<void> {
       body: `<svg xmlns="http://www.w3.org/2000/svg" width="${dimensions.width}" height="${dimensions.height}" viewBox="0 0 ${dimensions.width} ${dimensions.height}"><rect width="100%" height="100%" rx="8" fill="#dbeafe"/><path d="M${dimensions.width * 0.14} ${dimensions.height * 0.72} ${dimensions.width * 0.37} ${dimensions.height * 0.44}l${dimensions.width * 0.16} ${dimensions.height * 0.18} ${dimensions.width * 0.12}-${dimensions.height * 0.13} ${dimensions.width * 0.2} ${dimensions.height * 0.23}" fill="none" stroke="#2563eb" stroke-width="${Math.max(5, dimensions.width * 0.06)}" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${dimensions.width * 0.7}" cy="${dimensions.height * 0.3}" r="${Math.min(dimensions.width, dimensions.height) * 0.09}" fill="#0f766e"/></svg>`,
       contentType: 'image/svg+xml',
       headers: { 'cache-control': 'no-store' },
+      status: 200,
+    });
+  });
+  await page.route('**/__novus_e2e_asset/*.mp4', async (route) => {
+    const bytes = createE2EMp4Fixture();
+    const range = route.request().headers().range?.match(/^bytes=(\d+)-(\d*)$/u);
+    if (range) {
+      const start = Number.parseInt(range[1]!, 10);
+      const requestedEnd = range[2] ? Number.parseInt(range[2], 10) : bytes.length - 1;
+      if (start >= bytes.length || requestedEnd < start) {
+        await route.fulfill({ status: 416, headers: { 'content-range': `bytes */${bytes.length}` } });
+        return;
+      }
+      const end = Math.min(requestedEnd, bytes.length - 1);
+      await route.fulfill({
+        body: bytes.subarray(start, end + 1),
+        contentType: 'video/mp4',
+        headers: {
+          'accept-ranges': 'bytes',
+          'cache-control': 'no-store',
+          'content-range': `bytes ${start}-${end}/${bytes.length}`,
+        },
+        status: 206,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: bytes,
+      contentType: 'video/mp4',
+      headers: { 'accept-ranges': 'bytes', 'cache-control': 'no-store' },
       status: 200,
     });
   });
@@ -114,6 +149,43 @@ export async function queueProjectImageImport(page: Page, fixture: GeneratedImag
     mediaType: fixture.mimeType,
     width: dimensions.width,
   });
+}
+
+export async function queueProjectVideoImport(
+  page: Page,
+  input: { byteSize?: number; label: string },
+): Promise<void> {
+  await page.evaluate(({ byteSize, label }) => {
+    window.__NOVUS_E2E__!.queueProjectVideoImport({ byteSize, label, mediaType: 'video/mp4' });
+  }, {
+    byteSize: input.byteSize ?? createE2EMp4Fixture().byteLength,
+    label: input.label,
+  });
+}
+
+function createE2EMp4Fixture(): Buffer {
+  const box = (type: string, payload: Buffer) => {
+    const result = Buffer.alloc(8 + payload.length);
+    result.writeUInt32BE(result.length, 0);
+    result.write(type, 4, 4, 'ascii');
+    payload.copy(result, 8);
+    return result;
+  };
+  const movieHeader = Buffer.alloc(100);
+  movieHeader.writeUInt32BE(1_000, 12);
+  return Buffer.concat([
+    box('ftyp', Buffer.from([
+      0x69, 0x73, 0x6f, 0x6d,
+      0x00, 0x00, 0x02, 0x00,
+      0x69, 0x73, 0x6f, 0x6d,
+      0x6d, 0x70, 0x34, 0x31,
+    ])),
+    box('moov', Buffer.concat([
+      box('mvhd', movieHeader),
+      box('trak', box('tkhd', Buffer.alloc(4))),
+    ])),
+    box('mdat', Buffer.from([0, 0, 0, 0])),
+  ]);
 }
 
 function clampE2EDimension(value: number): number {
@@ -365,6 +437,11 @@ declare global {
         label: string;
         mediaType: 'image/png';
         width: number;
+      }): void;
+      queueProjectVideoImport(input: {
+        byteSize: number;
+        label: string;
+        mediaType: 'video/mp4';
       }): void;
       failNextModelJobEnqueue(): void;
       reset(): Promise<void>;

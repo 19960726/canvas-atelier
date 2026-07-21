@@ -23,12 +23,17 @@ export type {
   ImportPackBridgeResult,
   ImportProjectImageBridgeRequest,
   ImportProjectImageBridgeResult,
+  ImportProjectVideoBridgeRequest,
+  ImportProjectVideoBridgeResult,
   PasteProjectClipboardImageBridgeRequest,
   PasteProjectClipboardImageBridgeResult,
+  PasteProjectClipboardVideoBridgeRequest,
+  PasteProjectClipboardVideoBridgeResult,
   KnowledgeStateBridgeResult,
   KnowledgeSyncStatus,
   KnowledgeSyncStatusSummary,
   ListProjectImagesBridgeRequest,
+  ListProjectVideosBridgeRequest,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
   PrepareSkillCandidateReviewBridgeRequest,
@@ -39,7 +44,9 @@ export type {
   ProjectLock,
   ProjectManifest,
   ProjectImageAssetSummary,
+  ProjectVideoAssetSummary,
   ProjectClipboardImageTarget,
+  ProjectClipboardVideoTarget,
   ProjectImageImportTarget,
   RecoveryCandidateBridgeSummary,
   RecoveryPlanBridgeRequest,
@@ -74,10 +81,12 @@ export type {
 } from './contracts.js';
 
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
-export { AssetStore } from './asset-store.js';
-export type { AssetMetadata, StageAssetOptions } from './asset-store.js';
+export { AssetStore, MAX_MANAGED_MP4_BYTES, verifyAssetFile } from './asset-store.js';
+export type { AssetCatalogMetadata, AssetMetadata, StageAssetOptions } from './asset-store.js';
 export { createElectronClipboardImageAdapter } from './electron-clipboard-image.js';
 export type { ClipboardImageAdapter, TrustedClipboardImage } from './electron-clipboard-image.js';
+export { createElectronClipboardVideoAdapter } from './electron-clipboard-video.js';
+export type { ClipboardVideoAdapter, TrustedClipboardVideoPath } from './electron-clipboard-video.js';
 export {
   PROJECT_ASSET_SCHEME,
   createProjectAssetDisplayUrl,
