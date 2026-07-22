@@ -2,6 +2,7 @@ import { z, type ZodTypeAny } from 'zod';
 
 export const PROVIDER_BRIDGE_CHANNELS = {
   getStatus: 'novus-desktop:provider:get-status',
+  checkConnection: 'novus-desktop:provider:check-connection',
   configure: 'novus-desktop:provider:configure',
   unlock: 'novus-desktop:provider:unlock',
   listProfiles: 'novus-desktop:provider:list-profiles',
@@ -58,6 +59,17 @@ export const ProviderConfigurationStatusSchema = z.object({
   configured: z.boolean(),
   locked: z.boolean(),
   encryption: z.enum(['safeStorage', 'passphrase', 'unavailable']),
+}).strict();
+
+export const ProviderConnectionCheckResultSchema = z.object({
+  checkedAt: z.string().datetime({ offset: true }),
+  status: z.enum([
+    'unconfigured',
+    'connected',
+    'authentication_failed',
+    'network_unavailable',
+    'service_limited',
+  ]),
 }).strict();
 
 export const ConfigureProviderBridgeRequestSchema = z.object({
@@ -176,6 +188,7 @@ export const AckImageJobTerminalBridgeResultSchema = z.object({
 
 export const ProviderBridgeRequestSchemas = {
   getStatus: noPayloadSchema,
+  checkConnection: noPayloadSchema,
   configure: ConfigureProviderBridgeRequestSchema,
   unlock: UnlockProviderBridgeRequestSchema,
   listProfiles: noPayloadSchema,
@@ -187,6 +200,7 @@ export const ProviderBridgeRequestSchemas = {
 
 export const ProviderBridgeResponseSchemas = {
   getStatus: ProviderConfigurationStatusSchema,
+  checkConnection: ProviderConnectionCheckResultSchema,
   configure: ProviderConfigurationStatusSchema,
   unlock: ProviderConfigurationStatusSchema,
   listProfiles: z.array(ProviderBridgeProfileSchema),
@@ -203,6 +217,7 @@ const providerBridgeEnvelopeSchema = z.union([
 
 const REQUEST_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
   [PROVIDER_BRIDGE_CHANNELS.getStatus, ProviderBridgeRequestSchemas.getStatus],
+  [PROVIDER_BRIDGE_CHANNELS.checkConnection, ProviderBridgeRequestSchemas.checkConnection],
   [PROVIDER_BRIDGE_CHANNELS.configure, ProviderBridgeRequestSchemas.configure],
   [PROVIDER_BRIDGE_CHANNELS.unlock, ProviderBridgeRequestSchemas.unlock],
   [PROVIDER_BRIDGE_CHANNELS.listProfiles, ProviderBridgeRequestSchemas.listProfiles],
@@ -214,6 +229,7 @@ const REQUEST_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
 
 const RESPONSE_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
   [PROVIDER_BRIDGE_CHANNELS.getStatus, ProviderBridgeResponseSchemas.getStatus],
+  [PROVIDER_BRIDGE_CHANNELS.checkConnection, ProviderBridgeResponseSchemas.checkConnection],
   [PROVIDER_BRIDGE_CHANNELS.configure, ProviderBridgeResponseSchemas.configure],
   [PROVIDER_BRIDGE_CHANNELS.unlock, ProviderBridgeResponseSchemas.unlock],
   [PROVIDER_BRIDGE_CHANNELS.listProfiles, ProviderBridgeResponseSchemas.listProfiles],
@@ -229,6 +245,7 @@ export type ProviderBridgeBlockedReason = 'credentials_locked';
 export type ProviderImageJobTerminalStatus = z.infer<typeof terminalStatusSchema>;
 export type ProviderBridgeProfile = z.infer<typeof ProviderBridgeProfileSchema>;
 export type ProviderConfigurationStatus = z.infer<typeof ProviderConfigurationStatusSchema>;
+export type ProviderConnectionCheckResult = z.infer<typeof ProviderConnectionCheckResultSchema>;
 export type ConfigureProviderBridgeRequest = z.infer<typeof ConfigureProviderBridgeRequestSchema>;
 export type UnlockProviderBridgeRequest = z.infer<typeof UnlockProviderBridgeRequestSchema>;
 export type SubmitImageJobBridgeRequest = z.infer<typeof SubmitImageJobBridgeRequestSchema>;

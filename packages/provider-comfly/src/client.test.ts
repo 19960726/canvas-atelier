@@ -14,6 +14,17 @@ describe('ComflyClient', () => {
     vi.useRealTimers();
   });
 
+  it('checks authentication with the free OpenAI-compatible models endpoint', async () => {
+    const fetch = vi.fn(async () => jsonResponse({ data: [{ id: 'private-model-id' }], object: 'list' }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    await expect(client.checkConnection()).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/models', expect.objectContaining({
+      method: 'GET',
+      headers: { authorization: 'Bearer secret-token' },
+    }));
+  });
+
   it('posts OpenAI-compatible chat payloads to /v1/chat/completions with request-time authorization', async () => {
     const fetch = vi.fn(async () => jsonResponse({
       id: 'chat-1',

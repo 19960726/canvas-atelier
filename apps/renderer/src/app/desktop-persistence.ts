@@ -85,12 +85,22 @@ export interface ProjectVideoImportResult {
   revision: number;
 }
 
+export interface ProjectHistoryCopyResult {
+  project: CanvasProject;
+  projectAssetId: string;
+  revision: number;
+}
+
 export interface ProjectPersistenceClient {
   close(): Promise<void>;
   commit(request: ProjectCommitRequest): Promise<ProjectCommitResult>;
   hydrate(): Promise<ProjectHydrationResult>;
   openProject?(): Promise<ProjectHydrationResult | null>;
   reloadDurableProject?(): Promise<ProjectHydrationResult | null>;
+  copyHistoryToProject?(input: {
+    readonly historyId: string;
+    readonly operationId: string;
+  }): Promise<ProjectHistoryCopyResult | null>;
   importProjectImage(target: ProjectImageImportTarget): Promise<ProjectImageImportResult | null>;
   importProjectVideo?(nodeId: string): Promise<ProjectVideoImportResult | null>;
   pasteClipboardImage(input: {
@@ -340,6 +350,24 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       return {
         asset: result.asset,
         project: currentProject,
+        revision,
+      };
+    },
+    async copyHistoryToProject(input) {
+      if (sessionId === null) return null;
+      if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
+      const result = await bridge.history.copyToProject({
+        historyIds: [input.historyId],
+        operationId: input.operationId,
+        sessionId,
+      });
+      const copied = result.copies.find((item) => item.historyId === input.historyId);
+      if (copied === undefined) return null;
+      currentProject = validateRecoveredProject(result.project, currentProject);
+      revision = result.currentRevision;
+      return {
+        project: currentProject,
+        projectAssetId: copied.projectAssetId,
         revision,
       };
     },

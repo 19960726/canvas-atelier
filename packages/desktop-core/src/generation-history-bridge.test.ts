@@ -44,15 +44,18 @@ describe('generation history narrow desktop bridge', () => {
     expect(handlers).toHaveProperty('getGenerationHistoryReusableSummary');
     expect(handlers).toHaveProperty('compareGenerationHistory');
     expect(handlers).toHaveProperty('exportGenerationHistory');
+    expect(handlers).toHaveProperty('resolveGenerationHistoryImagePath');
     const list = handlers.listGenerationHistory;
     const reuse = handlers.getGenerationHistoryReusableSummary;
     const compare = handlers.compareGenerationHistory;
     const exportHistory = handlers.exportGenerationHistory;
+    const resolveHistoryImage = handlers.resolveGenerationHistoryImagePath;
     if (
       typeof list !== 'function'
       || typeof reuse !== 'function'
       || typeof compare !== 'function'
       || typeof exportHistory !== 'function'
+      || typeof resolveHistoryImage !== 'function'
     ) return;
 
     const listed = await list({}, { pageSize: 25, filters: { trashState: 'all' } });
@@ -64,6 +67,12 @@ describe('generation history narrow desktop bridge', () => {
     expect(reusable).toMatchObject({ historyId: record.id, promptSummary: record.promptSummary });
     expect(Array.isArray(compared)).toBe(true);
     expect(exported).toEqual({ status: 'cancelled', exportedCount: 0, files: [] });
+    await expect(resolveHistoryImage(`novus-history://asset/${record.output!.historyAssetId}`)).resolves.toBe(join(
+      harness.historyRoot,
+      'originals',
+      `${record.output!.historyAssetId}.png`,
+    ));
+    await expect(resolveHistoryImage('novus-history://asset/../private')).resolves.toBeNull();
     expect(JSON.stringify({ listed, reusable, exported })).not.toMatch(
       /path|token|authorization|base64|blob:|providerUrl|rawTask|https?:\/\//iu,
     );

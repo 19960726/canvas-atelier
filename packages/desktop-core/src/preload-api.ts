@@ -76,6 +76,7 @@ import {
   type PollImageJobBridgeResult,
   type ProviderBridgeProfile,
   type ProviderConfigurationStatus,
+  type ProviderConnectionCheckResult,
   type SubmitImageJobBridgeRequest,
   type SubmitImageJobBridgeResult,
   type UnlockProviderBridgeRequest,
@@ -188,6 +189,7 @@ export interface DesktopLifecycleBridgeApi {
 
 export interface DesktopProviderBridgeApi {
   getStatus(): Promise<ProviderConfigurationStatus>;
+  checkConnection(): Promise<ProviderConnectionCheckResult>;
   configure(request: ConfigureProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
   unlock(request: UnlockProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
   listProfiles(): Promise<ProviderBridgeProfile[]>;
@@ -356,6 +358,9 @@ export function createPreloadApi(
     provider: {
       getStatus() {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.getStatus);
+      },
+      checkConnection() {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.checkConnection);
       },
       configure(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.configure, request);

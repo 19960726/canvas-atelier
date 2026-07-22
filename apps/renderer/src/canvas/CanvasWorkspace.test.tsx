@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAgentKnowledgeLease, createCanvasModuleNode, type PlacementObject, type ProjectMemoryEntry } from '@agent-canvas/domain';
@@ -204,6 +204,66 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('agent-panel')).not.toBeVisible();
     expect(useAppStore.getState().project).toBe(project);
     expect(useAppStore.getState().undoStack).toBe(undoStack);
+  });
+
+  it('keeps History, Settings, and Agent in one mutually exclusive overlay surface', () => {
+    render(<CanvasWorkspace />);
+    const project = useAppStore.getState().project;
+    const undoStack = useAppStore.getState().undoStack;
+    const revision = useAppStore.getState().desktopRevision;
+    const topbarActions = screen.getByTestId('topbar').querySelector('.topbar__actions');
+    const historyToggle = screen.getByRole('button', { name: '打开历史记录' });
+    const settingsToggle = screen.getByRole('button', { name: '打开设置' });
+
+    expect(topbarActions).not.toBeNull();
+    expect(historyToggle.compareDocumentPosition(settingsToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(historyToggle);
+    expect(screen.getByLabelText('生成历史 / Generation History')).toBeVisible();
+    expect(screen.getByTestId('agent-panel')).not.toBeVisible();
+
+    fireEvent.click(settingsToggle);
+    expect(screen.queryByLabelText('生成历史 / Generation History')).toBeNull();
+    expect(screen.getByTestId('settings-drawer')).toBeVisible();
+
+    fireEvent.click(screen.getByTestId('agent-toggle'));
+    expect(screen.queryByTestId('settings-drawer')).toBeNull();
+    expect(screen.getByTestId('agent-panel')).toBeVisible();
+
+    fireEvent.click(screen.getByTestId('agent-toggle'));
+    expect(screen.getByTestId('agent-panel')).not.toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '打开历史记录' }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByLabelText('生成历史 / Generation History')).toBeNull();
+
+    expect(useAppStore.getState().project).toBe(project);
+    expect(useAppStore.getState().undoStack).toBe(undoStack);
+    expect(useAppStore.getState().desktopRevision).toBe(revision);
+  });
+
+  it('shows a session-only history dot for a newly completed result and clears it when history opens', async () => {
+    render(<CanvasWorkspace />);
+    expect(screen.queryByTestId('history-unread-dot')).toBeNull();
+
+    act(() => {
+      useAppStore.setState({
+        modelJobs: [{
+          id: 'model-job-new-result',
+          modelId: 'public-image-model',
+          promptNodeId: 'prompt-node',
+          referenceAssetIds: [],
+          resultAssetId: 'asset-new-result',
+          resultNodeId: 'result-node',
+          retryCount: 0,
+          status: 'completed',
+        }],
+      });
+    });
+
+    expect(await screen.findByTestId('history-unread-dot')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '打开历史记录' }));
+    await waitFor(() => expect(screen.queryByTestId('history-unread-dot')).toBeNull());
+    expect(useAppStore.getState().project).toBeDefined();
   });
 
   it('configures provider credentials through the narrow desktop bridge without persisting the secret', async () => {

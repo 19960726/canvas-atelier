@@ -349,7 +349,10 @@ export type GenerationHistoryMutationBridgeResult = GenerationHistoryMutationRes
 export type GenerationHistoryPurgeBridgeResult = GenerationHistoryPurgeResult;
 export type GenerationHistoryReusableBridgeResult = GenerationHistoryReusableSummary;
 export type GenerationHistoryComparisonBridgeResult = readonly GenerationHistoryComparisonDescriptor[];
-export type CopyGenerationHistoryToProjectBridgeResult = GenerationHistoryProjectCopyResult;
+export interface CopyGenerationHistoryToProjectBridgeResult extends GenerationHistoryProjectCopyResult {
+  readonly currentRevision: number;
+  readonly project: CanvasProject;
+}
 export type ExportGenerationHistoryBridgeResult = GenerationHistoryExportResult;
 export type GenerationHistorySafeRecord = GenerationHistoryRecord;
 

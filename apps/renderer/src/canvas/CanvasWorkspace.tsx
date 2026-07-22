@@ -19,6 +19,7 @@ import {
   Box,
   ChevronRight,
   Hand,
+  History,
   Image,
   LayoutTemplate,
   Library,
@@ -41,6 +42,7 @@ import { ReversePromptAgent } from '../agent/ReversePromptAgent';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
 import { JobStrip } from '../jobs/JobStrip';
 import { SettingsDrawer } from '../settings/SettingsDrawer';
+import { GenerationHistoryDrawer } from '../history/GenerationHistoryDrawer';
 import { ModuleLibrary, MODULE_DRAG_MIME } from './ModuleLibrary';
 import { QuickInsert } from './QuickInsert';
 import { recordRecentModule } from './module-preferences';
@@ -69,6 +71,8 @@ interface QuickInsertState {
   anchor: { x: number; y: number };
   position: { x: number; y: number };
 }
+
+type WorkspaceSurface = 'agent' | 'history' | 'settings';
 
 function isPlacementNode(node: CanvasNode): node is PlacementNode {
   return node.type === 'placement_preview';
@@ -243,6 +247,8 @@ export function CanvasWorkspace() {
   const agentPanelCollapsed = useAppStore((state) => state.agentPanelCollapsed);
   const setActiveTool = useAppStore((state) => state.setActiveTool);
   const addModuleNode = useAppStore((state) => state.addModuleNode);
+  const addHistoryImageToCanvas = useAppStore((state) => state.addHistoryImageToCanvas);
+  const reuseHistoryParameters = useAppStore((state) => state.reuseHistoryParameters);
   const connectModulePorts = useAppStore((state) => state.connectModulePorts);
   const commitNodePosition = useAppStore((state) => state.commitNodePosition);
   const toggleAgentPanel = useAppStore((state) => state.toggleAgentPanel);
@@ -294,8 +300,34 @@ export function CanvasWorkspace() {
   const flowInstanceRef = useRef<CanvasFlowInstance | null>(null);
   const [moduleLibraryOpen, setModuleLibraryOpen] = useState(false);
   const [quickInsert, setQuickInsert] = useState<QuickInsertState | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeSurface, setActiveSurface] = useState<WorkspaceSurface | null>(null);
+  const [historyUnread, setHistoryUnread] = useState(false);
   const [providerStatus, setProviderStatus] = useState<ProviderConfigurationStatus | null>(null);
+  const seenCompletedHistoryJobsRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    const completed = new Set(modelJobs.flatMap((job) => (
+      job.status === 'completed' && job.resultAssetId ? [job.id] : []
+    )));
+    const previous = seenCompletedHistoryJobsRef.current;
+    seenCompletedHistoryJobsRef.current = completed;
+    if (previous === null || activeSurface === 'history') return;
+    if ([...completed].some((id) => !previous.has(id))) setHistoryUnread(true);
+  }, [activeSurface, modelJobs]);
+
+  const changeSurface = useCallback((surface: WorkspaceSurface | null) => {
+    setQuickInsert(null);
+    if (surface === 'history') setHistoryUnread(false);
+    setActiveSurface((current) => {
+      const next = current === surface ? null : surface;
+      if (current === 'agent' && next !== 'agent' && !useAppStore.getState().agentPanelCollapsed) {
+        toggleAgentPanel();
+      } else if (current !== 'agent' && next === 'agent' && useAppStore.getState().agentPanelCollapsed) {
+        toggleAgentPanel();
+      }
+      return next;
+    });
+  }, [toggleAgentPanel]);
 
   const flowNodeState = useMemo(() => {
     const nodes = toFlowNodes(project.nodes);
@@ -464,6 +496,21 @@ export function CanvasWorkspace() {
     return addModuleNode(moduleType, position);
   }, [addModuleNode, getSafeViewportCenter]);
 
+  const addHistoryRecordAtViewportCenter = useCallback(async (historyId: string, operationId: string) => {
+    const position = getSafeViewportCenter();
+    if (!position) return false;
+    return addHistoryImageToCanvas(historyId, operationId, position);
+  }, [addHistoryImageToCanvas, getSafeViewportCenter]);
+
+  const reuseHistoryAtViewportCenter = useCallback(async (
+    summary: Parameters<typeof reuseHistoryParameters>[0],
+    operationId: string,
+  ) => {
+    const position = getSafeViewportCenter();
+    if (!position) return false;
+    return reuseHistoryParameters(summary, operationId, position);
+  }, [getSafeViewportCenter, reuseHistoryParameters]);
+
   const createQuickInsertModule = useCallback(async (moduleType: CanvasModuleType) => {
     if (!quickInsert) return false;
     return addModuleNode(moduleType, quickInsert.position);
@@ -546,11 +593,9 @@ export function CanvasWorkspace() {
   const activateCanvasTool = useCallback((tool: Parameters<typeof setActiveTool>[0]) => {
     setModuleLibraryOpen(false);
     setQuickInsert(null);
-    if (tool === 'placement' && !agentPanelCollapsed) {
-      toggleAgentPanel();
-    }
+    if (tool === 'placement' && activeSurface !== null) changeSurface(null);
     setActiveTool(tool);
-  }, [agentPanelCollapsed, setActiveTool, toggleAgentPanel]);
+  }, [activeSurface, changeSurface, setActiveTool]);
 
   const toggleModuleLibrary = useCallback(() => {
     if (moduleLibraryOpen) {
@@ -593,15 +638,14 @@ export function CanvasWorkspace() {
         setQuickInsert(null);
         return;
       }
-      if (settingsOpen) {
-        setSettingsOpen(false);
+      if (activeSurface !== null) {
+        changeSurface(null);
         return;
       }
-      if (!agentPanelCollapsed) toggleAgentPanel();
     };
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [agentPanelCollapsed, quickInsert, settingsOpen, toggleAgentPanel]);
+  }, [activeSurface, changeSurface, quickInsert]);
 
   useEffect(() => {
     let cancelled = false;
@@ -739,7 +783,7 @@ export function CanvasWorkspace() {
   };
 
   return (
-    <div data-testid="workspace" data-agent-collapsed={agentPanelCollapsed} className={`workspace${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
+    <div data-testid="workspace" data-agent-collapsed={activeSurface !== 'agent'} className={`workspace${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
       <header className="topbar" data-testid="topbar" data-surface="chrome">
         <div className="product-mark" aria-label="Novus Atelier">
           <span className="product-mark__icon"><Box size={17} /></span>
@@ -762,19 +806,29 @@ export function CanvasWorkspace() {
             {providerStatus?.configured ? (providerStatus.locked ? '模型已锁定' : '模型已配置') : '模型未配置'}
           </span>
           <button
-            className="icon-button"
+            className="topbar-surface-button"
+            type="button"
+            data-testid="history-toggle"
+            aria-label={activeSurface === 'history' ? '关闭历史记录' : '打开历史记录'}
+            aria-pressed={activeSurface === 'history'}
+            title="历史记录 / History"
+            onClick={() => changeSurface('history')}
+          >
+            <History size={16} />
+            <span>历史记录</span>
+            {historyUnread && <i className="topbar-surface-button__dot" data-testid="history-unread-dot" aria-label="有新的生成结果" />}
+          </button>
+          <button
+            className="topbar-surface-button"
             type="button"
             data-testid="settings-toggle"
-            aria-label={settingsOpen ? '关闭设置' : '打开设置'}
-            aria-pressed={settingsOpen}
-            title="设置"
-            onClick={() => {
-              setQuickInsert(null);
-              if (!settingsOpen && !agentPanelCollapsed) toggleAgentPanel();
-              setSettingsOpen((open) => !open);
-            }}
+            aria-label={activeSurface === 'settings' ? '关闭设置' : '打开设置'}
+            aria-pressed={activeSurface === 'settings'}
+            title="设置 / Settings"
+            onClick={() => changeSurface('settings')}
           >
             <Settings size={16} />
+            <span>设置</span>
           </button>
           <button className="run-button" type="button" aria-label="运行方案"><Play size={15} fill="currentColor" /><span>运行方案</span></button>
         </div>
@@ -908,13 +962,13 @@ export function CanvasWorkspace() {
         )}
         <nav className="canvas-action-rail" aria-label="画布侧栏">
           <button
-            className={`canvas-action-rail__button${agentPanelCollapsed ? '' : ' is-active'}`}
+            className={`canvas-action-rail__button${activeSurface === 'agent' ? ' is-active' : ''}`}
             type="button"
             data-testid="agent-toggle"
-            aria-label={agentPanelCollapsed ? '打开 Novus Agent' : '关闭 Novus Agent'}
-            aria-pressed={!agentPanelCollapsed}
+            aria-label={activeSurface === 'agent' ? '关闭 Novus Agent' : '打开 Novus Agent'}
+            aria-pressed={activeSurface === 'agent'}
             title="Novus Agent"
-            onClick={toggleAgentPanel}
+            onClick={() => changeSurface('agent')}
           >
             <Sparkles size={18} strokeWidth={1.8} />
             {modelJobs.some((job) => job.status === 'submitting' || job.status === 'running') && (
@@ -975,13 +1029,13 @@ export function CanvasWorkspace() {
         )}
       </main>
 
-      <aside className="agent-panel" aria-label="Novus Agent 工作台" data-testid="agent-panel" hidden={agentPanelCollapsed}>
+      <aside className="agent-panel" aria-label="Novus Agent 工作台" data-testid="agent-panel" hidden={activeSurface !== 'agent'}>
         <div className="agent-panel__header">
           <div>
             <strong>Novus Agent</strong>
             <span>技能与知识工作台 / Skills & Knowledge</span>
           </div>
-          <button className="icon-button" type="button" aria-label="关闭 Novus Agent" title="关闭 Novus Agent" onClick={toggleAgentPanel}>
+          <button className="icon-button" type="button" aria-label="关闭 Novus Agent" title="关闭 Novus Agent" onClick={() => changeSurface(null)}>
             <X size={16} />
           </button>
         </div>
@@ -1081,10 +1135,18 @@ export function CanvasWorkspace() {
         )}
       </aside>
 
-      {settingsOpen && (
+      {activeSurface === 'history' && (
+        <GenerationHistoryDrawer
+          onAddToCanvas={addHistoryRecordAtViewportCenter}
+          onClose={() => changeSurface(null)}
+          onReuseParameters={reuseHistoryAtViewportCenter}
+        />
+      )}
+
+      {activeSurface === 'settings' && (
         <SettingsDrawer
           providerStatus={providerStatus}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => changeSurface(null)}
           onProviderStatusChange={setProviderStatus}
         />
       )}

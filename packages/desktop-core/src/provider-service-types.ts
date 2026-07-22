@@ -8,6 +8,7 @@ import type {
   PollImageJobBridgeResult,
   ProviderBridgeProfile,
   ProviderConfigurationStatus,
+  ProviderConnectionCheckResult,
   SubmitImageJobBridgeRequest,
   SubmitImageJobBridgeResult,
   UnlockProviderBridgeRequest,
@@ -15,6 +16,7 @@ import type {
 
 export interface ProviderService {
   getStatus(): Promise<ProviderConfigurationStatus>;
+  checkConnection(): Promise<ProviderConnectionCheckResult>;
   configure(request: ConfigureProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
   unlock(request: UnlockProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
   listProfiles(): Promise<ProviderBridgeProfile[]>;
@@ -26,6 +28,7 @@ export interface ProviderService {
 
 export interface ProviderBridgeHandlers {
   getStatus(event: unknown, request: unknown): Promise<ProviderConfigurationStatus>;
+  checkConnection(event: unknown, request: unknown): Promise<ProviderConnectionCheckResult>;
   configure(event: unknown, request: unknown): Promise<ProviderConfigurationStatus>;
   unlock(event: unknown, request: unknown): Promise<ProviderConfigurationStatus>;
   listProfiles(event: unknown, request: unknown): Promise<ProviderBridgeProfile[]>;

@@ -26,11 +26,9 @@ import type {
   GenerationHistoryProviderSinkContract,
 } from './generation-history-provider-sink.js';
 import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
-import type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
+import type { ProviderBridgeHandlers, ProviderService } from './provider-service-types.js';
 import {
   PROVIDER_BRIDGE_CHANNELS,
-  createProviderBridgeErrorEnvelope,
-  createProviderBridgeSuccessEnvelope,
   createProviderBridgeError,
   normalizeProviderBridgeError,
   parseProviderBridgeProfiles,
@@ -46,6 +44,7 @@ import {
   type ProviderBridgeException,
   type ProviderBridgeProfile,
   type ProviderConfigurationStatus,
+  type ProviderConnectionCheckResult,
   type SubmitImageJobBridgeRequest,
   type SubmitImageJobBridgeResult,
   type UnlockProviderBridgeRequest,
@@ -75,6 +74,7 @@ export type {
   ProviderBridgeException,
   ProviderBridgeProfile,
   ProviderConfigurationStatus,
+  ProviderConnectionCheckResult,
   ProviderImageJobResult,
   SubmitImageJobBridgeRequest,
   SubmitImageJobBridgeResult,
@@ -86,13 +86,12 @@ const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CURRENT_GENERATION_JOB_ID_PREFIX = 'model-job-v2-';
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
 export type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
+export { registerProviderBridgeHandlers } from './provider-ipc-registration.js';
 interface ConfigurationSnapshot {
   readonly baseUrl: string;
   readonly profiles: readonly ProviderBridgeProfile[];
 }
-interface RuntimeSnapshot extends ConfigurationSnapshot {
-  readonly token: string;
-}
+type RuntimeSnapshot = ConfigurationSnapshot & { readonly token: string };
 
 export function createComflyProviderService(options: {
   readonly appDataRoot: string;
@@ -136,6 +135,19 @@ export function createComflyProviderService(options: {
   return {
     getStatus() {
       return options.credentialStore.getStatus();
+    },
+    async checkConnection(): Promise<ProviderConnectionCheckResult> {
+      const checkedAt = new Date(nowMs()).toISOString();
+      const status = await options.credentialStore.getStatus();
+      if (!status.configured) return { checkedAt, status: 'unconfigured' };
+      if (status.locked) return { checkedAt, status: 'service_limited' };
+      try {
+        const snapshot = await captureRuntimeSnapshot();
+        await createClient(snapshot).checkConnection();
+        return { checkedAt, status: 'connected' };
+      } catch (error) {
+        return { checkedAt, status: classifyConnectionCheckFailure(error) };
+      }
     },
     configure(request) {
       return enqueueConfigure(async () => {
@@ -490,11 +502,25 @@ export function createComflyProviderService(options: {
   }
 }
 
+function classifyConnectionCheckFailure(error: unknown): ProviderConnectionCheckResult['status'] {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/status (?:401|403)\b/u.test(message)) return 'authentication_failed';
+  if (/status (?:429|5\d\d)\b/u.test(message) || /CREDENTIALS_LOCKED/u.test(message)) return 'service_limited';
+  return 'network_unavailable';
+}
+
 export function createProviderBridgeHandlers(service: ProviderService): ProviderBridgeHandlers {
   return {
     getStatus: async (_event, request) => {
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.getStatus, request);
       return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.getStatus, await service.getStatus()) as ProviderConfigurationStatus;
+    },
+    checkConnection: async (_event, request) => {
+      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.checkConnection, request);
+      return parseProviderBridgeResponse(
+        PROVIDER_BRIDGE_CHANNELS.checkConnection,
+        await service.checkConnection(),
+      ) as ProviderConnectionCheckResult;
     },
     configure: async (_event, request) => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.configure, await service.configure(
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.configure, request) as ConfigureProviderBridgeRequest,
@@ -518,33 +544,6 @@ export function createProviderBridgeHandlers(service: ProviderService): Provider
     ackImageJobTerminal: async (_event, request) => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, await service.ackImageJobTerminal(
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, request) as AckImageJobTerminalBridgeRequest,
     )) as AckImageJobTerminalBridgeResult,
-  };
-}
-
-export function registerProviderBridgeHandlers(
-  ipcMain: ProviderIpcMainLike,
-  handlers: ProviderBridgeHandlers,
-): void {
-  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.getStatus, wrapProviderIpcHandler(PROVIDER_BRIDGE_CHANNELS.getStatus, handlers.getStatus));
-  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.configure, wrapProviderIpcHandler(PROVIDER_BRIDGE_CHANNELS.configure, handlers.configure));
-  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.unlock, wrapProviderIpcHandler(PROVIDER_BRIDGE_CHANNELS.unlock, handlers.unlock));
-  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.listProfiles, wrapProviderIpcHandler(PROVIDER_BRIDGE_CHANNELS.listProfiles, handlers.listProfiles));
-  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.submitImageJob, wrapProviderIpcHandler(PROVIDER_BRIDGE_CHANNELS.submitImageJob, handlers.submitImageJob));
-  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.pollImageJob, wrapProviderIpcHandler(PROVIDER_BRIDGE_CHANNELS.pollImageJob, handlers.pollImageJob));
-  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, wrapProviderIpcHandler(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, handlers.cancelImageJob));
-  ipcMain.handle(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, wrapProviderIpcHandler(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, handlers.ackImageJobTerminal));
-}
-
-function wrapProviderIpcHandler(
-  channel: string,
-  handler: (event: unknown, request: unknown) => Promise<unknown>,
-): (event: unknown, request: unknown) => Promise<unknown> {
-  return async (event, request) => {
-    try {
-      return createProviderBridgeSuccessEnvelope(channel, await handler(event, request));
-    } catch (error) {
-      return createProviderBridgeErrorEnvelope(error);
-    }
   };
 }
 

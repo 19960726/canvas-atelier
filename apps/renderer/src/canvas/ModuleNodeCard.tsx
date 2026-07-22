@@ -41,6 +41,7 @@ const ModulePort = memo(function ModulePort({ port }: ModulePortProps) {
   return (
     <div
       className={`module-node__port-row module-node__port-row--${port.direction}`}
+      aria-label={`${port.primaryLabel} / ${port.secondaryLabel}`}
       data-port-id={port.id}
       data-port-direction={port.direction}
       data-port-type={port.dataType}
@@ -57,7 +58,7 @@ const ModulePort = memo(function ModulePort({ port }: ModulePortProps) {
           data-port-shape={portShape}
         />
       )}
-      <span className="module-node__port-label" title={`${port.primaryLabel} / ${port.secondaryLabel}`}>
+      <span aria-hidden="true" className="module-node__port-label" title={`${port.primaryLabel} / ${port.secondaryLabel}`}>
         {port.primaryLabel}
         {port.required ? null : <small className="module-node__port-optional" aria-label="可选 / optional">选</small>}
       </span>
@@ -126,6 +127,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       className={`module-node${hasMediaControls ? ' module-node--media-controls' : ''}${hasImageControls ? ' module-node--image-controls' : ''}${isProfessionalWorkbench ? ' module-node--workbench' : ''}${selected ? ' is-selected' : ''}`}
       data-testid="module-node-card"
       data-module-type={definition.type}
+      data-port-label-mode={isProfessionalWorkbench ? 'interactive' : 'always'}
       style={mediaNodeStyle}
     >
       <header className="module-node__header">
@@ -211,12 +213,29 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
 
 function ImageGenerationSummary({ config }: { config: Record<string, unknown> }) {
   const referenceCount = readStringArray(config.referenceAssetIds).length;
+  const prompt = readNonEmptyString(config.prompt) ?? '输入主提示词';
+  const aspectRatio = readNonEmptyString(config.aspectRatio) ?? '自由比例';
+  const resolution = readNonEmptyString(config.resolution) ?? '自动尺寸';
+  const outputCount = readPositiveInteger(config.outputCount) ?? 1;
   return (
-    <section className="module-node__summary module-node__summary--compact" aria-label="生成摘要 / Generation summary">
+    <section className="module-node__summary module-node__summary--compact module-node__summary--generation" aria-label="生成摘要 / Generation summary">
+      <div className="module-node__result-stage" aria-hidden="true">
+        <ImageIcon size={24} strokeWidth={1.5} />
+      </div>
+      <p className="module-node__prompt" title={prompt}>{prompt}</p>
       <div className="module-node__compact-line">
         <span title="模型路线 / Model route">{formatRoute(config)}</span>
         <b>参考 {referenceCount}</b>
       </div>
+      <div className="module-node__parameter-row" aria-label="生成参数 / Generation parameters">
+        <span>{aspectRatio}</span>
+        <span>{resolution}</span>
+        <span>{outputCount} 张</span>
+      </div>
+      <details className="module-node__advanced nodrag nopan">
+        <summary>高级参数</summary>
+        <span>蒙版、姿态与参考顺序在完整工作台中配置</span>
+      </details>
       <ResultFreshness value={config.resultState} />
     </section>
   );
@@ -225,6 +244,8 @@ function ImageGenerationSummary({ config }: { config: Record<string, unknown> })
 function ReverseAgentSummary({ config }: { config: Record<string, unknown> }) {
   const media = readOrderedMedia(config.orderedMedia);
   const skillName = readNonEmptyString(config.skillName) ?? '自动识别';
+  const role = readNonEmptyString(config.role) ?? '视觉分析助手';
+  const task = readNonEmptyString(config.task) ?? '等待分析任务';
   const mode = readNonEmptyString(config.mode) ?? 'auto';
   const knowledgeVersion = typeof config.knowledgeVersion === 'number' ? `知识 v${config.knowledgeVersion}` : '知识未绑定';
   return (
@@ -233,9 +254,22 @@ function ReverseAgentSummary({ config }: { config: Record<string, unknown> }) {
       aria-label="反推摘要 / Reverse summary"
       title={formatMediaTooltip(media)}
     >
+      <div className="module-node__media-thumbs" aria-label={`媒体输入 ${media.length} 项`}>
+        {media.length === 0 ? (
+          <span className="module-node__media-thumb is-empty"><ImageIcon size={16} /></span>
+        ) : media.slice(0, 4).map((item) => (
+          <span key={`${item.kind}:${item.assetId}`} className={`module-node__media-thumb is-${item.kind}`} aria-hidden="true">
+            {item.kind === 'video' ? <Video size={16} /> : <ImageIcon size={16} />}
+          </span>
+        ))}
+      </div>
       <div className="module-node__compact-line">
         <span>{skillName}</span>
         <b>{media.length} 项</b>
+      </div>
+      <div className="module-node__reverse-brief">
+        <strong>{role}</strong>
+        <span title={task}>{task}</span>
       </div>
       <div className="module-node__compact-subline">
         <span>{knowledgeVersion}</span>
@@ -308,6 +342,10 @@ function readStringArray(value: unknown): string[] {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 interface OrderedMediaSummary {

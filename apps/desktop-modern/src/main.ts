@@ -57,10 +57,16 @@ const snapshotWorkerEntryPath = join(currentDir, 'snapshot-worker-entry.cjs');
 const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
 
 if (protocol !== undefined) {
-  protocol.registerSchemesAsPrivileged([{
-    scheme: 'novus-asset',
-    privileges: { secure: true, standard: true },
-  }]);
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: 'novus-asset',
+      privileges: { secure: true, standard: true },
+    },
+    {
+      scheme: 'novus-history',
+      privileges: { secure: true, standard: true },
+    },
+  ]);
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -511,6 +517,11 @@ function createDialogAdapter(): BridgeDialogAdapter {
 function registerProjectImageProtocol(handlers: DesktopBridgeHandlers): void {
   protocol.registerFileProtocol('novus-asset', (request, callback) => {
     void handlers.resolveProjectImagePath(request.url)
+      .then((path) => callback(path === null ? { error: -6 } : { path }))
+      .catch(() => callback({ error: -6 }));
+  });
+  protocol.registerFileProtocol('novus-history', (request, callback) => {
+    void handlers.resolveGenerationHistoryImagePath(request.url)
       .then((path) => callback(path === null ? { error: -6 } : { path }))
       .catch(() => callback({ error: -6 }));
   });

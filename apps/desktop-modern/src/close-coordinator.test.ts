@@ -52,6 +52,7 @@ describe('modern desktop close coordinator', () => {
 
     expect(source).toContain('protocol.registerSchemesAsPrivileged');
     expect(source).toContain("protocol.registerFileProtocol('novus-asset'");
+    expect(source).toContain("protocol.registerFileProtocol('novus-history'");
     expect(source).toContain('handlers.resolveProjectImagePath(request.url)');
     expect(source).toContain('async chooseProjectImage()');
     expect(source).toContain("properties: ['openFile']");

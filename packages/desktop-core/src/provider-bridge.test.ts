@@ -213,6 +213,21 @@ describe('secure provider credential storage', () => {
 });
 
 describe('Comfly provider service', () => {
+  it('checks credentials through the free models endpoint without creating a provider job', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async () => jsonResponse({ data: [{ id: 'private-model-id' }], object: 'list' }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, profiles });
+
+    await expect(service.checkConnection()).resolves.toMatchObject({ status: 'unconfigured' });
+    expect(fetch).not.toHaveBeenCalled();
+    await service.configure({ token });
+    await expect(service.checkConnection()).resolves.toMatchObject({ status: 'connected' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/v1\/models$/u), expect.objectContaining({ method: 'GET' }));
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('returns an empty profile inventory when no profiles are configured', async () => {
     const appDataRoot = await makeTempRoot();
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
@@ -1876,6 +1891,7 @@ describe('provider IPC handlers', () => {
       ackImageJobTerminal: vi.fn(),
       cancelImageJob: vi.fn(),
       configure: vi.fn(),
+      checkConnection: vi.fn(),
       getStatus: vi.fn(),
       listProfiles: vi.fn(),
       pollImageJob: vi.fn(),

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Connection } from '@xyflow/react';
 import type {
   KnowledgeSyncStatusSummary,
+  GenerationHistoryReusableBridgeResult,
   ProjectImageAssetSummary,
   ProjectImageImportTarget,
   ProjectVideoAssetSummary,
@@ -191,6 +192,16 @@ interface AppState {
   discardPersistence: () => Promise<boolean>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
   retryFailedProjectCommit: () => Promise<boolean>;
+  addHistoryImageToCanvas: (
+    historyId: string,
+    operationId: string,
+    position: { readonly x: number; readonly y: number },
+  ) => Promise<boolean>;
+  reuseHistoryParameters: (
+    summary: GenerationHistoryReusableBridgeResult,
+    operationId: string,
+    position: { readonly x: number; readonly y: number },
+  ) => Promise<boolean>;
   addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
   connectModulePorts: (connection: Connection) => Promise<boolean>;
   commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
@@ -264,6 +275,88 @@ export const useAppStore = create<AppState>((set, get) => ({
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
   },
+  addHistoryImageToCanvas: (historyId, operationId, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const copyHistoryToProject = projectPersistenceClient.copyHistoryToProject;
+    if (
+      copyHistoryToProject === undefined
+      || !isNonEmptyString(historyId)
+      || !isNonEmptyString(operationId)
+      || !isFinitePosition(position)
+      || get().projectLifecycle !== 'durable'
+    ) return false;
+    const generation = projectPersistenceGeneration;
+    const expectedProjectId = get().project.id;
+    set({ saveErrorCode: null, saveStatus: 'saving' });
+    let copied;
+    try {
+      copied = await copyHistoryToProject({ historyId, operationId });
+    } catch (error) {
+      if (generation === projectPersistenceGeneration && get().project.id === expectedProjectId) {
+        set({ saveErrorCode: readErrorCode(error), saveStatus: 'error' });
+      }
+      return false;
+    }
+    if (
+      copied === null
+      || generation !== projectPersistenceGeneration
+      || copied.project.id !== expectedProjectId
+      || get().project.id !== expectedProjectId
+    ) return false;
+    const nodeId = `history-node-${operationId}`;
+    const transactionId = `history-canvas-${operationId}`;
+    const existingNode = copied.project.nodes.find((node) => node.id === nodeId);
+    set({ desktopRevision: copied.revision, project: copied.project });
+    if (existingNode !== undefined) {
+      const projectImages = await projectPersistenceClient.listProjectImages().catch(() => get().projectImages);
+      set({ projectImages, saveErrorCode: null, saveStatus: 'saved' });
+      return true;
+    }
+    const baseNode = createCanvasModuleNode(nodeId, 'image_input', position);
+    const node = {
+      ...baseNode,
+      data: { ...baseNode.data, config: { ...baseNode.data.config, assetId: copied.projectAssetId } },
+    };
+    const committed = await commitNow({
+      id: transactionId,
+      label: 'Add generation history image to canvas',
+      operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
+    });
+    if (!committed) return false;
+    const projectImages = await projectPersistenceClient.listProjectImages().catch(() => get().projectImages);
+    set({ projectImages });
+    return true;
+  }),
+  reuseHistoryParameters: (summary, operationId, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    if (
+      !isNonEmptyString(operationId)
+      || !isFinitePosition(position)
+      || containsProtectedRendererPayload(summary)
+    ) return false;
+    const nodeId = `history-reuse-node-${operationId}`;
+    const existing = get().project.nodes.find((node) => node.id === nodeId);
+    if (existing !== undefined) return existing.type === 'module' && existing.data.moduleType === 'image_generation';
+    const baseNode = createCanvasModuleNode(nodeId, 'image_generation', position);
+    const node = {
+      ...baseNode,
+      data: {
+        ...baseNode.data,
+        config: {
+          ...baseNode.data.config,
+          ...summary.parameters,
+          modelDisplayName: summary.provider.modelDisplayName,
+          prompt: summary.promptSummary,
+          providerDisplayName: summary.provider.displayName,
+          resultState: 'empty',
+          routeDisplayName: summary.provider.modelDisplayName,
+        },
+      },
+    };
+    return commitNow({
+      id: `history-reuse-${operationId}`,
+      label: 'Reuse generation history parameters',
+      operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
+    });
+  }),
   addModuleNode: (moduleType, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const suffix = `${Date.now()}-${planSequence++}`;
     const node = createCanvasModuleNode(`module-${moduleType}-${suffix}`, moduleType, position);
@@ -1601,8 +1694,8 @@ function upsertProjectVideoSummary(
 
 type CompatibleProjectPersistenceClient = Omit<
   ProjectPersistenceClient,
-  'importProjectImage' | 'importProjectVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'
-> & Partial<Pick<ProjectPersistenceClient, 'importProjectImage' | 'importProjectVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'>>;
+  'copyHistoryToProject' | 'importProjectImage' | 'importProjectVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'
+> & Partial<Pick<ProjectPersistenceClient, 'copyHistoryToProject' | 'importProjectImage' | 'importProjectVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'>>;
 
 export function replaceProjectPersistenceClientForTests(client: CompatibleProjectPersistenceClient): void {
   projectPersistenceClient = withProjectImagePersistenceDefaults(client);
@@ -1611,6 +1704,7 @@ export function replaceProjectPersistenceClientForTests(client: CompatibleProjec
 function withProjectImagePersistenceDefaults(client: CompatibleProjectPersistenceClient): ProjectPersistenceClient {
   return {
     ...client,
+    copyHistoryToProject: client.copyHistoryToProject ?? (async () => null),
     importProjectImage: client.importProjectImage ?? (async () => null),
     importProjectVideo: client.importProjectVideo ?? (async () => null),
     listProjectImages: client.listProjectImages ?? (async () => []),

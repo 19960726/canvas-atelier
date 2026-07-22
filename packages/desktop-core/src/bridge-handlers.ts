@@ -139,6 +139,7 @@ import {
 } from './snapshot-scheduler.js';
 import { BRIDGE_CHANNELS } from './preload-api.js';
 import { createProjectAssetDisplayUrl, parseProjectAssetDisplayUrl } from './project-asset-url.js';
+import { parseGenerationHistoryAssetUrl } from './generation-history-asset-url.js';
 
 interface BridgeWriter {
   commit(request: Omit<CommitBridgeRequest, 'sessionId'>): Promise<CommitAck>;
@@ -318,6 +319,7 @@ export interface DesktopBridgeHandlers {
   reviewSkillCandidate(event: unknown, request: unknown): Promise<ReviewSkillCandidateBridgeResult>;
   restore(event: unknown, request: unknown): Promise<RestoreBridgeResult>;
   resolveProjectImagePath(displayUrl: string): Promise<string | null>;
+  resolveGenerationHistoryImagePath(displayUrl: string): Promise<string | null>;
 }
 
 export interface DesktopIpcMainLike {
@@ -1078,6 +1080,12 @@ export function createDesktopBridgeHandlers(
     );
   }
 
+  async function resolveGenerationHistoryImagePath(displayUrl: string): Promise<string | null> {
+    const identity = parseGenerationHistoryAssetUrl(displayUrl);
+    if (identity === null) return null;
+    return historyStore.resolveAvailableAssetPath(identity.historyAssetId);
+  }
+
   async function listGenerationHistory(
     _event: unknown,
     request: unknown,
@@ -1125,7 +1133,7 @@ export function createDesktopBridgeHandlers(
     return enqueueSessionMaintenance(session, async () => {
       const currentSession = requireWritableSession(sessions, validated.sessionId);
       const writer = requireBridgeWriter(currentSession);
-      return historyService.copyToProject({
+      const copied = await historyService.copyToProject({
         historyIds: validated.historyIds,
         operationId: validated.operationId,
         projectDisplayLabel: currentSession.session.manifest.projectName,
@@ -1161,6 +1169,9 @@ export function createDesktopBridgeHandlers(
           await flushScheduledSnapshotAfterCommit(currentSession, ack, 'canvas');
         },
       });
+      const project = await repository.readCurrentProject(currentSession.session);
+      const currentRevision = await readCurrentRevision(repository, currentSession.session);
+      return { ...copied, currentRevision, project };
     });
   }
 
@@ -1513,6 +1524,7 @@ export function createDesktopBridgeHandlers(
     purgeGenerationHistory,
     restoreGenerationHistory,
     restore,
+    resolveGenerationHistoryImagePath,
     resolveProjectImagePath,
     setGenerationHistoryFavorite,
     trashGenerationHistory,

@@ -52,6 +52,7 @@ interface HistoryStoreLike {
     readonly operationId: string;
     readonly referenceIds: readonly string[];
   }): Promise<unknown>;
+  resolveAvailableAssetPath(historyAssetId: string): Promise<string | null>;
   restore(input: { readonly historyIds: readonly string[]; readonly operationId: string }): Promise<unknown>;
   setFavorite(input: {
     readonly favorite: boolean;
@@ -65,6 +66,40 @@ interface HistoryStoreLike {
     consumer: (asset: { readonly record: GenerationHistoryRecord; readonly source: NodeJS.ReadableStream }) => Promise<T>,
   ): Promise<T>;
 }
+
+describe('generation history media resolution', () => {
+  it('resolves only active verified originals by opaque history asset id', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const store = new Store(harness);
+    const record = historyRecord('history_mediaaaaaaaaaaa', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_mediaaaaa', record, source: chunks(pngBytes) });
+
+    await expect(store.resolveAvailableAssetPath(record.output!.historyAssetId)).resolves.toBe(join(
+      harness.historyRoot,
+      'originals',
+      `${record.output!.historyAssetId}.png`,
+    ));
+    await expect(store.resolveAvailableAssetPath('history_asset_unknownxx')).resolves.toBeNull();
+    await expect(store.resolveAvailableAssetPath('../private-file')).resolves.toBeNull();
+
+    await store.softDelete({ historyIds: [record.id], operationId: 'operation_trash_mediaaaaaa' });
+    await expect(store.resolveAvailableAssetPath(record.output!.historyAssetId)).resolves.toBeNull();
+  });
+
+  it('rejects a same-size corrupted original during media resolution', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const store = new Store(harness);
+    const record = historyRecord('history_mediacorruptaaa', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_mediabbb', record, source: chunks(pngBytes) });
+    await writeFile(join(harness.historyRoot, 'originals', `${record.output!.historyAssetId}.png`), Buffer.alloc(pngBytes.length, 0x7f));
+
+    await expect(store.resolveAvailableAssetPath(record.output!.historyAssetId)).resolves.toBeNull();
+  });
+});
 
 type HistoryStoreConstructor = new (options: {
   readonly fileSystem?: FileSystem;

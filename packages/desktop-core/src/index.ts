@@ -116,6 +116,12 @@ export type {
 } from './approved-snapshot-pull.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
 export { GenerationHistoryStore } from './generation-history-store.js';
+export {
+  GENERATION_HISTORY_ASSET_SCHEME,
+  createGenerationHistoryAssetUrl,
+  parseGenerationHistoryAssetUrl,
+} from './generation-history-asset-url.js';
+export type { GenerationHistoryAssetUrlIdentity } from './generation-history-asset-url.js';
 export type {
   GenerationHistoryListResult,
   GenerationHistoryAvailableAsset,
@@ -261,6 +267,7 @@ export type {
   ProviderBridgeHandlers,
   ProviderBridgeProfile,
   ProviderConfigurationStatus,
+  ProviderConnectionCheckResult,
   ProviderCredentialStore,
   ProviderImageJobResult,
   ProviderService,

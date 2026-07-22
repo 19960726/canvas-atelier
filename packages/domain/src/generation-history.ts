@@ -226,10 +226,12 @@ export const generationHistoryListRequestSchema = z.object({
   filters: z.object({
     createdFrom: timestampSchema.optional(),
     createdTo: timestampSchema.optional(),
+    availability: z.enum(['all', 'available', 'missing', 'corrupt']).default('all'),
     favorite: z.boolean().optional(),
     modelDisplayName: safeOptionalTextSchema(120),
     projectId: opaqueIdSchema.optional(),
     providerDisplayName: safeOptionalTextSchema(80),
+    referenceState: z.enum(['all', 'used', 'unreferenced']).default('all'),
     statuses: z.array(generationHistoryStatusSchema).max(5).optional(),
     text: safeOptionalTextSchema(120),
     trashState: z.enum(['active', 'trashed', 'all']).default('active'),
@@ -290,6 +292,9 @@ export function filterAndSortGenerationHistory(
       if (filters.createdFrom !== undefined && createdAt < Date.parse(filters.createdFrom)) return false;
       if (filters.createdTo !== undefined && createdAt > Date.parse(filters.createdTo)) return false;
       if (filters.favorite !== undefined && record.favorite !== filters.favorite) return false;
+      if (filters.referenceState === 'used' && record.projectReferenceCount === 0) return false;
+      if (filters.referenceState === 'unreferenced' && record.projectReferenceCount > 0) return false;
+      if (filters.availability !== 'all' && record.output?.availability !== filters.availability) return false;
       if (filters.projectId !== undefined && record.project?.projectId !== filters.projectId) return false;
       if (filters.providerDisplayName !== undefined && record.provider.displayName !== filters.providerDisplayName) return false;
       if (filters.modelDisplayName !== undefined && record.provider.modelDisplayName !== filters.modelDisplayName) return false;

@@ -46,6 +46,10 @@ describe('formal module node presentation', () => {
     const node = createCanvasModuleNode('generation', 'image_generation' as never, { x: 0, y: 0 });
     node.data.config = {
       routeDisplayName: 'Compatible Image Route',
+      prompt: '高端护肤产品，干净棚拍光线',
+      aspectRatio: '4:5',
+      resolution: '2048 × 2560',
+      outputCount: 2,
       enabledInputCapabilities: ['references', 'mask'],
       referenceAssetIds: ['ref-a', 'ref-b'],
       resultState: 'stale',
@@ -61,6 +65,11 @@ describe('formal module node presentation', () => {
     expect(screen.getByLabelText('生成摘要 / Generation summary')).not.toHaveTextContent('当前模型不支持');
     expect(screen.getByLabelText('生成摘要 / Generation summary')).not.toHaveTextContent('/ Mask');
     expect(screen.getByText(/Compatible Image Route/)).toBeVisible();
+    expect(screen.getByText('高端护肤产品，干净棚拍光线')).toBeVisible();
+    expect(screen.getByLabelText('生成参数 / Generation parameters')).toHaveTextContent('4:5');
+    expect(screen.getByLabelText('生成参数 / Generation parameters')).toHaveTextContent('2048 × 2560');
+    expect(screen.getByLabelText('生成参数 / Generation parameters')).toHaveTextContent('2 张');
+    expect(screen.getByText('高级参数')).toBeVisible();
     expect(screen.getByText('已过期')).toBeVisible();
     expect(screen.getByRole('alert')).toHaveTextContent('模型不可用');
     expect(screen.getByRole('alert')).toHaveTextContent('选择兼容模型');
@@ -76,6 +85,8 @@ describe('formal module node presentation', () => {
       ],
       skillName: '产品商业片',
       mode: '多模态兼容',
+      role: '商业视觉导演',
+      task: '拆解构图、材质与灯光',
       knowledgeVersion: 7,
       resultState: 'fresh',
       routeDisplayName: 'Vision Composite',
@@ -87,10 +98,23 @@ describe('formal module node presentation', () => {
     const summary = screen.getByLabelText('反推摘要 / Reverse summary');
     expect(summary).toHaveTextContent('产品商业片');
     expect(summary).toHaveTextContent('3 项');
+    expect(summary).toHaveTextContent('商业视觉导演');
+    expect(summary).toHaveTextContent('拆解构图、材质与灯光');
     expect(summary).toHaveTextContent('知识 v7');
+    expect(summary.querySelectorAll('.module-node__media-thumb')).toHaveLength(3);
     expect(summary).toHaveAttribute('title', expect.stringContaining('00:01.500–00:06.250'));
     expect(screen.queryByText('产品正面')).not.toBeInTheDocument();
     expect(screen.getByText('最新')).toBeVisible();
+  });
+
+  it('keeps professional port labels quiet until interaction while preserving accessible handles', () => {
+    const node = createCanvasModuleNode('generation', 'image_generation', { x: 0, y: 0 });
+    renderCard(node);
+
+    const card = screen.getByTestId('module-node-card');
+    expect(card).toHaveAttribute('data-port-label-mode', 'interactive');
+    expect(card.querySelector('[data-port-id="prompt"]')).toHaveAttribute('aria-label', '提示词 / Prompt');
+    expect(card.querySelector('.module-node__port-label')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it.each([

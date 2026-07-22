@@ -64,6 +64,44 @@ describe('desktop persistence', () => {
     expect(result?.project.nodes.some((node) => node.id === 'clipboard-node')).toBe(true);
   });
 
+  it('copies history into the active project without exposing the desktop session to callers', async () => {
+    const project = createStarterProject();
+    const copiedProject = {
+      ...project,
+      assets: [{
+        assetId: '0123456789abcdef', byteSize: 42, extension: 'png' as const, height: 50,
+        label: 'History image', mediaType: 'image/png' as const, origin: 'generated' as const,
+        sha256: `0123456789abcdef${'0'.repeat(48)}`, width: 25,
+      }],
+    };
+    const copyToProject = vi.fn(async () => ({
+      copies: [{ historyId: 'history_0123456789abcdef', projectAssetId: '0123456789abcdef' }],
+      currentRevision: 4,
+      project: copiedProject,
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      history: { copyToProject },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const result = await client.copyHistoryToProject?.({
+      historyId: 'history_0123456789abcdef',
+      operationId: 'operation_history_canvas_01234567',
+    });
+
+    expect(copyToProject).toHaveBeenCalledWith({
+      historyIds: ['history_0123456789abcdef'],
+      operationId: 'operation_history_canvas_01234567',
+      sessionId: 'session',
+    });
+    expect(result).toMatchObject({ projectAssetId: '0123456789abcdef', revision: 4 });
+    expect((await client.hydrate()).project.assets).toHaveLength(1);
+  });
+
   it('retries one ambiguous clipboard paste with the exact same operation identity', async () => {
     const project = createStarterProject();
     const result = {

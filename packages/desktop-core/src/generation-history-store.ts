@@ -616,6 +616,27 @@ export class GenerationHistoryStore {
     });
   }
 
+  async resolveAvailableAssetPath(historyAssetId: string): Promise<string | null> {
+    let assetId: string;
+    try {
+      assetId = parseOpaqueId(historyAssetId, 'History asset identity is invalid');
+    } catch {
+      return null;
+    }
+    return this.withLockedIndex(async (current) => {
+      const record = current.records.find((candidate) => (
+        candidate.trash === null
+        && candidate.output?.historyAssetId === assetId
+        && candidate.output.availability === 'available'
+      ));
+      if (record?.output === null || record?.output === undefined) return null;
+      const path = this.recordAssetPath(record);
+      return await this.inspectOriginal(path, record.output.sha256, record.output.byteSize) === 'valid'
+        ? path
+        : null;
+    });
+  }
+
   async withAvailableAsset<T>(
     historyId: string,
     consumer: (asset: GenerationHistoryAvailableAsset) => Promise<T>,

@@ -4,6 +4,7 @@ import * as historyContract from './generation-history';
 
 import {
   GENERATION_HISTORY_SCHEMA_VERSION,
+  filterAndSortGenerationHistory,
   parseGenerationHistoryRecord,
   type GenerationHistoryRecord,
 } from './generation-history';
@@ -115,6 +116,8 @@ describe('generation history query contract', () => {
         modelDisplayName: 'Image Studio',
         projectId: 'project_0123456789abcdef',
         providerDisplayName: 'Comfly',
+        referenceState: 'used',
+        availability: 'available',
         statuses: ['succeeded'],
         text: 'studio',
         trashState: 'active',
@@ -128,6 +131,37 @@ describe('generation history query contract', () => {
       createdFrom: '2026-08-01T00:00:00.000Z',
       createdTo: '2026-07-01T00:00:00.000Z',
     } })).toThrow();
+    expect(() => parseList({ filters: { referenceState: 'unknown' } })).toThrow();
+    expect(() => parseList({ filters: { availability: 'none' } })).toThrow();
+  });
+
+  it('filters reference and availability state before pagination', () => {
+    const used = parseGenerationHistoryRecord({
+      ...succeededRecord(),
+      id: 'history_usedaaaaaaaaaaaa',
+      projectReferenceCount: 1,
+      projectReferences: [{
+        referenceId: 'reference_aaaaaaaaaaaaaaaa',
+        projectId: 'project_0123456789abcdef',
+        projectDisplayLabel: 'Campaign',
+      }],
+    });
+    const corrupt = parseGenerationHistoryRecord({
+      ...succeededRecord(),
+      id: 'history_corruptaaaaaaaaa',
+      output: { ...succeededRecord().output as Record<string, unknown>, availability: 'corrupt' },
+    });
+    const unreferenced = parseGenerationHistoryRecord({
+      ...succeededRecord(),
+      id: 'history_freeaaaaaaaaaaaa',
+    });
+
+    expect(filterAndSortGenerationHistory([used, corrupt, unreferenced], {
+      filters: { availability: 'available', referenceState: 'unreferenced' },
+    }).map((record) => record.id)).toEqual([unreferenced.id]);
+    expect(filterAndSortGenerationHistory([used, corrupt, unreferenced], {
+      filters: { availability: 'corrupt', referenceState: 'all' },
+    }).map((record) => record.id)).toEqual([corrupt.id]);
   });
 
   it('filters and stably sorts records with deterministic id tie breakers', () => {

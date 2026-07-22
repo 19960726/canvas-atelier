@@ -3455,6 +3455,90 @@ describe('stable module graph commits', () => {
     expect(useAppStore.getState().saveStatus).toBe('saved');
   });
 
+  it('copies a history image and creates one asset-bound image node with a stable transaction', async () => {
+    const asset = {
+      assetId: '0123456789abcdef', byteSize: 42, extension: 'png' as const, height: 50,
+      label: 'History image', mediaType: 'image/png' as const, origin: 'generated' as const,
+      sha256: `0123456789abcdef${'0'.repeat(48)}`, width: 25,
+    };
+    const copiedProject = parseCanvasProject({ ...createStarterProject(), assets: [asset] });
+    const copyHistoryToProject = vi.fn(async () => ({
+      project: copiedProject,
+      projectAssetId: asset.assetId,
+      revision: 4,
+    }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    const listProjectImages = vi.fn(async () => [{ ...asset, displayUrl: `novus-asset://project/session/${asset.assetId}`, usageCount: 1 }]);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, copyHistoryToProject, listProjectImages }));
+    useAppStore.setState({ desktopRevision: 3, project: createStarterProject(), saveStatus: 'saved' });
+
+    expect(await useAppStore.getState().addHistoryImageToCanvas(
+      'history_0123456789abcdef',
+      'operation_history_canvas_01234567',
+      { x: 420, y: 260 },
+    )).toBe(true);
+
+    expect(copyHistoryToProject).toHaveBeenCalledWith({
+      historyId: 'history_0123456789abcdef',
+      operationId: 'operation_history_canvas_01234567',
+    });
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({
+      baseRevision: 4,
+      transaction: expect.objectContaining({ id: 'history-canvas-operation_history_canvas_01234567' }),
+    }));
+    const node = useAppStore.getState().project.nodes.find((candidate) => candidate.id === 'history-node-operation_history_canvas_01234567');
+    expect(node).toMatchObject({
+      position: { x: 420, y: 260 },
+      data: { moduleType: 'image_input', config: { assetId: asset.assetId } },
+    });
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 5, projectImages: [{ assetId: asset.assetId }] });
+  });
+
+  it('reuses a safe history summary as one configured image generation node', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 6,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ desktopRevision: 5, project: createStarterProject(), saveStatus: 'saved' });
+    const summary = {
+      historyId: 'history_0123456789abcdef',
+      parameters: { aspectRatio: '4:5', outputCount: 2, quality: 'high' as const, seed: 42 },
+      promptSummary: 'Clean studio product scene',
+      provider: { displayName: 'Novus Compatible', modelDisplayName: 'Image Studio', capabilityRevision: '2026-07' },
+    };
+
+    expect(await useAppStore.getState().reuseHistoryParameters(
+      summary,
+      'operation_history_reuse_01234567',
+      { x: 360, y: 220 },
+    )).toBe(true);
+
+    const node = useAppStore.getState().project.nodes.find((candidate) => candidate.id === 'history-reuse-node-operation_history_reuse_01234567');
+    expect(node).toMatchObject({
+      position: { x: 360, y: 220 },
+      data: {
+        moduleType: 'image_generation',
+        config: {
+          aspectRatio: '4:5',
+          modelDisplayName: 'Image Studio',
+          outputCount: 2,
+          prompt: 'Clean studio product scene',
+          quality: 'high',
+          seed: 42,
+        },
+      },
+    });
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({
+      transaction: expect.objectContaining({ id: 'history-reuse-operation_history_reuse_01234567' }),
+    }));
+  });
+
   it('rejects self and multi-node cycles before persistence', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -3695,6 +3779,7 @@ function createMockClient(overrides: Partial<ReloadableTestProjectPersistenceCli
   }));
   return {
     close: overrides.close ?? (async () => {}),
+    copyHistoryToProject: overrides.copyHistoryToProject,
     commit: async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
       const response = overrides.commit === undefined
         ? { ok: true, project: request.nextProject, revision: 1 }

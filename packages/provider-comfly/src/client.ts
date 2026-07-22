@@ -36,6 +36,10 @@ const responsesResponseSchema = z.object({
   output: z.array(z.unknown()),
 }).passthrough();
 
+const modelInventorySchema = z.object({
+  data: z.array(z.unknown()),
+}).passthrough();
+
 const imageTaskSchema = z.object({
   taskId: nonEmptyStringSchema,
   status: nonEmptyStringSchema,
@@ -84,6 +88,13 @@ export class ComflyClient {
     this.tokenSupplier = options.tokenSupplier;
     this.fetch = options.fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  async checkConnection(): Promise<void> {
+    await this.request('/v1/models', {
+      method: 'GET',
+      schema: modelInventorySchema,
+    });
   }
 
   async chat(input: ComflyChatRequest) {
