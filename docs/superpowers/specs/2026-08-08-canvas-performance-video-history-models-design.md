@@ -1,88 +1,88 @@
-# Canvas reliability, video results, models, and interaction performance
+# 画布可靠性、视频结果、模型与交互性能设计规范
 
-Date: 2026-08-08
+日期：2026年8月8日
 
-## Goal
+## 目标
 
-Restore a reliable manual-test canvas where opening history cannot blank the application, connected video references remain separate from generated results, model selectors reflect real Comfly account models, Agent capability errors appear only after an incompatible media action, settings use the approved compact visual system, and common canvas interactions remain responsive.
+修复当前手动测试画布中的关键问题：打开历史记录不能导致整个应用白屏；视频参考素材与生成结果必须严格分开；模型选择器必须显示 Comfly 账户实际可用的模型；Agent 仅在用户真正引用了不兼容的图片或视频时提示能力错误；设置界面必须统一为紧凑规范；画布常用交互必须保持流畅。
 
-## Confirmed behavior
+## 已确认的功能规范
 
-### Generation history
+### 生成历史
 
-- Clicking the left-rail history button always opens a visible history surface.
-- An unavailable or incomplete browser/desktop history bridge renders a controlled empty or unavailable state; it never throws during component mount.
-- No records renders an explicit empty history panel rather than an empty page.
-- Generated records display their real date, thumbnail, model, status, and available actions.
+- 点击左侧栏的历史记录按钮后，必须始终打开可见的历史记录界面。
+- 浏览器或桌面端的历史桥接接口不可用、缺失或不完整时，显示受控的空状态或不可用状态，组件挂载期间不能抛出异常。
+- 没有生成记录时，显示明确的历史空状态页面，不能显示空白页面。
+- 已生成记录需要显示真实日期、缩略图、模型、状态以及可用操作。
 
-### Video reference slots and results
+### 视频素材图槽与生成结果
 
-- Media connected to a video-generation node appears in the shared media-slot row above the expanded prompt.
-- Connected reference media is input context and is never treated as a generated video result.
-- The result gallery is derived only from completed video result records.
-- One completed video renders one preview; two render two previews; three render three previews; four render a four-item grid.
-- A single poster or reference frame must never be duplicated to simulate the requested output count.
-- Before any completed result exists, no empty result window or placeholder grid is rendered.
+- 连接到视频生成节点的图片或视频素材，显示在展开状态下提示词输入框上方的统一素材图槽中。
+- 已连接的参考素材属于输入上下文，不能被当成生成完成的视频结果。
+- 视频结果预览必须只读取真实完成的视频结果记录。
+- 完成 1 个视频时显示 1 个预览；完成 2 个时显示 2 个；完成 3 个时显示 3 个；完成 4 个时才显示四宫格。
+- 禁止复制同一张素材封面或同一个视频预览来模拟用户选择的生成数量。
+- 没有任何真实完成结果前，不显示空结果窗口，也不显示占位四宫格。
 
-### Models
+### 模型
 
-- Comfly model identifiers come from the configured account response; the application does not invent model names.
-- Models are classified into image generation, video generation, reverse/vision language, and Agent chat groups by supported capabilities.
-- Settings allows users to enable account-visible models and choose a default for each supported group.
-- Saved profiles update the selectors in image generation, video generation, reverse Agent, and Agent chat.
-- Missing credentials, locked credentials, an unavailable endpoint, and an empty model response each have a distinct controlled status.
+- Comfly 模型标识必须来自用户已配置账户返回的真实数据，画布不能自行编造模型名称。
+- 根据真实能力把模型分为生图模型、视频生成模型、反推或视觉语言模型、Agent 对话模型四组。
+- 设置界面允许用户启用账户可用模型，并为每一组选择默认模型。
+- 保存模型配置后，生图、视频生成、反推 Agent 和 Agent 对话中的模型选择器必须同步更新。
+- 未配置密钥、密钥被锁定、接口不可访问和接口返回空模型列表，需要分别显示清晰、可区分的状态。
 
-### Agent media capability feedback
+### Agent 素材能力提示
 
-- Opening an empty Agent conversation does not show an image/video capability error.
-- Text-only conversation remains usable with a text model.
-- The visual-model warning appears only when the user tries to add, paste, mention, or send media with a model that lacks the required capability.
-- Switching to a compatible visual model clears the stale capability warning.
+- 打开一个没有引用任何素材的 Agent 对话时，不显示图片或视频能力错误。
+- 用户使用文字模型时，普通文字对话必须保持可用。
+- 只有用户尝试添加、粘贴、@引用或发送图片或视频，而当前模型不支持对应能力时，才显示视觉模型警告。
+- 用户切换到兼容的视觉模型后，旧的能力警告必须自动清除。
 
-### Settings diagnostics
+### 设置中的高级故障排查
 
-- The advanced diagnostics area uses the same compact typography, spacing, surfaces, input height, and centered button geometry as the rest of settings.
-- Legacy large-card rules cannot override the current Figma UI Gate styling.
-- Connection checking reports checking, connected, authentication failure, network failure, or service limitation without exposing secrets.
+- 高级故障排查区域必须使用与当前设置界面一致的字号、间距、背景、输入框高度和按钮居中规范。
+- 旧版大卡片样式不能覆盖当前 Figma UI Gate 的最终样式。
+- 检查连接需要显示检查中、连接成功、身份验证失败、网络不可用或服务受限状态，不能暴露任何密钥内容。
 
-### Canvas performance
+### 画布流畅性
 
-- Pan and zoom viewport publication is coalesced to at most one React state update per animation frame.
-- Repeated pointer movement does not recreate expensive canvas-wide objects unnecessarily.
-- Node position changes remain local draft state while dragging and persist only after drag completion.
-- During active interaction, expensive shadows and media rendering work are reduced without hiding nodes or changing their geometry.
-- Viewport culling keeps selected nodes, active connections, result nodes, and adjacent nodes available while excluding off-screen inactive content.
+- 平移和缩放产生的视口更新，每个浏览器动画帧最多提交一次 React 状态更新。
+- 连续移动鼠标时，不能反复创建不必要的画布级对象或导致整个工作区重复渲染。
+- 节点拖动过程中只更新本地草稿位置，停止拖动后才持久化节点坐标。
+- 用户交互期间可以降低高成本阴影和媒体绘制开销，但不能隐藏节点，也不能改变节点尺寸与位置。
+- 视口裁剪需要保留选中节点、活动连线、结果节点以及相关相邻节点，同时排除视口外没有活动状态的内容。
 
-## Architecture
+## 实现结构
 
-1. Add capability guards around optional history bridge methods and expose an explicit history availability state.
-2. Represent video results as a list of completed result items independent from reference media and requested output count.
-3. Keep provider model discovery, model classification, saved profiles, and node selectors as one end-to-end data flow.
-4. Make Agent errors action-derived rather than inferred merely from the selected model.
-5. Consolidate final settings rules under scoped UI Gate selectors.
-6. Coalesce viewport updates with `requestAnimationFrame` and preserve stable memoized inputs across canvas interaction frames.
+1. 对历史桥接接口的每个可选方法进行能力检查，并提供明确的历史可用状态。
+2. 将视频生成结果保存为独立的已完成结果列表，不再与参考素材或用户请求数量混用。
+3. 将模型发现、能力分类、模型配置保存以及各节点模型选择器组成一条完整数据链路。
+4. Agent 错误提示由用户实际执行的素材操作触发，不能仅根据当前选中的模型自动显示。
+5. 使用限定在当前 UI Gate 下的最终设置样式，统一高级故障排查区域。
+6. 使用浏览器动画帧合并视口更新，并保证画布高频交互期间输入对象保持稳定。
 
-## Error handling
+## 错误处理
 
-- Optional bridge functions are checked before invocation.
-- Rejected history/model requests are caught and rendered as local status UI.
-- Invalid or missing result media is omitted instead of rendering a broken preview.
-- Secret values, filesystem paths, binary media, and base64 payloads are not written into model profiles or history requests.
+- 调用可选桥接方法前必须确认该方法真实存在。
+- 历史记录和模型请求失败时，必须捕获异常并在对应界面显示本地状态，不能让整个应用崩溃。
+- 无效、缺失或无法读取的结果媒体应从预览列表中排除，不能显示破损图片或空视频框。
+- 模型配置和历史请求中不能写入密钥、文件系统路径、二进制媒体或 Base64 媒体内容。
 
-## Verification
+## 验证标准
 
-- Component regression test: incomplete history bridge opens a controlled panel without unmounting the workspace.
-- Component regression tests: video preview count equals actual completed result count for zero through four results.
-- Component regression test: connected video/image references appear only in input slots before generation.
-- Component regression tests: model groups and defaults propagate to all four selectors.
-- Component regression tests: Agent warning is absent initially and appears only after an incompatible media action.
-- Settings screenshot tests cover compact diagnostics in light and dark themes.
-- Interaction tests verify animation-frame viewport coalescing and stable node-drag commits.
-- Browser acceptance test clicks history, switches models, connects media, generates one/four video results, and exercises pan, zoom, drag, and selection without page errors.
-- Typecheck and focused Vitest/Playwright suites must pass before a new manual-test link is delivered.
+- 组件回归测试：历史桥接接口不完整时，仍能打开受控历史界面，工作区不能卸载或白屏。
+- 组件回归测试：视频结果为 0、1、2、3、4 个时，预览数量必须与真实完成结果数量完全一致。
+- 组件回归测试：生成前连接的图片和视频只出现在输入图槽中。
+- 组件回归测试：模型分组和默认模型配置能够同步到四个对应模型选择器。
+- 组件回归测试：Agent 初始状态没有视觉能力警告，只有执行不兼容的素材操作后才出现。
+- 设置截图测试：浅色和深色主题下，高级故障排查区域都符合紧凑规范。
+- 交互测试：验证视口更新按动画帧合并，以及节点停止拖动后才提交坐标。
+- 浏览器验收测试：点击历史记录、切换模型、连接素材、生成 1 个或 4 个视频，并执行平移、缩放、拖动和框选，过程中不能出现页面错误。
+- 提供新的用户测试链接前，类型检查以及相关 Vitest、Playwright 测试必须通过。
 
-## Non-goals
+## 本轮不包含的内容
 
-- The browser acceptance harness will not call paid generation APIs.
-- No model identifier will be fabricated when the Comfly account cannot be queried.
-- This change will not rewrite the entire React Flow canvas or package an installer.
+- 浏览器验收环境不会调用需要付费的真实生成接口。
+- 无法查询 Comfly 账户时，不会虚构任何模型标识。
+- 本轮不会重写整个 React Flow 画布，也不会制作安装包。
