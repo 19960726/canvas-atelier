@@ -4,7 +4,7 @@
 
 **Goal:** Make completed image-generation results survive an internally rotated desktop project session, write into the original generation node, complete the model job, and recover the currently stuck result without weakening stale-job protection.
 
-**Architecture:** Keep the existing session-ID guard, but add a second, durable ownership proof based on the active formal generation node's exact `lastResultJobId`. A session mismatch is accepted only while the current source node still claims that same running job; generation invalidation, node deletion, a newer job, or an unrelated project remains blocked. Existing conflict reload and job recovery paths then complete the inline transaction without schema or IndexedDB migration.
+**Architecture:** Keep the existing session-ID guard, but add a second, durable ownership proof based on the active formal generation node's exact `lastResultJobId`. A session mismatch is accepted only while the current source node still claims that same running job; generation invalidation, node deletion, a newer job, or an unrelated project remains blocked. Startup recovery retains only those node-owned `running` jobs, cancels every other interrupted non-terminal job as before, and restarts polling after hydration.
 
 **Tech Stack:** TypeScript, Zustand, Vitest, Electron desktop persistence, IndexedDB model-job storage.
 
@@ -166,7 +166,53 @@ git commit -m "fix: recover generated results after session rotation"
 
 ---
 
-### Task 3: Verify, build, and recover the current real project
+### Task 3: Resume only node-owned running jobs after startup
+
+**Files:**
+- Modify: `apps/renderer/src/jobs/job-store.ts:241-254`
+- Modify: `apps/renderer/src/app/app-store.ts:3249-3262`
+- Modify: `apps/renderer/src/jobs/job-store.test.ts:75-118`
+- Test: `apps/renderer/src/jobs/job-store.test.ts`
+- Test: `apps/renderer/src/app/app-store.test.ts`
+
+**Interfaces:**
+- Consumes: `ModelJobStoreOptions.canContinueResult`, `jobStore.recover()`, and `jobStore.run()`.
+- Produces: selective restart recovery for a `running` job that is still owned by its source node.
+
+- [ ] **Step 1: Write failing recovery tests**
+
+Extend the restart test with two running jobs. Configure `canContinueResult` to return true only for `job-running-owned`. After `recover()`, expect queued, submitting and unowned running jobs to be `cancelled`, while `job-running-owned` remains `running`. Add an app-store hydration test proving background recovery calls the provider for the owned job and materializes its inline result under the new session.
+
+- [ ] **Step 2: Verify RED**
+
+```powershell
+npm.cmd exec vitest -- --config vitest.config.ts apps/renderer/src/jobs/job-store.test.ts apps/renderer/src/app/app-store.test.ts --run
+```
+
+Expected: the owned running job is cancelled by the current unconditional recovery map, and no provider poll completes it after hydration.
+
+- [ ] **Step 3: Implement selective recovery**
+
+Change `recover()` to evaluate running jobs asynchronously. Keep a running job only when `canContinueResult(job, isStillRunning)` returns true; transition all queued/submitting jobs and unowned running jobs to `cancelled`. After `recoverModelJobsInBackground()` completes recovery, call `jobStore.run()` so retained running jobs resume polling.
+
+- [ ] **Step 4: Verify GREEN**
+
+```powershell
+npm.cmd exec vitest -- --config vitest.config.ts apps/renderer/src/jobs/job-store.test.ts apps/renderer/src/app/app-store.test.ts --run
+```
+
+Expected: owned running recovery completes; all stale recovery cases remain cancelled.
+
+- [ ] **Step 5: Commit startup recovery**
+
+```powershell
+git add -- apps/renderer/src/jobs/job-store.ts apps/renderer/src/jobs/job-store.test.ts apps/renderer/src/app/app-store.ts apps/renderer/src/app/app-store.test.ts
+git commit -m "fix: resume owned generation jobs after restart"
+```
+
+---
+
+### Task 4: Verify, build, and recover the current real project
 
 **Files:**
 - Verify: `apps/renderer/src/app/app-store.ts`
