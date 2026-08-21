@@ -77,9 +77,37 @@ export function reconcileConnectedMentions(
 ): string {
   const nextByAsset = new Map(next.map((item) => [`${item.kind}:${item.assetId}`, item]));
   const previousByToken = new Map(previous.map((item) => [item.token, item]));
-  return value.replace(/@(图片|视频)(\d{1,2})/gu, (token) => {
+  const pattern = /@(图片|视频)(\d{1,2})/gu;
+  const pieces: string[] = [];
+  let cursor = 0;
+  let dropLeadingHorizontal = false;
+  for (const match of value.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    const token = match[0];
+    let between = value.slice(cursor, start);
+    if (dropLeadingHorizontal) {
+      between = between.replace(/^[ \t]/u, '');
+      dropLeadingHorizontal = false;
+    }
+    pieces.push(between);
     const prior = previousByToken.get(token);
-    if (prior === undefined) return '';
-    return nextByAsset.get(`${prior.kind}:${prior.assetId}`)?.token ?? '';
-  }).replace(/[ \t]{2,}/gu, ' ').trimEnd();
+    const replacement = prior === undefined ? undefined : nextByAsset.get(`${prior.kind}:${prior.assetId}`)?.token;
+    if (replacement !== undefined) {
+      pieces.push(replacement);
+    } else {
+      const before = value[start - 1];
+      const after = value[start + token.length];
+      if (/[ \t]/u.test(before ?? '') && /[ \t]/u.test(after ?? '')) {
+        dropLeadingHorizontal = true;
+      } else if (/[ \t]/u.test(before ?? '') && after === undefined) {
+        const last = pieces.length - 1;
+        pieces[last] = pieces[last].replace(/[ \t]$/u, '');
+      }
+    }
+    cursor = start + token.length;
+  }
+  let tail = value.slice(cursor);
+  if (dropLeadingHorizontal) tail = tail.replace(/^[ \t]/u, '');
+  pieces.push(tail);
+  return pieces.join('');
 }

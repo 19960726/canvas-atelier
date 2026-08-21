@@ -60,4 +60,13 @@ describe('media mention model', () => {
     }]);
     expect(reconcileConnectedMentions(catalog, catalog, '@图片1\n@图片1')).toBe('@图片1\n@图片1');
   });
+
+  it('preserves unrelated horizontal whitespace while removing only mention-local separators', () => {
+    const previous = [{ token: '@图片1', assetId: 'image-a', kind: 'image', label: 'A' }] as const;
+    const unchanged = reconcileConnectedMentions(previous, previous, '描述  保留 @图片1 ');
+    expect(unchanged).toBe('描述  保留 @图片1 ');
+
+    const removed = reconcileConnectedMentions(previous, [], '描述  保留 @图片1 后');
+    expect(removed).toBe('描述  保留 后');
+  });
 });
