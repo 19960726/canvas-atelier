@@ -15,12 +15,16 @@ export type {
   CommitBridgeRequest,
   CommitRequest,
   ConfigureKnowledgeBaseBridgeRequest,
+  CreateProjectBridgeRequest,
+  CreateProjectBridgeResult,
   ExportPackBridgeRequest,
   ExportPackBridgeResult,
   JournalRecord,
   JournalTransactionKind,
   ImportPackBridgeRequest,
   ImportPackBridgeResult,
+  ImportDroppedProjectMediaBridgeRequest,
+  ImportDroppedProjectMediaBridgeResult,
   ImportProjectImageBridgeRequest,
   ImportProjectImageBridgeResult,
   ImportProjectVideoBridgeRequest,
@@ -36,6 +40,9 @@ export type {
   ListProjectVideosBridgeRequest,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
+  OpenRecentProjectBridgeRequest,
+  RecentProjectRequest,
+  RecentProjectSummary,
   PrepareSkillCandidateReviewBridgeRequest,
   PrepareSkillCandidateReviewBridgeResult,
   PersistenceChannel,
@@ -51,6 +58,7 @@ export type {
   RecoveryCandidateBridgeSummary,
   RecoveryPlanBridgeRequest,
   RecoveryPlanBridgeResult,
+  RefreshProjectBridgeRequest,
   RecoveryAction,
   RecoveryPlan,
   ReviewSkillCandidateBridgeRequest,
@@ -79,6 +87,37 @@ export type {
   ListGenerationHistoryBridgeResult,
   SetGenerationHistoryFavoriteBridgeRequest,
 } from './contracts.js';
+
+export {
+  PHOTOSHOP_IMPORT_ERROR_CODES,
+  parsePhotoshopImportRequest,
+} from './photoshop-contract.js';
+export { PhotoshopSmartObjectService } from './photoshop-smart-object-service.js';
+export type {
+  PhotoshopManagedAsset,
+  PhotoshopManagedAssetResolver,
+  PhotoshopSmartObjectAdapter,
+} from './photoshop-smart-object-service.js';
+export { createPhotoshopPlacementPayload } from './photoshop-script.js';
+export type { PhotoshopPlacementPayloadInput } from './photoshop-script.js';
+export {
+  createNodeWindowsPhotoshopSmartObjectAdapter,
+  createWindowsPhotoshopSmartObjectAdapter,
+} from './photoshop-windows-adapter.js';
+export type {
+  PhotoshopInstallation,
+  PhotoshopRunningInstance,
+  PhotoshopTemporaryFiles,
+  PhotoshopWindowsExecutionResult,
+  WindowsPhotoshopAdapterDependencies,
+  NodeWindowsPhotoshopAdapterOptions,
+} from './photoshop-windows-adapter.js';
+export type {
+  PhotoshopCapability,
+  PhotoshopImportErrorCode,
+  PhotoshopImportRequest,
+  PhotoshopImportResult,
+} from './photoshop-contract.js';
 
 export { canonicalJson, sha256Canonical } from './canonical-json.js';
 export { AssetStore, MAX_MANAGED_MP4_BYTES, verifyAssetFile } from './asset-store.js';
@@ -250,11 +289,16 @@ export {
   createSecureProviderCredentialStore,
   normalizeProviderBridgeError,
   parseProviderBridgeRequest,
+  parseProviderBridgeResponse,
   registerProviderBridgeHandlers,
 } from './provider-bridge.js';
 export type {
   AckImageJobTerminalBridgeRequest,
   AckImageJobTerminalBridgeResult,
+  AnalyzeReversePromptBridgeRequest,
+  AnalyzeReversePromptBridgeResult,
+  ChatSkillBridgeRequest,
+  ChatSkillBridgeResult,
   ComflyFetch,
   CancelImageJobBridgeRequest,
   CancelImageJobBridgeResult,
@@ -270,21 +314,50 @@ export type {
   ProviderConnectionCheckResult,
   ProviderCredentialStore,
   ProviderImageJobResult,
+  ManagedReversePromptMediaIdentity,
   ProviderService,
   SafeStorageAdapter,
   SubmitImageJobBridgeRequest,
   SubmitImageJobBridgeResult,
   UnlockProviderBridgeRequest,
 } from './provider-bridge.js';
+export { createRelayMeProviderService } from './relayme-provider-service.js';
+export {
+  SEEDANCE_25_REVERSE_SKILL_ID,
+  SEEDANCE_25_REVERSE_SKILL_VERSION,
+  getSeedance25ReverseSkill,
+} from './seedance-25-reverse-skill.js';
+export type { Seedance25ReverseSkill, Seedance25TaskType } from './seedance-25-reverse-skill.js';
+export { createProviderRegistry } from './provider-registry.js';
+export type { ProviderRegistry } from './provider-registry.js';
+export type { RelayMeFetch } from '@agent-canvas/provider-relayme';
 export type {
   DesktopBridgeApi,
   DesktopBridgeInvoke,
   DesktopBridgeSend,
   DesktopBridgeSubscribe,
   DesktopGenerationHistoryBridgeApi,
+  DesktopMcpIntegrationBridgeApi,
+  DesktopMcpRuntimeBridgeApi,
+  DesktopProviderBridgeApi,
   DesktopProjectImageBridgeApi,
+  DesktopRecentProjectBridgeApi,
+  DesktopStorageBridgeApi,
+  DesktopUpdateBridgeApi,
   SafeModeBridgeApi,
 } from './preload-api.js';
+export { MockReleaseFeed, UpdateClient } from './update-client.js';
+export {
+  createCacheDirectoryService,
+  createNodeCacheDirectoryServiceAdapters,
+} from './cache-directory-service.js';
+export type {
+  CacheDirectoryService,
+  CacheDirectoryServiceAdapters,
+  CacheDirectoryState,
+  NodeCacheDirectoryAdaptersOptions,
+} from './cache-directory-service.js';
+export type { MockRelease, UpdateCheckResult, UpdateFeed, UpdateRestartResult, UpdateState, UpdateStatus } from './update-client.js';
 export { createDesktopBridgeHandlers, registerDesktopBridgeHandlers } from './bridge-handlers.js';
 export type {
   BridgeDialogAdapter,
@@ -311,3 +384,26 @@ export {
   type CloseChoiceDecision,
   type CloseChoiceRequest,
 } from './close-choice-contract.js';
+
+export { MCP_RUNTIME_PROTOCOL, MCP_RUNTIME_TTL_MS, createMcpRuntimeDescriptor, deleteMcpRuntimeFile, parseMcpRuntimeFile, readMcpRuntimeFile, writeMcpRuntimeFile } from './mcp-runtime-file.js';
+export type { CanvasMcpRuntimeDescriptor, CreateMcpRuntimeDescriptorOptions, ParseMcpRuntimeFileOptions } from './mcp-runtime-file.js';
+export { createMcpRendererBridge } from './mcp-renderer-bridge.js';
+export type { McpIpcMainLike, McpRendererBridge, McpRendererBridgeOptions, McpRendererEndpoint } from './mcp-renderer-bridge.js';
+export { registerMcpClientConfigIpc } from './mcp-client-ipc.js';
+export type { McpClientConfigIpcMainLike, McpClientConfigIpcRegistration } from './mcp-client-ipc.js';
+export { createMcpClientConfigManager } from './mcp-client-config.js';
+export type { McpClientConfigManager, McpClientConfigManagerOptions, McpClientHealthResult, McpClientId, McpClientStatus } from './mcp-client-config.js';
+export { createMcpRuntimeService } from './mcp-runtime-service.js';
+export type { McpPipeRequestEnvelope, McpPipeResponseEnvelope, McpRuntimeService, McpRuntimeServiceOptions, McpRuntimeServiceStatus } from './mcp-runtime-service.js';
+
+export { createMcpStdioHealthCheck } from './mcp-stdio-health';
+export type { McpStdioLaunchSpec } from './mcp-stdio-health';
+
+export { RecentProjectStore, createRecentProjectId } from './recent-project-store.js';
+export type { RecentProjectEntryInput, RecentProjectStoreOptions } from './recent-project-store.js';
+export {
+  migrateLegacyProviderData,
+  migrateLegacyUserData,
+  resolveLegacyUserDataRoots,
+  resolveStableUserDataRoot,
+} from './user-data-migration.js';
