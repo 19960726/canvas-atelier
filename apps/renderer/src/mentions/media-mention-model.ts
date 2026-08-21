@@ -101,7 +101,8 @@ export function reconcileConnectedMentions(
         dropLeadingHorizontal = true;
       } else if (/[ \t]/u.test(before ?? '') && after === undefined) {
         const last = pieces.length - 1;
-        pieces[last] = pieces[last].replace(/[ \t]$/u, '');
+        const previousPiece = pieces[last];
+        if (previousPiece !== undefined) pieces[last] = previousPiece.replace(/[ \t]$/u, '');
       }
     }
     cursor = start + token.length;
