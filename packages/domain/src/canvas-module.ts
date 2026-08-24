@@ -1,19 +1,20 @@
 import type { RuntimeProfileId } from './runtime-profile';
+import { normalizeImageResolutionTier } from './model-job';
 
 export type CanvasPortDataType =
   | 'image_asset' | 'image_list' | 'mask_asset' | 'mask_list' | 'pose_data'
-  | 'text_prompt' | 'analysis_document' | 'video_asset' | 'video_ranges'
+  | 'text_prompt' | 'analysis_document' | 'video_asset' | 'video_ranges' | 'media_asset'
   | 'camera_timeline' | 'material_plan' | 'generation_request'
   | 'generation_result' | 'comparison_document' | 'storyboard_document'
   | 'storyboard_chart' | 'sanitized_workflow' | 'audio_asset' | 'voice_profile_id';
 
 export type CanvasModuleType =
   | 'image_input' | 'upload_image' | 'video_input' | 'canvas_library' | 'text_prompt'
-  | 'image_generation' | 'image_editor' | 'drawing_mask' | 'local_redraw'
+  | 'image_generation' | 'video_generation' | 'image_editor' | 'drawing_mask' | 'local_redraw'
   | 'image_compare' | 'openpose' | 'reverse_agent' | 'skill_agent'
   | 'detail_page_agent' | 'storyboard_sheet' | 'storyboard_chart'
   | 'line_art_material' | 'comfy_workflow' | 'music_generation'
-  | 'speech_generation' | 'result_output';
+  | 'speech_generation' | 'result_output' | 'video_result' | 'reverse_result';
 
 export type LegacyCanvasModuleType = 'image_generation_v1' | 'image_generation_v2' | 'video_analysis';
 export type SerializedCanvasModuleType = CanvasModuleType | LegacyCanvasModuleType;
@@ -118,6 +119,7 @@ const PORT_PRIMARY_LABELS: Readonly<Record<string, string>> = Object.freeze({
   Mask: '蒙版',
   Masks: '蒙版组',
   Materials: '材质方案',
+  Media: '素材',
   Pose: '姿态',
   Prompt: '提示词',
   References: '参考图',
@@ -132,6 +134,9 @@ const PORT_PRIMARY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 const MODULE_COPY: Readonly<Record<CanvasModuleType, ModuleCopy>> = Object.freeze({
+  video_generation: copy('视频生成', 'Video Generation', '在离线模拟模式中预览受管首尾帧与视频参数。', '为真实视频生成 Provider 预留安全的节点内工作台。', '填写提示词，连接或选择项目受管首尾帧后运行模拟预览。', '当前只提供离线模拟预览，不会联网、调用付费 Provider 或生成真实视频。', ['视频生成', '视频预览', 'video generation', 'mock video']),
+  video_result: copy('视频结果', 'Video Result', '显示已连线视频生成模块的受管视频结果。', '作为视频工作流的稳定输出节点。', '把视频生成的结果端口连接到此节点，然后预览或导出受管视频。', '只接收受管视频结果，不会暴露 Provider 原始地址。', ['视频输出', '生成视频结果', 'video result']),
+  reverse_result: copy('反推结果', 'Reverse Result', '显示已连线反推 Agent 的结构化分析结果。', '作为反推工作流的稳定输出节点。', '把反推 Agent 的分析端口连接到此节点，然后查看、复制或继续使用受管分析结果。', '只接收受管分析文档，不会暴露模型原始响应或密钥。', ['反推输出', '分析结果', 'reverse result']),
   image_input: copy('图片输入', 'Image Input', '从项目素材中选择一张受管图片。', '为工作流提供稳定的图片资产输入。', '选择项目图片后连接到编辑、分析或生成模块。', '仅接受项目受管资产，不读取任意本地路径。', ['图像输入', '参考图']),
   upload_image: copy('上传图片', 'Upload Image', '通过桌面安全选择器导入受管图片。', '将本地图片安全加入项目素材。', '激活模块后使用受限导入操作选择图片。', '导入由桌面主进程完成，渲染器不接触文件路径。', ['导入图片', '上传图像']),
   video_input: copy('视频输入', 'Video Input', '为多模态分析提供受管视频和范围。', '绑定待分析的视频资产。', '选择项目视频并标注需要分析的时间范围。', '当前仅定义受管视频合同，不提供任意网络视频抓取。', ['视频素材', '输入视频']),
@@ -214,9 +219,9 @@ function cloneConfig(config: Readonly<Record<string, unknown>>): Record<string, 
 }
 
 export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Object.freeze([
-  definition('image_input', 'input', 'image_input', 'local', [], [out('image', 'Image', 'image_asset')], ['image_editor', 'drawing_mask', 'image_compare', 'reverse_agent', 'line_art_material']),
-  definition('upload_image', 'input', 'upload_image', 'local', [], [out('image', 'Image', 'image_asset')], ['canvas_library', 'image_editor', 'reverse_agent']),
-  definition('video_input', 'input', 'video_input', 'local', [], [out('video', 'Video', 'video_asset')], ['reverse_agent']),
+  definition('image_input', 'input', 'image_input', 'local', [], [out('image', 'Image', 'image_asset')], ['image_editor', 'drawing_mask', 'image_compare', 'video_generation', 'reverse_agent', 'line_art_material']),
+  definition('upload_image', 'input', 'upload_image', 'local', [], [out('image', 'Image', 'image_asset')], ['canvas_library', 'image_editor', 'video_generation', 'reverse_agent']),
+  definition('video_input', 'input', 'video_input', 'local', [], [out('video', 'Video', 'video_asset')], ['video_generation', 'reverse_agent']),
   definition('canvas_library', 'input', 'canvas_library', 'local', [], [out('images', 'Images', 'image_list')], ['image_generation', 'image_compare', 'reverse_agent']),
   definition('text_prompt', 'input', 'text_prompt', 'local', [], [out('prompt', 'Prompt', 'text_prompt')], ['image_generation', 'local_redraw', 'reverse_agent', 'music_generation', 'speech_generation']),
   definition('image_generation', 'generation', 'image_generation', 'provider', ['image_generation'], [
@@ -225,7 +230,30 @@ export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Obje
     input('mask', 'Mask', 'mask_asset', false),
     input('pose', 'Pose', 'pose_data', false),
     out('result', 'Result', 'generation_result'),
-  ], ['result_output', 'image_compare', 'image_editor'], Object.freeze({ enabledInputCapabilities: ['references'], resultState: 'empty' })),
+  ], ['result_output', 'image_compare', 'image_editor'], Object.freeze({ enabledInputCapabilities: ['references'], resolution: '1K', resultState: 'empty' })),
+  definition('video_generation', 'generation', 'video_generation', 'local', ['video_generation'], [
+    // A video prompt can combine ordered image references with one managed
+    // source video.  The card and executor cap this ordered collection at the
+    // project-wide 20-reference limit.
+    inputMany('media', 'Media', 'media_asset', false),
+    input('prompt', 'Prompt', 'text_prompt'),
+    input('sourceVideo', 'Source video', 'video_asset', false),
+    input('firstFrame', 'First frame', 'image_asset', false),
+    input('lastFrame', 'Last frame', 'image_asset', false),
+    out('result', 'Result', 'video_asset'),
+  ], ['video_result', 'reverse_agent'], Object.freeze({
+    mode: 'mock',
+    modelRoute: 'seedance-1.5-pro',
+    prompt: '',
+    referenceAssetIds: [],
+    firstFrameAssetId: undefined,
+    lastFrameAssetId: undefined,
+    aspectRatio: '16:9',
+    keyframe: 'auto',
+    durationSeconds: 5,
+    resolution: '1080p',
+    resultState: 'empty',
+  })),
   definition('image_editor', 'editing', 'image_editor', 'composite', ['image_edit'], [
     input('image', 'Image', 'image_asset'), input('mask', 'Mask', 'mask_asset', false), input('prompt', 'Prompt', 'text_prompt', false),
     out('image', 'Image', 'image_asset'), out('mask', 'Mask', 'mask_asset', false),
@@ -239,13 +267,13 @@ export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Obje
   ], ['result_output', 'local_redraw']),
   definition('openpose', 'editing', 'openpose', 'provider', ['vision', 'pose'], [input('image', 'Image', 'image_asset'), out('pose', 'Pose', 'pose_data')], ['image_generation', 'comfy_workflow']),
   definition('reverse_agent', 'analysis', 'reverse_agent', 'agent', ['chat', 'vision', 'video_understanding', 'structured_output'], [
-    inputMany('references', 'References', 'image_list', false),
+    inputMany('references', 'References', 'media_asset', false),
     inputMany('video', 'Video', 'video_ranges', false),
     input('task', 'Task', 'text_prompt', false),
     input('line_art', 'Line art', 'image_asset', false),
     out('analysis', 'Analysis', 'analysis_document'),
     out('timeline', 'Timeline', 'camera_timeline', false),
-  ], ['image_generation', 'storyboard_sheet', 'line_art_material', 'detail_page_agent'], Object.freeze({ orderedMedia: [], mode: 'auto', resultState: 'empty' })),
+  ], ['reverse_result', 'image_generation', 'storyboard_sheet', 'line_art_material', 'detail_page_agent'], Object.freeze({ orderedMedia: [], mode: 'auto', resultState: 'empty' })),
   definition('skill_agent', 'analysis', 'skill_agent', 'agent', ['chat'], [inputMany('references', 'References', 'image_list', false), input('task', 'Task', 'text_prompt', false), out('analysis', 'Analysis', 'analysis_document')], ['reverse_agent', 'image_generation']),
   definition('detail_page_agent', 'analysis', 'detail_page_agent', 'agent', ['chat', 'vision', 'structured_output'], [inputMany('references', 'References', 'image_list', false), input('analysis', 'Analysis', 'analysis_document', false), out('analysis', 'Analysis', 'analysis_document')], ['storyboard_sheet', 'image_generation']),
   definition('storyboard_sheet', 'analysis', 'storyboard_sheet', 'composite', ['storyboard'], [
@@ -265,6 +293,11 @@ export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Obje
     input('prompt', 'Prompt', 'text_prompt'), input('voice', 'Voice', 'voice_profile_id', false), out('audio', 'Audio', 'audio_asset'),
   ], [], Object.freeze({ routeAvailable: false, availability: 'compatible_model_required' })),
   definition('result_output', 'output', 'result_output', 'local', [], [input('result', 'Result', 'generation_result'), out('image', 'Image', 'image_asset')], ['image_compare', 'canvas_library']),
+  definition('video_result', 'output', 'video_result', 'local', [], [input('video', 'Video', 'video_asset')], [], Object.freeze({ resultState: 'empty' })),
+  definition('reverse_result', 'output', 'reverse_result', 'local', [], [
+    input('analysis', 'Analysis', 'analysis_document'),
+    out('analysis', 'Analysis', 'analysis_document'),
+  ], ['storyboard_sheet', 'detail_page_agent'], Object.freeze({ resultState: 'empty' })),
 ]);
 
 export function listCanvasModuleDefinitions(): CanvasModuleDefinition[] {
@@ -288,6 +321,16 @@ function cloneDefinition(item: CanvasModuleDefinition): CanvasModuleDefinition {
     recommendedDownstreamModuleTypes: Object.freeze([...item.recommendedDownstreamModuleTypes]),
   });
 }
+
+export function normalizeCanvasModuleConfig(
+  moduleType: CanvasModuleType,
+  config: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const normalized = cloneConfig(config);
+  if (moduleType === 'image_generation') normalized.resolution = normalizeImageResolutionTier(config.resolution);
+  return normalized;
+}
+
 
 export function createCanvasModuleNode(id: string, moduleType: CanvasModuleType, position: { x: number; y: number }) {
   const module = getCanvasModuleDefinition(moduleType);

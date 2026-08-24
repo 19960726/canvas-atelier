@@ -32,6 +32,7 @@ export interface RendererCloseFlushCoordinatorOptions {
   readonly closeAllProjects: () => void | Promise<void>;
   readonly createRequestId?: () => string;
   readonly finalizeClose: (reason: CloseFlushCompletionReason) => void | Promise<void>;
+  readonly onCloseBlocked?: (reason: Exclude<CloseFlushCompletionReason, 'saved' | 'discarded' | 'cancel'>) => 'cancel' | 'discard' | Promise<'cancel' | 'discard'>;
   readonly sendCloseFlushRequest: (request: CloseFlushRequest) => boolean | void;
   readonly setTimeout?: (listener: () => void, delayMs: number) => unknown;
   readonly timeoutMs?: number;
@@ -47,6 +48,7 @@ export function createRendererCloseFlushCoordinator({
   closeAllProjects,
   createRequestId = createCloseFlushRequestId,
   finalizeClose,
+  onCloseBlocked,
   sendCloseFlushRequest,
   setTimeout: setTimeoutFn = (listener, delayMs) => setTimeout(listener, delayMs),
   timeoutMs = CLOSE_FLUSH_TIMEOUT_MS,
@@ -55,6 +57,7 @@ export function createRendererCloseFlushCoordinator({
   let pendingRequest: {
     readonly requestId: string;
     readonly resolve: (reason: CloseFlushCompletionReason) => void;
+    phase: 'delivery' | 'decision_requested' | 'save_started';
     timeoutHandle: unknown | null;
   } | null = null;
 
@@ -68,7 +71,7 @@ export function createRendererCloseFlushCoordinator({
   };
 
   const waitForRenderer = (requestId: string): Promise<CloseFlushCompletionReason> => new Promise((resolve) => {
-    pendingRequest = { requestId, resolve, timeoutHandle: null };
+    pendingRequest = { requestId, resolve, phase: 'delivery', timeoutHandle: null };
   });
 
   const startPendingTimeout = (): boolean => {
@@ -76,6 +79,13 @@ export function createRendererCloseFlushCoordinator({
     pendingRequest.timeoutHandle = setTimeoutFn(() => {
       completePending('timeout');
     }, timeoutMs);
+    return true;
+  };
+
+  const pausePendingTimeout = (): boolean => {
+    if (pendingRequest === null || pendingRequest.timeoutHandle === null) return false;
+    clearTimeoutFn(pendingRequest.timeoutHandle);
+    pendingRequest.timeoutHandle = null;
     return true;
   };
 
@@ -94,16 +104,39 @@ export function createRendererCloseFlushCoordinator({
     const request = parseCloseFlushRequest({ requestId: createRequestId() });
     if (request !== null && canRequestRendererFlush()) {
       try {
+        // Register the pending request before IPC send. Electron can deliver a
+        // clean-project ACK in the same turn; registering afterwards drops it
+        // and leaves the native close event permanently prevented.
+        const rendererCompletion = waitForRenderer(request.requestId);
+        // The renderer may fail before it ever acknowledges the request. Start
+        // this delivery watchdog before IPC send so a missing ACK cannot leave
+        // the native close event prevented forever.
+        startPendingTimeout();
         const sent = sendCloseFlushRequest(request);
         if (sent !== false) {
-          reason = await waitForRenderer(request.requestId);
+          reason = await rendererCompletion;
+        } else {
+          completePending('unavailable');
+          reason = 'unavailable';
         }
       } catch {
+        completePending('unavailable');
         reason = 'unavailable';
       }
     }
-    if (reason !== 'saved' && reason !== 'discarded') return;
-    await finishClose(reason);
+    if (reason === 'saved' || reason === 'discarded') {
+      await finishClose(reason);
+      return;
+    }
+    if (reason === 'cancel' || onCloseBlocked === undefined) return;
+    try {
+      if (await onCloseBlocked(reason) === 'discard') {
+        await finishClose('discarded');
+      }
+    } catch {
+      // Keeping the window open is the safe outcome if the main-process
+      // recovery dialog itself cannot be shown.
+    }
   };
 
   return {
@@ -112,7 +145,18 @@ export function createRendererCloseFlushCoordinator({
       if (ack === null || pendingRequest === null || ack.requestId !== pendingRequest.requestId) {
         return false;
       }
-      if (ack.phase === 'save_started') return startPendingTimeout();
+      if (ack.phase === 'decision_requested') {
+        if (pendingRequest.phase !== 'delivery') return false;
+        pausePendingTimeout();
+        pendingRequest.phase = 'decision_requested';
+        return true;
+      }
+      if (ack.phase === 'save_started') {
+        if (pendingRequest.phase === 'save_started') return false;
+        pendingRequest.phase = 'save_started';
+        startPendingTimeout();
+        return true;
+      }
       const reason: CloseFlushCompletionReason = ack.outcome === 'cancelled'
         ? 'cancel'
         : ack.outcome;

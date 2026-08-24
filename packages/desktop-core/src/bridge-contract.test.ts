@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { build } from 'esbuild';
 import {
   applyProjectTransaction,
+  createCanvasModuleNode,
   createAgentKnowledgeLease,
   createSkillPromotionCandidateFingerprint,
   createUserFeedbackMemory,
@@ -52,6 +53,7 @@ describe('desktop bridge contract', () => {
       'closeProject',
       'commit',
       'configureKnowledgeBase',
+      'createProject',
       'createStablePoint',
       'exportPack',
       'getKnowledgeState',
@@ -59,30 +61,48 @@ describe('desktop bridge contract', () => {
       'history',
       'importPack',
       'lifecycle',
+      'mcpIntegration',
+      'mcpRuntime',
+      'openLatestRecoveryPreview',
       'openProject',
       'prepareSkillCandidateReview',
       'projectImages',
       'projectVideos',
       'provider',
+      'recentProjects',
+      'refreshProject',
       'restore',
       'reviewSkillCandidate',
+      'storage',
       'subscribeKnowledgeState',
       'subscribeKnowledgeSyncStatus',
+      'updates',
     ]);
     expect(Object.keys(createPreloadApi(mockInvoke).provider).sort()).toEqual([
       'ackImageJobTerminal',
+      'ackVideoJobTerminal',
+      'analyzeReversePrompt',
       'cancelImageJob',
+      'cancelVideoJob',
+      'chat',
+      'checkConnection',
       'configure',
+      'generateStoryboard',
       'getStatus',
+      'listAvailableModelIds',
       'listProfiles',
       'pollImageJob',
+      'pollVideoJob',
+      'revealCredential',
       'submitImageJob',
+      'submitVideoJob',
       'unlock',
+      'updateProfiles',
     ]);
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('readFile');
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('watchPath');
     expect(createPreloadApi(mockInvoke).provider).not.toHaveProperty('fetch');
-    expect(Object.keys(createPreloadApi(mockInvoke).projectImages).sort()).toEqual(['importImage', 'list', 'pasteClipboardImage']);
+    expect(Object.keys(createPreloadApi(mockInvoke).projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'pasteClipboardImage']);
     expect(createPreloadApi(mockInvoke).projectImages).not.toHaveProperty('readFile');
     expect(Object.keys(createPreloadApi(mockInvoke).history).sort()).toEqual([
       'addProjectReferences',
@@ -103,10 +123,53 @@ describe('desktop bridge contract', () => {
     expect(Object.keys(createPreloadApi(mockInvoke).lifecycle).sort()).toEqual([
       'ackCloseFlush',
       'chooseCloseDecision',
+      'requestClose',
       'subscribeCloseFlushRequest',
     ]);
+    expect(Object.keys(createPreloadApi(mockInvoke).storage).sort()).toEqual([
+      'chooseCacheDirectory',
+      'getCacheDirectory',
+      'openCacheDirectory',
+      'resetCacheDirectory',
+    ]);
+    expect(Object.keys(createPreloadApi(mockInvoke).mcpRuntime).sort()).toEqual(['getStatus', 'onRequest', 'respond']);
   });
 
+  it('invokes exact storage channels and clones storage results', async () => {
+    const cacheState = {
+      path: 'D:\\NovusCache',
+      isDefault: false,
+      available: true,
+      busy: false,
+      error: null,
+    };
+    const openResult = { opened: true };
+    const invokeMock = vi.fn(async (channel: string) => (
+      channel === BRIDGE_CHANNELS.storage.openCacheDirectory ? openResult : cacheState
+    ));
+    const invoke = invokeMock as DesktopBridgeInvoke;
+    const storage = createPreloadApi(invoke).storage;
+
+    const getResult = await storage.getCacheDirectory();
+    const chooseResult = await storage.chooseCacheDirectory();
+    const resetResult = await storage.resetCacheDirectory();
+    const opened = await storage.openCacheDirectory();
+
+    expect(invokeMock.mock.calls).toEqual([
+      [BRIDGE_CHANNELS.storage.getCacheDirectory],
+      [BRIDGE_CHANNELS.storage.chooseCacheDirectory],
+      [BRIDGE_CHANNELS.storage.resetCacheDirectory],
+      [BRIDGE_CHANNELS.storage.openCacheDirectory],
+    ]);
+    expect(getResult).toEqual(cacheState);
+    expect(chooseResult).toEqual(cacheState);
+    expect(resetResult).toEqual(cacheState);
+    expect(opened).toEqual(openResult);
+    expect(getResult).not.toBe(cacheState);
+    expect(chooseResult).not.toBe(cacheState);
+    expect(resetResult).not.toBe(cacheState);
+    expect(opened).not.toBe(openResult);
+  });
   it('unwraps provider IPC envelopes and preserves serializable locked errors in the renderer', async () => {
     const invoke = vi.fn(async () => JSON.parse(JSON.stringify({
       ok: false,
@@ -126,6 +189,195 @@ describe('desktop bridge contract', () => {
       message: 'Provider credentials are locked',
       retryable: true,
     });
+  });
+
+  it('exposes reverse analysis only through the controlled provider channel', async () => {
+    const invoke = vi.fn(async () => ({
+      ok: false,
+      error: { code: 'INVALID_REQUEST', message: 'Invalid request', retryable: false },
+    })) as DesktopBridgeInvoke;
+    const api = createPreloadApi(invoke);
+
+    await expect(api.provider.analyzeReversePrompt({
+      sessionId: 'desktop-session-1',
+      provider: 'comfly',
+      run: {} as never,
+      media: [] as never,
+    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.analyzeReversePrompt, expect.objectContaining({
+      sessionId: 'desktop-session-1',
+      provider: 'comfly',
+    }));
+  });
+
+  it('exposes Skill chat only through the controlled provider channel', async () => {
+    const invoke = vi.fn(async () => ({
+      ok: true,
+      value: {
+        message: 'Use a simplified visual hierarchy.',
+        modelRoute: 'skill-chat',
+        sources: [{ knowledgeBaseId: 'catalog', version: 1, displayName: 'Catalog' }],
+      },
+    })) as DesktopBridgeInvoke;
+    const api = createPreloadApi(invoke);
+
+    await expect(api.provider.chat({
+      provider: 'comfly',
+      modelRoute: 'skill-chat',
+      messages: [{ role: 'user', content: 'How should I simplify this?' }],
+      context: { knowledgeBaseIds: ['catalog'], projectMemoryIds: [] },
+    })).resolves.toMatchObject({ message: 'Use a simplified visual hierarchy.' });
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.chat, expect.objectContaining({
+      provider: 'comfly',
+      modelRoute: 'skill-chat',
+    }));
+  });
+
+  it('forwards provider selection when reading status and model catalogs', async () => {
+    const invoke = vi.fn(async (channel: string) => ({
+      ok: true,
+      value: channel === BRIDGE_CHANNELS.provider.getStatus
+        ? { configured: true, locked: false, encryption: 'safeStorage' }
+        : channel === BRIDGE_CHANNELS.provider.checkConnection
+          ? { checkedAt: '2026-08-08T12:00:00.000Z', status: 'connected' }
+          : channel === BRIDGE_CHANNELS.provider.listAvailableModelIds
+            ? ['relay-image']
+            : [],
+    })) as DesktopBridgeInvoke;
+    const api = createPreloadApi(invoke);
+
+    await api.provider.getStatus({ provider: 'relayme' });
+    await api.provider.checkConnection({ provider: 'relayme' });
+    await api.provider.listAvailableModelIds({ provider: 'relayme' });
+    await api.provider.listProfiles({ provider: 'relayme' });
+
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.getStatus, { provider: 'relayme' });
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.checkConnection, { provider: 'relayme' });
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.listAvailableModelIds, { provider: 'relayme' });
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.listProfiles, { provider: 'relayme' });
+  });
+  it('routes RelayMe image and video requests through provider-scoped channels', async () => {
+    const invoke = vi.fn(async (channel: string) => ({
+      ok: true,
+      value: channel === BRIDGE_CHANNELS.provider.submitImageJob || channel === BRIDGE_CHANNELS.provider.submitVideoJob
+        ? { providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef' }
+        : { status: 'running', progress: 0.25 },
+    })) as DesktopBridgeInvoke;
+    const api = createPreloadApi(invoke);
+
+    await api.provider.submitImageJob({
+      jobId: 'image-job-1', provider: 'relayme', modelRoute: 'relayme-image', prompt: '测试生图',
+      conversationId: 'conversation-1', referenceAssetIds: [],
+    });
+    await api.provider.submitVideoJob({
+      jobId: 'video-job-1', provider: 'relayme', modelRoute: 'relayme-video', prompt: '测试视频',
+      conversationId: 'conversation-1', referenceAssetIds: [], durationSeconds: 6,
+      resolution: '1080p', audioEnabled: true,
+    });
+    await api.provider.pollVideoJob({
+      provider: 'relayme', providerTaskId: 'provider-job-1234567890abcdef1234567890abcdef',
+    });
+
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.submitImageJob, expect.objectContaining({ provider: 'relayme' }));
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.submitVideoJob, expect.objectContaining({
+      provider: 'relayme', durationSeconds: 6, resolution: '1080p', audioEnabled: true,
+    }));
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.provider.pollVideoJob, expect.objectContaining({ provider: 'relayme' }));
+  });
+
+  it('durably repairs an orphaned old-project image result before returning the opened session', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-legacy-image-repair-'));
+    const projectRoot = join(tempRoot, 'LegacyImageRepair.novus-project');
+    const openedSession = createOpenedSession(projectRoot);
+    const source: Extract<import('@agent-canvas/domain').CanvasNode, { type: 'module' }> = createCanvasModuleNode('legacy-image-node', 'image_generation', { x: 0, y: 0 });
+    source.data.config = {
+      ...source.data.config,
+      lastResultJobId: 'legacy-image-job',
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    source.data.execution = { ...source.data.execution, state: 'queued' };
+    const stableProject: CanvasProject = { ...starterProject, nodes: [source], assets: [] };
+    const generated = {
+      assetId: 'd'.repeat(16), byteSize: 128, extension: 'png' as const, height: 512,
+      label: 'Generated image', mediaType: 'image/png' as const, origin: 'generated' as const,
+      sha256: 'd'.repeat(64), width: 512,
+    };
+    let currentProject: CanvasProject = { ...stableProject, assets: [generated] };
+    let revision = 51;
+    const commit = vi.fn(async (request: CommitRequest) => {
+      currentProject = applyProjectTransaction(currentProject, request.transaction);
+      revision += 1;
+      return {
+        committedAt: '2026-08-21T00:00:00.000Z',
+        projectId: starterProject.id,
+        revision,
+        sequence: revision,
+        transactionId: request.transaction.id,
+      };
+    });
+    const handlers = createDesktopBridgeHandlers({
+      appDataRoot: tempRoot,
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => openedSession),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => currentProject),
+        readCurrentRevision: vi.fn(async () => revision),
+        readStableProject: vi.fn(async () => stableProject),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(),
+      } as unknown as SnapshotScheduler,
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+
+      expect(commit).toHaveBeenCalledWith(expect.objectContaining({
+        baseRevision: 51,
+        kind: 'system',
+        transaction: expect.objectContaining({ id: 'repair-orphaned-image-result-legacy-image-job' }),
+      }));
+      expect(opened?.currentRevision).toBe(52);
+      expect(opened?.project.nodes[0]).toMatchObject({
+        data: {
+          config: { resultAssetIds: [generated.assetId], resultState: 'fresh' },
+          execution: { state: 'completed' },
+        },
+      });
+    } finally {
+      await handlers.closeAllProjects();
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    'Provider failed at https://api.example.test/v1/jobs/secret',
+    'Provider failed at file:///C:/Users/Private/input.png',
+    'Provider failed at C:\\Users\\Private\\input.png',
+    'Provider failed at \\\\server\\share\\input.png',
+    'Provider failed at /var/private/input.png',
+    'Provider failed at /usr/local/private/input.png',
+    'Provider failed with data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+    'Provider failed with iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+    'Provider failed with Authorization: Bearer top-secret-token',
+  ])('redacts protected provider envelope error messages: %s', async (unsafeMessage) => {
+    const invoke = vi.fn(async () => ({
+      ok: false,
+      error: { code: 'PROVIDER_ERROR', message: unsafeMessage, retryable: true },
+    })) as DesktopBridgeInvoke;
+    const api = createPreloadApi(invoke);
+
+    const error = await api.provider.getStatus().catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({ code: 'PROVIDER_ERROR', retryable: true });
+    expect(String((error as Error).message)).toContain('Provider failed');
+    expect(String((error as Error).message)).not.toMatch(/https?:\/\/|file:\/\/|[A-Za-z]:\\|\\\\|\/(?:Users|home|var|etc|opt|tmp|private)\/|base64|authorization|bearer|top-secret-token/iu);
+    expect(String((error as Error).message)).not.toContain('iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB');
   });
 
   it('rejects malformed provider IPC envelopes before exposing values to renderer code', async () => {
@@ -176,6 +428,15 @@ describe('desktop bridge contract', () => {
     expect(subscribe).toHaveBeenCalledWith(BRIDGE_CHANNELS.knowledgeSyncStatusChanged, expect.any(Function));
     expect(listener).toHaveBeenCalledWith(status);
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+  it('requests a coordinated desktop close through the lifecycle channel', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const api = createPreloadApi(invoke as DesktopBridgeInvoke);
+
+    await expect(api.lifecycle.requestClose()).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeRequest);
   });
   it('subscribes to close-flush requests and ACKs only strict matching lifecycle payloads', () => {
     const send = vi.fn();
@@ -348,6 +609,36 @@ describe('desktop bridge contract', () => {
       projectId: starterProject.id,
       stableSnapshotRevision: 2,
     });
+  });
+
+  it('refreshes the active desktop session without invoking the native project picker', async () => {
+    const session = createOpenedSession();
+    const refreshedProject = { ...starterProject, name: 'Provider asset committed' };
+    const chooseProjectRoot = vi.fn(async () => 'C:\\redacted\\Demo.novus-project');
+    const readCurrentProject = vi.fn()
+      .mockResolvedValueOnce(starterProject)
+      .mockResolvedValueOnce(refreshedProject);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot },
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => session),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject,
+        readCurrentRevision: vi.fn()
+          .mockResolvedValueOnce(50)
+          .mockResolvedValueOnce(51),
+      },
+    });
+    const opened = await handlers.openProject({}, { mode: 'write' });
+    if (opened === null) throw new Error('Expected active desktop session');
+
+    await expect(handlers.refreshProject({}, { sessionId: opened.sessionId })).resolves.toMatchObject({
+      currentRevision: 51,
+      project: { name: 'Provider asset committed' },
+      sessionId: opened.sessionId,
+    });
+    expect(chooseProjectRoot).toHaveBeenCalledOnce();
   });
 
   it('cancels knowledge configuration through the main-process picker without accepting renderer paths', async () => {
@@ -2566,6 +2857,166 @@ describe('desktop bridge contract', () => {
     await handlers.closeAllProjects();
     expect(close).toHaveBeenCalledOnce();
     expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('opens the latest orphan mirror as a protected preview without creating the managed project root', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-orphan-preview-'));
+    const projectRoot = join(tempRoot, 'projects', `${starterProject.id}.novus-project`);
+    const candidatePath = join(tempRoot, 'recovery', 'project-orphan', 'session-orphan', 'candidate-5.json');
+    const recoveredProject = { ...starterProject, name: 'Recovered orphan preview' };
+    await mkdir(join(candidatePath, '..'), { recursive: true });
+    await writeFile(candidatePath, JSON.stringify({
+      createdAt: '2026-08-20T09:00:00.000Z',
+      project: recoveredProject,
+      projectId: starterProject.id,
+      revision: 5,
+      snapshotId: 'snapshot-orphan-5',
+    }), 'utf8');
+    const handlers = createDesktopBridgeHandlers({
+      appDataRoot: tempRoot,
+      createId: createSequentialId('orphan-preview'),
+      recoveryScanner: {
+        discoverLatestOrphanCandidate: vi.fn(async () => ({
+          createdAt: '2026-08-20T09:00:00.000Z',
+          path: candidatePath,
+          project: recoveredProject,
+          projectId: starterProject.id,
+          revision: 5,
+          snapshotId: 'snapshot-orphan-5',
+          tailStatus: 'complete' as const,
+        })),
+        scan: vi.fn(),
+      },
+    });
+
+    try {
+      const preview = await handlers.openLatestRecoveryPreview({});
+      expect(preview).toMatchObject({
+        currentRevision: 5,
+        project: recoveredProject,
+        recoveryRequired: true,
+        stableSnapshotId: 'snapshot-orphan-5',
+      });
+      await expect(access(projectRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+      const plan = await handlers.getRecoveryPlan({}, { sessionId: preview!.sessionId });
+      expect(plan.candidates).toEqual([
+        expect.objectContaining({ revision: 5, snapshotId: 'snapshot-orphan-5' }),
+      ]);
+      await expect(access(projectRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await handlers.closeAllProjects();
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('recreates a missing managed project root from a retained recovery candidate and reindexes it', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-missing-root-recovery-'));
+    const projectRoot = join(tempRoot, 'projects', `${starterProject.id}.novus-project`);
+    const candidatePath = join(tempRoot, 'candidate.json');
+    const openedSession = createOpenedSession(projectRoot);
+    const restoredProject = { ...starterProject, name: 'Recovered missing root' };
+    const corruptError = Object.assign(new Error('Stable snapshot is corrupt'), {
+      code: 'CORRUPT_SNAPSHOT',
+      retryable: false,
+    });
+    const scan = vi.fn(async () => ({
+      action: 'choose_recovery' as const,
+      candidates: [{
+        path: candidatePath,
+        project: restoredProject,
+        projectId: starterProject.id,
+        revision: 5,
+        snapshotId: 'snapshot-missing-root',
+        tailStatus: 'complete' as const,
+      }],
+      issues: ['corrupt_snapshot'],
+      projectId: starterProject.id,
+      recoveredRevision: 5,
+      stableSnapshotId: 'snapshot-missing-root',
+      targetRevision: 5,
+    }));
+    const openJournalWriter = vi.fn(async () => ({ commit: vi.fn() }));
+    const open = vi.fn()
+      .mockResolvedValueOnce(openedSession)
+      .mockImplementationOnce(async () => ({
+        ...openedSession,
+        manifest: JSON.parse(await readFile(join(projectRoot, 'project.novus.json'), 'utf8')),
+      }));
+
+    await mkdir(join(projectRoot, 'snapshots'), { recursive: true });
+    await mkdir(join(projectRoot, 'journal'), { recursive: true });
+    await writeFile(join(projectRoot, 'project.novus.json'), `${JSON.stringify(openedSession.manifest)}\n`, 'utf8');
+    await writeFile(candidatePath, JSON.stringify({
+      project: restoredProject,
+      projectId: starterProject.id,
+      revision: 5,
+      snapshotId: 'snapshot-missing-root',
+    }), 'utf8');
+
+    const handlers = createDesktopBridgeHandlers({
+      appDataRoot: tempRoot,
+      createId: createSequentialId('missing-root'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      recoveryScanner: { scan },
+      repository: {
+        close: vi.fn(async () => undefined),
+        open,
+        openJournalWriter,
+        readCurrentProject: vi.fn()
+          .mockRejectedValueOnce(corruptError)
+          .mockResolvedValue(restoredProject),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(),
+      } as unknown as SnapshotScheduler,
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const plan = await handlers.getRecoveryPlan({}, { sessionId: opened!.sessionId });
+      await rm(projectRoot, { force: true, recursive: true });
+
+      const restored = await handlers.restore({}, {
+        candidateId: plan.candidates[0]!.candidateId,
+        sessionId: opened!.sessionId,
+      });
+
+      expect(restored).toMatchObject({
+        project: restoredProject,
+        restoredRevision: 5,
+      });
+      expect(restored).not.toHaveProperty('recoveryRequired');
+      await expect(access(join(projectRoot, 'project.novus.json'))).resolves.toBeUndefined();
+      await expect(access(join(projectRoot, 'journal', 'active.ndjson'))).resolves.toBeUndefined();
+      await expect(access(join(projectRoot, 'snapshots'))).resolves.toBeUndefined();
+      for (const directory of [
+        'assets',
+        'generated',
+        'generated/images',
+        'generated/videos',
+        'history',
+        'indexes',
+        'journal/archive',
+        'recovery',
+        'recovery/quarantine',
+        'reverse',
+        'reverse/results',
+      ]) {
+        await expect(access(join(projectRoot, ...directory.split('/')))).resolves.toBeUndefined();
+      }
+      expect(openJournalWriter).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(open).toHaveBeenLastCalledWith(projectRoot, { mode: 'write' });
+      await expect(handlers.listRecentProjects({})).resolves.toMatchObject([{
+        availability: 'available',
+        displayName: 'Recovered missing root',
+        projectId: starterProject.id,
+      }]);
+    } finally {
+      await handlers.closeAllProjects();
+      await rm(tempRoot, { force: true, recursive: true });
+    }
   });
 
   it.each([

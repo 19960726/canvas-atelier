@@ -182,6 +182,26 @@ describe('secret/path scan coverage', () => {
     expect(`${result.stdout}\n${result.stderr}`).toContain('raw base64 image payload');
   });
 
+  it('allows the protected-text matcher only in approved runtime redaction modules', () => {
+    const slash = String.fromCharCode(92);
+    const protectedMatcher = ['const matcher = /', slash, slash, '[^', slash, 's]+', slash, slash, '/u;'].join('');
+    const result = runScannerInIsolatedRoot(
+      'apps/renderer/src/agent/SkillChatWorkbench.tsx',
+      `${protectedMatcher}\n`,
+    );
+
+    expect(result.status).toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('secret/path scan passed');
+  });
+
+  it('allows a test-runner source location in an otherwise scanned validation log', () => {
+    const testLocation = ['E:', 'workspace', 'tests', 'e2e', 'canvas.spec.ts:1:1'].join(String.fromCharCode(92));
+    const result = runScannerInIsolatedRoot('test-results/validation.log', `${testLocation}\n`);
+
+    expect(result.status).toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('secret/path scan passed');
+  });
+
   it.each([
     ['source', 'apps/renderer/src/race-private.ts'],
     ['test', 'tests/race-private.test.ts'],

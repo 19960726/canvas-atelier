@@ -135,6 +135,25 @@ const imageResultNodeSchema = z.object({
   }).strict(),
 }).strict();
 
+const videoResultNodeSchema = z.object({
+  ...nodeBase,
+  type: z.literal('video_result'),
+  data: z.object({
+    assetId: idSchema,
+    modelId: idSchema,
+    providerTaskId: idSchema.optional(),
+    parentNodeIds: z.array(idSchema).default([]),
+    provider: z.string().min(1).optional(),
+    modelRoute: z.string().min(1).optional(),
+    displayName: z.string().min(1).optional(),
+    promptNodeId: idSchema.optional(),
+    referenceAssetIds: z.array(idSchema).default([]),
+    jobId: idSchema.optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    durationSeconds: z.number().positive().optional(),
+  }).strict(),
+}).strict();
 const reviewNodeSchema = z.object({
   ...nodeBase,
   type: z.literal('review'),
@@ -166,6 +185,7 @@ export const canvasNodeSchema = z.discriminatedUnion('type', [
   promptNodeSchema,
   modelJobNodeSchema,
   imageResultNodeSchema,
+  videoResultNodeSchema,
   reviewNodeSchema,
   memoryDiffNodeSchema,
   agentPlanNodeSchema,
@@ -218,6 +238,55 @@ export const canvasProjectSchema = z.object({
           path: ['nodes', nodeIndex, 'data', 'config', 'assetId'],
           message: 'Managed video module asset id must exist in the project catalog',
         });
+      }
+      continue;
+    }
+    if (node.data.moduleType === 'video_generation') {
+      const referenceAssetIds = node.data.config.referenceAssetIds;
+      if (referenceAssetIds !== undefined) {
+        if (!Array.isArray(referenceAssetIds) || referenceAssetIds.length > MAX_GENERATION_REFERENCES) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['nodes', nodeIndex, 'data', 'config', 'referenceAssetIds'],
+            message: `Video preview references are limited to ${MAX_GENERATION_REFERENCES} managed project images`,
+          });
+        } else {
+          const seen = new Set<string>();
+          referenceAssetIds.forEach((assetId, assetIndex) => {
+            const asset = typeof assetId === 'string' ? assetsById.get(assetId) : undefined;
+            if (typeof assetId !== 'string' || asset === undefined || !asset.mediaType.startsWith('image/') || seen.has(assetId)) {
+              context.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['nodes', nodeIndex, 'data', 'config', 'referenceAssetIds', assetIndex],
+                message: 'Video preview references must be unique managed project images',
+              });
+            }
+            if (typeof assetId === 'string') seen.add(assetId);
+          });
+        }
+      }
+      for (const key of ['firstFrameAssetId', 'lastFrameAssetId'] as const) {
+        const assetId = node.data.config[key];
+        if (assetId === undefined) continue;
+        const asset = typeof assetId === 'string' ? assetsById.get(assetId) : undefined;
+        if (asset === undefined || !asset.mediaType.startsWith('image/')) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['nodes', nodeIndex, 'data', 'config', key],
+            message: 'Video preview frame asset must be a managed project image',
+          });
+        }
+      }
+      const sourceVideoAssetId = node.data.config.sourceVideoAssetId;
+      if (sourceVideoAssetId !== undefined) {
+        const sourceVideo = typeof sourceVideoAssetId === 'string' ? assetsById.get(sourceVideoAssetId) : undefined;
+        if (sourceVideo?.mediaType !== 'video/mp4') {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['nodes', nodeIndex, 'data', 'config', 'sourceVideoAssetId'],
+            message: 'Video preview source video must be a managed project MP4',
+          });
+        }
       }
       continue;
     }

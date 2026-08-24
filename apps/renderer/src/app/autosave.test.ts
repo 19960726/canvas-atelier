@@ -73,6 +73,23 @@ describe('renderer autosave', () => {
     expect(commit.mock.calls[0]?.[0].nextProject.name).toBe('newest-draft');
   });
 
+  it('preserves a newer draft scheduled while an older autosave commit is in flight', async () => {
+    const firstAck = deferred<boolean>();
+    const commit = vi.fn()
+      .mockReturnValueOnce(firstAck.promise)
+      .mockResolvedValueOnce(true);
+    const controller = createAutosaveController<CanvasProject>({ commit });
+
+    controller.schedule({ project: namedProject('older-in-flight'), revision: 1 });
+    const flush = controller.flush('idle');
+    controller.schedule({ project: namedProject('latest-autosave-must-survive'), revision: 1 });
+    firstAck.resolve(true);
+
+    await expect(flush).resolves.toBe(true);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]![0].project.name).toBe('latest-autosave-must-survive');
+  });
+
   it('shares one in-flight controller flush promise across concurrent close boundaries', async () => {
     const ack = deferred<boolean>();
     const commit = vi.fn((_draft: AutosaveDraft<CanvasProject>, _reason: AutosaveFlushReason) => ack.promise);

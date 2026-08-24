@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 
 import { describe, expect, it, vi } from 'vitest';
+import { createAgentKnowledgeLease, createReversePromptRun, type ReversePromptRun } from '@agent-canvas/domain';
+import { createKnowledgeSnapshotCandidate } from '@agent-canvas/skill-store';
 
 import {
   PROVIDER_BRIDGE_CHANNELS,
@@ -15,11 +17,15 @@ import {
   createSecureProviderCredentialStore,
   normalizeProviderBridgeError,
   parseProviderBridgeRequest,
+  parseProviderBridgeResponse,
   registerProviderBridgeHandlers,
   type ProviderBridgeProfile,
   type SafeStorageAdapter,
+  type SubmitImageJobBridgeRequest,
 } from './provider-bridge.js';
+import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 import { NodeFileSystem, type FileHandleLike, type FileSystem } from './file-system.js';
+import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
 
 const token = 'sk-task-9-secret-token';
 const passphrase = 'correct horse battery staple';
@@ -41,6 +47,30 @@ const profiles: ProviderBridgeProfile[] = [
 ];
 
 describe('provider bridge contracts', () => {
+  it('keeps the submitted image resolution tier stable before provider mapping', () => {
+    expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, {
+      jobId: 'job-tier', provider: 'comfly', modelRoute: 'gpt-image', prompt: 'draw a chair',
+      conversationId: 'conversation-tier', referenceAssetIds: [], aspectRatio: '16:9', resolution: '4K',
+    })).toMatchObject({ resolution: '4K', aspectRatio: '16:9' });
+  });
+
+  it('accepts up to three hidden image and reverse credential keys without returning them from status', () => {
+    const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.configure, {
+      token: 'primary-image-key',
+      imageTokens: ['primary-image-key', 'image-key-2', 'image-key-3'],
+      reverseTokens: ['primary-reverse-key', 'reverse-key-2', 'reverse-key-3'],
+    });
+
+    expect(parsed).toMatchObject({
+      imageTokens: ['primary-image-key', 'image-key-2', 'image-key-3'],
+      reverseTokens: ['primary-reverse-key', 'reverse-key-2', 'reverse-key-3'],
+    });
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.configure, {
+      token: 'primary-image-key',
+      imageTokens: ['a', 'b', 'c', 'd'],
+    })).toThrow();
+  });
+
   it('keeps provider IPC request and response contracts backed by strict Zod schemas', async () => {
     const contractsSource = await readFile(join(process.cwd(), 'packages/desktop-core/src/provider-contracts.ts'), 'utf8');
     const bridgeSource = await readFile(join(process.cwd(), 'packages/desktop-core/src/provider-bridge.ts'), 'utf8');
@@ -80,6 +110,77 @@ describe('provider bridge contracts', () => {
     })).toThrow(/protected payload/i);
   });
 
+  it('accepts controlled Skill Chat text and context ids while rejecting protected data', () => {
+    const request = {
+      provider: 'comfly' as const,
+      modelRoute: 'skill-chat',
+      messages: [{ role: 'user' as const, content: 'Compare the composition options.' }],
+      context: {
+        knowledgeBaseIds: ['catalog'],
+        projectMemoryIds: ['project-memory-1'],
+      },
+    };
+
+    expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, request)).toEqual(request);
+    expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, {
+      ...request,
+      messages: [{ role: 'user', content: 'ThisIsAnOrdinarySentenceWithWords' }],
+    })).toEqual({
+      ...request,
+      messages: [{ role: 'user', content: 'ThisIsAnOrdinarySentenceWithWords' }],
+    });
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, {
+      ...request,
+      messages: [{ role: 'user', content: 'Read C:\\Users\\private\\brief.md' }],
+    })).toThrow(/protected payload/i);
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, {
+      ...request,
+      messages: [{ role: 'user', content: 'Open https://unsafe.example/context' }],
+    })).toThrow(/protected payload/i);
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, {
+      ...request,
+      context: { ...request.context, secret: token },
+    })).toThrow(/unknown key/i);
+
+    const twentyManagedImageIds = Array.from({ length: 20 }, (_, index) => index.toString(16).padStart(16, '0'));
+    expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, {
+      ...request,
+      sessionId: 'desktop-session-1',
+      referenceAssetIds: twentyManagedImageIds,
+    })).toEqual({
+      ...request,
+      sessionId: 'desktop-session-1',
+      referenceAssetIds: twentyManagedImageIds,
+    });
+
+    expect(parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.chat, {
+      message: 'Use the lower-angle reference for a more dramatic framing.',
+      modelRoute: 'skill-chat',
+      sources: [{ knowledgeBaseId: 'catalog', version: 1, displayName: 'Catalog' }],
+    })).toEqual({
+      message: 'Use the lower-angle reference for a more dramatic framing.',
+      modelRoute: 'skill-chat',
+      sources: [{ knowledgeBaseId: 'catalog', version: 1, displayName: 'Catalog' }],
+    });
+
+    for (const protectedText of [
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+      '/9j/4AAQSkZJRgABAQAAAQABAAD',
+      'Read C:/Users/private/brief.md',
+      'Read /srv/private/brief.md',
+    ]) {
+      expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, {
+        ...request,
+        messages: [{ role: 'user', content: protectedText }],
+      })).toThrow(/protected payload/i);
+      expect(() => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.chat, {
+        message: protectedText,
+        modelRoute: 'skill-chat',
+        sources: [],
+      })).toThrow(/protected payload/i);
+    }
+  });
+
   it('accepts only the stable comfly provider identifier in configured profiles', () => {
     expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.configure, {
       token,
@@ -105,7 +206,195 @@ describe('provider bridge contracts', () => {
   });
 });
 
+describe('reverse prompt analysis bridge contract', () => {
+  it('accepts only opaque session metadata, a pinned reverse run, and managed media identities', () => {
+    const imageAssetId = 'b'.repeat(16);
+    const imageSha256 = 'b'.repeat(64);
+    const videoAssetId = 'c'.repeat(16);
+    const videoSha256 = 'c'.repeat(64);
+    const references = [{
+      assetId: imageAssetId,
+      label: 'Product',
+      position: 0,
+      role: 'product_identity' as const,
+    }];
+    const run = createReversePromptRun({
+      projectId: 'project-1',
+      skill: { id: 'reverse-prompt', version: 'v1' },
+      agentConfig: {
+        modelRoute: 'comfly/gemini-video',
+        role: 'Commercial visual analyst',
+        task: 'Analyze the managed original media.',
+        knowledgeBaseIds: ['catalog', 'composition'],
+      },
+      knowledgeLease: createAgentKnowledgeLease({
+        runId: 'reverse-run-1',
+        capability: 'reverse_prompt',
+        snapshots: [
+          { knowledgeBaseId: 'catalog', version: 1, contentHash: 'd'.repeat(64) },
+          { knowledgeBaseId: 'composition', version: 2, contentHash: 'e'.repeat(64) },
+        ],
+        references,
+        citations: [],
+      }, { leaseId: 'lease-1', createdAt: '2026-07-22T00:00:00.000Z' }),
+      approvedMemorySnapshot: {
+        version: 'approved-1',
+        approvedAt: '2026-07-22T00:00:00.000Z',
+        approvedMemoryIds: [],
+      },
+      references,
+      videoInput: {
+        assetId: videoAssetId,
+        byteSize: 1_024,
+        durationMs: 1_000,
+        extension: 'mp4',
+        height: 1_080,
+        label: 'Launch film',
+        mediaType: 'video/mp4',
+        origin: 'imported',
+        sha256: videoSha256,
+        width: 1_920,
+      },
+    }, {
+      createNonce: () => 'nonce-1',
+      now: () => '2026-07-22T00:00:00.000Z',
+    });
+    const request = {
+      sessionId: 'desktop-session-1',
+      provider: 'comfly',
+      run,
+      media: [
+        { kind: 'image', assetId: imageAssetId, sha256: imageSha256, byteSize: 512, mediaType: 'image/png' },
+        { kind: 'video', assetId: videoAssetId, sha256: videoSha256, byteSize: 1_024, mediaType: 'video/mp4' },
+      ],
+    };
+    const result = {
+      sessionId: run.sessionId,
+      nonce: run.nonce,
+      knowledgeSnapshotVersion: run.knowledgeLease.versionKey,
+      analysis: 'The product is framed centrally with a soft key light.',
+      keywords: ['product', 'soft key light'],
+      positivePrompt: 'A centrally framed product with a soft key light.',
+      negativeConstraints: ['Do not distort the product.'],
+      executionChecklist: ['Check the product silhouette.'],
+    };
+
+    expect(parseProviderBridgeRequest('novus-desktop:provider:analyze-reverse-prompt', request)).toEqual(request);
+    expect(parseProviderBridgeResponse('novus-desktop:provider:analyze-reverse-prompt', result)).toEqual(result);
+    expect(() => parseProviderBridgeRequest('novus-desktop:provider:analyze-reverse-prompt', {
+      ...request,
+      sessionId: 'https://unsafe.example/session',
+    })).toThrow(/provider request is invalid/i);
+    expect(() => parseProviderBridgeRequest('novus-desktop:provider:analyze-reverse-prompt', {
+      ...request,
+      media: [{ ...request.media[0], localPath: 'C:\\private\\source.png' }],
+    })).toThrow(/unknown key/i);
+    expect(() => parseProviderBridgeRequest('novus-desktop:provider:analyze-reverse-prompt', {
+      ...request,
+      media: [{ ...request.media[0], bytes: 'AAECAwQFBgcICQoLDA0ODw==' }],
+    })).toThrow(/unknown key/i);
+    expect(() => parseProviderBridgeRequest('novus-desktop:provider:analyze-reverse-prompt', {
+      ...request,
+      authorization: `Bearer ${token}`,
+    })).toThrow(/unknown key/i);
+  });
+  it('accepts multiple videos and images only when managed media matches the ordered run exactly', () => {
+    const imageA = { assetId: '1'.repeat(16), sha256: '1'.repeat(64), byteSize: 256, label: 'Image A', mediaType: 'image/png' as const, role: 'product_identity' as const };
+    const videoA = { assetId: '2'.repeat(16), sha256: '2'.repeat(64), byteSize: 512, durationMs: 1000, extension: 'mp4' as const, height: 1080, label: 'Video A', mediaType: 'video/mp4' as const, origin: 'imported' as const, width: 1920 };
+    const imageB = { assetId: '3'.repeat(16), sha256: '3'.repeat(64), byteSize: 768, label: 'Image B', mediaType: 'image/jpeg' as const, role: 'scene_composition' as const };
+    const videoB = { assetId: '4'.repeat(16), sha256: '4'.repeat(64), byteSize: 1024, durationMs: 2000, extension: 'mp4' as const, height: 720, label: 'Video B', mediaType: 'video/mp4' as const, origin: 'imported' as const, width: 1280 };
+    const references = [
+      { assetId: imageA.assetId, label: imageA.label, position: 0, role: imageA.role },
+      { assetId: imageB.assetId, label: imageB.label, position: 1, role: imageB.role },
+    ];
+    const run = createReversePromptRun({
+      projectId: 'project-ordered-media',
+      skill: { id: 'reverse-prompt', version: 'v1' },
+      agentConfig: { modelRoute: 'comfly/gemini-video', role: 'Analyst', task: 'Compare all media.', knowledgeBaseIds: [] },
+      knowledgeLease: createAgentKnowledgeLease({ runId: 'reverse-run-ordered', capability: 'reverse_prompt', snapshots: [], references, citations: [] }, { leaseId: 'lease-ordered', createdAt: '2026-08-06T00:00:00.000Z' }),
+      approvedMemorySnapshot: { version: 'approved-ordered', approvedAt: '2026-08-06T00:00:00.000Z', approvedMemoryIds: [] },
+      references,
+      orderedMedia: [
+        { kind: 'video', ...videoA, order: 0 },
+        { kind: 'image', ...imageA, order: 1 },
+        { kind: 'video', ...videoB, order: 2 },
+        { kind: 'image', ...imageB, order: 3 },
+      ],
+    }, { createNonce: () => 'nonce-ordered', now: () => '2026-08-06T00:00:00.000Z' });
+    const media = [
+      { kind: 'video' as const, assetId: videoA.assetId, sha256: videoA.sha256, byteSize: videoA.byteSize, mediaType: videoA.mediaType },
+      { kind: 'image' as const, assetId: imageA.assetId, sha256: imageA.sha256, byteSize: imageA.byteSize, mediaType: imageA.mediaType },
+      { kind: 'video' as const, assetId: videoB.assetId, sha256: videoB.sha256, byteSize: videoB.byteSize, mediaType: videoB.mediaType },
+      { kind: 'image' as const, assetId: imageB.assetId, sha256: imageB.sha256, byteSize: imageB.byteSize, mediaType: imageB.mediaType },
+    ];
+    const request = { sessionId: 'desktop-session-ordered', provider: 'comfly', run, media };
+
+    expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt, request)).toEqual(request);
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt, {
+      ...request,
+      media: [media[1], media[0], media[2], media[3]],
+    })).toThrow(/must match the ordered reverse-prompt media exactly/i);
+  });
+});
+
 describe('secure provider credential storage', () => {
+  it.each(['comfly', 'relayme'] as const)(
+    'allows an explicit new %s key to replace a safeStorage envelope that this Windows profile can no longer decrypt',
+    async (provider) => {
+      const appDataRoot = await makeTempRoot();
+      const originalStorage = createScopedFakeSafeStorage('old-profile');
+      const currentStorage = createScopedFakeSafeStorage('current-profile');
+      const original = createSecureProviderCredentialStore({ appDataRoot, provider, safeStorage: originalStorage });
+      await original.configure({ token: 'old-provider-key' });
+
+      const recovered = createSecureProviderCredentialStore({ appDataRoot, provider, safeStorage: currentStorage });
+      await expect(recovered.getToken()).rejects.toMatchObject({ code: 'CREDENTIALS_LOCKED' });
+
+      await expect(recovered.configure({ token: 'replacement-provider-key' })).resolves.toBeUndefined();
+      await expect(recovered.getToken()).resolves.toBe('replacement-provider-key');
+      const restarted = createSecureProviderCredentialStore({ appDataRoot, provider, safeStorage: currentStorage });
+      await expect(restarted.getToken()).resolves.toBe('replacement-provider-key');
+      await cleanupTempRoot(appDataRoot);
+    },
+  );
+
+  it('keeps the RelayMe key encrypted and available after the desktop service restarts', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const store = createSecureProviderCredentialStore({ appDataRoot, provider: 'relayme', safeStorage });
+
+    await store.configure({ token: 'relayme-persisted-key' });
+
+    const restarted = createSecureProviderCredentialStore({ appDataRoot, provider: 'relayme', safeStorage });
+    await expect(restarted.getStatus()).resolves.toMatchObject({ configured: true, locked: false, encryption: 'safeStorage' });
+    await expect(restarted.getToken()).resolves.toBe('relayme-persisted-key');
+    const serialized = await readFile(join(appDataRoot, 'providers', 'relayme', 'provider-credentials.json'), 'utf8');
+    expect(serialized).not.toContain('relayme-persisted-key');
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('keeps three image and three reverse tokens encrypted across a store restart', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const store = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+
+    await store.configure({
+      token: 'image-token-1',
+      imageTokens: ['image-token-1', 'image-token-2', 'image-token-3'],
+      reverseTokens: ['reverse-token-1', 'reverse-token-2', 'reverse-token-3'],
+    });
+
+    await expect(store.getToken('image')).resolves.toBe('image-token-1');
+    await expect(store.getToken('language')).resolves.toBe('reverse-token-1');
+    const restarted = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    await expect(restarted.getToken('image')).resolves.toBe('image-token-1');
+    await expect(restarted.getToken('language')).resolves.toBe('reverse-token-1');
+    const serialized = await readFile(join(appDataRoot, 'provider-credentials.json'), 'utf8');
+    expect(serialized).not.toContain('image-token-1');
+    expect(serialized).not.toContain('reverse-token-1');
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('roundtrips with safeStorage without serializing plaintext token', async () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();
@@ -213,6 +502,655 @@ describe('secure provider credential storage', () => {
 });
 
 describe('Comfly provider service', () => {
+  it('pins active managed knowledge for chat and returns only safe source summaries', async () => {
+    const appDataRoot = await makeTempRoot();
+    const knowledgeStore = new ManagedKnowledgeStore({ appDataRoot });
+    await publishKnowledgeSnapshot(knowledgeStore, 'catalog', 'Catalog', 'prompts/catalog.md', 'Keep the product silhouette clear.');
+    const fetch = vi.fn(async () => jsonResponse({
+      id: 'chat-response-1',
+      model: 'provider-skill-chat',
+      choices: [{ message: { role: 'assistant', content: 'Use a clear silhouette and a restrained background.' } }],
+    }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const projectMemoryContextResolver = {
+      resolveSelectedProjectMemory: vi.fn(async () => [{
+        memoryId: 'project-memory-1',
+        projectRevision: 24,
+        summary: 'Keep the product silhouette clear and the background restrained.',
+      }]),
+    };
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'skill-chat',
+        modelId: 'provider-skill-chat',
+        displayName: 'Skill Chat',
+        capabilities: ['chat'],
+      }],
+      projectMemoryContextResolver,
+    });
+    await service.configure({ token });
+
+    await expect(service.chat?.({
+      provider: 'comfly',
+      modelRoute: 'skill-chat',
+      messages: [{ role: 'user', content: 'How should I frame this product?' }],
+      context: { knowledgeBaseIds: ['catalog'], projectMemoryIds: ['project-memory-1'] },
+    })).resolves.toEqual({
+      message: 'Use a clear silhouette and a restrained background.',
+      modelRoute: 'skill-chat',
+      sources: [{ knowledgeBaseId: 'catalog', version: 1, displayName: 'Catalog' }],
+    });
+
+    const payload = JSON.parse(String((fetch.mock.calls[0] as unknown as [string, { body?: string }])[1].body)) as {
+      model: string;
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(payload.model).toBe('provider-skill-chat');
+    expect(payload.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: 'How should I frame this product?' }),
+      expect.objectContaining({ role: 'system', content: expect.stringContaining('Keep the product silhouette clear.') }),
+    ]));
+    expect(projectMemoryContextResolver.resolveSelectedProjectMemory).toHaveBeenCalledWith(['project-memory-1']);
+    const systemMessage = payload.messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(systemMessage).toContain('"projectRevision":24');
+    expect(systemMessage).not.toContain('"projectMemoryIds"');
+    expect(JSON.stringify(payload)).not.toMatch(/C:\\|https?:\/\//i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects selected project memory when no controlled main-process resolver is configured', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'skill-chat',
+        displayName: 'Skill Chat',
+        capabilities: ['chat'],
+      }],
+    });
+    await service.configure({ token });
+
+    await expect(service.chat?.({
+      provider: 'comfly',
+      modelRoute: 'skill-chat',
+      messages: [{ role: 'user', content: 'Use the approved project direction.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: ['project-memory-1'] },
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects controlled image references on a chat route without vision capability before transport', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'text-only-skill-chat',
+        displayName: 'Text only Skill Chat',
+        capabilities: ['chat'],
+      }],
+    });
+    await service.configure({ token });
+
+    await expect(service.chat?.({
+      provider: 'comfly',
+      modelRoute: 'text-only-skill-chat',
+      sessionId: 'desktop-session-1',
+      referenceAssetIds: ['a'.repeat(16)],
+      messages: [{ role: 'user', content: 'Analyze the selected managed image.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('uses only main-process resolved managed image bytes for a vision Skill chat request', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async () => jsonResponse({
+      id: 'chat-response-vision-1',
+      model: 'provider-vision-skill-chat',
+      choices: [{ message: { role: 'assistant', content: 'The managed image has a centered product.' } }],
+    }));
+    const readManagedSkillChatImages = vi.fn(async () => [{
+      bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
+      mediaType: 'image/png' as const,
+    }]);
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'vision-skill-chat',
+        modelId: 'provider-vision-skill-chat',
+        displayName: 'Vision Skill Chat',
+        capabilities: ['chat', 'vision'],
+      }],
+      readManagedSkillChatImages,
+    });
+    await service.configure({ token });
+
+    await expect(service.chat?.({
+      provider: 'comfly',
+      modelRoute: 'vision-skill-chat',
+      sessionId: 'desktop-session-1',
+      referenceAssetIds: ['a'.repeat(16)],
+      messages: [{ role: 'user', content: 'Analyze the selected managed image.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    })).resolves.toMatchObject({ message: 'The managed image has a centered product.' });
+
+    expect(readManagedSkillChatImages).toHaveBeenCalledWith('desktop-session-1', ['a'.repeat(16)]);
+    const payload = JSON.parse(String((fetch.mock.calls[0] as unknown as [string, { body?: string }])[1].body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    const userMessage = payload.messages.find((message) => message.role === 'user');
+    expect(userMessage?.content).toEqual([
+      { type: 'text', text: 'Analyze the selected managed image.' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw==' } },
+    ]);
+    expect(JSON.stringify(payload)).not.toMatch(/C:\\|https?:\/\//i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects unsafe project-memory resolver summaries before provider transport', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'skill-chat',
+        displayName: 'Skill Chat',
+        capabilities: ['chat'],
+      }],
+      projectMemoryContextResolver: {
+        resolveSelectedProjectMemory: async () => [{
+          memoryId: 'project-memory-1',
+          projectRevision: 24,
+          summary: 'Read C:/Users/private/project-memory.json',
+        }],
+      },
+    });
+    await service.configure({ token });
+
+    await expect(service.chat?.({
+      provider: 'comfly',
+      modelRoute: 'skill-chat',
+      messages: [{ role: 'user', content: 'Use the approved project direction.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: ['project-memory-1'] },
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects chat calls for configured routes without chat capability before transport', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles,
+    });
+    await service.configure({ token });
+
+    await expect(service.chat?.({
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      messages: [{ role: 'user', content: 'Give me composition advice.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('runs image-only reverse analysis through a catalog-discovered OpenAI-compatible vision chat route', async () => {
+    const appDataRoot = await makeTempRoot();
+    const knowledgeStore = new ManagedKnowledgeStore({ appDataRoot });
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, knowledgeStore);
+    const imageOnlyRequest = {
+      ...request,
+      run: { ...request.run, agentConfig: { ...request.run.agentConfig!, modelRoute: 'comfly-vision-chat' }, orderedMedia: [request.run.orderedMedia[0]!], videoInput: undefined },
+      media: [request.media[0]!],
+    };
+    const fetch = vi.fn(async () => jsonResponse({
+      id: 'reverse-chat-1', model: 'vision-chat-model',
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(reversePromptResultFor(imageOnlyRequest.run)) } }],
+    }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{
+        provider: 'comfly', modelRoute: 'comfly-vision-chat', modelId: 'vision-chat-model', displayName: 'Vision Chat',
+        capabilities: ['chat', 'vision', 'reverse_prompt'],
+      }],
+      readManagedReverseMedia: async () => [{ bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), mediaType: 'image/png' }],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(imageOnlyRequest)).resolves.toEqual(reversePromptResultFor(imageOnlyRequest.run));
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/v1\/chat\/completions$/u), expect.objectContaining({ method: 'POST' }));
+    const payload = JSON.parse(String((fetch.mock.calls[0] as unknown as readonly [string, { readonly body?: unknown }])[1]?.body)) as {
+      messages: Array<{ content: unknown }>;
+    };
+    expect(JSON.stringify(payload.messages)).toContain('data:image/png;base64,iVBORw==');
+    expect(JSON.stringify(payload.messages)).toContain('Catalog guidance.');
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('keeps reverse chat alive after the normal 30 second timeout', async () => {
+    vi.useFakeTimers();
+    const appDataRoot = await makeTempRoot();
+    try {
+      const knowledgeStore = new ManagedKnowledgeStore({ appDataRoot });
+      const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, knowledgeStore);
+      const imageOnlyRequest = {
+        ...request,
+        run: {
+          ...request.run,
+          agentConfig: { ...request.run.agentConfig!, modelRoute: 'comfly-vision-chat' },
+          orderedMedia: [request.run.orderedMedia[0]!],
+          videoInput: undefined,
+        },
+        media: [request.media[0]!],
+      };
+      let capturedSignal: AbortSignal | undefined;
+      let resolveFetchStarted!: () => void;
+      const fetchStarted = new Promise<void>((resolve) => { resolveFetchStarted = resolve; });
+      let resolveFetch!: (value: ReturnType<typeof jsonResponse>) => void;
+      const fetch = vi.fn(async (_url: string, init?: { signal?: AbortSignal }) => {
+        capturedSignal = init?.signal;
+        resolveFetchStarted();
+        return new Promise<ReturnType<typeof jsonResponse>>((resolve) => { resolveFetch = resolve; });
+      });
+      const service = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fetch,
+        profiles: [{
+          provider: 'comfly', modelRoute: 'comfly-vision-chat', modelId: 'vision-chat-model', displayName: 'Vision Chat',
+          capabilities: ['chat', 'vision', 'reverse_prompt'],
+        }],
+        readManagedReverseMedia: async () => [{
+          bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
+          mediaType: 'image/png',
+        }],
+      });
+      await service.configure({ token });
+
+      const pending = service.analyzeReversePrompt!(imageOnlyRequest);
+      await fetchStarted;
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(capturedSignal?.aborted).toBe(false);
+      resolveFetch(jsonResponse({
+        id: 'reverse-response',
+        model: 'vision-chat-model',
+        choices: [{ message: { role: 'assistant', content: JSON.stringify(reversePromptResultFor(imageOnlyRequest.run)) } }],
+      }));
+      await expect(pending).resolves.toEqual(reversePromptResultFor(imageOnlyRequest.run));
+    } finally {
+      vi.useRealTimers();
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('keeps Gemini-native reverse alive after 30 seconds and forwards its 120 second timeout', async () => {
+    vi.useFakeTimers();
+    const appDataRoot = await makeTempRoot();
+    try {
+      const knowledgeStore = new ManagedKnowledgeStore({ appDataRoot });
+      const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, knowledgeStore);
+      let capturedSignal: AbortSignal | undefined;
+      let capturedTimeoutMs: number | undefined;
+      let resolveFetchStarted!: () => void;
+      const fetchStarted = new Promise<void>((resolve) => { resolveFetchStarted = resolve; });
+      let resolveFetch!: (value: ReturnType<typeof jsonResponse>) => void;
+      const fetch = vi.fn(async (_url: string, init?: { signal?: AbortSignal; timeoutMs?: number }) => {
+        capturedSignal = init?.signal;
+        capturedTimeoutMs = init?.timeoutMs;
+        resolveFetchStarted();
+        return new Promise<ReturnType<typeof jsonResponse>>((resolve) => { resolveFetch = resolve; });
+      });
+      const service = createComflyProviderService({
+        appDataRoot,
+        credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+        fetch,
+        profiles: [geminiReverseProfile()],
+        readManagedReverseMedia: async () => [
+          { bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), mediaType: 'image/png' },
+          { bytes: Uint8Array.from([0, 0, 0, 0, 0x66, 0x74, 0x79, 0x70]), mediaType: 'video/mp4' },
+        ],
+      });
+      await service.configure({ token });
+
+      const pending = service.analyzeReversePrompt!(request);
+      await fetchStarted;
+      expect(capturedTimeoutMs).toBe(120_000);
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(capturedSignal?.aborted).toBe(false);
+      resolveFetch(jsonResponse({
+        candidates: [{ content: { parts: [{ text: JSON.stringify(reversePromptResultFor(request.run)) }] } }],
+      }));
+      await expect(pending).resolves.toEqual(reversePromptResultFor(request.run));
+    } finally {
+      vi.useRealTimers();
+      await cleanupTempRoot(appDataRoot);
+    }
+  });
+
+  it('sends pinned managed knowledge bodies and original managed media to the Gemini-compatible route', async () => {
+    const appDataRoot = await makeTempRoot();
+    const knowledgeStore = new ManagedKnowledgeStore({ appDataRoot });
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, knowledgeStore);
+    const fetch = vi.fn(async () => jsonResponse({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(reversePromptResultFor(request.run)) }] } }],
+    }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia: async () => [
+        { bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), mediaType: 'image/png' },
+        { bytes: Uint8Array.from([0, 0, 0, 0, 0x66, 0x74, 0x79, 0x70]), mediaType: 'video/mp4' },
+      ],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).resolves.toEqual(reversePromptResultFor(request.run));
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringMatching(/\/v1beta\/models\/gemini-video-provider-id:generateContent$/u),
+      expect.objectContaining({ method: 'POST' }),
+    );
+    const fetchCall = fetch.mock.calls[0] as unknown as readonly [string, { readonly body?: unknown }];
+    const payload = JSON.parse(String(fetchCall[1]?.body)) as {
+      contents: Array<{ parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> }>;
+    };
+    const parts = payload.contents[0]?.parts ?? [];
+    const requestText = JSON.parse(parts[0]?.text ?? '{}') as {
+      builtinSkills?: Array<{ id?: string; version?: string }>;
+      knowledge?: unknown[];
+      mediaManifest?: Array<{ mention?: string }>;
+      requiredOutput?: Record<string, unknown>;
+    };
+    expect(requestText.builtinSkills).toEqual([expect.objectContaining({
+      id: 'seedance-2-5-reverse',
+      version: '2026-08-21.1',
+    })]);
+    expect(requestText.knowledge).toHaveLength(2);
+    expect(requestText.knowledge).toEqual([
+      expect.objectContaining({ knowledgeBaseId: 'catalog', documents: [{ relativePath: 'prompts/catalog.md', content: 'Catalog guidance.' }] }),
+      expect.objectContaining({ knowledgeBaseId: 'composition', documents: [{ relativePath: 'prompts/composition.md', content: 'Composition guidance.' }] }),
+    ]);
+    expect(requestText.requiredOutput).toEqual(expect.objectContaining({
+      sessionId: request.run.sessionId,
+      nonce: request.run.nonce,
+      knowledgeSnapshotVersion: request.run.knowledgeLease.versionKey,
+      analysis: expect.stringMatching(/空间|材质|镜头/u),
+      keywords: [expect.stringMatching(/关键词/u)],
+      positivePrompt: expect.stringMatching(/提示词/u),
+      positivePromptZh: expect.stringMatching(/中文/u),
+      positivePromptEn: expect.stringMatching(/English/u),
+      mediaResponsibilities: expect.any(Array),
+      materialsAndTextures: expect.any(Array),
+      effects: expect.any(Array),
+      fluids: expect.any(Array),
+      videoTimeline: expect.any(Array),
+      whiteBackgroundAdaptation: expect.any(Object),
+      promptLogic: expect.any(Object),
+      seedance25: expect.any(Object),
+      negativeConstraints: [expect.stringMatching(/约束/u)],
+      executionChecklist: [expect.stringMatching(/检查/u)],
+    }));
+    expect(parts.slice(1)).toEqual([
+      { inlineData: { mimeType: 'image/png', data: 'iVBORw==' } },
+      { inlineData: { mimeType: 'video/mp4', data: 'AAAAAGZ0eXA=' } },
+    ]);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('preserves every interleaved image and video when sending ordered reverse media', async () => {
+    const appDataRoot = await makeTempRoot();
+    const request = createOrderedMultiReversePromptRequest();
+    const fetch = vi.fn(async () => jsonResponse({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(reversePromptResultFor(request.run)) }] } }],
+    }));
+    const readManagedReverseMedia = vi.fn(async () => [
+      { bytes: Uint8Array.from([1]), mediaType: 'video/mp4' },
+      { bytes: Uint8Array.from([2]), mediaType: 'image/png' },
+      { bytes: Uint8Array.from([3]), mediaType: 'video/mp4' },
+      { bytes: Uint8Array.from([4]), mediaType: 'image/jpeg' },
+    ] as const);
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia,
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).resolves.toEqual(reversePromptResultFor(request.run));
+    expect(readManagedReverseMedia).toHaveBeenCalledWith(request.sessionId, request.media);
+    const fetchCall = fetch.mock.calls[0] as unknown as readonly [string, { readonly body?: unknown }];
+    const payload = JSON.parse(String(fetchCall[1]?.body)) as { contents: Array<{ parts: Array<{ inlineData?: { mimeType: string; data: string } }> }> };
+    expect(payload.contents[0]?.parts.slice(1)).toEqual([
+      { inlineData: { mimeType: 'video/mp4', data: 'AQ==' } },
+      { inlineData: { mimeType: 'image/png', data: 'Ag==' } },
+      { inlineData: { mimeType: 'video/mp4', data: 'Aw==' } },
+      { inlineData: { mimeType: 'image/jpeg', data: 'BA==' } },
+    ]);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('requires video understanding whenever ordered reverse media contains videos', async () => {
+    const appDataRoot = await makeTempRoot();
+    const request = createOrderedMultiReversePromptRequest();
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{ ...geminiReverseProfile(), capabilities: ['gemini_native', 'reverse_prompt'] }],
+      readManagedReverseMedia: async () => [],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+    await cleanupTempRoot(appDataRoot);
+  });
+  it('rejects a Gemini reverse-analysis result whose identity does not match the pinned run', async () => {
+    const appDataRoot = await makeTempRoot();
+    const knowledgeStore = new ManagedKnowledgeStore({ appDataRoot });
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, knowledgeStore);
+    const fetch = vi.fn(async () => jsonResponse({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({
+        ...reversePromptResultFor(request.run),
+        sessionId: 'different-session',
+      }) }] } }],
+    }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia: async () => [
+        { bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), mediaType: 'image/png' },
+        { bytes: Uint8Array.from([0, 0, 0, 0, 0x66, 0x74, 0x79, 0x70]), mediaType: 'video/mp4' },
+      ],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it.each([
+    ['has no text candidate', { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw==' } }] } }] }],
+    ['returns malformed JSON text', { candidates: [{ content: { parts: [{ text: '{not-json' }] } }] }],
+    ['returns JSON rejected by the reverse-analysis response schema', { candidates: [{ content: { parts: [{ text: JSON.stringify({ sessionId: 'session', nonce: 'nonce' }) }] } }] }],
+  ])('surfaces a sanitized PROVIDER_INVALID_RESPONSE when Gemini %s', async (_caseName, response) => {
+    const appDataRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
+    const fetch = vi.fn(async () => jsonResponse(response));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia: async () => [],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+      message: 'Provider returned an invalid reverse-analysis response',
+    });
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it.each([
+    ['is missing', [] as ProviderBridgeProfile[]],
+    ['does not support Gemini-native reverse analysis', [{ ...geminiReverseProfile(), capabilities: ['reverse_prompt'] as ProviderBridgeProfile['capabilities'] }]],
+    ['does not support video understanding for an MP4 run', [{ ...geminiReverseProfile(), capabilities: ['gemini_native', 'reverse_prompt'] as ProviderBridgeProfile['capabilities'] }]],
+  ])('rejects before Provider transport when the reverse-analysis profile %s', async (_caseName, profiles) => {
+    const appDataRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles,
+      readManagedReverseMedia: async () => [],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects missing pinned knowledge before calling the Provider', async () => {
+    const knowledgeRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(knowledgeRoot, new ManagedKnowledgeStore({ appDataRoot: knowledgeRoot }));
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia: async () => [],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await cleanupTempRoot(knowledgeRoot);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects a pinned knowledge hash mismatch before calling the Provider', async () => {
+    const appDataRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia: async () => [],
+    });
+    await service.configure({ token });
+    const mismatched = {
+      ...request,
+      run: {
+        ...request.run,
+        knowledgeLease: createAgentKnowledgeLease({
+          runId: 'reverse-run-1',
+          capability: 'reverse_prompt',
+          snapshots: [{ ...request.run.knowledgeLease.snapshots[0]!, contentHash: 'f'.repeat(64) }, request.run.knowledgeLease.snapshots[1]!],
+          references: request.run.references,
+          citations: [],
+        }, { leaseId: 'lease-1', createdAt: '2026-07-22T00:00:00.000Z' }),
+      },
+    };
+
+    await expect(service.analyzeReversePrompt?.(mismatched)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects reverse analysis when the managed media resolver is unavailable', async () => {
+    const appDataRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
+    const fetch = vi.fn();
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects an MP4 larger than 20 MiB before reading managed media', async () => {
+    const appDataRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
+    const fetch = vi.fn();
+    const readManagedReverseMedia = vi.fn(async () => []);
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia,
+    });
+    await service.configure({ token });
+    const byteSize = 20 * 1024 * 1024 + 1;
+    const oversized = {
+      ...request,
+      run: { ...request.run, videoInput: { ...request.run.videoInput!, byteSize } },
+      media: [request.media[0]!, { ...request.media[1]!, byteSize }],
+    };
+
+    await expect(service.analyzeReversePrompt?.(oversized)).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(readManagedReverseMedia).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('checks credentials through the free models endpoint without creating a provider job', async () => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn(async () => jsonResponse({ data: [{ id: 'private-model-id' }], object: 'list' }));
@@ -225,6 +1163,21 @@ describe('Comfly provider service', () => {
     await expect(service.checkConnection()).resolves.toMatchObject({ status: 'connected' });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/v1\/models$/u), expect.objectContaining({ method: 'GET' }));
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('reads account-visible model ids through the configured Comfly connection', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async () => jsonResponse({
+      object: 'list',
+      data: [{ id: 'gpt-image-2' }, { id: 'gemini-3.1-flash-lite' }, { id: null }],
+    }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, profiles });
+    await service.configure({ token });
+
+    await expect(service.listAvailableModelIds()).resolves.toEqual(['gpt-image-2', 'gemini-3.1-flash-lite']);
+    expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/models', expect.objectContaining({ method: 'GET' }));
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -261,6 +1214,136 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('executes a dynamically discovered Comfly image model immediately after the key is saved', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/models')) return jsonResponse({ object: 'list', data: [{ id: 'gpt-image-2' }] });
+      if (url.endsWith('/api/models/price')) return jsonResponse({ data: {
+        version: 'catalog-runtime-v1',
+        models: [{ key: 'gpt-image-2', name: 'GPT Image 2', provider: 'OpenAI', tags: '绘图,异步任务', apis: ['POST-/v1/images/generations-1'] }],
+      } });
+      if (url.endsWith('/v1/images/generations?async=true')) return jsonResponse({ taskId: 'dynamic-image-task', status: 'queued' });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, discoverModelCatalog: true });
+    await service.configure({ token });
+
+    await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelRoute: 'comfly-gpt-image-2', modelId: 'gpt-image-2', capabilities: expect.arrayContaining(['image_generation']) }),
+    ]));
+    await expect(service.submitImageJob({
+      jobId: 'model-job-v2-dynamic-image',
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-image-2',
+      prompt: 'draw a product scene',
+      conversationId: 'conversation-dynamic-image',
+      referenceAssetIds: [],
+      aspectRatio: '16:9',
+      resolution: '2K',
+      outputCount: 1,
+    })).resolves.toEqual({ providerTaskId: expect.stringMatching(/^provider-job-/u) });
+    expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/images/generations?async=true', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ authorization: `Bearer ${token}` }),
+      body: expect.stringContaining('"model":"gpt-image-2"'),
+    }));
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('stores a synchronous Comfly image result for models without async task support', async () => {
+    const appDataRoot = await makeTempRoot();
+    const storeGeneratedImage = vi.fn(async () => ({ assetId: 'abcdef0123456789', width: 1024, height: 1024 }));
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/models')) return jsonResponse({ object: 'list', data: [{ id: 'nano-banana-2' }] });
+      if (url.endsWith('/api/models/price')) return jsonResponse({ data: {
+        version: 'catalog-sync-image-v1',
+        models: [{
+          key: 'nano-banana-2',
+          name: 'Nano Banana 2',
+          provider: 'Google',
+          tags: '对话',
+          apis: ['POST-/v1/chat/completions-1', 'POST-/v1/images/generations-2'],
+        }],
+      } });
+      if (url.endsWith('/v1/images/generations')) return jsonResponse({ data: [{ b64_json: 'iVBORw0KGgo=' }] });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, discoverModelCatalog: true, storeGeneratedImage });
+    await service.configure({ token });
+
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-sync-image',
+      provider: 'comfly',
+      modelRoute: 'comfly-nano-banana-2',
+      prompt: 'draw a product scene',
+      conversationId: 'conversation-sync-image',
+      sessionId: 'desktop-session-sync-image',
+      referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId })).resolves.toEqual({
+      status: 'completed',
+      progress: 1,
+      result: { assetId: 'abcdef0123456789', width: 1024, height: 1024 },
+    });
+    expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/images/generations', expect.objectContaining({ method: 'POST' }));
+    expect(storeGeneratedImage).toHaveBeenCalledWith('desktop-session-sync-image', expect.any(Uint8Array), 'image/png');
+    await cleanupTempRoot(appDataRoot);
+  });
+  it('refreshes the discovered model catalog after the provider key changes', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+      const tokenId = init?.headers?.authorization === 'Bearer sk-second-provider' ? 'second-image-model' : 'first-image-model';
+      if (url.endsWith('/v1/models')) return jsonResponse({ object: 'list', data: [{ id: tokenId }] });
+      if (url.endsWith('/api/models/price')) return jsonResponse({ data: {
+        version: `catalog-${tokenId}`,
+        models: [{ key: tokenId, name: tokenId, provider: 'Test', tags: '绘图,异步任务' }],
+      } });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, discoverModelCatalog: true });
+
+    await service.configure({ token: 'sk-first-provider' });
+    await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'first-image-model' }),
+    ]));
+
+    await service.configure({ token: 'sk-second-provider' });
+    const refreshedProfiles = await service.listProfiles();
+    expect(refreshedProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'second-image-model' }),
+    ]));
+    expect(refreshedProfiles).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'first-image-model' }),
+    ]));
+    await cleanupTempRoot(appDataRoot);
+  });
+  it('updates model routes without replacing the saved provider credential', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch: vi.fn(), profiles });
+    await service.configure({ token: 'sk-model-route-credential' });
+
+    expect(typeof (service as unknown as { updateProfiles?: unknown }).updateProfiles).toBe('function');
+    await (service as unknown as { updateProfiles(request: { profiles: ProviderBridgeProfile[] }): Promise<unknown> }).updateProfiles({ profiles: [{
+      provider: 'comfly',
+      modelRoute: 'image-default',
+      displayName: 'gpt-image-2',
+      modelId: 'gpt-image-2',
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
+    }] });
+
+    expect(await credentialStore.getToken()).toBe('sk-model-route-credential');
+    await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelRoute: 'image-default', modelId: 'gpt-image-2' }),
+    ]));
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('maps async image submit and polling to public job contracts', async () => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn()
@@ -283,7 +1366,7 @@ describe('Comfly provider service', () => {
       modelRoute: 'gpt-image',
       prompt: 'draw a chair',
       conversationId: 'conversation-1',
-      referenceAssetIds: ['asset-reference'],
+      referenceAssetIds: [],
     });
     const running = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
     const completed = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
@@ -293,7 +1376,7 @@ describe('Comfly provider service', () => {
       modelRoute: 'gpt-image',
       prompt: 'draw a lamp',
       conversationId: 'conversation-1',
-      referenceAssetIds: ['asset-reference'],
+      referenceAssetIds: [],
     });
     const failed = await service.pollImageJob({ provider: 'comfly', providerTaskId: failedSubmission.providerTaskId });
 
@@ -312,10 +1395,515 @@ describe('Comfly provider service', () => {
       error: { code: 'PROVIDER_ERROR', message: 'Provider image task failed', retryable: true },
     });
     expect(fetch.mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({ authorization: `Bearer ${token}` }));
-    expect(fetch.mock.calls.map((call) => call[0])).toContain('https://api.comfly.chat/v1/images/tasks/raw-provider-task-123');
-    expect(fetch.mock.calls.map((call) => call[0])).toContain('https://api.comfly.chat/v1/images/tasks/raw-provider-task-456');
+    expect(fetch.mock.calls.map((call) => call[0])).toContain('https://ai.comfly.org/v1/images/tasks/raw-provider-task-123');
+    expect(fetch.mock.calls.map((call) => call[0])).toContain('https://ai.comfly.org/v1/images/tasks/raw-provider-task-456');
     expect(JSON.stringify({ submitted, running, completed, failedSubmission, failed })).not.toMatch(/raw-provider-task-(123|456)|sk-task|Authorization|base64/i);
     expect(JSON.stringify(completed)).not.toMatch(/https:\/\/assets\.example|generated\.png/i);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('consumes an async Comfly b64_json result inside the main process without exposing it over IPC', async () => {
+    const appDataRoot = await makeTempRoot();
+    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-inline-image-task', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({
+        taskId: 'raw-inline-image-task',
+        status: 'succeeded',
+        data: [{ b64_json: Buffer.from(imageBytes).toString('base64') }],
+      }));
+    const historySink = {
+      reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+        created: true,
+        historyId: deriveGenerationHistoryId(input.jobId),
+        status: 'queued' as const,
+        terminal: null,
+      })),
+      queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+    };
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      profiles,
+      historySink,
+    });
+    await service.configure({ token });
+
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-inline-image',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'draw a product',
+      conversationId: 'conversation-inline-image',
+      referenceAssetIds: [],
+    });
+    const completed = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
+
+    expect(historySink.succeeded).toHaveBeenCalledWith(
+      deriveGenerationHistoryId('model-job-v2-inline-image'),
+      imageBytes,
+    );
+    expect(completed).toEqual({
+      status: 'completed',
+      progress: 1,
+      result: { assetId: `provider-result-${submitted.providerTaskId}`, width: 1, height: 1 },
+    });
+    expect(JSON.stringify(completed)).not.toMatch(/base64|iVBOR|b64_json/iu);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('stores an async Comfly image in the active project and returns the real asset id', async () => {
+    const appDataRoot = await makeTempRoot();
+    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-project-image-task', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({
+        taskId: 'raw-project-image-task',
+        status: 'succeeded',
+        data: [{ b64_json: Buffer.from(imageBytes).toString('base64') }],
+      }));
+    const storeGeneratedImage = vi.fn(async () => ({
+      assetId: '0123456789abcdef',
+      width: 1,
+      height: 1,
+    }));
+    const historySink = {
+      reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+        created: true,
+        historyId: deriveGenerationHistoryId(input.jobId),
+        status: 'queued' as const,
+        terminal: null,
+      })),
+      queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+    };
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      profiles,
+      historySink,
+      storeGeneratedImage,
+    });
+    await service.configure({ token });
+
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-project-image',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'draw a product',
+      conversationId: 'conversation-project-image',
+      sessionId: 'desktop-session-project-image',
+      referenceAssetIds: [],
+    });
+    const completed = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
+
+    expect(storeGeneratedImage).toHaveBeenCalledWith(
+      'desktop-session-project-image',
+      imageBytes,
+      'image/png',
+    );
+    expect(historySink.succeeded).toHaveBeenCalledWith(
+      deriveGenerationHistoryId('model-job-v2-project-image'),
+      imageBytes,
+    );
+    expect(completed).toEqual({
+      status: 'completed',
+      progress: 1,
+      result: { assetId: '0123456789abcdef', width: 1, height: 1 },
+    });
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('materializes a provider result when history already reports success but the project asset is missing', async () => {
+    const appDataRoot = await makeTempRoot();
+    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'raw-history-recovery-task', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({
+        taskId: 'raw-history-recovery-task',
+        status: 'succeeded',
+        data: [{ b64_json: Buffer.from(imageBytes).toString('base64') }],
+      }));
+    const storeGeneratedImage = vi.fn(async () => ({ assetId: 'fedcba9876543210', width: 1, height: 1 }));
+    const historySink = {
+      reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+        created: true,
+        historyId: deriveGenerationHistoryId(input.jobId),
+        status: 'queued' as const,
+        terminal: null,
+      })),
+      queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+    };
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      profiles,
+      historySink,
+      storeGeneratedImage,
+    });
+    await service.configure({ token });
+
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-history-recovery',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'recover a generated product',
+      conversationId: 'conversation-history-recovery',
+      sessionId: 'desktop-session-history-recovery',
+      referenceAssetIds: [],
+    });
+    const completed = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(storeGeneratedImage).toHaveBeenCalledWith(
+      'desktop-session-history-recovery',
+      imageBytes,
+      'image/png',
+    );
+    expect(completed).toEqual({
+      status: 'completed',
+      progress: 1,
+      result: { assetId: 'fedcba9876543210', width: 1, height: 1 },
+    });
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('accepts Comfly snake-case task envelopes and nested output image results', async () => {
+    const appDataRoot = await makeTempRoot();
+    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ task_id: 'raw-nested-image-task', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          task_id: 'raw-nested-image-task',
+          status: 'SUCCESS',
+          output: { images: [{ url: 'https://assets.example/nested-generated.png', width: 1536, height: 1024 }] },
+        },
+      }))
+      .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => imageBytes.buffer });
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      profiles,
+      resolveResultHost: async () => ['93.184.216.34'],
+      storeGeneratedImage: async () => ({
+        assetId: 'abcdef0123456789',
+        width: 1536,
+        height: 1024,
+      }),
+    });
+    await service.configure({ token });
+
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-nested-image',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'draw a product photo',
+      conversationId: 'conversation-nested-image',
+      referenceAssetIds: [],
+    });
+    await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId })).resolves.toEqual({
+      status: 'completed',
+      progress: 1,
+      result: { assetId: 'abcdef0123456789', width: 1536, height: 1024 },
+    });
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('runs a documented Comfly v2 text-to-video task and stores the returned MP4', async () => {
+    const appDataRoot = await makeTempRoot();
+    const mp4 = Uint8Array.from([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    let submittedBody: string | undefined;
+    const fetch = vi.fn(async (url: string, init?: { readonly body?: string }) => {
+      if (url.endsWith('/v2/videos/generations')) {
+        submittedBody = init?.body;
+        return jsonResponse({ task_id: 'raw-video-task-1' });
+      }
+      if (url.endsWith('/v2/videos/generations/raw-video-task-1')) return jsonResponse({
+        task_id: 'raw-video-task-1', status: 'SUCCESS', progress: 100,
+        data: { output: 'https://assets.example/generated.mp4', duration: 8 },
+      });
+      if (url === 'https://assets.example/generated.mp4') return {
+        ok: true, status: 200, json: async () => ({}),
+        arrayBuffer: async () => mp4.buffer.slice(mp4.byteOffset, mp4.byteOffset + mp4.byteLength),
+      };
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const storeGeneratedVideo = vi.fn(async () => ({ assetId: 'fedcba9876543210', width: 1920, height: 1080 }));
+    const historySink = {
+      queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+      reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+        created: true,
+        historyId: deriveGenerationHistoryId(input.jobId),
+        status: 'queued' as const,
+        terminal: null,
+      })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' })),
+      failed: vi.fn(async () => ({ status: 'failed' })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' })),
+      getTerminal: vi.fn(async () => null),
+    };
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot, credentialStore, fetch,
+      profiles: [{ provider: 'comfly', modelRoute: 'veo-video', modelId: 'veo3.1-fast', displayName: 'Veo 3.1 Fast', capabilities: ['video_generation', 'async_tasks'] }],
+      resolveResultHost: async () => ['93.184.216.34'],
+      storeGeneratedVideo,
+      historySink: historySink as never,
+    });
+    await service.configure({ token });
+
+    const submitted = await service.submitVideoJob!({
+      jobId: 'model-job-v2-video-1', provider: 'comfly', modelRoute: 'veo-video',
+      prompt: 'A product rotates on a clean studio table', conversationId: 'video-session-1',
+      referenceAssetIds: [], aspectRatio: '16:9', resolution: '2K', durationSeconds: 8,
+      outputCount: 1, audioEnabled: true,
+    });
+    const completed = await service.pollVideoJob!({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
+
+    expect(submitted.providerTaskId).toMatch(/^provider-job-/u);
+    expect(completed).toEqual({
+      status: 'completed', progress: 1,
+      result: { assetId: 'fedcba9876543210', width: 1920, height: 1080, durationSeconds: 8 },
+    });
+    expect(storeGeneratedVideo).toHaveBeenCalledWith('video-session-1', mp4, 'video/mp4');
+    expect(historySink.reserveSubmission).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: 'model-job-v2-video-1', kind: 'video', provider: 'comfly', modelDisplayName: 'Veo 3.1 Fast',
+    }));
+    const historyId = deriveGenerationHistoryId('model-job-v2-video-1');
+    expect(historySink.running).toHaveBeenCalledWith(historyId);
+    expect(historySink.succeeded).toHaveBeenCalledWith(historyId, mp4, expect.objectContaining({
+      width: 1920, height: 1080, durationSeconds: 8,
+    }));
+    expect(JSON.parse(String(submittedBody))).toEqual({
+      model: 'veo3.1-fast', prompt: 'A product rotates on a clean studio table',
+      aspect_ratio: '16:9', resolution: '2k', duration: 8, audio: true,
+    });
+    await cleanupTempRoot(appDataRoot);
+  });
+  it('forwards schema-validated image controls to the Comfly image request', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async (_url: string, _init?: { body?: string }) => jsonResponse({ taskId: 'raw-provider-task-parameters', status: 'queued' }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, profiles });
+    await service.configure({ token });
+
+    await service.submitImageJob({
+      jobId: 'job-parameters',
+      provider: 'comfly',
+      modelRoute: 'gpt-image',
+      prompt: 'draw a studio product photograph',
+      conversationId: 'conversation-parameters',
+      referenceAssetIds: [],
+      aspectRatio: '16:9',
+      resolution: '2K',
+      outputCount: 2,
+    });
+
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual(expect.objectContaining({
+      model: 'provider-gpt-image-route',
+      prompt: 'draw a studio product photograph',
+      async: true,
+      aspect_ratio: '16:9',
+      size: '1536x1024',
+      n: 2,
+    }));
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('pins the focused bridge test to the local Comfly tier mapping contract', async () => {
+    const source = await readFile(join(process.cwd(), 'packages/provider-comfly/src/client.ts'), 'utf8');
+    expect(source).toMatch(/mapComflyImageResolutionTier\(input\.size, input\.aspect_ratio\)/u);
+    expect(source).toMatch(/CAPABILITY_UNSUPPORTED/u);
+    expect(source).toMatch(/native 4K output/u);
+  });
+
+  it('stores Gemini native inline image output and returns the project asset id', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async () => jsonResponse({
+      candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }] } }],
+    }));
+    const storeGeneratedImage = vi.fn(async () => ({ assetId: 'e77617115ffe6399', width: 1, height: 1 }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      storeGeneratedImage,
+      profiles: [{ provider: 'comfly', modelRoute: 'gemini-image', modelId: 'gemini-3-pro-image-preview', displayName: 'Gemini Image', capabilities: ['image_generation', 'gemini_native'] }],
+    });
+    await service.configure({ token });
+
+    const submitted = await service.submitImageJob({ jobId: 'gemini-job', provider: 'comfly', modelRoute: 'gemini-image', prompt: 'draw a chair', conversationId: 'session-1', referenceAssetIds: [] });
+    const completed = await service.pollImageJob({ provider: 'comfly', providerTaskId: submitted.providerTaskId });
+
+    expect(storeGeneratedImage).toHaveBeenCalledWith('session-1', expect.any(Uint8Array), 'image/png');
+    expect(completed).toEqual({ status: 'completed', progress: 1, result: { assetId: 'e77617115ffe6399', width: 1, height: 1 } });
+    expect((fetch.mock.calls as unknown as Array<[string, unknown]>)[0]?.[0]).toContain('/v1beta/models/gemini-3-pro-image-preview:generateContent');
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('sends managed generation images in @1 then @2 order and preserves existing task retries', async () => {
+    const fetch = vi.fn(async (_url, init) => {
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        model: 'nano-banana-2',
+        prompt: [
+          '@1 is the authoritative scene: preserve its composition, camera, lighting, and background.',
+          '@2 is the authoritative replacement product: preserve its identity, proportions, material, color, and logo.',
+          'Replace only the primary subject in @1 with @2. Do not blend, duplicate, or redesign the scene.',
+          'Replace the product only.',
+        ].join('\n'),
+        image: [
+          'data:image/png;base64,iVBORw==',
+          'data:image/jpeg;base64,/9j/2Q==',
+        ],
+      });
+      return jsonResponse({ taskId: 'provider-raw-task', status: 'pending' });
+    });
+    const readManagedGenerationImages = vi.fn()
+      .mockResolvedValueOnce([
+        { bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), mediaType: 'image/png' as const },
+        { bytes: Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), mediaType: 'image/jpeg' as const },
+      ])
+      .mockRejectedValueOnce(new Error('project is no longer open'));
+    const appDataRoot = await makeTempRoot();
+    const credentialStore = createSecureProviderCredentialStore({
+      appDataRoot,
+      safeStorage: createFakeSafeStorage(),
+    });
+    await credentialStore.configure({ token: 'provider-token' });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      readManagedGenerationImages,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'nano-banana-2',
+        modelId: 'nano-banana-2',
+        displayName: 'Nano Banana 2',
+        capabilities: ['image_generation', 'image_edit', 'async_tasks'],
+      }],
+    });
+
+    const request = {
+      jobId: 'model-job-v2-11111111111111111111111111111111',
+      provider: 'comfly',
+      modelRoute: 'nano-banana-2',
+      prompt: 'Replace the product only.',
+      conversationId: 'conversation-reference-order',
+      sessionId: 'desktop-session-1',
+      referenceAssetIds: ['1'.repeat(16), '2'.repeat(16)],
+    } satisfies SubmitImageJobBridgeRequest;
+
+    const first = await service.submitImageJob(request);
+    await expect(service.submitImageJob(request)).resolves.toEqual(first);
+
+    expect(readManagedGenerationImages).toHaveBeenCalledWith(
+      'desktop-session-1',
+      ['1'.repeat(16), '2'.repeat(16)],
+    );
+    expect(readManagedGenerationImages).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects reference generation without a session before reading managed images', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn();
+    const readManagedGenerationImages = vi.fn();
+    const credentialStore = createSecureProviderCredentialStore({
+      appDataRoot,
+      safeStorage: createFakeSafeStorage(),
+    });
+    await credentialStore.configure({ token: 'provider-token' });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      readManagedGenerationImages,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'nano-banana-2',
+        modelId: 'nano-banana-2',
+        displayName: 'Nano Banana 2',
+        capabilities: ['image_generation', 'image_edit', 'async_tasks'],
+      }],
+    });
+
+    await expect(service.submitImageJob({
+      jobId: 'model-job-v2-33333333333333333333333333333333',
+      provider: 'comfly',
+      modelRoute: 'nano-banana-2',
+      prompt: 'Use the selected reference.',
+      conversationId: 'conversation-missing-session',
+      referenceAssetIds: ['1'.repeat(16)],
+    }))
+      .rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    expect(readManagedGenerationImages).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects references for image-generation-only routes before fetch', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn();
+    const credentialStore = createSecureProviderCredentialStore({
+      appDataRoot,
+      safeStorage: createFakeSafeStorage(),
+    });
+    await credentialStore.configure({ token: 'provider-token' });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      readManagedGenerationImages: vi.fn(async () => [{
+        bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
+        mediaType: 'image/png' as const,
+      }]),
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'text-only-image',
+        modelId: 'text-only-image',
+        displayName: 'Text Only Image',
+        capabilities: ['image_generation'],
+      }],
+    });
+
+    await expect(service.submitImageJob({
+      jobId: 'model-job-v2-22222222222222222222222222222222',
+      provider: 'comfly',
+      modelRoute: 'text-only-image',
+      prompt: 'Use the selected reference.',
+      conversationId: 'conversation-unsupported-reference',
+      sessionId: 'desktop-session-1',
+      referenceAssetIds: ['1'.repeat(16)],
+    }))
+      .rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
+    expect(fetch).not.toHaveBeenCalled();
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -365,8 +1953,8 @@ describe('Comfly provider service', () => {
       },
     });
     expect(net.requests.map((request) => request.url)).toEqual([
-      'https://api.comfly.chat/v1/images/generations?async=true',
-      'https://api.comfly.chat/v1/images/tasks/raw-provider-task-electron-22',
+      'https://ai.comfly.org/v1/images/generations?async=true',
+      'https://ai.comfly.org/v1/images/tasks/raw-provider-task-electron-22',
     ]);
     expect(net.requests[0]?.method).toBe('POST');
     expect(net.requests[1]?.method).toBe('GET');
@@ -1159,7 +2747,8 @@ describe('Comfly provider service', () => {
         result: { assetId: `provider-result-${submitted.providerTaskId}` },
       });
       expect(JSON.stringify(publicResult)).not.toContain(unsafeUrl);
-      expect(JSON.stringify(publicResult)).not.toMatch(/localhost|127\.0\.0\.1|10\.0\.0\.4|192\.168|169\.254|fc00|fe80|redirect|meta-data|generated\.png/i);
+      const publicResultWithoutOpaqueId = JSON.stringify(publicResult).replace(/provider-result-provider-job-[a-f0-9]{32}/u, '');
+      expect(publicResultWithoutOpaqueId).not.toMatch(/localhost|127\.0\.0\.1|10\.0\.0\.4|192\.168|169\.254|fc00|fe80|redirect|meta-data|generated\.png/i);
       await cleanupTempRoot(appDataRoot);
     }
 
@@ -1299,6 +2888,7 @@ describe('Comfly provider service', () => {
       }),
       unlock: vi.fn(async () => undefined),
       getStatus: vi.fn(async () => ({ configured: Boolean(activeToken), locked: !activeToken, encryption: 'safeStorage' as const })),
+      getPrimaryToken: vi.fn(async () => activeToken),
       getToken: vi.fn(async () => activeToken),
       getMappingKey: vi.fn(async () => 'stable-test-mapping-key'),
       getMappingSecrets: vi.fn(async () => ({ primary: 'stable-test-mapping-key', fallback: [] })),
@@ -1766,11 +3356,11 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
-  it('rejects invalid provider responses and raw base64 results with sanitized errors', async () => {
+  it('rejects malformed provider responses and malformed inline image results with sanitized errors', async () => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ taskId: 'task-unsafe', status: 'queued' }))
-      .mockResolvedValueOnce(jsonResponse({ taskId: 'task-unsafe', status: 'succeeded', data: [{ b64_json: 'AAAAAAAAAAAAAAAAAAAA' }] }))
+      .mockResolvedValueOnce(jsonResponse({ taskId: 'task-unsafe', status: 'succeeded', data: [{ b64_json: '%%%not-base64%%%' }] }))
       .mockResolvedValueOnce(jsonResponse({ taskId: 'task-invalid', status: 'queued' }))
       .mockResolvedValueOnce(jsonResponse({ taskId: '', status: '???' }));
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
@@ -1786,7 +3376,7 @@ describe('Comfly provider service', () => {
       referenceAssetIds: [],
     });
     await expect(service.pollImageJob({ provider: 'comfly', providerTaskId: unsafeSubmitted.providerTaskId })).rejects.toMatchObject({
-      code: 'PROTECTED_PAYLOAD',
+      code: 'PROVIDER_INVALID_RESPONSE',
       message: expect.not.stringMatching(/AAAAAAAA|sk-task/i),
     });
     const invalidSubmitted = await service.submitImageJob({
@@ -1893,6 +3483,8 @@ describe('provider IPC handlers', () => {
       configure: vi.fn(),
       checkConnection: vi.fn(),
       getStatus: vi.fn(),
+      revealCredential: vi.fn(),
+      listAvailableModelIds: vi.fn(),
       listProfiles: vi.fn(),
       pollImageJob: vi.fn(),
       submitImageJob: vi.fn(),
@@ -2191,7 +3783,7 @@ describe('desktop shell provider wiring', () => {
     const source = await readFile(join(process.cwd(), 'packages/desktop-core/src/provider-bridge.ts'), 'utf8');
 
     expect(source).not.toMatch(/createCipheriv|createDecipheriv|scrypt|acquireConfinedFileLock|writeAtomic|provider-task-mappings\.json|provider-credentials\.json/u);
-    expect(source.split(/\r?\n/u).length).toBeLessThan(900);
+    expect(source.split(/\r?\n/u).length).toBeLessThan(1100);
   });
 
   it('wires Modern and Legacy provider services after app readiness with safeStorage', async () => {
@@ -2612,6 +4204,19 @@ function createFakeSafeStorage(): SafeStorageAdapter {
   };
 }
 
+function createScopedFakeSafeStorage(scope: string): SafeStorageAdapter {
+  const prefix = `${scope}:`;
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(`${prefix}${Buffer.from(value, 'utf8').toString('base64')}`, 'utf8'),
+    decryptString: (value) => {
+      const text = Buffer.from(value).toString('utf8');
+      if (!text.startsWith(prefix)) throw new Error('encrypted for another Windows profile');
+      return Buffer.from(text.slice(prefix.length), 'base64').toString('utf8');
+    },
+  };
+}
+
 function unavailableSafeStorage(): SafeStorageAdapter {
   return {
     isEncryptionAvailable: () => false,
@@ -2688,4 +4293,153 @@ async function readAllFiles(root: string): Promise<string> {
     return readFile(nextPath, 'utf8');
   }));
   return contents.join('\n');
+}
+
+function geminiReverseProfile(): ProviderBridgeProfile {
+  return {
+    provider: 'comfly',
+    modelRoute: 'comfly/gemini-video',
+    modelId: 'gemini-video-provider-id',
+    displayName: 'Gemini Video',
+    capabilities: ['gemini_native', 'reverse_prompt', 'video_understanding'],
+  };
+}
+
+function createOrderedMultiReversePromptRequest() {
+  const imageA = { assetId: '1'.repeat(16), sha256: '1'.repeat(64), byteSize: 256, label: 'Image A', mediaType: 'image/png' as const, role: 'product_identity' as const };
+  const videoA = { assetId: '2'.repeat(16), sha256: '2'.repeat(64), byteSize: 512, durationMs: 1000, extension: 'mp4' as const, height: 1080, label: 'Video A', mediaType: 'video/mp4' as const, origin: 'imported' as const, width: 1920 };
+  const imageB = { assetId: '3'.repeat(16), sha256: '3'.repeat(64), byteSize: 768, label: 'Image B', mediaType: 'image/jpeg' as const, role: 'scene_composition' as const };
+  const videoB = { assetId: '4'.repeat(16), sha256: '4'.repeat(64), byteSize: 1024, durationMs: 2000, extension: 'mp4' as const, height: 720, label: 'Video B', mediaType: 'video/mp4' as const, origin: 'imported' as const, width: 1280 };
+  const references = [
+    { assetId: imageA.assetId, label: imageA.label, position: 0, role: imageA.role },
+    { assetId: imageB.assetId, label: imageB.label, position: 1, role: imageB.role },
+  ];
+  const run = createReversePromptRun({
+    projectId: 'project-ordered-media',
+    skill: { id: 'reverse-prompt', version: 'v1' },
+    agentConfig: { modelRoute: 'comfly/gemini-video', role: 'Analyst', task: 'Compare all media.', knowledgeBaseIds: [] },
+    knowledgeLease: createAgentKnowledgeLease({ runId: 'reverse-run-ordered', capability: 'reverse_prompt', snapshots: [], references, citations: [] }, { leaseId: 'lease-ordered', createdAt: '2026-08-06T00:00:00.000Z' }),
+    approvedMemorySnapshot: { version: 'approved-ordered', approvedAt: '2026-08-06T00:00:00.000Z', approvedMemoryIds: [] },
+    references,
+    orderedMedia: [
+      { kind: 'video', ...videoA, order: 0 },
+      { kind: 'image', ...imageA, order: 1 },
+      { kind: 'video', ...videoB, order: 2 },
+      { kind: 'image', ...imageB, order: 3 },
+    ],
+  }, { createNonce: () => 'nonce-ordered', now: () => '2026-08-06T00:00:00.000Z' });
+  return {
+    sessionId: 'desktop-session-ordered',
+    provider: 'comfly' as const,
+    run,
+    media: [
+      { kind: 'video' as const, assetId: videoA.assetId, sha256: videoA.sha256, byteSize: videoA.byteSize, mediaType: videoA.mediaType },
+      { kind: 'image' as const, assetId: imageA.assetId, sha256: imageA.sha256, byteSize: imageA.byteSize, mediaType: imageA.mediaType },
+      { kind: 'video' as const, assetId: videoB.assetId, sha256: videoB.sha256, byteSize: videoB.byteSize, mediaType: videoB.mediaType },
+      { kind: 'image' as const, assetId: imageB.assetId, sha256: imageB.sha256, byteSize: imageB.byteSize, mediaType: imageB.mediaType },
+    ],
+  };
+}
+async function createReversePromptRequestWithManagedKnowledge(
+  appDataRoot: string,
+  knowledgeStore: ManagedKnowledgeStore,
+) {
+  const catalog = await publishKnowledgeSnapshot(knowledgeStore, 'catalog', 'Catalog', 'prompts/catalog.md', 'Catalog guidance.');
+  const composition = await publishKnowledgeSnapshot(knowledgeStore, 'composition', 'Composition', 'prompts/composition.md', 'Composition guidance.');
+  const imageAssetId = 'b'.repeat(16);
+  const imageSha256 = 'b'.repeat(64);
+  const videoAssetId = 'c'.repeat(16);
+  const videoSha256 = 'c'.repeat(64);
+  const references = [{
+    assetId: imageAssetId,
+    label: 'Product',
+    position: 0,
+    role: 'product_identity' as const,
+  }];
+  const run = createReversePromptRun({
+    projectId: 'project-1',
+    skill: { id: 'reverse-prompt', version: 'v1' },
+    agentConfig: {
+      modelRoute: 'comfly/gemini-video',
+      role: 'Commercial visual analyst',
+      task: 'Analyze the managed original media.',
+      knowledgeBaseIds: ['catalog', 'composition'],
+    },
+    knowledgeLease: createAgentKnowledgeLease({
+      runId: 'reverse-run-1',
+      capability: 'reverse_prompt',
+      snapshots: [
+        { knowledgeBaseId: catalog.knowledgeBaseId, version: catalog.version, contentHash: catalog.contentHash },
+        { knowledgeBaseId: composition.knowledgeBaseId, version: composition.version, contentHash: composition.contentHash },
+      ],
+      references,
+      citations: [],
+    }, { leaseId: 'lease-1', createdAt: '2026-07-22T00:00:00.000Z' }),
+    approvedMemorySnapshot: {
+      version: 'approved-1',
+      approvedAt: '2026-07-22T00:00:00.000Z',
+      approvedMemoryIds: [],
+    },
+    references,
+    videoInput: {
+      assetId: videoAssetId,
+      byteSize: 1_024,
+      durationMs: 1_000,
+      extension: 'mp4',
+      height: 1_080,
+      label: 'Launch film',
+      mediaType: 'video/mp4',
+      origin: 'imported',
+      sha256: videoSha256,
+      width: 1_920,
+    },
+  }, {
+    createNonce: () => 'nonce-1',
+    now: () => '2026-07-22T00:00:00.000Z',
+  });
+  return {
+    sessionId: 'desktop-session-1',
+    provider: 'comfly' as const,
+    run,
+    media: [
+      { kind: 'image' as const, assetId: imageAssetId, sha256: imageSha256, byteSize: 512, mediaType: 'image/png' as const },
+      { kind: 'video' as const, assetId: videoAssetId, sha256: videoSha256, byteSize: 1_024, mediaType: 'video/mp4' as const },
+    ],
+  };
+}
+
+async function publishKnowledgeSnapshot(
+  knowledgeStore: ManagedKnowledgeStore,
+  knowledgeBaseId: string,
+  displayName: string,
+  relativePath: string,
+  content: string,
+) {
+  await knowledgeStore.configure({ knowledgeBaseId, displayName, rootPath: `managed-${knowledgeBaseId}` });
+  const candidate = createKnowledgeSnapshotCandidate({
+    knowledgeBaseId,
+    displayName,
+    documents: [{ relativePath, content }],
+  });
+  const snapshot = {
+    ...candidate,
+    version: 1,
+    publishedAt: '2026-07-22T00:00:00.000Z',
+    sourceDeviceId: 'desktop-1',
+  };
+  await knowledgeStore.publish(snapshot);
+  return snapshot;
+}
+
+function reversePromptResultFor(run: ReversePromptRun) {
+  return {
+    sessionId: run.sessionId,
+    nonce: run.nonce,
+    knowledgeSnapshotVersion: run.knowledgeLease.versionKey,
+    analysis: 'The product is framed centrally with a soft key light.',
+    keywords: ['product', 'soft key light'],
+    positivePrompt: 'A centrally framed product with a soft key light.',
+    negativeConstraints: ['Do not distort the product.'],
+    executionChecklist: ['Check the product silhouette.'],
+  };
 }

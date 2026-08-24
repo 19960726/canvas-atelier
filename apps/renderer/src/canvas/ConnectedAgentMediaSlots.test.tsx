@@ -1,0 +1,184 @@
+import { readFileSync } from 'node:fs';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import '@testing-library/jest-dom/vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ConnectedAgentMediaSlots, type ConnectedAgentMediaSlotItem } from './ConnectedAgentMediaSlots';
+import { CONNECTED_MEDIA_DRAG_MIME } from './connected-media-drag';
+
+afterEach(cleanup);
+
+const media: ConnectedAgentMediaSlotItem[] = [
+  { edgeId: 'edge-image-a', kind: 'image', assetId: 'image-a', label: 'Image A', previewUrl: 'data:image/png;base64,AA==' },
+  { edgeId: 'edge-video-a', kind: 'video', assetId: 'video-a', label: 'Video A', previewUrl: 'blob:video-a' },
+  { edgeId: 'edge-image-b', kind: 'image', assetId: 'image-b', label: 'Image B', previewUrl: 'data:image/png;base64,BB==' },
+  { edgeId: 'edge-video-b', kind: 'video', assetId: 'video-b', label: 'Video B', previewUrl: 'blob:video-b' },
+];
+
+describe('ConnectedAgentMediaSlots', () => {
+  it('renders ordered image and video covers with a shared twenty-item counter', () => {
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} />);
+
+    expect(screen.getByText('4 / 20')).toBeVisible();
+    expect(screen.getByRole('img', { name: 'Image A' })).toBeVisible();
+    expect(screen.getByLabelText('Video A 视频封面')).toBeVisible();
+    expect(screen.getByLabelText('Agent media slot 4')).toHaveTextContent('4');
+  });
+
+  it('renders only connected media instead of inventing empty slot thumbnails', () => {
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} />);
+
+    expect(screen.getAllByLabelText(/Agent media slot \d+$/u)).toHaveLength(4);
+    expect(screen.queryByLabelText('Agent media slot 5 empty')).not.toBeInTheDocument();
+  });
+
+  it('caps the shared tray at twenty numbered media thumbnails', () => {
+    const overflowing = Array.from({ length: 21 }, (_, index): ConnectedAgentMediaSlotItem => ({
+      kind: index % 2 === 0 ? 'image' : 'video',
+      assetId: `asset-${index + 1}`,
+      label: `Asset ${index + 1}`,
+      previewUrl: index % 2 === 0 ? `data:image/png;base64,${index}` : `blob:video-${index}`,
+    }));
+
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={overflowing} />);
+
+    expect(screen.getByText('20 / 20')).toBeVisible();
+    expect(screen.getAllByLabelText(/Agent media slot \d+/u)).toHaveLength(20);
+    expect(screen.getByLabelText('Agent media slot 20')).toHaveTextContent('20');
+    expect(screen.queryByLabelText('Agent media slot 21')).not.toBeInTheDocument();
+  });
+  it('allows an arbitrary slot to be dragged to a new position', () => {
+    const onReorder = vi.fn();
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={onReorder} />);
+
+    fireEvent.dragStart(screen.getByLabelText('Agent media slot 4'));
+    fireEvent.dragOver(screen.getByLabelText('Agent media slot 1'));
+    fireEvent.drop(screen.getByLabelText('Agent media slot 1'));
+
+    expect(onReorder).toHaveBeenCalledWith([
+      media[3], media[0], media[1], media[2],
+    ]);
+  });
+
+  it('falls back to pointer drag when Electron does not start native HTML dragging', () => {
+    const onReorder = vi.fn();
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={onReorder} />);
+
+    fireEvent.pointerDown(screen.getByLabelText('Agent media slot 4'), { button: 0, pointerId: 7 });
+    fireEvent.pointerEnter(screen.getByLabelText('Agent media slot 1'), { pointerId: 7 });
+    fireEvent.pointerUp(screen.getByLabelText('Agent media slot 1'), { button: 0, pointerId: 7 });
+
+    expect(onReorder).toHaveBeenCalledWith([media[3], media[0], media[1], media[2]]);
+  });
+
+  it('allows slots after the first four to be reordered and keeps their edge identity', () => {
+    const onReorder = vi.fn();
+    const nineMedia = Array.from({ length: 9 }, (_, index): ConnectedAgentMediaSlotItem => ({
+      edgeId: `edge-${index + 1}`,
+      kind: 'image',
+      assetId: `image-${index + 1}`,
+      label: `Image ${index + 1}`,
+    }));
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={nineMedia} onReorder={onReorder} />);
+
+    fireEvent.dragStart(screen.getByLabelText('Agent media slot 9'));
+    fireEvent.dragOver(screen.getByLabelText('Agent media slot 5'));
+    fireEvent.drop(screen.getByLabelText('Agent media slot 5'));
+
+    expect(onReorder).toHaveBeenCalledWith([
+      ...nineMedia.slice(0, 4), nineMedia[8], ...nineMedia.slice(4, 8),
+    ]);
+    expect(screen.getByLabelText('Agent media slot 9')).toHaveAttribute('data-slot-index', '9');
+  });
+
+  it('moves the twentieth material directly to the first position', () => {
+    const onReorder = vi.fn();
+    const twentyMedia = Array.from({ length: 20 }, (_, index): ConnectedAgentMediaSlotItem => ({
+      edgeId: `edge-${index + 1}`,
+      kind: 'image',
+      assetId: `image-${index + 1}`,
+      label: `Image ${index + 1}`,
+    }));
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={twentyMedia} onReorder={onReorder} />);
+
+    fireEvent.dragStart(screen.getByLabelText('Agent media slot 20'));
+    fireEvent.dragOver(screen.getByLabelText('Agent media slot 1'));
+    fireEvent.drop(screen.getByLabelText('Agent media slot 1'));
+
+    expect(onReorder).toHaveBeenCalledWith([twentyMedia[19], ...twentyMedia.slice(0, 19)]);
+  });
+
+  it('publishes the existing project asset when a slot is dragged toward the canvas', () => {
+    const setData = vi.fn();
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={vi.fn()} />);
+
+    fireEvent.dragStart(screen.getByLabelText('Agent media slot 1'), {
+      dataTransfer: { setData, effectAllowed: 'none' },
+    });
+
+    expect(setData).toHaveBeenCalledWith(
+      CONNECTED_MEDIA_DRAG_MIME,
+      expect.stringContaining('"assetId":"image-a"'),
+    );
+  });
+
+  it('uses the unique connection id when the same asset appears in multiple slots', () => {
+    const onReorder = vi.fn();
+    const duplicateMedia: ConnectedAgentMediaSlotItem[] = [
+      { edgeId: 'edge-a-first', kind: 'image', assetId: 'image-a', label: 'Image A first' },
+      { edgeId: 'edge-a-second', kind: 'image', assetId: 'image-a', label: 'Image A second' },
+      { edgeId: 'edge-b', kind: 'image', assetId: 'image-b', label: 'Image B' },
+    ];
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={duplicateMedia} onReorder={onReorder} />);
+
+    fireEvent.dragStart(screen.getByLabelText('Agent media slot 2'));
+    fireEvent.drop(screen.getByLabelText('Agent media slot 1'));
+
+    expect(onReorder).toHaveBeenCalledWith([
+      duplicateMedia[1], duplicateMedia[0], duplicateMedia[2],
+    ]);
+  });
+
+  it('shows complete small thumbnails without cropping connected media', () => {
+    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const rule = css.match(/\.workspace--ui-gate \.module-node__agent-media-slot > :is\(img, video\) \{[^}]+\}/u)?.[0] ?? '';
+
+    expect(rule).toContain('object-fit: contain');
+    expect(rule).not.toContain('object-fit: cover');
+  });
+
+  it('keeps the 1-20 slot number above every real thumbnail', () => {
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} />);
+    expect(screen.getByLabelText('图槽编号 1')).toHaveClass('connected-agent-media-slots__index');
+    expect(screen.getByLabelText('图槽编号 4')).toHaveTextContent('4');
+
+    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const rules = [...css.matchAll(/\.workspace--ui-gate \.connected-agent-media-slots__index \{[^}]+\}/gu)];
+    const rule = rules[rules.length - 1]?.[0] ?? '';
+
+    expect(rule).toContain('z-index: 7');
+    expect(rule).toContain('min-width: 16px');
+    expect(rule).toContain('border: 1px solid');
+    expect(rule).toContain('color: #fff');
+  });
+
+  it('keeps every slot in the scrollable interaction row instead of clipping after slot four', () => {
+    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    expect(css).toContain('module-node__agent-media-slot-row');
+    expect(css).toContain('width: 100% !important;');
+    expect(css).toContain('opacity: 1 !important;');
+    expect(css).toContain('overflow-x: auto !important;');
+    expect(css).toContain('pointer-events: none !important;');
+    expect(css).toMatch(/module-node__agent-media-slot-row::-webkit-scrollbar\s*\{[^}]*display:\s*none/isu);
+  });
+  it('supports keyboard reordering without triggering canvas drag', () => {
+    const onReorder = vi.fn();
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={onReorder} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move Video B left' }));
+
+    expect(onReorder).toHaveBeenCalledWith([
+      media[0], media[1], media[3], media[2],
+    ]);
+    expect(screen.getByRole('button', { name: 'Move Video B left' })).toHaveClass('nodrag', 'nopan');
+  });
+});

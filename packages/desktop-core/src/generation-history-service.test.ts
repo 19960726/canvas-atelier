@@ -64,6 +64,18 @@ describe('generation history safe service', () => {
     );
   });
 
+  it('rejects video records from the image comparison service', async () => {
+    const Service = requireService();
+    if (Service === null) return;
+    const image = historyRecord('history_aaaaaaaaaaaaaaaa', pngBytes);
+    const video = videoHistoryRecord('history_videoaaaaaaaaaaa');
+    const store = {
+      getRecords: async () => [image, video],
+    } as unknown as GenerationHistoryStore;
+    const service = new Service({ store });
+
+    await expect(service.compare([image.id, video.id])).rejects.toThrow(/image history/i);
+  });
   it('copies into the managed project asset library independently so later history deletion cannot break it', async () => {
     const Service = requireService();
     if (Service === null) return;
@@ -208,6 +220,39 @@ function historyRecord(id: string, bytes: Uint8Array): GenerationHistoryRecord {
   });
 }
 
+function videoHistoryRecord(id: string): GenerationHistoryRecord {
+  return parseGenerationHistoryRecord({
+    schemaVersion: 2,
+    kind: 'video',
+    id,
+    createdAt: '2026-07-18T12:00:00.000Z',
+    updatedAt: '2026-07-18T12:00:02.000Z',
+    completedAt: '2026-07-18T12:00:02.000Z',
+    project: null,
+    job: { jobId: 'job_videoaaaaaaaaaaaaaa', resultId: 'result_videoaaaaaaaaaaa' },
+    status: 'succeeded',
+    provider: { displayName: 'RelayMe', modelDisplayName: 'Seedance 2.0 Pro', capabilityRevision: 'video-v1' },
+    promptSummary: 'Generated product reveal video',
+    parameters: { aspectRatio: '16:9' },
+    output: {
+      width: 1920,
+      height: 1080,
+      durationSeconds: 8,
+      format: 'mp4',
+      mediaType: 'video/mp4',
+      byteSize: 1024,
+      availability: 'available',
+      historyAssetId: 'history_asset_videoaaaaaaa',
+      sha256: 'b'.repeat(64),
+    },
+    favorite: false,
+    tags: [],
+    projectReferenceCount: 0,
+    projectReferences: [],
+    trash: null,
+    termination: null,
+  });
+}
 async function* chunks(bytes: Uint8Array): AsyncIterable<Uint8Array> {
   yield bytes;
 }

@@ -27,9 +27,10 @@ describe('durable canvas stress fixture', () => {
       'reverse_agent',
       'text_prompt',
       'image_generation',
-      'result_output',
+      'video_generation',
     ]));
     expect(executionStates).toEqual(expect.objectContaining(new Set(['idle', 'running', 'failed', 'completed'])));
+    expect(moduleTypes.has('result_output')).toBe(false);
     expect(modules.some((node) => node.data.config.resultState === 'stale')).toBe(true);
     expect(modules.some((node) => Array.isArray(node.data.config.orderedMedia)
       && JSON.stringify(node.data.config.orderedMedia).includes('startMs'))).toBe(true);

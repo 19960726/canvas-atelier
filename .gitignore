@@ -5,3 +5,12 @@ dist/
 coverage/
 playwright-report/
 test-results/
+
+# Local QA/runtime output. Keep generated evidence and packaged binaries on
+# disk without allowing test runs to pollute the source worktree.
+/.tmp-*
+/artifacts/
+/dist-builder/
+/apps/*/dist-builder/
+/recent-projects.index.json
+/main.cjs

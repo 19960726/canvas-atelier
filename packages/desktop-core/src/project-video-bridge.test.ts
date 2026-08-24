@@ -17,6 +17,26 @@ describe('project video bridge', () => {
     await Promise.all(tempRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
   });
 
+  it('stores a generated MP4 in the active project asset catalog without exposing bytes', async () => {
+    const fixture = await createEmptyVideoProject(tempRoots, 'generated-video-asset-', 7730);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => fixture.projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.storeGeneratedVideo(opened!.sessionId, createMinimalMp4(), 'video/mp4');
+      expect(result).toMatchObject({ assetId: expect.stringMatching(/^[a-f0-9]{16}$/u), mediaType: 'video/mp4' });
+      expect(result).not.toHaveProperty('bytes');
+      expect(result).not.toHaveProperty('base64');
+      const listed = await handlers.listProjectVideos({}, { sessionId: opened!.sessionId });
+      expect(listed).toEqual([expect.objectContaining({ assetId: result.assetId, mediaType: 'video/mp4' })]);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(fixture.projectRoot, 'journal', 'active.ndjson'), 'video-project');
+    }
+  });
   it('atomically imports a managed MP4 and binds it to a video input node', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'project-video-bridge-'));
     tempRoots.push(tempRoot);
@@ -70,6 +90,77 @@ describe('project video bridge', () => {
     } finally {
       await handlers.closeAllProjects();
       releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'video-project');
+    }
+  });
+
+  it('imports an Agent video reference into project assets without creating or updating nodes', async () => {
+    const fixture = await createEmptyVideoProject(tempRoots, 'project-video-agent-reference-', 7716);
+    const sourcePath = join(fixture.tempRoot, 'agent-reference.mp4');
+    const bytes = createMinimalMp4();
+    await writeFile(sourcePath, bytes);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => fixture.projectRoot),
+        chooseProjectVideo: vi.fn(async () => sourcePath),
+      },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.importProjectVideo({}, {
+        sessionId: opened!.sessionId,
+        target: { kind: 'agent_reference' },
+      } as never);
+
+      expect(result).toMatchObject({
+        currentRevision: 1,
+        asset: { mediaType: 'video/mp4', usageCount: 0 },
+        project: { assets: [expect.objectContaining({ mediaType: 'video/mp4' })], nodes: [] },
+      });
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(fixture.projectRoot, 'journal', 'active.ndjson'), 'video-project');
+    }
+  });
+  it('atomically imports an externally dropped MP4 into a new video input node without exposing its path', async () => {
+    const fixture = await createEmptyVideoProject(tempRoots, 'project-video-drop-', 7715);
+    const confidentialName = 'confidential-shoot';
+    const sourcePath = join(fixture.tempRoot, `${confidentialName}.mp4`);
+    const bytes = createMinimalMp4();
+    await writeFile(sourcePath, bytes);
+    const handlers = createDesktopBridgeHandlers({
+      createId: sequentialId('bridge'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => fixture.projectRoot) },
+      openVideoSource: async () => ({ byteSize: bytes.length, close: async () => undefined, stream: Readable.from(bytes) }),
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.importDroppedProjectMedia({}, {
+        request: {
+          sessionId: opened!.sessionId,
+          target: { kind: 'new_media_input', operationId: 'dropped_media_video-1', position: { x: 96, y: -48 } },
+        },
+        sourcePath,
+      });
+
+      expect(result).toMatchObject({
+        asset: { byteSize: bytes.length, extension: 'mp4', mediaType: 'video/mp4' },
+        currentRevision: 1,
+        project: {
+          nodes: [expect.objectContaining({
+            position: { x: 96, y: -48 },
+            data: expect.objectContaining({ moduleType: 'video_input', config: { assetId: expect.any(String) } }),
+          })],
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(confidentialName);
+      expect(JSON.stringify(result)).not.toContain(sourcePath);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(fixture.projectRoot, 'journal', 'active.ndjson'), 'video-project');
     }
   });
 

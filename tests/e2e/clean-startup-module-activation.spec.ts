@@ -23,17 +23,19 @@ test('starts empty and activates modules exactly once by double click and drag',
   await expect(page.locator('[data-module-type="text_prompt"]')).toHaveCount(1);
   await expect.poll(async () => (await e2eState(page)).commitCount).toBe(1);
 
-  await search.fill('openpose');
-  const poseModule = page.getByRole('button', { name: '查看 姿态提取 / OpenPose' });
+  await search.fill('Image Input');
+  const imageInputModule = page.getByRole('button', { name: /^查看 .*Image Input$/ });
   const pane = page.locator('.react-flow__pane');
-  await poseModule.dragTo(pane, { targetPosition: { x: 700, y: 420 } });
-  await expect(page.locator('[data-module-type="openpose"]')).toHaveCount(1);
+  await imageInputModule.dragTo(pane, { targetPosition: { x: 700, y: 420 } });
+  await expect(page.locator('[data-module-type="image_input"]')).toHaveCount(1);
   await expect.poll(async () => (await e2eState(page)).commitCount).toBe(2);
 
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.getByLabel('主题 Theme').selectOption('dark');
+  await page.evaluate(() => localStorage.setItem('novus.theme.mode', 'dark'));
+  await page.reload();
+  await page.waitForFunction((nonce) => window.__NOVUS_E2E__?.nonce === nonce, process.env.NOVUS_E2E_NONCE);
   await page.evaluate(() => window.__NOVUS_E2E__!.resetEmpty());
-  await page.getByRole('button', { name: '关闭模块库' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.getByText('双击空白处添加模块')).toBeVisible();
   await captureLayoutScreenshot(page, testInfo, 'task-2-empty-dark-1440x900');
 });

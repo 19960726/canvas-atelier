@@ -1,8 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCanvasModuleNode, type CanvasNode } from '@agent-canvas/domain';
-import { toFlowEdges, toFlowNodes } from './node-types';
+import { reconcileFlowEdges, toFlowEdges, toFlowNodes } from './node-types';
 
 describe('toFlowEdges', () => {
+  it('reuses the previous edge array when edge content is unchanged', () => {
+    const previous = toFlowEdges([{ id: 'stable', source: 'a', target: 'b' }]);
+    const next = toFlowEdges([{ id: 'stable', source: 'a', target: 'b' }]);
+
+    expect(reconcileFlowEdges(previous, next)).toBe(previous);
+  });
+
+  it('reuses edges when only the generated cancel callback identity changes', () => {
+    const previous = toFlowEdges([{ id: 'stable-cancel', source: 'a', target: 'b' }], () => undefined);
+    const next = toFlowEdges([{ id: 'stable-cancel', source: 'a', target: 'b' }], () => undefined);
+
+    expect(reconcileFlowEdges(previous, next)).toBe(previous);
+  });
   it('hides the internal agent-plan marker without animating persisted edges', () => {
     expect(toFlowEdges([{
       id: 'edge-1',
@@ -13,6 +26,7 @@ describe('toFlowEdges', () => {
       id: 'edge-1',
       source: 'source-1',
       target: 'target-1',
+      type: 'canvas-bezier',
       label: undefined,
       animated: false,
     }]);
@@ -35,6 +49,31 @@ describe('toFlowEdges', () => {
       targetHandle: 'prompt',
       data: { order: 0 },
     });
+  });
+
+  it('renders every durable canvas edge as one smooth Bezier connector', () => {
+    expect(toFlowEdges([{
+      id: 'video-result-edge',
+      source: 'video-generation',
+      sourcePortId: 'result',
+      target: 'video-result',
+      targetPortId: 'video',
+    }])[0]).toMatchObject({
+      type: 'canvas-bezier',
+    });
+  });
+
+  it('carries an explicit cancel action for the midpoint edge control', () => {
+    const onDeleteEdge = vi.fn();
+    const edge = toFlowEdges([{
+      id: 'cancelable-edge',
+      source: 'source',
+      target: 'target',
+    }], onDeleteEdge)[0];
+
+    expect(edge?.data).toHaveProperty('onCancel');
+    (edge?.data as { onCancel: () => void }).onCancel();
+    expect(onDeleteEdge).toHaveBeenCalledWith('cancelable-edge');
   });
 });
 
@@ -104,6 +143,7 @@ describe('toFlowNodes', () => {
         data: {
           job: {
             id: 'job-1',
+            kind: 'image',
             modelId: 'gpt-image-1',
             status: 'running',
             promptNodeId: 'prompt-node',
@@ -222,4 +262,140 @@ describe('toFlowNodes', () => {
       data: node.data,
     });
   });
-});
+
+  it('keeps formal video wrappers interactive so visible ports can accept a connection', () => {
+    const node = createCanvasModuleNode('video', 'video_generation', { x: 12, y: 24 });
+    const flowNode = toFlowNodes([node])[0];
+
+    expect(flowNode).toMatchObject({ className: 'canvas-flow-node--module-video_generation' });
+    expect(flowNode?.style).toBeUndefined();
+  });
+
+  it('passes configured storyboard chat routes to storyboard-sheet nodes', () => {
+    const node = createCanvasModuleNode('storyboard', 'storyboard_sheet', { x: 12, y: 24 });
+    const storyboardRoutes = [{
+      provider: 'comfly',
+      modelRoute: 'scene-chat',
+      displayName: 'Scene chat',
+      capabilities: ['chat'],
+    }];
+
+    const flowNode = toFlowNodes([node], {
+      imageGenerationRoutes: [],
+      reverseAgentRoutes: [],
+      storyboardRoutes,
+      onOpenReverseAgentSettings: () => undefined,
+      onGenerateImage: async () => true,
+      onReversePrompt: async () => ({ positivePrompt: 'Test prompt' }),
+      onCancelJob: async () => undefined,
+      onGenerateStoryboard: async () => true,
+      generationEditorExpandedNodeId: null,
+      onOpenGenerationEditor: () => undefined,
+      onCloseGenerationEditor: () => undefined,
+      resultOutputMenuNodeId: null,
+      onResultOutputMenuChange: () => undefined,
+    });
+
+    expect(flowNode[0]?.data).toMatchObject({ storyboardRoutes });
+  });
+
+  it('marks both durable edge endpoints as connected for module rendering', () => {
+    const image = createCanvasModuleNode('image-input', 'image_input', { x: 0, y: 0 });
+    const generator = createCanvasModuleNode('generator', 'image_generation', { x: 320, y: 0 });
+
+    const flowNodes = toFlowNodes([image, generator], undefined, [{
+      id: 'image-to-generator',
+      source: image.id,
+      sourcePortId: 'image',
+      target: generator.id,
+      targetPortId: 'references',
+    }]);
+
+    expect(flowNodes.find((node) => node.id === image.id)?.data).toMatchObject({ connectedPortIds: ['image'] });
+    expect(flowNodes.find((node) => node.id === generator.id)?.data).toMatchObject({ connectedPortIds: ['references'] });
+  });
+
+  it('marks generic-card input and output sockets as connected from durable edges', () => {
+    const reference: CanvasNode = {
+      id: 'reference',
+      type: 'reference',
+      position: { x: 0, y: 0 },
+      data: { assetId: 'asset-1', role: 'product_identity' },
+    };
+    const prompt: CanvasNode = {
+      id: 'prompt',
+      type: 'prompt',
+      position: { x: 320, y: 0 },
+      data: { prompt: '', requirementIds: [] },
+    };
+
+    const flowNodes = toFlowNodes([reference, prompt], undefined, [{
+      id: 'reference-to-prompt',
+      source: reference.id,
+      target: prompt.id,
+    }]);
+
+    expect(flowNodes.find((node) => node.id === reference.id)?.data).toMatchObject({ outputConnected: true });
+    expect(flowNodes.find((node) => node.id === prompt.id)?.data).toMatchObject({ inputConnected: true });
+  });
+
+  it('keeps same-named input and output ports distinct when only the input is connected', () => {
+    const reverseAgent = createCanvasModuleNode('reverse-agent', 'reverse_agent', { x: 0, y: 0 });
+    const reverseResult = createCanvasModuleNode('reverse-result', 'reverse_result', { x: 620, y: 0 });
+
+    const flowNodes = toFlowNodes([reverseAgent, reverseResult], undefined, [{
+      id: 'reverse-analysis-result',
+      source: reverseAgent.id,
+      sourcePortId: 'analysis',
+      target: reverseResult.id,
+      targetPortId: 'analysis',
+    }]);
+
+    expect(flowNodes.find((node) => node.id === reverseResult.id)?.data).toMatchObject({
+      connectedPortKeys: ['input:analysis'],
+    });
+  });
+
+  it('reuses unchanged flow-node objects while replacing only nodes whose runtime or position changed', async () => {
+    const module = await import('./node-types');
+    const reconcileFlowNodes = (module as unknown as {
+      reconcileFlowNodes?: <T extends { id: string }>(previous: readonly T[], next: readonly T[]) => T[];
+    }).reconcileFlowNodes;
+    expect(reconcileFlowNodes).toBeTypeOf('function');
+
+    const image = createCanvasModuleNode('image-input', 'image_input', { x: 0, y: 0 });
+    const generator = createCanvasModuleNode('generator', 'image_generation', { x: 320, y: 0 });
+    const runtime = {
+      imageGenerationRoutes: [],
+      reverseAgentRoutes: [],
+      storyboardRoutes: [],
+      onOpenReverseAgentSettings: () => undefined,
+      onGenerateImage: async () => true,
+      onReversePrompt: async () => ({ positivePrompt: 'Test prompt' }),
+      onCancelJob: async () => undefined,
+      onGenerateStoryboard: async () => true,
+      generationEditorExpandedNodeId: null,
+      onOpenGenerationEditor: () => undefined,
+      onCloseGenerationEditor: () => undefined,
+      resultOutputMenuNodeId: null,
+      onResultOutputMenuChange: () => undefined,
+    };
+    const edges = [{
+      id: 'image-to-generator',
+      source: image.id,
+      sourcePortId: 'image',
+      target: generator.id,
+      targetPortId: 'references',
+    }];
+    const first = toFlowNodes([image, generator], runtime, edges);
+    const expanded = toFlowNodes([image, generator], { ...runtime, generationEditorExpandedNodeId: generator.id }, edges);
+    const second = reconcileFlowNodes!(first, expanded);
+
+    expect(second.find((node) => node.id === image.id)).toBe(first.find((node) => node.id === image.id));
+    expect(second.find((node) => node.id === generator.id)).not.toBe(first.find((node) => node.id === generator.id));
+
+    const movedImage = { ...image, position: { x: 48, y: 64 } };
+    const moved = reconcileFlowNodes!(second, toFlowNodes([movedImage, generator], { ...runtime, generationEditorExpandedNodeId: generator.id }, edges));
+    expect(moved.find((node) => node.id === image.id)).not.toBe(second.find((node) => node.id === image.id));
+    expect(moved.find((node) => node.id === generator.id)).toBe(second.find((node) => node.id === generator.id));
+  });});

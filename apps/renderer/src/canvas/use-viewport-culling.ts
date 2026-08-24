@@ -13,6 +13,7 @@ export interface CanvasNodeSize {
 
 export const DEFAULT_CANVAS_NODE_SIZE: CanvasNodeSize = Object.freeze({ width: 250, height: 104 });
 export const DEFAULT_VIEWPORT_OVERSCAN = 256;
+const EMPTY_CULLED_EDGES: Edge[] = [];
 
 export interface ViewportCullingInput<
   TNode extends Node = Node,
@@ -56,7 +57,10 @@ export function selectViewportCulledElements<
     input.viewportSize.height <= 0 ||
     input.viewport.zoom <= 0
   ) {
-    return { edges: [...input.edges], nodes: [...input.nodes] };
+    return {
+      edges: input.edges as TEdge[],
+      nodes: input.nodes as TNode[],
+    };
   }
 
   const nodeSize = input.nodeSize ?? DEFAULT_CANVAS_NODE_SIZE;
@@ -76,7 +80,9 @@ export function selectViewportCulledElements<
   for (const node of input.nodes) {
     if (node.selected || selectedNodeIds.has(node.id)) {
       retainedNodeIds.add(node.id);
-      selectedAnchorNodeIds.add(node.id);
+      if (!intersects(viewportBounds, getNodeBounds(node, nodeSize))) {
+        selectedAnchorNodeIds.add(node.id);
+      }
     }
     if (ghostNodeIds.has(node.id) || hasClassName(node, 'agent-ghost-node')) retainedNodeIds.add(node.id);
   }
@@ -109,7 +115,9 @@ export function selectViewportCulledElements<
     return true;
   });
 
-  const edges = input.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target));
+  const edges = input.edges.length === 0
+    ? EMPTY_CULLED_EDGES as TEdge[]
+    : input.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target));
   return { edges, nodes };
 }
 
@@ -118,6 +126,8 @@ export function useViewportCulling<
   TEdge extends Edge = Edge,
 >(input: Omit<ViewportCullingInput<TNode, TEdge>, 'viewport' | 'viewportSize'>) {
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const pendingViewportRef = useRef<Viewport | null>(null);
+  const viewportFrameRef = useRef<number | null>(null);
   const [isViewportInitialized, setIsViewportInitialized] = useState(false);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [viewportSize, setViewportSize] = useState<ViewportSize | null>(null);
@@ -147,6 +157,11 @@ export function useViewportCulling<
   useEffect(() => () => {
     resizeObserverRef.current?.disconnect();
     resizeObserverRef.current = null;
+    if (viewportFrameRef.current !== null && typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(viewportFrameRef.current);
+    }
+    viewportFrameRef.current = null;
+    pendingViewportRef.current = null;
   }, []);
 
   const publishViewport = useCallback((nextViewport: Viewport) => {
@@ -155,7 +170,19 @@ export function useViewportCulling<
   }, []);
 
   const handleViewportChange = useCallback((_event: MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
-    publishViewport(nextViewport);
+    pendingViewportRef.current = nextViewport;
+    if (viewportFrameRef.current !== null) return;
+    if (typeof globalThis.requestAnimationFrame !== 'function') {
+      pendingViewportRef.current = null;
+      publishViewport(nextViewport);
+      return;
+    }
+    viewportFrameRef.current = globalThis.requestAnimationFrame(() => {
+      viewportFrameRef.current = null;
+      const pendingViewport = pendingViewportRef.current;
+      pendingViewportRef.current = null;
+      if (pendingViewport !== null) publishViewport(pendingViewport);
+    });
   }, [publishViewport]);
 
   const handleViewportInitialized = useCallback((instance: ViewportInitializer) => {

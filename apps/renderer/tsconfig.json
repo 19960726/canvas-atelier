@@ -3,7 +3,13 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["ES2019", "DOM", "DOM.Iterable"],
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals"],
+    "baseUrl": ".",
+    "paths": {
+      "@agent-canvas/desktop-core": ["../../packages/desktop-core/src/index.ts"],
+      "@agent-canvas/desktop-core/preload-api": ["../../packages/desktop-core/src/preload-api.ts"],
+      "@agent-canvas/domain": ["../../packages/domain/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
 }

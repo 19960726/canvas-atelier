@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CornerDownLeft, Search, Star, X } from 'lucide-react';
+import { CornerDownLeft, Grid3X3, History, Search, Star, Upload, X } from 'lucide-react';
 import type { CanvasModuleType } from '@agent-canvas/domain';
 import { resolveCanvasModuleIcon } from './module-icons';
 import {
@@ -15,21 +15,28 @@ import {
 
 interface QuickInsertProps {
   anchor: { x: number; y: number };
+  compatibleModuleTypes?: readonly CanvasModuleType[];
   onClose: () => void;
   onCreate: (moduleType: CanvasModuleType) => boolean | void | Promise<boolean | void>;
+  onImportImage?: (file: File) => boolean | void | Promise<boolean | void>;
+  onOpenHistory?: () => void;
+  onOpenLibrary?: () => void;
 }
 
-export function QuickInsert({ anchor, onClose, onCreate }: QuickInsertProps) {
+export function QuickInsert({ anchor, compatibleModuleTypes, onClose, onCreate, onImportImage, onOpenHistory, onOpenLibrary }: QuickInsertProps) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<ModuleCatalogCategory>('all');
   const [activeIndex, setActiveIndex] = useState(0);
   const [preferences, setPreferences] = useState(() => readModulePreferences());
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const activationInFlight = useRef(false);
-  const definitions = useMemo(
-    () => listFilteredModuleDefinitions(query, category, preferences),
-    [category, preferences, query],
-  );
+  const definitions = useMemo(() => {
+    const allDefinitions = listFilteredModuleDefinitions(query, category, preferences);
+    if (compatibleModuleTypes === undefined) return allDefinitions;
+    const compatible = new Set(compatibleModuleTypes);
+    return allDefinitions.filter((definition) => compatible.has(definition.type));
+  }, [category, compatibleModuleTypes, preferences, query]);
   const activeDefinition = definitions[Math.min(activeIndex, Math.max(0, definitions.length - 1))];
 
   useEffect(() => {
@@ -44,11 +51,22 @@ export function QuickInsert({ anchor, onClose, onCreate }: QuickInsertProps) {
     if (activationInFlight.current) return;
     activationInFlight.current = true;
     try {
-      const created = await Promise.resolve(onCreate(moduleType));
-      if (created === true) {
-        setPreferences(recordRecentModule(moduleType));
+      const creation = onCreate(moduleType);
+      // A synchronous `false` is the only signal that the request was not
+      // accepted. Once accepted, release the popover immediately instead of
+      // holding its activation lock until desktop persistence finishes. That
+      // lets a second node be inserted while the first durable save is queued.
+      if (creation !== false) {
         onClose();
+        const created = await Promise.resolve(creation);
+        if (created !== false) {
+          setPreferences(recordRecentModule(moduleType));
+        }
       }
+    } catch {
+      // Creation and persistence failures are surfaced by the workspace save
+      // status. The transient menu must not become an unhandled rejection
+      // source after it has already closed.
     } finally {
       activationInFlight.current = false;
     }
@@ -66,8 +84,11 @@ export function QuickInsert({ anchor, onClose, onCreate }: QuickInsertProps) {
     <section
       className="quick-insert"
       data-testid="quick-insert"
+      data-figma-density="compact"
+      data-figma-surface="quick-insert"
       aria-label="快速插入模块"
       style={{ left: anchor.x, top: anchor.y }}
+      onPointerDownCapture={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
@@ -85,9 +106,12 @@ export function QuickInsert({ anchor, onClose, onCreate }: QuickInsertProps) {
         }
       }}
     >
+      <div className="quick-insert__figma-kicker">
+        {compatibleModuleTypes === undefined ? '双击空白处 · 快速添加画布节点' : '连接到空白处 · 选择兼容节点'}
+      </div>
       <header className="quick-insert__header">
         <div>
-          <strong>添加模块</strong>
+          <strong>添加节点</strong>
           <span>Quick Insert</span>
         </div>
         <button className="icon-button" type="button" aria-label="关闭快速插入" title="关闭快速插入" onClick={onClose}>
@@ -157,6 +181,7 @@ export function QuickInsert({ anchor, onClose, onCreate }: QuickInsertProps) {
                 key={definition.type}
                 className={`quick-insert__row${isActive ? ' is-active' : ''}`}
                 role="listitem"
+                data-module-type={definition.type}
               >
                 <button
                   type="button"
@@ -191,7 +216,38 @@ export function QuickInsert({ anchor, onClose, onCreate }: QuickInsertProps) {
           })}
           {definitions.length === 0 && <div className="quick-insert__empty" role="status">没有匹配的模块</div>}
         </div>
+        <section className="quick-insert__resources" aria-label="添加资源">
+          <span className="quick-insert__resources-title">添加资源</span>
+          <button type="button" className="quick-insert__resource" onClick={() => uploadInputRef.current?.click()}>
+            <Upload size={15} aria-hidden="true" />
+            <span>上传图片</span>
+          </button>
+          <button type="button" className="quick-insert__resource" onClick={() => { onClose(); onOpenHistory?.(); }}>
+            <History size={15} aria-hidden="true" />
+            <span>从生图历史选择</span>
+          </button>
+          <button type="button" className="quick-insert__resource" onClick={() => { onClose(); onOpenLibrary?.(); }}>
+            <Grid3X3 size={15} aria-hidden="true" />
+            <span>素材库</span>
+            <b>NEW</b>
+          </button>
+          <input
+            ref={uploadInputRef}
+            className="quick-insert__upload-input"
+            type="file"
+            accept="image/*"
+            tabIndex={-1}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (file) {
+                void Promise.resolve(onImportImage?.(file)).then(() => onClose());
+              }
+            }}
+          />
+        </section>
       </div>
+      <footer className="quick-insert__figma-footer"><kbd>Esc</kbd><span>关闭</span><span>点击画布可创建节点</span></footer>
     </section>
   );
 }

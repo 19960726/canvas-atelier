@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { containsProtectedPublicText } from './protected-public-text';
 
-export const GENERATION_HISTORY_SCHEMA_VERSION = 1 as const;
+export const GENERATION_HISTORY_SCHEMA_VERSION = 2 as const;
 export const GENERATION_HISTORY_TRASH_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const MAX_GENERATION_HISTORY_TAGS = 20;
 export const MAX_GENERATION_HISTORY_PROJECT_REFERENCES = 50;
@@ -58,15 +58,19 @@ const providerIdentitySchema = z.object({
   capabilityRevision: safeTextSchema(80),
 }).strict();
 
-const historyOutputSchema = z.object({
+const historyOutputBase = {
   width: z.number().int().positive().max(32_768),
   height: z.number().int().positive().max(32_768),
-  format: z.enum(['gif', 'jpg', 'png', 'webp']),
-  mediaType: z.enum(['image/gif', 'image/jpeg', 'image/png', 'image/webp']),
   byteSize: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   availability: generationHistoryAvailabilitySchema,
   historyAssetId: opaqueIdSchema,
   sha256: z.string().regex(/^[a-f0-9]{64}$/u, 'History asset hash must be SHA-256'),
+} as const;
+
+const imageHistoryOutputSchema = z.object({
+  ...historyOutputBase,
+  format: z.enum(['gif', 'jpg', 'png', 'webp']),
+  mediaType: z.enum(['image/gif', 'image/jpeg', 'image/png', 'image/webp']),
 }).strict().superRefine((output, context) => {
   const expectedMediaType = output.format === 'jpg' ? 'image/jpeg' : `image/${output.format}`;
   if (output.mediaType !== expectedMediaType) {
@@ -77,6 +81,15 @@ const historyOutputSchema = z.object({
     });
   }
 });
+
+const videoHistoryOutputSchema = z.object({
+  ...historyOutputBase,
+  durationSeconds: z.number().finite().positive().max(86_400),
+  format: z.literal('mp4'),
+  mediaType: z.literal('video/mp4'),
+}).strict();
+
+const historyOutputSchema = z.union([imageHistoryOutputSchema, videoHistoryOutputSchema]);
 
 const projectReferenceSchema = z.object({
   referenceId: opaqueIdSchema,
@@ -134,6 +147,7 @@ const terminationSchema = z.object({
 
 export const generationHistoryRecordSchema = z.object({
   schemaVersion: z.literal(GENERATION_HISTORY_SCHEMA_VERSION),
+  kind: z.enum(['image', 'video']),
   id: opaqueIdSchema,
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
@@ -177,6 +191,16 @@ export const generationHistoryRecordSchema = z.object({
     }
   }
 
+  if (record.output !== null) {
+    const outputKind = record.output.format === 'mp4' ? 'video' : 'image';
+    if (record.kind !== outputKind) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['output'],
+        message: 'History output media must match record kind',
+      });
+    }
+  }
   if (record.status === 'succeeded' && record.output === null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['output'], message: 'Succeeded history requires an output' });
   }
@@ -226,6 +250,7 @@ export const generationHistoryListRequestSchema = z.object({
   filters: z.object({
     createdFrom: timestampSchema.optional(),
     createdTo: timestampSchema.optional(),
+    kind: z.enum(['all', 'image', 'video']).default('all'),
     availability: z.enum(['all', 'available', 'missing', 'corrupt']).default('all'),
     favorite: z.boolean().optional(),
     modelDisplayName: safeOptionalTextSchema(120),
@@ -272,7 +297,7 @@ export type GenerationHistoryParameterSummary = DeepReadonly<z.infer<typeof gene
 export type GenerationHistoryListRequest = DeepReadonly<z.infer<typeof generationHistoryListRequestSchema>>;
 
 export function parseGenerationHistoryRecord(input: unknown): GenerationHistoryRecord {
-  return deepFreeze(generationHistoryRecordSchema.parse(input)) as GenerationHistoryRecord;
+  return deepFreeze(generationHistoryRecordSchema.parse(migrateGenerationHistoryRecord(input))) as GenerationHistoryRecord;
 }
 
 export function parseGenerationHistoryListRequest(input: unknown): GenerationHistoryListRequest {
@@ -292,6 +317,7 @@ export function filterAndSortGenerationHistory(
       if (filters.createdFrom !== undefined && createdAt < Date.parse(filters.createdFrom)) return false;
       if (filters.createdTo !== undefined && createdAt > Date.parse(filters.createdTo)) return false;
       if (filters.favorite !== undefined && record.favorite !== filters.favorite) return false;
+      if (filters.kind !== 'all' && record.kind !== filters.kind) return false;
       if (filters.referenceState === 'used' && record.projectReferenceCount === 0) return false;
       if (filters.referenceState === 'unreferenced' && record.projectReferenceCount > 0) return false;
       if (filters.availability !== 'all' && record.output?.availability !== filters.availability) return false;
@@ -334,6 +360,24 @@ export function containsProtectedHistoryValue(value: unknown): boolean {
   return false;
 }
 
+function migrateGenerationHistoryRecord(input: unknown): unknown {
+  if (
+    input !== null
+    && typeof input === 'object'
+    && !Array.isArray(input)
+    && Object.getPrototypeOf(input) === Object.prototype
+  ) {
+    const record = input as Record<string, unknown>;
+    if (record.schemaVersion === 1 && record.kind === undefined) {
+      return {
+        ...record,
+        schemaVersion: GENERATION_HISTORY_SCHEMA_VERSION,
+        kind: 'image',
+      };
+    }
+  }
+  return input;
+}
 function deepFreeze<T>(value: T): T {
   if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) deepFreeze(child);

@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import type { ReactNode } from 'react';
-import type { CanvasEdge, CanvasNode, CanvasProject } from '@agent-canvas/domain';
+import { createCanvasModuleNode, type CanvasEdge, type CanvasNode, type CanvasProject } from '@agent-canvas/domain';
 import {
   createStarterProject,
   replaceProjectPersistenceClientForTests,
@@ -20,30 +20,39 @@ import { CanvasWorkspace } from '../../apps/renderer/src/canvas/CanvasWorkspace'
 const flowHarness = vi.hoisted(() => ({
   initCalls: 0,
   moveCalls: 0,
+  onNodesChange: null as null | ((changes: Array<{ id: string; selected: boolean; type: 'select' }>) => void),
+  nodeSnapshots: [] as Array<Array<{ id: string; position?: { x: number; y: number } }>>,
   selectedNodeIds: new Set<string>(),
   viewport: { x: 0, y: 0, zoom: 1 },
 }));
 
-vi.mock('@xyflow/react', async () => {
+vi.mock('@xyflow/react', async (importOriginal) => {
   const React = await import('react');
+  const actual = await importOriginal<typeof import('@xyflow/react')>();
   const passthrough = ({ children }: { children?: ReactNode }) => (
     React.createElement(React.Fragment, null, children)
   );
   return {
+    applyNodeChanges: actual.applyNodeChanges,
     Background: () => null,
     BackgroundVariant: { Dots: 'dots' },
+    ConnectionMode: { Loose: 'loose' },
     Controls: () => null,
     Handle: () => null,
     MiniMap: () => null,
     Position: { Left: 'left', Right: 'right' },
+    SelectionMode: { Partial: 'partial' },
     ReactFlow: (props: {
       children?: ReactNode;
       edges: Array<{ id: string; selected?: boolean }>;
       nodes: Array<{ className?: string; data?: Record<string, unknown>; id: string; selected?: boolean; type?: string }>;
       onInit?: (instance: { getViewport: () => typeof flowHarness.viewport }) => void;
       onMove?: (event: null, viewport: typeof flowHarness.viewport) => void;
+      onNodesChange?: (changes: Array<{ id: string; selected: boolean; type: 'select' }>) => void;
       onSelectionChange?: (selection: { edges: Array<{ id: string }>; nodes: Array<{ id: string }> }) => void;
     }) => {
+      flowHarness.nodeSnapshots.push(props.nodes);
+      flowHarness.onNodesChange = props.onNodesChange ?? null;
       React.useEffect(() => {
         if (props.onInit) {
           flowHarness.initCalls += 1;
@@ -84,6 +93,8 @@ describe('large canvas integration', () => {
     delete window.novusDesktop;
     flowHarness.initCalls = 0;
     flowHarness.moveCalls = 0;
+    flowHarness.onNodesChange = null;
+    flowHarness.nodeSnapshots = [];
     flowHarness.selectedNodeIds = new Set();
     flowHarness.viewport = { x: 0, y: 0, zoom: 1 };
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
@@ -107,58 +118,79 @@ describe('large canvas integration', () => {
   });
 
   it('renders CanvasWorkspace with 1000 lightweight nodes while mounting only the culled viewport and selected connection', async () => {
-    const nodes = createReferenceNodes(1000).map((node) => (
-      node.id === 'node-999' ? { ...node, position: { x: 16000, y: 8000 } } : node
+    const nodes = createModuleNodes(1000).map((node) => (
+      node.id === 'module-999' ? { ...node, position: { x: 16000, y: 8000 } } : node
     ));
-    const edges: CanvasEdge[] = [{ id: 'edge-selected', source: 'node-998', target: 'node-999' }];
-    flowHarness.selectedNodeIds = new Set(['node-999']);
+    const edges: CanvasEdge[] = [{ id: 'edge-selected', source: 'module-998', target: 'module-999' }];
+    flowHarness.selectedNodeIds = new Set(['module-999']);
     useAppStore.setState({
       project: projectWith({ edges, nodes }),
     });
 
     render(createElement(CanvasWorkspace));
 
+    await waitFor(() => expect(flowHarness.onNodesChange).not.toBeNull());
+    act(() => flowHarness.onNodesChange?.([{ id: 'module-999', selected: true, type: 'select' }]));
     await waitFor(() => expect(screen.getAllByTestId('flow-node').length).toBeLessThan(80));
     const mountedIds = mountedFlowNodeIds();
     expect(flowHarness.initCalls).toBeGreaterThan(0);
-    expect(mountedIds).toEqual(expect.arrayContaining(['node-998', 'node-999']));
-    expect(mountedIds[0]).toBe('node-0');
+    expect(mountedIds).toEqual(expect.arrayContaining(['module-998', 'module-999']));
+    expect(mountedIds[0]).toBe('module-0');
   });
 
-  it('renders CanvasWorkspace with 200 image results without mounting every image result node after viewport initialization', async () => {
+  it('renders 200 current image-generation cards without mounting every offscreen workbench', async () => {
     useAppStore.setState({
-      project: projectWith({ edges: [], nodes: createImageNodes(200) }),
+      project: projectWith({ edges: [], nodes: createModuleNodes(200, 'image_generation') }),
     });
 
     render(createElement(CanvasWorkspace));
 
-    await waitFor(() => expect(mountedFlowNodesByType('image_result').length).toBeLessThan(50));
+    await waitFor(() => expect(mountedFlowNodesByType('module').length).toBeLessThan(50));
     expect(flowHarness.initCalls).toBeGreaterThan(0);
-    expect(mountedFlowNodesByType('image_result').length).toBeGreaterThan(0);
+    expect(mountedFlowNodesByType('module').length).toBeGreaterThan(0);
   });
 
-  it('previews Agent ghost nodes through the real composer flow as one store update before confirmation', async () => {
+  it('preserves unchanged React Flow node identities when one durable node moves', async () => {
+    const nodes = Array.from({ length: 120 }, (_, index) => createCanvasModuleNode(
+      `module-${index}`,
+      'image_input',
+      { x: (index % 12) * 280, y: Math.floor(index / 12) * 180 },
+    ));
+    useAppStore.setState({ project: projectWith({ edges: [], nodes }) });
     render(createElement(CanvasWorkspace));
-    const listener = vi.fn();
-    const unsubscribe = useAppStore.subscribe(listener);
-    const textarea = document.querySelector<HTMLTextAreaElement>('.agent-composer textarea');
-    const sendButton = document.querySelector<HTMLButtonElement>('.agent-composer__footer button');
-    if (!textarea || !sendButton) throw new Error('Missing Agent composer');
 
-    fireEvent.change(textarea, { target: { value: 'Create a large-canvas ghost preview' } });
-    fireEvent.click(sendButton);
+    await waitFor(() => expect(flowHarness.nodeSnapshots.at(-1)?.length ?? 0).toBeGreaterThan(2));
+    const before = flowHarness.nodeSnapshots.at(-1)!;
+    const stableBefore = before.find((node) => node.id === 'module-1');
+    const movedBefore = before.find((node) => node.id === 'module-0');
+    expect(stableBefore).toBeDefined();
+    expect(movedBefore).toBeDefined();
+    const snapshotCount = flowHarness.nodeSnapshots.length;
 
-    await waitFor(() => expect(useAppStore.getState().agentPlan?.state).toBe('waiting_for_confirmation'));
-    unsubscribe();
+    useAppStore.setState((state) => ({
+      project: {
+        ...state.project,
+        nodes: state.project.nodes.map((node) => node.id === 'module-0'
+          ? { ...node, position: { x: 48, y: 64 } }
+          : node),
+      },
+    }));
 
-    expect(listener).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(document.querySelectorAll('[data-ghost="node"]').length).toBe(1));
+    await waitFor(() => {
+      expect(flowHarness.nodeSnapshots.length).toBeGreaterThan(snapshotCount);
+      expect(flowHarness.nodeSnapshots.at(-1)?.find((node) => node.id === 'module-0')?.position).toEqual({ x: 48, y: 64 });
+    });
+    const after = flowHarness.nodeSnapshots.at(-1)!;
+    expect(after.find((node) => node.id === 'module-1')).toBe(stableBefore);
+    expect(after.find((node) => node.id === 'module-0')).not.toBe(movedBefore);
+  });
+  it('does not mount the retired canvas-mutating Agent composer or ghost nodes', async () => {
+    render(createElement(CanvasWorkspace));
+    await waitFor(() => expect(flowHarness.initCalls).toBeGreaterThan(0));
 
-    await useAppStore.getState().confirmAgentPlan({ deleteNodes: false, models: false, skillWriteback: false });
-
-    await waitFor(() => expect(useAppStore.getState().agentPlan?.state).toBe('reviewing_results'));
+    expect(document.querySelector('.agent-composer')).toBeNull();
     expect(document.querySelectorAll('[data-ghost="node"]')).toHaveLength(0);
-    expect(mountedFlowNodeIds().some((id) => id.startsWith('agent-review-'))).toBe(true);
+    expect(useAppStore.getState().agentPlan).toBeNull();
   });
 });
 
@@ -180,6 +212,13 @@ function projectWith({ edges, nodes }: { edges: CanvasEdge[]; nodes: CanvasNode[
   };
 }
 
+function createModuleNodes(count: number, moduleType: 'image_input' | 'image_generation' = 'image_input'): CanvasNode[] {
+  return Array.from({ length: count }, (_, index) => createCanvasModuleNode(
+    `module-${index}`,
+    moduleType,
+    { x: (index % 20) * 280, y: Math.floor(index / 20) * 180 },
+  ));
+}
 function createReferenceNodes(count: number): CanvasNode[] {
   return Array.from({ length: count }, (_, index) => ({
     id: `node-${index}`,

@@ -8,6 +8,26 @@ import {
 } from './renderer-close-flush';
 
 describe('renderer close-flush coordinator', () => {
+  it('accepts an immediate renderer completion acknowledgement instead of leaving the window close pending', async () => {
+    const finalizeClose = vi.fn();
+    let coordinator: ReturnType<typeof createRendererCloseFlushCoordinator>;
+    coordinator = createRendererCloseFlushCoordinator({
+      closeAllProjects: vi.fn(),
+      createRequestId: () => 'immediate-close',
+      finalizeClose,
+      sendCloseFlushRequest: (request) => {
+        void coordinator.handleCloseFlushAck({ requestId: request.requestId, phase: 'completed', outcome: 'discarded' });
+        return true;
+      },
+    });
+
+    void coordinator.requestClose({ preventDefault: vi.fn() });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(finalizeClose).toHaveBeenCalledWith('discarded');
+  });
+
   it('waits for a matching renderer ACK before closing active projects and finalizing close', async () => {
     const harness = createHarness();
 
@@ -25,10 +45,10 @@ describe('renderer close-flush coordinator', () => {
     expect(harness.calls).toEqual(['send:close-request-1', 'closeAllProjects', 'finalize:saved']);
   });
 
-  it('starts the timeout only after save begins and aborts on failure, timeout, or renderer unavailability', async () => {
+  it('starts the timeout as soon as the renderer close request is sent so a missing renderer ACK cannot deadlock the window', async () => {
     const failed = createHarness({ requestIds: ['close-request-failed', 'close-request-retry'] });
     const failedClosing = failed.coordinator.requestClose(failed.closeEvent);
-    expect(failed.scheduledMs).toBe(0);
+    expect(failed.scheduledMs).toBe(CLOSE_FLUSH_TIMEOUT_MS);
     await failed.coordinator.handleCloseFlushAck({ requestId: 'close-request-failed', phase: 'save_started' });
     await expect(failed.coordinator.handleCloseFlushAck({ requestId: 'close-request-failed', phase: 'completed', outcome: 'failed' })).resolves.toBe(true);
     await failedClosing;
@@ -43,8 +63,6 @@ describe('renderer close-flush coordinator', () => {
 
     const timeout = createHarness({ requestIds: ['close-request-timeout', 'close-request-timeout-retry'] });
     const timeoutClosing = timeout.coordinator.requestClose(timeout.closeEvent);
-    expect(timeout.scheduledMs).toBe(0);
-    await timeout.coordinator.handleCloseFlushAck({ requestId: 'close-request-timeout', phase: 'save_started' });
     expect(timeout.scheduledMs).toBe(CLOSE_FLUSH_TIMEOUT_MS);
     timeout.flushTimeout();
     await timeoutClosing;
@@ -62,11 +80,40 @@ describe('renderer close-flush coordinator', () => {
     expect(crashed.finalizeClose).not.toHaveBeenCalled();
   });
 
+  it('allows an explicit discard decision after the renderer reports that saving failed', async () => {
+    const finalizeClose = vi.fn();
+    const closeAllProjects = vi.fn();
+    const onCloseBlocked = vi.fn(async () => 'discard' as const);
+    const coordinator = createRendererCloseFlushCoordinator({
+      closeAllProjects,
+      createRequestId: () => 'close-request-discard-after-failure',
+      finalizeClose,
+      onCloseBlocked,
+      sendCloseFlushRequest: () => true,
+    });
+
+    const closing = coordinator.requestClose({ preventDefault: vi.fn() });
+    await coordinator.handleCloseFlushAck({
+      requestId: 'close-request-discard-after-failure',
+      phase: 'completed',
+      outcome: 'failed',
+    });
+    await closing;
+
+    expect(onCloseBlocked).toHaveBeenCalledWith('failed');
+    expect(closeAllProjects).toHaveBeenCalledOnce();
+    expect(finalizeClose).toHaveBeenCalledWith('discarded');
+  });
+
   it('does not time out while the user is deciding, then cancels and permits a later discard', async () => {
     const harness = createHarness({ requestIds: ['close-request-cancel', 'close-request-after-cancel'] });
     const cancelled = harness.coordinator.requestClose(harness.closeEvent);
 
-    expect(harness.scheduledMs).toBe(0);
+    expect(harness.scheduledMs).toBe(CLOSE_FLUSH_TIMEOUT_MS);
+    await expect(harness.coordinator.handleCloseFlushAck({
+      requestId: 'close-request-cancel',
+      phase: 'decision_requested',
+    })).resolves.toBe(true);
     harness.flushTimeout();
     expect(harness.closeAllProjects).not.toHaveBeenCalled();
 

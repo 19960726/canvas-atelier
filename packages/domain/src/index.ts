@@ -25,8 +25,8 @@ export type {
   KnowledgeSnapshotPin,
   OrderedReference,
 } from './knowledge-context';
-export { DEFAULT_REVERSE_PROMPT_PERSONA, REVERSE_PROMPT_PERSONAS, createReversePromptRun, parseReversePromptResult } from './reverse-prompt-agent';
-export type { ApprovedMemorySnapshot, ReversePromptPersona, ReversePromptResult, ReversePromptRun } from './reverse-prompt-agent';
+export { DEFAULT_REVERSE_PROMPT_PERSONA, MAX_REVERSE_PROMPT_MP4_BYTES, REVERSE_PROMPT_PERSONAS, createReversePromptRun, managedMp4InputSnapshotSchema, normalizeReverseRolePreference, orderedAgentMediaItemSchema, parseReversePromptResult, reverseAgentNodeConfigSchema, reversePromptResultSchema, reversePromptRunSchema } from './reverse-prompt-agent';
+export type { ApprovedMemorySnapshot, ManagedMp4InputSnapshot, OrderedAgentMediaItem, ReverseAgentNodeConfig, ReversePromptPersona, ReversePromptResult, ReversePromptRun } from './reverse-prompt-agent';
 export { MAX_GENERATION_REFERENCES, parseGenerationRequest } from './generation-request';
 export type { GenerationReference, GenerationRequest } from './generation-request';
 export { cancelAgentPlan, confirmAgentPlan, validateAgentPlan } from './agent-plan';
@@ -88,6 +88,21 @@ export {
   getCanvasModuleDefinition,
   listCanvasModuleDefinitions,
 } from './canvas-module';
+export {
+  DEFAULT_MCP_PERMISSION_FLAGS,
+  createCodexWorkflowContract,
+} from './codex-workflow-contract';
+export {
+  CANVAS_MCP_TOOL_DEFINITIONS,
+  CanvasConfirmationGrantSchema,
+  CanvasMcpRequestSchema,
+  CanvasMcpResponseSchema,
+  CanvasMcpToolNameSchema,
+  CanvasWorkflowMutationSchema,
+  CanvasWorkflowPlanSchema,
+  CanvasWorkflowSnapshotSchema,
+  redactMcpValue,
+} from './mcp-workflow';
 
 export type {
   AppliedCanvasTransaction,
@@ -111,7 +126,7 @@ export type {
   PlacementObject,
   ReferenceRole,
 } from './project-schema';
-export type { ConfirmedModelJobInput, ModelJobStatus } from './model-job';
+export type { ConfirmedModelJobInput, ImageAspectRatio, ImageResolutionTier, ModelJobKind, ModelJobProvider, ModelJobStatus, VideoResolutionTier } from './model-job';
 
 export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation, ExecutionReferenceSnapshot } from './agent-plan';
 export type { RuntimeProfile, RuntimeProfileId } from './runtime-profile';
@@ -127,3 +142,13 @@ export type {
   LegacyCanvasModuleType,
   SerializedCanvasModuleType,
 } from './canvas-module';
+export type { CanvasConfirmationGrant, CanvasMcpRequest, CanvasMcpResponse, CanvasMcpToolDefinition, CanvasMcpToolName, CanvasWorkflowMutation, CanvasWorkflowPlan, CanvasWorkflowSnapshot } from './mcp-workflow';
+export type {
+  CodexWorkflowContract,
+  CodexWorkflowModuleContract,
+  CodexWorkflowPortContract,
+  McpPermissionFlags,
+} from './codex-workflow-contract';
+
+export { adaptGenerationParameters } from './model-parameter-adapter';
+export type { AdaptedGenerationParameters, DurationConstraint, GenerationParameterConstraints, GenerationParameterTarget } from './model-parameter-adapter';

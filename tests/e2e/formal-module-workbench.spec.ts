@@ -1,9 +1,10 @@
 import { test, expect } from './helpers/e2e-test';
 import {
   assertLocatorInside,
-  assertNoTrackedRegionsOverlap,
   captureLayoutScreenshot,
+  e2eState,
   openAgentPanel,
+  openApp,
   openEmptyApp,
 } from './helpers/app';
 
@@ -14,25 +15,50 @@ const viewports = [
 ];
 
 for (const theme of ['light', 'dark'] as const) {
+  test(`automatically opens the exact legacy starter as the Figma workbench in ${theme}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
+    await openApp(page);
+
+    await expect(page.getByTestId('legacy-workbench-migration')).toBeHidden();
+    await expect(page.getByTestId('file-menu-toggle')).toBeVisible();
+    await expect(page.locator('[data-module-type="image_generation"]')).toHaveCount(1);
+    await expect(page.locator('[data-module-type="reverse_result"]')).toHaveCount(1);
+    await expect(page.locator('[data-module-type="video_result"]')).toHaveCount(1);
+    await expect(page.locator('[data-node-kind="reference"], [data-node-kind="placement_preview"], [data-node-kind="prompt"]')).toHaveCount(0);
+    const imageWorkbench = page.locator('[data-module-type="image_generation"]');
+    expect((await imageWorkbench.boundingBox())?.x).toBe(340);
+    await expect(page.getByTestId('toolrail')).toHaveJSProperty('offsetWidth', 60);
+    await expect(page.getByTestId('toolrail')).toHaveJSProperty('offsetHeight', 390);
+    await expect(page.getByTestId('toolrail')).toHaveCSS('left', '52px');
+    expect((await page.getByTestId('toolrail').boundingBox())?.y).toBe(142);
+    await openAgentPanel(page);
+    await expect(page.getByTestId('agent-panel')).toBeVisible();
+    expect((await e2eState(page)).projectNodeTypes).toEqual(['module', 'module', 'module', 'module', 'module', 'module', 'module']);
+
+    await captureLayoutScreenshot(page, testInfo, `legacy-to-figma-workbench-${theme}`);
+  });
+}
+
+for (const theme of ['light', 'dark'] as const) {
   for (const viewport of viewports) {
     test(`unified module workbench is contained at ${viewport.name} ${theme}`, async ({ page }, testInfo) => {
       await page.setViewportSize(viewport);
+      await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
       await openEmptyApp(page);
-      await page.getByLabel('主题 Theme').selectOption(theme);
       await page.evaluate(async () => {
         const harness = window.__NOVUS_E2E__;
-        await harness?.createModule('text_prompt', { x: 0, y: 0 });
-        await harness?.createModule('image_input', { x: 0, y: 360 });
-        await harness?.createModule('image_generation', { x: 320, y: 0 });
-        await harness?.createModule('reverse_agent', { x: 320, y: 360 });
-        await harness?.createModule('result_output', { x: 640, y: 0 });
-        await harness?.createModule('storyboard_sheet', { x: 640, y: 360 });
-        await harness?.connectModules('text_prompt', 'prompt', 'image_generation', 'prompt');
-        await harness?.connectModules('text_prompt', 'prompt', 'reverse_agent', 'task');
+        await harness?.createModule('image_input', { x: 0, y: 520 });
+        await harness?.createModule('image_generation', { x: 420, y: 0 });
+        await harness?.createModule('reverse_agent', { x: 420, y: 540 });
+        await harness?.createModule('video_generation', { x: 1120, y: 0 });
+        await harness?.createModule('reverse_result', { x: 1120, y: 540 });
+        await harness?.createModule('video_result', { x: 1850, y: 0 });
         await harness?.connectModules('image_input', 'image', 'image_generation', 'references');
         await harness?.connectModules('image_input', 'image', 'reverse_agent', 'references');
-        await harness?.connectModules('image_generation', 'result', 'result_output', 'result');
-        await harness?.connectModules('reverse_agent', 'analysis', 'storyboard_sheet', 'analysis');
+        await harness?.connectModules('image_input', 'image', 'video_generation', 'media');
+        await harness?.connectModules('reverse_agent', 'analysis', 'reverse_result', 'analysis');
+        await harness?.connectModules('video_generation', 'result', 'video_result', 'video');
       });
 
       const configured = await page.evaluate(async () => {
@@ -71,55 +97,74 @@ for (const theme of ['light', 'dark'] as const) {
       });
       expect(configured).toBe(true);
 
-      await page.locator('.react-flow__controls-fitview').click();
-      await page.locator('.react-flow__controls-zoomout').click();
-      await page.locator('.react-flow__controls-zoomout').click();
-      const pane = page.locator('.react-flow__pane');
-      const paneBox = await pane.boundingBox();
-      expect(paneBox).not.toBeNull();
-      await page.mouse.move(paneBox!.x + paneBox!.width / 2, paneBox!.y + paneBox!.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(paneBox!.x + paneBox!.width / 2 + 165, paneBox!.y + paneBox!.height / 2, { steps: 8 });
-      await page.mouse.up();
+      await page.locator('.react-flow__controls-fitview').evaluate((button) => (button as HTMLButtonElement).click());
       await page.getByTestId('tool-modules').click();
 
       const library = page.getByTestId('module-library');
       const canvas = page.getByTestId('canvas-stage');
       const representativeTypes = [
-        'text_prompt',
         'image_input',
         'image_generation',
         'reverse_agent',
-        'result_output',
-        'storyboard_sheet',
+        'video_generation',
+        'reverse_result',
+        'video_result',
       ];
       for (const moduleType of representativeTypes) {
         const node = page.locator(`[data-module-type="${moduleType}"]`);
         await expect(node).toHaveCount(1);
         await assertLocatorInside(canvas, node, `${moduleType} node ${viewport.name} ${theme}`);
       }
-      await expect(page.locator('.react-flow__edge')).toHaveCount(6);
+      const nodeBoxes = await Promise.all(representativeTypes.map(async (moduleType) => ({
+        moduleType,
+        box: await page.locator(`[data-module-type="${moduleType}"]`).boundingBox(),
+      })));
+      for (let index = 0; index < nodeBoxes.length; index += 1) {
+        const current = nodeBoxes[index];
+        expect(current.box, `${current.moduleType} should be measurable`).not.toBeNull();
+        for (const other of nodeBoxes.slice(index + 1)) {
+          expect(other.box, `${other.moduleType} should be measurable`).not.toBeNull();
+          const overlaps = current.box!.x < other.box!.x + other.box!.width
+            && current.box!.x + current.box!.width > other.box!.x
+            && current.box!.y < other.box!.y + other.box!.height
+            && current.box!.y + current.box!.height > other.box!.y;
+          expect(overlaps, `${current.moduleType} should not overlap ${other.moduleType}`).toBe(false);
+        }
+      }
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      await expect(page.locator('.react-flow__edge')).toHaveCount(5);
       await expect(page.locator('[data-module-type="image_generation_v1"], [data-module-type="image_generation_v2"], [data-module-type="video_analysis"]')).toHaveCount(0);
       await assertLocatorInside(canvas, library, `module library ${viewport.name} ${theme}`);
       const generationNode = page.locator('[data-module-type="image_generation"]');
       const reverseNode = page.locator('[data-module-type="reverse_agent"]');
-      await assertLocatorInside(generationNode, generationNode.locator('.module-node__port-row[data-port-id="prompt"][data-port-direction="input"]'), `generation prompt port ${viewport.name} ${theme}`);
-      await assertLocatorInside(generationNode, generationNode.locator('.module-node__port-row[data-port-id="result"][data-port-direction="output"]'), `generation result port ${viewport.name} ${theme}`);
-      await assertLocatorInside(reverseNode, reverseNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"]'), `reverse reference port ${viewport.name} ${theme}`);
-      await assertLocatorInside(reverseNode, reverseNode.locator('.module-node__port-row[data-port-id="analysis"][data-port-direction="output"]'), `reverse analysis port ${viewport.name} ${theme}`);
-      await expect(generationNode).toContainText('Compatible Image Route');
-      await expect(generationNode).toContainText('已过期');
+      const allNodes = representativeTypes.map((moduleType) => page.locator(`[data-module-type="${moduleType}"]`));
+      await expect(generationNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"] .react-flow__handle')).toBeVisible();
+      await expect(generationNode.locator('.module-node__port-row[data-port-id="result"][data-port-direction="output"] .react-flow__handle')).toBeVisible();
+      await expect(reverseNode.locator('.module-node__port-row[data-port-id="references"][data-port-direction="input"] .react-flow__handle')).toBeVisible();
+      await expect(reverseNode.locator('.module-node__port-row[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle')).toBeVisible();
+      for (const node of allNodes) {
+        const handles = node.locator('.react-flow__handle');
+        expect(await handles.count()).toBeGreaterThan(0);
+        for (let handleIndex = 0; handleIndex < await handles.count(); handleIndex += 1) {
+          await expect(handles.nth(handleIndex)).toBeVisible();
+        }
+      }
+      await expect(generationNode).toContainText('Image Generation');
       await expect(generationNode.getByRole('alert')).toContainText('模型不可用');
-      await expect(reverseNode).toContainText('Vision Composite');
-      await expect(reverseNode).toContainText('最新');
-      await expect(reverseNode.locator('.module-node__summary')).toHaveAttribute('title', /00:01.500–00:06.250/);
-
+      await expect(reverseNode).toContainText('Gemini 3.1 Pro');
+      // UI Gate media slots are populated only from a real graph edge, rather
+      // than from stale node configuration retained by the test harness.
+      await expect(reverseNode.locator('.module-node__agent-media-slots')).toHaveCount(0);
       const before = await canvas.boundingBox();
       await expect(page.getByTestId('agent-panel')).toBeHidden();
       await openAgentPanel(page);
       const after = await canvas.boundingBox();
       expect(after!.width).toBeCloseTo(before!.width, 0);
-      await assertNoTrackedRegionsOverlap(page, ['module-library', 'agent-panel', 'job-strip']);
+      await expect(library).toBeHidden();
+      // The former job strip belongs to the retired workbench shell.  The UI Gate
+      // keeps the Agent panel as the only auxiliary surface, so do not require a
+      // hidden legacy region merely to make this layout audit pass.
+      await assertLocatorInside(page.locator('body'), page.getByTestId('agent-panel'), `agent panel ${viewport.name} ${theme}`);
       await page.getByTestId('agent-panel').getByRole('button', { name: '关闭 Novus Agent' }).click();
       await expect(page.getByTestId('agent-panel')).toBeHidden();
       await openAgentPanel(page);

@@ -46,6 +46,29 @@ describe('KnowledgeClient', () => {
     expect(first.versionKey).toBe(`scene-skill@1:${'a'.repeat(12)}`);
   });
 
+  it('pins only the two Agent-node selected ready knowledge bases', async () => {
+    window.novusDesktop = createBridge({
+      getKnowledgeState: async () => ({ states: [
+        knowledgeState({ knowledgeBaseId: 'scene-skill', version: 1, hashPrefix: 'a' }),
+        knowledgeState({ knowledgeBaseId: 'brand-rules', version: 2, hashPrefix: 'b' }),
+        knowledgeState({ knowledgeBaseId: 'unselected-base', version: 3, hashPrefix: 'c' }),
+      ] }),
+    });
+    const client = createKnowledgeClient();
+
+    await client.start(() => undefined);
+    const lease = client.getLease('run-selected', 'reverse_prompt', references, [], [
+      'brand-rules',
+      'scene-skill',
+    ]);
+
+    expect(lease.snapshots.map((item) => item.knowledgeBaseId)).toEqual([
+      'brand-rules',
+      'scene-skill',
+    ]);
+    expect(lease.snapshots).toHaveLength(2);
+  });
+
   it('buffers knowledge-state events during hydration so the next lease pins the newest activation', async () => {
     let stateListener: ((state: KnowledgeBaseStateSummary) => void) | undefined;
     let resolveHydration!: (value: KnowledgeStateBridgeResult) => void;

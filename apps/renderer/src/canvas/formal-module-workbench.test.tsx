@@ -61,21 +61,21 @@ describe('formal module node presentation', () => {
 
     expect(screen.getAllByText('图片生成')[0]).toBeVisible();
     expect(screen.getByText('Image Generation')).toBeVisible();
-    expect(screen.getByLabelText('生成摘要 / Generation summary')).toHaveTextContent(/参考\s*2/u);
+    expect(screen.queryByLabelText('Image generation reference slots')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open image generation editor' }));
     expect(screen.getByLabelText('生成摘要 / Generation summary')).not.toHaveTextContent('当前模型不支持');
     expect(screen.getByLabelText('生成摘要 / Generation summary')).not.toHaveTextContent('/ Mask');
-    expect(screen.getByText(/Compatible Image Route/)).toBeVisible();
-    expect(screen.getByText('高端护肤产品，干净棚拍光线')).toBeVisible();
-    expect(screen.getByLabelText('生成参数 / Generation parameters')).toHaveTextContent('4:5');
-    expect(screen.getByLabelText('生成参数 / Generation parameters')).toHaveTextContent('2048 × 2560');
-    expect(screen.getByLabelText('生成参数 / Generation parameters')).toHaveTextContent('2 张');
+    expect(screen.getByLabelText('Image generation model route')).toBeDisabled();
+    expect(screen.getByLabelText('Image generation prompt')).toHaveValue('高端护肤产品，干净棚拍光线');
+    expect(screen.getByLabelText('Image generation aspect ratio')).toHaveValue('1:1');
+    expect(screen.getByLabelText('Image generation resolution')).toHaveValue('2K');
+    expect(screen.getByLabelText('Image generation quantity')).toHaveValue('2');
     expect(screen.getByText('高级参数')).toBeVisible();
-    expect(screen.getByText('已过期')).toBeVisible();
     expect(screen.getByRole('alert')).toHaveTextContent('模型不可用');
     expect(screen.getByRole('alert')).toHaveTextContent('选择兼容模型');
   });
 
-  it('summarizes ordered mixed media without expanding every item into the node', () => {
+  it('keeps saved reverse media out of the visible tray until a real canvas edge exists', () => {
     const node = createCanvasModuleNode('reverse', 'reverse_agent', { x: 0, y: 0 });
     node.data.config = {
       orderedMedia: [
@@ -95,16 +95,24 @@ describe('formal module node presentation', () => {
 
     renderCard(node);
 
-    const summary = screen.getByLabelText('反推摘要 / Reverse summary');
-    expect(summary).toHaveTextContent('产品商业片');
-    expect(summary).toHaveTextContent('3 项');
-    expect(summary).toHaveTextContent('商业视觉导演');
-    expect(summary).toHaveTextContent('拆解构图、材质与灯光');
-    expect(summary).toHaveTextContent('知识 v7');
-    expect(summary.querySelectorAll('.module-node__media-thumb')).toHaveLength(3);
-    expect(summary).toHaveAttribute('title', expect.stringContaining('00:01.500–00:06.250'));
+    const studio = screen.getByLabelText('Agent task configuration');
+    expect(studio.querySelector('.module-node__agent-media-slots')).toBeNull();
+    expect(studio.querySelector('.module-node__agent-media-empty-hint')).toBeInTheDocument();
+    expect(screen.getByLabelText('Role positioning')).toHaveValue('商业视觉导演');
+    expect(screen.getByLabelText('Analysis task')).toHaveValue('拆解构图、材质与灯光');
+    expect(screen.getByLabelText('Reverse knowledge context')).toBeInTheDocument();
     expect(screen.queryByText('产品正面')).not.toBeInTheDocument();
     expect(screen.getByText('最新')).toBeVisible();
+  });
+
+  it('keeps the reverse Figma card out of the retired workbench shell', () => {
+    const node = createCanvasModuleNode('reverse-figma-shell', 'reverse_agent', { x: 0, y: 0 });
+
+    renderCard(node);
+
+    const card = screen.getByTestId('module-node-card');
+    expect(card).toHaveClass('module-node--reverse-figma');
+    expect(card).not.toHaveClass('module-node--workbench');
   });
 
   it('keeps professional port labels quiet until interaction while preserving accessible handles', () => {
@@ -113,7 +121,8 @@ describe('formal module node presentation', () => {
 
     const card = screen.getByTestId('module-node-card');
     expect(card).toHaveAttribute('data-port-label-mode', 'interactive');
-    expect(card.querySelector('[data-port-id="prompt"]')).toHaveAttribute('aria-label', '提示词 / Prompt');
+    expect(card.querySelector('[data-port-id="references"]')).toHaveAttribute('aria-label', '参考图 / References');
+    expect(card.querySelector('[data-port-id="prompt"]')).toBeNull();
     expect(card.querySelector('.module-node__port-label')).toHaveAttribute('aria-hidden', 'true');
   });
 
@@ -139,7 +148,7 @@ describe('formal module node presentation', () => {
   ])('renders professional typed-node content for %s', (type, title) => {
     const node = createCanvasModuleNode(type, type as never, { x: 0, y: 0 });
     renderCard(node);
-    expect(screen.getByText(title)).toBeVisible();
+    expect(screen.getAllByText(title)[0]).toBeVisible();
     expect(document.querySelectorAll('[data-port-type]').length).toBeGreaterThan(1);
     expect(document.querySelector('.module-node')).not.toHaveTextContent('IMG');
     expect(document.querySelector('.module-node')).not.toHaveTextContent(/[锟斤烫屯拷]/u);
@@ -149,18 +158,20 @@ describe('formal module node presentation', () => {
     const node = migratedModuleNode('image_generation_v2');
     renderCard(node);
 
-    const summary = screen.getByLabelText('生成摘要 / Generation summary');
-    expect(summary).toHaveTextContent(/参考\s*2/u);
-    expect(screen.getByText(/Legacy image route/)).toBeVisible();
+    expect(screen.getByLabelText('生成摘要 / Generation summary')).toBeVisible();
+    expect(screen.queryByLabelText('Image generation reference slots')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open image generation editor' }));
+    expect(screen.getByLabelText('Image generation prompt')).toHaveValue('studio light');
+    expect(screen.getByRole('button', { name: 'Generate image' })).toBeDisabled();
   });
 
-  it('renders migrated video ranges from the parsed legacy Reverse Agent project', () => {
+  it('does not turn migrated reverse-media metadata into a tray without an edge', () => {
     const node = migratedModuleNode('video_analysis');
     renderCard(node);
 
-    const summary = screen.getByLabelText('反推摘要 / Reverse summary');
-    expect(summary).toHaveTextContent('1 项');
-    expect(summary).toHaveAttribute('title', expect.stringContaining('00:01.200–00:04.200'));
+    const studio = screen.getByLabelText('Agent task configuration');
+    expect(studio.querySelector('.module-node__agent-media-slots')).toBeNull();
+    expect(studio.querySelector('.module-node__agent-media-empty-hint')).toBeInTheDocument();
     expect(screen.getByText(/Legacy vision route/)).toBeVisible();
   });
 });

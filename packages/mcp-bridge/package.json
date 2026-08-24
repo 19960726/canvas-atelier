@@ -1,0 +1,17 @@
+{
+  "name": "@agent-canvas/mcp-bridge",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./dist/canvasforge-mcp.cjs",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/canvasforge-mcp.cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@agent-canvas/domain": "file:../domain",
+    "@agent-canvas/desktop-core": "file:../desktop-core",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "^3.25.76"
+  }
+}

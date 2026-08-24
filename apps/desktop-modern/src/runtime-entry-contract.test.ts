@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { resolveRendererHtmlPath } from './renderer-path';
 
 const workspaceRoot = process.cwd();
 
@@ -17,6 +18,7 @@ type BuildPackageJson = {
   main: string;
   scripts: { build: string };
   type?: string;
+  version: string;
 };
 
 const desktopShells: DesktopShell[] = [
@@ -56,6 +58,8 @@ function createElectronStubCjs(options: { whenReadyFailureMessage?: string }) {
 const { EventEmitter } = require('node:events');
 
 class StubApp extends EventEmitter {
+  commandLine = { appendSwitch() {} };
+
   requestSingleInstanceLock() {
     return true;
   }
@@ -73,6 +77,8 @@ class StubApp extends EventEmitter {
   getPath() {
     return 'C:/tmp/canvas-agent-vitest-user-data';
   }
+
+  setPath() {}
 }
 
 class StubBrowserWindow extends EventEmitter {
@@ -148,6 +154,11 @@ const moduleExports = {
     removeHandler() {},
   },
   ipcRenderer,
+  webUtils: {
+    getPathForFile() {
+      return '';
+    },
+  },
   net: {
     isOnline() {
       return true;
@@ -185,6 +196,7 @@ export const ipcRenderer = cjsModule.ipcRenderer;
 export const net = cjsModule.net;
 export const safeStorage = cjsModule.safeStorage;
 export const shell = cjsModule.shell;
+export const webUtils = cjsModule.webUtils;
 export default cjsModule;
 `;
 
@@ -315,6 +327,43 @@ function spawnArtifactLoad(entryPath: string) {
 }
 
 describe('desktop runtime entry contract', () => {
+  it('modern 1.6.55 resolves only the modern renderer entry', async () => {
+    const shell = desktopShells[0]!;
+    const packageJson = await readPackageJson(shell);
+    const rendererEntry = resolveRendererHtmlPath(join(workspaceRoot, shell.appDir, 'dist'));
+
+    expect(packageJson.version).toBe('1.6.55');
+    expect(rendererEntry).toBe(resolve(workspaceRoot, 'apps', 'renderer', 'dist', 'index.html'));
+    expect(rendererEntry).not.toContain('desktop-legacy');
+  });
+
+  it('modern packages CommonJS preload entries with a .cjs extension', async () => {
+    const shell = desktopShells[0]!;
+    const packageJson = await readPackageJson(shell);
+    const mainSource = await readFile(join(workspaceRoot, shell.appDir, 'src', 'main.ts'), 'utf8');
+
+    expect(packageJson.type).toBe('module');
+    expect(packageJson.scripts.build).toContain('--format=cjs --outfile=dist/preload.cjs');
+    expect(packageJson.scripts.build).toContain('--format=cjs --outfile=dist/safe-preload.cjs');
+    expect(mainSource).toContain("join(currentDir, 'preload.cjs')");
+    expect(mainSource).toContain("join(currentDir, 'safe-preload.cjs')");
+  });
+
+  it('modern disables Windows GPU acceleration before startup without exposing Node to the renderer', async () => {
+    const mainSource = await readFile(join(workspaceRoot, 'apps', 'desktop-modern', 'src', 'main.ts'), 'utf8');
+    const gpuCompatibilityIndex = mainSource.indexOf("app.commandLine.appendSwitch('disable-gpu')");
+    const lockIndex = mainSource.indexOf('app.requestSingleInstanceLock()');
+    const readyIndex = mainSource.indexOf('app.whenReady()');
+
+    expect(gpuCompatibilityIndex).toBeGreaterThanOrEqual(0);
+    expect(gpuCompatibilityIndex).toBeLessThan(lockIndex);
+    expect(gpuCompatibilityIndex).toBeLessThan(readyIndex);
+    expect(mainSource).not.toContain("app.commandLine.appendSwitch('in-process-gpu')");
+    expect(mainSource).toContain("sandbox: process.platform !== 'win32'");
+    expect(mainSource).toContain('contextIsolation: true');
+    expect(mainSource).toContain('nodeIntegration: false');
+  });
+
   it('refuses redirected shell and dist directories without deleting external sentinels', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'canvas-agent-dist-confinement-'));
     try {
@@ -362,17 +411,22 @@ describe('desktop runtime entry contract', () => {
       await expectMissing(join(workspaceRoot, shell.appDir, 'dist', 'main.js'));
       await expectMissing(join(workspaceRoot, shell.appDir, 'dist', 'nested', 'stale.js'));
 
+      const preloadArtifacts = shell.label === 'modern'
+        ? ['preload.cjs', 'safe-preload.cjs']
+        : ['preload.js', 'safe-preload.js'];
       for (const artifact of [
         'main.cjs',
         'snapshot-worker-entry.cjs',
-        'preload.js',
-        'safe-preload.js',
+        ...preloadArtifacts,
         'safe-mode.js',
         'safe-mode.html',
+        'mcp/canvasforge-mcp.cjs',
+        'photoshop/photoshop-place-smart-object.jsx',
+        'photoshop/photoshop-windows-runner.js',
       ]) {
         await expectPresent(join(workspaceRoot, shell.appDir, 'dist', artifact));
       }
-    });
+    }, 15_000);
 
     it(`${shell.label} builds a self-contained CommonJS desktop main that loads under the Electron contract`, async () => {
       const packageJson = await readPackageJson(shell);
@@ -380,6 +434,12 @@ describe('desktop runtime entry contract', () => {
       expect(packageJson.main).toBe('./dist/main.cjs');
       expect(packageJson.scripts.build).toContain('--format=cjs --outfile=dist/main.cjs');
       expect(packageJson.scripts.build).toContain('--format=cjs --outfile=dist/snapshot-worker-entry.cjs');
+      const preloadArtifacts = shell.label === 'modern'
+        ? ['preload.cjs', 'safe-preload.cjs']
+        : ['preload.js', 'safe-preload.js'];
+      expect(packageJson.scripts.build).toContain(`--format=cjs --outfile=dist/${preloadArtifacts[0]}`);
+      expect(packageJson.scripts.build).toContain(`--format=cjs --outfile=dist/${preloadArtifacts[1]}`);
+      if (shell.label === 'modern') expect(packageJson.scripts.build).toContain('npm run build -w @agent-canvas/mcp-bridge');
       expect(packageJson.scripts.build).not.toContain('--external:archiver');
       expect(packageJson.scripts.build).not.toContain('--external:yauzl');
 
@@ -390,12 +450,30 @@ describe('desktop runtime entry contract', () => {
       expect(builtMainSource).not.toContain('Dynamic require of "');
       expect(builtMainSource).not.toMatch(/(?:from|require\()["']archiver["']/u);
       expect(builtMainSource).not.toMatch(/(?:from|require\()["']yauzl["']/u);
+      expect(builtMainSource).toMatch(/ipcMain\.handle\(BRIDGE_CHANNELS\.storage\.getCacheDirectory/u);
+      expect(builtMainSource).toMatch(/ipcMain\.handle\(BRIDGE_CHANNELS\.storage\.chooseCacheDirectory/u);
+      expect(builtMainSource).toMatch(/ipcMain\.handle\(BRIDGE_CHANNELS\.storage\.resetCacheDirectory/u);
+      expect(builtMainSource).toMatch(/ipcMain\.handle\(BRIDGE_CHANNELS\.storage\.openCacheDirectory/u);
+      expect(builtMainSource).toContain('openDirectory');
+      expect(builtMainSource).toContain('createDirectory');
+      expect(builtMainSource).toContain('shell.openPath');
+      expect(builtMainSource).toContain('resolveStableUserDataRoot');
+      expect(builtMainSource).toContain('migrateLegacyUserData');
+      expect(builtMainSource).toMatch(/setPath\(["']userData["']/u);
+      expect(builtMainSource).toContain('createWindowsPhotoshopSmartObjectAdapter');
+      expect(builtMainSource).toContain('photoshopSmartObjectAdapter');
+
+      for (const preloadArtifact of preloadArtifacts) {
+        const preloadSource = await readFile(join(workspaceRoot, shell.appDir, 'dist', preloadArtifact), 'utf8');
+        expect(preloadSource).not.toMatch(/^\s*import\s/u);
+        expect(preloadSource).toMatch(/require\(["']electron["']\)/u);
+      }
 
       const workerEntryPath = join(workspaceRoot, shell.appDir, 'dist', 'snapshot-worker-entry.cjs');
       await expect(readFile(workerEntryPath, 'utf8')).resolves.toContain('buildSnapshotProject');
 
       await withTempPackage(shell, packageJson, createElectronStubCjs({}), async (packageRoot) => {
-        for (const entryPoint of ['main.cjs', 'snapshot-worker-entry.cjs', 'preload.js', 'safe-preload.js']) {
+        for (const entryPoint of ['main.cjs', 'snapshot-worker-entry.cjs', ...preloadArtifacts]) {
           const entryLoad = spawnArtifactLoad(resolve(packageRoot, 'dist', entryPoint));
           expect(entryLoad.status, `${entryPoint}\n${entryLoad.stderr}\n${entryLoad.stdout}`).toBe(0);
           expect(entryLoad.stderr).not.toContain('Dynamic require of "');

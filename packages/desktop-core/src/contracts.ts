@@ -1,4 +1,6 @@
 import type {
+  CanvasMcpRequest,
+  CanvasMcpResponse,
   CanvasProject,
   GenerationHistoryListRequest,
   GenerationHistoryRecord,
@@ -9,6 +11,12 @@ import type {
   ReferenceRole,
   SkillPromotionCandidate,
 } from '@agent-canvas/domain';
+export type {
+  PhotoshopCapability,
+  PhotoshopImportErrorCode,
+  PhotoshopImportRequest,
+  PhotoshopImportResult,
+} from './photoshop-contract.js';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import type {
   GenerationHistoryComparisonDescriptor,
@@ -160,6 +168,37 @@ export interface OpenProjectBridgeRequest {
 
 export interface OpenProjectBridgeResult extends BridgeSessionSummary {}
 
+export interface RefreshProjectBridgeRequest {
+  readonly sessionId: string;
+}
+
+export interface RecentProjectSummary {
+  readonly recentProjectId: string;
+  readonly projectId: string;
+  readonly displayName: string;
+  readonly lastOpenedAt: string;
+  readonly lastSavedAt: string;
+  readonly availability: 'available' | 'missing';
+  readonly nodeCount: number;
+  readonly imageCount: number;
+  readonly videoCount: number;
+  readonly previewUrl: string | null;
+}
+
+export interface RecentProjectRequest {
+  readonly recentProjectId: string;
+}
+
+export interface OpenRecentProjectBridgeRequest extends RecentProjectRequest {
+  readonly mode: 'write' | 'read_only';
+}
+
+export interface CreateProjectBridgeRequest {
+  readonly project: CanvasProject;
+}
+
+export interface CreateProjectBridgeResult extends BridgeSessionSummary {}
+
 export interface CommitBridgeRequest extends CommitRequest {
   readonly sessionId: string;
 }
@@ -235,7 +274,8 @@ export type ProjectImageImportTarget =
     readonly kind: 'placement_reference';
     readonly nodeId: string;
     readonly role: Exclude<ReferenceRole, 'placement_preview'>;
-  };
+  }
+  | { readonly kind: 'agent_reference' };
 
 export interface ProjectClipboardImageTarget {
   readonly kind: 'new_image_input';
@@ -269,13 +309,34 @@ export interface PasteProjectClipboardVideoBridgeRequest {
   readonly target: ProjectClipboardVideoTarget;
 }
 
+/**
+ * Public portion of a desktop file-drop request. The native file path is
+ * resolved inside preload and is intentionally not part of this payload.
+ */
+export interface ImportDroppedProjectMediaBridgeRequest {
+  readonly sessionId: string;
+  readonly target:
+    | {
+        readonly kind: 'new_media_input';
+        readonly operationId: string;
+        readonly position: { readonly x: number; readonly y: number };
+      }
+    | {
+        readonly kind: 'module';
+        readonly nodeId: string;
+        readonly operationId: string;
+      };
+}
+
 export interface ListProjectImagesBridgeRequest {
   readonly sessionId: string;
 }
 
 export interface ImportProjectVideoBridgeRequest {
   readonly sessionId: string;
-  readonly target: { readonly kind: 'module'; readonly nodeId: string };
+  readonly target:
+    | { readonly kind: 'module'; readonly nodeId: string }
+    | { readonly kind: 'agent_reference' };
 }
 
 export interface ListProjectVideosBridgeRequest {
@@ -307,6 +368,10 @@ export interface ImportProjectVideoBridgeResult {
 }
 
 export type PasteProjectClipboardVideoBridgeResult = ImportProjectVideoBridgeResult;
+
+export type ImportDroppedProjectMediaBridgeResult =
+  | ImportProjectImageBridgeResult
+  | ImportProjectVideoBridgeResult;
 
 export type ListGenerationHistoryBridgeRequest = GenerationHistoryListRequest;
 export type ListGenerationHistoryBridgeResult = GenerationHistoryListResult;
@@ -378,6 +443,23 @@ export interface KnowledgeStateBridgeResult {
   readonly syncStatuses?: readonly KnowledgeSyncStatusSummary[];
 }
 
+export interface McpRuntimeRendererRequest {
+  readonly requestId: string;
+  readonly request: CanvasMcpRequest;
+}
+
+export interface McpRuntimeRendererResponse {
+  readonly requestId: string;
+  readonly response: CanvasMcpResponse;
+}
+
+export interface McpRuntimePublicStatus {
+  readonly state: 'stopped' | 'waiting_for_canvas' | 'running' | 'error';
+  readonly rendererConnected: boolean;
+  readonly serverVersion: string;
+  readonly toolCount: 14;
+  readonly lastError: string | null;
+}
 export interface SkillCandidatePreparedManagedSnapshot {
   readonly knowledgeBaseId: string;
   readonly version: number;

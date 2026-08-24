@@ -9,6 +9,7 @@ const edgeExecutablePath = process.env.PLAYWRIGHT_EDGE_EXECUTABLE_PATH
 
 export default defineConfig({
   testDir: './tests/e2e',
+  globalTeardown: './tests/e2e/helpers/e2e-global-teardown.mjs',
   outputDir: 'test-results/e2e',
   fullyParallel: false,
   workers: 1,
@@ -21,12 +22,12 @@ export default defineConfig({
     ['./tests/e2e/helpers/safe-json-reporter.mjs', { outputFile: 'playwright-report/results.json' }],
   ],
   webServer: {
-    command: `npm run dev -w @agent-canvas/renderer -- --host 127.0.0.1 --port ${port} --strictPort`,
+    command: `node scripts/e2e-vite-server.mjs`,
     env: {
       VITE_NOVUS_E2E_MODE: '1',
       VITE_NOVUS_E2E_NONCE: e2eNonce,
     },
-    reuseExistingServer: false,
+    reuseExistingServer: process.env.NOVUS_E2E_REUSE_SERVER === '1',
     timeout: 120_000,
     url: baseURL,
   },

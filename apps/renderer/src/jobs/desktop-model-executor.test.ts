@@ -48,6 +48,7 @@ describe('desktop model job executor', () => {
       modelRoute: 'gpt-image',
       prompt: 'draw a chair',
       conversationId: 'conversation-1',
+      sessionId: 'desktop-session-1',
       referenceAssetIds: ['asset-reference'],
     });
     expect(fetch).not.toHaveBeenCalled();
@@ -59,6 +60,66 @@ describe('desktop model job executor', () => {
     expect(JSON.stringify({ submitted, polled })).not.toMatch(/Authorization|Bearer|token|base64/i);
   });
 
+  it('routes RelayMe image jobs through the same provider bridge', async () => {
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-relayme-public' }));
+    vi.stubGlobal('window', {
+      novusDesktop: {
+        provider: {
+          submitImageJob,
+          pollImageJob: vi.fn(),
+          cancelImageJob: vi.fn(),
+          ackImageJobTerminal: vi.fn(),
+        },
+      },
+    });
+
+    await expect(createDesktopModelJobExecutor().submit(job({
+      provider: 'relayme',
+      modelRoute: 'relayme-gpt-image-2',
+    }))).resolves.toEqual({ providerTaskId: 'provider-job-relayme-public' });
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'relayme',
+      modelRoute: 'relayme-gpt-image-2',
+    }));
+  });
+
+  it('routes video jobs through the video bridge and preserves video controls', async () => {
+    const submitVideoJob = vi.fn(async () => ({ providerTaskId: 'provider-job-relay-video' }));
+    const pollVideoJob = vi.fn(async () => ({
+      status: 'completed' as const,
+      progress: 1,
+      result: { assetId: 'fedcba9876543210', width: 1920, height: 1080, durationSeconds: 8 },
+    }));
+    const cancelVideoJob = vi.fn(async () => ({ status: 'cancelled' as const }));
+    const ackVideoJobTerminal = vi.fn(async () => ({ acknowledged: true as const }));
+    vi.stubGlobal('window', { novusDesktop: { provider: {
+      submitVideoJob, pollVideoJob, cancelVideoJob, ackVideoJobTerminal,
+      submitImageJob: vi.fn(), pollImageJob: vi.fn(), cancelImageJob: vi.fn(), ackImageJobTerminal: vi.fn(),
+    } } });
+    const executor = createDesktopModelJobExecutor();
+    const videoJob = job({
+      kind: 'video', provider: 'relayme', modelRoute: 'relayme-video', referenceAssetIds: [],
+      aspectRatio: '16:9', videoResolution: '1080p', durationSeconds: 8, outputCount: 1, audioEnabled: true,
+    });
+
+    const submitted = await executor.submit(videoJob);
+    await expect(executor.poll({ ...videoJob, status: 'running', providerTaskId: submitted.providerTaskId })).resolves.toEqual({
+      status: 'completed', progress: 1,
+      result: { assetId: 'fedcba9876543210', width: 1920, height: 1080, durationSeconds: 8 },
+    });
+    await executor.cancel?.({ ...videoJob, status: 'running', providerTaskId: submitted.providerTaskId });
+    await executor.ackTerminal?.({ ...videoJob, status: 'completed', providerTaskId: submitted.providerTaskId });
+
+    expect(submitVideoJob).toHaveBeenCalledWith({
+      jobId: 'job-1', provider: 'relayme', modelRoute: 'relayme-video', prompt: 'draw a chair',
+      conversationId: 'conversation-1', sessionId: 'desktop-session-1', referenceAssetIds: [],
+      aspectRatio: '16:9', resolution: '1080p', durationSeconds: 8, outputCount: 1, audioEnabled: true,
+    });
+    expect(cancelVideoJob).toHaveBeenCalled();
+    expect(ackVideoJobTerminal).toHaveBeenCalledWith({
+      provider: 'relayme', providerTaskId: 'provider-job-relay-video', status: 'completed',
+    });
+  });
   it('passes through cancelled provider terminals from poll and cancel', async () => {
     const pollImageJob = vi.fn(async () => ({ status: 'cancelled' as const }));
     const cancelImageJob = vi.fn(async () => ({ status: 'cancelled' as const }));
@@ -127,10 +188,12 @@ function job(overrides: Partial<ModelJob> = {}): ModelJob {
     modelRoute: 'gpt-image',
     displayName: 'GPT Image',
     conversationId: 'conversation-1',
+    projectSessionId: 'desktop-session-1',
     referenceAssetIds: ['asset-reference'],
     prompt: 'draw a chair',
     createdAt: '2026-07-16T08:00:00.000Z',
     updatedAt: '2026-07-16T08:00:00.000Z',
     ...overrides,
+    kind: overrides.kind ?? 'image',
   };
 }

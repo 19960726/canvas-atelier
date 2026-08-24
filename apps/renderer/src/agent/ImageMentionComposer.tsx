@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ImagePlus } from 'lucide-react';
 import type { ImageCitation, OrderedReference } from '@agent-canvas/domain';
 
@@ -7,13 +7,19 @@ export interface ImageMentionValue {
   citations: ImageCitation[];
 }
 
+export interface MentionableImageReference extends OrderedReference {
+  readonly displayUrl?: string;
+}
+
 interface ImageMentionComposerProps {
-  references: OrderedReference[];
+  references: MentionableImageReference[];
   value: ImageMentionValue;
   onChange: (value: ImageMentionValue) => void;
   textareaLabel?: string;
   placeholder?: string;
   rows?: number;
+  mentionEnabled?: boolean;
+  onMentionUnavailable?: () => void;
 }
 
 export function ImageMentionComposer({
@@ -23,8 +29,12 @@ export function ImageMentionComposer({
   textareaLabel = 'Message',
   placeholder,
   rows = 3,
+  mentionEnabled = true,
+  onMentionUnavailable,
 }: ImageMentionComposerProps) {
   const [mentionOpen, setMentionOpen] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingCaretRef = useRef<number | null>(null);
   const labelCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const reference of references) counts.set(reference.label, (counts.get(reference.label) ?? 0) + 1);
@@ -41,6 +51,7 @@ export function ImageMentionComposer({
     if (currentCitations.some((citation) => citation.assetId === reference.assetId)) return;
     const token = `@${reference.label}`;
     const text = value.text.trimEnd().length > 0 ? `${value.text.trimEnd()} ${token}` : token;
+    pendingCaretRef.current = text.length;
     onChange({
       text,
       citations: [...currentCitations, {
@@ -49,14 +60,41 @@ export function ImageMentionComposer({
       }],
     });
   };
+  useLayoutEffect(() => {
+    const caret = pendingCaretRef.current;
+    const textarea = textareaRef.current;
+    if (caret === null || textarea === null || value.text.length < caret) return;
+    pendingCaretRef.current = null;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+  }, [value.text]);
+  const removeCitation = (citation: ImageCitation) => {
+    const token = `@${citation.label}`;
+    onChange({
+      text: value.text.replace(token, '').replace(/\s{2,}/gu, ' ').trimStart(),
+      citations: value.citations.filter((candidate) => candidate.assetId !== citation.assetId),
+    });
+  };
+  const referencesById = useMemo(() => new Map(references.map((reference) => [reference.assetId, reference])), [references]);
 
   return (
     <div className="image-mention-composer">
-      <textarea data-testid="agent-composer-input" aria-label={textareaLabel} placeholder={placeholder} rows={rows} value={value.text}
+      <textarea ref={textareaRef} data-testid="agent-composer-input" aria-label={textareaLabel} placeholder={placeholder} rows={rows} value={value.text}
         onChange={(event) => updateText(event.target.value)} />
+      {value.citations.length > 0 && (
+        <div className="image-mention-composer__citations" aria-label="Selected image references">
+          {value.citations.map((citation) => {
+            const reference = referencesById.get(citation.assetId);
+            return <button key={citation.assetId} type="button" aria-label={`Remove ${citation.label} image reference`} onClick={() => removeCitation(citation)}>
+              {reference?.displayUrl && <img src={reference.displayUrl} alt="" />}
+              <span>@{citation.label}</span>
+            </button>;
+          })}
+        </div>
+      )}
       <div className="image-mention-composer__control">
         <button data-testid="image-mention-toggle" type="button" aria-label="Mention image" title="Mention image" disabled={references.length === 0}
-          aria-expanded={mentionOpen} onClick={() => setMentionOpen((open) => !open)}><ImagePlus size={15} /></button>
+          aria-expanded={mentionOpen} onClick={() => mentionEnabled ? setMentionOpen((open) => !open) : onMentionUnavailable?.()}><ImagePlus size={15} /></button>
         {mentionOpen && (
           <div className="image-mention-menu" role="menu" aria-label="Reference images">
             {references.map((reference) => {

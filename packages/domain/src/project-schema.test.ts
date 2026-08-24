@@ -67,6 +67,78 @@ describe('parseCanvasProject', () => {
     });
   });
 
+  it('accepts a strict video result node with provider provenance', () => {
+    const project = parseCanvasProject({
+      version: 1,
+      graphVersion: 2,
+      id: 'video-result-project',
+      name: 'video result project',
+      nodes: [{
+        id: 'video-result-1',
+        type: 'video_result',
+        position: { x: 480, y: 120 },
+        data: {
+          assetId: 'fedcba9876543210',
+          modelId: 'relay-video',
+          providerTaskId: 'relay-task-1',
+          parentNodeIds: ['video-generator-1'],
+          provider: 'relayme',
+          modelRoute: 'relayme-video',
+          displayName: 'Relay video',
+          promptNodeId: 'prompt-1',
+          referenceAssetIds: ['0123456789abcdef'],
+          jobId: 'video-job-1',
+          width: 1920,
+          height: 1080,
+          durationSeconds: 8,
+        },
+      }],
+      edges: [],
+    });
+
+    expect(project.nodes[0]).toMatchObject({
+      type: 'video_result',
+      data: {
+        assetId: 'fedcba9876543210',
+        durationSeconds: 8,
+        provider: 'relayme',
+      },
+    });
+  });
+  it('rejects a video preview node that names a non-managed first or last frame', () => {
+    const video = createCanvasModuleNode('video-preview', 'video_generation' as never, { x: 0, y: 0 });
+
+    expect(() => parseCanvasProject({
+      version: 1,
+      graphVersion: 2,
+      id: 'video-preview-project',
+      name: 'video preview',
+      nodes: [{
+        ...video,
+        data: {
+          ...video.data,
+          config: {
+            ...video.data.config,
+            firstFrameAssetId: 'outside-project',
+            lastFrameAssetId: '0123456789abcdef',
+          },
+        },
+      }],
+      edges: [],
+      assets: [{
+        assetId: '0123456789abcdef',
+        sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        byteSize: 1024,
+        extension: 'png',
+        height: 720,
+        mediaType: 'image/png',
+        label: 'Managed frame',
+        origin: 'imported',
+        width: 1280,
+      }],
+    })).toThrow(/managed|first|frame/i);
+  });
+
   it('rejects protected or unknown module node data', () => {
     const moduleNode = createCanvasModuleNode('unsafe', 'text_prompt', { x: 0, y: 0 });
 
@@ -714,7 +786,16 @@ describe('agentPlanSchema', () => {
 describe('public domain API', () => {
   it('exposes only the approved runtime functions', () => {
     expect(Object.keys(publicApi).sort()).toEqual([
+      'CANVAS_MCP_TOOL_DEFINITIONS',
       'CANVAS_MODULE_DEFINITIONS',
+      'CanvasConfirmationGrantSchema',
+      'CanvasMcpRequestSchema',
+      'CanvasMcpResponseSchema',
+      'CanvasMcpToolNameSchema',
+      'CanvasWorkflowMutationSchema',
+      'CanvasWorkflowPlanSchema',
+      'CanvasWorkflowSnapshotSchema',
+      'DEFAULT_MCP_PERMISSION_FLAGS',
       'DEFAULT_REVERSE_PROMPT_PERSONA',
       'GENERATION_HISTORY_SCHEMA_VERSION',
       'GENERATION_HISTORY_TRASH_RETENTION_MS',
@@ -722,9 +803,11 @@ describe('public domain API', () => {
       'MAX_GENERATION_HISTORY_PROJECT_REFERENCES',
       'MAX_GENERATION_HISTORY_TAGS',
       'MAX_GENERATION_REFERENCES',
+      'MAX_REVERSE_PROMPT_MP4_BYTES',
       'REVERSE_PROMPT_PERSONAS',
       'RUNTIME_PROFILES',
       'UNCONFIGURED_KNOWLEDGE_VERSION_KEY',
+      'adaptGenerationParameters',
       'appendProjectMemoryEntry',
       'applyProjectTransaction',
       'applyTransaction',
@@ -734,6 +817,7 @@ describe('public domain API', () => {
       'cancelAgentPlan',
       'canvasOperationSchema',
       'createCanvasModuleNode',
+      'createCodexWorkflowContract',
       'confirmAgentPlan',
       'containsProtectedHistoryValue',
       'containsProtectedRendererPayload',
@@ -755,6 +839,8 @@ describe('public domain API', () => {
       'modelJobSchema',
       'modelJobStatusSchema',
       'normalizePlacementObject',
+      'normalizeReverseRolePreference',
+      'orderedAgentMediaItemSchema',
       'parseCanvasProject',
       'parseGenerationHistoryListRequest',
       'parseGenerationHistoryRecord',
@@ -769,8 +855,13 @@ describe('public domain API', () => {
       'projectTransactionSchema',
       'listCanvasModuleDefinitions',
       'migrateCanvasProjectGraph',
+      'managedMp4InputSnapshotSchema',
+      'redactMcpValue',
       'reorderCanvasInputEdges',
       'reorderReferences',
+      'reverseAgentNodeConfigSchema',
+      'reversePromptResultSchema',
+      'reversePromptRunSchema',
       'revertTransaction',
       'reviewSkillPromotionCandidate',
       'rollbackSkillPromotionCandidate',

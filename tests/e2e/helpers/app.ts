@@ -67,7 +67,7 @@ type E2EState = {
 
 const previewDimensionsByPage = new WeakMap<Page, Array<{ height: number; width: number }>>();
 
-export async function openApp(page: Page): Promise<void> {
+export async function openApp(page: Page, path = '/'): Promise<void> {
   previewDimensionsByPage.set(page, []);
   await page.route('**/__novus_e2e_asset/*.svg', async (route) => {
     const assetSequence = Number.parseInt(route.request().url().match(/([a-f0-9]{16})\.svg$/u)?.[1] ?? '0', 16);
@@ -109,14 +109,14 @@ export async function openApp(page: Page): Promise<void> {
       status: 200,
     });
   });
-  await page.goto('/');
+  await page.goto(path);
   await page.waitForFunction((nonce) => window.__NOVUS_E2E__?.nonce === nonce, process.env.NOVUS_E2E_NONCE);
   await page.evaluate(() => window.__NOVUS_E2E__!.reset());
   await expect(page.getByTestId('workspace')).toBeVisible();
 }
 
-export async function openEmptyApp(page: Page): Promise<void> {
-  await openApp(page);
+export async function openEmptyApp(page: Page, path = '/'): Promise<void> {
+  await openApp(page, path);
   await page.evaluate(() => window.__NOVUS_E2E__!.resetEmpty());
   await expect(page.getByRole('status').filter({ hasText: '双击空白处添加模块' })).toBeVisible();
 }
@@ -209,7 +209,11 @@ export async function waitForModelSubmissions(page: Page, count: number): Promis
   return e2eState(page);
 }
 
-export async function assertNoTrackedRegionsOverlap(page: Page, testIds: string[]): Promise<void> {
+export async function assertNoTrackedRegionsOverlap(
+  page: Page,
+  testIds: string[],
+  allowedOverlaps: ReadonlyArray<readonly [string, string]> = [],
+): Promise<void> {
   const boxes = await Promise.all(testIds.map(async (testId) => ({
     testId,
     box: await page.getByTestId(testId).boundingBox(),
@@ -224,6 +228,10 @@ export async function assertNoTrackedRegionsOverlap(page: Page, testIds: string[
     for (let rightIndex = leftIndex + 1; rightIndex < boxes.length; rightIndex += 1) {
       const left = boxes[leftIndex]!;
       const right = boxes[rightIndex]!;
+      const overlapAllowed = allowedOverlaps.some(([first, second]) =>
+        (first === left.testId && second === right.testId)
+        || (first === right.testId && second === left.testId));
+      if (overlapAllowed) continue;
       const area = intersectionArea(left.box!, right.box!);
       expect(area, `${left.testId} overlaps ${right.testId}`).toBeLessThanOrEqual(1);
     }
@@ -263,15 +271,27 @@ export async function captureLayoutScreenshot(page: Page, testInfo: TestInfo, na
 
 export async function medianPanZoomFrameInterval(page: Page): Promise<PanZoomFrameMetrics> {
   await page.evaluate(() => performance.clearMarks('novus-pan-zoom-frame'));
-  const canvas = page.getByTestId('canvas-stage');
-  const box = await canvas.boundingBox();
-  expect(box).not.toBeNull();
-  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
-  await page.mouse.down();
+  const panePoint = await page.evaluate(() => {
+    const pane = document.querySelector<HTMLElement>('.react-flow__pane');
+    if (!pane) return null;
+    const rect = pane.getBoundingClientRect();
+    for (const xRatio of [0.04, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.96]) {
+      for (const yRatio of [0.08, 0.18, 0.32, 0.5, 0.68, 0.82, 0.92]) {
+        const x = rect.left + rect.width * xRatio;
+        const y = rect.top + rect.height * yRatio;
+        const target = document.elementFromPoint(x, y);
+        if (target?.closest('.react-flow__pane') && !target.closest('.react-flow__node')) return { x, y };
+      }
+    }
+    return null;
+  });
+  expect(panePoint, 'an uncovered React Flow pane point should be available for pan and zoom verification').not.toBeNull();
+  await page.mouse.move(panePoint!.x, panePoint!.y);
+  await page.mouse.down({ button: 'middle' });
   for (let index = 0; index < 12; index += 1) {
-    await page.mouse.move(box!.x + box!.width / 2 + 12 + index * 4, box!.y + box!.height / 2 + 8, { steps: 2 });
+    await page.mouse.move(panePoint!.x + 12 + index * 4, panePoint!.y + 8, { steps: 2 });
   }
-  await page.mouse.up();
+  await page.mouse.up({ button: 'middle' });
   for (let index = 0; index < 6; index += 1) {
     await page.mouse.wheel(0, index % 2 === 0 ? -160 : 120);
   }
@@ -384,7 +404,10 @@ export async function finishInteractionStallObserver(
   return operations.map((operation) => ({ ...graph, ...operation }));
 }
 
-export async function expectVisibleMainRegion(page: Page): Promise<void> {
+export async function expectVisibleMainRegion(
+  page: Page,
+  minimumVisibleNodes = 3,
+): Promise<void> {
   await expect(page.getByTestId('canvas-stage')).toBeVisible();
   const visibleArea = await page.getByTestId('canvas-stage').evaluate((element) => {
     const rect = element.getBoundingClientRect();
@@ -393,7 +416,7 @@ export async function expectVisibleMainRegion(page: Page): Promise<void> {
     return { area: rect.width * rect.height, background, nodes };
   });
   expect(visibleArea.area).toBeGreaterThan(200_000);
-  expect(visibleArea.nodes).toBeGreaterThan(2);
+  expect(visibleArea.nodes).toBeGreaterThanOrEqual(minimumVisibleNodes);
   expect(visibleArea.background).not.toBe('rgb(255, 255, 255)');
 }
 

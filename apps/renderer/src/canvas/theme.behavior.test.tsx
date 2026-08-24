@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,7 +27,7 @@ describe('renderer theme behavior', () => {
 
     render(<CanvasWorkspace />);
 
-    const selector = screen.getByRole('combobox', { name: '主题 Theme' });
+    const selector = openSettingsThemeSelector();
     expect(selector).toHaveValue('system');
     expect(screen.getByRole('option', { name: '跟随系统 System' })).toBeVisible();
     expect(screen.getByRole('option', { name: '浅色 Light' })).toBeVisible();
@@ -57,7 +57,7 @@ describe('renderer theme behavior', () => {
 
     render(<CanvasWorkspace />);
 
-    const selector = screen.getByRole('combobox', { name: '主题 Theme' });
+    const selector = openSettingsThemeSelector();
     expect(selector).toHaveValue('dark');
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
 
@@ -74,7 +74,7 @@ describe('renderer theme behavior', () => {
     render(<CanvasWorkspace />);
     expect(media.listenerCount()).toBe(1);
 
-    fireEvent.change(screen.getByRole('combobox', { name: '主题 Theme' }), {
+    fireEvent.change(openSettingsThemeSelector(), {
       target: { value: 'dark' },
     });
 
@@ -92,7 +92,7 @@ describe('renderer theme behavior', () => {
 
     render(<CanvasWorkspace />);
 
-    expect(screen.getByRole('combobox', { name: '主题 Theme' })).toHaveValue('system');
+    expect(openSettingsThemeSelector()).toHaveValue('system');
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
   });
 
@@ -103,11 +103,11 @@ describe('renderer theme behavior', () => {
     });
 
     render(<CanvasWorkspace />);
-    fireEvent.change(screen.getByRole('combobox', { name: '主题 Theme' }), {
+    fireEvent.change(openSettingsThemeSelector(), {
       target: { value: 'dark' },
     });
 
-    expect(screen.getByRole('combobox', { name: '主题 Theme' })).toHaveValue('dark');
+    expect(openSettingsThemeSelector()).toHaveValue('dark');
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
   });
 
@@ -116,7 +116,7 @@ describe('renderer theme behavior', () => {
     const projectBefore = useAppStore.getState().project;
 
     render(<CanvasWorkspace />);
-    fireEvent.change(screen.getByRole('combobox', { name: '主题 Theme' }), {
+    fireEvent.change(openSettingsThemeSelector(), {
       target: { value: 'dark' },
     });
 
@@ -125,6 +125,9 @@ describe('renderer theme behavior', () => {
   });
 });
 
+function openSettingsThemeSelector(): HTMLSelectElement {
+  return within(screen.getByTestId('topbar')).getByRole('combobox', { name: '主题 Theme' });
+}
 function installMatchMedia(initialMatches: boolean) {
   let matches = initialMatches;
   const listeners = new Set<(event: MediaQueryListEvent) => void>();

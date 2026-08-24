@@ -42,6 +42,19 @@ describe('ModuleLibrary', () => {
     expect(onCreate).toHaveBeenCalledWith('text_prompt');
   });
 
+  it('keeps an already-selected row in inspection mode until an explicit activation', () => {
+    const onCreate = vi.fn(async () => true);
+    render(<ModuleLibrary onCreate={onCreate} />);
+    const row = screen.getByRole('button', { name: '查看 文本提示词 / Text Prompt' });
+
+    fireEvent.click(row);
+    expect(onCreate).not.toHaveBeenCalled();
+    fireEvent.click(row);
+
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(row).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('creates once with Enter while Space only selects', () => {
     const onCreate = vi.fn(async () => true);
     render(<ModuleLibrary onCreate={onCreate} />);
@@ -86,21 +99,16 @@ describe('ModuleLibrary', () => {
     expect(onCreate).not.toHaveBeenCalled();
   });
 
-  it('filters by display name and alias and creates by keyboard', () => {
+  it('filters by display name and keeps legacy editing modules out of the UI Gate library', () => {
     const onCreate = vi.fn();
     render(<ModuleLibrary onCreate={onCreate} />);
 
     fireEvent.change(screen.getByRole('searchbox', { name: '搜索模块' }), { target: { value: 'pose' } });
 
-    const openPose = screen.getByRole('button', { name: '查看 姿态提取 / OpenPose' });
-    expect(openPose).toBeVisible();
-    expect(openPose.querySelector('.module-library__item-icon')).toHaveAttribute('data-icon-category', 'editing');
-    expect(openPose.querySelector('.module-library__item-icon svg')).toHaveAttribute('width', '17');
+    expect(screen.queryByRole('button', { name: '查看 姿态提取 / OpenPose' })).toBeNull();
     expect(screen.queryByRole('button', { name: '查看 文本提示词 / Text Prompt' })).toBeNull();
-
-    pressKeyboard(openPose, 'Enter');
-
-    expect(onCreate).toHaveBeenCalledWith('openpose');
+    expect(screen.getByRole('status')).toHaveTextContent('没有匹配的模块');
+    expect(onCreate).not.toHaveBeenCalled();
   });
 
   it('provides roving category tabs and moves focus with keyboard navigation', () => {

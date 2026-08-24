@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 
 const sourceAliases = {
+  '@agent-canvas/domain': fileURLToPath(new URL('./packages/domain/src/index.ts', import.meta.url)),
   '@agent-canvas/desktop-bridge/preload': fileURLToPath(new URL('./packages/desktop-bridge/src/preload.ts', import.meta.url)),
   '@agent-canvas/desktop-bridge': fileURLToPath(new URL('./packages/desktop-bridge/src/index.ts', import.meta.url)),
   '@agent-canvas/desktop-core/preload-api': fileURLToPath(new URL('./packages/desktop-core/src/preload-api.ts', import.meta.url)),
@@ -38,6 +39,15 @@ export const skillStoreTestProject = {
     name: '@agent-canvas/skill-store',
     environment: 'node',
     include: ['packages/skill-store/src/**/*.test.ts'],
+  },
+};
+
+export const providerRelayMeTestProject = {
+  resolve: { alias: sourceAliases },
+  test: {
+    name: '@agent-canvas/provider-relayme',
+    environment: 'node',
+    include: ['packages/provider-relayme/src/**/*.test.ts'],
   },
 };
 
@@ -82,5 +92,16 @@ export const desktopShellTestProject = {
     name: '@agent-canvas/desktop-shells',
     environment: 'node',
     include: ['apps/desktop-modern/src/**/*.test.ts', 'apps/desktop-legacy/src/**/*.test.ts'],
+  },
+};
+
+export const mcpBridgeTestProject = {
+  resolve: {
+    alias: sourceAliases,
+  },
+  test: {
+    name: '@agent-canvas/mcp-bridge',
+    environment: 'node',
+    include: ['packages/mcp-bridge/src/**/*.test.ts'],
   },
 };

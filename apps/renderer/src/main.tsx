@@ -4,6 +4,11 @@ import { App } from './app/App';
 import '@xyflow/react/dist/style.css';
 import './styles/tokens.css';
 import './styles/app.css';
+import './styles/figma-hybrid-canvas.css';
+import './styles/release-layout-contract.css';
+
+const manualAcceptanceHarness = new URLSearchParams(window.location.search).get('novusHarness') === 'novus-e2e-codex-ui-gate';
+if (manualAcceptanceHarness) window.__NOVUS_MANUAL_ACCEPTANCE__ = true;
 
 const root = document.getElementById('root');
 if (!root) {
@@ -14,6 +19,9 @@ async function bootstrap() {
   if (import.meta.env.VITE_NOVUS_E2E_MODE === '1') {
     const { installRendererE2EHarness } = await import('./test-mode/e2e-harness');
     installRendererE2EHarness();
+  } else if (manualAcceptanceHarness) {
+    const { installManualAcceptanceBridge } = await import('./test-mode/manual-acceptance-bridge');
+    installManualAcceptanceBridge();
   }
 
   createRoot(root!).render(

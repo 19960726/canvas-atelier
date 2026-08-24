@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ModelJob, ProjectTransaction } from '@agent-canvas/domain';
-import { applyProjectTransaction } from '@agent-canvas/domain';
+import type { CanvasNode, CanvasProject, ModelJob, ProjectTransaction } from '@agent-canvas/domain';
+import { applyProjectTransaction, createCanvasModuleNode } from '@agent-canvas/domain';
 import { createStarterProject } from '../app/app-store';
 import {
   createInMemoryModelJobStorage,
@@ -33,9 +33,10 @@ describe('persistent model job store', () => {
   it('polls running jobs repeatedly until a terminal result', async () => {
     const storage = createInMemoryModelJobStorage();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const executor = createExecutor({
       poll: vi.fn()
@@ -71,12 +72,13 @@ describe('persistent model job store', () => {
     });
   });
 
-  it('restart recovery submits queued jobs and continues polling running jobs', async () => {
+  it('restart recovery stops queued and running jobs without calling the provider', async () => {
     const storage = createInMemoryModelJobStorage();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const executor = createExecutor({
       submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
@@ -107,13 +109,108 @@ describe('persistent model job store', () => {
     });
     await restarted.recover();
 
-    expect(executor.submit).toHaveBeenCalledTimes(1);
-    expect(executor.submit).toHaveBeenCalledWith(expect.objectContaining({ id: 'job-queued' }));
-    expect(executor.poll).toHaveBeenCalledTimes(2);
+    expect(executor.submit).not.toHaveBeenCalled();
+    expect(executor.poll).not.toHaveBeenCalled();
     expect(await restarted.listJobs()).toMatchObject([
-      { id: 'job-queued', status: 'completed' },
-      { id: 'job-running', status: 'completed' },
+      { id: 'job-queued', status: 'cancelled' },
+      { id: 'job-running', status: 'cancelled' },
     ]);
+  });
+
+  it('restart recovery preserves only a running job still owned by its active source node', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const executor = createExecutor();
+    const first = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+    });
+    await first.enqueueConfirmedJobs({
+      conversationId: 'owned-restart-recovery',
+      confirmedAt,
+      requests: [
+        request({ id: 'job-running-owned' }),
+        request({ id: 'job-running-stale' }),
+      ],
+    });
+    for (const id of ['job-running-owned', 'job-running-stale']) {
+      await storage.put({
+        ...(await storage.get(id))!,
+        status: 'running',
+        providerTaskId: `task-${id}`,
+      });
+    }
+    const canRecoverRunningJob = vi.fn(async (job: ModelJob) => job.id === 'job-running-owned');
+    const restarted = createModelJobStore({
+      storage,
+      executor,
+      canRecoverRunningJob,
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await restarted.recover();
+
+    expect(canRecoverRunningJob).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'job-running-owned', status: 'running' }),
+    );
+    expect(await restarted.listJobs()).toMatchObject([
+      { id: 'job-running-owned', status: 'running' },
+      { id: 'job-running-stale', status: 'cancelled' },
+    ]);
+  });
+
+  it('repairs a completed result into its original generation node without resuming the provider job', async () => {
+    const source = createCanvasModuleNode('repair-inline-source', 'image_generation', { x: 0, y: 0 });
+    let project: CanvasProject = {
+      ...createStarterProject(),
+      nodes: [source],
+      edges: [],
+    };
+    const completedJob = {
+      ...request({ id: 'repair-inline-job', promptNodeId: source.id, referenceAssetIds: [] }),
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      completedAt: confirmedAt,
+      kind: 'image' as const,
+      status: 'completed' as const,
+      retryCount: 0,
+      resultAssetId: 'asset-repair-inline',
+      projectSessionId: 'retired-session',
+    } satisfies ModelJob;
+    const storage = createInMemoryModelJobStorage([completedJob]);
+    const executor = createExecutor();
+    const repairCompletedProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction: vi.fn(async () => ({ committed: false, resultNodeId: source.id })),
+      repairCompletedProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.recover();
+
+    expect(executor.submit).not.toHaveBeenCalled();
+    expect(executor.poll).not.toHaveBeenCalled();
+    expect(repairCompletedProjectTransaction).toHaveBeenCalledOnce();
+    expect(project.nodes.find((node) => node.id === source.id)).toMatchObject({
+      data: {
+        config: { resultAssetIds: ['asset-repair-inline'], resultState: 'fresh' },
+        execution: { state: 'completed' },
+      },
+    });
+    expect(project.nodes.some((node) => node.type === 'image_result')).toBe(false);
   });
 
   it('runs submit and poll with bounded concurrency', async () => {
@@ -148,10 +245,11 @@ describe('persistent model job store', () => {
     const decodeGate = createGate();
     let project = createStarterProject();
     const commits: ProjectTransaction[] = [];
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      commits.push(transaction);
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      commits.push(materialization.transaction);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const executor = createExecutor({
       submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
@@ -203,14 +301,425 @@ describe('persistent model job store', () => {
     });
   });
 
+  it('stores a generated result inside its formal image module', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const imageModule = createCanvasModuleNode('image-module', 'image_generation', { x: 120, y: 80 });
+    let project: CanvasProject = { ...createStarterProject(), nodes: [imageModule], edges: [] };
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({
+          status: 'completed' as const,
+          progress: 1,
+          result: { assetId: '0123456789abcdef', width: 1408, height: 768 },
+        })),
+      }),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'formal-image-module',
+      confirmedAt,
+      requests: [request({ id: 'job-formal-image', promptNodeId: imageModule.id, referenceAssetIds: [] })],
+    });
+    await store.run();
+
+    expect(await storage.get('job-formal-image')).toMatchObject({
+      status: 'completed',
+      resultAssetId: '0123456789abcdef',
+      resultNodeId: imageModule.id,
+    });
+    expect(project.nodes.find((node) => node.id === imageModule.id)).toMatchObject({
+      type: 'module',
+      data: {
+        config: expect.objectContaining({
+          resultAssetIds: ['0123456789abcdef'],
+          resultState: 'fresh',
+        }),
+        execution: expect.objectContaining({ state: 'completed' }),
+      },
+    });
+    expect(project.nodes.some((node) => node.type === 'image_result')).toBe(false);
+    expect(project.edges).toEqual([]);
+  });
+
+  it('does not mark a provider result completed when source-node persistence fails', async () => {
+    const imageNode = createCanvasModuleNode('image-node', 'image_generation', { x: 0, y: 0 });
+    const project = { ...createStarterProject(), nodes: [imageNode], edges: [] };
+    const runningJob = {
+      ...request({ id: 'job-result-write-failed', promptNodeId: imageNode.id }),
+      conversationId: 'conversation-result-write',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-result-write-failed',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'a'.repeat(16) } })),
+      }),
+      getProject: () => project,
+      commitProjectTransaction: vi.fn(async () => ({ committed: false, resultNodeId: imageNode.id })),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.pollActiveJobs();
+
+    expect(await storage.get('job-result-write-failed')).toMatchObject({ status: 'running' });
+    expect(await storage.get('job-result-write-failed')).not.toHaveProperty('resultAssetId');
+  });
+
+  it('does not trust a successful commit response until the source node contains the generated asset', async () => {
+    const imageNode = createCanvasModuleNode('image-node-unverified-commit', 'image_generation', { x: 0, y: 0 });
+    imageNode.data.config = { ...imageNode.data.config, resultAssetIds: [] };
+    let project: CanvasProject = {
+      ...createStarterProject(),
+      nodes: [imageNode],
+      edges: [],
+      assets: [{
+        assetId: 'b'.repeat(16),
+        label: 'Generated image',
+        width: 1024,
+        height: 1024,
+        mediaType: 'image/jpeg',
+        byteSize: 2048,
+        sha256: 'b'.repeat(64),
+        extension: 'jpg',
+        origin: 'generated',
+      }],
+    };
+    const runningJob = {
+      ...request({ id: 'job-result-unverified-commit', promptNodeId: imageNode.id }),
+      conversationId: 'conversation-result-unverified-commit',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-result-unverified-commit',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      expect(materialization.transaction.id).toBe(`model-job-inline-result-${runningJob.id}`);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'b'.repeat(16) } })),
+      }),
+      getProject: () => project,
+      commitProjectTransaction,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.pollActiveJobs();
+
+    expect(commitProjectTransaction).toHaveBeenCalledOnce();
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'running' });
+    expect(await storage.get(runningJob.id)).not.toHaveProperty('resultAssetId');
+    expect(project.nodes[0]).toMatchObject({ data: { config: { resultAssetIds: [] } } });
+  });
+
+  it('exposes a running-job guard and does not complete after the owner job changes', async () => {
+    const imageNode = createCanvasModuleNode('image-node-running-guard', 'image_generation', { x: 0, y: 0 });
+    const project = { ...createStarterProject(), nodes: [imageNode], edges: [] };
+    const runningJob = {
+      ...request({ id: 'job-running-guard', promptNodeId: imageNode.id }),
+      conversationId: 'conversation-running-guard',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-running-guard',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let guardType = 'missing';
+    let ownerStillRunning = true;
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'c'.repeat(16) } })),
+      }),
+      getProject: () => project,
+      commitProjectTransaction: vi.fn(async (_build, _owner, isOwnerRunning) => {
+        guardType = typeof isOwnerRunning;
+        entered.resolve();
+        await release.promise;
+        ownerStillRunning = await isOwnerRunning();
+        return { committed: ownerStillRunning, resultNodeId: imageNode.id };
+      }),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    const polling = store.pollActiveJobs();
+    await entered.promise;
+    await storage.put({ ...runningJob, status: 'cancelled', updatedAt: fixedNow() });
+    release.resolve();
+    await polling;
+
+    expect(guardType).toBe('function');
+    expect(ownerStillRunning).toBe(false);
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'cancelled' });
+    expect(await storage.get(runningJob.id)).not.toHaveProperty('resultAssetId');
+  });
+
+  it('does not complete a provider result when the project commit throws', async () => {
+    const imageNode = createCanvasModuleNode('image-node-commit-throws', 'image_generation', { x: 0, y: 0 });
+    const project = { ...createStarterProject(), nodes: [imageNode], edges: [] };
+    const runningJob = {
+      ...request({ id: 'job-commit-throws', promptNodeId: imageNode.id }),
+      conversationId: 'conversation-commit-throws',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-commit-throws',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'd'.repeat(16) } })),
+      }),
+      getProject: () => project,
+      commitProjectTransaction: vi.fn(async () => { throw new Error('commit failed'); }),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.pollActiveJobs();
+
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'failed' });
+    expect(await storage.get(runningJob.id)).not.toHaveProperty('resultAssetId');
+  });
+
+  it('builds the result transaction from the source node current at commit time', async () => {
+    const imageNode = createCanvasModuleNode('image-node-current', 'image_generation', { x: 0, y: 0 });
+    const runningJob = {
+      ...request({ id: 'job-result-current-node', promptNodeId: imageNode.id }),
+      conversationId: 'conversation-result-current-node',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-result-current-node',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    let project: CanvasProject = {
+      ...createStarterProject(),
+      nodes: [{
+        ...imageNode,
+        data: { ...imageNode.data, config: { ...imageNode.data.config, prompt: 'new local prompt' } },
+      }],
+      edges: [],
+    };
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'b'.repeat(16) } })),
+      }),
+      getProject: () => project,
+      commitProjectTransaction: vi.fn(async (build: unknown) => {
+        expect(typeof build).toBe('function');
+        const materialization = (build as (latest: CanvasProject) => {
+          resultNodeId: string;
+          transaction: ProjectTransaction;
+        })(project);
+        project = applyProjectTransaction(project, materialization.transaction);
+        return { committed: true, resultNodeId: materialization.resultNodeId };
+      }),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.pollActiveJobs();
+
+    expect(project.nodes.find((node) => node.id === imageNode.id)).toMatchObject({
+      data: { config: { prompt: 'new local prompt', resultAssetIds: ['b'.repeat(16)] } },
+    });
+  });
+
+  it('merges concurrent formal image results into one capped source-node gallery', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const imageModule = createCanvasModuleNode('image-module-multi', 'image_generation', { x: 120, y: 80 });
+    let project: CanvasProject = { ...createStarterProject(), nodes: [imageModule], edges: [] };
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async (job) => ({
+          status: 'completed' as const,
+          progress: 1,
+          result: { assetId: `asset-${job.id}`, width: 1024, height: 1024 },
+        })),
+      }),
+      commitProjectTransaction: async (build) => {
+        const materialization = build(project);
+        project = applyProjectTransaction(project, materialization.transaction);
+        return { committed: true, resultNodeId: materialization.resultNodeId };
+      },
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'formal-image-module-multi',
+      confirmedAt,
+      requests: Array.from({ length: 4 }, (_, index) => request({
+        id: `formal-image-${index + 1}`,
+        promptNodeId: imageModule.id,
+        referenceAssetIds: [],
+      })),
+    });
+    await store.run();
+
+    const updated = project.nodes.find((node) => node.id === imageModule.id);
+    expect(updated?.type === 'module' ? updated.data.config.resultAssetIds : undefined).toEqual([
+      'asset-formal-image-1',
+      'asset-formal-image-2',
+      'asset-formal-image-3',
+      'asset-formal-image-4',
+    ]);
+    expect(project.nodes.some((node) => node.type === 'image_result')).toBe(false);
+  });
+
+  it('stores a generated video inside its formal video module', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const videoModule = createCanvasModuleNode('video-module', 'video_generation', { x: 120, y: 80 });
+    let project: CanvasProject = { ...createStarterProject(), nodes: [videoModule], edges: [] };
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({
+          status: 'completed' as const,
+          progress: 1,
+          result: { assetId: 'fedcba9876543210', width: 1920, height: 1080, durationSeconds: 8 },
+        })),
+      }),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'formal-video-module',
+      confirmedAt,
+      requests: [request({
+        id: 'job-formal-video', kind: 'video', promptNodeId: videoModule.id,
+        provider: 'relayme', modelRoute: 'relayme-video', displayName: 'Relay video', modelId: 'relay-video',
+        referenceAssetIds: [], aspectRatio: '16:9', videoResolution: '1080p', durationSeconds: 8, audioEnabled: true,
+      })],
+    });
+    await store.run();
+
+    expect(await storage.get('job-formal-video')).toMatchObject({
+      status: 'completed',
+      resultAssetId: 'fedcba9876543210',
+      resultNodeId: videoModule.id,
+    });
+    expect(project.nodes.find((node) => node.id === videoModule.id)).toMatchObject({
+      type: 'module',
+      data: {
+        config: expect.objectContaining({
+          resultState: 'fresh',
+          videoResults: [expect.objectContaining({
+            assetId: 'fedcba9876543210',
+            durationMs: 8000,
+            mediaType: 'video/mp4',
+          })],
+        }),
+        execution: expect.objectContaining({ state: 'completed' }),
+      },
+    });
+    expect(project.nodes.some((node) => node.type === 'video_result')).toBe(false);
+    expect(project.edges).toEqual([]);
+  });
+
+  it('materializes completed video jobs as video result nodes', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({
+          status: 'completed' as const,
+          progress: 1,
+          result: { assetId: 'fedcba9876543210', width: 1920, height: 1080, durationSeconds: 8 },
+        })),
+      }),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'video-conversation',
+      confirmedAt,
+      requests: [request({
+        id: 'video-job-result', kind: 'video', provider: 'relayme', modelRoute: 'relayme-video',
+        displayName: 'Relay video', modelId: 'relay-video', referenceAssetIds: [],
+        aspectRatio: '16:9', videoResolution: '1080p', durationSeconds: 8, audioEnabled: true,
+      })],
+    });
+    await store.run();
+
+    expect((await storage.get('video-job-result'))?.error).toBeUndefined();
+    expect(await storage.get('video-job-result')).toMatchObject({ status: 'completed' });
+    expect(project.nodes.find((node) => node.type === 'video_result' && node.data.jobId === 'video-job-result')).toMatchObject({
+      id: 'video-result-video-job-result',
+      data: {
+        assetId: 'fedcba9876543210', durationSeconds: 8, width: 1920, height: 1080,
+        provider: 'relayme', modelRoute: 'relayme-video', promptNodeId: 'prompt-start',
+      },
+    });
+    expect(await storage.get('video-job-result')).toMatchObject({
+      status: 'completed', resultAssetId: 'fedcba9876543210', resultNodeId: 'video-result-video-job-result',
+    });
+  });
+
   it('coalesces overlapping run calls and keeps submit and decode concurrency bounded', async () => {
     const storage = createInMemoryModelJobStorage();
     const submitGate = createGate();
     const decodeGate = createGate();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const executor = createExecutor({
       submit: vi.fn(async (job) => {
@@ -262,9 +771,10 @@ describe('persistent model job store', () => {
     const submitGate = createGate();
     const decodeGate = createGate();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const executor = createExecutor({
       submit: vi.fn(async (job) => {
@@ -327,7 +837,7 @@ describe('persistent model job store', () => {
     const store = createModelJobStore({
       storage,
       executor,
-      commitProjectTransaction: vi.fn(async () => true),
+      commitProjectTransaction: vi.fn(async () => ({ committed: true, resultNodeId: '' })),
       now: fixedNow,
       pollIntervalMs: 0,
     });
@@ -355,13 +865,55 @@ describe('persistent model job store', () => {
     expect(await storage.get('job-poll-cancel')).toMatchObject({ status: 'cancelled' });
   });
 
+  it('finishes local cancellation when the provider cancel call never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = createInMemoryModelJobStorage();
+      const executor = createExecutor({
+        cancel: vi.fn(() => new Promise<never>(() => undefined)),
+        ackTerminal: vi.fn(() => new Promise<never>(() => undefined)),
+      });
+      const store = createModelJobStore({
+        storage,
+        executor,
+        commitProjectTransaction: vi.fn(async () => ({ committed: true, resultNodeId: '' })),
+        now: fixedNow,
+      });
+      await store.enqueueConfirmedJobs({
+        conversationId: 'agent-conversation-shared',
+        confirmedAt,
+        requests: [request({ id: 'job-cancel-provider-hang' })],
+      });
+      await storage.put({
+        ...(await storage.get('job-cancel-provider-hang'))!,
+        status: 'running',
+        providerTaskId: 'task-job-cancel-provider-hang',
+      });
+
+      const cancellation = store.cancelQueuedJob('job-cancel-provider-hang');
+      let settled = false;
+      void cancellation.then(() => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await Promise.resolve();
+
+      expect(settled).toBe(true);
+      expect(await storage.get('job-cancel-provider-hang')).toMatchObject({ status: 'cancelled' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not duplicate materialization after commit false, retry, or existing result', async () => {
     const storage = createInMemoryModelJobStorage();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      if (commitProjectTransaction.mock.calls.length === 1) return false;
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      if (commitProjectTransaction.mock.calls.length === 1) {
+        return { committed: false, resultNodeId: materialization.resultNodeId };
+      }
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const executor = createExecutor({
       poll: vi.fn(async (job) => ({
@@ -399,12 +951,123 @@ describe('persistent model job store', () => {
     expect(await storage.get('job-idempotent')).toMatchObject({ status: 'completed' });
   });
 
+  it('repairs a completed job whose durable canvas result is missing during recovery', async () => {
+    const storage = createInMemoryModelJobStorage();
+    let project = createStarterProject();
+    const commitProjectTransaction = vi.fn(async (build, owner: ModelJob) => {
+      expect(owner).toMatchObject({ id: 'job-repair-completed', projectSessionId: 'desktop-session-a' });
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const first = createModelJobStore({
+      storage,
+      executor: createExecutor(),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await first.enqueueConfirmedJobs({
+      conversationId: 'repair-completed-result',
+      projectSessionId: 'desktop-session-a',
+      confirmedAt,
+      requests: [request({ id: 'job-repair-completed' })],
+    });
+    const queued = (await storage.get('job-repair-completed'))!;
+    await storage.put({
+      ...queued,
+      status: 'completed',
+      providerTaskId: 'provider-repair-completed',
+      completedAt: fixedNow(),
+      progress: 1,
+      resultAssetId: 'asset-job-repair-completed',
+      resultNodeId: 'image-result-job-repair-completed',
+    });
+
+    await first.recover();
+
+    expect(commitProjectTransaction).toHaveBeenCalledTimes(1);
+    expect(project.nodes).toContainEqual(expect.objectContaining({
+      id: 'image-result-job-repair-completed',
+      type: 'image_result',
+      data: expect.objectContaining({ assetId: 'asset-job-repair-completed', jobId: 'job-repair-completed' }),
+    }));
+  });
+
+  it('migrates a legacy result node back into its formal generation source during recovery', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const source = createCanvasModuleNode('legacy-inline-source', 'image_generation', { x: 0, y: 0 });
+    const legacyResult: CanvasNode = {
+      id: 'image-result-legacy-inline-job',
+      type: 'image_result',
+      position: { x: 320, y: 40 },
+      data: {
+        assetId: 'asset-legacy-inline',
+        displayName: 'Legacy image model',
+        jobId: 'legacy-inline-job',
+        modelId: 'legacy-image-model',
+        modelRoute: 'legacy-image-route',
+        parentNodeIds: [source.id],
+        promptNodeId: source.id,
+        provider: 'comfly',
+        providerTaskId: 'provider-legacy-inline',
+        referenceAssetIds: [],
+      },
+    };
+    let project: CanvasProject = {
+      ...createStarterProject(),
+      nodes: [source, legacyResult],
+      edges: [{ id: 'legacy-result-edge', source: source.id, sourcePortId: 'result', target: legacyResult.id }],
+    };
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor(),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'legacy-inline-recovery',
+      confirmedAt,
+      requests: [request({ id: 'legacy-inline-job', promptNodeId: source.id, referenceAssetIds: [] })],
+    });
+    const queued = (await storage.get('legacy-inline-job'))!;
+    await storage.put({
+      ...queued,
+      status: 'completed',
+      providerTaskId: 'provider-legacy-inline',
+      completedAt: fixedNow(),
+      progress: 1,
+      resultAssetId: legacyResult.data.assetId,
+      resultNodeId: legacyResult.id,
+    });
+
+    await store.recover();
+
+    expect(project.nodes.find((node) => node.id === source.id)).toMatchObject({
+      type: 'module',
+      data: {
+        config: expect.objectContaining({ resultAssetIds: ['asset-legacy-inline'], resultState: 'fresh' }),
+        execution: expect.objectContaining({ state: 'completed' }),
+      },
+    });
+    expect(project.nodes.find((node) => node.id === legacyResult.id)).toEqual(legacyResult);
+  });
+
   it('acks completed provider terminals only after project result and terminal job are durable', async () => {
     const storage = createInMemoryModelJobStorage();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const ackTerminal = vi.fn(async (job: ModelJob) => {
       expect(await storage.get(job.id)).toMatchObject({
@@ -470,7 +1133,7 @@ describe('persistent model job store', () => {
     const store = createModelJobStore({
       storage,
       executor,
-      commitProjectTransaction: vi.fn(async () => true),
+      commitProjectTransaction: vi.fn(async () => ({ committed: true, resultNodeId: '' })),
       now: fixedNow,
       pollIntervalMs: 0,
     });
@@ -502,9 +1165,10 @@ describe('persistent model job store', () => {
   it('keeps provider ACK pending after failures and replays it on recovery', async () => {
     const storage = createInMemoryModelJobStorage();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const ackTerminal = vi.fn()
       .mockRejectedValueOnce(new Error('temporary ACK outage'))
@@ -562,9 +1226,10 @@ describe('persistent model job store', () => {
   it('does not mark terminal jobs ACK pending when the executor has no ACK channel', async () => {
     const storage = createInMemoryModelJobStorage();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const store = createModelJobStore({
       storage,
@@ -619,7 +1284,7 @@ describe('persistent model job store', () => {
     const store = createModelJobStore({
       storage,
       executor: createExecutor({ ackTerminal: undefined }),
-      commitProjectTransaction: vi.fn(async () => true),
+      commitProjectTransaction: vi.fn(async () => ({ committed: true, resultNodeId: '' })),
       now: fixedNow,
       pollIntervalMs: 0,
     });
@@ -636,9 +1301,10 @@ describe('persistent model job store', () => {
   it('honors provider terminal returned from cancel instead of overwriting first terminal', async () => {
     const storage = createInMemoryModelJobStorage();
     let project = createStarterProject();
-    const commitProjectTransaction = vi.fn(async (transaction: ProjectTransaction) => {
-      project = applyProjectTransaction(project, transaction);
-      return true;
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
     });
     const ackTerminal = vi.fn(async () => undefined);
     const executor = createExecutor({
@@ -679,6 +1345,39 @@ describe('persistent model job store', () => {
       status: 'completed',
       providerTaskId: 'provider-job-cancel-completed-race',
     }));
+  });
+
+  it('cancels a stale running job when its provider result cannot be committed to the active project', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const executor = createExecutor({
+      cancel: vi.fn(async (job) => ({
+        status: 'completed' as const,
+        progress: 1,
+        result: { assetId: `asset-${job.id}` },
+      })),
+    });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      canContinueResult: vi.fn(async () => false),
+      commitProjectTransaction: vi.fn(async () => ({ committed: false, resultNodeId: '' })),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-cancel-stale-completed' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-cancel-stale-completed'))!,
+      status: 'running',
+      providerTaskId: 'provider-job-cancel-stale-completed',
+    });
+
+    await store.cancelQueuedJob('job-cancel-stale-completed');
+
+    expect(await storage.get('job-cancel-stale-completed')).toMatchObject({ status: 'cancelled' });
   });
 
   it('notifies subscribers with sanitized clones for live progress and action errors', async () => {
@@ -887,11 +1586,18 @@ function request(overrides: Partial<ModelJobRequest> = {}): ModelJobRequest {
     displayName: overrides.displayName ?? 'GPT image',
     modelId: overrides.modelId ?? 'dynamic-model-id',
     referenceAssetIds: overrides.referenceAssetIds ?? ['starter-product'],
+    ...overrides,
   };
 }
 
 function fixedNow() {
   return '2026-07-16T08:05:00.000Z';
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
 }
 
 function createExecutor(overrides: Partial<ModelJobExecutor> = {}): ModelJobExecutor {

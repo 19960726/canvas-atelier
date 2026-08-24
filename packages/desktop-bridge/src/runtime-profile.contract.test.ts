@@ -24,7 +24,7 @@ describe('runtime profile shell and config contract', () => {
 
     const canvasWorkspaceSource = await readFile(join(process.cwd(), 'apps/renderer/src/canvas/CanvasWorkspace.tsx'), 'utf8');
     expect(canvasWorkspaceSource).toContain('runtimeProfile');
-    expect(canvasWorkspaceSource).toContain('thumbnailEdge');
+    expect(canvasWorkspaceSource).toContain('useInteractionQuality(runtimeProfile)');
 
     const placementBoardSource = await readFile(join(process.cwd(), 'apps/renderer/src/placement/PlacementBoard.tsx'), 'utf8');
     expect(placementBoardSource).toContain('targetFps');
@@ -47,14 +47,14 @@ describe('runtime profile shell and config contract', () => {
     expect(modernPreloadSource).toContain("@agent-canvas/domain");
     expect(modernPreloadSource).not.toMatch(/process\.env|contextBridge\.exposeInMainWorld\([^)]*process/u);
 
-    for (const mainPath of [
-      join(process.cwd(), 'apps/desktop-legacy/src/main.ts'),
-      join(process.cwd(), 'apps/desktop-modern/src/main.ts'),
-    ]) {
+    for (const [mainPath, sandboxContract] of [
+      [join(process.cwd(), 'apps/desktop-legacy/src/main.ts'), 'sandbox: true'],
+      [join(process.cwd(), 'apps/desktop-modern/src/main.ts'), "sandbox: process.platform !== 'win32'"],
+    ] as const) {
       const source = await readFile(mainPath, 'utf8');
       expect(source).toContain('contextIsolation: true');
       expect(source).toContain('nodeIntegration: false');
-      expect(source).toContain('sandbox: true');
+      expect(source).toContain(sandboxContract);
       expect(source).not.toMatch(/enableRemoteModule|@electron\/remote|electron\/remote/u);
     }
   });
@@ -90,7 +90,7 @@ describe('runtime profile shell and config contract', () => {
       packageDir: join(process.cwd(), 'apps/desktop-legacy'),
     });
     await expectShellLayout({
-      artifactName: 'AgentCanvas-Win10-11-x64-${version}.exe',
+      artifactName: 'CanvasAtelier-Win10-11-x64-${version}.exe',
       builderPath: join(process.cwd(), 'apps/desktop-modern/electron-builder.yml'),
       mainPath: join(process.cwd(), 'apps/desktop-modern/src/main.ts'),
       rendererPathHelperPath: join(process.cwd(), 'apps/desktop-modern/src/renderer-path.ts'),

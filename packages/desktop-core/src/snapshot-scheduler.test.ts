@@ -230,11 +230,13 @@ describe('SnapshotScheduler', () => {
     expect(fileSystem.binaryReadPaths.some((path) => path.endsWith('.json.gz'))).toBe(true);
   });
 
-  it('uses a node worker entry URL by default while preserving worker factory injection', async () => {
+  it('uses an explicitly supplied worker entry URL without guessing a bundle-relative path', async () => {
     const { session } = await createProjectWithCommits(tempRoots, 'project-default-worker-url', 1);
     let workerUrl: string | null = null;
+    const configuredWorkerUrl = new URL('snapshot-worker-entry.cjs', 'https://runtime.canvas.invalid/');
     const scheduler = new SnapshotScheduler({
       now: () => baseNow,
+      workerEntryUrl: configuredWorkerUrl,
       workerFactory: (url: URL) => {
         workerUrl = url.pathname.replace(/\\/g, '/');
         return new ImmediateSnapshotWorker();
@@ -245,7 +247,7 @@ describe('SnapshotScheduler', () => {
       revision: 1,
     });
 
-    expect(workerUrl).toMatch(/snapshot-worker-entry\.js$/);
+    expect(workerUrl).toBe('/snapshot-worker-entry.cjs');
   });
 
   it('writes a verified gzip snapshot and atomically advances the manifest', async () => {

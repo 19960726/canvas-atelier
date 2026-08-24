@@ -3,22 +3,26 @@ import type { ModelJobExecutor, ModelJobPollResult, ModelJobSubmission } from '.
 
 type ProviderPollResult = Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['pollImageJob']>>;
 type ProviderCancelResult = Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['cancelImageJob']>>;
+type ProviderVideoPollResult = Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['pollVideoJob']>>;
+type ProviderVideoCancelResult = Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['cancelVideoJob']>>;
 
 export function createDesktopModelJobExecutor(): ModelJobExecutor {
   return {
     async submit(job) {
-      return getProviderBridge().submitImageJob(toSubmitRequest(job));
+      return job.kind === 'video'
+        ? getProviderBridge().submitVideoJob(toVideoSubmitRequest(job))
+        : getProviderBridge().submitImageJob(toImageSubmitRequest(job));
     },
     async poll(job) {
       if (!job.providerTaskId) {
         throw new Error('Provider task id is required before polling');
       }
-      let result: ProviderPollResult;
+      let result: ProviderPollResult | ProviderVideoPollResult;
       try {
-        result = await getProviderBridge().pollImageJob({
-          provider: requireProviderField(job.provider),
-          providerTaskId: job.providerTaskId,
-        });
+        const request = { provider: requireProviderField(job.provider), providerTaskId: job.providerTaskId };
+        result = job.kind === 'video'
+          ? await getProviderBridge().pollVideoJob(request)
+          : await getProviderBridge().pollImageJob(request);
       } catch (error) {
         if (isCredentialsLocked(error)) {
           return { status: 'running', blockedReason: 'credentials_locked', progress: undefined };
@@ -29,21 +33,23 @@ export function createDesktopModelJobExecutor(): ModelJobExecutor {
     },
     async cancel(job) {
       if (!job.providerTaskId) return;
-      const result = await getProviderBridge().cancelImageJob({
-        provider: requireProviderField(job.provider),
-        providerTaskId: job.providerTaskId,
-      });
+      const request = { provider: requireProviderField(job.provider), providerTaskId: job.providerTaskId };
+      const result = job.kind === 'video'
+        ? await getProviderBridge().cancelVideoJob(request)
+        : await getProviderBridge().cancelImageJob(request);
       return sanitizePollResult(result);
     },
     async ackTerminal(job) {
       if (!job.providerTaskId || (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled')) {
         return;
       }
-      await getProviderBridge().ackImageJobTerminal({
+      const request = {
         provider: requireProviderField(job.provider),
         providerTaskId: job.providerTaskId,
         status: job.status,
-      });
+      };
+      if (job.kind === 'video') await getProviderBridge().ackVideoJobTerminal(request);
+      else await getProviderBridge().ackImageJobTerminal(request);
     },
   };
 }
@@ -56,18 +62,39 @@ function getProviderBridge() {
   return provider;
 }
 
-function toSubmitRequest(job: ModelJob) {
+function toImageSubmitRequest(job: ModelJob) {
   return {
     jobId: job.id,
     provider: requireProviderField(job.provider),
     modelRoute: requireJobField(job.modelRoute, 'modelRoute'),
     prompt: requireJobField(job.prompt, 'prompt'),
     conversationId: requireJobField(job.conversationId, 'conversationId'),
+    ...(job.projectSessionId === undefined ? {} : { sessionId: job.projectSessionId }),
     referenceAssetIds: [...job.referenceAssetIds],
+    ...(job.aspectRatio === undefined ? {} : { aspectRatio: job.aspectRatio }),
+    ...(job.resolution === undefined ? {} : { resolution: job.resolution }),
+    ...(job.outputCount === undefined ? {} : { outputCount: job.outputCount }),
   };
 }
 
-function sanitizePollResult(result: ProviderPollResult | ProviderCancelResult): ModelJobPollResult {
+function toVideoSubmitRequest(job: ModelJob) {
+  return {
+    jobId: job.id,
+    provider: requireProviderField(job.provider),
+    modelRoute: requireJobField(job.modelRoute, 'modelRoute'),
+    prompt: requireJobField(job.prompt, 'prompt'),
+    conversationId: requireJobField(job.conversationId, 'conversationId'),
+    ...(job.projectSessionId === undefined ? {} : { sessionId: job.projectSessionId }),
+    referenceAssetIds: [...job.referenceAssetIds],
+    ...(job.aspectRatio === undefined ? {} : { aspectRatio: job.aspectRatio }),
+    ...(job.videoResolution === undefined ? {} : { resolution: job.videoResolution }),
+    ...(job.durationSeconds === undefined ? {} : { durationSeconds: job.durationSeconds }),
+    ...(job.outputCount === undefined ? {} : { outputCount: job.outputCount }),
+    ...(job.audioEnabled === undefined ? {} : { audioEnabled: job.audioEnabled }),
+  };
+}
+
+function sanitizePollResult(result: ProviderPollResult | ProviderCancelResult | ProviderVideoPollResult | ProviderVideoCancelResult): ModelJobPollResult {
   if (result.status === 'running') {
     return {
       status: 'running',
@@ -88,6 +115,9 @@ function sanitizePollResult(result: ProviderPollResult | ProviderCancelResult): 
       assetId: result.result.assetId,
       width: result.result.width,
       height: result.result.height,
+      ...('durationSeconds' in result.result && result.result.durationSeconds !== undefined
+        ? { durationSeconds: result.result.durationSeconds }
+        : {}),
     },
   };
 }
@@ -106,9 +136,9 @@ function requireJobField(value: string | undefined, fieldName: string): string {
   return value;
 }
 
-function requireProviderField(value: string | undefined): 'comfly' {
+function requireProviderField(value: string | undefined): 'comfly' | 'relayme' {
   const provider = requireJobField(value, 'provider');
-  if (provider !== 'comfly') {
+  if (provider !== 'comfly' && provider !== 'relayme') {
     throw new Error('provider is required for provider job execution');
   }
   return provider;

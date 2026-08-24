@@ -2,11 +2,13 @@ import { MonitorCog } from 'lucide-react';
 
 import { isThemeMode, type ThemePreference } from './theme';
 
-export function ThemeControl({ theme }: { readonly theme: ThemePreference }) {
+export function ThemeControl({ theme, compact = false }: { readonly theme: ThemePreference; readonly compact?: boolean }) {
   return (
-    <label className="theme-control" title={`当前主题：${theme.resolvedTheme}`}>
-      <MonitorCog aria-hidden="true" size={14} />
-      <span className="theme-control__label">主题</span>
+    <label className={`theme-control${compact ? ' theme-control--figma' : ''}`} title={`当前主题：${theme.resolvedTheme}`}>
+      {compact ? <span className="theme-control__figma-value">Theme · {theme.resolvedTheme === 'dark' ? 'Dark' : 'Light'}</span> : <>
+        <MonitorCog aria-hidden="true" size={14} />
+        <span className="theme-control__label">主题</span>
+      </>}
       <select
         aria-label="主题 Theme"
         value={theme.mode}

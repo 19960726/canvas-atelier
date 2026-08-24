@@ -78,14 +78,14 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
   };
 
   return (
-    <aside className="module-library" aria-label="模块库 / Module library" data-testid="module-library">
+    <aside className="module-library" aria-label="模块库 / Module library" data-figma-surface="module-library" data-testid="module-library">
       <header className="module-library__header">
-        <div>
+        <div data-testid="module-library-heading">
           <strong>模块库</strong>
           <span>{filteredDefinitions.length} 个可用模块</span>
         </div>
         {onClose && (
-          <button className="icon-button" type="button" aria-label="关闭模块库" title="关闭模块库" onClick={onClose}>
+          <button className="icon-button" type="button" data-testid="module-library-close" aria-label="关闭模块库" title="关闭模块库" onClick={onClose}>
             <X size={15} />
           </button>
         )}
@@ -100,7 +100,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
           onChange={(event) => setQuery(event.target.value)}
         />
       </label>
-      <div className="module-library__categories" role="tablist" aria-label="模块分类">
+      <div className="module-library__categories" role="tablist" aria-label="模块分类" data-figma-tabs="segmented">
         {moduleCatalogCategories.map((item, index) => (
           <button
             key={item.id}

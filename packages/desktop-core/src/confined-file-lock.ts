@@ -50,7 +50,7 @@ type PersistedLockRead =
 
 const DEFAULT_RETRY_MS = 10;
 const DEFAULT_STALE_AGE_MS = 15_000;
-const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_STALE_OWNER_TEMP_CLEANUP = 16;
 const ATOMIC_LINK_ERROR_MESSAGE = 'Confined file lock requires atomic hard-link support on the app-data volume';
 const OWNER_PUBLICATION_ERROR_MESSAGE = 'Confined file lock owner publication failed';

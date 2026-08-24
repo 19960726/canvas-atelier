@@ -1,5 +1,5 @@
 import { StrictMode } from 'react';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -14,6 +14,7 @@ import type { ProjectCommitRequest, ProjectCommitResult, ProjectPersistenceClien
 import { createBrowserPersistenceClient } from './desktop-persistence';
 import { PROJECT_STORAGE_KEY } from './project-persistence';
 import { App, resetAppHydrationForTests } from './App';
+import { mcpUiConfirmationStore } from './mcp-ui-confirmation-store';
 
 describe('App persistence hydration', () => {
   afterEach(() => cleanup());
@@ -44,7 +45,7 @@ describe('App persistence hydration', () => {
   });
 
   it('hydrates the renderer from the persistence client on startup', async () => {
-    const desktopProject = { ...createStarterProject(), name: 'Desktop Hydrated Project' };
+    const desktopProject = { ...createStarterProject(), name: 'Desktop Hydrated Project', nodes: [], edges: [] };
     const hydrate = vi.fn(async () => ({
       availableSnapshotIds: ['desktop-after'],
       lifecycle: 'durable' as const,
@@ -58,6 +59,7 @@ describe('App persistence hydration', () => {
     render(<App />);
 
     await waitFor(() => expect(hydrate).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useAppStore.getState().desktopRevision).toBe(8));
     expect(useAppStore.getState()).toMatchObject({
       availableSnapshotIds: ['desktop-after'],
       desktopRevision: 8,
@@ -75,6 +77,18 @@ describe('App persistence hydration', () => {
     render(<App />);
 
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  });
+
+  it('saves the current project with Ctrl+S and prevents the browser save dialog', async () => {
+    const saveProjectExplicitly = vi.fn(async () => true);
+    useAppStore.setState({ saveProjectExplicitly } as never);
+    render(<App />);
+
+    const event = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(saveProjectExplicitly).toHaveBeenCalledOnce());
   });
 
   it('does not close persistence during StrictMode mount cleanup replay', async () => {
@@ -132,11 +146,20 @@ describe('App persistence hydration', () => {
         }),
       },
     } as unknown as typeof window.novusDesktop;
-    replaceProjectPersistenceClientForTests(createHydrationClient({ close, commit, stablePoint }));
+    const hydrate = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      mode: 'desktop' as const,
+      project: { ...createStarterProject(), name: 'Strict close hydrated base', nodes: [], edges: [] },
+      revision: 20,
+      saveStatus: 'saved' as const,
+    }));
+    replaceProjectPersistenceClientForTests(createHydrationClient({ close, commit, hydrate, stablePoint }));
 
     render(<StrictMode><App /></StrictMode>);
     await waitFor(() => expect(window.novusDesktop?.lifecycle.subscribeCloseFlushRequest).toHaveBeenCalled());
-    useAppStore.getState().setProject({ ...createStarterProject(), name: 'Pending strict close draft' });
+    await waitFor(() => expect(useAppStore.getState().project.name).toBe('Strict close hydrated base'));
+    useAppStore.getState().setProject({ ...createStarterProject(), name: 'Pending strict close draft', nodes: [], edges: [] });
 
     await listeners[listeners.length - 1]?.({ requestId: 'close-request-strict-1' });
 
@@ -170,11 +193,20 @@ describe('App persistence hydration', () => {
         }),
       },
     } as unknown as typeof window.novusDesktop;
-    replaceProjectPersistenceClientForTests(createHydrationClient({ close, commit, stablePoint }));
+    const hydrate = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      mode: 'desktop' as const,
+      project: { ...createStarterProject(), name: 'Failed close hydrated base', nodes: [], edges: [] },
+      revision: 19,
+      saveStatus: 'saved' as const,
+    }));
+    replaceProjectPersistenceClientForTests(createHydrationClient({ close, commit, hydrate, stablePoint }));
 
     render(<App />);
     await waitFor(() => expect(window.novusDesktop?.lifecycle.subscribeCloseFlushRequest).toHaveBeenCalled());
-    useAppStore.getState().setProject({ ...createStarterProject(), name: 'Pending failed close draft' });
+    await waitFor(() => expect(useAppStore.getState().project.name).toBe('Failed close hydrated base'));
+    useAppStore.getState().setProject({ ...createStarterProject(), name: 'Pending failed close draft', nodes: [], edges: [] });
 
     await listeners[listeners.length - 1]?.({ requestId: 'close-request-failed-1' });
 
@@ -224,11 +256,18 @@ describe('App persistence hydration', () => {
     expect(ackCloseFlush).toHaveBeenLastCalledWith({ requestId: 'close-request-durable-name', phase: 'completed', outcome: 'saved' });
   });
 
-  it('keeps a renamed untitled project on the untitled close-choice path', async () => {
+  it('automatically saves a renamed untitled project on close without opening a decision dialog', async () => {
     const renamedUntitled = { ...createStarterProject(), name: 'Renamed draft', nodes: [], edges: [] };
     const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
     const ackCloseFlush = vi.fn();
     const chooseCloseDecision = vi.fn(async () => 'cancel' as const);
+    const close = vi.fn(async () => {});
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['close-stable-renamed'],
+      lifecycle: 'durable' as const,
+      project: renamedUntitled,
+      revision: 0,
+    }));
     window.novusDesktop = {
       lifecycle: {
         ackCloseFlush,
@@ -240,6 +279,7 @@ describe('App persistence hydration', () => {
       },
     } as unknown as typeof window.novusDesktop;
     replaceProjectPersistenceClientForTests(createHydrationClient({
+      close,
       hydrate: vi.fn(async () => ({
         availableSnapshotIds: [],
         lifecycle: 'untitled' as const,
@@ -248,17 +288,23 @@ describe('App persistence hydration', () => {
         revision: 0,
         saveStatus: 'pending' as const,
       })),
+      stablePoint,
     }));
 
     render(<App />);
     await waitFor(() => expect(useAppStore.getState().project.name).toBe('Renamed draft'));
     await listeners[0]?.({ requestId: 'close-request-renamed-untitled' });
 
-    expect(chooseCloseDecision).toHaveBeenCalledWith({ dirty: true, projectName: 'Renamed draft', untitled: true });
-    expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-renamed-untitled', phase: 'completed', outcome: 'cancelled' });
+    expect(chooseCloseDecision).not.toHaveBeenCalled();
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-renamed-untitled', phase: 'save_started' }],
+      [{ requestId: 'close-request-renamed-untitled', phase: 'completed', outcome: 'saved' }],
+    ]);
   });
 
-  it('uses the desktop Save Discard Cancel choice for an unnamed dirty project and aborts on cancel', async () => {
+  it('closes a clean untitled project without opening a save decision', async () => {
     const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
     const ackCloseFlush = vi.fn();
     const chooseCloseDecision = vi.fn(async () => 'cancel' as const);
@@ -279,10 +325,57 @@ describe('App persistence hydration', () => {
         availableSnapshotIds: [],
         lifecycle: 'untitled' as const,
         mode: 'desktop' as const,
-        project: { ...createStarterProject(), name: '未命名画布', nodes: [], edges: [] },
+        project: { ...createStarterProject(), nodes: [], edges: [] },
+        revision: 0,
+        saveStatus: 'saved' as const,
+      })),
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(window.novusDesktop?.lifecycle.subscribeCloseFlushRequest).toHaveBeenCalled());
+    await listeners[0]?.({ requestId: 'close-request-clean-untitled' });
+
+    expect(chooseCloseDecision).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-clean-untitled', phase: 'save_started' }],
+      [{ requestId: 'close-request-clean-untitled', phase: 'completed', outcome: 'saved' }],
+    ]);
+  });
+
+  it('automatically saves an unnamed dirty project on close without opening a decision dialog', async () => {
+    const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
+    const ackCloseFlush = vi.fn();
+    const chooseCloseDecision = vi.fn(async () => 'cancel' as const);
+    const close = vi.fn(async () => {});
+    const untitledProject = { ...createStarterProject(), name: '未命名画布', nodes: [], edges: [] };
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['close-stable-untitled'],
+      lifecycle: 'durable' as const,
+      project: untitledProject,
+      revision: 0,
+    }));
+    window.novusDesktop = {
+      lifecycle: {
+        ackCloseFlush,
+        chooseCloseDecision,
+        subscribeCloseFlushRequest: vi.fn((listener) => {
+          listeners.push(listener);
+          return vi.fn();
+        }),
+      },
+    } as unknown as typeof window.novusDesktop;
+    replaceProjectPersistenceClientForTests(createHydrationClient({
+      close,
+      hydrate: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'untitled' as const,
+        mode: 'desktop' as const,
+        project: untitledProject,
         revision: 0,
         saveStatus: 'pending' as const,
       })),
+      stablePoint,
     }));
     resetAppStoreForTests({ project: 'empty' });
 
@@ -290,9 +383,87 @@ describe('App persistence hydration', () => {
     await waitFor(() => expect(window.novusDesktop?.lifecycle.subscribeCloseFlushRequest).toHaveBeenCalled());
     await listeners[0]?.({ requestId: 'close-request-cancel-1' });
 
-    expect(chooseCloseDecision).toHaveBeenCalledWith({ dirty: true, projectName: '未命名画布', untitled: true });
-    expect(close).not.toHaveBeenCalled();
-    expect(ackCloseFlush).toHaveBeenCalledWith({ requestId: 'close-request-cancel-1', phase: 'completed', outcome: 'cancelled' });
+    expect(chooseCloseDecision).not.toHaveBeenCalled();
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-cancel-1', phase: 'save_started' }],
+      [{ requestId: 'close-request-cancel-1', phase: 'completed', outcome: 'saved' }],
+    ]);
+  });
+  it('clears MCP confirmation state when the App test lifecycle is reset', () => {
+    mcpUiConfirmationStore.publish({
+      id: 'plan-reset', kind: 'workflow', title: 'Reset pending workflow', projectId: 'project-reset', expectedRevision: 1,
+      mutations: [], paidJobs: [], limitations: [],
+    }, { confirm: () => ({ token: 'grant-reset', expiresAt: 301_000 }), reject: vi.fn() });
+
+    resetAppHydrationForTests();
+
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+  });
+  it('invalidates pending MCP confirmations when the active project changes', async () => {
+    const initialProject = { ...createStarterProject(), id: 'project-before-switch', name: 'Before switch', nodes: [], edges: [] };
+    replaceProjectPersistenceClientForTests(createHydrationClient({
+      hydrate: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: initialProject,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      })),
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(useAppStore.getState().project.id).toBe('project-before-switch'));
+    mcpUiConfirmationStore.publish({
+      id: 'plan-before-switch',
+      kind: 'workflow',
+      title: 'Pending workflow',
+      projectId: 'project-before-switch',
+      expectedRevision: 4,
+      mutations: [],
+      paidJobs: [],
+      limitations: [],
+    }, { confirm: () => ({ token: 'grant-before-switch', expiresAt: 301_000 }), reject: vi.fn() });
+    expect(mcpUiConfirmationStore.getSnapshot()).toHaveLength(1);
+
+    act(() => {
+      useAppStore.getState().setProject({ ...initialProject, id: 'project-after-switch', name: 'After switch' });
+    });
+
+    await waitFor(() => expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]));
+  });
+  it('subscribes once to MCP runtime requests in StrictMode and responds from the live canvas store', async () => {
+    const listeners: Array<(payload: { requestId: string; request: { tool: 'canvas_read_workflow' } }) => void | Promise<void>> = [];
+    const respond = vi.fn();
+    const onRequest = vi.fn((listener) => {
+      listeners.push(listener as (payload: { requestId: string; request: { tool: 'canvas_read_workflow' } }) => void | Promise<void>);
+      return vi.fn();
+    });
+    window.novusDesktop = {
+      mcpRuntime: {
+        getStatus: vi.fn(async () => ({ state: 'running', rendererConnected: true, serverVersion: '1.0.0', toolCount: 14, lastError: null })),
+        onRequest,
+        respond,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests({ project: 'empty' });
+
+    render(<StrictMode><App /></StrictMode>);
+    await waitFor(() => expect(onRequest).toHaveBeenCalledTimes(1));
+    await listeners[0]?.({ requestId: 'mcp-renderer-1', request: { tool: 'canvas_read_workflow' } });
+
+    await waitFor(() => expect(respond).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'mcp-renderer-1',
+      response: expect.objectContaining({ ok: true }),
+    })));
+    const response = respond.mock.calls[0]?.[0]?.response;
+    expect(response.result).toMatchObject({
+      protocol: 'canvasforge.mcp.snapshot.v1',
+      projectId: useAppStore.getState().project.id,
+      revision: useAppStore.getState().desktopRevision,
+    });
   });
 });
 

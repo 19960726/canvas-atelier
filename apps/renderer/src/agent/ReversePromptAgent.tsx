@@ -9,10 +9,12 @@ import {
   type ApprovedMemorySnapshot,
   type FeedbackObservations,
   type ImageCitation,
+  type ManagedMp4InputSnapshot,
   type OrderedReference,
   type ReversePromptPersona,
   type ReversePromptResult,
   type ReversePromptRun,
+  type ReverseAgentNodeConfig,
 } from '@agent-canvas/domain';
 import type { KnowledgeSyncStatusSummary } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
@@ -30,10 +32,13 @@ interface ReversePromptAgentProps {
   knowledgeSyncStatuses?: KnowledgeSyncStatusSummary[];
   pendingKnowledgeReviewCount?: number;
   analyze: (run: ReversePromptRun) => Promise<ReversePromptResult>;
-  analysisMode?: 'provider' | 'local_draft';
+  videoInput?: ManagedMp4InputSnapshot;
   onEditSkill?: () => void;
   onFeedback?: (input: ReversePromptFeedbackInput) => Promise<boolean>;
   onMoreSkill?: () => void;
+  selectedAgentNodeId?: string | null;
+  agentConfig?: ReverseAgentNodeConfig | null;
+  blockedReason?: string | null;
 }
 
 interface RunHistoryEntry {
@@ -68,10 +73,13 @@ export function ReversePromptAgent({
   knowledgeSyncStatuses = [],
   pendingKnowledgeReviewCount = 0,
   analyze,
-  analysisMode = 'provider',
+  videoInput,
   onEditSkill,
   onFeedback,
   onMoreSkill,
+  selectedAgentNodeId,
+  agentConfig,
+  blockedReason: canvasBlockedReason = null,
 }: ReversePromptAgentProps) {
   const [personaId, setPersonaId] = useState<ReversePromptPersona['id']>(DEFAULT_REVERSE_PROMPT_PERSONA.id);
   const [history, setHistory] = useState<RunHistoryEntry[]>([]);
@@ -84,24 +92,39 @@ export function ReversePromptAgent({
     () => REVERSE_PROMPT_PERSONAS.find((item) => item.id === personaId) ?? DEFAULT_REVERSE_PROMPT_PERSONA,
     [personaId],
   );
+  const selectionBlockedReason = selectedAgentNodeId === null
+    ? '请选择一个已应用配置的 Agent 反推节点。'
+    : selectedAgentNodeId !== undefined && agentConfig === null
+      ? '所选 Agent 节点尚未应用配置。'
+      : null;
+  const blockedReason = canvasBlockedReason ?? selectionBlockedReason;
+  const hasManagedMedia = references.length > 0 || videoInput !== undefined;
 
   const startAnalysis = async () => {
-    if (runningRef.current || references.length === 0) return;
+    if (runningRef.current || !hasManagedMedia) return;
+    if (blockedReason !== null) {
+      setError(blockedReason);
+      return;
+    }
     runningRef.current = true;
     setStatus('running');
     setError(null);
     try {
       const approvedMemorySnapshot = getApprovedMemorySnapshot();
       const runId = createClientUniqueValue();
-      const knowledgeLease = getKnowledgeLease(runId, 'reverse_prompt', references, citations);
+      const knowledgeLease = agentConfig === undefined || agentConfig === null
+        ? getKnowledgeLease(runId, 'reverse_prompt', references, citations)
+        : getKnowledgeLease(runId, 'reverse_prompt', references, citations, agentConfig.knowledgeBaseIds);
       const run = createReversePromptRun({
         projectId,
         skill: { id: 'scene-skill', version: 'managed-latest' },
         persona,
+        agentConfig: agentConfig ?? undefined,
         knowledgeLease,
         approvedMemorySnapshot,
         projectMemoryIds: getProjectMemoryIds(),
         references,
+        videoInput,
       });
       const result = parseReversePromptResult(await analyze(run), run);
       setHistory((current) => [{ run, result }, ...current]);
@@ -165,11 +188,10 @@ export function ReversePromptAgent({
           pinnedLease={history[0]?.run.knowledgeLease ?? null}
         />
       </div>
-      {analysisMode === 'local_draft' && <p className="reverse-agent__mode">本地草稿，未调用模型</p>}
-
-      <button className="reverse-agent__run reverse-agent__run-action" type="button" disabled={status === 'running' || references.length === 0} onClick={startAnalysis}>
+      <button className="reverse-agent__run reverse-agent__run-action" type="button" disabled={status === 'running' || !hasManagedMedia || blockedReason !== null} onClick={startAnalysis}>
         <Sparkles size={15} />{status === 'running' ? '正在反推…' : '开始反推'}
       </button>
+      {blockedReason && <p className="reverse-agent__blocked" role="status">{blockedReason}</p>}
       {error && <p className="reverse-agent__error" role="alert">{error}</p>}
 
       {history.length > 0 && (
@@ -180,6 +202,30 @@ export function ReversePromptAgent({
               <ResultSection title="分析"><p>{result.analysis}</p></ResultSection>
               <ResultSection title="新关键词"><div className="reverse-keywords">{result.keywords.map((keyword) => <span key={keyword}>{keyword}</span>)}</div></ResultSection>
               <ResultSection title="反推正向提示词"><p>{result.positivePrompt}</p></ResultSection>
+              {result.positivePromptZh && <ResultSection title="中文执行提示词"><p>{result.positivePromptZh}</p></ResultSection>}
+              {result.positivePromptEn && <ResultSection title="English Prompt"><p>{result.positivePromptEn}</p></ResultSection>}
+              {(result.mediaResponsibilities?.length ?? 0) > 0 && <ResultSection title="逐素材职责与纹理">
+                <ul>{result.mediaResponsibilities!.map((item) => <li key={item.sourceId}><strong>{item.label ?? item.sourceId}</strong> · {item.role} · {item.priority}<br />继承：{item.inheritance.join('；') || '无'}<br />冲突：{item.conflicts.join('；') || '无'}<br />可用纹理/内容：{item.usableElements.join('；')}</li>)}</ul>
+              </ResultSection>}
+              {(result.materialsAndTextures?.length ?? 0) > 0 && <ResultSection title="材质与纹理拆解">
+                <ul>{result.materialsAndTextures!.map((item) => <li key={`${item.object}-${item.material}`}><strong>{item.object}</strong>：{item.material}；{item.roughnessReflectionTransmission}；{item.textureScaleAndDetail}；制作：{item.productionMethod}</li>)}</ul>
+              </ResultSection>}
+              {result.lightingAndColor && <ResultSection title="灯光、扫光与高级感"><p>{result.lightingAndColor.keyFillRimEnvironment.join('；')}<br />扫光：{result.lightingAndColor.sweepLight}<br />高级感：{result.lightingAndColor.premiumLookRationale.join('；')}</p></ResultSection>}
+              {(result.effects?.length ?? 0) > 0 && <ResultSection title="特效拆解与产品适配">
+                <ul>{result.effects!.map((item, index) => <li key={`${item.type}-${index}`}><strong>{item.type}</strong>：{item.purpose}<br />制作：{item.recreation.join('；')}<br />适配：{item.productAdaptation}</li>)}</ul>
+              </ResultSection>}
+              {(result.fluids?.length ?? 0) > 0 && <ResultSection title="流体拆解">
+                <ul>{result.fluids!.map((item, index) => <li key={`${item.type}-${index}`}><strong>{item.type}</strong>：{item.purpose}；{item.physicalBehavior}<br />制作：{item.productionMethod.join('；')}<br />产品交互：{item.productInteraction}</li>)}</ul>
+              </ResultSection>}
+              {result.whiteBackgroundAdaptation && <ResultSection title="白底产品适配"><ul>{[
+                ...result.whiteBackgroundAdaptation.silhouetteProtection,
+                ...result.whiteBackgroundAdaptation.grounding,
+                ...result.whiteBackgroundAdaptation.contaminationPrevention,
+                ...result.whiteBackgroundAdaptation.doNotCopy.map((item) => `禁止照搬：${item}`),
+              ].map((item) => <li key={item}>{item}</li>)}</ul></ResultSection>}
+              {(result.videoTimeline?.length ?? 0) > 0 && <ResultSection title="视频逐镜头时间轴">
+                <ol>{result.videoTimeline!.map((shot, index) => <li key={`${shot.timeRange}-${index}`}><strong>{shot.timeRange} · {shot.shotType}</strong><br />焦距：{shot.estimatedFocalLength}；运镜：{shot.cameraMovement}；速度/稳定：{shot.speedCurveAndStabilization}<br />灯光/扫光：{shot.lightingAndSweep}；转场：{shot.transition}<br />产品适配：{shot.productAdaptation}</li>)}</ol>
+              </ResultSection>}
               <ResultSection title="负面约束"><ul>{result.negativeConstraints.map((item) => <li key={item}>{item}</li>)}</ul></ResultSection>
               <ResultSection title="执行检查清单"><ul>{result.executionChecklist.map((item) => <li key={item}>{item}</li>)}</ul></ResultSection>
               <footer>知识快照 <b>{result.knowledgeSnapshotVersion}</b> · nonce {run.nonce.slice(0, 8)}</footer>

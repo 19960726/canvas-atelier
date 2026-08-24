@@ -35,8 +35,9 @@ describe('project image bridge', () => {
     const invoke = vi.fn(async () => null) as DesktopBridgeInvoke;
     const api = createPreloadApi(invoke);
 
-    expect(Object.keys(api.projectImages).sort()).toEqual(['importImage', 'list', 'pasteClipboardImage']);
+    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'pasteClipboardImage']);
     expect(api.projectImages).not.toHaveProperty('readFile');
+    expect(api.projectImages).not.toHaveProperty('resolvePath');
     await api.projectImages.importImage({
       sessionId: 'session-1',
       target: { kind: 'module', nodeId: 'image-input' },
@@ -56,6 +57,83 @@ describe('project image bridge', () => {
       sessionId: 'session-1',
       target: { kind: 'new_image_input', operationId: 'clipboard_paste_aaaaaaaa', position: { x: 120, y: 240 } },
     });
+  });
+
+  it('imports a pasted local image into an existing module without creating another node', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-pasted-image-');
+    const projectRoot = join(tempRoot, 'Pasted.novus-project');
+    const sourcePath = join(tempRoot, 'pasted.png');
+    await writeFile(sourcePath, validClipboardPngBytes);
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6172 });
+    const created = await repository.create(projectRoot, {
+      project: imageProject(),
+      projectId: 'image-project',
+      projectName: 'Image Project',
+    });
+    await repository.close(created);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.importDroppedProjectMedia({}, {
+        request: {
+          sessionId: opened!.sessionId,
+          target: { kind: 'module', nodeId: 'image-input', operationId: 'dropped_media_paste-1' },
+        },
+        sourcePath,
+      });
+
+      expect(result).toMatchObject({
+        currentRevision: 1,
+        asset: { mediaType: 'image/png', usageCount: 1 },
+        project: {
+          nodes: [
+            expect.objectContaining({
+              id: 'image-input',
+              data: expect.objectContaining({ config: { assetId: expect.any(String) } }),
+            }),
+            expect.objectContaining({ id: 'placement' }),
+          ],
+        },
+      });
+      expect(result!.project.nodes).toHaveLength(2);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');
+    }
+  });
+
+  it('stores a generated image in the active project asset catalog without exposing bytes', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'generated-image-asset-');
+    const projectRoot = join(tempRoot, 'Generated.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('generated-repo'), processId: 6171 });
+    const created = await repository.create(projectRoot, {
+      project: { ...imageProject(), id: 'generated-project', nodes: [] },
+      projectId: 'generated-project',
+      projectName: 'Generated Project',
+    });
+    await repository.close(created);
+    const handlers = createDesktopBridgeHandlers({
+      createId: sequentialId('generated-bridge'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.storeGeneratedImage(opened!.sessionId, validClipboardPngBytes, 'image/png');
+      expect(result).toMatchObject({ assetId: expect.stringMatching(/^[a-f0-9]{16}$/), mediaType: 'image/png', origin: 'generated' });
+      expect(result).not.toHaveProperty('bytes');
+      expect(result).not.toHaveProperty('base64');
+      const listed = await handlers.listProjectImages({}, { sessionId: opened!.sessionId });
+      expect(listed).toEqual([expect.objectContaining({ assetId: result.assetId, mediaType: 'image/png' })]);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'generated-project');
+    }
   });
 
   it('atomically stores a trusted clipboard PNG and creates a bound image input node', async () => {
@@ -106,6 +184,13 @@ describe('project image bridge', () => {
       });
       expect(result).not.toHaveProperty('bytes');
       expect(JSON.stringify(result)).not.toMatch(/"bytes"|base64|objectURL|[A-Z]:\\/iu);
+      const managedChatImage = await handlers.readManagedSkillChatImages(
+        opened!.sessionId,
+        [result!.asset.assetId],
+      );
+      expect(managedChatImage).toEqual([{ bytes: validClipboardPngBytes, mediaType: 'image/png' }]);
+      await expect(handlers.readManagedSkillChatImages(opened!.sessionId, ['a'.repeat(16)]))
+        .rejects.toMatchObject({ code: 'MISSING_ASSET' });
     } finally {
       await handlers.closeAllProjects();
       releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'clipboard-project');
@@ -543,6 +628,57 @@ describe('project image bridge', () => {
       await handlers.closeAllProjects();
       releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project-missing');
     }
+  });
+
+  it('keeps verified old-project images visible when unrelated stale catalog entries are missing', async () => {
+    const available = {
+      assetId: '1fcb93e29c44dd8e',
+      byteSize: 3_389_269,
+      extension: 'jpg' as const,
+      height: null,
+      label: 'Generated image',
+      mediaType: 'image/jpeg' as const,
+      origin: 'generated' as const,
+      sha256: '1fcb93e29c44dd8ed70ee6c5247bf45e8da514998260c6a5f026284a512c1821',
+      width: null,
+    };
+    const missing = {
+      ...available,
+      assetId: 'a'.repeat(16),
+      label: 'Stale missing image',
+      sha256: 'a'.repeat(64),
+    };
+    const project = { ...imageProject(), assets: [missing, available] };
+    const handlers = createDesktopBridgeHandlers({
+      assetStore: {
+        list: vi.fn(async () => [{
+          byteSize: available.byteSize,
+          extension: available.extension,
+          height: available.height,
+          id: available.assetId,
+          mediaType: available.mediaType,
+          relativePath: `assets/${available.assetId}.jpg`,
+          sha256: available.sha256,
+          width: available.width,
+        }]),
+      } as never,
+      createId: sequentialId('partial-assets'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => 'fixture/OldProject.novus-project') },
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => openedSession('read_only', 'fixture/OldProject.novus-project')),
+        openJournalWriter: vi.fn(),
+        readCurrentProject: vi.fn(async () => project),
+      },
+    });
+
+    const opened = await handlers.openProject({}, { mode: 'read_only' });
+
+    await expect(handlers.listProjectImages({}, { sessionId: opened!.sessionId })).resolves.toEqual([
+      expect.objectContaining({ assetId: available.assetId, mediaType: available.mediaType }),
+    ]);
+    await expect(handlers.listProjectVideos({}, { sessionId: opened!.sessionId })).resolves.toEqual([]);
+    await handlers.closeAllProjects();
   });
 
   it('rejects concurrent image pickers for the same project session', async () => {
@@ -1076,3 +1212,48 @@ async function createTempRoot(tempRoots: string[], prefix: string): Promise<stri
   tempRoots.push(root);
   return root;
 }
+
+  it('imports an Agent reference into the managed asset catalog without patching canvas nodes', async () => {
+    const tempRoots: string[] = [];
+    const tempRoot = await createTempRoot(tempRoots, 'agent-reference-image-');
+    const projectRoot = join(tempRoot, 'AgentReference.novus-project');
+    const sourcePath = join(tempRoot, 'agent-reference.png');
+    await writeFile(sourcePath, pngBytes);
+    const initialProject = imageProject();
+    const repository = new ProjectRepository({ createId: sequentialId('agent-reference-repo'), processId: 6172 });
+    const created = await repository.create(projectRoot, {
+      project: initialProject,
+      projectId: 'image-project',
+      projectName: 'Agent Reference Project',
+    });
+    await repository.close(created);
+    const handlers = createDesktopBridgeHandlers({
+      createId: sequentialId('agent-reference-bridge'),
+      dialogs: {
+        chooseProjectImage: vi.fn(async () => sourcePath),
+        chooseProjectRoot: vi.fn(async () => projectRoot),
+      },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.importProjectImage({}, {
+        sessionId: opened!.sessionId,
+        target: { kind: 'agent_reference' },
+      });
+
+      expect(result).toMatchObject({
+        currentRevision: 1,
+        asset: { label: 'agent-reference', usageCount: 0 },
+      });
+      expect(result!.project.nodes).toEqual(initialProject.nodes);
+      expect(result!.project.edges).toEqual(initialProject.edges);
+      expect(result!.project.assets).toEqual([expect.objectContaining({ assetId: result!.asset.assetId })]);
+      expect(JSON.stringify(result)).not.toMatch(/sourcePath|base64|"bytes"|[A-Z]:\\/iu);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');
+      await Promise.all(tempRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
+    }
+  });

@@ -1,10 +1,72 @@
 import { EventEmitter } from 'node:events';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createElectronNetComflyFetch, type ElectronNetLike } from './electron-net-fetch';
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('Electron provider transport response bounds', () => {
+  it('aborts a stalled provider request using the default bounded timeout', async () => {
+    vi.useFakeTimers();
+    const net = stalledNet();
+    const fetch = createElectronNetComflyFetch(net.adapter);
+    const result = fetch('https://api.example/v1/models');
+    const expectation = expect(result).rejects.toThrow(/timed out/i);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expectation;
+    expect(net.aborted).toBe(true);
+  });
+
+  it('honors a longer request timeout for paid image generation', async () => {
+    vi.useFakeTimers();
+    const net = stalledNet();
+    const fetch = createElectronNetComflyFetch(net.adapter);
+    const result = fetch('https://api.example/v1/images/generations', { timeoutMs: 180_000 });
+    const outcome = result.then(() => 'resolved', (error: Error) => error.message);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(Promise.race([outcome, Promise.resolve('still-running')])).resolves.toBe('still-running');
+    expect(net.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(150_000);
+    await expect(outcome).resolves.toMatch(/timed out/i);
+    expect(net.aborted).toBe(true);
+  });
+
+  it('honors an AbortSignal and releases a stalled Electron request immediately', async () => {
+    const net = stalledNet();
+    const fetch = createElectronNetComflyFetch(net.adapter);
+    const controller = new AbortController();
+    const result = fetch('https://api.example/v1/chat/completions', { signal: controller.signal });
+
+    controller.abort();
+
+    await expect(result).rejects.toThrow(/aborted/i);
+    expect(net.aborted).toBe(true);
+  });
+
+  it('preserves a safe Chromium network error code for provider diagnostics', async () => {
+    const fetch = createElectronNetComflyFetch(errorNet(new Error('net::ERR_CONNECTION_RESET')));
+
+    await expect(fetch('https://api.example/v1/images/generations')).rejects.toThrow(
+      /Provider network request failed \(net::ERR_CONNECTION_RESET\)/,
+    );
+  });
+
+  it('preserves Electron network error codes that omit the net namespace', async () => {
+    const error = Object.assign(new Error('Request failed'), { code: 'ERR_FAILED' });
+    const fetch = createElectronNetComflyFetch(errorNet(error));
+
+    await expect(fetch('https://api.example/v1/images/generations')).rejects.toThrow(
+      /Provider network request failed \(ERR_FAILED\)/,
+    );
+  });
+
   it('rejects an oversized Content-Length before accepting response bytes', async () => {
     const net = responseNet({ headers: { 'content-length': ['9'] }, chunks: [] });
     const fetch = createElectronNetComflyFetch(net.adapter, { maxResponseBytes: 8 });
@@ -54,7 +116,42 @@ describe('Electron provider transport response bounds', () => {
     const resolved = await pinned.lookup('assets.example');
     expect(resolved).toEqual({ address: '93.184.216.34', family: 4 });
   });
+
+  it('returns address records when Node requests an all-address pinned lookup', async () => {
+    const net = responseNet({ chunks: [Buffer.from('{}')] });
+    const pinned = pinnedHttpsRequest({ chunks: [Buffer.from('{}')] });
+    const fetch = createElectronNetComflyFetch(net.adapter, { pinnedHttpsRequest: pinned.adapter });
+
+    await fetch('https://assets.example/image.png', { trustedResolvedAddress: '93.184.216.34' });
+
+    await expect(pinned.lookupAll('assets.example')).resolves.toEqual([
+      { address: '93.184.216.34', family: 4 },
+    ]);
+  });
 });
+
+function stalledNet(): { readonly adapter: ElectronNetLike; aborted: boolean } {
+  const state = { adapter: undefined as unknown as ElectronNetLike, aborted: false };
+  state.adapter = {
+    request() {
+      const request = new EventEmitter() as EventEmitter & { abort(): void; end(): void };
+      request.abort = () => { state.aborted = true; };
+      request.end = () => undefined;
+      return request;
+    },
+  };
+  return state;
+}
+
+function errorNet(error: Error): ElectronNetLike {
+  return {
+    request() {
+      const request = new EventEmitter() as EventEmitter & { end(): void };
+      request.end = () => queueMicrotask(() => request.emit('error', error));
+      return request;
+    },
+  };
+}
 
 function responseNet(options: {
   readonly chunks: readonly Buffer[];
@@ -121,12 +218,17 @@ function pinnedHttpsRequest(options: {
     readonly lookup: (
       hostname: string,
       options: unknown,
-      callback: (error: NodeJS.ErrnoException | null, address: string, family: 4 | 6) => void,
+      callback: (
+        error: NodeJS.ErrnoException | null,
+        address: string | readonly { readonly address: string; readonly family: 4 | 6 }[],
+        family?: 4 | 6,
+      ) => void,
     ) => void;
     readonly path: string;
     readonly servername: string;
   } | null;
   lookup(hostname: string): Promise<{ readonly address: string; readonly family: 4 | 6 }>;
+  lookupAll(hostname: string): Promise<unknown>;
 } {
   const state = {
     options: null as ReturnType<typeof pinnedHttpsRequest>['options'],
@@ -163,7 +265,23 @@ function pinnedHttpsRequest(options: {
       }
       state.options.lookup(hostname, {}, (error, address, family) => {
         if (error !== null) reject(error);
-        else resolve({ address, family });
+        else if (typeof address === 'string' && family !== undefined) resolve({ address, family });
+        else reject(new Error('single-address lookup returned an invalid result'));
+      });
+    }),
+    lookupAll: (hostname) => new Promise((resolve, reject) => {
+      if (state.options === null) {
+        reject(new Error('lookup was not captured'));
+        return;
+      }
+      const lookup = state.options.lookup as unknown as (
+        hostname: string,
+        options: { readonly all: true },
+        callback: (error: NodeJS.ErrnoException | null, addresses: unknown) => void,
+      ) => void;
+      lookup(hostname, { all: true }, (error, addresses) => {
+        if (error !== null) reject(error);
+        else resolve(addresses);
       });
     }),
   };

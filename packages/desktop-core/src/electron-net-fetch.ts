@@ -2,6 +2,8 @@ import { request as nodeHttpsRequest } from 'node:https';
 
 import type { ComflyFetch, ComflyFetchResponse } from '@agent-canvas/provider-comfly';
 
+const DEFAULT_PROVIDER_NETWORK_TIMEOUT_MS = 30_000;
+
 export interface ElectronNetLike {
   request(options: { readonly url: string; readonly method: string; readonly redirect: 'manual' }): ElectronClientRequestLike;
 }
@@ -28,8 +30,12 @@ export type PinnedHttpsRequestLike = (
     readonly hostname: string;
     readonly lookup: (
       hostname: string,
-      options: unknown,
-      callback: (error: NodeJS.ErrnoException | null, address: string, family: 4 | 6) => void,
+      options: { readonly all?: boolean } | unknown,
+      callback: (
+        error: NodeJS.ErrnoException | null,
+        address: string | readonly { readonly address: string; readonly family: 4 | 6 }[],
+        family?: 4 | 6,
+      ) => void,
     ) => void;
     readonly method: string;
     readonly path: string;
@@ -59,13 +65,15 @@ export function createElectronNetComflyFetch(
 ): ComflyFetch {
   const maxResponseBytes = options.maxResponseBytes ?? 64 * 1024 * 1024;
   const pinnedHttpsRequest = options.pinnedHttpsRequest ?? nodeHttpsRequest as PinnedHttpsRequestLike;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_NETWORK_TIMEOUT_MS;
   return async (url, init = {}) => {
     const parsedUrl = parseHttpsUrl(url);
+    const requestTimeoutMs = init.timeoutMs ?? timeoutMs;
     if (init.trustedResolvedAddress !== undefined) {
       return requestPinnedHttps(parsedUrl, init, init.trustedResolvedAddress, {
         maxResponseBytes,
         pinnedHttpsRequest,
-        timeoutMs: options.timeoutMs,
+        timeoutMs: requestTimeoutMs,
       });
     }
     return await new Promise<ComflyFetchResponse>((resolve, reject) => {
@@ -107,7 +115,7 @@ export function createElectronNetComflyFetch(
         return;
       }
       init.signal?.addEventListener('abort', abort, { once: true });
-      if (options.timeoutMs !== undefined && options.timeoutMs > 0) {
+      if (requestTimeoutMs > 0) {
         timeout = setTimeout(() => {
           try {
             request.abort?.();
@@ -115,7 +123,7 @@ export function createElectronNetComflyFetch(
             // The sanitized timeout error below is the public result.
           }
           fail('Provider network request timed out');
-        }, options.timeoutMs);
+        }, requestTimeoutMs);
       }
 
       for (const [name, value] of Object.entries(init.headers ?? {})) {
@@ -125,7 +133,7 @@ export function createElectronNetComflyFetch(
         consumeResponse(response, request, maxResponseBytes, () => settled, fail, succeed);
       });
       request.on('redirect', () => fail('Provider network redirect was blocked'));
-      request.on('error', () => fail('Provider network request failed'));
+      request.on('error', (error) => fail(formatNetworkFailure(error)));
       if (init.body !== undefined) {
         request.write?.(init.body);
       }
@@ -152,7 +160,16 @@ function requestPinnedHttps(
     const request = options.pinnedHttpsRequest({
       headers: init.headers,
       hostname: url.hostname,
-      lookup: (_hostname, _lookupOptions, callback) => callback(null, trustedResolvedAddress, family),
+      lookup: (_hostname, lookupOptions, callback) => {
+        const wantsAll = lookupOptions !== null
+          && typeof lookupOptions === 'object'
+          && (lookupOptions as { readonly all?: unknown }).all === true;
+        if (wantsAll) {
+          callback(null, [{ address: trustedResolvedAddress, family }]);
+          return;
+        }
+        callback(null, trustedResolvedAddress, family);
+      },
       method: init.method ?? 'GET',
       path: `${url.pathname}${url.search}`,
       ...(url.port === '' ? {} : { port: url.port }),
@@ -202,7 +219,7 @@ function requestPinnedHttps(
         fail('Provider network request timed out');
       }, options.timeoutMs);
     }
-    request.on('error', () => fail('Provider network request failed'));
+    request.on('error', (error) => fail(formatNetworkFailure(error)));
     if (init.body !== undefined) request.write?.(init.body);
     request.end();
   });
@@ -312,4 +329,18 @@ function sanitizeElectronNetError(value: string): string {
     .replace(/\s+/gu, ' ')
     .trim();
   return (sanitized || 'Provider network request failed').slice(0, 180);
+}
+
+function formatNetworkFailure(error: unknown): string {
+  const candidates = [
+    error instanceof Error ? error.message : '',
+    typeof (error as { code?: unknown } | null)?.code === 'string'
+      ? String((error as { code: string }).code)
+      : '',
+  ];
+  for (const candidate of candidates) {
+    const chromiumCode = /\b(?:net::)?ERR_[A-Z0-9_]+\b/u.exec(candidate)?.[0];
+    if (chromiumCode !== undefined) return `Provider network request failed (${chromiumCode})`;
+  }
+  return 'Provider network request failed';
 }

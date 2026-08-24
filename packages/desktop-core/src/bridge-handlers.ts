@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { basename, extname, join } from 'node:path';
+import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 
 import {
@@ -43,10 +43,14 @@ import {
   type CommitAck,
   type CommitBridgeRequest,
   type ConfigureKnowledgeBaseBridgeRequest,
+  type CreateProjectBridgeRequest,
+  type CreateProjectBridgeResult,
   type ExportPackBridgeRequest,
   type ExportPackBridgeResult,
   type ImportPackBridgeRequest,
   type ImportPackBridgeResult,
+  type ImportDroppedProjectMediaBridgeRequest,
+  type ImportDroppedProjectMediaBridgeResult,
   type ImportProjectImageBridgeRequest,
   type ImportProjectImageBridgeResult,
   type ImportProjectVideoBridgeRequest,
@@ -61,6 +65,9 @@ import {
   type ListProjectVideosBridgeRequest,
   type OpenProjectBridgeRequest,
   type OpenProjectBridgeResult,
+  type OpenRecentProjectBridgeRequest,
+  type RecentProjectRequest,
+  type RecentProjectSummary,
   type PrepareSkillCandidateReviewBridgeRequest,
   type PrepareSkillCandidateReviewBridgeResult,
   type PersistenceChannel,
@@ -74,6 +81,7 @@ import {
   type RecoveryCandidateBridgeSummary,
   type RecoveryPlanBridgeRequest,
   type RecoveryPlanBridgeResult,
+  type RefreshProjectBridgeRequest,
   type ReviewSkillCandidateBridgeRequest,
   type ReviewSkillCandidateBridgeResult,
   type RestoreBridgeRequest,
@@ -99,8 +107,11 @@ import {
   type ListGenerationHistoryBridgeRequest,
   type ListGenerationHistoryBridgeResult,
   type SetGenerationHistoryFavoriteBridgeRequest,
+  type PhotoshopImportRequest,
+  type PhotoshopImportResult,
 } from './contracts.js';
 import { AssetStore, type AssetMetadata } from './asset-store.js';
+import type { ManagedReversePromptMediaIdentity } from './provider-contracts.js';
 import type { ClipboardImageAdapter, TrustedClipboardImage } from './electron-clipboard-image.js';
 import type { ClipboardVideoAdapter } from './electron-clipboard-video.js';
 import { openSafeLocalMp4Source, type SafeLocalMp4Source } from './local-video-source.js';
@@ -125,13 +136,16 @@ import {
 } from './novus-pack.js';
 import {
   type OpenedProjectSession,
+  PROJECT_DIRECTORIES,
   ProjectRepository,
 } from './project-repository.js';
 import {
   RecoveryScanner,
+  type OrphanRecoveryCandidate,
   type RecoveryCandidate,
   type RecoveryScanResult,
 } from './recovery-scanner.js';
+import { RecentProjectStore, type RecentProjectEntryInput } from './recent-project-store.js';
 import {
   SnapshotScheduler,
   type SnapshotFlushResult,
@@ -140,17 +154,35 @@ import {
 import { BRIDGE_CHANNELS } from './preload-api.js';
 import { createProjectAssetDisplayUrl, parseProjectAssetDisplayUrl } from './project-asset-url.js';
 import { parseGenerationHistoryAssetUrl } from './generation-history-asset-url.js';
+import { parsePhotoshopImportRequest } from './photoshop-contract.js';
+import { buildLegacyOrphanedImageResultRepair } from './legacy-generation-repair.js';
+import {
+  PhotoshopSmartObjectService,
+  type PhotoshopManagedAssetResolver,
+  type PhotoshopSmartObjectAdapter,
+} from './photoshop-smart-object-service.js';
 
 interface BridgeWriter {
   commit(request: Omit<CommitBridgeRequest, 'sessionId'>): Promise<CommitAck>;
 }
 
 interface ProjectRepositoryLike {
+  create(root: string, options: { project: CanvasProject; projectId?: string; projectName?: string }): Promise<OpenedProjectSession>;
   close(session: OpenedProjectSession): Promise<void>;
   open(root: string, options: { mode: 'write' | 'read_only' }): Promise<OpenedProjectSession>;
   openJournalWriter(session: OpenedProjectSession): Promise<BridgeWriter>;
   readCurrentProject(session: OpenedProjectSession): Promise<CanvasProject>;
   readCurrentRevision?(session: OpenedProjectSession): Promise<number>;
+  readStableProject?(session: OpenedProjectSession): Promise<CanvasProject>;
+}
+
+interface RecentProjectStoreLike {
+  list(): Promise<readonly RecentProjectSummary[]>;
+  relocate(recentProjectId: string, root: string): Promise<RecentProjectSummary | null>;
+  remove(recentProjectId: string): Promise<readonly RecentProjectSummary[]>;
+  resolvePreviewPath(recentProjectId: string): Promise<string | null>;
+  resolveRoot(recentProjectId: string): Promise<string | null>;
+  upsert(input: RecentProjectEntryInput): Promise<readonly RecentProjectSummary[]>;
 }
 
 interface ProjectAssetStoreLike {
@@ -194,6 +226,7 @@ interface SnapshotSchedulerLike {
 }
 
 interface RecoveryScannerLike {
+  discoverLatestOrphanCandidate?(): Promise<OrphanRecoveryCandidate | null>;
   scan(projectRoot: string): Promise<RecoveryScanResult>;
 }
 
@@ -250,6 +283,7 @@ interface KnowledgeConfigurationSyncLike {
 }
 
 export interface BridgeDialogAdapter {
+  chooseCreateProjectRoot(project: CanvasProject): Promise<string | null>;
   chooseImportDestination(): Promise<string | null>;
   chooseImportPackSource(): Promise<string | null>;
   chooseKnowledgeRoot(request: ConfigureKnowledgeBaseBridgeRequest): Promise<string | null>;
@@ -263,12 +297,15 @@ export interface BridgeDialogAdapter {
 export interface DesktopBridgeHandlerDependencies {
   readonly appDataRoot?: string;
   readonly channel?: PersistenceChannel;
+  readonly captureProjectPreview?: () => Promise<Uint8Array | null>;
   readonly clipboard?: ClipboardImageAdapter;
   readonly clipboardVideo?: ClipboardVideoAdapter;
   readonly createId?: () => string;
   readonly dialogs?: Partial<BridgeDialogAdapter>;
   readonly fileSystem?: FileSystem;
   readonly importerIsolationRoot?: string;
+  readonly now?: () => string;
+  readonly recentProjectStore?: RecentProjectStoreLike;
   readonly openVideoSource?: (sourcePath: string) => Promise<SafeLocalMp4Source | null>;
   readonly approvedSnapshotOutbox?: ApprovedSnapshotOutboxLike;
   readonly assetStore?: ProjectAssetStoreLike;
@@ -284,11 +321,13 @@ export interface DesktopBridgeHandlerDependencies {
   readonly recoveryScanner?: RecoveryScannerLike;
   readonly repository?: Partial<ProjectRepositoryLike>;
   readonly snapshotScheduler?: SnapshotSchedulerLike;
+  readonly photoshopSmartObjectAdapter?: PhotoshopSmartObjectAdapter;
 }
 
 export interface DesktopBridgeHandlers {
   closeAllProjects(): Promise<void>;
   closeProject(event: unknown, request: unknown): Promise<void>;
+  createProject(event: unknown, request: unknown): Promise<CreateProjectBridgeResult | null>;
   commit(event: unknown, request: unknown): Promise<CommitAck>;
   configureKnowledgeBase(event: unknown, request: unknown): Promise<KnowledgeBaseStateSummary | null>;
   createStablePoint(event: unknown, request: unknown): Promise<StablePointBridgeResult>;
@@ -296,7 +335,9 @@ export interface DesktopBridgeHandlers {
   getKnowledgeState(event: unknown, request: unknown): Promise<KnowledgeStateBridgeResult>;
   getRecoveryPlan(event: unknown, request: unknown): Promise<RecoveryPlanBridgeResult>;
   importPack(event: unknown, request: unknown): Promise<ImportPackBridgeResult | null>;
+  importDroppedProjectMedia(event: unknown, request: unknown): Promise<ImportDroppedProjectMediaBridgeResult | null>;
   importProjectImage(event: unknown, request: unknown): Promise<ImportProjectImageBridgeResult | null>;
+  importProjectImageToPhotoshop(event: unknown, request: unknown): Promise<PhotoshopImportResult>;
   importProjectVideo(event: unknown, request: unknown): Promise<ImportProjectVideoBridgeResult | null>;
   pasteProjectClipboardImage(event: unknown, request: unknown): Promise<PasteProjectClipboardImageBridgeResult | null>;
   pasteProjectClipboardVideo(event: unknown, request: unknown): Promise<PasteProjectClipboardVideoBridgeResult | null>;
@@ -314,12 +355,33 @@ export interface DesktopBridgeHandlers {
   restoreGenerationHistory(event: unknown, request: unknown): Promise<GenerationHistoryMutationBridgeResult>;
   permanentlyDeleteGenerationHistory(event: unknown, request: unknown): Promise<GenerationHistoryPurgeBridgeResult>;
   purgeGenerationHistory(event: unknown, request: unknown): Promise<GenerationHistoryPurgeBridgeResult>;
+  listRecentProjects(event: unknown, request?: unknown): Promise<readonly RecentProjectSummary[]>;
+  openLatestRecoveryPreview(event: unknown): Promise<OpenProjectBridgeResult | null>;
   openProject(event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null>;
+  refreshProject(event: unknown, request: unknown): Promise<OpenProjectBridgeResult>;
+  openRecentProject(event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null>;
+  relocateRecentProject(event: unknown, request: unknown): Promise<RecentProjectSummary | null>;
+  removeRecentProject(event: unknown, request: unknown): Promise<readonly RecentProjectSummary[]>;
   prepareSkillCandidateReview(event: unknown, request: unknown): Promise<PrepareSkillCandidateReviewBridgeResult>;
   reviewSkillCandidate(event: unknown, request: unknown): Promise<ReviewSkillCandidateBridgeResult>;
+  readManagedSkillChatImages(sessionId: string, referenceAssetIds: readonly string[]): Promise<readonly ManagedSkillChatImageContent[]>;
+  storeGeneratedImage(sessionId: string, bytes: Uint8Array, mediaType: string): Promise<ProjectImageAsset>;
+  storeGeneratedVideo(sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4'): Promise<ProjectVideoAsset>;
   restore(event: unknown, request: unknown): Promise<RestoreBridgeResult>;
+  readManagedReverseMedia(sessionId: string, media: readonly ManagedReversePromptMediaIdentity[]): Promise<readonly ManagedReversePromptMediaContent[]>;
   resolveProjectImagePath(displayUrl: string): Promise<string | null>;
+  resolveRecentProjectPreviewPath(displayUrl: string): Promise<string | null>;
   resolveGenerationHistoryImagePath(displayUrl: string): Promise<string | null>;
+}
+
+export interface ManagedReversePromptMediaContent {
+  readonly bytes: Uint8Array;
+  readonly mediaType: ManagedReversePromptMediaIdentity['mediaType'];
+}
+
+export interface ManagedSkillChatImageContent {
+  readonly bytes: Uint8Array;
+  readonly mediaType: 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp';
 }
 
 export interface DesktopIpcMainLike {
@@ -331,6 +393,7 @@ interface BridgeSessionContext {
   closeState: 'open' | 'closing' | 'retry_only';
   imageImportInFlight: boolean;
   maintenanceTail: Promise<void>;
+  openedAt: string;
   recoveryRequired: boolean;
   session: OpenedProjectSession;
   sessionId: string;
@@ -382,6 +445,12 @@ export function createDesktopBridgeHandlers(
   dependencies: DesktopBridgeHandlerDependencies = {},
 ): DesktopBridgeHandlers {
   const fileSystem = dependencies.fileSystem ?? new NodeFileSystem();
+  const appDataRoot = dependencies.appDataRoot ?? process.cwd();
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  const recentProjectStore = dependencies.recentProjectStore ?? new RecentProjectStore({
+    appDataRoot: dependencies.appDataRoot ?? process.cwd(),
+    fileSystem,
+  });
   const assetStore = dependencies.assetStore ?? new AssetStore();
   const createId = dependencies.createId ?? defaultId;
   const clipboard = dependencies.clipboard ?? { readImage: async () => null };
@@ -424,15 +493,153 @@ export function createDesktopBridgeHandlers(
     store: historyStore,
   });
   const sessions = new Map<string, BridgeSessionContext>();
+  const photoshopAssetResolver: PhotoshopManagedAssetResolver = {
+    async resolve(request) {
+      const session = requireSession(sessions, request.sessionId);
+      const project = await repository.readCurrentProject(session.session);
+      const asset = (project.assets ?? []).find((candidate) => candidate.assetId === request.assetId);
+      if (asset === undefined) return null;
+      if (!asset.mediaType.startsWith('image/')) {
+        return { absolutePath: '', label: asset.label, mediaType: asset.mediaType };
+      }
+      const absolutePath = await assetStore.resolvePath(
+        session.session.root,
+        asset.assetId,
+        asset.extension,
+        asset.sha256,
+        asset.byteSize,
+      );
+      if (absolutePath === null) return null;
+      return { absolutePath, label: asset.label, mediaType: asset.mediaType };
+    },
+  };
+  const photoshopSmartObjectService = new PhotoshopSmartObjectService(
+    photoshopAssetResolver,
+    dependencies.photoshopSmartObjectAdapter ?? {
+      async place() {
+        return { ok: false, code: 'desktop_bridge_unavailable' };
+      },
+    },
+  );
+
+  async function createProject(_event: unknown, request: unknown): Promise<CreateProjectBridgeResult | null> {
+    const validated = validateCreateProjectBridgeRequest(request);
+    const projectsRoot = join(appDataRoot, 'projects');
+    await fileSystem.mkdir(projectsRoot, { recursive: true });
+    const root = join(projectsRoot, `${validated.project.id}.novus-project`);
+    const openedAt = now();
+    const opened = await requireMethod(repository, 'create')(root, {
+      project: validated.project,
+      projectId: validated.project.id,
+      projectName: validated.project.name,
+    });
+    const sessionId = createId();
+    let registered = false;
+    try {
+      const summary = await summarizeSession(repository, sessionId, opened);
+      const writer = await requireMethod(repository, 'openJournalWriter')(opened);
+      sessions.set(sessionId, {
+        assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+        closeState: 'open',
+        imageImportInFlight: false,
+        maintenanceTail: Promise.resolve(),
+        openedAt,
+        recoveryCandidatePaths: new Map(),
+        recoveryRequired: false,
+        session: opened,
+        sessionId,
+        writer,
+      });
+      registered = true;
+      await writeProjectPreview(opened.root);
+      await recordRecentProject(summary, opened.root, openedAt, openedAt);
+      return summary;
+    } catch (error) {
+      if (registered) sessions.delete(sessionId);
+      await requireMethod(repository, 'close')(opened).catch(() => undefined);
+      throw error;
+    }
+  }
+  async function listRecentProjects(_event: unknown, _request?: unknown): Promise<readonly RecentProjectSummary[]> {
+    return recentProjectStore.list();
+  }
 
   async function openProject(_event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null> {
     const validated = validateOpenProjectBridgeRequest(request);
     const root = await dialogs.chooseProjectRoot(validated);
-    if (root === null) {
-      return null;
-    }
+    if (root === null) return null;
+    return openProjectAtRoot(root, validated.mode);
+  }
 
-    const opened = await requireMethod(repository, 'open')(root, { mode: validated.mode });
+  async function openLatestRecoveryPreview(_event: unknown): Promise<OpenProjectBridgeResult | null> {
+    const candidate = await recoveryScanner.discoverLatestOrphanCandidate?.() ?? null;
+    if (candidate === null) return null;
+    const root = join(appDataRoot, 'projects', `${candidate.projectId}.novus-project`);
+    if (await pathExists(fileSystem, root)) return null;
+    const sessionId = createId();
+    const candidateId = createId();
+    const openedAt = now();
+    const session: OpenedProjectSession = {
+      lock: null,
+      manifest: createOrphanRecoveryManifest(candidate),
+      mode: 'write',
+      root,
+    };
+    const summary = summarizeRecoveryPreview(sessionId, session, candidate);
+    sessions.set(sessionId, {
+      assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
+      closeState: 'open',
+      imageImportInFlight: false,
+      maintenanceTail: Promise.resolve(),
+      openedAt,
+      recoveryCandidatePaths: new Map([[candidateId, candidate.path]]),
+      recoveryRequired: true,
+      session,
+      sessionId,
+      writer: null,
+    });
+    return summary;
+  }
+
+  async function refreshProject(_event: unknown, request: unknown): Promise<OpenProjectBridgeResult> {
+    const validated = validateSessionRequest(request) as RefreshProjectBridgeRequest;
+    const session = requireSession(sessions, validated.sessionId);
+    await session.maintenanceTail;
+    if (session.recoveryRequired) {
+      throw createPersistenceError(
+        'RECOVERY_REQUIRED',
+        false,
+        'Recovery preview must be restored or discarded before refreshing',
+      );
+    }
+    return summarizeSession(repository, session.sessionId, session.session);
+  }
+
+  async function openRecentProject(_event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null> {
+    const validated = validateOpenRecentProjectBridgeRequest(request);
+    const root = await recentProjectStore.resolveRoot(validated.recentProjectId);
+    if (root === null) return null;
+    return openProjectAtRoot(root, validated.mode);
+  }
+
+  async function removeRecentProject(_event: unknown, request: unknown): Promise<readonly RecentProjectSummary[]> {
+    const validated = validateRecentProjectRequest(request);
+    return recentProjectStore.remove(validated.recentProjectId);
+  }
+
+  async function relocateRecentProject(_event: unknown, request: unknown): Promise<RecentProjectSummary | null> {
+    const validated = validateRecentProjectRequest(request);
+    const root = await dialogs.chooseProjectRoot({ mode: 'write' });
+    if (root === null) return null;
+    return recentProjectStore.relocate(validated.recentProjectId, root);
+  }
+
+  async function openProjectAtRoot(
+    root: string,
+    mode: 'write' | 'read_only',
+  ): Promise<OpenProjectBridgeResult> {
+    const openedAt = now();
+    const opened = await requireMethod(repository, 'open')(root, { mode });
     const sessionId = createId();
     let registered = false;
     try {
@@ -450,6 +657,7 @@ export function createDesktopBridgeHandlers(
           closeState: 'open',
           imageImportInFlight: false,
           maintenanceTail: Promise.resolve(),
+          openedAt,
           recoveryCandidatePaths: new Map(),
           recoveryRequired: true,
           session: opened,
@@ -457,17 +665,38 @@ export function createDesktopBridgeHandlers(
           writer: null,
         });
         registered = true;
+        await recordRecentProject(summary, opened.root, openedAt, openedAt);
         return summary;
       }
 
       const writer = opened.mode === 'write'
         ? await requireMethod(repository, 'openJournalWriter')(opened)
         : null;
+      if (writer !== null && repository.readStableProject !== undefined) {
+        try {
+          const stableProject = await repository.readStableProject(opened);
+          const currentProject = await repository.readCurrentProject(opened);
+          const repair = buildLegacyOrphanedImageResultRepair(stableProject, currentProject);
+          if (repair !== null) {
+            applyProjectTransaction(currentProject, repair);
+            await writer.commit({
+              baseRevision: await readCurrentRevision(repository, opened),
+              kind: 'system',
+              projectId: currentProject.id,
+              transaction: repair,
+            });
+            summary = await summarizeSession(repository, sessionId, opened);
+          }
+        } catch {
+          // A best-effort legacy repair must never prevent the project from opening.
+        }
+      }
       sessions.set(sessionId, {
         assets: new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset])),
         closeState: 'open',
         imageImportInFlight: false,
         maintenanceTail: Promise.resolve(),
+        openedAt,
         recoveryCandidatePaths: new Map(),
         recoveryRequired: false,
         session: opened,
@@ -476,6 +705,7 @@ export function createDesktopBridgeHandlers(
       });
       registered = true;
       await reconcileStagedKnowledgeTransitionsForProject(opened);
+      await recordRecentProject(summary, opened.root, openedAt, openedAt);
       return summary;
     } catch (error) {
       if (registered) sessions.delete(sessionId);
@@ -487,7 +717,6 @@ export function createDesktopBridgeHandlers(
       throw error;
     }
   }
-
   async function commit(_event: unknown, request: unknown): Promise<CommitAck> {
     const validated = validateCommitBridgeRequest(request);
     if (validated.transaction.operations.some((operation) => operation.kind === 'set_project_assets')) {
@@ -517,6 +746,11 @@ export function createDesktopBridgeHandlers(
         transaction: validated.transaction,
       });
       await flushScheduledSnapshotAfterCommit(session, ack, validated.kind);
+      const savedProject = await repository.readCurrentProject(session.session);
+      await recordRecentProject({
+        ...await summarizeSession(repository, session.sessionId, session.session),
+        project: savedProject,
+      }, session.session.root, session.openedAt, now());
       return ack;
     });
   }
@@ -530,6 +764,7 @@ export function createDesktopBridgeHandlers(
     return enqueueSessionMaintenance(session, async () => {
       const flushed = await snapshotScheduler.flush(session.session, { reason: 'stable_point' });
       session.session = await refreshSessionManifest(fileSystem, session.session);
+      await writeProjectPreview(session.session.root);
       return {
         path: flushed.path,
         reason: 'stable_point',
@@ -545,6 +780,13 @@ export function createDesktopBridgeHandlers(
   ): Promise<RecoveryPlanBridgeResult> {
     const validated = validateSessionRequest(request);
     const session = requireSession(sessions, validated.sessionId);
+    if (
+      session.recoveryRequired
+      && session.recoveryCandidatePaths.size > 0
+      && !await pathExists(fileSystem, session.session.root)
+    ) {
+      return retainedOrphanRecoveryPlan(fileSystem, session);
+    }
     const scan = await recoveryScanner.scan(session.session.root);
     session.recoveryCandidatePaths.clear();
     return sanitizeRecoveryPlan(scan, session.recoveryCandidatePaths, createId);
@@ -561,13 +803,24 @@ export function createDesktopBridgeHandlers(
       if (mirrorPath === undefined) {
         throw createPersistenceError('INVALID_REQUEST', false, 'Restore candidate is unavailable');
       }
+      const previewSession = session.session;
       let restoredSession: OpenedProjectSession | null = null;
+      let reopenedSession: OpenedProjectSession | null = null;
+      let recreatedRoot = false;
       try {
-        const restoredManifest = await restoreRecoveryCandidate(fileSystem, createId, session, mirrorPath);
-        restoredSession = {
-          ...session.session,
-          manifest: restoredManifest,
-        };
+        const restored = await restoreRecoveryCandidate(fileSystem, createId, session, mirrorPath, appDataRoot);
+        const restoredManifest = restored.manifest;
+        recreatedRoot = restored.recreatedRoot;
+        if (recreatedRoot) {
+          releaseJournalState(join(previewSession.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), restoredManifest.projectId);
+          reopenedSession = await requireMethod(repository, 'open')(previewSession.root, { mode: 'write' });
+          restoredSession = reopenedSession;
+        } else {
+          restoredSession = {
+            ...previewSession,
+            manifest: restoredManifest,
+          };
+        }
         let restoredWriter = session.writer;
         if (restoredSession.mode === 'write') {
           releaseJournalState(join(restoredSession.root, ...ACTIVE_JOURNAL_SEGMENT.split('/')), restoredManifest.projectId);
@@ -575,6 +828,8 @@ export function createDesktopBridgeHandlers(
         }
 
         const summary = await summarizeSession(repository, session.sessionId, restoredSession);
+        await writeProjectPreview(restoredSession.root);
+        await recordRecentProject(summary, restoredSession.root, session.openedAt, now());
         session.recoveryCandidatePaths.clear();
         session.session = restoredSession;
         session.writer = restoredWriter;
@@ -585,7 +840,17 @@ export function createDesktopBridgeHandlers(
           restoredRevision: restoredManifest.stableSnapshotRevision,
         };
       } catch (error) {
-        if (restoredSession !== null) session.session = restoredSession;
+        if (reopenedSession !== null) {
+          try {
+            await requireMethod(repository, 'close')(reopenedSession);
+          } catch {
+            // Preserve the restoration failure for retry.
+          }
+        }
+        if (recreatedRoot) {
+          await fileSystem.rm(previewSession.root, { force: true, recursive: true }).catch(() => undefined);
+        }
+        session.session = previewSession;
         session.writer = null;
         session.recoveryRequired = true;
         throw error;
@@ -646,6 +911,7 @@ export function createDesktopBridgeHandlers(
         closeState: 'open',
         imageImportInFlight: false,
         maintenanceTail: Promise.resolve(),
+        openedAt: now(),
         recoveryCandidatePaths: new Map(),
         recoveryRequired: false,
         session: opened,
@@ -683,6 +949,7 @@ export function createDesktopBridgeHandlers(
       throw invalidRequest('A project image import is already in progress');
     }
     const openedSession = session.session;
+    const targetNodeId = validated.target.kind === 'module' ? validated.target.nodeId : null;
     session.imageImportInFlight = true;
     try {
       const sourcePath = await dialogs.chooseProjectImage();
@@ -747,6 +1014,14 @@ export function createDesktopBridgeHandlers(
     } finally {
       session.imageImportInFlight = false;
     }
+  }
+
+  async function importProjectImageToPhotoshop(
+    _event: unknown,
+    request: unknown,
+  ): Promise<PhotoshopImportResult> {
+    const validated: PhotoshopImportRequest = parsePhotoshopImportRequest(request);
+    return photoshopSmartObjectService.import(validated);
   }
 
   async function pasteProjectClipboardImage(
@@ -820,6 +1095,125 @@ export function createDesktopBridgeHandlers(
     }
   }
 
+  async function importDroppedProjectMedia(
+    _event: unknown,
+    payload: unknown,
+  ): Promise<ImportDroppedProjectMediaBridgeResult | null> {
+    const { request, sourcePath } = validateImportDroppedProjectMediaPayload(payload);
+    const session = requireWritableSession(sessions, request.sessionId);
+    if (session.writer === null) {
+      throw createPersistenceError('CONCURRENT_WRITER', true, 'Dropped media import requires a writable desktop session');
+    }
+    if (session.imageImportInFlight) throw invalidRequest('A project asset import is already in progress');
+    const openedSession = session.session;
+    session.imageImportInFlight = true;
+    try {
+      return await enqueueSessionMaintenance(session, async () => {
+        const currentSession = requireWritableSession(sessions, request.sessionId);
+        if (currentSession !== session || currentSession.session !== openedSession || currentSession.writer === null) {
+          throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before dropped media import');
+        }
+        const videoSource = await openVideoSource(sourcePath);
+        if (videoSource !== null) {
+          if (request.target.kind === 'module') {
+            await videoSource.close().catch(() => undefined);
+            throw invalidRequest('An image module can only be replaced with an image');
+          }
+          const videoTarget = request.target;
+          const commitState: {
+            value?: { readonly asset: ProjectVideoAsset; readonly project: CanvasProject; readonly revision: number };
+          } = {};
+          try {
+            await assetStore.stageAndCommit(currentSession.session.root, videoSource.stream, {
+              maxBytes: MAX_PROJECT_VIDEO_BYTES,
+              mediaType: 'video/mp4',
+              originalName: basename(sourcePath),
+              commitReference: async (storedAsset) => {
+                assertVideoSourceSizeUnchanged(storedAsset, videoSource.byteSize);
+                const currentProject = await repository.readCurrentProject(currentSession.session);
+                const currentRevision = await readCurrentRevision(repository, currentSession.session);
+                const projectAsset = createImportedProjectVideoAsset(storedAsset);
+                const transaction = createDroppedVideoImportTransaction(currentProject, videoTarget, projectAsset);
+                const nextProject = applyProjectTransaction(currentProject, transaction);
+                const revision = await commitWithDurableReconciliation(
+                  currentSession.writer!,
+                  repository,
+                  currentSession.session,
+                  { baseRevision: currentRevision, kind: 'canvas', projectId: currentProject.id, transaction },
+                  nextProject,
+                );
+                commitState.value = { asset: projectAsset, project: nextProject, revision };
+              },
+            });
+          } finally {
+            await videoSource.close().catch(() => undefined);
+          }
+          const committed = commitState.value;
+          if (committed === undefined) throw invalidRequest('Dropped video import did not reach its durable commit boundary');
+          currentSession.assets.set(committed.asset.assetId, committed.asset);
+          await flushScheduledSnapshot(currentSession, {
+            closing: false,
+            lastTransactionKind: 'canvas',
+            revision: committed.revision,
+            stablePoint: false,
+          });
+          const result = {
+            asset: createProjectVideoSummary(
+              committed.asset,
+              currentSession.sessionId,
+              countProjectImageUsage(committed.project, committed.asset.assetId),
+            ),
+            currentRevision: committed.revision,
+            project: committed.project,
+          };
+          assertPublicBridgePayload(result);
+          return result;
+        }
+        if (extname(sourcePath).toLowerCase() === '.mp4') {
+          throw invalidRequest('Dropped video must be one regular local MP4 file within the size limit');
+        }
+        const commitState: {
+          value?: { readonly ack: CommitAck; readonly asset: ProjectImageAsset; readonly project: CanvasProject };
+        } = {};
+        await assetStore.stageAndCommit(currentSession.session.root, createReadStream(sourcePath), {
+          maxBytes: MAX_PROJECT_IMAGE_BYTES,
+          originalName: basename(sourcePath),
+          commitReference: async (storedAsset) => {
+            const currentProject = await repository.readCurrentProject(currentSession.session);
+            const currentRevision = await readCurrentRevision(repository, currentSession.session);
+            const projectAsset = createImportedProjectImageAsset(storedAsset, sourcePath);
+            const transaction = createDroppedImageImportTransaction(currentProject, request.target, projectAsset);
+            const nextProject = applyProjectTransaction(currentProject, transaction);
+            const ack = await currentSession.writer!.commit({
+              baseRevision: currentRevision,
+              kind: 'canvas',
+              projectId: currentProject.id,
+              transaction,
+            });
+            commitState.value = { ack, asset: projectAsset, project: nextProject };
+          },
+        });
+        const committed = commitState.value;
+        if (committed === undefined) throw invalidRequest('Dropped media import did not reach its durable commit boundary');
+        currentSession.assets.set(committed.asset.assetId, committed.asset);
+        await flushScheduledSnapshotAfterCommit(currentSession, committed.ack, 'canvas');
+        const result = {
+          asset: createProjectImageSummary(
+            committed.asset,
+            currentSession.sessionId,
+            countProjectImageUsage(committed.project, committed.asset.assetId),
+          ),
+          currentRevision: committed.ack.revision,
+          project: committed.project,
+        };
+        assertPublicBridgePayload(result);
+        return result;
+      });
+    } finally {
+      session.imageImportInFlight = false;
+    }
+  }
+
   async function importProjectVideo(
     _event: unknown,
     request: unknown,
@@ -831,6 +1225,7 @@ export function createDesktopBridgeHandlers(
     }
     if (session.imageImportInFlight) throw invalidRequest('A project asset import is already in progress');
     const openedSession = session.session;
+    const targetNodeId = validated.target.kind === 'module' ? validated.target.nodeId : null;
     session.imageImportInFlight = true;
     try {
       const sourcePath = await dialogs.chooseProjectVideo();
@@ -841,9 +1236,11 @@ export function createDesktopBridgeHandlers(
           throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before video import');
         }
         const currentProject = await repository.readCurrentProject(currentSession.session);
-        const node = currentProject.nodes.find((candidate) => candidate.id === validated.target.nodeId);
-        if (node?.type !== 'module' || node.data.moduleType !== 'video_input') {
-          throw invalidRequest('Project video module target is not import-capable');
+        if (targetNodeId !== null) {
+          const node = currentProject.nodes.find((candidate) => candidate.id === targetNodeId);
+          if (node?.type !== 'module' || node.data.moduleType !== 'video_input') {
+            throw invalidRequest('Project video module target is not import-capable');
+          }
         }
         const source = await openVideoSource(sourcePath);
         if (source === null) {
@@ -861,22 +1258,29 @@ export function createDesktopBridgeHandlers(
             commitReference: async (storedAsset) => {
               assertVideoSourceSizeUnchanged(storedAsset, source.byteSize);
               const durableProject = await repository.readCurrentProject(currentSession.session);
-              const targetNode = durableProject.nodes.find((candidate) => candidate.id === validated.target.nodeId);
-              if (targetNode?.type !== 'module' || targetNode.data.moduleType !== 'video_input') {
+              const targetNode = targetNodeId === null
+                ? undefined
+                : durableProject.nodes.find((candidate) => candidate.id === targetNodeId);
+              if (targetNodeId !== null && (targetNode?.type !== 'module' || targetNode.data.moduleType !== 'video_input')) {
                 throw invalidRequest('Project video module target changed before commit');
               }
               const asset = createImportedProjectVideoAsset(storedAsset);
-              const nextNode = {
-                ...targetNode,
-                data: { ...targetNode.data, config: { ...targetNode.data.config, assetId: asset.assetId } },
-              };
+              const operations: ProjectTransaction['operations'] = [
+                { kind: 'set_project_assets', assets: upsertProjectAsset(durableProject.assets ?? [], asset) },
+              ];
+              if (targetNode?.type === 'module') {
+                const nextNode = {
+                  ...targetNode,
+                  data: { ...targetNode.data, config: { ...targetNode.data.config, assetId: asset.assetId } },
+                };
+                operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } });
+              }
               const transaction: ProjectTransaction = {
                 id: `import-project-video-${asset.assetId}-${createId()}`,
-                label: 'Import managed project video',
-                operations: [
-                  { kind: 'set_project_assets', assets: upsertProjectAsset(durableProject.assets ?? [], asset) },
-                  { kind: 'canvas', operation: { kind: 'update_node', node: nextNode } },
-                ],
+                label: validated.target.kind === 'agent_reference'
+                  ? 'Import managed Agent reference video'
+                  : 'Import managed project video',
+                operations,
               };
               const nextProject = applyProjectTransaction(durableProject, transaction);
               const commitRequest = {
@@ -1022,7 +1426,7 @@ export function createDesktopBridgeHandlers(
       session.session.root,
       projectAssets,
     );
-    if (storedAssetList.length !== projectAssets.length) {
+    if (projectAssets.length > 0 && storedAssetList.length === 0) {
       throw createPersistenceError(
         'MISSING_ASSET',
         true,
@@ -1052,7 +1456,7 @@ export function createDesktopBridgeHandlers(
     const project = await repository.readCurrentProject(session.session);
     const projectAssets = project.assets ?? [];
     const storedAssetList = await assetStore.list(session.session.root, projectAssets);
-    if (storedAssetList.length !== projectAssets.length) {
+    if (projectAssets.length > 0 && storedAssetList.length === 0) {
       throw createPersistenceError('MISSING_ASSET', true, 'A managed project asset is missing or failed integrity verification');
     }
     const storedAssets = new Map(storedAssetList.map((asset) => [asset.id, asset]));
@@ -1078,6 +1482,120 @@ export function createDesktopBridgeHandlers(
       asset.sha256,
       asset.byteSize,
     );
+  }
+
+  async function readManagedReverseMedia(
+    sessionId: string,
+    media: readonly ManagedReversePromptMediaIdentity[],
+  ): Promise<readonly ManagedReversePromptMediaContent[]> {
+    const session = requireSession(sessions, sessionId);
+    if (fileSystem.readFileBuffer === undefined) throw createPersistenceError('MISSING_ASSET', false, 'Managed media reader is unavailable');
+    return Promise.all(media.map(async (identity) => {
+      const asset = session.assets.get(identity.assetId);
+      if (asset === undefined || asset.sha256 !== identity.sha256 || asset.byteSize !== identity.byteSize || asset.mediaType !== identity.mediaType || (identity.kind === 'image' && !isProjectImageAsset(asset)) || (identity.kind === 'video' && !isProjectVideoAsset(asset))) {
+        throw createPersistenceError('MISSING_ASSET', false, 'Managed reverse-analysis media is unavailable');
+      }
+      const path = await assetStore.resolvePath(session.session.root, asset.assetId, asset.extension, asset.sha256, asset.byteSize);
+      if (path === null) throw createPersistenceError('MISSING_ASSET', false, 'Managed reverse-analysis media failed integrity verification');
+      return { bytes: await fileSystem.readFileBuffer!(path), mediaType: identity.mediaType };
+    }));
+  }
+
+  async function readManagedSkillChatImages(
+    sessionId: string,
+    referenceAssetIds: readonly string[],
+  ): Promise<readonly ManagedSkillChatImageContent[]> {
+    const session = requireSession(sessions, sessionId);
+    if (fileSystem.readFileBuffer === undefined) throw createPersistenceError('MISSING_ASSET', false, 'Managed Skill chat image reader is unavailable');
+    const project = await repository.readCurrentProject(session.session);
+    const projectAssets = project.assets ?? [];
+    session.assets = new Map(projectAssets.map((asset) => [asset.assetId, asset]));
+    return Promise.all(referenceAssetIds.map(async (assetId) => {
+      const asset = session.assets.get(assetId);
+      if (asset === undefined || !isProjectImageAsset(asset)) {
+        throw createPersistenceError('MISSING_ASSET', false, 'Managed Skill chat image is unavailable');
+      }
+      const path = await assetStore.resolvePath(session.session.root, asset.assetId, asset.extension, asset.sha256, asset.byteSize);
+      if (path === null) throw createPersistenceError('MISSING_ASSET', false, 'Managed Skill chat image failed integrity verification');
+      return { bytes: await fileSystem.readFileBuffer!(path), mediaType: asset.mediaType };
+    }));
+  }
+
+  async function storeGeneratedImage(
+    sessionId: string,
+    bytes: Uint8Array,
+    mediaType: string,
+  ): Promise<ProjectImageAsset> {
+    if (!mediaType.startsWith('image/')) throw invalidRequest('Generated result must be an image');
+    if (bytes.byteLength === 0) throw invalidRequest('Generated result is empty');
+    const session = requireWritableSession(sessions, sessionId);
+    return enqueueSessionMaintenance(session, async () => {
+      const currentSession = requireWritableSession(sessions, sessionId);
+      if (currentSession.writer === null) throw createPersistenceError('CONCURRENT_WRITER', true, 'Generated image requires a writable desktop session');
+      const commitState: { value?: { readonly ack: CommitAck; readonly asset: ProjectImageAsset } } = {};
+      await assetStore.stageAndCommit(currentSession.session.root, Readable.from([bytes]), {
+        maxBytes: MAX_PROJECT_IMAGE_BYTES,
+        mediaType,
+        originalName: 'generated.png',
+        commitReference: async (storedAsset) => {
+          const currentProject = await repository.readCurrentProject(currentSession.session);
+          const currentRevision = await readCurrentRevision(repository, currentSession.session);
+          const asset = createHistoryProjectImageAsset(storedAsset, 'generated');
+          const transaction: ProjectTransaction = {
+            id: `generated-image-${createId()}`,
+            label: 'Store generated image',
+            operations: [{ kind: 'set_project_assets', assets: upsertProjectImageAsset(currentProject.assets ?? [], asset) }],
+          };
+          const ack = await currentSession.writer!.commit({ baseRevision: currentRevision, kind: 'canvas', projectId: currentProject.id, transaction });
+          commitState.value = { ack, asset };
+        },
+      });
+      if (commitState.value === undefined) throw invalidRequest('Generated image did not reach its durable commit boundary');
+      currentSession.assets.set(commitState.value.asset.assetId, commitState.value.asset);
+      await flushScheduledSnapshotAfterCommit(currentSession, commitState.value.ack, 'canvas');
+      return commitState.value.asset;
+    });
+  }
+
+  async function storeGeneratedVideo(
+    sessionId: string,
+    bytes: Uint8Array,
+    mediaType: 'video/mp4',
+  ): Promise<ProjectVideoAsset> {
+    if (mediaType !== 'video/mp4') throw invalidRequest('Generated video result must be an MP4');
+    if (bytes.byteLength === 0) throw invalidRequest('Generated video result is empty');
+    const session = requireWritableSession(sessions, sessionId);
+    return enqueueSessionMaintenance(session, async () => {
+      const currentSession = requireWritableSession(sessions, sessionId);
+      if (currentSession.writer === null) throw createPersistenceError('CONCURRENT_WRITER', true, 'Generated video requires a writable desktop session');
+      const commitState: { value?: { readonly ack: CommitAck; readonly asset: ProjectVideoAsset } } = {};
+      await assetStore.stageAndCommit(currentSession.session.root, Readable.from([bytes]), {
+        maxBytes: MAX_PROJECT_VIDEO_BYTES,
+        mediaType,
+        originalName: 'generated.mp4',
+        commitReference: async (storedAsset) => {
+          const currentProject = await repository.readCurrentProject(currentSession.session);
+          const currentRevision = await readCurrentRevision(repository, currentSession.session);
+          const asset = createImportedProjectVideoAsset(storedAsset);
+          const transaction: ProjectTransaction = {
+            id: `generated-video-${createId()}`,
+            label: 'Store generated video',
+            operations: [{ kind: 'set_project_assets', assets: upsertProjectAsset(currentProject.assets ?? [], asset) }],
+          };
+          const ack = await currentSession.writer!.commit({ baseRevision: currentRevision, kind: 'canvas', projectId: currentProject.id, transaction });
+          commitState.value = { ack, asset };
+        },
+      });
+      if (commitState.value === undefined) throw invalidRequest('Generated video did not reach its durable commit boundary');
+      currentSession.assets.set(commitState.value.asset.assetId, commitState.value.asset);
+      await flushScheduledSnapshotAfterCommit(currentSession, commitState.value.ack, 'canvas');
+      return commitState.value.asset;
+    });
+  }
+  async function resolveRecentProjectPreviewPath(displayUrl: string): Promise<string | null> {
+    const match = /^novus-recent-project:\/\/(recent_[a-f0-9]{24})\/preview$/u.exec(displayUrl);
+    if (match === null) return null;
+    return recentProjectStore.resolvePreviewPath(match[1]!);
   }
 
   async function resolveGenerationHistoryImagePath(displayUrl: string): Promise<string | null> {
@@ -1497,6 +2015,7 @@ export function createDesktopBridgeHandlers(
   return {
     closeAllProjects,
     closeProject,
+    createProject,
     commit,
     configureKnowledgeBase,
     createStablePoint,
@@ -1504,7 +2023,9 @@ export function createDesktopBridgeHandlers(
     getKnowledgeState,
     getRecoveryPlan,
     importPack,
+    importDroppedProjectMedia,
     importProjectImage,
+    importProjectImageToPhotoshop,
     importProjectVideo,
     pasteProjectClipboardImage,
     pasteProjectClipboardVideo,
@@ -1517,19 +2038,65 @@ export function createDesktopBridgeHandlers(
     listGenerationHistory,
     listProjectImages,
     listProjectVideos,
+    listRecentProjects,
+    openLatestRecoveryPreview,
     openProject,
+    refreshProject,
+    openRecentProject,
+    relocateRecentProject,
+    removeRecentProject,
     prepareSkillCandidateReview,
     reviewSkillCandidate,
     permanentlyDeleteGenerationHistory,
     purgeGenerationHistory,
     restoreGenerationHistory,
     restore,
+    readManagedReverseMedia,
+    readManagedSkillChatImages,
+    storeGeneratedImage,
+    storeGeneratedVideo,
     resolveGenerationHistoryImagePath,
     resolveProjectImagePath,
+    resolveRecentProjectPreviewPath,
     setGenerationHistoryFavorite,
     trashGenerationHistory,
   };
 
+  async function writeProjectPreview(projectRoot: string): Promise<void> {
+    if (dependencies.captureProjectPreview === undefined) return;
+    try {
+      const bytes = await dependencies.captureProjectPreview();
+      if (bytes === null || bytes.byteLength < 8 || bytes.byteLength > 10 * 1024 * 1024) return;
+      const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+      if (!pngSignature.every((value, index) => bytes[index] === value)) return;
+      await writeAtomic(fileSystem, join(projectRoot, 'preview.png'), bytes);
+    } catch {
+      // A preview is optional metadata; capture failure must not block project durability.
+    }
+  }
+  async function recordRecentProject(
+    summary: BridgeSessionSummary,
+    root: string,
+    lastOpenedAt: string,
+    lastSavedAt: string,
+  ): Promise<void> {
+    const assets = summary.project.assets ?? [];
+    try {
+      await recentProjectStore.upsert({
+        root,
+        projectId: summary.projectId,
+        displayName: summary.projectName,
+        lastOpenedAt,
+        lastSavedAt,
+        nodeCount: summary.project.nodes.length,
+        imageCount: assets.filter((asset) => asset.mediaType.startsWith('image/')).length,
+        videoCount: assets.filter((asset) => asset.mediaType === 'video/mp4').length,
+      });
+    } catch {
+      // The recent-project index is auxiliary metadata. A temporarily locked or
+      // unavailable index must never prevent the user's project from opening or saving.
+    }
+  }
   async function closeBridgeSession(
     session: BridgeSessionContext,
     options: { flush?: boolean } = {},
@@ -2024,17 +2591,26 @@ export function registerDesktopBridgeHandlers(
   handlers: DesktopBridgeHandlers,
 ): void {
   ipcMain.handle(BRIDGE_CHANNELS.openProject, handlers.openProject);
+  ipcMain.handle(BRIDGE_CHANNELS.refreshProject, handlers.refreshProject);
+  ipcMain.handle(BRIDGE_CHANNELS.recentProjects.list, handlers.listRecentProjects);
+  ipcMain.handle(BRIDGE_CHANNELS.recentProjects.open, handlers.openRecentProject);
+  ipcMain.handle(BRIDGE_CHANNELS.recentProjects.remove, handlers.removeRecentProject);
+  ipcMain.handle(BRIDGE_CHANNELS.recentProjects.relocate, handlers.relocateRecentProject);
+  ipcMain.handle(BRIDGE_CHANNELS.createProject, handlers.createProject);
   ipcMain.handle(BRIDGE_CHANNELS.commit, handlers.commit);
   ipcMain.handle(BRIDGE_CHANNELS.createStablePoint, handlers.createStablePoint);
   ipcMain.handle(BRIDGE_CHANNELS.restore, handlers.restore);
   ipcMain.handle(BRIDGE_CHANNELS.exportPack, handlers.exportPack);
   ipcMain.handle(BRIDGE_CHANNELS.importPack, handlers.importPack);
+  ipcMain.handle(BRIDGE_CHANNELS.importDroppedProjectMedia, handlers.importDroppedProjectMedia);
   ipcMain.handle(BRIDGE_CHANNELS.importProjectImage, handlers.importProjectImage);
+  ipcMain.handle(BRIDGE_CHANNELS.importProjectImageToPhotoshop, handlers.importProjectImageToPhotoshop);
   ipcMain.handle(BRIDGE_CHANNELS.importProjectVideo, handlers.importProjectVideo);
   ipcMain.handle(BRIDGE_CHANNELS.pasteProjectClipboardImage, handlers.pasteProjectClipboardImage);
   ipcMain.handle(BRIDGE_CHANNELS.pasteProjectClipboardVideo, handlers.pasteProjectClipboardVideo);
   ipcMain.handle(BRIDGE_CHANNELS.listProjectImages, handlers.listProjectImages);
   ipcMain.handle(BRIDGE_CHANNELS.listProjectVideos, handlers.listProjectVideos);
+  ipcMain.handle(BRIDGE_CHANNELS.openLatestRecoveryPreview, handlers.openLatestRecoveryPreview);
   ipcMain.handle(BRIDGE_CHANNELS.closeProject, handlers.closeProject);
   ipcMain.handle(BRIDGE_CHANNELS.getRecoveryPlan, handlers.getRecoveryPlan);
   ipcMain.handle(BRIDGE_CHANNELS.configureKnowledgeBase, handlers.configureKnowledgeBase);
@@ -2057,6 +2633,7 @@ export function registerDesktopBridgeHandlers(
 
 function withDialogDefaults(dialogs: Partial<BridgeDialogAdapter> | undefined): BridgeDialogAdapter {
   return {
+    chooseCreateProjectRoot: dialogs?.chooseCreateProjectRoot ?? (async () => null),
     chooseImportDestination: dialogs?.chooseImportDestination ?? (async () => null),
     chooseImportPackSource: dialogs?.chooseImportPackSource ?? (async () => null),
     chooseKnowledgeRoot: dialogs?.chooseKnowledgeRoot ?? (async () => null),
@@ -2072,7 +2649,7 @@ function withRepositoryDefaults(
   repository: Partial<ProjectRepositoryLike> | undefined,
   options: { readonly channel: PersistenceChannel; readonly fileSystem: FileSystem },
 ): ProjectRepositoryLike {
-  if (repository?.open !== undefined && repository.close !== undefined && repository.openJournalWriter !== undefined) {
+  if (repository?.create !== undefined && repository.open !== undefined && repository.close !== undefined && repository.openJournalWriter !== undefined) {
     return repository as ProjectRepositoryLike;
   }
 
@@ -2081,11 +2658,16 @@ function withRepositoryDefaults(
     fileSystem: options.fileSystem,
   });
   return {
+    create: repository?.create ?? ((root, createOptions) => fallback.create(root, createOptions)),
     close: repository?.close ?? ((session) => fallback.close(session)),
     open: repository?.open ?? ((root, openOptions) => fallback.open(root, openOptions)),
     openJournalWriter: repository?.openJournalWriter ?? ((session) => fallback.openJournalWriter(session)),
     readCurrentProject: repository?.readCurrentProject ?? ((session) => fallback.readCurrentProject(session)),
-    readCurrentRevision: repository?.readCurrentRevision ?? ((session) => fallback.readCurrentRevision(session)),
+    readCurrentRevision: repository?.readCurrentRevision
+      ?? (repository?.readCurrentProject === undefined
+        ? ((session) => fallback.readCurrentRevision(session))
+        : async (session) => session.manifest.stableSnapshotRevision),
+    readStableProject: repository?.readStableProject ?? ((session) => fallback.readStableProject(session)),
   };
 }
 
@@ -2094,6 +2676,7 @@ async function validateProjectImageTarget(
   session: BridgeSessionContext,
   target: ProjectImageImportTarget,
 ): Promise<void> {
+  if (target.kind === 'agent_reference') return;
   const project = await repository.readCurrentProject(session.session);
   const node = project.nodes.find((candidate) => candidate.id === target.nodeId);
   if (node === undefined) throw invalidRequest('Project image target node is unavailable');
@@ -2180,9 +2763,17 @@ function createProjectImageImportTransaction(
   asset: ProjectImageAsset,
   createId: () => string,
 ): ProjectTransaction {
+  const assets = upsertProjectImageAsset(project.assets ?? [], asset);
+  const suffix = createId();
+  if (target.kind === 'agent_reference') {
+    return {
+      id: `import-agent-reference-image-${asset.assetId}-${suffix}`,
+      label: 'Import managed Agent reference image',
+      operations: [{ kind: 'set_project_assets', assets }],
+    };
+  }
   const node = project.nodes.find((candidate) => candidate.id === target.nodeId);
   if (node === undefined) throw invalidRequest('Project image target node is unavailable');
-  const assets = upsertProjectImageAsset(project.assets ?? [], asset);
   let nextNode: CanvasProject['nodes'][number];
   if (target.kind === 'module') {
     if (node.type !== 'module' || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')) {
@@ -2224,7 +2815,6 @@ function createProjectImageImportTransaction(
       data: { ...node.data, objects: [...node.data.objects, object] },
     };
   }
-  const suffix = createId();
   return {
     id: `import-project-image-${asset.assetId}-${suffix}`,
     label: 'Import managed project image',
@@ -2274,6 +2864,61 @@ function createClipboardVideoPasteTransaction(
       { kind: 'set_project_assets', assets: upsertProjectAsset(project.assets ?? [], asset) },
       { kind: 'canvas', operation: { kind: 'create_node', node: boundNode } },
     ],
+  };
+}
+
+function createDroppedImageImportTransaction(
+  project: CanvasProject,
+  target: ImportDroppedProjectMediaBridgeRequest['target'],
+  asset: ProjectImageAsset,
+): ProjectTransaction {
+  const identity = droppedMediaIdentity(target.operationId);
+  if (target.kind === 'module') {
+    return createProjectImageImportTransaction(
+      project,
+      { kind: 'module', nodeId: target.nodeId },
+      asset,
+      () => identity.transactionId,
+    );
+  }
+  const node = createCanvasModuleNode(identity.nodeId, 'image_input', target.position);
+  const boundNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } };
+  return {
+    id: identity.transactionId,
+    label: 'Import dropped image',
+    operations: [
+      { kind: 'set_project_assets', assets: upsertProjectImageAsset(project.assets ?? [], asset) },
+      { kind: 'canvas', operation: { kind: 'create_node', node: boundNode } },
+    ],
+  };
+}
+
+function createDroppedVideoImportTransaction(
+  project: CanvasProject,
+  target: Extract<ImportDroppedProjectMediaBridgeRequest['target'], { readonly kind: 'new_media_input' }>,
+  asset: ProjectVideoAsset,
+): ProjectTransaction {
+  const identity = droppedMediaIdentity(target.operationId, 'video');
+  const node = createCanvasModuleNode(identity.nodeId, 'video_input', target.position);
+  const boundNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } };
+  return {
+    id: identity.transactionId,
+    label: 'Import dropped video',
+    operations: [
+      { kind: 'set_project_assets', assets: upsertProjectAsset(project.assets ?? [], asset) },
+      { kind: 'canvas', operation: { kind: 'create_node', node: boundNode } },
+    ],
+  };
+}
+
+function droppedMediaIdentity(
+  operationId: string,
+  mediaType: 'image' | 'video' = 'image',
+): { readonly nodeId: string; readonly transactionId: string } {
+  const suffix = sha256Canonical({ operationId }).slice(0, 24);
+  return {
+    nodeId: `dropped-${mediaType}-${suffix}`,
+    transactionId: `import-dropped-${mediaType}-${suffix}`,
   };
 }
 
@@ -2526,6 +3171,56 @@ function summarizeRecoveryPreview(
   };
 }
 
+function createOrphanRecoveryManifest(candidate: OrphanRecoveryCandidate): ProjectManifest {
+  const assets = candidate.project.assets ?? [];
+  return {
+    activeJournalSegment: ACTIVE_JOURNAL_SEGMENT,
+    assetInventory: {
+      assetCount: assets.length,
+      totalBytes: assets.reduce((total, asset) => total + asset.byteSize, 0),
+    },
+    cleanClose: false,
+    formatVersion: PROJECT_FORMAT_VERSION,
+    minimumCompatibleWriterVersion: PROJECT_FORMAT_VERSION,
+    nextSequence: candidate.revision + 1,
+    projectId: candidate.projectId,
+    projectName: candidate.project.name,
+    stableSnapshotId: candidate.snapshotId,
+    stableSnapshotPath: null,
+    stableSnapshotRevision: candidate.revision,
+  };
+}
+
+async function retainedOrphanRecoveryPlan(
+  fileSystem: FileSystem,
+  session: BridgeSessionContext,
+): Promise<RecoveryPlanBridgeResult> {
+  const candidates: RecoveryCandidateBridgeSummary[] = [];
+  for (const [candidateId, path] of session.recoveryCandidatePaths) {
+    const mirror = parseRecoveryCandidateMirror(
+      JSON.parse(await fileSystem.readFile(path, 'utf8')) as unknown,
+      session.session.manifest.projectId,
+    );
+    candidates.push({
+      candidateId,
+      revision: mirror.revision,
+      snapshotId: mirror.snapshotId,
+      tailStatus: 'complete',
+    });
+  }
+  candidates.sort((left, right) => right.revision - left.revision || left.snapshotId.localeCompare(right.snapshotId));
+  const selected = candidates[0] ?? null;
+  return {
+    action: 'choose_recovery',
+    candidates,
+    issues: ['missing_project_root'],
+    projectId: session.session.manifest.projectId,
+    recoveredRevision: selected?.revision ?? null,
+    stableSnapshotId: selected?.snapshotId ?? null,
+    targetRevision: selected?.revision ?? null,
+  };
+}
+
 function selectHighestCompleteRecoveryCandidate(
   scan: RecoveryScanResult,
   projectId: string,
@@ -2741,8 +3436,21 @@ async function restoreRecoveryCandidate(
   createId: () => string,
   session: BridgeSessionContext,
   mirrorPath: string,
-): Promise<ProjectManifest> {
-  const manifest = await readProjectManifest(fileSystem, session.session.root);
+  appDataRoot: string,
+): Promise<{ readonly manifest: ProjectManifest; readonly recreatedRoot: boolean }> {
+  const rootExists = await pathExists(fileSystem, session.session.root);
+  let recreatedRoot = false;
+  let manifest: ProjectManifest;
+  if (rootExists) {
+    manifest = await readProjectManifest(fileSystem, session.session.root);
+  } else {
+    assertManagedRecoveryRoot(appDataRoot, session.session.root);
+    manifest = session.session.manifest;
+    for (const directory of PROJECT_DIRECTORIES) {
+      await fileSystem.mkdir(join(session.session.root, ...directory.split('/')), { recursive: true });
+    }
+    recreatedRoot = true;
+  }
   const candidate = parseRecoveryCandidateMirror(
     JSON.parse(await fileSystem.readFile(mirrorPath, 'utf8')) as unknown,
     manifest.projectId,
@@ -2776,6 +3484,7 @@ async function restoreRecoveryCandidate(
     cleanClose: false,
     formatVersion: PROJECT_FORMAT_VERSION,
     nextSequence: candidate.revision + 1,
+    projectName: parseCanvasProject(candidate.project).name,
     stableSnapshotId: snapshotId,
     stableSnapshotPath: snapshotPath,
     stableSnapshotRevision: candidate.revision,
@@ -2785,7 +3494,35 @@ async function restoreRecoveryCandidate(
     join(session.session.root, PROJECT_MANIFEST_PATH),
     `${canonicalJson(nextManifest)}\n`,
   );
-  return nextManifest;
+  return { manifest: nextManifest, recreatedRoot };
+}
+
+function assertManagedRecoveryRoot(appDataRoot: string, projectRoot: string): void {
+  const managedProjectsRoot = resolve(appDataRoot, 'projects');
+  const candidateRoot = resolve(projectRoot);
+  const relativePath = relative(managedProjectsRoot, candidateRoot);
+  if (
+    relativePath.length === 0
+    || relativePath.startsWith('..')
+    || isAbsolute(relativePath)
+    || !basename(candidateRoot).endsWith('.novus-project')
+  ) {
+    throw createPersistenceError(
+      'INVALID_REQUEST',
+      false,
+      'Missing recovery roots can only be recreated inside the managed projects directory',
+    );
+  }
+}
+
+async function pathExists(fileSystem: FileSystem, path: string): Promise<boolean> {
+  try {
+    await fileSystem.stat(path);
+    return true;
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 async function refreshSessionManifest(
@@ -2832,11 +3569,40 @@ function parseRecoveryCandidateMirror(value: unknown, projectId: string): Recove
   };
 }
 
+function validateCreateProjectBridgeRequest(value: unknown): CreateProjectBridgeRequest {
+  const record = expectPlainRecord(value);
+  try {
+    return { project: parseCanvasProject(record.project) };
+  } catch {
+    throw createPersistenceError('INVALID_REQUEST', false, 'Create project payload is invalid');
+  }
+}
 function validateOpenProjectBridgeRequest(value: unknown): OpenProjectBridgeRequest {
   const record = expectPlainRecord(value);
+  assertExactKeys(record, ['mode'], 'Open project request');
+  return { mode: parseMode(record.mode) };
+}
+
+function validateOpenRecentProjectBridgeRequest(value: unknown): OpenRecentProjectBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['mode', 'recentProjectId'], 'Open recent project request');
   return {
     mode: parseMode(record.mode),
+    recentProjectId: parseRecentProjectId(record.recentProjectId),
   };
+}
+
+function validateRecentProjectRequest(value: unknown): RecentProjectRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['recentProjectId'], 'Recent project request');
+  return { recentProjectId: parseRecentProjectId(record.recentProjectId) };
+}
+
+function parseRecentProjectId(value: unknown): string {
+  if (typeof value !== 'string' || !/^recent_[a-f0-9]{24}$/u.test(value)) {
+    throw invalidRequest('Recent project id is invalid');
+  }
+  return value;
 }
 
 function validateCloseProjectBridgeRequest(value: unknown): CloseProjectBridgeRequest {
@@ -2897,6 +3663,9 @@ function validateImportProjectImageBridgeRequest(value: unknown): ImportProjectI
       nodeId: parseNonEmptyString(targetRecord.nodeId, 'target.nodeId'),
       role: parseReferenceRole(targetRecord.role),
     };
+  } else if (kind === 'agent_reference') {
+    assertExactKeys(targetRecord, ['kind'], 'Agent reference image target');
+    target = { kind };
   } else {
     throw invalidRequest('Project image import target kind is invalid');
   }
@@ -2911,12 +3680,70 @@ function validateImportProjectImageBridgeRequest(value: unknown): ImportProjectI
 function validateImportProjectVideoBridgeRequest(value: unknown): ImportProjectVideoBridgeRequest {
   const record = expectPlainRecord(value);
   assertExactKeys(record, ['sessionId', 'target'], 'Project video import request');
-  const target = expectPlainRecord(record.target);
-  assertExactKeys(target, ['kind', 'nodeId'], 'Project video module target');
-  if (target.kind !== 'module') throw invalidRequest('Project video import target kind is invalid');
+  const targetRecord = expectPlainRecord(record.target);
+  let target: ImportProjectVideoBridgeRequest['target'];
+  if (targetRecord.kind === 'module') {
+    assertExactKeys(targetRecord, ['kind', 'nodeId'], 'Project video module target');
+    target = { kind: 'module', nodeId: parseNonEmptyString(targetRecord.nodeId, 'target.nodeId') };
+  } else if (targetRecord.kind === 'agent_reference') {
+    assertExactKeys(targetRecord, ['kind'], 'Agent reference video target');
+    target = { kind: 'agent_reference' };
+  } else {
+    throw invalidRequest('Project video import target kind is invalid');
+  }
   const request = {
     sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
-    target: { kind: 'module' as const, nodeId: parseNonEmptyString(target.nodeId, 'target.nodeId') },
+    target,
+  };
+  assertPublicBridgePayload(request);
+  return request;
+}
+
+function validateImportDroppedProjectMediaPayload(value: unknown): {
+  readonly request: ImportDroppedProjectMediaBridgeRequest;
+  readonly sourcePath: string;
+} {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['request', 'sourcePath'], 'Dropped project media import payload');
+  const request = validateImportDroppedProjectMediaBridgeRequest(record.request);
+  const sourcePath = parseNonEmptyString(record.sourcePath, 'sourcePath');
+  if (!isAbsolute(sourcePath)) throw invalidRequest('Dropped media source must be an absolute local path');
+  return { request, sourcePath };
+}
+
+function validateImportDroppedProjectMediaBridgeRequest(value: unknown): ImportDroppedProjectMediaBridgeRequest {
+  const record = expectPlainRecord(value);
+  assertExactKeys(record, ['sessionId', 'target'], 'Dropped project media import request');
+  const target = expectPlainRecord(record.target);
+  const sessionId = parseNonEmptyString(record.sessionId, 'sessionId');
+  const operationId = parseDroppedMediaOperationId(target.operationId);
+  if (target.kind === 'module') {
+    assertExactKeys(target, ['kind', 'nodeId', 'operationId'], 'Dropped project media module target');
+    const request = {
+      sessionId,
+      target: {
+        kind: 'module' as const,
+        nodeId: parseNonEmptyString(target.nodeId, 'target.nodeId'),
+        operationId,
+      },
+    };
+    assertPublicBridgePayload(request);
+    return request;
+  }
+  assertExactKeys(target, ['kind', 'operationId', 'position'], 'Dropped project media target');
+  if (target.kind !== 'new_media_input') throw invalidRequest('Dropped project media target kind is invalid');
+  const position = expectPlainRecord(target.position);
+  assertExactKeys(position, ['x', 'y'], 'Dropped project media position');
+  const request = {
+    sessionId,
+    target: {
+      kind: 'new_media_input' as const,
+      operationId,
+      position: {
+        x: parseBoundedCanvasCoordinate(position.x, 'target.position.x'),
+        y: parseBoundedCanvasCoordinate(position.y, 'target.position.y'),
+      },
+    },
   };
   assertPublicBridgePayload(request);
   return request;
@@ -2984,6 +3811,11 @@ function parseClipboardOperationId(value: unknown): string {
 function parseClipboardVideoOperationId(value: unknown): string {
   if (typeof value === 'string' && /^clipboard_video_[a-z0-9-]{4,72}$/u.test(value)) return value;
   throw invalidRequest('Clipboard video paste operation identity is invalid');
+}
+
+function parseDroppedMediaOperationId(value: unknown): string {
+  if (typeof value === 'string' && /^dropped_media_[a-z0-9-]{4,72}$/u.test(value)) return value;
+  throw invalidRequest('Dropped media operation identity is invalid');
 }
 
 function parseBoundedCanvasCoordinate(value: unknown, field: string): number {

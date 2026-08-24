@@ -14,9 +14,25 @@ const viewportSize = { width: 800, height: 600 };
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('selectViewportCulledElements', () => {
+  it('preserves controlled node and edge references when culling is disabled', () => {
+    const nodes = [testNode('source', 20, 20), testNode('target', 320, 20)];
+    const edges = [testEdge('connected', 'source', 'target')];
+
+    const result = selectViewportCulledElements({
+      edges,
+      enabled: false,
+      nodes,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      viewportSize: { width: 800, height: 600 },
+    });
+
+    expect(result.nodes).toBe(nodes);
+    expect(result.edges).toBe(edges);
+  });
   it('keeps viewport, selected-connected, active-edge, and ghost nodes without reordering or mutating inputs', () => {
     const nodes = [
       testNode('visible', 40, 40),
@@ -78,9 +94,48 @@ describe('selectViewportCulledElements', () => {
       nodes.filter((node) => result.nodes.some((visible) => visible.id === node.id)).map((node) => node.id),
     );
   });
+
+  it('does not mount offscreen neighbors when the selected node is already visible', () => {
+    const nodes = [
+      testNode('selected-visible', 40, 40, { selected: true }),
+      testNode('offscreen-neighbor', 2400, 1800),
+    ];
+    const edges = [testEdge('connected', 'selected-visible', 'offscreen-neighbor')];
+
+    const result = selectViewportCulledElements({
+      edges,
+      nodes,
+      overscan: 80,
+      viewport,
+      viewportSize,
+    });
+
+    expect(result.nodes.map((node) => node.id)).toEqual(['selected-visible']);
+    expect(result.edges).toHaveLength(0);
+  });
 });
 
 describe('useViewportCulling', () => {
+  it('coalesces repeated viewport changes into one animation-frame publication', () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const { result } = renderHook(() => useViewportCulling({ edges: [], nodes: [] }));
+
+    act(() => {
+      result.current.handleViewportChange(null, { x: 10, y: 20, zoom: 1 });
+      result.current.handleViewportChange(null, { x: 30, y: 40, zoom: 1.2 });
+      result.current.handleViewportChange(null, { x: 50, y: 60, zoom: 1.4 });
+    });
+
+    expect(result.current.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
+    expect(callbacks).toHaveLength(1);
+    act(() => callbacks[0]!(16));
+    expect(result.current.viewport).toEqual({ x: 50, y: 60, zoom: 1.4 });
+  });
   it('keeps all nodes for fitView until React Flow reports the first real viewport', () => {
     const nodes = [
       testNode('far-a', 4800, 5200),
@@ -108,7 +163,7 @@ describe('useViewportCulling', () => {
 
     expect(result.current.nodes.map((node) => node.id)).toEqual(['far-a', 'far-b']);
 
-    act(() => result.current.handleViewportChange(null, viewport));
+    act(() => result.current.handleViewportInitialized({ getViewport: () => viewport }));
 
     expect(result.current.nodes).toHaveLength(0);
   });

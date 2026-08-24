@@ -68,6 +68,11 @@ export interface SnapshotSchedulerOptions {
   readonly fileSystem?: FileSystem;
   readonly now?: () => Date;
   readonly worker?: (input: SnapshotWorkerInput) => Promise<SnapshotWorkerOutput>;
+  /**
+   * Worker entry supplied by the host bundle.  Keeping this explicit avoids
+   * resolving a source-relative URL that breaks when the host is bundled as CJS.
+   */
+  readonly workerEntryUrl?: URL;
   readonly workerFactory?: SnapshotWorkerFactory;
 }
 
@@ -108,7 +113,10 @@ export class SnapshotScheduler {
   constructor(options: SnapshotSchedulerOptions = {}) {
     this.fileSystem = options.fileSystem ?? new NodeFileSystem();
     this.now = options.now ?? (() => new Date());
-    this.worker = options.worker ?? createNodeSnapshotWorkerRunner(options.workerFactory);
+    this.worker = options.worker
+      ?? (options.workerEntryUrl
+        ? createNodeSnapshotWorkerRunner(options.workerEntryUrl, options.workerFactory)
+        : SnapshotScheduler.defaultWorker);
   }
 
   static defaultWorker(input: SnapshotWorkerInput): Promise<SnapshotWorkerOutput> {
@@ -485,10 +493,11 @@ function validateSnapshotSegment(path: string): string {
 }
 
 function createNodeSnapshotWorkerRunner(
+  workerEntryUrl: URL,
   workerFactory: SnapshotWorkerFactory = (url) => new Worker(url) as SnapshotWorkerLike,
 ): (input: SnapshotWorkerInput) => Promise<SnapshotWorkerOutput> {
   return (input) => new Promise<SnapshotWorkerOutput>((resolve, reject) => {
-    const worker = workerFactory(new URL('./snapshot-worker-entry.js', import.meta.url));
+    const worker = workerFactory(workerEntryUrl);
     let settled = false;
 
     const settle = (callback: () => void) => {

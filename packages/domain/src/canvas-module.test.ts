@@ -12,9 +12,22 @@ import {
   createCanvasModuleNode,
   getCanvasModuleDefinition,
   listCanvasModuleDefinitions,
+  normalizeCanvasModuleConfig,
 } from './canvas-module';
 
 describe('canvas module registry', () => {
+  it('uses a 1K tier for new image generation nodes and normalizes legacy saved dimensions', () => {
+    expect(createCanvasModuleNode('new-image', 'image_generation', { x: 0, y: 0 }).data.config.resolution).toBe('1K');
+    expect(normalizeCanvasModuleConfig('image_generation', { resolution: '1536x1024', aspectRatio: '16:9' })).toMatchObject({
+      resolution: '2K',
+      aspectRatio: '16:9',
+    });
+    expect(normalizeCanvasModuleConfig('image_generation', { resolution: '1024x1536', aspectRatio: '9:16' })).toMatchObject({
+      resolution: '2K',
+      aspectRatio: '9:16',
+    });
+  });
+
   it('exposes immutable bilingual discovery metadata for current modules only', () => {
     const reverseAgent = getCanvasModuleDefinition('reverse_agent');
     expect(reverseAgent).toMatchObject({
@@ -49,6 +62,47 @@ describe('canvas module registry', () => {
     expect(types).not.toContain('image_generation_v2' as never);
     expect(types).not.toContain('video_analysis' as never);
     expect(new Set(CANVAS_MODULE_DEFINITIONS.map((item) => item.type)).size).toBe(CANVAS_MODULE_DEFINITIONS.length);
+  });
+
+  it('registers an offline video preview module with its media contract while the canvas exposes one media socket', () => {
+    const video = getCanvasModuleDefinition('video_generation' as never);
+
+    expect(video).toMatchObject({
+      type: 'video_generation',
+      category: 'generation',
+      executionMode: 'local',
+      capabilities: ['video_generation'],
+    });
+    expect(video.ports.map((port) => [port.id, port.direction, port.dataType])).toEqual([
+      ['media', 'input', 'media_asset'],
+      ['prompt', 'input', 'text_prompt'],
+      ['sourceVideo', 'input', 'video_asset'],
+      ['firstFrame', 'input', 'image_asset'],
+      ['lastFrame', 'input', 'image_asset'],
+      ['result', 'output', 'video_asset'],
+    ]);
+    expect(video.createDefaultConfig()).toMatchObject({
+      mode: 'mock',
+      durationSeconds: 5,
+      resolution: '1080p',
+    });
+  });
+
+  it('advertises video generation to every source that can use its visible media socket', () => {
+    expect(getCanvasModuleDefinition('image_input').recommendedDownstreamModuleTypes).toContain('video_generation');
+    expect(getCanvasModuleDefinition('upload_image').recommendedDownstreamModuleTypes).toContain('video_generation');
+    expect(getCanvasModuleDefinition('video_input').recommendedDownstreamModuleTypes).toContain('video_generation');
+    expect(getCanvasModuleDefinition('video_generation').recommendedDownstreamModuleTypes).toContain('video_result');
+  });
+
+  it('keeps a reverse result as a pass-through analysis document for the Figma output socket', () => {
+    const result = getCanvasModuleDefinition('reverse_result');
+
+    expect(result.ports.map((port) => [port.id, port.direction, port.dataType])).toEqual([
+      ['analysis', 'input', 'analysis_document'],
+      ['analysis', 'output', 'analysis_document'],
+    ]);
+    expect(result.recommendedDownstreamModuleTypes).toEqual(['storyboard_sheet', 'detail_page_agent']);
   });
 
   it('keeps canonical metadata immutable across lookup boundaries', () => {

@@ -42,6 +42,7 @@ export interface KnowledgeClient {
     capability: AgentKnowledgeCapability,
     references: OrderedReference[],
     citations: ImageCitation[],
+    selectedKnowledgeBaseIds?: readonly string[],
   ): AgentKnowledgeLease;
 }
 
@@ -166,9 +167,12 @@ export function createKnowledgeClient(): KnowledgeClient {
       upsert(result.knowledgeState);
       return result;
     },
-    getLease(runId, capability, references, citations) {
+    getLease(runId, capability, references, citations, selectedKnowledgeBaseIds) {
+      const selectedIds = selectedKnowledgeBaseIds === undefined
+        ? null
+        : new Set(selectedKnowledgeBaseIds);
       const snapshots = states
-        .filter(hasPinnableSnapshot)
+        .filter((state) => hasPinnableSnapshot(state) && (selectedIds === null || selectedIds.has(state.knowledgeBaseId)))
         .map((state) => ({
           knowledgeBaseId: state.knowledgeBaseId,
           version: state.activeVersion!,

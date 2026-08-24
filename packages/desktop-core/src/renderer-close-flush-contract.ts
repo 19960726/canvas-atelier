@@ -7,6 +7,9 @@ export interface CloseFlushRequest {
 }
 
 export type CloseFlushAck = {
+  readonly phase: 'decision_requested';
+  readonly requestId: string;
+} | {
   readonly phase: 'save_started';
   readonly requestId: string;
 } | {
@@ -27,6 +30,10 @@ const closeFlushRequestSchema = z.object({
 }).strict();
 
 const closeFlushAckSchema = z.discriminatedUnion('phase', [
+  z.object({
+    phase: z.literal('decision_requested'),
+    requestId: requestIdSchema,
+  }).strict(),
   z.object({
     phase: z.literal('save_started'),
     requestId: requestIdSchema,

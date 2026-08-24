@@ -14,6 +14,7 @@ const CURRENT_TYPES = [
   'canvas_library',
   'text_prompt',
   'image_generation',
+  'video_generation',
   'image_editor',
   'drawing_mask',
   'local_redraw',
@@ -29,6 +30,8 @@ const CURRENT_TYPES = [
   'music_generation',
   'speech_generation',
   'result_output',
+  'video_result',
+  'reverse_result',
 ] as const;
 
 const LEGACY_TYPES = ['image_generation_v1', 'image_generation_v2', 'video_analysis'] as const;
@@ -78,12 +81,20 @@ describe('formal current module catalog', () => {
       ['result', 'generation_result', 'output', 'one', true],
     ]);
     expect(portSnapshot('reverse_agent')).toEqual([
-      ['references', 'image_list', 'input', 'many', false],
+      ['references', 'media_asset', 'input', 'many', false],
       ['video', 'video_ranges', 'input', 'many', false],
       ['task', 'text_prompt', 'input', 'one', false],
       ['line_art', 'image_asset', 'input', 'one', false],
       ['analysis', 'analysis_document', 'output', 'one', true],
       ['timeline', 'camera_timeline', 'output', 'one', false],
+    ]);
+    expect(portSnapshot('video_generation')).toEqual(expect.arrayContaining([
+      ['media', 'media_asset', 'input', 'many', false],
+      ['result', 'video_asset', 'output', 'one', true],
+    ]));
+    expect(portSnapshot('reverse_result')).toEqual([
+      ['analysis', 'analysis_document', 'input', 'one', true],
+      ['analysis', 'analysis_document', 'output', 'one', true],
     ]);
     expect(portSnapshot('image_compare')).toEqual(expect.arrayContaining([
       ['images', 'image_list', 'input', 'many', true],

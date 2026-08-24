@@ -6,18 +6,26 @@ import type {
   ProjectImageAssetSummary,
   ProjectImageImportTarget,
   ProjectVideoAssetSummary,
+  ChatSkillBridgeResult,
   ProviderBridgeProfile,
 } from '@agent-canvas/desktop-core';
 import {
+  adaptGenerationParameters,
   appendProjectMemoryEntry,
   applyProjectTransaction,
+  buildProjectMemoryContext,
   canConnectCanvasPorts,
   createSkillPromotionCandidateFingerprint,
   createSkillPromotionCandidate,
   createCanvasModuleNode,
+  createReversePromptRun,
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
+  DEFAULT_REVERSE_PROMPT_PERSONA,
+  parseReversePromptResult,
+  reverseAgentNodeConfigSchema,
   reorderCanvasInputEdges,
+  sanitizeModelJobError,
   createUserFeedbackMemory,
   confirmAgentPlan as confirmDomainPlan,
   revertTransaction,
@@ -34,20 +42,27 @@ import {
   type FeedbackObservations,
   type ImageCitation,
   type ModelJob,
+  type ModelJobProvider,
   type OrderedReference,
   type ProjectOperation,
   type ProjectMemoryEntry,
   type ProjectTransaction,
   type ReferenceRole,
+  type ReverseAgentNodeConfig,
+  type ReversePromptResult,
+  type ReversePromptRun,
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import {
   createProjectPersistenceClient,
+  registerActiveProjectPersistenceClient,
   type ProjectCommitRequest,
   type ProjectCommitResult,
   type ProjectLifecycle,
   type ProjectPersistenceClient,
   type ProjectSaveStatus,
+  type ManagedReversePromptMediaIdentity,
+  type SkillChatRequest,
 } from './desktop-persistence';
 import { createUntitledProject } from './project-factory';
 import {
@@ -60,8 +75,11 @@ import {
   type KnowledgeBaseStateSummary,
   type KnowledgeClient,
 } from './knowledge-client';
+import { mergeReverseCitationImages, resolveConnectedReverseMedia } from '../canvas/reverse-agent-media';
+import { resolveConnectedStoryboardReferences } from '../canvas/storyboard-reference-media';
 import { loadPersistedProjectBundle } from './project-persistence';
 import { createExecutionReferenceSnapshot } from './execution-reference-snapshot';
+import { commitGeneratedResultWithRefresh } from './model-result-commit';
 import {
   createInMemoryModelJobStorage,
   createModelJobStore,
@@ -71,8 +89,13 @@ import {
   type ModelJobStore,
 } from '../jobs/job-store';
 import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
+import { withProviderOperationTimeout } from '../settings/provider-operation-timeout';
+
+const REVERSE_AGENT_OPERATION_TIMEOUT_MS = 135_000;
 import { createModelJobRunId } from '../jobs/model-job-identity';
+import { advanceOfflineVideoPreview, createOfflineVideoPreview } from '../jobs/video-preview-mock';
 import { runtimeProfile } from './runtime-profile';
+import { listAllProviderProfiles, selectProviderProfile } from './provider-profiles';
 
 let planSequence = 0;
 let stableProjectCommitTail: Promise<void> | null = null;
@@ -90,6 +113,7 @@ let modelJobStore: ModelJobStore | null = null;
 let modelJobUnsubscribe: (() => void) | null = null;
 let modelJobStoreGeneration = 0;
 let modelJobRecoveryGeneration = 0;
+const activeReverseAgentRuns = new Map<string, string>();
 let pendingAgentConfirmation: PendingAgentConfirmation | null = null;
 let pendingAgentJobRetry: Promise<void> | null = null;
 const AGENT_MODEL_CONVERSATION_ID = 'agent-conversation-shared';
@@ -99,7 +123,11 @@ const projectAutosave = createAutosaveController<CanvasProject>({
     () => useAppStore.getState(),
     async (commitNow) => {
       const project = draft.project;
-      return commitNow(createIdleSyncTransaction(project), { kind: 'system', nextProject: project });
+      return commitNow(createIdleSyncTransaction(project), {
+        kind: 'system',
+        nextProject: project,
+        preservePendingAutosave: true,
+      });
     },
   ),
   delayMs: AUTOSAVE_IDLE_MS,
@@ -138,6 +166,7 @@ interface CommitProjectTransactionOptions {
 }
 
 interface CommitProjectTransactionNowOptions extends CommitProjectTransactionOptions {
+  preservePendingAutosave?: boolean;
   retryRequest?: ProjectCommitRequest;
 }
 
@@ -162,6 +191,48 @@ interface RecordUserFeedbackInput {
     never: string[];
     score?: number;
   };
+}
+interface ImageGenerationNodeInput {
+  readonly prompt: string;
+  readonly modelRoute?: string;
+  readonly aspectRatio?: string;
+  readonly resolution?: string;
+  readonly outputCount?: number;
+  readonly referenceAssetIds?: readonly string[];
+}
+
+interface EditableReverseAgentResult {
+  readonly analysis?: string;
+  readonly keywords?: readonly string[];
+  readonly positivePrompt: string;
+  readonly negativeConstraints?: readonly string[];
+  readonly executionChecklist?: readonly string[];
+}
+interface VideoPreviewNodeInput {
+  readonly prompt: string;
+  readonly referenceAssetIds: readonly string[];
+  readonly modelRoute?: string;
+  readonly aspectRatio: string;
+  readonly keyframe: string;
+  readonly durationSeconds: number;
+  readonly resolution: string;
+  readonly outputCount: 1 | 2 | 3 | 4;
+  readonly audioEnabled: boolean;
+}
+type GenerationNodeDraftConfig = Pick<ImageGenerationNodeInput, 'prompt' | 'modelRoute' | 'aspectRatio' | 'resolution' | 'outputCount'>
+  & Partial<Pick<VideoPreviewNodeInput, 'keyframe' | 'durationSeconds' | 'audioEnabled'>>;
+interface StoryboardNodeInput {
+  readonly modelRoute: string;
+  readonly script: string;
+  readonly shotCount: number;
+  readonly referenceAssetIds: readonly string[];
+}
+interface StoryboardShotUpdateInput {
+  readonly composition: string;
+  readonly aspectRatio: string;
+  readonly resolution: string;
+  readonly outputCount: number;
+  readonly referenceAssetIds: readonly string[];
 }
 interface AppState {
   project: CanvasProject;
@@ -205,19 +276,38 @@ interface AppState {
   addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
   connectModulePorts: (connection: Connection) => Promise<boolean>;
   commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
+  commitNodePositions: (updates: readonly { readonly nodeId: string; readonly position: { readonly x: number; readonly y: number } }[]) => Promise<boolean>;
+  deleteCanvasNodes: (nodeIds: readonly string[]) => Promise<boolean>;
+  deleteCanvasEdge: (edgeId: string) => Promise<boolean>;
   toggleNodeLock: (nodeId: string) => Promise<boolean>;
   reorderModuleInput: (targetNodeId: string, targetPortId: string, edgeIds: string[]) => Promise<boolean>;
   commitReferenceOrder: (assetIds: string[]) => Promise<boolean>;
   configureKnowledgeBase: (knowledgeBaseId: string, displayName: string) => Promise<void>;
   getKnowledgeLease: KnowledgeClient['getLease'];
+  analyzeReversePrompt: (input: {
+    readonly provider: ProviderBridgeProfile['provider'];
+    readonly run: ReversePromptRun;
+    readonly media: readonly ManagedReversePromptMediaIdentity[];
+  }) => Promise<ReversePromptResult>;
+  chatSkill: (input: SkillChatRequest) => Promise<ChatSkillBridgeResult>;
   hydratePersistence: () => Promise<void>;
-  openProject: () => Promise<boolean>;
+  openProject: (recentProjectId?: string) => Promise<boolean>;
   reloadDurableProject: () => Promise<boolean>;
+  migrateLegacyStarterProjectToFigmaWorkbench: () => Promise<boolean>;
   newWorkflow: () => Promise<void>;
-  importImageForModule: (nodeId: string) => Promise<boolean>;
-  importVideoForModule: (nodeId: string) => Promise<boolean>;
+  importImageForModule: (nodeId: string, file?: File) => Promise<boolean>;
+  importAgentReferenceImage: (file?: File) => Promise<ProjectImageAssetSummary | null>;
+  importAgentReferenceVideo: (file?: File) => Promise<ProjectVideoAssetSummary | null>;
+  importVideoForModule: (nodeId: string, file?: File) => Promise<boolean>;
+  runImageGenerationNode: (nodeId: string, input: ImageGenerationNodeInput) => Promise<boolean>;
+  runVideoPreviewNode: (nodeId: string, input: VideoPreviewNodeInput) => Promise<boolean>;
+  generateStoryboardNode: (nodeId: string, input: StoryboardNodeInput) => Promise<boolean>;
+  updateStoryboardShot: (nodeId: string, shotId: string, input: StoryboardShotUpdateInput) => Promise<boolean>;
+  runReverseAgentNode: (nodeId: string, config?: ReverseAgentNodeConfig) => Promise<ReversePromptResult>;
+  cancelReverseAgentNode: (nodeId: string) => Promise<boolean>;
   pasteClipboardImage: (position: { readonly x: number; readonly y: number }) => Promise<boolean>;
   pasteClipboardMedia: (position: { readonly x: number; readonly y: number }) => Promise<boolean>;
+  importDroppedMedia: (file: File, position: { readonly x: number; readonly y: number }) => Promise<boolean>;
   importPlacementReference: (
     nodeId: string,
     role: Exclude<ReferenceRole, 'placement_preview'>,
@@ -225,6 +315,7 @@ interface AppState {
   refreshProjectImages: () => Promise<void>;
   initializeKnowledge: () => Promise<void>;
   flushProjectSave: (reason: Exclude<AutosaveFlushReason, 'idle'>) => Promise<boolean>;
+  saveProjectExplicitly: () => Promise<boolean>;
   refreshModelJobs: () => Promise<void>;
   retryModelJob: (jobId: string) => Promise<void>;
   retryAgentPlanJobs: () => Promise<void>;
@@ -234,6 +325,10 @@ interface AppState {
   setProject: (project: CanvasProject, options?: SetProjectOptions) => void;
   selectProjectImageForModule: (nodeId: string, assetId: string) => Promise<boolean>;
   setCanvasLibrarySelection: (nodeId: string, assetIds: string[]) => Promise<boolean>;
+  draftGenerationNodeConfig: (nodeId: string, config: GenerationNodeDraftConfig) => Promise<boolean>;
+  draftReverseAgentConfig: (nodeId: string, config: ReverseAgentNodeConfig) => Promise<boolean>;
+  applyReverseAgentConfig: (nodeId: string, config: ReverseAgentNodeConfig) => Promise<boolean>;
+  updateReverseAgentResult: (nodeId: string, result: EditableReverseAgentResult) => Promise<boolean>;
   draftAgentPlan: (message: string, options?: { modelRoute?: string; modelRouteDisplayName?: string }) => void;
   confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => Promise<void>;
   cancelAgentPlan: () => void;
@@ -274,6 +369,522 @@ export const useAppStore = create<AppState>((set, get) => ({
     await getModelJobStore().cancelQueuedJob(jobId);
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
+  },
+  cancelReverseAgentNode: async (nodeId) => {
+    const node = getModuleNode(get().project.nodes, nodeId);
+    if (!node || node.data.moduleType !== 'reverse_agent' || node.data.config.reverseAgentRunState !== 'running') return false;
+    activeReverseAgentRuns.delete(nodeId);
+    return persistReverseAgentRunPatch(set, get, nodeId, {
+      reverseAgentCompletedAt: new Date().toISOString(),
+      reverseAgentError: null,
+      reverseAgentRunState: 'cancelled',
+    }, 'Cancel reverse Agent run');
+  },
+  runImageGenerationNode: async (nodeId, input) => {
+    if (get().canRetryProjectCommit && get().projectCommitConflictCode === null) {
+      await get().retryFailedProjectCommit();
+    }
+    if (!await ensureModelRunSaveBoundary(get)) return false;
+    return enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    const node = getModuleNode(state.project.nodes, nodeId);
+    const prompt = input.prompt.trim();
+    if (!node || node.data.moduleType !== 'image_generation' || prompt.length === 0 || containsProtectedRendererPayload(prompt)) return false;
+    if (state.modelJobs.some((job) => job.promptNodeId === nodeId && ['queued', 'submitting', 'running'].includes(job.status))) return false;
+
+    const bridge = globalThis.window?.novusDesktop?.provider;
+    if (bridge === undefined) throw createGenerationStartError('PROVIDER_BRIDGE_UNAVAILABLE', 'Provider bridge is unavailable');
+    const profiles = await listAllProviderProfiles(bridge);
+    const imageProfiles = profiles.filter((profile) => profile.capabilities.includes('image_generation'));
+    const profile = input.modelRoute === undefined
+      ? imageProfiles[0]
+      : imageProfiles.find((candidate) => candidate.modelRoute === input.modelRoute || candidate.modelId === input.modelRoute);
+    if (profile === undefined) throw createGenerationStartError('MODEL_ROUTE_UNAVAILABLE', 'Selected image model route is unavailable');
+    const requestedImageAspectRatio = normalizeImageAspectRatio(input.aspectRatio);
+    const requestedImageResolution = normalizeImageResolution(input.resolution);
+    const requestedImageOutputCount = normalizeImageOutputCount(input.outputCount);
+    const imageConstraints = profile.constraints?.image;
+    const supportedImageResolutions = imageConstraints?.resolutions?.filter((value): value is '1K' | '2K' | '4K' => value === '1K' || value === '2K' || value === '4K');
+    const usesVerifiedProviderDefaults = profile.capabilityStatus === 'complete';
+    if (usesVerifiedProviderDefaults && imageConstraints?.resolutions !== undefined && supportedImageResolutions?.length === 0) {
+      throw createGenerationStartError('GENERATION_PARAMETERS_UNSUPPORTED', 'Image resolution constraints are unsupported');
+    }
+    let imageAspectRatio = requestedImageAspectRatio;
+    let imageResolution = requestedImageResolution;
+    const imageOutputCount = requestedImageOutputCount ?? 1;
+    if (usesVerifiedProviderDefaults) {
+      const adaptation = adaptGenerationParameters({
+        kind: 'image',
+        aspectRatio: requestedImageAspectRatio ?? imageConstraints?.aspectRatios?.[0] ?? '1:1',
+        resolution: requestedImageResolution ?? supportedImageResolutions?.[0] ?? '2K',
+        outputCount: 1,
+      }, {
+        image: {
+          aspectRatios: imageConstraints?.aspectRatios ?? [requestedImageAspectRatio ?? '1:1'],
+          resolutions: supportedImageResolutions ?? [requestedImageResolution ?? '2K'],
+          outputCounts: imageConstraints?.outputCounts ?? [1],
+        },
+      });
+      if (adaptation.status === 'unsupported' || adaptation.actual?.kind !== 'image') {
+        throw createGenerationStartError('GENERATION_PARAMETERS_UNSUPPORTED', 'Selected image parameters are unsupported');
+      }
+      imageAspectRatio = imageConstraints?.aspectRatios?.length ? adaptation.actual.aspectRatio : undefined;
+      imageResolution = supportedImageResolutions?.length ? adaptation.actual.resolution : undefined;
+    } else {
+      const adaptedImageParameters = imageConstraints === undefined
+        ? null
+        : adaptGenerationParameters({
+          kind: 'image',
+          aspectRatio: requestedImageAspectRatio ?? imageConstraints.aspectRatios?.[0] ?? '1:1',
+          resolution: requestedImageResolution ?? supportedImageResolutions?.[0] ?? '2K',
+          outputCount: 1,
+        }, { ...profile.constraints, image: imageConstraints === undefined ? undefined : { ...imageConstraints, resolutions: supportedImageResolutions } });
+      if (adaptedImageParameters?.status === 'unsupported' || adaptedImageParameters?.actual?.kind === 'video') {
+        throw createGenerationStartError('GENERATION_PARAMETERS_UNSUPPORTED', 'Selected image parameters are unsupported');
+      }
+      imageAspectRatio = adaptedImageParameters?.actual.aspectRatio ?? requestedImageAspectRatio;
+      imageResolution = adaptedImageParameters?.actual.resolution ?? requestedImageResolution;
+    }    const referenceAssetIds = resolveImageGenerationReferenceAssetIds(state.project, nodeId, input.referenceAssetIds);
+    if (referenceAssetIds === null) return false;
+
+    const timestamp = new Date().toISOString();
+    const requests = Array.from({ length: imageOutputCount }, () => ({
+      id: createModelJobRunId(),
+      kind: 'image' as const,
+      promptNodeId: nodeId,
+      prompt,
+      provider: profile.provider,
+      modelRoute: profile.modelRoute,
+      displayName: profile.displayName,
+      modelId: profile.modelId ?? profile.modelRoute,
+      referenceAssetIds,
+      referenceSnapshotRevision: state.desktopRevision,
+      aspectRatio: imageAspectRatio,
+      resolution: imageResolution,
+      outputCount: 1 as const,
+    }));
+
+    const nextNode = {
+      ...node,
+      data: {
+        ...node.data,
+        config: {
+          ...node.data.config,
+          modelRoute: profile.modelRoute,
+          modelDisplayName: profile.displayName,
+          prompt,
+          ...(imageAspectRatio === undefined ? {} : { aspectRatio: imageAspectRatio }),
+          ...(imageResolution === undefined ? {} : { resolution: imageResolution }),
+          outputCount: imageOutputCount,
+          providerDisplayName: profile.provider,
+          referenceAssetIds,
+          lastResultJobId: requests[0]?.id,
+          resultAssetIds: [],
+          resultState: 'pending',
+          routeDisplayName: profile.displayName,
+        },
+        execution: { state: 'queued' as const },
+      },
+    };
+    const transaction: ProjectTransaction = {
+      id: `run-image-generation-${nodeId}-${Date.now()}-${planSequence++}`,
+      label: 'Run image generation node',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    let nextProject: CanvasProject;
+    try {
+      nextProject = applyProjectTransaction(state.project, transaction);
+    } catch {
+      return false;
+    }
+    if (!await commitNow(transaction, { kind: 'agent', nextProject })) {
+      throw createGenerationStartError('PROJECT_COMMIT_FAILED', 'Project must be saved before image generation starts');
+    }
+
+    const jobStore = getModelJobStore();
+    try {
+      const projectSessionId = await resolveModelExecutionSessionId();
+      const modelJobs = await jobStore.enqueueConfirmedJobs({
+        conversationId: `image-node-${nodeId}`,
+        projectSessionId,
+        confirmedAt: timestamp,
+        requests,
+      });
+      set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
+      void jobStore.run();
+      return true;
+    } catch (error) {
+      if (isGenerationStartError(error)) throw error;
+      throw createGenerationStartError('MODEL_SESSION_FAILED', 'Model execution session could not be established');
+    }
+  }, { throwOnRecovery: true });
+  },
+  runVideoPreviewNode: async (nodeId, input) => {
+    if (get().canRetryProjectCommit && get().projectCommitConflictCode === null) {
+      await get().retryFailedProjectCommit();
+    }
+    if (!await ensureModelRunSaveBoundary(get)) return false;
+    return enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    const node = getModuleNode(state.project.nodes, nodeId);
+    const prompt = input.prompt.trim();
+    if (!node || node.data.moduleType !== 'video_generation' || prompt.length === 0 || containsProtectedRendererPayload(prompt)) return false;
+    if (state.modelJobs.some((job) => job.promptNodeId === nodeId && ['queued', 'submitting', 'running'].includes(job.status))) return false;
+    if (!Number.isInteger(input.durationSeconds) || input.durationSeconds < 0 || input.durationSeconds > 60) return false;
+    if (!Number.isInteger(input.outputCount) || input.outputCount < 1 || input.outputCount > 4 || typeof input.audioEnabled !== 'boolean') return false;
+    const requestedAspectRatio = input.aspectRatio === 'Auto' ? undefined : normalizeImageAspectRatio(input.aspectRatio);
+    const requestedVideoResolution = input.resolution === 'Auto' ? undefined : normalizeVideoResolution(input.resolution);
+    if (input.aspectRatio !== 'Auto' && requestedAspectRatio === undefined) return false;
+    if (input.resolution !== 'Auto' && requestedVideoResolution === undefined) return false;
+
+    const bridge = globalThis.window?.novusDesktop?.provider;
+    if (bridge === undefined) return false;
+    const profiles = await listAllProviderProfiles(bridge);
+    const profile = selectProviderProfile(profiles, input.modelRoute, 'video_generation');
+    if (profile === undefined) return false;
+
+    const videoConstraints = profile.constraints?.video;
+    const usesVerifiedProviderDefaults = profile.capabilityStatus === 'complete';
+    let actualAspectRatio = requestedAspectRatio;
+    let actualVideoResolution = requestedVideoResolution;
+    let actualDurationSeconds = input.durationSeconds === 0 ? undefined : input.durationSeconds;
+    const actualOutputCount = input.outputCount;
+    if (usesVerifiedProviderDefaults) {
+      const durationSeed = actualDurationSeconds
+        ?? videoConstraints?.duration?.defaultValue
+        ?? (videoConstraints?.duration?.mode === 'options' ? videoConstraints.duration.options[0] : videoConstraints?.duration?.min)
+        ?? 5;
+      const adaptation = adaptGenerationParameters({
+        kind: 'video',
+        aspectRatio: requestedAspectRatio ?? videoConstraints?.aspectRatios?.[0] ?? '1:1',
+        resolution: requestedVideoResolution ?? videoConstraints?.resolutions?.[0] ?? '720p',
+        durationSeconds: durationSeed,
+        outputCount: 1,
+      }, {
+        video: {
+          aspectRatios: videoConstraints?.aspectRatios ?? [requestedAspectRatio ?? '1:1'],
+          resolutions: videoConstraints?.resolutions ?? [requestedVideoResolution ?? '720p'],
+          duration: videoConstraints?.duration ?? { mode: 'options', options: [durationSeed] },
+          outputCounts: videoConstraints?.outputCounts ?? [1],
+        },
+      });
+      if (adaptation.status === 'unsupported' || adaptation.actual?.kind !== 'video') return false;
+      actualAspectRatio = videoConstraints?.aspectRatios?.length ? adaptation.actual.aspectRatio : undefined;
+      actualVideoResolution = videoConstraints?.resolutions?.length ? adaptation.actual.resolution : undefined;
+      actualDurationSeconds = videoConstraints?.duration === undefined ? undefined : adaptation.actual.durationSeconds;
+    } else {
+      if (requestedAspectRatio === undefined || requestedVideoResolution === undefined || actualDurationSeconds === undefined) return false;
+      const adaptedVideoParameters = videoConstraints === undefined
+        ? null
+        : adaptGenerationParameters({
+          kind: 'video', aspectRatio: requestedAspectRatio, resolution: requestedVideoResolution,
+          durationSeconds: actualDurationSeconds, outputCount: 1,
+        }, profile.constraints ?? {});
+      if (adaptedVideoParameters?.status === 'unsupported' || adaptedVideoParameters?.actual?.kind === 'image') return false;
+      actualAspectRatio = adaptedVideoParameters?.actual.aspectRatio ?? requestedAspectRatio;
+      actualVideoResolution = adaptedVideoParameters?.actual.resolution ?? requestedVideoResolution;
+      actualDurationSeconds = adaptedVideoParameters?.actual.durationSeconds ?? actualDurationSeconds;
+    }
+    const connectedMedia = resolveConnectedVideoGenerationMedia(state.project, nodeId);
+    if (connectedMedia === null) return false;
+    const frameAssetIds = connectedMedia === undefined
+      ? [...new Set(input.referenceAssetIds)]
+      : connectedMedia.imageAssetIds;
+    const sourceVideoAssetId = connectedMedia?.sourceVideoAssetId;
+    if (frameAssetIds.length > MAX_GENERATION_REFERENCES || frameAssetIds.some((assetId) => !isNonEmptyString(assetId))) return false;
+    const assets = new Map((state.project.assets ?? []).map((asset) => [asset.assetId, asset]));
+    if (frameAssetIds.some((assetId) => !assets.get(assetId)?.mediaType.startsWith('image/'))) return false;
+    if (sourceVideoAssetId !== undefined && assets.get(sourceVideoAssetId)?.mediaType !== 'video/mp4') return false;
+    const jobReferenceAssetIds = sourceVideoAssetId === undefined
+      ? frameAssetIds
+      : [...frameAssetIds, sourceVideoAssetId];
+
+    const { firstFrameAssetId: _previousFirstFrameAssetId, lastFrameAssetId: _previousLastFrameAssetId, sourceVideoAssetId: _previousSourceVideoAssetId, videoResults: _previousVideoResults, mode: _previousMode, ...previousConfig } = node.data.config;
+    const nextNode = {
+      ...node,
+      data: {
+        ...node.data,
+        config: {
+          ...previousConfig,
+          prompt,
+          modelRoute: profile.modelRoute,
+          modelDisplayName: profile.displayName,
+          providerDisplayName: profile.provider,
+          referenceAssetIds: frameAssetIds,
+          ...(frameAssetIds[0] ? { firstFrameAssetId: frameAssetIds[0] } : {}),
+          ...(frameAssetIds.length > 1 ? { lastFrameAssetId: frameAssetIds[frameAssetIds.length - 1] } : {}),
+          ...(sourceVideoAssetId ? { sourceVideoAssetId } : {}),
+          ...(actualAspectRatio === undefined ? {} : { aspectRatio: actualAspectRatio }),
+          keyframe: input.keyframe,
+          ...(actualDurationSeconds === undefined ? {} : { durationSeconds: actualDurationSeconds }),
+          ...(actualVideoResolution === undefined ? {} : { resolution: actualVideoResolution }),
+          outputCount: actualOutputCount,
+          audioEnabled: input.audioEnabled,
+          resultState: 'pending',
+          routeDisplayName: profile.displayName,
+        },
+        execution: { state: 'queued' as const },
+      },
+    };
+    const transaction: ProjectTransaction = {
+      id: `run-video-generation-${nodeId}-${Date.now()}-${planSequence++}`,
+      label: 'Run video generation node',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    let nextProject: CanvasProject;
+    try {
+      nextProject = applyProjectTransaction(state.project, transaction);
+    } catch {
+      return false;
+    }
+    if (!await commitNow(transaction, { kind: 'agent', nextProject })) return false;
+
+    const timestamp = new Date().toISOString();
+    const jobStore = getModelJobStore();
+    try {
+      const projectSessionId = await resolveModelExecutionSessionId();
+      const requests: ModelJobRequest[] = Array.from({ length: actualOutputCount }, () => ({
+        id: createModelJobRunId(),
+        kind: 'video',
+        promptNodeId: nodeId,
+        prompt,
+        provider: profile.provider,
+        modelRoute: profile.modelRoute,
+        displayName: profile.displayName,
+        modelId: profile.modelId ?? profile.modelRoute,
+        referenceAssetIds: jobReferenceAssetIds,
+        referenceSnapshotRevision: state.desktopRevision,
+        aspectRatio: actualAspectRatio,
+        videoResolution: actualVideoResolution,
+        durationSeconds: actualDurationSeconds,
+        audioEnabled: input.audioEnabled,
+        outputCount: 1,
+      }));
+      const modelJobs = await jobStore.enqueueConfirmedJobs({
+        conversationId: `video-node-${nodeId}`,
+        projectSessionId,
+        confirmedAt: timestamp,
+        requests,
+      });
+      set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
+      void jobStore.run();
+      return true;
+    } catch {
+      return false;
+    }
+    });
+  },
+  generateStoryboardNode: (nodeId, input) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    const node = getModuleNode(state.project.nodes, nodeId);
+    const script = input.script.trim();
+    if (!node || node.data.moduleType !== 'storyboard_sheet' || script.length === 0 || containsProtectedRendererPayload(script)) return false;
+    const references = resolveConnectedStoryboardReferences({ project: state.project, nodeId });
+    if (!references.ok) return false;
+    const bridge = globalThis.window?.novusDesktop?.provider;
+    if (bridge === undefined) return false;
+    try {
+      const profiles = await listAllProviderProfiles(bridge);
+      const profile = selectProviderProfile(profiles, input.modelRoute, 'chat');
+      if (!profile) return false;
+      const result = await bridge.generateStoryboard({
+        provider: profile.provider, modelRoute: profile.modelRoute, script, shotCount: input.shotCount, referenceAssetIds: [...references.assetIds],
+      });
+      const nextNode = {
+        ...node,
+        data: {
+          ...node.data,
+          config: { ...node.data.config, script, modelRoute: result.modelRoute, shotCount: input.shotCount, referenceAssetIds: [...references.assetIds], shots: result.shots, resultState: 'fresh' },
+          execution: { state: 'completed' as const },
+        },
+      };
+      const transaction: ProjectTransaction = {
+        id: `generate-storyboard-${nodeId}-${Date.now()}-${planSequence++}`,
+        label: 'Generate storyboard shots',
+        operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+      };
+      return await commitNow(transaction, { kind: 'agent', nextProject: applyProjectTransaction(state.project, transaction) });
+    } catch {
+      return false;
+    }
+  }),
+  updateStoryboardShot: (nodeId, shotId, input) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    const node = getModuleNode(state.project.nodes, nodeId);
+    const currentShots = readStoryboardShotRecords(node?.data.config.shots);
+    const currentShot = currentShots.find((shot) => shot.id === shotId);
+    const references = resolveImageGenerationReferenceAssetIds(state.project, nodeId, input.referenceAssetIds);
+    if (
+      !node || node.data.moduleType !== 'storyboard_sheet' || currentShot === undefined || references === null
+      || !isSafeStoryboardShotUpdate(input)
+    ) return false;
+    const nextNode = {
+      ...node,
+      data: {
+        ...node.data,
+        config: {
+          ...node.data.config,
+          shots: currentShots.map((shot) => shot.id === shotId ? {
+            ...shot,
+            composition: input.composition.trim(),
+            aspectRatio: input.aspectRatio,
+            resolution: input.resolution,
+            outputCount: input.outputCount,
+            referenceAssetIds: references,
+          } : shot),
+          resultState: 'fresh',
+        },
+      },
+    };
+    const transaction: ProjectTransaction = {
+      id: `update-storyboard-shot-${nodeId}-${shotId}-${Date.now()}-${planSequence++}`,
+      label: 'Update storyboard shot',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    try {
+      return await commitNow(transaction, { kind: 'canvas', nextProject: applyProjectTransaction(state.project, transaction) });
+    } catch {
+      return false;
+    }
+  }),
+  runReverseAgentNode: async (nodeId, requestedConfig) => {
+    if (get().canRetryProjectCommit && get().projectCommitConflictCode === null) {
+      await get().retryFailedProjectCommit();
+    }
+    const persistenceState = get();
+    if (
+      persistenceState.canRetryProjectCommit
+      || persistenceState.projectCommitConflictCode !== null
+      || persistenceState.recoveryRequired
+      || persistenceState.saveStatus === 'read_only'
+    ) throw createReverseConfigurationSaveError(persistenceState);
+    if (requestedConfig !== undefined) {
+      const applied = await get().applyReverseAgentConfig(nodeId, requestedConfig);
+      if (!applied) throw createReverseConfigurationSaveError(get());
+    }
+    if (!await ensureModelRunSaveBoundary(get)) throw createReverseConfigurationSaveError(get());
+    const state = get();
+    const node = getModuleNode(state.project.nodes, nodeId);
+    if (!node || node.data.moduleType !== 'reverse_agent') {
+      throw new Error('Select an Agent reverse node before running analysis');
+    }
+    const parsedConfig = reverseAgentNodeConfigSchema.safeParse({
+      modelRoute: node.data.config.modelRoute,
+      role: node.data.config.role,
+      task: node.data.config.task,
+      knowledgeBaseIds: node.data.config.knowledgeBaseIds,
+      referenceAssetIds: node.data.config.referenceAssetIds,
+    });
+    if (!parsedConfig.success) {
+      throw new Error('Apply the Agent task before running analysis');
+    }
+    const connectedMedia = resolveConnectedReverseMedia({
+      project: state.project,
+      nodeId,
+      images: state.projectImages,
+      videos: state.projectVideos,
+    });
+    const citationAssetIds = parsedConfig.data.referenceAssetIds ?? [];
+    const hasInboundMediaEdges = state.project.edges.some((edge) => (
+      edge.target === nodeId && (edge.targetPortId === 'references' || edge.targetPortId === 'video')
+    ));
+    if (!connectedMedia.ok && (hasInboundMediaEdges || citationAssetIds.length === 0)) {
+      throw new Error(connectedMedia.reason);
+    }
+    const baseMedia = connectedMedia.ok
+      ? connectedMedia
+      : { ok: true as const, references: [], media: [], orderedMedia: [], edgeIds: [] };
+    const resolvedMedia = mergeReverseCitationImages(baseMedia, citationAssetIds, state.projectImages);
+    if (!resolvedMedia.ok) throw new Error(resolvedMedia.reason);
+    const analyzeReversePrompt = projectPersistenceClient.analyzeReversePrompt;
+    if (analyzeReversePrompt === undefined) throw new Error('Reverse prompt analysis is unavailable');
+
+    const startedAt = new Date().toISOString();
+    const runId = `reverse-node-${createModelJobRunId()}`;
+    activeReverseAgentRuns.set(nodeId, runId);
+    const runningPersisted = await persistReverseAgentRunPatch(set, get, nodeId, {
+      reverseAgentCompletedAt: null,
+      reverseAgentError: null,
+      reverseAgentRunId: runId,
+      reverseAgentRunState: 'running',
+      reverseAgentStartedAt: startedAt,
+    }, 'Start reverse Agent run');
+    if (!runningPersisted) {
+      activeReverseAgentRuns.delete(nodeId);
+      throw new Error('Reverse analysis state could not be saved');
+    }
+
+    const knowledgeLease = get().getKnowledgeLease(
+      runId,
+      'reverse_prompt',
+      [...resolvedMedia.references],
+      [],
+      parsedConfig.data.knowledgeBaseIds,
+    );
+    const run = createReversePromptRun({
+      projectId: state.project.id,
+      skill: { id: 'scene-skill', version: 'managed-latest' },
+      persona: DEFAULT_REVERSE_PROMPT_PERSONA,
+      agentConfig: parsedConfig.data,
+      knowledgeLease,
+      approvedMemorySnapshot: {
+        version: 'local-draft-no-approved-skill',
+        approvedAt: new Date().toISOString(),
+        approvedMemoryIds: [],
+      },
+      projectMemoryIds: buildProjectMemoryContext(state.project.projectMemory, 50).map((memory) => memory.id),
+      references: [...resolvedMedia.references],
+      orderedMedia: [...resolvedMedia.orderedMedia],
+    });
+    try {
+      const providerBridge = globalThis.window?.novusDesktop?.provider;
+      const reverseProfile = providerBridge?.listProfiles
+        ? selectProviderProfile(await listAllProviderProfiles(providerBridge), parsedConfig.data.modelRoute, 'reverse_prompt')
+        : undefined;
+      if (providerBridge?.listProfiles && !reverseProfile) throw new Error('所选模型没有明确声明反推能力');
+      // The renderer may retain a historical route alias after the provider
+      // catalog has replaced it with the canonical route. The bridge validates
+      // the route against its current catalog, so send that canonical value.
+      // createReversePromptRun accepts an optional agent config for legacy
+      // snapshots, while the provider analysis contract requires the complete
+      // config. This run always originates from the validated node config, so
+      // restore that invariant before applying the canonical route alias.
+      const configuredAgentConfig = run.agentConfig;
+      if (!configuredAgentConfig) throw new Error('反推配置缺少模型参数');
+      const configuredRun: ReversePromptRun = run;
+      const analysisRun: ReversePromptRun = reverseProfile === undefined
+        ? configuredRun
+        : {
+          ...configuredRun,
+          agentConfig: { ...configuredAgentConfig, modelRoute: reverseProfile.modelRoute },
+        };
+      const result = await withProviderOperationTimeout(
+        analyzeReversePrompt({ provider: reverseProfile?.provider ?? 'comfly', run: analysisRun, media: resolvedMedia.media }),
+        REVERSE_AGENT_OPERATION_TIMEOUT_MS,
+      );
+      const parsedResult = parseReversePromptResult(result, analysisRun);
+      if (!isReverseAgentRunActive(get, nodeId, runId)) throw createReverseRunCancelledError();
+      const persisted = await persistReverseAgentRunPatch(set, get, nodeId, {
+        reverseAgentCompletedAt: new Date().toISOString(),
+        reverseAgentError: null,
+        reverseAgentResult: parsedResult,
+        reverseAgentRunState: 'completed',
+        reverseAgentStartedAt: startedAt,
+      }, 'Store reverse Agent result');
+      if (!persisted) throw new Error('Reverse analysis result could not be saved');
+      return parsedResult;
+    } catch (error) {
+      if (!isReverseAgentRunActive(get, nodeId, runId)) throw createReverseRunCancelledError();
+      await persistReverseAgentRunPatch(set, get, nodeId, {
+        reverseAgentCompletedAt: new Date().toISOString(),
+        reverseAgentError: sanitizeModelJobError(error),
+        reverseAgentRunState: 'failed',
+        reverseAgentStartedAt: startedAt,
+      }, 'Store reverse Agent failure');
+      throw error;
+    } finally {
+      if (activeReverseAgentRuns.get(nodeId) === runId) activeReverseAgentRuns.delete(nodeId);
+    }
   },
   addHistoryImageToCanvas: (historyId, operationId, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const copyHistoryToProject = projectPersistenceClient.copyHistoryToProject;
@@ -387,8 +998,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     ));
     if (!targetPort) return false;
 
+    // Reverse Agent renders image and video references as one ordered tray.
+    // Allocate one shared sequence for both input ports; otherwise the first
+    // image and first video each receive order 0 and their display order falls
+    // back to the persisted edge array instead of the user's connection order.
     const incoming = state.project.edges.filter((edge) => (
-      edge.target === targetId && edge.targetPortId === targetPortId
+      edge.target === targetId
+      && (targetNode.data.moduleType === 'reverse_agent'
+        ? (edge.targetPortId === 'references' || edge.targetPortId === 'video')
+        : edge.targetPortId === targetPortId)
     ));
     if (targetPort.cardinality === 'one' && incoming.length > 0) return false;
     const nextOrder = incoming.length === 0
@@ -419,19 +1037,73 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false;
     }
   }),
-  commitNodePosition: (nodeId, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+  commitNodePosition: (nodeId, position) => get().commitNodePositions([{ nodeId, position }]),
+  commitNodePositions: (updates) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
-    if (!isNonEmptyString(nodeId) || !isFinitePosition(position)) return false;
-    const node = state.project.nodes.find((candidate) => candidate.id === nodeId);
-    if (!node) return false;
-    if (node.locked === true) return false;
-    if (node.position.x === position.x && node.position.y === position.y) return true;
+    if (!Array.isArray(updates) || updates.length === 0) return false;
+    const requestedById = new Map<string, { readonly x: number; readonly y: number }>();
+    for (const update of updates) {
+      if (!isNonEmptyString(update.nodeId) || !isFinitePosition(update.position)) return false;
+      requestedById.set(update.nodeId, update.position);
+    }
+    const nodesById = new Map(state.project.nodes.map((node) => [node.id, node]));
+    if ([...requestedById.keys()].some((nodeId) => !nodesById.has(nodeId))) return false;
+    const movedNodes = [...requestedById].flatMap(([nodeId, position]) => {
+      const node = nodesById.get(nodeId)!;
+      if (node.locked === true) return [];
+      if (node.position.x === position.x && node.position.y === position.y) return [];
+      return [{ ...node, position }];
+    });
+    if (movedNodes.length === 0) {
+      return [...requestedById.keys()].some((nodeId) => nodesById.get(nodeId)?.locked !== true);
+    }
 
-    const nextNode = { ...node, position };
+    const suffix = `${Date.now()}-${planSequence++}`;
     const transaction: ProjectTransaction = {
-      id: `move-node-${nodeId}-${position.x}-${position.y}`,
-      label: 'Move canvas node',
-      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+      id: `move-canvas-nodes-${suffix}`,
+      label: `Move ${movedNodes.length} canvas node${movedNodes.length === 1 ? '' : 's'}`,
+      operations: movedNodes.map((node) => ({ kind: 'canvas' as const, operation: { kind: 'update_node' as const, node } })),
+    };
+    try {
+      const nextProject = applyProjectTransaction(state.project, transaction);
+      return commitNow(transaction, { nextProject });
+    } catch {
+      return false;
+    }
+  }),
+  deleteCanvasNodes: (nodeIds) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    const requestedNodeIds = [...new Set(nodeIds.filter(isNonEmptyString))];
+    if (requestedNodeIds.length === 0) return false;
+    const existingNodesById = new Map(state.project.nodes.map((node) => [node.id, node]));
+    if (requestedNodeIds.some((nodeId) => !existingNodesById.has(nodeId))) return false;
+    const selectedNodeIds = requestedNodeIds.filter((nodeId) => existingNodesById.get(nodeId)?.locked !== true);
+    if (selectedNodeIds.length === 0) return false;
+    const selectedIds = new Set(selectedNodeIds);
+    const connectedEdges = state.project.edges.filter((edge) => selectedIds.has(edge.source) || selectedIds.has(edge.target));
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const transaction: ProjectTransaction = {
+      id: `delete-canvas-nodes-${suffix}`,
+      label: `Delete ${selectedNodeIds.length} canvas node${selectedNodeIds.length === 1 ? '' : 's'}`,
+      operations: [
+        ...connectedEdges.map((edge) => ({ kind: 'canvas' as const, operation: { kind: 'delete_edge' as const, edgeId: edge.id } })),
+        ...selectedNodeIds.map((nodeId) => ({ kind: 'canvas' as const, operation: { kind: 'delete_node' as const, nodeId } })),
+      ],
+    };
+    try {
+      const nextProject = applyProjectTransaction(state.project, transaction);
+      return commitNow(transaction, { nextProject });
+    } catch {
+      return false;
+    }
+  }),
+  deleteCanvasEdge: (edgeId) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    if (!isNonEmptyString(edgeId) || !state.project.edges.some((edge) => edge.id === edgeId)) return false;
+    const transaction: ProjectTransaction = {
+      id: `delete-canvas-edge-${edgeId}-${Date.now()}-${planSequence++}`,
+      label: 'Cancel canvas connection',
+      operations: [{ kind: 'canvas', operation: { kind: 'delete_edge', edgeId } }],
     };
     try {
       const nextProject = applyProjectTransaction(state.project, transaction);
@@ -544,22 +1216,130 @@ export const useAppStore = create<AppState>((set, get) => ({
     const nextProject = applyProjectTransaction(state.project, transaction);
     return commitNow(transaction, { nextProject });
   }),
-  closePersistence: async () => {
-    if (get().projectLifecycle === 'untitled') return false;
-    if (get().recoveryRequired) return false;
-    const activeRequest = invalidateActiveProjectCommit();
-    if (activeRequest !== null) {
-      pendingFailedProjectCommit = activeRequest;
-      set({
-        canReloadDurableProject: false,
-        canRetryProjectCommit: true,
-        project: activeRequest.nextProject,
-        projectCommitConflictCode: null,
-        saveErrorCode: 'DURABLE_WRITE_FAILED',
-        saveStatus: 'error',
-      });
+  draftGenerationNodeConfig: async (nodeId, config) => {
+    const state = get();
+    if (
+      state.saveStatus === 'read_only'
+      || state.recoveryRequired
+      || state.projectCommitConflictCode !== null
+      || pendingFailedProjectCommit !== null
+    ) {
       return false;
     }
+    const node = getModuleNode(state.project.nodes, nodeId);
+    if (!node || (node.data.moduleType !== 'image_generation' && node.data.moduleType !== 'video_generation')) return false;
+    const nextDraft = {
+      prompt: config.prompt,
+      modelRoute: config.modelRoute ?? '',
+      aspectRatio: config.aspectRatio ?? (node.data.moduleType === 'video_generation' ? '16:9' : '1:1'),
+      resolution: config.resolution ?? (node.data.moduleType === 'video_generation' ? '1080P' : '2K'),
+      outputCount: normalizeImageOutputCount(config.outputCount) ?? 1,
+      ...(node.data.moduleType === 'video_generation' ? {
+        keyframe: config.keyframe ?? 'auto',
+        durationSeconds: config.durationSeconds ?? 5,
+        audioEnabled: config.audioEnabled !== false,
+      } : {}),
+    };
+    const currentDraft = Object.fromEntries(Object.keys(nextDraft).map((key) => [key, node.data.config[key]]));
+    if (JSON.stringify(currentDraft) === JSON.stringify(nextDraft)) return true;
+    const nextNode = {
+      ...node,
+      data: { ...node.data, config: { ...node.data.config, ...nextDraft } },
+    };
+    const project = {
+      ...state.project,
+      nodes: state.project.nodes.map((candidate) => candidate.id === nodeId ? nextNode : candidate),
+    };
+    set({
+      canReloadDurableProject: false,
+      project,
+      projectCommitConflictCode: null,
+      saveErrorCode: null,
+      saveStatus: 'pending',
+    });
+    scheduleProjectSave(get);
+    return true;
+  },
+  draftReverseAgentConfig: async (nodeId, config) => {
+    const state = get();
+    if (
+      state.saveStatus === 'read_only'
+      || state.recoveryRequired
+      || state.projectCommitConflictCode !== null
+      || pendingFailedProjectCommit !== null
+    ) return false;
+    const node = getModuleNode(state.project.nodes, nodeId);
+    if (!node || node.data.moduleType !== 'reverse_agent') return false;
+    const nextDraft = {
+      modelRoute: config.modelRoute,
+      role: config.role,
+      task: config.task,
+      knowledgeBaseIds: [...config.knowledgeBaseIds],
+      referenceAssetIds: [...(config.referenceAssetIds ?? [])],
+    };
+    const currentDraft = {
+      modelRoute: typeof node.data.config.modelRoute === 'string' ? node.data.config.modelRoute : '',
+      role: typeof node.data.config.role === 'string' ? node.data.config.role : '',
+      task: typeof node.data.config.task === 'string' ? node.data.config.task : '',
+      knowledgeBaseIds: Array.isArray(node.data.config.knowledgeBaseIds)
+        ? node.data.config.knowledgeBaseIds.filter(isNonEmptyString)
+        : [],
+      referenceAssetIds: Array.isArray(node.data.config.referenceAssetIds)
+        ? node.data.config.referenceAssetIds.filter(isNonEmptyString)
+        : [],
+    };
+    if (JSON.stringify(currentDraft) === JSON.stringify(nextDraft)) return true;
+    const nextNode = {
+      ...node,
+      data: { ...node.data, config: { ...node.data.config, ...nextDraft } },
+    };
+    const project = {
+      ...state.project,
+      nodes: state.project.nodes.map((candidate) => candidate.id === nodeId ? nextNode : candidate),
+    };
+    set({
+      canReloadDurableProject: false,
+      project,
+      projectCommitConflictCode: null,
+      saveErrorCode: null,
+      saveStatus: 'pending',
+    });
+    scheduleProjectSave(get);
+    return true;
+  },
+  applyReverseAgentConfig: (nodeId, config) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    const node = getModuleNode(state.project.nodes, nodeId);
+    if (!node || node.data.moduleType !== 'reverse_agent') return false;
+    const parsed = reverseAgentNodeConfigSchema.safeParse(config);
+    if (!parsed.success) return false;
+    const current = reverseAgentNodeConfigSchema.safeParse(node.data.config);
+    if (current.success && JSON.stringify(current.data) === JSON.stringify(parsed.data)) return true;
+    const nextNode = {
+      ...node,
+      data: { ...node.data, config: { ...node.data.config, ...parsed.data } },
+    };
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const transaction: ProjectTransaction = {
+      id: `apply-reverse-agent-config-${suffix}`,
+      label: 'Apply reverse Agent task',
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    const nextProject = applyProjectTransaction(state.project, transaction);
+    return commitNow(transaction, { nextProject });
+  }),
+  updateReverseAgentResult: (nodeId, result) => {
+    const node = getModuleNode(get().project.nodes, nodeId);
+    if (!node || node.data.moduleType !== 'reverse_agent') return Promise.resolve(false);
+    const current = node.data.config.reverseAgentResult;
+    const merged = {
+      ...(current && typeof current === 'object' && !Array.isArray(current) ? current : {}),
+      ...result,
+    };
+    return persistReverseAgentRunPatch(set, get, nodeId, { reverseAgentResult: merged }, 'Update reverse Agent result');
+  },
+  closePersistence: async () => {
+    if (get().recoveryRequired) return false;
     const flushed = await flushPendingProjectSave(get, set, 'close');
     if (!flushed) return false;
     invalidateModelJobStoreGeneration();
@@ -651,14 +1431,36 @@ export const useAppStore = create<AppState>((set, get) => ({
   configureKnowledgeBase: async (knowledgeBaseId, displayName) => {
     await knowledgeClient.configure(knowledgeBaseId, displayName);
   },
-  getKnowledgeLease: (runId, capability, references, citations) => (
-    knowledgeClient.getLease(runId, capability, references, citations)
+  getKnowledgeLease: (runId, capability, references, citations, selectedKnowledgeBaseIds) => (
+    knowledgeClient.getLease(runId, capability, references, citations, selectedKnowledgeBaseIds)
   ),
+  analyzeReversePrompt: async (input) => {
+    const analyzeReversePrompt = projectPersistenceClient.analyzeReversePrompt;
+    if (analyzeReversePrompt === undefined) throw new Error('Reverse prompt analysis is unavailable');
+    return analyzeReversePrompt(input);
+  },
+  chatSkill: async (input) => {
+    const chatSkill = projectPersistenceClient.chatSkill;
+    if (chatSkill === undefined) throw new Error('Skill chat is unavailable');
+    return chatSkill(input);
+  },
   hydratePersistence: async () => {
+    const hydrationGeneration = projectPersistenceGeneration;
+    const hydrationProject = get().project;
+    // The desktop bridge can update the project object while startup restore is
+    // in flight. Keep a value snapshot as well as the reference so an in-place
+    // edit cannot be mistaken for an untouched initial project.
+    const hydrationProjectFingerprint = JSON.stringify(hydrationProject);
     const jobStore = getModelJobStore();
     const hydrated = await projectPersistenceClient.hydrate();
     const imageState = await readProjectImagesForHydration();
     const modelJobs = await jobStore.listJobs();
+    const currentProject = get().project;
+    if (
+      hydrationGeneration !== projectPersistenceGeneration
+      || currentProject !== hydrationProject
+      || JSON.stringify(currentProject) !== hydrationProjectFingerprint
+    ) return;
     invalidateProjectPersistenceBoundary();
     cancelPendingProjectSave();
     clearPendingFailedProjectCommit();
@@ -678,14 +1480,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveErrorCode: hydrated.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
       saveStatus: hydrated.saveStatus,
     });
-    if (hydrated.lifecycle === 'durable') await reconcilePendingClipboardMedia(hydrated.project.id);
-    recoverModelJobsInBackground(jobStore);
+    const interruptedReverseRuns = createInterruptedReverseRunsTransaction(hydrated.project);
+    if (interruptedReverseRuns !== null && hydrated.recoveryRequired !== true) {
+      await get().commitProjectTransaction(interruptedReverseRuns.transaction, {
+        kind: 'agent',
+        nextProject: interruptedReverseRuns.project,
+      });
+    }
+    if (
+      hydrated.recoveryRequired !== true
+      && isRetiredStarterCanvasProject(hydrated.project)
+    ) {
+      await get().migrateLegacyStarterProjectToFigmaWorkbench();
+    }
+    if (hydrated.lifecycle === 'durable') await reconcilePendingClipboardMedia(get().project.id);
+    if (hydrated.recoveryRequired !== true) {
+      await recoverModelJobsInBackground(jobStore);
+    }
   },
-  openProject: async () => {
+  openProject: async (recentProjectId) => {
     if (get().recoveryRequired) return false;
     const openProject = projectPersistenceClient.openProject;
     if (openProject === undefined) return false;
-    const opened = await openProject();
+    const opened = await openProject(recentProjectId);
     if (opened === null) return false;
     const imageState = await readProjectImagesForHydration();
     invalidateProjectPersistenceBoundary();
@@ -707,6 +1524,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveStatus: opened.saveStatus,
       undoStack: [],
     });
+    if (
+      opened.lifecycle === 'durable'
+      && opened.recoveryRequired !== true
+      && get().modelJobs.length === 0
+      && isRetiredStarterCanvasProject(opened.project)
+    ) {
+      await get().migrateLegacyStarterProjectToFigmaWorkbench();
+    }
     await reconcilePendingClipboardMedia(opened.project.id);
     return true;
   },
@@ -768,10 +1593,47 @@ export const useAppStore = create<AppState>((set, get) => ({
       undoStack: [],
     });
   },
-  importImageForModule: (nodeId) => importProjectImageWithTarget({ kind: 'module', nodeId }),
-  importVideoForModule: (nodeId) => importProjectVideoForModule(nodeId),
+  migrateLegacyStarterProjectToFigmaWorkbench: () => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    if (state.recoveryRequired || !isRetiredStarterCanvasProject(state.project)) return false;
+
+    try {
+      await projectPersistenceClient.stablePoint();
+    } catch {
+      return false;
+    }
+
+    const transactionId = `migrate-legacy-starter-to-figma-ui-gate-${Date.now()}-${planSequence++}`;
+    const migratedCanvas = createFigmaHybridCanvasProject(state.project);
+    const memoryEntry = createFigmaWorkbenchMigrationMemory(
+      state.project,
+      migratedCanvas,
+      transactionId,
+      new Date().toISOString(),
+    );
+    const nextProject: CanvasProject = {
+      ...migratedCanvas,
+      projectMemory: appendProjectMemoryEntry(migratedCanvas.projectMemory, memoryEntry),
+    };
+    const transaction: ProjectTransaction = {
+      id: transactionId,
+      label: 'Migrate legacy starter canvas to Figma workbench',
+      operations: [
+        { kind: 'replace_canvas_state', nodes: nextProject.nodes, edges: nextProject.edges },
+        { kind: 'append_project_memory', entry: memoryEntry },
+      ],
+    };
+    const saved = await commitNow(transaction, { kind: 'system', nextProject });
+    if (saved) set({ agentPlan: null, undoStack: [] });
+    return saved;
+  }),
+  importImageForModule: (nodeId, file) => importProjectImageWithTarget({ kind: 'module', nodeId }, file),
+  importAgentReferenceImage: (file) => importAgentReferenceImageIntoProject(file),
+  importAgentReferenceVideo: (file) => importAgentReferenceVideoIntoProject(file),
+  importVideoForModule: (nodeId, file) => importProjectVideoForModule(nodeId, file),
   pasteClipboardImage: (position) => pasteClipboardImageAt(position),
   pasteClipboardMedia: (position) => pasteClipboardMediaAt(position),
+  importDroppedMedia: (file, position) => importDroppedMediaAt(file, position),
   importPlacementReference: (nodeId, role) => importProjectImageWithTarget({
     kind: 'placement_reference',
     nodeId,
@@ -779,8 +1641,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   refreshProjectImages: async () => {
     try {
-      const projectImages = await projectPersistenceClient.listProjectImages();
-      set({ projectImages, projectImageError: null });
+      const [projectImages, projectVideos] = await Promise.all([
+        projectPersistenceClient.listProjectImages(),
+        projectPersistenceClient.listProjectVideos?.() ?? Promise.resolve([]),
+      ]);
+      set({ projectImages, projectVideos, projectImageError: null });
     } catch (error) {
       set({ projectImageError: readErrorCode(error) });
     }
@@ -794,6 +1659,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
   },
   flushProjectSave: (reason) => flushPendingProjectSave(get, set, reason),
+  saveProjectExplicitly: async () => {
+    if (get().recoveryRequired || get().saveStatus === 'read_only') return false;
+    // A failed durable commit keeps its exact request for retry. The top-bar
+    // Save button and Ctrl/Cmd+S must retry that request instead of silently
+    // returning false forever while the UI says “保存失败”.
+    if (pendingFailedProjectCommit !== null) return get().retryFailedProjectCommit();
+    set({ saveErrorCode: null, saveStatus: 'saving' });
+    try {
+      return await flushPendingProjectSave(get, set, 'stable-boundary');
+    } catch (error) {
+      set({ saveErrorCode: readErrorCode(error), saveStatus: 'error' });
+      return false;
+    }
+  },
   refreshModelJobs: async () => {
     const modelJobs = await getModelJobStore().listJobs();
     set({ confirmedModelJobs: countConfirmedModelJobs(modelJobs), modelJobs });
@@ -820,7 +1699,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleAgentPanel: () => set((state) => ({ agentPanelCollapsed: !state.agentPanelCollapsed })),
   setProject: (project, options = {}) => {
     if (pendingFailedProjectCommit !== null || get().recoveryRequired) return;
-    invalidateProjectPersistenceBoundary();
+    if (project.id !== get().project.id) invalidateProjectPersistenceBoundary();
     set((state) => ({
       canReloadDurableProject: false,
       project,
@@ -982,8 +1861,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       let modelJobs = get().modelJobs;
       if (result.executeModels) {
         try {
+          const projectSessionId = await resolveModelExecutionSessionId();
           modelJobs = await getModelJobStore().enqueueConfirmedJobs({
             conversationId: committingPlan.modelConversationId ?? AGENT_MODEL_CONVERSATION_ID,
+            projectSessionId,
             confirmedAt: now,
             requests: buildModelJobRequests(project, committingPlan, modelProfile!),
           });
@@ -1128,6 +2009,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           saveErrorCode: restored.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
           saveStatus: restored.saveStatus,
         });
+        if (restored.recoveryRequired !== true) {
+          await recoverModelJobsInBackground(getModelJobStore());
+        }
         return true;
       }, { allowRecovery: true });
       return;
@@ -1216,7 +2100,128 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 }));
 
-async function importProjectImageWithTarget(target: ProjectImageImportTarget): Promise<boolean> {
+const pristineAppStoreState = useAppStore.getState();
+
+async function importAgentReferenceImageIntoProject(file?: File): Promise<ProjectImageAssetSummary | null> {
+  let importedAsset: ProjectImageAssetSummary | null = null;
+  const completed = await enqueueStableProjectOperation(
+    (partial) => useAppStore.setState(partial),
+    () => useAppStore.getState(),
+    async () => {
+      const generation = projectPersistenceGeneration;
+      const before = useAppStore.getState();
+      if (
+        before.projectImageImportingNodeId !== null
+        || before.saveStatus === 'read_only'
+        || before.canRetryProjectCommit
+        || before.recoveryRequired
+      ) return false;
+
+      const previousSaveStatus = before.saveStatus;
+      useAppStore.setState({
+        projectImageError: null,
+        projectImageImportingNodeId: 'agent_reference',
+        saveErrorCode: null,
+        saveStatus: 'saving',
+      });
+      try {
+        const result = file === undefined
+          ? await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget)
+          : await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget, file);
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        if (result === null) {
+          useAppStore.setState({
+            projectImageImportingNodeId: null,
+            saveStatus: previousSaveStatus,
+          });
+          return false;
+        }
+        const current = useAppStore.getState();
+        importedAsset = result.asset;
+        useAppStore.setState({
+          desktopRevision: result.revision,
+          project: result.project,
+          projectImages: upsertProjectImageSummary(current.projectImages, result.asset),
+          projectImageError: null,
+          projectImageImportingNodeId: null,
+          saveErrorCode: null,
+          saveStatus: 'saved',
+        });
+        return true;
+      } catch (error) {
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        const code = readErrorCode(error);
+        useAppStore.setState({
+          projectImageError: code,
+          projectImageImportingNodeId: null,
+          saveErrorCode: code,
+          saveStatus: 'error',
+        });
+        return false;
+      }
+    },
+  );
+  return completed ? importedAsset : null;
+}
+async function importAgentReferenceVideoIntoProject(file?: File): Promise<ProjectVideoAssetSummary | null> {
+  let importedAsset: ProjectVideoAssetSummary | null = null;
+  const completed = await enqueueStableProjectOperation(
+    (partial) => useAppStore.setState(partial),
+    () => useAppStore.getState(),
+    async () => {
+      const generation = projectPersistenceGeneration;
+      const before = useAppStore.getState();
+      if (
+        before.projectImageImportingNodeId !== null
+        || before.saveStatus === 'read_only'
+        || before.canRetryProjectCommit
+        || before.recoveryRequired
+      ) return false;
+
+      const previousSaveStatus = before.saveStatus;
+      useAppStore.setState({
+        projectImageError: null,
+        projectImageImportingNodeId: 'agent_reference_video',
+        saveErrorCode: null,
+        saveStatus: 'saving',
+      });
+      try {
+        const result = file === undefined
+          ? await projectPersistenceClient.importAgentReferenceVideo?.() ?? null
+          : await projectPersistenceClient.importAgentReferenceVideo?.(file) ?? null;
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        if (result === null) {
+          useAppStore.setState({ projectImageImportingNodeId: null, saveStatus: previousSaveStatus });
+          return false;
+        }
+        const current = useAppStore.getState();
+        importedAsset = result.asset;
+        useAppStore.setState({
+          desktopRevision: result.revision,
+          project: result.project,
+          projectVideos: upsertProjectVideoSummary(current.projectVideos, result.asset),
+          projectImageError: null,
+          projectImageImportingNodeId: null,
+          saveErrorCode: null,
+          saveStatus: 'saved',
+        });
+        return true;
+      } catch (error) {
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        const code = readErrorCode(error);
+        useAppStore.setState({
+          projectImageError: code,
+          projectImageImportingNodeId: null,
+          saveErrorCode: code,
+          saveStatus: 'error',
+        });
+        return false;
+      }
+    },
+  );
+  return completed ? importedAsset : null;
+}
+async function importProjectImageWithTarget(target: ProjectImageImportTarget, file?: File): Promise<boolean> {
   return enqueueStableProjectOperation(
     (partial) => useAppStore.setState(partial),
     () => useAppStore.getState(),
@@ -1229,6 +2234,7 @@ async function importProjectImageWithTarget(target: ProjectImageImportTarget): P
         || before.canRetryProjectCommit
         || before.recoveryRequired
       ) return false;
+      if (target.kind === 'agent_reference') return false;
       const node = before.project.nodes.find((candidate) => candidate.id === target.nodeId);
       if (node === undefined) return false;
       if (target.kind === 'module' && (
@@ -1245,7 +2251,9 @@ async function importProjectImageWithTarget(target: ProjectImageImportTarget): P
         saveStatus: 'saving',
       });
       try {
-        const result = await projectPersistenceClient.importProjectImage(target);
+        const result = file === undefined
+          ? await projectPersistenceClient.importProjectImage(target)
+          : await projectPersistenceClient.importProjectImage(target, file);
         if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
         if (result === null) {
           useAppStore.setState({
@@ -1300,7 +2308,7 @@ async function importProjectImageWithTarget(target: ProjectImageImportTarget): P
   );
 }
 
-async function importProjectVideoForModule(nodeId: string): Promise<boolean> {
+async function importProjectVideoForModule(nodeId: string, file?: File): Promise<boolean> {
   return enqueueStableProjectOperation(
     (partial) => useAppStore.setState(partial),
     () => useAppStore.getState(),
@@ -1323,7 +2331,9 @@ async function importProjectVideoForModule(nodeId: string): Promise<boolean> {
         saveStatus: 'saving',
       });
       try {
-        const result = await projectPersistenceClient.importProjectVideo?.(nodeId) ?? null;
+        const result = file === undefined
+          ? await projectPersistenceClient.importProjectVideo?.(nodeId) ?? null
+          : await projectPersistenceClient.importProjectVideo?.(nodeId, file) ?? null;
         if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
         if (result === null) {
           useAppStore.setState({ projectImageImportingNodeId: null, saveStatus: previousSaveStatus });
@@ -1429,6 +2439,76 @@ async function pasteClipboardImageAt(position: { readonly x: number; readonly y:
   );
 }
 
+async function importDroppedMediaAt(file: File, position: { readonly x: number; readonly y: number }): Promise<boolean> {
+  // The desktop preload verifies the native file identity. Renderer code must
+  // not reject a context-isolated File proxy with a realm-specific instanceof.
+  if (file === null || typeof file !== 'object' || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return false;
+  const operationId = createDroppedMediaOperationId();
+  return enqueueStableProjectOperation(
+    (partial) => useAppStore.setState(partial),
+    () => useAppStore.getState(),
+    async () => {
+      const generation = projectPersistenceGeneration;
+      const before = useAppStore.getState();
+      if (before.projectImageImportingNodeId !== null || before.saveStatus === 'read_only' || before.canRetryProjectCommit || before.recoveryRequired) {
+        return false;
+      }
+      const previousSaveStatus = before.saveStatus;
+      useAppStore.setState({
+        projectImageError: null,
+        projectImageImportingNodeId: 'dropped-media',
+        saveErrorCode: null,
+        saveStatus: 'saving',
+      });
+      try {
+        const result = await projectPersistenceClient.importDroppedMedia?.({ file, operationId, position }) ?? null;
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        if (result === null) {
+          useAppStore.setState({
+            projectImageError: 'UNSUPPORTED_DROPPED_MEDIA',
+            projectImageImportingNodeId: null,
+            saveStatus: previousSaveStatus,
+          });
+          return false;
+        }
+        const current = useAppStore.getState();
+        if (result.asset.mediaType === 'video/mp4') {
+          useAppStore.setState({
+            desktopRevision: result.revision,
+            project: result.project,
+            projectImageError: null,
+            projectImageImportingNodeId: null,
+            projectVideos: upsertProjectVideoSummary(current.projectVideos, result.asset),
+            saveErrorCode: null,
+            saveStatus: 'saved',
+          });
+        } else {
+          useAppStore.setState({
+            desktopRevision: result.revision,
+            project: result.project,
+            projectImages: upsertProjectImageSummary(current.projectImages, result.asset),
+            projectImageError: null,
+            projectImageImportingNodeId: null,
+            saveErrorCode: null,
+            saveStatus: 'saved',
+          });
+        }
+        return true;
+      } catch (error) {
+        if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
+        const code = readErrorCode(error);
+        useAppStore.setState({
+          projectImageError: code,
+          projectImageImportingNodeId: null,
+          saveErrorCode: code,
+          saveStatus: 'error',
+        });
+        return false;
+      }
+    },
+  );
+}
+
 async function pasteClipboardMediaAt(position: { readonly x: number; readonly y: number }): Promise<boolean> {
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return false;
   const videoOperationId = createClipboardVideoOperationId();
@@ -1510,7 +2590,11 @@ async function pasteClipboardMediaAt(position: { readonly x: number; readonly y:
         });
         if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
         if (imageResult === null) {
-          useAppStore.setState({ projectImageImportingNodeId: null, saveStatus: previousSaveStatus });
+          useAppStore.setState({
+            projectImageError: 'CLIPBOARD_MEDIA_UNAVAILABLE',
+            projectImageImportingNodeId: null,
+            saveStatus: previousSaveStatus,
+          });
           clearPendingClipboardMedia();
           return false;
         }
@@ -1674,6 +2758,12 @@ function createClipboardVideoOperationId(): string {
   return `clipboard_video_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
+function createDroppedMediaOperationId(): string {
+  const crypto = globalThis.crypto;
+  if (typeof crypto?.randomUUID === 'function') return `dropped_media_${crypto.randomUUID().toLocaleLowerCase()}`;
+  return `dropped_media_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
 function upsertProjectImageSummary(
   assets: readonly ProjectImageAssetSummary[],
   asset: ProjectImageAssetSummary,
@@ -1692,21 +2782,34 @@ function upsertProjectVideoSummary(
     : [...assets, asset];
 }
 
+async function resolveModelExecutionSessionId(): Promise<string | undefined> {
+  if (projectPersistenceClient.ensureModelExecutionSession !== undefined) {
+    const sessionId = await projectPersistenceClient.ensureModelExecutionSession();
+    if (sessionId === null) throw new Error('Project session is unavailable');
+    return sessionId;
+  }
+  return projectPersistenceClient.getSessionId?.() ?? undefined;
+}
+
 type CompatibleProjectPersistenceClient = Omit<
   ProjectPersistenceClient,
-  'copyHistoryToProject' | 'importProjectImage' | 'importProjectVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'
-> & Partial<Pick<ProjectPersistenceClient, 'copyHistoryToProject' | 'importProjectImage' | 'importProjectVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'>>;
+  'chatSkill' | 'copyHistoryToProject' | 'importProjectImage' | 'importDroppedMedia' | 'importProjectVideo' | 'importAgentReferenceVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'
+> & Partial<Pick<ProjectPersistenceClient, 'chatSkill' | 'copyHistoryToProject' | 'importProjectImage' | 'importDroppedMedia' | 'importProjectVideo' | 'importAgentReferenceVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'>>;
 
 export function replaceProjectPersistenceClientForTests(client: CompatibleProjectPersistenceClient): void {
   projectPersistenceClient = withProjectImagePersistenceDefaults(client);
+  registerActiveProjectPersistenceClient(projectPersistenceClient);
 }
 
 function withProjectImagePersistenceDefaults(client: CompatibleProjectPersistenceClient): ProjectPersistenceClient {
   return {
     ...client,
+    chatSkill: client.chatSkill ?? (async () => { throw new Error('Skill chat is unavailable'); }),
     copyHistoryToProject: client.copyHistoryToProject ?? (async () => null),
     importProjectImage: client.importProjectImage ?? (async () => null),
+    importDroppedMedia: client.importDroppedMedia ?? (async () => null),
     importProjectVideo: client.importProjectVideo ?? (async () => null),
+    importAgentReferenceVideo: client.importAgentReferenceVideo ?? (async () => null),
     listProjectImages: client.listProjectImages ?? (async () => []),
     listProjectVideos: client.listProjectVideos ?? (async () => []),
     pasteClipboardImage: client.pasteClipboardImage ?? (async () => null),
@@ -1742,13 +2845,19 @@ function enqueueStableProjectOperation(
   set: (partial: Partial<AppState>) => void,
   get: () => AppState,
   operation: StableProjectOperation,
-  options: { allowPendingFailure?: boolean; allowRecovery?: boolean } = {},
+  options: { allowPendingFailure?: boolean; allowRecovery?: boolean; throwOnRecovery?: boolean } = {},
 ): Promise<boolean> {
   const generation = projectPersistenceGeneration;
   const run = async (): Promise<boolean> => {
     if (generation !== projectPersistenceGeneration) return false;
     if (!options.allowPendingFailure && pendingFailedProjectCommit !== null) return false;
-    if (get().projectCommitConflictCode !== null || (!options.allowRecovery && get().recoveryRequired)) return false;
+    if (get().projectCommitConflictCode !== null) return false;
+    if (!options.allowRecovery && get().recoveryRequired) {
+      if (options.throwOnRecovery) {
+        throw createGenerationStartError('RECOVERY_REQUIRED', 'Recovery preview must be restored before generation starts');
+      }
+      return false;
+    }
     return operation((transaction, commitOptions = {}) => (
       commitProjectTransactionNow(transaction, commitOptions, set, get)
     ));
@@ -1771,7 +2880,7 @@ async function commitProjectTransactionNow(
   set: (partial: Partial<AppState>) => void,
   get: () => AppState,
 ): Promise<boolean> {
-  cancelPendingProjectSave();
+  if (!options.preservePendingAutosave) cancelPendingProjectSave();
   if (options.retryRequest !== undefined) {
     const request = options.retryRequest;
     if (
@@ -1819,6 +2928,7 @@ export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' }
   pendingProjectFlushBoundary = null;
   clearPendingAgentConfirmation();
   pendingAgentJobRetry = null;
+  activeReverseAgentRuns.clear();
   stableProjectCommitTail = null;
   invalidateModelJobStoreGeneration();
   modelJobStore?.stop();
@@ -1830,13 +2940,25 @@ export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' }
   knowledgeClient.stop();
   const state = createInitialState();
   useAppStore.setState(options.project === 'empty'
-    ? state
-    : { ...state, project: createStarterProject(), projectLifecycle: 'durable', saveStatus: 'pending' });
+    ? { ...pristineAppStoreState, ...state, project: createUntitledProject() }
+    : { ...pristineAppStoreState, ...state, project: createStarterProject(), projectLifecycle: 'durable', saveStatus: 'pending' }, true);
 }
 
 function getModuleNode(nodes: readonly CanvasProject['nodes'][number][], nodeId: string): CanvasModuleNode | undefined {
   const node = nodes.find((candidate) => candidate.id === nodeId);
   return node?.type === 'module' ? node : undefined;
+}
+
+function createReverseConfigurationSaveError(state: AppState): Error & { code: string } {
+  const code = state.projectCommitConflictCode
+    ?? (state.recoveryRequired
+      ? 'RECOVERY_REQUIRED'
+      : state.saveStatus === 'read_only'
+        ? 'PROJECT_READ_ONLY'
+        : state.canRetryProjectCommit
+          ? 'PROJECT_SAVE_RETRY_REQUIRED'
+          : 'PROJECT_CONFIG_SAVE_FAILED');
+  return Object.assign(new Error('Reverse configuration could not be saved.'), { code });
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1914,7 +3036,20 @@ async function executeProjectCommit(
   const token = beginProjectCommit(request);
   try {
     const result = await projectPersistenceClient.commit(request);
-    if (!isActiveProjectCommit(token, get)) return false;
+    if (!isActiveProjectCommit(token, get)) {
+      const state = get();
+      const supersededByNewerDraft = result.ok
+        && activeProjectCommitToken === token
+        && token.generation === projectPersistenceGeneration
+        && state.project.id === request.projectId;
+      if (!supersededByNewerDraft) return false;
+      set({
+        desktopRevision: result.revision,
+        saveErrorCode: null,
+        saveStatus: 'pending',
+      });
+      return true;
+    }
     if (retryRequest
       ? pendingFailedProjectCommit !== request
       : pendingFailedProjectCommit !== null && pendingFailedProjectCommit !== request) return false;
@@ -1967,6 +3102,9 @@ function applyCommitResult(
     canReloadDurableProject: false,
     canRetryProjectCommit: true,
     desktopRevision: result.revision,
+    // The bridge rejected the transaction against its current durable
+    // project. Keep the renderer on that acknowledged project instead of
+    // repeatedly retrying the same stale edge/node operation.
     project: request.nextProject,
     projectCommitConflictCode: null,
     saveErrorCode: result.code,
@@ -2100,16 +3238,205 @@ function countConfirmedModelJobs(jobs: ModelJob[]): number {
   return jobs.filter((job) => job.status === 'queued' || job.status === 'submitting' || job.status === 'running').length;
 }
 
+function isReverseAgentRunActive(get: () => AppState, nodeId: string, runId: string): boolean {
+  const node = getModuleNode(get().project.nodes, nodeId);
+  return activeReverseAgentRuns.get(nodeId) === runId
+    && node?.data.moduleType === 'reverse_agent'
+    && node.data.config.reverseAgentRunId === runId
+    && node.data.config.reverseAgentRunState === 'running';
+}
+
+function createReverseRunCancelledError(): Error & { readonly code: 'REVERSE_RUN_CANCELLED' } {
+  return Object.assign(new Error('Reverse analysis was stopped'), { code: 'REVERSE_RUN_CANCELLED' as const });
+}
+
+function createInterruptedReverseRunsTransaction(project: CanvasProject): {
+  readonly project: CanvasProject;
+  readonly transaction: ProjectTransaction;
+} | null {
+  const interrupted = project.nodes.flatMap((node) => {
+    if (node.type !== 'module' || node.data.moduleType !== 'reverse_agent' || node.data.config.reverseAgentRunState !== 'running') return [];
+    return [{
+      ...node,
+      data: {
+        ...node.data,
+        config: {
+          ...node.data.config,
+          reverseAgentCompletedAt: new Date().toISOString(),
+          reverseAgentError: null,
+          reverseAgentRunState: 'cancelled',
+        },
+      },
+    }];
+  });
+  if (interrupted.length === 0) return null;
+  const transaction: ProjectTransaction = {
+    id: `stop-interrupted-reverse-runs-${Date.now()}-${planSequence++}`,
+    label: 'Stop interrupted reverse Agent runs',
+    operations: interrupted.map((node) => ({ kind: 'canvas' as const, operation: { kind: 'update_node' as const, node } })),
+  };
+  return { project: applyProjectTransaction(project, transaction), transaction };
+}
+
+function persistReverseAgentRunPatch(
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+  nodeId: string,
+  patch: Record<string, unknown>,
+  label: string,
+): Promise<boolean> {
+  return enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const currentProject = get().project;
+    const currentNode = getModuleNode(currentProject.nodes, nodeId);
+    if (!currentNode || currentNode.data.moduleType !== 'reverse_agent') return false;
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const nextNode = {
+      ...currentNode,
+      data: {
+        ...currentNode.data,
+        config: { ...currentNode.data.config, ...patch },
+      },
+    };
+    const sourceTransaction: ProjectTransaction = {
+      id: `reverse-agent-run-state-${suffix}`,
+      label,
+      operations: [{ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } }],
+    };
+    const sourceCommitted = await commitNow(sourceTransaction, {
+      kind: 'agent',
+      nextProject: applyProjectTransaction(currentProject, sourceTransaction),
+    });
+    if (!sourceCommitted) return false;
+
+    const completedResult = patch.reverseAgentRunState === 'completed' && patch.reverseAgentResult !== undefined;
+    if (!completedResult) return true;
+
+    const persistedProject = get().project;
+    const persistedNode = getModuleNode(persistedProject.nodes, nodeId);
+    if (!persistedNode || persistedNode.data.moduleType !== 'reverse_agent') return true;
+    const existingResultEdge = persistedProject.edges.find((edge) => {
+      if (edge.source !== nodeId || edge.sourcePortId !== 'analysis' || edge.targetPortId !== 'analysis') return false;
+      const target = getModuleNode(persistedProject.nodes, edge.target);
+      return target?.data.moduleType === 'reverse_result';
+    });
+    if (existingResultEdge !== undefined) return true;
+
+    const existingIds = new Set(persistedProject.nodes.map((node) => node.id));
+    const baseId = `reverse-result-${nodeId}`;
+    let resultNodeId = baseId;
+    let index = 2;
+    while (existingIds.has(resultNodeId)) resultNodeId = `${baseId}-${index++}`;
+    const resultNode = createCanvasModuleNode(resultNodeId, 'reverse_result', {
+      x: persistedNode.position.x + 680,
+      y: persistedNode.position.y,
+    });
+    const resultTransaction: ProjectTransaction = {
+      id: `reverse-agent-result-node-${suffix}`,
+      label: 'Create reverse Agent result node',
+      operations: [
+        { kind: 'canvas', operation: { kind: 'create_node', node: resultNode } },
+        { kind: 'canvas', operation: { kind: 'create_edge', edge: {
+          id: createModuleEdgeId(persistedProject.edges.map((edge) => edge.id), {
+            sourceId: nodeId,
+            sourcePortId: 'analysis',
+            targetId: resultNodeId,
+            targetPortId: 'analysis',
+            order: 0,
+          }),
+          source: nodeId,
+          sourcePortId: 'analysis',
+          target: resultNodeId,
+          targetPortId: 'analysis',
+          order: 0,
+        } } },
+      ],
+    };
+    try {
+      await commitNow(resultTransaction, {
+        kind: 'agent',
+        nextProject: applyProjectTransaction(persistedProject, resultTransaction),
+      });
+    } catch {
+      // The durable source result is authoritative; the companion node is optional.
+    }
+    return true;
+  });
+}
+
 function getModelJobStore(): ModelJobStore {
   if (!modelJobStore) {
     const generation = modelJobStoreGeneration;
+    const canContinueResult = async (ownerJob: ModelJob, isOwnerRunning: () => Promise<boolean>) => {
+      if (generation !== modelJobStoreGeneration) return false;
+      const ownsActiveResult = () => (
+        ownerJob.projectSessionId === undefined
+        || projectPersistenceClient.getSessionId?.() === ownerJob.projectSessionId
+        || projectOwnsModelResult(useAppStore.getState().project, ownerJob)
+      );
+      if (!ownsActiveResult()) return false;
+      if (!await isOwnerRunning()) return false;
+      return generation === modelJobStoreGeneration && ownsActiveResult();
+    };
     modelJobStore = createModelJobStore({
       decodeConcurrency: runtimeProfile.imageDecodeConcurrency,
       storage: modelJobStorageOverride ?? (isIndexedDbAvailable() ? undefined : createInMemoryModelJobStorage()),
       executor: modelJobExecutorOverride ?? createDefaultModelJobExecutor(),
-      commitProjectTransaction: (transaction) => {
-        if (generation !== modelJobStoreGeneration) return Promise.resolve(false);
-        return useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' });
+      canContinueResult,
+      canRecoverRunningJob: async (ownerJob) => (
+        generation === modelJobStoreGeneration
+        && projectOwnsModelResult(useAppStore.getState().project, ownerJob)
+      ),
+      commitProjectTransaction: async (build, ownerJob, isOwnerRunning) => {
+        const currentProject = useAppStore.getState().project;
+        const rejected = { committed: false, resultNodeId: build(currentProject).resultNodeId };
+        const canContinue = () => canContinueResult(ownerJob, isOwnerRunning);
+        if (!await canContinue()) return rejected;
+        const commit = await commitGeneratedResultWithRefresh({
+          build,
+          canContinue,
+          commit: (transaction) => useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' }),
+          getLocalProject: () => useAppStore.getState().project,
+          reloadDurableProject: async () => {
+            const reload = projectPersistenceClient.reloadDurableProject;
+            if (reload === undefined) return null;
+            try {
+              const refreshed = await reload();
+              if (refreshed === null || refreshed.recoveryRequired === true || refreshed.saveStatus !== 'saved') return null;
+              return { project: refreshed.project, revision: refreshed.revision };
+            } catch {
+              return null;
+            }
+          },
+          adoptRefreshedProject: (project, revision) => {
+            clearPendingFailedProjectCommit();
+            useAppStore.setState({
+              canReloadDurableProject: false,
+              canRetryProjectCommit: false,
+              desktopRevision: revision,
+              project,
+              projectCommitConflictCode: null,
+              saveErrorCode: null,
+              saveStatus: 'saved',
+            });
+          },
+        });
+        if (commit.committed) {
+          await useAppStore.getState().refreshProjectImages();
+          if (!await canContinue()) return rejected;
+        }
+        return commit;
+      },
+      repairCompletedProjectTransaction: async (build) => {
+        const currentProject = useAppStore.getState().project;
+        const materialization = build(currentProject);
+        const sourceNode = getModuleNode(currentProject.nodes, materialization.resultNodeId);
+        if (sourceNode === undefined || (
+          sourceNode.data.moduleType !== 'image_generation'
+          && sourceNode.data.moduleType !== 'video_generation'
+        )) return { committed: false, resultNodeId: materialization.resultNodeId };
+        const committed = await useAppStore.getState().commitProjectTransaction(materialization.transaction, { kind: 'agent' });
+        if (committed) await useAppStore.getState().refreshProjectImages();
+        return { committed, resultNodeId: materialization.resultNodeId };
       },
       getProject: () => useAppStore.getState().project,
       pollConcurrency: runtimeProfile.providerPollConcurrency,
@@ -2126,26 +3453,45 @@ function getModelJobStore(): ModelJobStore {
   return modelJobStore;
 }
 
-function recoverModelJobsInBackground(jobStore: ModelJobStore): void {
+async function recoverModelJobsInBackground(jobStore: ModelJobStore): Promise<void> {
   const generation = ++modelJobRecoveryGeneration;
-  void jobStore.recover()
-    .then(async () => {
-      if (generation !== modelJobRecoveryGeneration || jobStore !== modelJobStore) return;
-      const modelJobs = await jobStore.listJobs();
-      if (generation !== modelJobRecoveryGeneration || jobStore !== modelJobStore) return;
-      useAppStore.setState({
-        confirmedModelJobs: countConfirmedModelJobs(modelJobs),
-        modelJobs,
-      });
-    })
-    .catch(() => {
-      // Recovery is retried on the next hydrate/run; job-level failures are persisted by the job store.
+  try {
+    await jobStore.recover();
+    if (generation !== modelJobRecoveryGeneration || jobStore !== modelJobStore) return;
+    void jobStore.run();
+    const modelJobs = await jobStore.listJobs();
+    if (generation !== modelJobRecoveryGeneration || jobStore !== modelJobStore) return;
+    useAppStore.setState({
+      confirmedModelJobs: countConfirmedModelJobs(modelJobs),
+      modelJobs,
     });
+  } catch {
+    // Recovery is retried on the next hydrate/run; job-level failures are persisted by the job store.
+  }
+}
+
+function projectOwnsModelResult(project: CanvasProject, ownerJob: ModelJob): boolean {
+  const sourceNode = project.nodes.find((node) => node.id === ownerJob.promptNodeId);
+  if (sourceNode?.type !== 'module') return false;
+  if (ownerJob.kind === 'video') {
+    if (sourceNode.data.moduleType !== 'video_generation') return false;
+  } else if (sourceNode.data.moduleType !== 'image_generation') {
+    return false;
+  }
+  return sourceNode.data.config.lastResultJobId === ownerJob.id;
 }
 
 function invalidateModelJobStoreGeneration(): void {
   modelJobStoreGeneration += 1;
   modelJobRecoveryGeneration += 1;
+}
+
+function createGenerationStartError(code: string, message: string): Error & { readonly code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
+function isGenerationStartError(error: unknown): error is Error & { readonly code: string } {
+  return error instanceof Error && typeof (error as { code?: unknown }).code === 'string';
 }
 
 function createUnavailableModelJobExecutor(): ModelJobExecutor {
@@ -2176,7 +3522,7 @@ function selectProductionModelJobExecutor(): ModelJobExecutor {
 }
 
 interface ResolvedModelJobProfile {
-  provider: string;
+  provider: ModelJobProvider;
   modelRoute: string;
   displayName: string;
   modelId?: string;
@@ -2210,7 +3556,7 @@ async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<ResolvedMo
   if (bridge === undefined) {
     throw new Error('Provider image model profile is unavailable');
   }
-  const profiles = await bridge.listProfiles();
+  const profiles = await listAllProviderProfiles(bridge);
   const imageProfiles = filterImageModelProfiles(profiles);
   const requestedRoute = normalizeLegacyPlanModelRoute(plan.modelRoute);
   const selected = requestedRoute === undefined
@@ -2296,8 +3642,10 @@ async function retryCommittedAgentPlanJobs(
   }
 
   try {
+    const projectSessionId = await resolveModelExecutionSessionId();
     const modelJobs = await getModelJobStore().enqueueConfirmedJobs({
       conversationId: plan.modelConversationId ?? AGENT_MODEL_CONVERSATION_ID,
+      projectSessionId,
       confirmedAt: plan.confirmations.models ?? plan.confirmations.canvas ?? new Date().toISOString(),
       requests: buildModelJobRequests(state.project, plan, profile),
     });
@@ -2553,7 +3901,7 @@ function sanitizeSkillPreparationError(error: unknown): string {
 }
 
 function resolveCommittedModelJobProfile(plan: AgentCanvasPlan): ResolvedModelJobProfile | null {
-  if (plan.modelProvider === undefined || plan.modelRoute === undefined) return null;
+  if ((plan.modelProvider !== 'comfly' && plan.modelProvider !== 'relayme') || plan.modelRoute === undefined) return null;
   return {
     provider: plan.modelProvider,
     modelRoute: plan.modelRoute,
@@ -2804,6 +4152,249 @@ function createSnapshotRestoreMemory(
   };
 }
 
+export function isLegacyStarterCanvasProject(project: CanvasProject): boolean {
+  const starter = createStarterProject();
+  return project.version === starter.version
+    && project.id === starter.id
+    && project.name === starter.name
+    && project.projectMemory.length === 0
+    && project.skillPromotionCandidates.length === 0
+    && (project.assets === undefined || project.assets.length === 0)
+    && JSON.stringify(project.nodes.map(normalizeLegacyStarterNode)) === JSON.stringify(starter.nodes)
+    && JSON.stringify(project.edges) === JSON.stringify(starter.edges);
+}
+
+/**
+ * The original starter may have been renamed, but is otherwise still the
+ * retired three-card canvas. It is safe to replace without discarding a
+ * user-created module graph or a running workflow.
+ */
+function isRetiredStarterCanvasProject(project: CanvasProject): boolean {
+  const starter = createStarterProject();
+  const hasNonStarterAsset = project.assets?.some((asset) => !asset.assetId.startsWith('starter-')) ?? false;
+  // The migration is intentionally limited to a pristine retired canvas.  A
+  // user project that happens to contain one of the old node types must keep
+  // its graph and memory; only the starter-shaped three-card canvas is safe to
+  // replace.  Do not key this decision off project id/version: older durable
+  // snapshots were renamed and had their graph metadata bumped while still
+  // rendering the same obsolete UI.
+  return project.version === starter.version
+    && project.id === starter.id
+    && !hasNonStarterAsset
+    && project.projectMemory.length === 0
+    && project.skillPromotionCandidates.length === 0
+    && hasRetiredStarterTopology(project);
+}
+
+/**
+ * Position, lock, edge-label and graph-version metadata is persisted
+ * independently from the canvas content. Treating those harmless changes as a new workflow left
+ * the retired Reference → Placement → Prompt screen visible after reopening.
+ * We identify only that three-node topology and starter payload, and still
+ * refuse migration as soon as it contains user assets or project memory.
+ * One released starter used an Agent-plan terminal instead of the later
+ * Prompt terminal; it is equally retired but was not previously recognized.
+ */
+function hasRetiredStarterTopology(project: CanvasProject): boolean {
+  if (project.nodes.length !== 3 || project.edges.length !== 2) return false;
+
+  const starter = createStarterProject();
+  const nodeTypes = new Map(project.nodes.map((node) => [node.id, node.type]));
+  const counts = project.nodes.reduce<Record<string, number>>((result, node) => {
+    result[node.type] = (result[node.type] ?? 0) + 1;
+    return result;
+  }, {});
+  if (counts.reference !== 1 || counts.placement_preview !== 1) return false;
+  const hasPromptTerminal = counts.prompt === 1 && counts.agent_plan === undefined;
+  const hasAgentPlanTerminal = counts.agent_plan === 1 && counts.prompt === undefined;
+  if (!hasPromptTerminal && !hasAgentPlanTerminal) return false;
+
+  if (hasAgentPlanTerminal) {
+    // The caller has already verified this is the local, asset-free starter
+    // project. The old Agent-plan terminal therefore contains no user-owned
+    // workflow data and can be replaced with the formal UI Gate workflow.
+    return project.edges.every((edge) => {
+      const sourceType = nodeTypes.get(edge.source);
+      const targetType = nodeTypes.get(edge.target);
+      return (sourceType === 'reference' && targetType === 'placement_preview')
+        || (sourceType === 'placement_preview' && targetType === 'agent_plan');
+    });
+  }
+
+  // Keep user-edited canvas content safe.  Only persistence metadata may drift
+  // between starter snapshots; the node payloads themselves must still match
+  // the retired starter (including the placement board and prompt text).
+  const projectPayloads = project.nodes
+    .map((node) => ({ type: node.type, data: node.data }))
+    .sort((left, right) => left.type.localeCompare(right.type));
+  const starterPayloads = starter.nodes
+    .map((node) => ({ type: node.type, data: node.data }))
+    .sort((left, right) => left.type.localeCompare(right.type));
+  if (JSON.stringify(projectPayloads) !== JSON.stringify(starterPayloads)) return false;
+
+  // Compare only the semantic topology.  Positions, labels, copy, lock flags,
+  // graph versions and generated ids are persistence metadata and have drifted
+  // across released starter snapshots.
+  return project.edges.every((edge) => {
+    const sourceType = nodeTypes.get(edge.source);
+    const targetType = nodeTypes.get(edge.target);
+    return (sourceType === 'reference' && targetType === 'placement_preview')
+      || (sourceType === 'placement_preview' && targetType === 'prompt');
+  });
+}
+
+/**
+ * `locked` was introduced after the original starter shipped. Persistence
+ * normalizes an omitted lock to `false`; that metadata-only change must not
+ * strand an otherwise untouched legacy canvas in the retired UI.
+ */
+function normalizeLegacyStarterNode(node: CanvasProject['nodes'][number]) {
+  if (node.locked !== false) return node;
+  const { locked: _locked, ...unlockedNode } = node;
+  return unlockedNode;
+}
+
+function createFigmaHybridCanvasProject(project: CanvasProject): CanvasProject {
+  const imageInput = createCanvasModuleNode('figma-image-input', 'image_input', { x: 20, y: 197 });
+  const imageGeneration = createCanvasModuleNode('figma-image-generation', 'image_generation', { x: 340, y: 132 });
+  imageGeneration.data.config = {
+    ...imageGeneration.data.config,
+    aspectRatio: '1:1',
+    outputCount: 4,
+    prompt: '产品视觉探索，保持参考图主体与材质一致。',
+    resolution: '自动尺寸',
+    resultState: 'fresh',
+  };
+  const imageResult = createCanvasModuleNode('figma-image-result', 'result_output', { x: 820, y: 282 });
+  const videoGeneration = createCanvasModuleNode('figma-video-generation', 'video_generation', { x: 1174, y: 146 });
+  videoGeneration.data.config = {
+    ...videoGeneration.data.config,
+    audioEnabled: false,
+    durationSeconds: 5,
+    modelRoute: 'seedance-1.5-pro',
+    mode: 'mock',
+    outputCount: 4,
+    prompt: '按照参考画面生成产品动态镜头，保持颜色、主体和构图一致。',
+    resolution: '1080p',
+    resultState: 'fresh',
+  };
+  const reverseAgent = createCanvasModuleNode('figma-reverse-agent', 'reverse_agent', { x: 340, y: 1062 });
+  reverseAgent.data.config = {
+    ...reverseAgent.data.config,
+    knowledgeBaseIds: ['scene-skill', 'ecommerce-detail-knowledge'],
+    mode: 'auto',
+    resultState: 'empty',
+    role: '产品视觉分析师',
+    task: '提取构图、材质、镜头、主体和可复用提示词。',
+  };
+  const reverseResult = createCanvasModuleNode('figma-reverse-result', 'reverse_result', { x: 1010, y: 1062 });
+  const videoResult = createCanvasModuleNode('figma-video-result', 'video_result', { x: 1860, y: 732 });
+  // The default delivery canvas is the Figma UI Gate image workflow. Other
+  // workflows remain available from the module library instead of appearing
+  // as unrelated legacy cards on a new canvas.
+  return {
+    ...project,
+    nodes: [
+      // Figma 411:2 uses one shared delivery coordinate system: the compact
+      // upload card sits at (170, 344), the 404x420 generation workbench at
+      // (340, 188), and the 404x230 result card at (820, 282).  Keeping the
+      // persisted node origins identical to those anchors means the runtime
+      // ports, Bézier edges and media trays all land on the same visual rails
+      // in both themes instead of falling back to the retired starter layout.
+      // React Flow's stage starts below the 56px application topbar, so keep
+      // these as canvas-local coordinates while matching the Figma page rails.
+      imageInput,
+      imageGeneration,
+      imageResult,
+      videoGeneration,
+      reverseAgent,
+      reverseResult,
+      videoResult,
+    ],
+    edges: [
+      {
+        id: 'figma-image-input-to-generation',
+        source: 'figma-image-input',
+        sourcePortId: 'image',
+        target: 'figma-image-generation',
+        targetPortId: 'references',
+        order: 0,
+      },
+      {
+        id: 'figma-image-generation-to-result',
+        source: 'figma-image-generation',
+        sourcePortId: 'result',
+        target: 'figma-image-result',
+        targetPortId: 'result',
+        order: 0,
+      },
+      {
+        id: 'figma-image-input-to-video',
+        source: 'figma-image-input',
+        sourcePortId: 'image',
+        target: 'figma-video-generation',
+        targetPortId: 'media',
+        order: 0,
+      },
+      {
+        id: 'figma-image-input-to-reverse-agent',
+        source: 'figma-image-input',
+        sourcePortId: 'image',
+        target: 'figma-reverse-agent',
+        targetPortId: 'references',
+        order: 0,
+      },
+      {
+        id: 'figma-reverse-agent-to-result',
+        source: 'figma-reverse-agent',
+        sourcePortId: 'analysis',
+        target: 'figma-reverse-result',
+        targetPortId: 'analysis',
+        order: 0,
+      },
+      {
+        id: 'figma-video-generation-to-result',
+        source: 'figma-video-generation',
+        sourcePortId: 'result',
+        target: 'figma-video-result',
+        targetPortId: 'video',
+        order: 0,
+      },
+    ],
+  };
+}
+
+function createFigmaWorkbenchMigrationMemory(
+  before: CanvasProject,
+  after: CanvasProject,
+  transactionId: string,
+  createdAt: string,
+): ProjectMemoryEntry {
+  const previousRevision = before.projectMemory[before.projectMemory.length - 1]?.projectRevision ?? 0;
+  return {
+    schemaVersion: 1,
+    id: `project-memory-${transactionId}`,
+    projectId: after.id,
+    projectRevision: previousRevision + 1,
+    createdAt,
+    kind: 'decision',
+    actor: 'user',
+    title: '迁移到 Figma 画布工作台',
+    changeSummary: '已将旧版 Reference、Placement 与 Agent plan 节点替换为 Figma UI Gate 模块工作台。',
+    rationale: '用户确认保留旧画布稳定点后，迁移到正式模块画布。',
+    snapshots: {
+      beforeId: `${transactionId}:before`,
+      afterId: `${transactionId}:after`,
+    },
+    context: {
+      referenceAssetIds: collectReferenceAssetIds(before),
+      resultAssetIds: before.nodes.flatMap((node) => node.type === 'image_result' ? [node.data.assetId] : []),
+    },
+    feedback: { keep: ['保留旧画布恢复点'], change: ['使用 Figma UI Gate 工作台'], never: ['删除原始项目文件'] },
+    nextStep: '连接图片输入、反推或生图模块，继续在正式工作台完成任务。',
+  };
+}
+
 function collectReferenceAssetIds(project: CanvasProject): string[] {
   const assetIds = project.nodes.flatMap((node) => {
     if (node.type === 'reference') return [node.data.assetId];
@@ -2834,6 +4425,126 @@ function collectExecutionReferences(project: CanvasProject): OrderedReference[] 
         position: 0,
       }]
     : []).map((reference, position) => ({ ...reference, position }));
+}
+
+function normalizeImageAspectRatio(value: string | undefined): '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16' | undefined {
+  return value === '1:1' || value === '2:3' || value === '3:2' || value === '4:3' || value === '3:4' || value === '16:9' || value === '9:16'
+    ? value
+    : undefined;
+}
+
+function normalizeImageResolution(value: string | undefined): '1K' | '2K' | '4K' | undefined {
+  if (value === '1K' || value === '2K' || value === '4K') return value;
+  if (value === '1024x1024') return '1K';
+  if (value === '1536x1024' || value === '1024x1536') return '2K';
+  return undefined;
+}
+
+function normalizeVideoResolution(value: string | undefined): '360p' | '480p' | '512p' | '540p' | '720p' | '768p' | '1080p' | '2K' | '4K' | undefined {
+  return value === '360p' || value === '480p' || value === '512p' || value === '540p' || value === '720p' || value === '768p' || value === '1080p' || value === '2K' || value === '4K' ? value : undefined;
+}
+function normalizeImageOutputCount(value: number | undefined): 1 | 2 | 3 | 4 | undefined {
+  return value === 1 || value === 2 || value === 3 || value === 4 ? value : undefined;
+}
+
+function collectImageGenerationReferenceAssetIds(project: CanvasProject, targetNodeId: string): string[] {
+  const orderedEdges = project.edges
+    .filter((edge) => edge.target === targetNodeId && edge.targetPortId === 'references')
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+  const assetIds: string[] = [];
+  for (const edge of orderedEdges) {
+    const source = project.nodes.find((node) => node.id === edge.source);
+    if (source?.type === 'image_result') {
+      assetIds.push(source.data.assetId);
+      continue;
+    }
+    if (source?.type !== 'module') continue;
+    const assetId = source.data.config.assetId;
+    if (typeof assetId === 'string' && assetId.trim().length > 0) assetIds.push(assetId);
+    const assetIdList = source.data.config.assetIds;
+    if (Array.isArray(assetIdList)) {
+      assetIds.push(...assetIdList.filter((value): value is string => typeof value === 'string' && value.trim().length > 0));
+    }
+  }
+  return [...new Set(assetIds)].slice(0, MAX_GENERATION_REFERENCES);
+}
+
+function resolveImageGenerationReferenceAssetIds(
+  project: CanvasProject,
+  targetNodeId: string,
+  requestedAssetIds: readonly string[] | undefined,
+): string[] | null {
+  if (requestedAssetIds === undefined) return collectImageGenerationReferenceAssetIds(project, targetNodeId);
+  const assetIds = [...new Set(requestedAssetIds)];
+  if (assetIds.length > MAX_GENERATION_REFERENCES || assetIds.some((assetId) => !isNonEmptyString(assetId))) return null;
+  const managedImageIds = new Set((project.assets ?? [])
+    .filter((asset) => asset.mediaType.startsWith('image/'))
+    .map((asset) => asset.assetId));
+  return assetIds.every((assetId) => managedImageIds.has(assetId)) ? assetIds : null;
+}
+
+function resolveConnectedVideoGenerationMedia(
+  project: CanvasProject,
+  targetNodeId: string,
+): { readonly imageAssetIds: string[]; readonly sourceVideoAssetId?: string } | undefined | null {
+  const edges = project.edges
+    .filter((edge) => edge.target === targetNodeId && edge.targetPortId === 'media')
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+  if (edges.length === 0) return undefined;
+  if (edges.length > MAX_GENERATION_REFERENCES) return null;
+
+  const images: string[] = [];
+  let sourceVideoAssetId: string | undefined;
+  const seenAssetIds = new Set<string>();
+  for (const edge of edges) {
+    const source = project.nodes.find((node) => node.id === edge.source);
+    const assetId = source?.type === 'image_result'
+      ? source.data.assetId
+      : source?.type === 'module' && typeof source.data.config.assetId === 'string'
+        ? source.data.config.assetId
+        : undefined;
+    const asset = assetId === undefined ? undefined : (project.assets ?? []).find((candidate) => candidate.assetId === assetId);
+    if (asset === undefined || seenAssetIds.has(asset.assetId)) return null;
+    seenAssetIds.add(asset.assetId);
+
+    if (
+      (source?.type === 'image_result' && edge.sourcePortId === 'image')
+      || (source?.type === 'module'
+        && (source.data.moduleType === 'image_input' || source.data.moduleType === 'upload_image')
+        && edge.sourcePortId === 'image')
+    ) {
+      if (!asset.mediaType.startsWith('image/')) return null;
+      images.push(asset.assetId);
+      continue;
+    }
+    if (source?.type === 'module' && source.data.moduleType === 'video_input' && edge.sourcePortId === 'video') {
+      if (asset.mediaType !== 'video/mp4' || sourceVideoAssetId !== undefined) return null;
+      sourceVideoAssetId = asset.assetId;
+      continue;
+    }
+    return null;
+  }
+  return { imageAssetIds: images, sourceVideoAssetId };
+}
+
+function readStoryboardShotRecords(value: unknown): Array<Record<string, unknown> & { id: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+    const id = (candidate as Record<string, unknown>).id;
+    return isNonEmptyString(id) ? [{ ...(candidate as Record<string, unknown>), id }] : [];
+  });
+}
+
+function isSafeStoryboardShotUpdate(input: StoryboardShotUpdateInput): boolean {
+  return input.composition.trim().length > 0
+    && input.composition.length <= 2_000
+    && !containsProtectedRendererPayload(input.composition)
+    && ['16:9', '1:1', '9:16'].includes(input.aspectRatio)
+    && ['1024x1024', '1536x1024', '1024x1536'].includes(input.resolution)
+    && Number.isInteger(input.outputCount)
+    && input.outputCount >= 1
+    && input.outputCount <= 4;
 }
 
 function filterValidSkillPromotionCandidates(
@@ -2993,15 +4704,18 @@ async function flushPendingProjectSave(
       const stablePoint = await projectPersistenceClient.stablePoint();
       if (generation !== projectPersistenceGeneration || get().project.id !== projectId) return false;
       const state = get();
+      const nextLifecycle = stablePoint.lifecycle ?? state.projectLifecycle;
       set({
         availableSnapshotIds: stablePoint.availableSnapshotIds,
         desktopRevision: stablePoint.revision,
         project: saved ? stablePoint.project : state.project,
+        projectLifecycle: nextLifecycle,
         saveErrorCode: null,
-        saveStatus: state.projectLifecycle === 'untitled'
-          ? 'pending'
-          : saved || state.saveStatus === 'saved' ? 'saved' : state.saveStatus,
+        saveStatus: nextLifecycle === 'untitled' ? 'pending' : 'saved',
       });
+      // A stable-point boundary completed successfully even when the current
+      // workflow remains untitled.  The lifecycle controls the pending/saved
+      // UI state above; the boolean reports whether this flush itself worked.
       return true;
     });
   })();
@@ -3010,4 +4724,15 @@ async function flushPendingProjectSave(
   });
   pendingProjectFlushBoundary = trackedFlushBoundary;
   return trackedFlushBoundary;
+}
+
+async function ensureModelRunSaveBoundary(get: () => AppState): Promise<boolean> {
+  const state = get();
+  // Let the stable operation produce its typed recovery/conflict error. The
+  // preflight only establishes a save point for otherwise writable drafts.
+  if (state.recoveryRequired || state.saveStatus === 'read_only' || pendingFailedProjectCommit !== null || state.projectCommitConflictCode !== null) return true;
+  if (state.projectLifecycle === 'untitled' || state.saveStatus !== 'saved') {
+    return state.saveProjectExplicitly();
+  }
+  return true;
 }

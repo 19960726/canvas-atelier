@@ -130,6 +130,7 @@ function nodeTypeLabel(type: CanvasNode['type']): string {
     case 'placement_preview': return '摆放预览';
     case 'model_job': return '模型任务';
     case 'image_result': return '结果节点';
+    case 'video_result': return '视频结果节点';
     case 'memory_diff': return '记忆差异';
     case 'agent_plan': return 'Agent 方案';
   }

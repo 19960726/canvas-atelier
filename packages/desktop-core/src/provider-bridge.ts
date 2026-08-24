@@ -1,52 +1,74 @@
 import { randomBytes } from 'node:crypto';
-import { BlockList, isIP } from 'node:net';
-
 import {
   ComflyClient,
   mergeComflyModelRegistries,
   type ComflyFetch,
   type ComflyModelRegistration,
 } from '@agent-canvas/provider-comfly';
-
+import { parseReversePromptResult } from '@agent-canvas/domain';
 import type { FileSystem } from './file-system.js';
-import {
-  createSecureProviderCredentialStore,
-  type ProviderCredentialStore,
-  type SafeStorageAdapter,
-} from './provider-credential-vault.js';
+import { createSecureProviderCredentialStore, type ProviderCredentialStore, type SafeStorageAdapter } from './provider-credential-vault.js';
 import {
   createProviderTaskMappingStore,
   type ProviderTaskMappingRecord,
 } from './provider-task-ledger.js';
 import { createProviderConfigurationStore } from './provider-configuration-store.js';
 import { createElectronNetComflyFetch } from './electron-net-fetch.js';
+import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
+import { readPinnedReverseKnowledge } from './provider-reverse-knowledge.js';
+import {
+  executeSkillChat,
+  type ManagedSkillChatImageResolver,
+  type ProjectMemoryContextResolver,
+} from './provider-skill-chat.js';
+import { createStoryboardService } from './storyboard-service.js';
+import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
 import type {
   GenerationHistoryDurableTerminal,
   GenerationHistoryFailureCode,
   GenerationHistoryProviderSinkContract,
 } from './generation-history-provider-sink.js';
 import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
-import type { ProviderBridgeHandlers, ProviderService } from './provider-service-types.js';
+import { buildComflyModelProfiles, cloneProviderProfile, mergeProviderModelProfiles } from './provider-model-catalog.js';
+import { createComflyVideoJobHandlers } from './comfly-video-jobs.js';
+import { isPublicProviderAddress, parseSafeProviderResultUrl } from './provider-result-security.js';
+import type { ProviderService } from './provider-service-types.js';
+import { decodeProviderInlineImage } from './provider-inline-image.js';
+import { detectGeneratedImageMediaType, findFirstProviderImageResult, parseDirectProviderImageResponse } from './provider-image-result.js';
+import { parseProviderJsonDocument } from './provider-json-document.js';
 import {
   PROVIDER_BRIDGE_CHANNELS,
   createProviderBridgeError,
   normalizeProviderBridgeError,
   parseProviderBridgeProfiles,
-  parseProviderBridgeRequest,
-  parseProviderBridgeResponse,
+  parseProviderBridgeRequest, parseProviderBridgeResponse,
   type AckImageJobTerminalBridgeRequest,
   type AckImageJobTerminalBridgeResult,
+  type AckVideoJobTerminalBridgeRequest,
+  type AckVideoJobTerminalBridgeResult,
+  type AnalyzeReversePromptBridgeRequest,
+  type AnalyzeReversePromptBridgeResult,
   type CancelImageJobBridgeRequest,
   type CancelImageJobBridgeResult,
+  type CancelVideoJobBridgeRequest,
+  type CancelVideoJobBridgeResult,
   type ConfigureProviderBridgeRequest,
+  type UpdateProviderProfilesBridgeRequest,
+  type GenerateStoryboardBridgeRequest,
+  type GenerateStoryboardBridgeResult,
   type PollImageJobBridgeRequest,
   type PollImageJobBridgeResult,
+  type PollVideoJobBridgeRequest,
+  type PollVideoJobBridgeResult,
   type ProviderBridgeException,
   type ProviderBridgeProfile,
+  type ProviderBridgeProvider,
   type ProviderConfigurationStatus,
   type ProviderConnectionCheckResult,
   type SubmitImageJobBridgeRequest,
   type SubmitImageJobBridgeResult,
+  type SubmitVideoJobBridgeRequest,
+  type SubmitVideoJobBridgeResult,
   type UnlockProviderBridgeRequest,
 } from './provider-contracts.js';
 export type { ComflyFetch } from '@agent-canvas/provider-comfly';
@@ -57,46 +79,26 @@ export {
   createProviderBridgeError,
   normalizeProviderBridgeError,
   parseProviderBridgeRequest,
+  parseProviderBridgeResponse,
 };
-export type {
-  AckImageJobTerminalBridgeRequest,
-  AckImageJobTerminalBridgeResult,
-  CancelImageJobBridgeRequest,
-  CancelImageJobBridgeResult,
-  ConfigureProviderBridgeRequest,
-  PollImageJobBridgeRequest,
-  PollImageJobBridgeResult,
-  ProviderBridgeBlockedReason,
-  ProviderBridgeChannel,
-  ProviderBridgeCapability,
-  ProviderBridgeError,
-  ProviderBridgeErrorCode,
-  ProviderBridgeException,
-  ProviderBridgeProfile,
-  ProviderConfigurationStatus,
-  ProviderConnectionCheckResult,
-  ProviderImageJobResult,
-  SubmitImageJobBridgeRequest,
-  SubmitImageJobBridgeResult,
-  UnlockProviderBridgeRequest,
-} from './provider-contracts.js';
+export type { AckImageJobTerminalBridgeRequest, AckImageJobTerminalBridgeResult, AnalyzeReversePromptBridgeRequest, AnalyzeReversePromptBridgeResult, ChatSkillBridgeRequest, ChatSkillBridgeResult, CancelImageJobBridgeRequest, CancelImageJobBridgeResult, ConfigureProviderBridgeRequest, UpdateProviderProfilesBridgeRequest, PollImageJobBridgeRequest, PollImageJobBridgeResult, ProviderBridgeBlockedReason, ProviderBridgeChannel, ProviderBridgeCapability, ProviderBridgeError, ProviderBridgeErrorCode, ProviderBridgeException, ProviderBridgeProfile, ProviderConfigurationStatus, ProviderConnectionCheckResult, ProviderImageJobResult, ManagedReversePromptMediaIdentity, RevealProviderCredentialBridgeResult, SubmitImageJobBridgeRequest, SubmitImageJobBridgeResult, UnlockProviderBridgeRequest } from './provider-contracts.js';
 export type { ProviderCredentialStore, SafeStorageAdapter } from './provider-credential-vault.js';
-const DEFAULT_COMFLY_BASE_URL = 'https://api.comfly.chat';
-const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_COMFLY_BASE_URL = 'https://ai.comfly.org'; const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CURRENT_GENERATION_JOB_ID_PREFIX = 'model-job-v2-';
+const REVERSE_PROVIDER_TIMEOUT_MS = 120_000;
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
 export type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
 export { registerProviderBridgeHandlers } from './provider-ipc-registration.js';
+export { createProviderBridgeHandlers } from './provider-ipc-handlers.js';
 interface ConfigurationSnapshot {
   readonly baseUrl: string;
   readonly profiles: readonly ProviderBridgeProfile[];
 }
-type RuntimeSnapshot = ConfigurationSnapshot & { readonly token: string };
-
+type RuntimeSnapshot = ConfigurationSnapshot & { readonly token: string; readonly imageToken: string; readonly languageToken: string };
 export function createComflyProviderService(options: {
   readonly appDataRoot: string;
   readonly credentialStore: ProviderCredentialStore;
-  readonly fetch: ComflyFetch;
+  readonly fetch: ComflyFetch; readonly discoverModelCatalog?: boolean;
   readonly fileSystem?: FileSystem;
   readonly profiles?: readonly ProviderBridgeProfile[];
   readonly providerModels?: readonly ProviderBridgeProfile[];
@@ -106,6 +108,18 @@ export function createComflyProviderService(options: {
   readonly timeoutMs?: number;
   readonly historySink?: GenerationHistoryProviderSinkContract;
   readonly resolveResultHost?: (hostname: string) => Promise<readonly string[]>;
+  readonly readManagedReverseMedia?: (sessionId: string, media: AnalyzeReversePromptBridgeRequest['media']) => Promise<readonly { readonly bytes: Uint8Array; readonly mediaType: string }[]>;
+  readonly projectMemoryContextResolver?: ProjectMemoryContextResolver;
+  readonly readManagedSkillChatImages?: ManagedSkillChatImageResolver['readManagedSkillChatImages'];
+  readonly readManagedGenerationImages?: (
+    sessionId: string,
+    referenceAssetIds: readonly string[],
+  ) => Promise<readonly {
+    readonly bytes: Uint8Array;
+    readonly mediaType: 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp';
+  }[]>;
+  readonly storeGeneratedImage?: (sessionId: string, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+  readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
 }): ProviderService {
   let configurationCache: ConfigurationSnapshot = {
     profiles: sanitizeProfiles(options.profiles ?? DEFAULT_PROVIDER_PROFILES),
@@ -113,6 +127,7 @@ export function createComflyProviderService(options: {
   };
   let configureTail: Promise<void> = Promise.resolve();
   let configurationOverride: ConfigurationSnapshot | null = null;
+  let discoveredProfileCache: ProviderBridgeProfile[] | null = null;
   const nowMs = options.now ?? Date.now;
   const terminalTombstoneTtlMs = options.terminalTombstoneTtlMs ?? DEFAULT_TERMINAL_TOMBSTONE_TTL_MS;
   const providerTaskMappings = createProviderTaskMappingStore({
@@ -124,18 +139,40 @@ export function createComflyProviderService(options: {
     appDataRoot: options.appDataRoot,
     fileSystem: options.fileSystem,
   });
-
-  const createClient = (snapshot: RuntimeSnapshot) => new ComflyClient({
+  const managedKnowledgeStore = new ManagedKnowledgeStore({
+    appDataRoot: options.appDataRoot,
+    fileSystem: options.fileSystem,
+  });
+  const createClient = (snapshot: RuntimeSnapshot, role: 'image' | 'language' = 'language') => new ComflyClient({
     baseUrl: snapshot.baseUrl,
     fetch: options.fetch,
     timeoutMs: options.timeoutMs,
-    tokenSupplier: async () => snapshot.token,
+    tokenSupplier: async () => role === 'image' ? snapshot.imageToken : snapshot.languageToken,
   });
-
-  return {
+  const videoJobs = createComflyVideoJobHandlers({
+    mappings: providerTaskMappings,
+    listProfiles: async () => (await captureRuntimeSnapshot()).profiles,
+    submitProvider: async (input) => {
+      const snapshot = await captureRuntimeSnapshot();
+      return translateProviderCall(() => createClient(snapshot, 'image').generateVideo(input));
+    },
+    pollProvider: async (rawTaskId, publicTaskId) => {
+      const snapshot = await captureRuntimeSnapshot();
+      return translateProviderCall(
+        () => createClient(snapshot, 'image').getVideoTask(rawTaskId),
+        { publicTaskId, rawTaskId, request: 'poll' },
+      );
+    },
+    downloadResult: async (url) => downloadProviderResult(url),
+    historySink: options.historySink,
+    storeGeneratedVideo: options.storeGeneratedVideo,
+    createPublicTaskId: createPublicProviderTaskId,
+    nowIso,
+  });  return {
     getStatus() {
       return options.credentialStore.getStatus();
     },
+    async revealCredential() { return { token: await options.credentialStore.getPrimaryToken() }; },
     async checkConnection(): Promise<ProviderConnectionCheckResult> {
       const checkedAt = new Date(nowMs()).toISOString();
       const status = await options.credentialStore.getStatus();
@@ -161,9 +198,14 @@ export function createComflyProviderService(options: {
           baseUrl: validated.baseUrl ?? currentConfiguration.baseUrl,
           profiles: nextProfiles ?? currentConfiguration.profiles,
         };
+        const updatesCredentials = validated.token !== undefined;
+        if (!updatesCredentials) {
+          const credentialStatus = await options.credentialStore.getStatus();
+          if (!credentialStatus.configured || credentialStatus.locked) throw createProviderBridgeError(credentialStatus.locked ? 'CREDENTIALS_LOCKED' : 'PROVIDER_UNAVAILABLE', 'Configure and unlock provider credentials before updating the API endpoint');
+        }
         await providerConfiguration.write(nextConfiguration);
         try {
-          await options.credentialStore.configure({ token: validated.token, passphrase: validated.passphrase });
+          if (updatesCredentials) await options.credentialStore.configure({ token: validated.token!, ...(validated.imageToken === undefined ? {} : { imageToken: validated.imageToken }), ...(validated.languageToken === undefined ? {} : { languageToken: validated.languageToken }), ...(validated.imageTokens === undefined ? {} : { imageTokens: validated.imageTokens }), ...(validated.reverseTokens === undefined ? {} : { reverseTokens: validated.reverseTokens }), passphrase: validated.passphrase });
         } catch (error) {
           try {
             await providerConfiguration.replace(persistedConfiguration.exists ? persistedConfiguration.snapshot : null);
@@ -178,7 +220,23 @@ export function createComflyProviderService(options: {
         }
         configurationOverride = null;
         configurationCache = cloneConfiguration(nextConfiguration);
+        discoveredProfileCache = null;
         await gcTerminalTombstones();
+        return options.credentialStore.getStatus();
+  });
+    },
+    updateProfiles(request) {
+      return enqueueConfigure(async () => {
+        const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.updateProfiles, request) as UpdateProviderProfilesBridgeRequest;
+        const status = await options.credentialStore.getStatus();
+        if (!status.configured || status.locked) throw createProviderBridgeError(status.locked ? 'CREDENTIALS_LOCKED' : 'PROVIDER_UNAVAILABLE', 'Configure and unlock the provider before saving model routes');
+        const persisted = await providerConfiguration.readPersisted();
+        const currentConfiguration = persisted.exists ? persisted.snapshot : configurationCache;
+        const nextConfiguration: ConfigurationSnapshot = { baseUrl: currentConfiguration.baseUrl, profiles: mergeUpdatedProfiles(currentConfiguration.profiles, parseProviderBridgeProfiles(validated.profiles)) };
+        await providerConfiguration.write(nextConfiguration);
+        configurationOverride = null;
+        configurationCache = cloneConfiguration(nextConfiguration);
+        discoveredProfileCache = null;
         return options.credentialStore.getStatus();
       });
     },
@@ -188,13 +246,18 @@ export function createComflyProviderService(options: {
       await gcTerminalTombstones();
       return options.credentialStore.getStatus();
     },
+    async listAvailableModelIds() {
+      const snapshot = await captureRuntimeSnapshot();
+      return createClient(snapshot, 'language').listModelIds();
+    },
     async listProfiles() {
-      const snapshot = await captureConfigurationSnapshot();
       await gcTerminalTombstones();
-      return sanitizeProfiles(mergeComflyModelRegistries({
-        providerModels: options.providerModels ?? [],
-        profileModels: snapshot.profiles,
-      }));
+      const configuration = await captureConfigurationSnapshot();
+      const configuredProfiles = configuredProfilesFor(configuration);
+      if (options.discoverModelCatalog !== true) return configuredProfiles;
+      const status = await options.credentialStore.getStatus();
+      if (!status.configured || status.locked) return configuredProfiles;
+      return (await captureRuntimeSnapshot()).profiles.map(cloneProfile);
     },
     async submitImageJob(request) {
       await gcTerminalTombstones();
@@ -202,6 +265,19 @@ export function createComflyProviderService(options: {
       const snapshot = await captureRuntimeSnapshot();
       const profile = selectProfile(snapshot.profiles, validated.provider, validated.modelRoute);
       const historyId = deriveGenerationHistoryId(validated.jobId);
+      const existingMapping = await providerTaskMappings.findByHistoryId(historyId);
+      if (existingMapping !== undefined) return { providerTaskId: existingMapping.publicTaskId };
+      const references = validated.referenceAssetIds.length === 0
+        ? []
+        : await requireManagedGenerationImages(validated, profile, options.readManagedGenerationImages);
+      const prompt = buildGenerationReferencePrompt(validated.prompt, references.length);
+      if (references.length > 0 && !profile.capabilities.includes('image_edit')
+        && !profile.capabilities.includes('gemini_native')) {
+        throw createProviderBridgeError(
+          'CAPABILITY_UNSUPPORTED',
+          'Selected image model does not support reference images',
+        );
+      }
       const submissionCreated = await providerTaskMappings.reserveSubmission({
         currentIdentity: validated.jobId.startsWith(CURRENT_GENERATION_JOB_ID_PREFIX), historyId,
       });
@@ -254,33 +330,176 @@ export function createComflyProviderService(options: {
           'Generation job is already reserved; create a new run to submit again',
         );
       }
-      let parsed: ReturnType<typeof parseImageTaskResponse>;
+      if (profile.capabilities.includes('gemini_native') && profile.capabilities.includes('image_generation')) {
+        if (options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated image storage is unavailable');
+        try {
+          const image = await translateProviderCall(() => createClient(snapshot, 'image').generateGeminiImage({
+            model: profile.modelId ?? profile.modelRoute,
+            prompt,
+            images: references,
+          }));
+          const stored = await options.storeGeneratedImage(validated.sessionId ?? validated.conversationId, image.bytes, image.mimeType);
+          const publicTaskId = createPublicProviderTaskId();
+          const timestamp = nowIso();
+          await providerTaskMappings.set({ provider: 'comfly', publicTaskId, rawTaskId: `gemini-inline-${publicTaskId}`, historyId, state: 'completed', createdAt: timestamp, updatedAt: timestamp, terminalAt: timestamp, result: { assetId: stored.assetId, ...(stored.width === null || stored.width === undefined ? {} : { width: stored.width }), ...(stored.height === null || stored.height === undefined ? {} : { height: stored.height }) } });
+          if (options.historySink !== undefined) await options.historySink.succeeded(historyId, image.bytes);
+          return { providerTaskId: publicTaskId };
+        } catch (error) { if (options.historySink !== undefined) await options.historySink.failed(historyId, historyFailureCode(error)); throw error; }
+      }
       try {
-        const response = await translateProviderCall(() => createClient(snapshot).generateImage({
+        const response = await translateProviderCall(() => createClient(snapshot, 'image').generateImage({
           model: profile.modelId ?? profile.modelRoute,
-          prompt: validated.prompt,
-          async: true,
+          prompt,
+          image: references.map((item) =>
+            `data:${item.mediaType};base64,${Buffer.from(item.bytes).toString('base64')}`),
+          ...(profile.capabilities.includes('async_tasks') ? { async: true } : {}),
+          ...(validated.aspectRatio === undefined ? {} : { aspect_ratio: validated.aspectRatio }),
+          ...(validated.resolution === undefined ? {} : { size: validated.resolution }),
+          ...(validated.outputCount === undefined ? {} : { n: validated.outputCount as 1 | 2 | 3 | 4 }),
         }));
-        parsed = parseImageTaskResponse(response);
+        assertProviderResponsePayload(response);
+        let directResult = profile.capabilities.includes('async_tasks') ? undefined : parseDirectProviderImageResponse(response);
+        let parsed: ReturnType<typeof parseImageTaskResponse> | undefined;
+        if (directResult === undefined) {
+          try {
+            parsed = parseImageTaskResponse(response);
+          } catch (taskError) {
+            directResult = parseDirectProviderImageResponse(response);
+            if (directResult === undefined) throw taskError;
+          }
+        }
+        if (directResult !== undefined) {
+          if (options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated image storage is unavailable');
+          const bytes = directResult.inlineBytes ?? await downloadProviderResult(directResult.resultUrl);
+          const mediaType = detectGeneratedImageMediaType(bytes);
+          const stored = await options.storeGeneratedImage(validated.sessionId ?? validated.conversationId, bytes, mediaType);
+          const publicTaskId = createPublicProviderTaskId();
+          const timestamp = nowIso();
+          await providerTaskMappings.set({
+            provider: 'comfly',
+            publicTaskId,
+            rawTaskId: `direct-image-${publicTaskId}`,
+            historyId,
+            state: 'completed',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            terminalAt: timestamp,
+            result: {
+              assetId: stored.assetId,
+              ...(stored.width === null || stored.width === undefined ? {} : { width: stored.width }),
+              ...(stored.height === null || stored.height === undefined ? {} : { height: stored.height }),
+            },
+          });
+          if (options.historySink !== undefined) await options.historySink.succeeded(historyId, bytes);
+          return { providerTaskId: publicTaskId };
+        }
+        if (parsed === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task response');
+        const publicTaskId = createPublicProviderTaskId();
+        const timestamp = nowIso();
+        await providerTaskMappings.set({
+          provider: 'comfly',
+          publicTaskId,
+          rawTaskId: parsed.taskId, sessionId: validated.sessionId ?? validated.conversationId, historyId,
+          state: 'running',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        if (options.historySink !== undefined) await options.historySink.running(historyId);
+        return { providerTaskId: publicTaskId };
       } catch (error) {
         if (options.historySink !== undefined) {
           await options.historySink?.failed(historyId, historyFailureCode(error));
         }
         throw error;
       }
-      const publicTaskId = createPublicProviderTaskId();
-      const timestamp = nowIso();
-      await providerTaskMappings.set({
-        provider: 'comfly',
-        publicTaskId,
-        rawTaskId: parsed.taskId,
-        historyId,
-        state: 'running',
-        createdAt: timestamp,
-        updatedAt: timestamp,
+    },
+    submitVideoJob: videoJobs.submitVideoJob,
+    pollVideoJob: videoJobs.pollVideoJob,
+    cancelVideoJob: videoJobs.cancelVideoJob,
+    ackVideoJobTerminal: videoJobs.ackVideoJobTerminal,
+    async analyzeReversePrompt(request) {
+      const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt, request) as AnalyzeReversePromptBridgeRequest;
+      const snapshot = await captureRuntimeSnapshot();
+      const profile = snapshot.profiles.find((item) => item.provider === validated.provider && item.modelRoute === validated.run.agentConfig?.modelRoute);
+      const hasVideo = validated.run.orderedMedia.some((item) => item.kind === 'video');
+      const usesGeminiNative = profile?.capabilities.includes('gemini_native') === true;
+      const usesVisionChat = profile?.capabilities.includes('chat') === true && profile.capabilities.includes('vision');
+      if (profile === undefined || !profile.capabilities.includes('reverse_prompt') || (!usesGeminiNative && !usesVisionChat) || (hasVideo && (!usesGeminiNative || !profile.capabilities.includes('video_understanding')))) {
+        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested reverse-analysis model profile is unavailable');
+      }
+      if (options.readManagedReverseMedia === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Managed reverse-analysis media is unavailable');
+      const media = await options.readManagedReverseMedia(validated.sessionId, validated.media);
+      const knowledge = await readPinnedReverseKnowledge(managedKnowledgeStore, validated.run.knowledgeLease.snapshots);
+      const reverseRequest = buildProfessionalReverseRequest(validated.run, knowledge);
+      let responseText: string | undefined;
+      if (usesGeminiNative) {
+        const response = await createClient(snapshot, 'language').generateGeminiContent({
+          model: profile.modelId ?? profile.modelRoute,
+          generationConfig: { responseMimeType: 'application/json' },
+          contents: [{ role: 'user', parts: [
+            { text: JSON.stringify(reverseRequest) },
+            ...media.map((item) => ({ inlineData: { mimeType: item.mediaType, data: Buffer.from(item.bytes).toString('base64') } })),
+          ] }],
+        }, REVERSE_PROVIDER_TIMEOUT_MS);
+        responseText = response.candidates[0]?.content?.parts?.find((part): part is { text: string } => typeof (part as { text?: unknown }).text === 'string')?.text;
+      } else {
+        const response = await createClient(snapshot, 'language').chat({
+          model: profile.modelId ?? profile.modelRoute,
+          messages: [{ role: 'system', content: `${reverseRequest.systemRole} Return only valid ReversePromptResult JSON that follows every required section and evidence rule.` }, { role: 'user', content: [
+            { type: 'text', text: JSON.stringify(reverseRequest) },
+            ...media.map((item) => ({ type: 'image_url', image_url: { url: `data:${item.mediaType};base64,${Buffer.from(item.bytes).toString('base64')}` } })),
+          ] }],
+        }, REVERSE_PROVIDER_TIMEOUT_MS);
+        const content = response.choices[0]?.message?.content;
+        responseText = typeof content === 'string' ? content : undefined;
+      }
+      if (responseText === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid reverse-analysis response');
+      try {
+        const parsed = parseProviderBridgeResponse(
+          PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt,
+          parseProviderJsonDocument(responseText),
+        ) as AnalyzeReversePromptBridgeResult;
+        return parseReversePromptResult(parsed, validated.run);
+      } catch {
+        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid reverse-analysis response');
+      }
+    },
+    async chat(request) {
+      return executeSkillChat({
+        request,
+        captureRuntimeSnapshot,
+        createClient,
+        managedKnowledgeStore,
+        projectMemoryContextResolver: options.projectMemoryContextResolver,
+        managedSkillChatImageResolver: options.readManagedSkillChatImages === undefined
+          ? undefined
+          : { readManagedSkillChatImages: options.readManagedSkillChatImages },
       });
-      if (options.historySink !== undefined) await options.historySink.running(historyId);
-      return { providerTaskId: publicTaskId };
+    },
+    async generateStoryboard(request) {
+      const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.generateStoryboard, request) as GenerateStoryboardBridgeRequest;
+      const service = createStoryboardService({
+        listProfiles: async () => (await captureRuntimeSnapshot()).profiles,
+        runStructuredChat: async (input) => {
+          const snapshot = await captureRuntimeSnapshot();
+          const profile = snapshot.profiles.find((item) => item.provider === validated.provider && item.modelRoute === input.modelRoute);
+          if (profile === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested storyboard model profile is unavailable');
+          const response = await createClient(snapshot, 'language').chat({
+            model: profile.modelId ?? profile.modelRoute,
+            messages: [{
+              role: 'system',
+              content: 'Return only JSON: {"shots":[{"id":"shot-1","order":1,"title":"...","composition":"...","durationSeconds":4,"referenceAssetIds":[]}]} . Do not include paths, URLs, base64, credentials, or any canvas mutation.',
+            }, {
+              role: 'user',
+              content: JSON.stringify({ script: input.script, shotCount: input.shotCount, referenceAssetIds: input.referenceAssetIds }),
+            }],
+          });
+          const content = response.choices[0]?.message?.content;
+          if (typeof content !== 'string') throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid storyboard response');
+          return content;
+        },
+      });
+      return service.generate(validated) as Promise<GenerateStoryboardBridgeResult>;
     },
     async pollImageJob(request) {
       await gcTerminalTombstones();
@@ -296,20 +515,16 @@ export function createComflyProviderService(options: {
       if (task === undefined || task.provider !== validated.provider) {
         throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
       }
-      if (task.state !== 'running') {
-        return terminalMappingToPollResult(task);
-      }
+      if (task.state !== 'running') return terminalMappingToPollResult(task);
       if (task.historyId !== undefined && options.historySink !== undefined) {
         const durableTerminal = await options.historySink.getTerminal(task.historyId);
-        if (durableTerminal !== null) {
-          return await commitHistoryTerminal(validated.providerTaskId, durableTerminal);
-        }
+        if (durableTerminal !== null && durableTerminal.status !== 'succeeded') return await commitHistoryTerminal(validated.providerTaskId, durableTerminal);
       }
       const snapshot = await captureRuntimeSnapshot();
       let response: unknown;
       try {
         response = await translateProviderCall(
-          () => createClient(snapshot).getImageTask(task.rawTaskId),
+          () => createClient(snapshot, 'image').getImageTask(task.rawTaskId),
           { publicTaskId: validated.providerTaskId, rawTaskId: task.rawTaskId, request: 'poll' },
         );
       } catch (error) {
@@ -318,11 +533,21 @@ export function createComflyProviderService(options: {
       }
       const mapped = mapImageTaskPollResult(validated.provider, validated.providerTaskId, task.rawTaskId, response);
       let result = mapped.publicResult;
-      if (task.historyId !== undefined && options.historySink !== undefined) {
+      if (result.status === 'completed' && options.storeGeneratedImage !== undefined && task.sessionId !== undefined) {
+        try {
+          const bytes = mapped.inlineBytes ?? await downloadProviderResult(mapped.resultUrl);
+          const stored = await options.storeGeneratedImage(task.sessionId, bytes, detectGeneratedImageMediaType(bytes));
+          result = { status: 'completed', progress: 1, result: { assetId: stored.assetId, ...(stored.width === null || stored.width === undefined ? {} : { width: stored.width }), ...(stored.height === null || stored.height === undefined ? {} : { height: stored.height }) } };
+          if (task.historyId !== undefined && options.historySink !== undefined) await options.historySink.succeeded(task.historyId, bytes);
+        } catch {
+          if (task.historyId !== undefined && options.historySink !== undefined) await options.historySink.failed(task.historyId, 'invalid_result');
+          result = { status: 'failed', error: createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result') };
+        }
+      } else if (task.historyId !== undefined && options.historySink !== undefined) {
         let effective: GenerationHistoryDurableTerminal | null = null;
         if (result.status === 'completed') {
           try {
-            const bytes = await downloadProviderResult(mapped.resultUrl);
+            const bytes = mapped.inlineBytes ?? await downloadProviderResult(mapped.resultUrl);
             effective = await options.historySink.succeeded(task.historyId, bytes);
           } catch {
             effective = await options.historySink.failed(task.historyId, 'invalid_result');
@@ -371,21 +596,41 @@ export function createComflyProviderService(options: {
       return { acknowledged: true };
     },
   };
-
   function enqueueConfigure<T>(operation: () => Promise<T>): Promise<T> {
     const run = configureTail.then(operation, operation);
     configureTail = run.then(() => undefined, () => undefined);
     return run;
   }
-
   async function captureRuntimeSnapshot(): Promise<RuntimeSnapshot> {
     const snapshot = await captureConfigurationSnapshot();
-    return {
+    const runtime: RuntimeSnapshot = {
       ...snapshot,
-      token: await options.credentialStore.getToken(),
+      token: await options.credentialStore.getToken('language'),
+      imageToken: await options.credentialStore.getToken('image'),
+      languageToken: await options.credentialStore.getToken('language'),
     };
+    if (options.discoverModelCatalog !== true) {
+      return { ...runtime, profiles: configuredProfilesFor(snapshot) };
+    }
+    if (discoveredProfileCache !== null) {
+      return { ...runtime, profiles: discoveredProfileCache.map(cloneProfile) };
+    }
+    try {
+      discoveredProfileCache = mergeProviderModelProfiles([
+        ...buildComflyModelProfiles(await createClient(runtime, 'language').listAccessibleModelCatalog()),
+        ...configuredProfilesFor(snapshot),
+      ]);
+      return { ...runtime, profiles: discoveredProfileCache.map(cloneProfile) };
+    } catch {
+      return { ...runtime, profiles: configuredProfilesFor(snapshot) };
+    }
   }
-
+  function configuredProfilesFor(snapshot: ConfigurationSnapshot): ProviderBridgeProfile[] {
+    return sanitizeProfiles(mergeComflyModelRegistries({
+      providerModels: options.providerModels ?? [],
+      profileModels: snapshot.profiles,
+    }));
+  }
   async function captureConfigurationSnapshot(): Promise<ConfigurationSnapshot> {
     await configureTail.catch(() => undefined);
     if (configurationOverride !== null) {
@@ -394,7 +639,6 @@ export function createComflyProviderService(options: {
     configurationCache = await providerConfiguration.read(configurationCache);
     return cloneConfiguration(configurationCache);
   }
-
   async function gcTerminalTombstones(): Promise<void> {
     try {
       await providerTaskMappings.gcTerminalTombstones(nowMs() - terminalTombstoneTtlMs);
@@ -402,11 +646,9 @@ export function createComflyProviderService(options: {
       if (!isCredentialsLocked(error)) throw error;
     }
   }
-
   function nowIso(): string {
     return new Date(nowMs()).toISOString();
   }
-
   async function downloadProviderResult(rawUrl: string | undefined): Promise<Uint8Array> {
     const url = parseSafeProviderResultUrl(rawUrl);
     if (options.resolveResultHost === undefined) {
@@ -427,14 +669,12 @@ export function createComflyProviderService(options: {
     }
     return new Uint8Array(await response.arrayBuffer());
   }
-
   async function commitHistoryTerminal(
     publicTaskId: string,
     terminal: GenerationHistoryDurableTerminal,
   ): Promise<PollImageJobBridgeResult> {
     return terminalMappingToPollResult(await commitHistoryTerminalRecord(publicTaskId, terminal));
   }
-
   async function commitHistoryTerminalRecord(
     publicTaskId: string,
     terminal: GenerationHistoryDurableTerminal,
@@ -452,7 +692,6 @@ export function createComflyProviderService(options: {
     if (committed === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider job handle is unavailable');
     return committed;
   }
-
   function createHistoryTerminalMappingRecord(
     publicTaskId: string,
     historyId: string,
@@ -501,52 +740,12 @@ export function createComflyProviderService(options: {
     };
   }
 }
-
 function classifyConnectionCheckFailure(error: unknown): ProviderConnectionCheckResult['status'] {
   const message = error instanceof Error ? error.message : String(error);
   if (/status (?:401|403)\b/u.test(message)) return 'authentication_failed';
   if (/status (?:429|5\d\d)\b/u.test(message) || /CREDENTIALS_LOCKED/u.test(message)) return 'service_limited';
   return 'network_unavailable';
 }
-
-export function createProviderBridgeHandlers(service: ProviderService): ProviderBridgeHandlers {
-  return {
-    getStatus: async (_event, request) => {
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.getStatus, request);
-      return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.getStatus, await service.getStatus()) as ProviderConfigurationStatus;
-    },
-    checkConnection: async (_event, request) => {
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.checkConnection, request);
-      return parseProviderBridgeResponse(
-        PROVIDER_BRIDGE_CHANNELS.checkConnection,
-        await service.checkConnection(),
-      ) as ProviderConnectionCheckResult;
-    },
-    configure: async (_event, request) => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.configure, await service.configure(
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.configure, request) as ConfigureProviderBridgeRequest,
-    )) as ProviderConfigurationStatus,
-    unlock: async (_event, request) => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.unlock, await service.unlock(
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.unlock, request) as UnlockProviderBridgeRequest,
-    )) as ProviderConfigurationStatus,
-    listProfiles: async (_event, request) => {
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.listProfiles, request);
-      return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.listProfiles, await service.listProfiles()) as ProviderBridgeProfile[];
-    },
-    submitImageJob: async (_event, request) => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.submitImageJob, await service.submitImageJob(
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest,
-    )) as SubmitImageJobBridgeResult,
-    pollImageJob: async (_event, request) => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.pollImageJob, await service.pollImageJob(
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.pollImageJob, request) as PollImageJobBridgeRequest,
-    )) as PollImageJobBridgeResult,
-    cancelImageJob: async (_event, request) => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, await service.cancelImageJob(
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request) as CancelImageJobBridgeRequest,
-    )) as CancelImageJobBridgeResult,
-    ackImageJobTerminal: async (_event, request) => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, await service.ackImageJobTerminal(
-      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, request) as AckImageJobTerminalBridgeRequest,
-    )) as AckImageJobTerminalBridgeResult,
-  };
-}
-
 async function translateProviderCall<T>(
   call: () => Promise<T>,
   context?: { readonly publicTaskId: string; readonly rawTaskId: string; readonly request: 'poll' },
@@ -576,7 +775,6 @@ async function translateProviderCall<T>(
     throw createProviderBridgeError('PROVIDER_ERROR', message, /timed out|timeout|network|fetch/i.test(message));
   }
 }
-
 function sanitizeProfiles(value: readonly ComflyModelRegistration[]): ProviderBridgeProfile[] {
   return parseProviderBridgeProfiles(value.flatMap((profile) => {
     if (profile.provider !== 'comfly') return [];
@@ -589,10 +787,13 @@ function sanitizeProfiles(value: readonly ComflyModelRegistration[]): ProviderBr
     };
   }));
 }
-
+function mergeUpdatedProfiles(existing: readonly ProviderBridgeProfile[], updates: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
+  const updatesByRoute = new Map(updates.map((profile) => [profile.modelRoute, profile]));
+  return parseProviderBridgeProfiles([...existing.filter((profile) => !updatesByRoute.has(profile.modelRoute)), ...updates]);
+}
 function selectProfile(
   profiles: readonly ProviderBridgeProfile[],
-  provider: 'comfly',
+  provider: ProviderBridgeProvider,
   modelRoute: string,
 ): ProviderBridgeProfile {
   assertSupportedProvider(provider);
@@ -602,22 +803,75 @@ function selectProfile(
   }
   return profile;
 }
-
+function buildGenerationReferencePrompt(prompt: string, count: number): string {
+  if (count === 0) return prompt;
+  const contract = [
+    '@1 is the authoritative scene: preserve its composition, camera, lighting, and background.',
+  ];
+  if (count >= 2) {
+    contract.push(
+      '@2 is the authoritative replacement product: preserve its identity, proportions, material, color, and logo.',
+      'Replace only the primary subject in @1 with @2. Do not blend, duplicate, or redesign the scene.',
+    );
+  }
+  if (count > 2) contract.push('@3 and later images are supplemental references only.');
+  return [...contract, prompt].join('\n');
+}
+async function requireManagedGenerationImages(
+  request: SubmitImageJobBridgeRequest,
+  _profile: ProviderBridgeProfile,
+  reader: ((
+    sessionId: string,
+    referenceAssetIds: readonly string[],
+  ) => Promise<readonly {
+    readonly bytes: Uint8Array;
+    readonly mediaType: 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp';
+  }[]>) | undefined,
+) {
+  if (request.referenceAssetIds.length > 0 && request.sessionId === undefined) {
+    throw createProviderBridgeError(
+      'INVALID_REQUEST',
+      'Reference image generation requires an open desktop project',
+    );
+  }
+  if (reader === undefined) {
+    throw createProviderBridgeError(
+      'PROVIDER_UNAVAILABLE',
+      'Managed reference images are unavailable',
+    );
+  }
+  const images = await reader(request.sessionId!, request.referenceAssetIds);
+  if (images.length !== request.referenceAssetIds.length) {
+    throw createProviderBridgeError(
+      'INVALID_REQUEST',
+      'Managed reference images are unavailable',
+    );
+  }
+  return images;
+}
 function assertSupportedProvider(provider: string): asserts provider is 'comfly' {
   if (provider !== 'comfly') {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider is unavailable');
   }
 }
-
 function parseImageTaskResponse(value: unknown): { taskId: string; status: string; data?: unknown } {
   assertProviderResponsePayload(value);
-  if (!isPlainRecord(value) || typeof value.taskId !== 'string' || value.taskId.length === 0 || typeof value.status !== 'string') {
+  const envelope = isPlainRecord(value) && isPlainRecord(value.data)
+    && (typeof value.data.taskId === 'string' || typeof value.data.task_id === 'string')
+    && typeof value.data.status === 'string'
+    ? value.data
+    : value;
+  if (!isPlainRecord(envelope)) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task response');
+  }
+  const taskId = typeof envelope.taskId === 'string' ? envelope.taskId : envelope.task_id;
+  if (typeof taskId !== 'string' || taskId.length === 0 || typeof envelope.status !== 'string') {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task response');
   }
   return {
-    taskId: value.taskId,
-    status: value.status,
-    data: value.data,
+    taskId,
+    status: envelope.status,
+    data: envelope.data ?? envelope.output ?? envelope.result,
   };
 }
 
@@ -626,7 +880,7 @@ function mapImageTaskPollResult(
   publicTaskId: string,
   rawTaskId: string,
   value: unknown,
-): { readonly publicResult: PollImageJobBridgeResult; readonly resultUrl?: string } {
+): { readonly publicResult: PollImageJobBridgeResult; readonly resultUrl?: string; readonly inlineBytes?: Uint8Array; readonly inlineMediaType?: string } {
   const task = parseImageTaskResponse(value);
   if (task.taskId !== rawTaskId) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task response');
@@ -647,14 +901,11 @@ function mapImageTaskPollResult(
   if (status !== 'succeeded' && status !== 'completed' && status !== 'success') {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image task status');
   }
-  const data = Array.isArray(task.data) ? task.data : [];
-  const first = data[0];
+  const first = findFirstProviderImageResult(task.data);
   if (!isPlainRecord(first)) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned no image result');
   }
-  if (typeof first.b64_json === 'string') {
-    throw createProviderBridgeError('PROTECTED_PAYLOAD', 'Provider returned a protected image payload');
-  }
+  const inlineBytes = decodeProviderInlineImage(first.b64_json);
   return {
     publicResult: {
       status: 'completed',
@@ -666,6 +917,7 @@ function mapImageTaskPollResult(
       },
     },
     ...(typeof first.url === 'string' ? { resultUrl: first.url } : {}),
+    ...(inlineBytes === undefined ? {} : { inlineBytes, inlineMediaType: 'image/png' }),
   };
 }
 
@@ -674,75 +926,6 @@ function historyFailureCode(error: unknown): GenerationHistoryFailureCode {
     return 'invalid_result';
   }
   return 'provider_unavailable';
-}
-
-function parseSafeProviderResultUrl(value: string | undefined): URL {
-  if (value === undefined) {
-    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
-  }
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
-  }
-  const hostname = url.hostname.toLowerCase().replace(/\.$/u, '').replace(/^\[|\]$/gu, '');
-  if (
-    url.protocol !== 'https:'
-    || url.username !== ''
-    || url.password !== ''
-    || hostname === 'localhost'
-    || hostname.endsWith('.localhost')
-    || hostname.endsWith('.local')
-    || isIpLiteral(hostname)
-  ) {
-    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
-  }
-  return url;
-}
-
-function isIpLiteral(hostname: string): boolean {
-  if (hostname.includes(':')) return true;
-  const parts = hostname.split('.');
-  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/u.test(part) && Number(part) <= 255);
-}
-
-const providerResultAddressBlockList = createProviderResultAddressBlockList();
-
-function isPublicProviderAddress(address: string): boolean {
-  const family = isIP(address);
-  if (family === 0) return false;
-  if (family === 4) return isPublicIpv4Address(address);
-  return !providerResultAddressBlockList.check(address, 'ipv6');
-}
-
-function createProviderResultAddressBlockList(): BlockList {
-  const blockList = new BlockList();
-  for (const [address, prefix] of [
-    ['::', 96],
-    ['::1', 128],
-    ['::ffff:0:0', 96],
-    ['64:ff9b::', 96],
-    ['64:ff9b:1::', 48],
-    ['fc00::', 7],
-    ['fec0::', 10],
-    ['fe80::', 10],
-    ['ff00::', 8],
-  ] as const) blockList.addSubnet(address, prefix, 'ipv6');
-  return blockList;
-}
-
-function isPublicIpv4Address(address: string): boolean {
-  const octets = address.split('.').map(Number);
-  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
-  const [first, second] = octets as [number, number, number, number];
-  if (first === 0 || first === 10 || first === 127 || first >= 224) return false;
-  if (first === 100 && second >= 64 && second <= 127) return false;
-  if (first === 169 && second === 254) return false;
-  if (first === 172 && second >= 16 && second <= 31) return false;
-  if (first === 192 && (second === 0 || second === 168)) return false;
-  if (first === 198 && (second === 18 || second === 19)) return false;
-  return true;
 }
 
 function createPublicProviderTaskId(): string {
@@ -839,6 +1022,9 @@ function parseFiniteNumber(value: unknown, fieldName: string): number {
   throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', `${fieldName} must be a finite number`);
 }
 
+function cloneProfile(profile: ProviderBridgeProfile): ProviderBridgeProfile {
+  return cloneProviderProfile(profile);
+}
 function cloneConfiguration(snapshot: ConfigurationSnapshot): ConfigurationSnapshot {
   return {
     baseUrl: snapshot.baseUrl,

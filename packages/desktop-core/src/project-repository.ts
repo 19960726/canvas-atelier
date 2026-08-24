@@ -90,15 +90,21 @@ const LOCK_GUARD_PATH = 'recovery/project.lock.guard';
 const LOCK_GUARD_SCHEMA_VERSION = 1;
 const PROJECT_MANIFEST_PATH = 'project.novus.json';
 
-const PROJECT_DIRECTORIES = [
+export const PROJECT_DIRECTORIES = [
   'assets',
+  'generated',
+  'generated/images',
+  'generated/videos',
+  'history',
   'indexes',
   'journal',
   'journal/archive',
   'recovery',
   'recovery/quarantine',
+  'reverse',
+  'reverse/results',
   'snapshots',
-];
+] as const;
 
 export class ProjectRepository {
   private readonly channel: PersistenceChannel;
@@ -299,6 +305,13 @@ export class ProjectRepository {
     return this.readCurrentCanvasProject(session.root, session.manifest, 'Desktop bridge hydration');
   }
 
+  async readStableProject(session: OpenedProjectSession): Promise<CanvasProject> {
+    return requireCanvasProject(
+      await this.readStableProjectState(session.root, session.manifest),
+      'Desktop bridge stable snapshot',
+    );
+  }
+
   async readCurrentRevision(session: OpenedProjectSession): Promise<number> {
     return (await this.readCurrentProjectStateWithRevision(session.root, session.manifest)).revision;
   }
@@ -444,7 +457,7 @@ export class ProjectRepository {
     ) as ProjectManifest;
   }
 
-  private async readStableProject(root: string, manifest: ProjectManifest): Promise<ProjectState> {
+  private async readStableProjectState(root: string, manifest: ProjectManifest): Promise<ProjectState> {
     if (manifest.stableSnapshotPath === null) {
       return {};
     }
@@ -483,7 +496,7 @@ export class ProjectRepository {
   }
 
   private async readCurrentProjectStateWithRevision(root: string, manifest: ProjectManifest): Promise<CurrentProjectState> {
-    const stableProject = await this.readStableProject(root, manifest);
+    const stableProject = await this.readStableProjectState(root, manifest);
     const activeJournalSegment = validateActiveJournalSegment(manifest.activeJournalSegment);
     const journal = await readValidJournal(join(root, ...activeJournalSegment.split('/')), {
       baseRevision: manifest.stableSnapshotRevision,

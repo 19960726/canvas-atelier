@@ -14,9 +14,10 @@ import { GenerationHistoryStore } from './generation-history-store';
 interface HistorySink {
   cancelled(historyId: string): Promise<unknown>;
   failed(historyId: string, code: 'provider_failed' | 'provider_unavailable' | 'invalid_result'): Promise<unknown>;
-  queued(input: { readonly jobId: string; readonly modelDisplayName: string }): Promise<string>;
+  reserveSubmission(input: { readonly jobId: string; readonly kind?: 'image' | 'video'; readonly modelDisplayName: string; readonly provider?: 'comfly' | 'relayme' }): Promise<{ readonly historyId: string }>;
+  queued(input: { readonly jobId: string; readonly kind?: 'image' | 'video'; readonly modelDisplayName: string; readonly provider?: 'comfly' | 'relayme' }): Promise<string>;
   running(historyId: string): Promise<void>;
-  succeeded(historyId: string, bytes: Uint8Array): Promise<unknown>;
+  succeeded(historyId: string, bytes: Uint8Array, metadata?: { readonly durationSeconds?: number; readonly height?: number; readonly width?: number }): Promise<unknown>;
 }
 type HistorySinkConstructor = new (options: {
   readonly trustedImageDecoder?: (bytes: Uint8Array, image: unknown) => boolean | Promise<boolean>;
@@ -222,6 +223,98 @@ describe('provider generation history production sink', () => {
     expect(serializedIndex).not.toContain(rawTaskIds[0]);
   }, 15_000);
 
+  it('persists a Gemini native inline image as succeeded generation history', async () => {
+    const { appDataRoot, sink, store } = await createHistorySink();
+    const fetch: ComflyFetch = vi.fn(async () => jsonResponse({
+      candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: pngBytes.toString('base64') } }] } }],
+    }));
+    const storeGeneratedImage = vi.fn(async () => ({
+      assetId: 'e77617115ffe6399',
+      width: 2,
+      height: 3,
+    }));
+    const service = (desktopCore.createComflyProviderService as unknown as (options: {
+      readonly appDataRoot: string;
+      readonly credentialStore: ProviderCredentialStore;
+      readonly fetch: ComflyFetch;
+      readonly historySink: unknown;
+      readonly profiles: readonly unknown[];
+      readonly resolveResultHost: (hostname: string) => Promise<readonly string[]>;
+      readonly storeGeneratedImage: typeof storeGeneratedImage;
+    }) => ProviderService)({
+      appDataRoot,
+      credentialStore: credentialStore(),
+      fetch,
+      historySink: sink,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'gemini-image',
+        modelId: 'gemini-3-pro-image-preview',
+        displayName: 'NanoBanana Pro',
+        capabilities: ['image_generation', 'gemini_native'],
+      }],
+      resolveResultHost: async () => ['93.184.216.34'],
+      storeGeneratedImage,
+    });
+
+    const submitted = await service.submitImageJob({
+      jobId: 'job-gemini-inline-history',
+      provider: 'comfly',
+      modelRoute: 'gemini-image',
+      prompt: 'private inline prompt',
+      conversationId: 'conversation-gemini-inline-history',
+      referenceAssetIds: [],
+    });
+    await expect(service.pollImageJob({
+      provider: 'comfly',
+      providerTaskId: submitted.providerTaskId,
+    })).resolves.toMatchObject({ status: 'completed' });
+
+    const records = (await store.list({ filters: { trashState: 'all' } })).records;
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      kind: 'image',
+      status: 'succeeded',
+      provider: { modelDisplayName: 'NanoBanana Pro' },
+      output: {
+        availability: 'available',
+        height: 3,
+        mediaType: 'image/png',
+        width: 2,
+      },
+    });
+  });
+
+  it('persists a RelayMe MP4 result as video history with duration and dimensions', async () => {
+    const { appDataRoot, sink, store } = await createHistorySink();
+    const mp4 = createMinimalMp4();
+    const reservation = await sink.reserveSubmission({
+      jobId: 'job-relayme-video-history',
+      kind: 'video',
+      modelDisplayName: 'Seedance 2.0 Pro',
+      provider: 'relayme',
+    });
+    await sink.running(reservation.historyId);
+
+    await sink.succeeded(reservation.historyId, mp4, {
+      durationSeconds: 8,
+      height: 1080,
+      width: 1920,
+    });
+
+    const record = (await store.list({ filters: { kind: 'video', trashState: 'all' } })).records[0]!;
+    expect(record).toMatchObject({
+      kind: 'video',
+      provider: { displayName: 'RelayMe', modelDisplayName: 'Seedance 2.0 Pro' },
+      output: { durationSeconds: 8, format: 'mp4', height: 1080, mediaType: 'video/mp4', width: 1920 },
+    });
+    expect(await readFile(join(
+      appDataRoot,
+      'generation-history',
+      'originals',
+      `${record.output!.historyAssetId}.mp4`,
+    ))).toEqual(mp4);
+  });
   it('persists submission failures without durable prompt or conversation content', async () => {
     const { appDataRoot, sink, store } = await createHistorySink();
     const fetch: ComflyFetch = vi.fn(async () => {
@@ -398,7 +491,7 @@ describe('provider generation history production sink', () => {
     expect((await store.list({ filters: { trashState: 'all' } })).records[0]!.status).toBe('running');
   });
 
-  it('reconciles a succeeded history terminal after restart when the provider later reports failure', async () => {
+  it('keeps a succeeded history terminal while retrying provider materialization after restart', async () => {
     const { appDataRoot, sink, store } = await createHistorySink();
     const rawTaskId = 'raw-provider-task-history-first-succeeded';
     const firstService = createProviderService(
@@ -426,7 +519,7 @@ describe('provider generation history production sink', () => {
       provider: 'comfly',
       providerTaskId: submitted.providerTaskId,
     })).resolves.toMatchObject({ status: 'completed', result: { width: 2, height: 3 } });
-    expect(restartedFetch).not.toHaveBeenCalled();
+    expect(restartedFetch).toHaveBeenCalledOnce();
     expect((await store.list({ filters: { trashState: 'all' } })).records[0]!.status).toBe('succeeded');
   });
 
@@ -715,7 +808,9 @@ describe('provider generation history production sink', () => {
       const source = await readFile(mainPath, 'utf8');
       expect(source).toContain('const generationHistoryStore = new GenerationHistoryStore({');
       expect(source).toContain('historyStore: generationHistoryStore');
-      expect(source).toContain('historySink: new GenerationHistoryProviderSink({');
+      expect(source).toContain('const generationHistorySink = new GenerationHistoryProviderSink({');
+      expect(source).toContain('historySink: generationHistorySink');
+      expect(source).toContain('relayme: createRelayMeProviderService({');
       expect(source).toContain('trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage)');
       expect(source).toContain("lookup(hostname, { all: true, verbatim: true })");
     }
@@ -739,6 +834,21 @@ async function createHistorySink(): Promise<{
   return { appDataRoot, sink: new Sink({ store, trustedImageDecoder: async () => true }), store };
 }
 
+function createMinimalMp4(): Buffer {
+  return Buffer.concat([
+    mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')),
+    mp4Box('moov', mp4Box('trak', Buffer.from([0, 0, 0, 0]))),
+    mp4Box('mdat', Buffer.from([1, 2, 3, 4])),
+  ]);
+}
+
+function mp4Box(type: string, payload: Buffer): Buffer {
+  const box = Buffer.alloc(8 + payload.byteLength);
+  box.writeUInt32BE(box.byteLength, 0);
+  box.write(type, 4, 4, 'ascii');
+  payload.copy(box, 8);
+  return box;
+}
 function createPng(width: number, height: number): Buffer {
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const ihdr = Buffer.alloc(13);
@@ -825,6 +935,7 @@ function credentialStore(): ProviderCredentialStore {
     configure: async () => undefined,
     unlock: async () => undefined,
     getStatus: async () => ({ configured: true, locked: false, encryption: 'safeStorage' }),
+    getPrimaryToken: async () => ['provider', 'credential'].join('-'),
     getToken: async () => ['provider', 'credential'].join('-'),
     getMappingKey: async () => mappingKey,
     getMappingSecrets: async () => ({ primary: mappingKey, fallback: [] }),

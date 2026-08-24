@@ -72,7 +72,7 @@ describe('durable project serialization integration', () => {
     const journalPath = join(created.projectRoot, 'journal', 'active.ndjson');
     const journal = await readValidJournal(journalPath);
     expect(journal.records.map((record) => record.label)).toEqual([
-      'Move canvas node',
+      'Move 1 canvas node',
       'Reorder Agent references',
     ]);
     expect(journal.records.map((record) => record.revision)).toEqual([1, 2]);

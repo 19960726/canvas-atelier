@@ -5,7 +5,10 @@ import {
   Brush,
   Clapperboard,
   Columns2,
+  CirclePlay,
   FileChartColumn,
+  FileText,
+  Film,
   Image,
   ImageUp,
   Images,
@@ -31,6 +34,7 @@ const moduleIconByType: Record<CanvasModuleType, LucideIcon> = {
   canvas_library: Images,
   text_prompt: MessageSquareText,
   image_generation: WandSparkles,
+  video_generation: Film,
   image_editor: SlidersHorizontal,
   drawing_mask: Brush,
   local_redraw: PenTool,
@@ -46,6 +50,8 @@ const moduleIconByType: Record<CanvasModuleType, LucideIcon> = {
   music_generation: Music2,
   speech_generation: AudioLines,
   result_output: Boxes,
+  video_result: CirclePlay,
+  reverse_result: FileText,
 };
 
 export function resolveCanvasModuleIcon(moduleType: CanvasModuleType): LucideIcon {

@@ -10,6 +10,7 @@ describe('JobStrip', () => {
   it('exposes active-job and durable save-state presentation hooks', () => {
     const jobs: ModelJob[] = [{
       id: 'job-running',
+      kind: 'image',
       modelId: 'gpt-image-1',
       promptNodeId: 'prompt-1',
       retryCount: 0,

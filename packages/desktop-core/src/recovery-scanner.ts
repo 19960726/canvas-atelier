@@ -32,6 +32,11 @@ export interface RecoveryScanResult extends RecoveryPlan {
   readonly recoveredRevision: number | null;
 }
 
+export interface OrphanRecoveryCandidate extends RecoveryCandidate {
+  readonly createdAt: string;
+  readonly projectId: string;
+}
+
 export interface RecoveryScannerOptions {
   readonly appDataRoot: string;
   readonly createId?: () => string;
@@ -68,6 +73,61 @@ export class RecoveryScanner {
     this.createId = options.createId ?? (() => `scan-${Date.now()}`);
     this.fileSystem = options.fileSystem ?? new NodeFileSystem();
     this.now = options.now ?? (() => new Date());
+  }
+
+  async discoverLatestOrphanCandidate(): Promise<OrphanRecoveryCandidate | null> {
+    const recoveryBase = resolve(this.appDataRoot, 'recovery');
+    const candidates: OrphanRecoveryCandidate[] = [];
+    for (const projectDirectory of await this.readDirectoryNames(recoveryBase)) {
+      if (!projectDirectory.startsWith('project-')) continue;
+      const projectRecoveryRoot = confinedJoin(recoveryBase, projectDirectory);
+      for (const sessionDirectory of await this.readDirectoryNames(projectRecoveryRoot)) {
+        if (!sessionDirectory.startsWith('session-')) continue;
+        const sessionRoot = confinedJoin(projectRecoveryRoot, sessionDirectory);
+        for (const candidateName of await this.readDirectoryNames(sessionRoot)) {
+          if (!candidateName.startsWith('candidate-') || !candidateName.endsWith('.json')) continue;
+          const candidatePath = confinedJoin(sessionRoot, candidateName);
+          try {
+            const record = JSON.parse(await this.fileSystem.readFile(candidatePath, 'utf8')) as unknown;
+            const candidate = parseOrphanRecoveryMirror(record, candidatePath);
+            const managedRoot = confinedJoin(
+              resolve(this.appDataRoot, 'projects'),
+              `${candidate.projectId}.novus-project`,
+            );
+            if (await this.exists(managedRoot)) continue;
+            candidates.push(candidate);
+          } catch {
+            // Malformed, escaped, or incompatible mirrors are ignored without mutating recovery data.
+          }
+        }
+      }
+    }
+    const latestByProject = new Map<string, OrphanRecoveryCandidate>();
+    for (const candidate of candidates) {
+      const current = latestByProject.get(candidate.projectId);
+      if (
+        current === undefined
+        || candidate.revision > current.revision
+        || (
+          candidate.revision === current.revision
+          && (
+            Date.parse(candidate.createdAt) > Date.parse(current.createdAt)
+            || (
+              candidate.createdAt === current.createdAt
+              && candidate.path.localeCompare(current.path) < 0
+            )
+          )
+        )
+      ) {
+        latestByProject.set(candidate.projectId, candidate);
+      }
+    }
+    const projectCandidates = [...latestByProject.values()].sort((left, right) => (
+      Date.parse(right.createdAt) - Date.parse(left.createdAt)
+      || right.revision - left.revision
+      || left.projectId.localeCompare(right.projectId)
+    ));
+    return projectCandidates[0] ?? null;
   }
 
   async scan(projectRoot: string): Promise<RecoveryScanResult> {
@@ -419,6 +479,50 @@ export class RecoveryScanner {
       return false;
     }
   }
+
+  private async readDirectoryNames(path: string): Promise<string[]> {
+    try {
+      return await this.fileSystem.readdir(path);
+    } catch {
+      return [];
+    }
+  }
+}
+
+function parseOrphanRecoveryMirror(value: unknown, path: string): OrphanRecoveryCandidate {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Recovery mirror is invalid');
+  }
+  const record = value as Record<string, unknown>;
+  const createdAt = record.createdAt;
+  const projectId = record.projectId;
+  const revision = record.revision;
+  const snapshotId = record.snapshotId;
+  if (
+    typeof createdAt !== 'string'
+    || !Number.isFinite(Date.parse(createdAt))
+    || typeof projectId !== 'string'
+    || projectId.length === 0
+    || /[\\/]/u.test(projectId)
+    || typeof revision !== 'number'
+    || !Number.isSafeInteger(revision)
+    || revision < 0
+    || typeof snapshotId !== 'string'
+    || snapshotId.length === 0
+  ) {
+    throw new Error('Recovery mirror metadata is invalid');
+  }
+  const project = parseCanvasProject(record.project);
+  if (project.id !== projectId) throw new Error('Recovery mirror project identity is invalid');
+  return {
+    createdAt,
+    path,
+    project,
+    projectId,
+    revision,
+    snapshotId,
+    tailStatus: 'complete',
+  };
 }
 
 function archiveRangeFromName(name: string): { firstSequence: number; lastSequence: number } | null {

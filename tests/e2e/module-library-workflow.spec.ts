@@ -9,28 +9,99 @@ import {
 } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
 
-test('creates and connects executable modules from the library', async ({ page }) => {
+test('manual acceptance imports image and video files through real browser pickers', async ({ page }) => {
+  await openEmptyApp(page, '/?novusHarness=novus-e2e-codex-ui-gate');
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.createModule('image_input', { x: 180, y: 140 });
+    await window.__NOVUS_E2E__!.createModule('video_input', { x: 560, y: 140 });
+  });
+
+  const imageNode = page.locator('[data-module-type="image_input"]');
+  const videoNode = page.locator('[data-module-type="video_input"]');
+  const imageFixture = makeReferenceImage(
+    'Manual acceptance frame.png',
+    [31, 118, 105, 255],
+    { width: 640, height: 360 },
+  );
+
+  const imageChooserPromise = page.waitForEvent('filechooser');
+  await imageNode.getByRole('button', { name: '导入图像 / Import image' }).click();
+  const imageChooser = await imageChooserPromise;
+  await imageChooser.setFiles({
+    name: imageFixture.name,
+    mimeType: imageFixture.mimeType,
+    buffer: imageFixture.buffer,
+  });
+
+  await expect(imageNode.getByRole('img', { name: 'Manual acceptance frame' })).toBeVisible();
+  await expect.poll(async () => (await e2eState(page)).projectImages.map((asset) => asset.label))
+    .toEqual(['Manual acceptance frame']);
+
+  const videoChooserPromise = page.waitForEvent('filechooser');
+  await videoNode.getByRole('button', { name: '导入视频 / Import video' }).click();
+  const videoChooser = await videoChooserPromise;
+  await videoChooser.setFiles({
+    name: 'Manual acceptance motion.mp4',
+    mimeType: 'video/mp4',
+    buffer: Buffer.from([0, 0, 0, 20, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0]),
+  });
+
+  await expect(videoNode.locator('video')).toHaveAttribute('aria-label', 'Manual acceptance motion');
+  await expect.poll(async () => (await e2eState(page)).projectVideos.map((asset) => asset.label))
+    .toEqual(['Manual acceptance motion']);
+  const agentFileInput = page.getByTestId('agent-reference-file-input');
+  await expect(agentFileInput).toHaveCount(1);
+  await expect(agentFileInput).toBeHidden();
+});
+
+test('creates executable modules from the library', async ({ page }) => {
   await openApp(page);
+  const initialTextPromptCount = await page.locator('[data-module-type="text_prompt"]').count();
+  const initialImageGenerationCount = await page.locator('[data-module-type="image_generation"]').count();
   await page.getByTestId('tool-modules').click();
   await page.getByRole('searchbox', { name: '搜索模块' }).fill('prompt');
   await page.getByRole('button', { name: '查看 文本提示词 / Text Prompt' }).dblclick();
   await page.getByRole('searchbox', { name: '搜索模块' }).fill('image generation');
   await page.getByRole('button', { name: '查看 图片生成 / Image Generation' }).dblclick();
 
-  const edgeCountBeforeConnect = (await e2eState(page)).edgeCount;
-  await expect(page.locator('[data-module-type="text_prompt"]')).toHaveCount(1);
-  await expect(page.locator('[data-module-type="image_generation"]')).toHaveCount(1);
-
-  await page.evaluate(() => window.__NOVUS_E2E__?.connectModules(
-    'text_prompt',
-    'prompt',
-    'image_generation',
-    'prompt',
-  ));
-
-  await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(edgeCountBeforeConnect + 1);
-  await expect(page.locator('.react-flow__edge')).not.toHaveCount(0);
+  await expect(page.locator('[data-module-type="text_prompt"]')).toHaveCount(initialTextPromptCount + 1);
+  await expect(page.locator('[data-module-type="image_generation"]')).toHaveCount(initialImageGenerationCount + 1);
   await expect(page.getByTestId('save-state')).toHaveAttribute('data-save-state', 'saved');
+});
+
+test('connects an image input to the reverse agent by dragging visible ports', async ({ page }) => {
+  await openEmptyApp(page);
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.createModule('image_input', { x: 120, y: 180 });
+    await window.__NOVUS_E2E__!.createModule('reverse_agent', { x: 620, y: 180 });
+  });
+
+  const source = page.locator('[data-module-type="image_input"] [data-port-id="image"].react-flow__handle');
+  const target = page.locator('[data-module-type="reverse_agent"] [data-port-id="references"].react-flow__handle');
+  await expect(source).toBeVisible();
+  await expect(target).toBeVisible();
+  const [sourceBox, targetBox] = await Promise.all([source.boundingBox(), target.boundingBox()]);
+  const [imageNodeBox, reverseNodeBox] = await Promise.all([
+    page.locator('[data-module-type="image_input"]').boundingBox(),
+    page.locator('[data-module-type="reverse_agent"]').boundingBox(),
+  ]);
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  expect(imageNodeBox).not.toBeNull();
+  expect(reverseNodeBox).not.toBeNull();
+  expect(sourceBox!.width).toBeGreaterThanOrEqual(14);
+  expect(targetBox!.width).toBeGreaterThanOrEqual(14);
+  expect(Math.abs((sourceBox!.x + sourceBox!.width / 2) - (imageNodeBox!.x + imageNodeBox!.width))).toBeLessThanOrEqual(1);
+  expect(Math.abs((targetBox!.x + targetBox!.width / 2) - reverseNodeBox!.x)).toBeLessThanOrEqual(1);
+
+  await source.dragTo(target);
+
+  await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(1);
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+  expect(
+    await page.locator('.react-flow__edge-path').getAttribute('d'),
+    'Image → reverse must use the same Bézier connector as the video flow.',
+  ).toContain('C');
 });
 
 test('does not persist every pointermove', async ({ page }) => {
@@ -68,7 +139,9 @@ test('imports managed module images and persists a searchable ordered canvas lib
     await window.__NOVUS_E2E__?.createModule('canvas_library', { x: 820, y: 120 });
   });
 
-  const imageInput = page.locator('[data-module-type="image_input"]');
+  const imageInputs = page.locator('[data-module-type="image_input"]');
+  await expect(imageInputs).toHaveCount(2);
+  const imageInput = imageInputs.last();
   const uploadImage = page.locator('[data-module-type="upload_image"]');
   const canvasLibrary = page.locator('[data-module-type="canvas_library"]');
   await expect(imageInput).toBeVisible();
@@ -77,11 +150,11 @@ test('imports managed module images and persists a searchable ordered canvas lib
 
   await queueProjectImageImport(page, makeReferenceImage('Product front.png', [20, 132, 108, 255]));
   await imageInput.getByRole('button', { name: '导入图像 / Import image' }).click();
-  await expect(imageInput.getByRole('strong').filter({ hasText: 'Product front' })).toBeVisible();
+  await expect(imageInput.getByRole('img', { name: 'Product front' })).toBeVisible();
 
   await queueProjectImageImport(page, makeReferenceImage('Studio scene.png', [49, 75, 132, 255]));
   await uploadImage.getByRole('button', { name: '导入图像 / Import image' }).click();
-  await expect(uploadImage.getByRole('strong').filter({ hasText: 'Studio scene' })).toBeVisible();
+  await expect(uploadImage.getByRole('img', { name: 'Studio scene' })).toBeVisible();
 
   await canvasLibrary.getByRole('searchbox', { name: '搜索项目图像 / Search project images' }).fill('scene');
   await expect(canvasLibrary.getByRole('checkbox', { name: '选择 Studio scene / Select Studio scene' })).toBeVisible();
@@ -98,12 +171,14 @@ test('imports managed module images and persists a searchable ordered canvas lib
   expect(state.projectAssetIds).toEqual(state.projectImages.map((asset) => asset.assetId));
   expect(state.projectImages.every((asset) => asset.displayUrl.includes('/__novus_e2e_asset/'))).toBe(true);
   expect(state.durableProjectContainsTransientImageUrl).toBe(false);
-  await expect(page.locator('input[type="file"]')).toHaveCount(0);
+  const agentFileInput = page.getByTestId('agent-reference-file-input');
+  await expect(agentFileInput).toHaveCount(1);
+  await expect(agentFileInput).toBeHidden();
   await expect(page.getByTestId('save-state')).toHaveAttribute('data-save-state', 'saved');
   await captureLayoutScreenshot(page, testInfo, 'renderer-managed-image-library');
 });
 
-test('keeps landscape portrait and square images as the visual body of their nodes', async ({ page }, testInfo) => {
+test('preserves landscape portrait and square images inside the large media source slot', async ({ page }, testInfo) => {
   await openEmptyApp(page);
   await page.evaluate(async () => {
     await window.__NOVUS_E2E__?.createModule('image_input', { x: 90, y: 70 });
@@ -141,8 +216,15 @@ test('keeps landscape portrait and square images as the visual body of their nod
     const mediaBox = await nodes.nth(index).locator('.module-node__media-frame').boundingBox();
     expect(nodeBox).not.toBeNull();
     expect(mediaBox).not.toBeNull();
-    expect(mediaBox!.width).toBeGreaterThan(180);
-    expect(mediaBox!.height).toBeGreaterThan(110);
+    // The Figma media source uses a stable 272px preview width while the
+    // rendered frame follows each asset's intrinsic aspect ratio.
+    const expectedMediaSizes = [
+      { width: 272, height: 153 },
+      { width: 272, height: 483.55555555555554 },
+      { width: 272, height: 272 },
+    ] as const;
+    expect(mediaBox!.width).toBeCloseTo(expectedMediaSizes[index]!.width, 1);
+    expect(mediaBox!.height).toBeCloseTo(expectedMediaSizes[index]!.height, 1);
     expect(mediaBox!.x).toBeGreaterThanOrEqual(nodeBox!.x);
     expect(mediaBox!.x + mediaBox!.width).toBeLessThanOrEqual(nodeBox!.x + nodeBox!.width + 1);
   }
@@ -170,15 +252,29 @@ test('uses the same media-first hierarchy for image and video input nodes', asyn
 
   await expect(imageNode.locator('.module-node__media-frame')).toBeVisible();
   await expect(videoNode.locator('.module-node__video-control')).toBeVisible();
-  await expect(videoNode.getByText('Campaign turntable')).toBeVisible();
-  await expect(videoNode.locator('video')).toHaveCount(1);
-  await expect(videoNode.locator('video')).toHaveAttribute('src', /\/__novus_e2e_asset\/[a-f0-9]{16}\.mp4$/u);
+  const videoPreview = videoNode.locator('video');
+  await expect(videoPreview).toHaveCount(1);
+  await expect(videoPreview).toHaveAttribute('aria-label', 'Campaign turntable');
+  await expect(videoPreview).toHaveAttribute('src', /\/__novus_e2e_asset\/[a-f0-9]{16}\.mp4$/u);
+  await expect(videoNode.locator('.module-node__media-frame')).toHaveCSS('aspect-ratio', '1920 / 1080');
+  const [imageMediaBox, videoMediaBox, imageNodeBox, videoNodeBox] = await Promise.all([
+    imageNode.locator('.module-node__media-frame').boundingBox(),
+    videoNode.locator('.module-node__media-frame').boundingBox(),
+    imageNode.boundingBox(),
+    videoNode.boundingBox(),
+  ]);
+  expect(imageMediaBox).not.toBeNull();
+  expect(videoMediaBox).not.toBeNull();
+  expect(imageNodeBox).not.toBeNull();
+  expect(videoNodeBox).not.toBeNull();
+  expect(videoMediaBox!.width).toBeCloseTo(272, 1);
+  expect(videoMediaBox!.height).toBeCloseTo(153, 1);
+  expect(videoNodeBox!.width).toBeCloseTo(imageNodeBox!.width, 1);
   await expect.poll(async () => (await e2eState(page)).commitCount).toBe(beforeVideoImport.commitCount + 1);
   expect((await e2eState(page)).projectVideos.map((asset) => asset.label)).toEqual(['Campaign turntable']);
   await expect(videoNode.getByText('待配置')).toHaveCount(0);
-  await expect.poll(() => imageNode.locator('.module-node__media-meta small').evaluate((element) => (
-    Number.parseFloat(getComputedStyle(element).fontSize)
-  ))).toBeGreaterThanOrEqual(8);
+  await expect(imageNode.locator('.module-node__media-meta')).toBeHidden();
+  await expect(videoNode.locator('.module-node__media-meta')).toBeHidden();
 
   const portHandle = imageNode.locator('.module-node__port-row .react-flow__handle').first();
   await expect(portHandle).toBeVisible();
@@ -189,7 +285,7 @@ test('uses the same media-first hierarchy for image and video input nodes', asyn
       height: Number.parseFloat(handle.height) + Math.abs(Number.parseFloat(target.top)) + Math.abs(Number.parseFloat(target.bottom)),
       width: Number.parseFloat(handle.width) + Math.abs(Number.parseFloat(target.left)) + Math.abs(Number.parseFloat(target.right)),
     };
-  })).toEqual({ height: 24, width: 24 });
+  })).toEqual({ height: 30, width: 30 });
   await expect.poll(() => portHandle.evaluate((element) => (
     (element.closest('.module-node__port-row') as HTMLElement).getBoundingClientRect().height
   ))).toBeGreaterThanOrEqual(24);
@@ -250,23 +346,9 @@ test('pastes a clipboard image as one managed media node transaction', async ({ 
   expect(after.durableProjectContainsTransientImageUrl).toBe(false);
 });
 
-test('hand tool pans without moving modules or writing durable history', async ({ page }) => {
+test('does not expose the retired hand tool in the seven-action Figma rail', async ({ page }) => {
   await openEmptyApp(page);
-  await page.evaluate(() => window.__NOVUS_E2E__?.createModule('image_input', { x: 360, y: 240 }));
-  const node = page.locator('[data-module-type="image_input"]');
-  const before = await e2eState(page);
-  const box = await node.boundingBox();
-  expect(box).not.toBeNull();
-
-  await page.getByTestId('tool-hand').click();
-  await expect(page.getByTestId('tool-hand')).toHaveAttribute('aria-pressed', 'true');
-  await page.mouse.move(box!.x + box!.width / 2, box!.y + 24);
-  await page.mouse.down();
-  await page.mouse.move(box!.x + box!.width / 2 + 90, box!.y + 74, { steps: 6 });
-  await page.mouse.up();
-
-  const after = await e2eState(page);
-  expect(after.commitCount).toBe(before.commitCount);
-  expect(after.undoDepth).toBe(before.undoDepth);
-  expect(after.modulePositions).toEqual(before.modulePositions);
+  await expect(page.getByTestId('toolrail').locator('button:visible')).toHaveCount(7);
+  await expect(page.getByTestId('tool-hand')).toHaveCount(0);
+  await expect(page.getByTestId('tool-placement')).toBeHidden();
 });

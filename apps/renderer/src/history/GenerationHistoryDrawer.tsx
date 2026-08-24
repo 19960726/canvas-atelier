@@ -31,6 +31,7 @@ type AvailabilityFilter = 'all' | 'available' | 'missing' | 'corrupt';
 type ReferenceFilter = 'all' | 'used' | 'unreferenced';
 type TrashFilter = 'active' | 'trashed' | 'all';
 type StatusFilter = 'all' | GenerationHistoryRecord['status'];
+type HistoryKindFilter = 'all' | GenerationHistoryRecord['kind'];
 
 export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParameters }: GenerationHistoryDrawerProps) {
   const bridge = window.novusDesktop?.history;
@@ -40,6 +41,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [textQuery, setTextQuery] = useState('');
+  const [kind, setKind] = useState<HistoryKindFilter>('all');
   const [referenceState, setReferenceState] = useState<ReferenceFilter>('all');
   const [availability, setAvailability] = useState<AvailabilityFilter>('all');
   const [trashState, setTrashState] = useState<TrashFilter>('active');
@@ -55,11 +57,13 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
   const [reusable, setReusable] = useState<GenerationHistoryReusableBridgeResult | null>(null);
   const [canvasStatus, setCanvasStatus] = useState<'idle' | 'adding' | 'added'>('idle');
   const selected = records.find((record) => record.id === selectedId) ?? null;
+  const groupedRecords = useMemo(() => groupHistoryRecordsByDate(records), [records]);
 
   const request = useMemo(() => ({
     pageSize: 50,
     sort,
     filters: {
+      kind,
       availability,
       referenceState,
       trashState,
@@ -69,7 +73,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
       ...(favoriteOnly ? { favorite: true } : {}),
       ...(textQuery.trim().length > 0 ? { text: textQuery.trim() } : {}),
     },
-  }), [availability, favoriteOnly, modelDisplayName, projectId, referenceState, sort, status, textQuery, trashState]);
+  }), [availability, favoriteOnly, kind, modelDisplayName, projectId, referenceState, sort, status, textQuery, trashState]);
 
   const projectOptions = useMemo(() => uniqueOptions(records.flatMap((record) => (
     record.project ? [[record.project.projectId, record.project.displayLabel] as const] : []
@@ -82,11 +86,13 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
     let cancelled = false;
     setLoading(true);
     setError(null);
-    if (!bridge) {
+    const canListHistory = typeof bridge?.list === 'function' && typeof bridge?.getCapacity === 'function';
+    if (!canListHistory) {
       setRecords([]);
       setCapacity(null);
       setTotal(0);
       setNextCursor(null);
+      setError(bridge ? '当前环境暂不支持历史记录' : null);
       setLoading(false);
       return () => { cancelled = true; };
     }
@@ -240,13 +246,18 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
   };
 
   return (
-    <aside className="history-drawer" aria-label="生成历史 / Generation History" data-testid="history-drawer">
+    <aside className="history-drawer" aria-label="生成历史 / Generation History" data-figma-surface="history" data-testid="history-drawer">
       <header className="surface-drawer__header">
-        <div className="surface-drawer__title">
+        <div className="surface-drawer__title" data-testid="history-drawer-heading">
           <span aria-hidden="true"><History size={17} /></span>
-          <div><strong>历史记录</strong><small>Generation History</small></div>
+          <div><strong>生图历史</strong><small>统一生成历史 ({total})　支持图片与视频筛选</small></div>
         </div>
-        <button className="icon-button" type="button" aria-label="关闭历史记录" title="关闭历史记录" onClick={onClose}>
+        <div className="history-figma-toolbar" aria-label="History actions">
+          <button type="button" aria-label="Toggle history sort" onClick={() => setSort((current) => current === 'newest' ? 'oldest' : 'newest')}>{sort === 'newest' ? '↑ 时间降序' : '↓ 时间升序'}</button>
+          <i aria-hidden="true" />
+          <button type="button" aria-label="Batch history actions" disabled={compareIds.length === 0}>批量操作</button>
+        </div>
+        <button className="icon-button" type="button" data-testid="history-drawer-close" aria-label="关闭历史记录" title="关闭历史记录" onClick={onClose}>
           <X size={16} />
         </button>
       </header>
@@ -280,11 +291,22 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
               </div>
             )}
             <div className="history-filters">
+              <div className="history-figma-filter-pills" aria-label="History quick filters">
+                <button type="button" className={kind === 'all' ? 'is-active' : ''} aria-pressed={kind === 'all'} onClick={() => setKind('all')}>全部媒体</button>
+                <button type="button" className={kind === 'image' ? 'is-active' : ''} aria-pressed={kind === 'image'} onClick={() => setKind('image')}>图片</button>
+                <button type="button" className={kind === 'video' ? 'is-active' : ''} aria-pressed={kind === 'video'} onClick={() => setKind('video')}>视频</button>
+                <button type="button" className={status === 'succeeded' ? 'is-active' : ''} aria-pressed={status === 'succeeded'} onClick={() => setStatus((current) => current === 'succeeded' ? 'all' : 'succeeded')}>成功</button>
+                <button type="button" className={status === 'failed' ? 'is-active' : ''} aria-pressed={status === 'failed'} onClick={() => setStatus((current) => current === 'failed' ? 'all' : 'failed')}>失败</button>
+                <button type="button" className={favoriteOnly ? 'is-active' : ''} aria-pressed={favoriteOnly} onClick={() => setFavoriteOnly((current) => !current)}>收藏</button>
+              </div>
               <label className="history-search">
                 <Search size={14} aria-hidden="true" />
                 <input aria-label="搜索历史记录" type="search" placeholder="搜索提示词、项目或模型" value={textQuery} onChange={(event) => setTextQuery(event.target.value)} />
               </label>
               <div className="history-filter-row">
+                <select aria-label="媒体类型" value={kind} onChange={(event) => setKind(event.target.value as HistoryKindFilter)}>
+                  <option value="all">全部媒体</option><option value="image">图片</option><option value="video">视频</option>
+                </select>
                 <select aria-label="项目筛选" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
                   <option value="all">全部项目</option>{projectOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                 </select>
@@ -313,9 +335,16 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
             {!loading && records.length === 0 ? (
               <section className="history-empty"><History size={24} strokeWidth={1.5} /><strong>暂无生成记录</strong><span>完成的图片生成会安全地出现在这里。</span></section>
             ) : (
-              <div className="history-grid" aria-busy={loading}>
-                {records.map((record) => (
-                  <HistoryCard key={record.id} record={record} onOpen={() => setSelectedId(record.id)} onFavorite={() => { void toggleFavorite(record); }} />
+              <div className="history-groups" aria-busy={loading}>
+                {groupedRecords.map(([date, dayRecords]) => (
+                  <section className="history-date-group" key={date}>
+                    <h2>{date}</h2>
+                    <div className="history-grid">
+                      {dayRecords.map((record) => (
+                        <HistoryCard key={record.id} record={record} onOpen={() => setSelectedId(record.id)} onFavorite={() => { void toggleFavorite(record); }} />
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
             )}
@@ -336,10 +365,13 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
 function HistoryCard({ record, onFavorite, onOpen }: { record: GenerationHistoryRecord; onFavorite: () => void; onOpen: () => void }) {
   const output = record.output;
   const available = output?.availability === 'available';
+  const failedMessage = historyFailureMessage(record);
   return (
     <article className="history-card" data-history-status={record.status}>
       <button className="history-card__preview" type="button" aria-label={`查看 ${record.promptSummary}`} onClick={onOpen}>
-        {available && output ? <img src={historyAssetUrl(output.historyAssetId)} alt={record.promptSummary} /> : <span className="history-card__unavailable"><ImageOff size={22} /><b>{availabilityLabel(output?.availability)}</b></span>}
+        {available && output
+          ? <HistoryMedia output={output} alt={record.promptSummary} />
+          : <span className="history-card__unavailable"><ImageOff size={22} /><b>{failedMessage === null ? availabilityLabel(output?.availability) : '生成失败'}</b>{failedMessage && <small>{failedMessage}</small>}</span>}
         <span className="history-card__status">{statusLabel(record.status)}</span>
       </button>
       <button className="history-card__favorite" type="button" aria-label={`${record.favorite ? '取消收藏' : '收藏'} ${record.promptSummary}`} title={record.favorite ? '取消收藏' : '收藏'} onClick={onFavorite}><Star size={14} fill={record.favorite ? 'currentColor' : 'none'} /></button>
@@ -350,6 +382,34 @@ function HistoryCard({ record, onFavorite, onOpen }: { record: GenerationHistory
       </div>
     </article>
   );
+}
+
+function historyFailureMessage(record: GenerationHistoryRecord): string | null {
+  if (record.status !== 'failed') return null;
+  const code = record.termination?.code;
+  if (code === 'provider_unavailable') return '模型服务不可用';
+  if (code === 'invalid_result') return '模型返回结果无效';
+  if (code === 'provider_failed') return '模型生成失败';
+  return '生成任务未完成';
+}
+
+function HistoryMedia({ alt, output }: { readonly alt: string; readonly output: NonNullable<GenerationHistoryRecord['output']> }) {
+  const src = historyAssetUrl(output.historyAssetId);
+  if (output.mediaType === 'video/mp4') {
+    return <video className="history-video-preview" aria-label={alt} muted playsInline preload="metadata" src={src} />;
+  }
+  return <img src={src} alt={alt} />;
+}
+
+function groupHistoryRecordsByDate(records: readonly GenerationHistoryRecord[]): readonly (readonly [string, readonly GenerationHistoryRecord[]])[] {
+  const groups = new Map<string, GenerationHistoryRecord[]>();
+  for (const record of records) {
+    const date = record.createdAt.slice(0, 10);
+    const day = groups.get(date) ?? [];
+    day.push(record);
+    groups.set(date, day);
+  }
+  return [...groups.entries()];
 }
 
 function HistoryDetail({
@@ -386,7 +446,7 @@ function HistoryDetail({
   return (
     <article className="history-detail">
       <header><button className="icon-button" type="button" aria-label="返回历史列表" onClick={onBack}><ArrowLeft size={16} /></button><h2>生成详情</h2><button className="icon-button" type="button" aria-label="更多历史操作"><MoreHorizontal size={16} /></button></header>
-      <div className="history-detail__media">{available && output ? <img src={historyAssetUrl(output.historyAssetId)} alt={record.promptSummary} /> : <span><ImageOff size={28} /><b>{availabilityLabel(output?.availability)}</b></span>}</div>
+      <div className="history-detail__media">{available && output ? <HistoryMedia output={output} alt={record.promptSummary} /> : <span><ImageOff size={28} /><b>{availabilityLabel(output?.availability)}</b></span>}</div>
       <section className="history-detail__prompt"><small>提示词摘要</small><p>{record.promptSummary}</p></section>
       <dl className="history-detail__facts">
         <div><dt>模型</dt><dd>{record.provider.modelDisplayName}</dd></div>

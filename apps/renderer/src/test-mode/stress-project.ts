@@ -20,7 +20,7 @@ const MODULE_GROUPS = [
   ['reverse_agent', 50],
   ['text_prompt', 50],
   ['image_generation', 50],
-  ['result_output', 29],
+  ['video_generation', 29],
 ] as const satisfies ReadonlyArray<readonly [CanvasModuleType, number]>;
 
 const EXECUTION_STATES: readonly CanvasModuleExecutionState[] = ['idle', 'running', 'failed', 'completed'];
@@ -220,22 +220,25 @@ function createStressEdges(): CanvasEdge[] {
   }
   for (let index = 0; index < 29; index += 1) {
     edges.push({
-      id: `stress-edge-result-output-${index}`,
-      source: `stress-image_generation-${index}`,
-      sourcePortId: 'result',
-      target: `stress-result_output-${index}`,
-      targetPortId: 'result',
+      id: `stress-edge-video-prompt-${index}`,
+      source: `stress-text_prompt-${index}`,
+      sourcePortId: 'prompt',
+      target: `stress-video_generation-${index}`,
+      targetPortId: 'prompt',
       order: 0,
     });
   }
   for (let index = 0; index < 21; index += 1) {
+    const target = `stress-reverse_agent-${index}`;
+    const order = reverseReferenceOrder.get(target) ?? 0;
+    reverseReferenceOrder.set(target, order + 1);
     edges.push({
-      id: `stress-edge-line-art-${index}`,
+      id: `stress-edge-extra-reference-${index}`,
       source: `stress-image_input-${index}`,
       sourcePortId: 'image',
-      target: `stress-reverse_agent-${index}`,
-      targetPortId: 'line_art',
-      order: 0,
+      target,
+      targetPortId: 'references',
+      order,
     });
   }
   return edges;

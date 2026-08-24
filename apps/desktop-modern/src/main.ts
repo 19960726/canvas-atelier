@@ -14,24 +14,39 @@ import {
   GenerationHistoryProviderSink,
   GenerationHistoryStore,
   ManagedKnowledgeStore,
+  MockReleaseFeed,
   createComflyProviderService,
+  createRelayMeProviderService,
+  createProviderRegistry,
+  createMcpClientConfigManager,
+  createMcpStdioHealthCheck,
+  createMcpRendererBridge,
+  createMcpRuntimeService,
   createDesktopBridgeHandlers,
+  createCacheDirectoryService,
+  createNodeCacheDirectoryServiceAdapters,
   createElectronClipboardImageAdapter,
   createElectronClipboardVideoAdapter,
   createElectronNetComflyFetch,
   createElectronTrustedImageDecoder,
+  createNodeWindowsPhotoshopSmartObjectAdapter,
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
   createProviderBridgeHandlers,
   isHistoryNetworkPath,
+  migrateLegacyUserData,
   createPersistenceError,
   createSecureProviderCredentialStore,
   parseCloseChoiceRequest,
   NodeFileSystem,
   SnapshotScheduler,
+  UpdateClient,
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
+  registerMcpClientConfigIpc,
   registerProviderBridgeHandlers,
+  resolveLegacyUserDataRoots,
+  resolveStableUserDataRoot,
   startApprovedSnapshotOutboxDrain,
   startConfiguredKnowledgeRefresh,
   shutdownDesktopServices,
@@ -39,10 +54,22 @@ import {
   type BridgeDialogAdapter,
   type DesktopBridgeHandlers,
   type RendererCloseFlushCoordinator,
+  type McpClientConfigIpcRegistration,
+  type McpRendererBridge,
+  type McpRuntimeService,
   type SnapshotWorkerInput,
   type SnapshotWorkerOutput,
 } from '@agent-canvas/desktop-core';
 import { resolveRendererHtmlPath } from './renderer-path';
+import { resolveQaUserDataRoot, shouldShowQaWindow } from './qa-user-data-root';
+import { installBrokenPipeExceptionCapture, installBrokenPipeGuard } from './broken-pipe-guard';
+
+installBrokenPipeGuard([process.stdout, process.stderr]);
+installBrokenPipeExceptionCapture(process);
+
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-gpu');
+}
 
 const runtimeChannel = 'modern' as const;
 const currentDir = __dirname;
@@ -50,11 +77,31 @@ const appIconPath = app.isPackaged
   ? join(process.resourcesPath, 'icon.ico')
   : join(currentDir, '..', 'build', 'icon.ico');
 const rendererHtmlPath = resolveRendererHtmlPath(currentDir);
-const preloadPath = join(currentDir, 'preload.js');
-const safeModePreloadPath = join(currentDir, 'safe-preload.js');
+const preloadPath = join(currentDir, 'preload.cjs');
+const safeModePreloadPath = join(currentDir, 'safe-preload.cjs');
 const safeModeHtmlPath = join(currentDir, 'safe-mode.html');
 const snapshotWorkerEntryPath = join(currentDir, 'snapshot-worker-entry.cjs');
+const mcpBridgeEntryPath = app.isPackaged
+  ? join(process.resourcesPath, 'mcp', 'canvasforge-mcp.cjs')
+  : join(currentDir, 'mcp', 'canvasforge-mcp.cjs');
+const photoshopResourceRoot = app.isPackaged
+  ? join(process.resourcesPath, 'photoshop')
+  : join(currentDir, 'photoshop');
+const photoshopSmartObjectAdapter = createNodeWindowsPhotoshopSmartObjectAdapter({
+  platform: process.platform,
+  jsxResourcePath: join(photoshopResourceRoot, 'photoshop-place-smart-object.jsx'),
+  runnerResourcePath: join(photoshopResourceRoot, 'photoshop-windows-runner.js'),
+});
 const diagnosticsChannel = 'novus-desktop:safe-mode-failure';
+const discoveredUserDataRoot = app.getPath('userData');
+const discoveredAppDataRoot = app.getPath('appData');
+const qaUserDataRoot = resolveQaUserDataRoot(process.env);
+const stableUserDataRoot = qaUserDataRoot ?? resolveStableUserDataRoot(discoveredAppDataRoot);
+const legacyUserDataRoots = qaUserDataRoot === null
+  ? resolveLegacyUserDataRoots(discoveredAppDataRoot, discoveredUserDataRoot)
+  : [];
+if (qaUserDataRoot !== null) app.setPath('appData', qaUserDataRoot);
+app.setPath('userData', stableUserDataRoot);
 
 if (protocol !== undefined) {
   protocol.registerSchemesAsPrivileged([
@@ -64,6 +111,9 @@ if (protocol !== undefined) {
     },
     {
       scheme: 'novus-history',
+      privileges: { secure: true, standard: true },
+    },    {
+      scheme: 'novus-recent-project',
       privileges: { secure: true, standard: true },
     },
   ]);
@@ -81,6 +131,10 @@ let closeCoordinator: RendererCloseFlushCoordinator | null = null;
 let allowCoordinatedClose = false;
 let closeFinalizeTarget: 'window' | 'app' = 'window';
 let rendererLoaded = false;
+let updateClient: UpdateClient | null = null;
+let mcpRendererBridge: McpRendererBridge | null = null;
+let mcpRuntimeService: McpRuntimeService | null = null;
+let mcpClientConfigRegistration: McpClientConfigIpcRegistration | null = null;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -97,8 +151,34 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+  await migrateLegacyUserData({
+    stableRoot: stableUserDataRoot,
+    legacyRoots: legacyUserDataRoots,
+  });
   const fileSystem = new NodeFileSystem();
   const appDataRoot = app.getPath('userData');
+  const cacheDirectoryService = createCacheDirectoryService(createNodeCacheDirectoryServiceAdapters({
+    defaultCacheRoot: join(appDataRoot, 'regenerable-cache'),
+    stateFilePath: join(appDataRoot, 'settings', 'cache-directory.json'),
+    async chooseDirectory() {
+      const result = await dialog.showOpenDialog({
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    },
+    async openDirectory(path) {
+      return (await shell.openPath(path)) === '';
+    },
+  }));
+  updateClient = new UpdateClient({
+    currentVersion: app.getVersion(),
+    feed: new MockReleaseFeed({
+      channel: 'stable',
+      version: process.env.NOVUS_MOCK_UPDATE_VERSION ?? app.getVersion(),
+      notes: process.env.NOVUS_MOCK_UPDATE_NOTES ?? 'Mock update feed is active for local verification only.',
+      signatureStatus: 'verified',
+    }),
+  });
   const generationHistoryStore = new GenerationHistoryStore({
     historyRoot: join(appDataRoot, 'generation-history'),
     ownedRoot: appDataRoot,
@@ -144,8 +224,15 @@ app.whenReady().then(async () => {
   };
   desktopHandlers = createDesktopBridgeHandlers({
     appDataRoot: app.getPath('userData'),
+    captureProjectPreview: async () => {
+      const window = mainWindow;
+      if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return null;
+      const captured = await window.webContents.capturePage();
+      if (captured.isEmpty()) return null;
+      return captured.resize({ width: 640, quality: 'good' }).toPNG();
+    },
     channel: runtimeChannel,
-      clipboard: createElectronClipboardImageAdapter(clipboard),
+      clipboard: createElectronClipboardImageAdapter(clipboard, { createFromPath: (path) => nativeImage.createFromPath(path) }),
       clipboardVideo: createElectronClipboardVideoAdapter(clipboard),
     dialogs: createDialogAdapter(),
     approvedSnapshotOutbox,
@@ -156,6 +243,7 @@ app.whenReady().then(async () => {
     knowledgeSyncStatusProvider: approvedSnapshotPullCoordinator,
     historyIsNetworkPath: isHistoryNetworkPath,
     historyStore: generationHistoryStore,
+    photoshopSmartObjectAdapter,
     snapshotScheduler,
   });
   registerProjectImageProtocol(desktopHandlers);
@@ -163,10 +251,24 @@ app.whenReady().then(async () => {
     canRequestRendererFlush: canRequestRendererCloseFlush,
     closeAllProjects: runCoordinatedShutdown,
     finalizeClose: finalizeCoordinatedClose,
+    onCloseBlocked: showCloseRecoveryChoice,
     sendCloseFlushRequest: sendRendererCloseFlushRequest,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
-  ipcMain.handle(BRIDGE_CHANNELS.closeChoice, async (event, payload) => {
+  ipcMain.handle(BRIDGE_CHANNELS.storage.getCacheDirectory, () => cacheDirectoryService.getCacheDirectory());
+  ipcMain.handle(BRIDGE_CHANNELS.storage.chooseCacheDirectory, () => cacheDirectoryService.chooseCacheDirectory());
+  ipcMain.handle(BRIDGE_CHANNELS.storage.resetCacheDirectory, () => cacheDirectoryService.resetCacheDirectory());
+  ipcMain.handle(BRIDGE_CHANNELS.storage.openCacheDirectory, () => cacheDirectoryService.openCacheDirectory());
+  ipcMain.handle(BRIDGE_CHANNELS.updates.getState, () => updateClient?.getState() ?? { status: 'idle' });
+  ipcMain.handle(BRIDGE_CHANNELS.updates.check, () => updateClient!.check());
+  ipcMain.handle(BRIDGE_CHANNELS.updates.download, () => updateClient!.download());
+  ipcMain.handle(BRIDGE_CHANNELS.updates.defer, () => updateClient!.defer());
+  ipcMain.handle(BRIDGE_CHANNELS.updates.retry, () => updateClient!.retry());
+  ipcMain.handle(BRIDGE_CHANNELS.updates.restart, () => updateClient!.restart());
+  ipcMain.handle(BRIDGE_CHANNELS.closeRequest, async (event) => {
+    if (mainWindow === null || event.sender !== mainWindow.webContents || closeCoordinator === null) return;
+    await closeCoordinator.requestClose();
+  });  ipcMain.handle(BRIDGE_CHANNELS.closeChoice, async (event, payload) => {
     if (mainWindow === null || event.sender !== mainWindow.webContents) return 'cancel';
     const request = parseCloseChoiceRequest(payload);
     if (request === null || !request.dirty || !request.untitled) return 'cancel';
@@ -182,20 +284,46 @@ app.whenReady().then(async () => {
     });
     return result.response === 0 ? 'save' : result.response === 1 ? 'discard' : 'cancel';
   });
-  registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createComflyProviderService({
-    appDataRoot: app.getPath('userData'),
-    credentialStore: createSecureProviderCredentialStore({
+  const providerFetch = createElectronNetComflyFetch(net);
+  const generationHistorySink = new GenerationHistoryProviderSink({
+    store: generationHistoryStore,
+    trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
+  });
+  registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createProviderRegistry({
+    comfly: createComflyProviderService({
       appDataRoot: app.getPath('userData'),
-      safeStorage,
+      credentialStore: createSecureProviderCredentialStore({
+        appDataRoot: app.getPath('userData'),
+        provider: 'comfly',
+        safeStorage,
+      }),
+      fetch: providerFetch,
+      discoverModelCatalog: true,
+      historySink: generationHistorySink,
+      resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
+        .map((entry) => entry.address),
+      readManagedReverseMedia: desktopHandlers.readManagedReverseMedia,
+      readManagedGenerationImages: desktopHandlers.readManagedSkillChatImages,
+      readManagedSkillChatImages: desktopHandlers.readManagedSkillChatImages,
+      storeGeneratedImage: desktopHandlers.storeGeneratedImage,
+      storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
     }),
-    fetch: createElectronNetComflyFetch(net),
-    historySink: new GenerationHistoryProviderSink({
-      store: generationHistoryStore,
-      trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
+    relayme: createRelayMeProviderService({
+      appDataRoot: app.getPath('userData'),
+      credentialStore: createSecureProviderCredentialStore({
+        appDataRoot: app.getPath('userData'),
+        provider: 'relayme',
+        safeStorage,
+      }),
+      fetch: providerFetch,
+      historySink: generationHistorySink,
+      resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
+        .map((entry) => entry.address),
+      readManagedReverseMedia: desktopHandlers.readManagedReverseMedia,
+      storeGeneratedImage: desktopHandlers.storeGeneratedImage,
+      storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
     }),
-    resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
-      .map((entry) => entry.address),
-  })));
+  })), { getTrustedSender: () => mainWindow?.webContents ?? null });
   ipcMain.on(diagnosticsChannel, (_event, message) => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
   });
@@ -203,7 +331,6 @@ app.whenReady().then(async () => {
     if (mainWindow === null || event.sender !== mainWindow.webContents) return;
     void closeCoordinator?.handleCloseFlushAck(payload);
   });
-
   const knowledgeBaseIds = await startConfiguredKnowledgeRefresh(knowledgeStore, knowledgeRefreshService);
   await approvedSnapshotPullCoordinator.start(knowledgeBaseIds);
   approvedSnapshotDrainHandle = startApprovedSnapshotOutboxDrain({
@@ -213,6 +340,7 @@ app.whenReady().then(async () => {
   });
   await approvedSnapshotDrainHandle.drainNow();
   await createMainWindow();
+  await startMcpRuntime();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -236,6 +364,85 @@ app.on('before-quit', (event) => {
   requestCoordinatedClose(event, 'app');
 });
 
+async function startMcpRuntime(): Promise<void> {
+  if (mcpRuntimeService !== null || mcpRendererBridge !== null) return;
+  let service: McpRuntimeService | null = null;
+  const rendererBridge = createMcpRendererBridge({
+    ipcMain,
+    getRenderer: () => {
+      const window = mainWindow;
+      if (
+        window === null
+        || !rendererLoaded
+        || safeModeLoaded
+        || window.isDestroyed()
+        || window.webContents.isCrashed()
+        || window.webContents.isDestroyed()
+      ) return null;
+      return {
+        sender: window.webContents,
+        isDestroyed: () => window.webContents.isDestroyed(),
+        send: (channel, payload) => window.webContents.send(channel, payload),
+      };
+    },
+    getStatus: () => service?.getStatus() ?? {
+      state: 'stopped',
+      rendererConnected: false,
+      serverVersion: app.getVersion(),
+      toolCount: 14,
+      lastError: null,
+    },
+  });
+  service = createMcpRuntimeService({
+    runtimeFilePath: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-v1.json'),
+    serverVersion: app.getVersion(),
+    forwardRequest: rendererBridge.forwardRequest,
+  });
+  mcpRendererBridge = rendererBridge;
+  mcpRuntimeService = service;
+  try {
+    await service.start();
+    const mcpLaunchSpec = {
+      command: process.execPath,
+      args: [mcpBridgeEntryPath],
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+    } as const;
+    const manager = createMcpClientConfigManager({
+      clientPaths: {
+        codex: process.env.CANVASFORGE_CODEX_CONFIG_PATH ?? join(app.getPath('home'), '.codex', 'config.toml'),
+        workbuddy: process.env.CANVASFORGE_WORKBUDDY_CONFIG_PATH ?? join(app.getPath('home'), '.workbuddy', 'mcp.json'),
+      },
+      ...mcpLaunchSpec,
+      healthCheck: createMcpStdioHealthCheck(mcpLaunchSpec),
+    });
+    mcpClientConfigRegistration = registerMcpClientConfigIpc({
+      ipcMain,
+      manager,
+      getTrustedSender: () => {
+        const window = mainWindow;
+        return window !== null && rendererLoaded && !safeModeLoaded && !window.isDestroyed()
+          ? window.webContents
+          : null;
+      },
+    });
+  } catch (error) {
+    rendererBridge.dispose();
+    mcpRendererBridge = null;
+    mcpRuntimeService = null;
+    throw error;
+  }
+}
+
+async function stopMcpRuntime(): Promise<void> {
+  mcpClientConfigRegistration?.dispose();
+  mcpClientConfigRegistration = null;
+  const rendererBridge = mcpRendererBridge;
+  const runtimeService = mcpRuntimeService;
+  mcpRendererBridge = null;
+  mcpRuntimeService = null;
+  rendererBridge?.dispose();
+  await runtimeService?.stop();
+}
 async function createMainWindow(): Promise<void> {
   const window = createDesktopWindow(preloadPath);
   mainWindow = window;
@@ -298,10 +505,30 @@ function sendRendererCloseFlushRequest(request: { readonly requestId: string }):
   return true;
 }
 
+async function showCloseRecoveryChoice(reason: 'failed' | 'timeout' | 'unavailable'): Promise<'cancel' | 'discard'> {
+  const window = mainWindow;
+  if (window === null || window.isDestroyed()) return 'cancel';
+  const detail = reason === 'timeout'
+    ? '保存没有在预期时间内完成。你可以返回画布继续编辑，或明确放弃未保存的更改后关闭。'
+    : '项目未能安全保存。你可以返回画布继续编辑，或明确放弃未保存的更改后关闭。';
+  const result = await dialog.showMessageBox(window, {
+    buttons: ['继续编辑', '放弃更改并关闭'],
+    cancelId: 0,
+    defaultId: 0,
+    detail,
+    message: '无法完成关闭前保存',
+    noLink: true,
+    title: '关闭需要确认',
+    type: 'warning',
+  });
+  return result.response === 1 ? 'discard' : 'cancel';
+}
+
 async function runCoordinatedShutdown(): Promise<void> {
   if (desktopHandlers === null || closeAllStarted) return;
   closeAllStarted = true;
   const handlers = desktopHandlers;
+  await stopMcpRuntime();
   await shutdownDesktopServices({
     closeAllProjects: () => handlers.closeAllProjects(),
     stopApprovedSnapshotDrain: () => approvedSnapshotDrainHandle?.stop() ?? Promise.resolve(),
@@ -339,18 +566,19 @@ function createDesktopWindow(preload: string): BrowserWindow {
     minWidth: 1100,
     minHeight: 720,
     show: false,
+    autoHideMenuBar: true,
     icon: appIconPath,
     backgroundColor: '#0a0d14',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload,
-      sandbox: true,
+      sandbox: process.platform !== 'win32',
     },
   });
 
   window.once('ready-to-show', () => {
-    window.show();
+    if (shouldShowQaWindow(process.env)) window.show();
   });
 
   window.webContents.on('will-navigate', (event, url) => {
@@ -392,6 +620,7 @@ async function loadSafeMode(reason: string): Promise<void> {
 }
 
 async function handleStartupFailure(error: unknown): Promise<void> {
+  await stopMcpRuntime();
   const message = `Desktop startup failed: ${redactNovusPackDiagnostics(
     error instanceof Error ? error.stack ?? error.message : String(error),
   )}`;
@@ -450,6 +679,14 @@ async function handleSafeModeCommand(command: string): Promise<void> {
 
 function createDialogAdapter(): BridgeDialogAdapter {
   return {
+    async chooseCreateProjectRoot(project) {
+      const safeName = project.name.trim().replace(/[<>:"/\\|?*\u0000-\u001f]+/gu, ' ').replace(/\s+/gu, ' ').trim() || '未命名画布';
+      const result = await dialog.showSaveDialog({
+        defaultPath: join(app.getPath('documents'), `${safeName}.novus-project`),
+        title: '保存画布项目',
+      });
+      return result.canceled || !result.filePath ? null : result.filePath;
+    },
     async chooseHistoryExportDirectory(files) {
       const result = await dialog.showOpenDialog({
         defaultPath: app.getPath('documents'),
@@ -522,6 +759,10 @@ function registerProjectImageProtocol(handlers: DesktopBridgeHandlers): void {
   });
   protocol.registerFileProtocol('novus-history', (request, callback) => {
     void handlers.resolveGenerationHistoryImagePath(request.url)
+      .then((path) => callback(path === null ? { error: -6 } : { path }))
+      .catch(() => callback({ error: -6 }));
+  });  protocol.registerFileProtocol('novus-recent-project', (request, callback) => {
+    void handlers.resolveRecentProjectPreviewPath(request.url)
       .then((path) => callback(path === null ? { error: -6 } : { path }))
       .catch(() => callback({ error: -6 }));
   });

@@ -1,15 +1,26 @@
-appId: com.novus.atelier.modern
-productName: Novus Atelier
+appId: com.canvasatelier.desktop
+productName: Canvas Atelier
 directories:
   output: dist-builder/desktop-modern
   buildResources: build
 files:
   - dist/**
+  - "!node_modules/**"
 extraResources:
   - from: ../renderer/dist
     to: renderer/dist
   - from: build/icon.ico
     to: icon.ico
+  - from: dist/mcp
+    to: mcp
 win:
   icon: icon.ico
-artifactName: AgentCanvas-Win10-11-x64-${version}.exe
+  signAndEditExecutable: false
+artifactName: CanvasAtelier-Win10-11-x64-${version}.exe
+nsis:
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Canvas Atelier
+  include: build/installer.nsh

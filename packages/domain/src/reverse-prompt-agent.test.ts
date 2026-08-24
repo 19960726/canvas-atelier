@@ -348,6 +348,37 @@ describe('reverse prompt runs', () => {
       positivePrompt: 'Premium product hero shot with centered framing and a left-front key light.',
       negativeConstraints: ['Do not alter the logo', 'Do not deform the product'],
       executionChecklist: ['Verify product identity', 'Verify safe area'],
+      mediaResponsibilities: [{
+        mention: '@图片1',
+        sourceId: 'asset-product',
+        label: '场景参考',
+        role: 'composition',
+        priority: 'primary' as const,
+        inheritance: ['镜头角度与空间结构'],
+        conflicts: [],
+        usableElements: ['前中后景层次'],
+      }, {
+        mention: '@图片2',
+        sourceId: 'asset-scene',
+        label: '场景参考',
+        role: 'composition',
+        priority: 'secondary' as const,
+        inheritance: ['空间层次'],
+        conflicts: [],
+        usableElements: ['背景结构'],
+      }],
+      sceneDecomposition: {
+        spatialStructure: '前景道具、中景产品、背景陈设形成三层空间。',
+        spatialDepth: '中长焦压缩透视，依靠前后景虚化和遮挡建立纵深。',
+        objects: [{
+          name: '产品',
+          role: '视觉主体',
+          placement: '画面中部',
+          scaleAndProportion: '约占画面宽度三分之一',
+          depthLayer: 'midground' as const,
+          occlusionAndZOrder: '位于前景道具之后、背景陈设之前',
+        }],
+      },
       positivePromptZh: '白底产品主视觉，左前方柔和主光。',
       positivePromptEn: 'White-background product hero with a soft front-left key light.',
       effects: [{
@@ -366,6 +397,53 @@ describe('reverse prompt runs', () => {
     expect(parseReversePromptResult(result, run)).toEqual(result);
     expect(() => parseReversePromptResult({ ...result, knowledgeSnapshotVersion: '' }, run)).toThrow(ZodError);
     expect(() => parseReversePromptResult({ ...result, knowledgeSnapshotVersion: 'stale-version' }, run)).toThrowError(Error);
+  });
+
+  it('requires one media responsibility entry for every ordered image or video', () => {
+    const knowledgeLease = createKnowledgeLease('run-1');
+    const video = orderedVideo(2);
+    const videoInput = { ...managedVideoInput, assetId: video.assetId, sha256: video.sha256 };
+    const run = createReversePromptRun({
+      projectId: 'project-1',
+      skill: { id: 'scene-skill', version: 'v2' },
+      agentConfig,
+      knowledgeLease,
+      approvedMemorySnapshot: snapshot,
+      references,
+      videoInput,
+      orderedMedia: [
+        { ...orderedImage(0), assetId: 'asset-product', label: 'Product' },
+        { ...orderedImage(1), assetId: 'asset-scene', label: 'Scene' },
+        { ...video, label: managedVideoInput.label },
+      ],
+    }, deps(['session-1'], ['nonce-1']));
+    const baseResult = {
+      sessionId: run.sessionId,
+      nonce: run.nonce,
+      knowledgeSnapshotVersion: knowledgeLease.versionKey,
+      analysis: '逐张分析素材职责。',
+      keywords: ['multi-reference'],
+      positivePrompt: '多素材产品主视觉。',
+      negativeConstraints: ['不要遗漏引用素材'],
+      executionChecklist: ['核对素材职责表'],
+    };
+    const incomplete = {
+      ...baseResult,
+      mediaResponsibilities: [{
+        mention: '@图片1', sourceId: 'asset-product', role: 'scene_composition', priority: 'primary' as const,
+        inheritance: ['空间结构'], conflicts: [], usableElements: ['前中后景'],
+      }],
+    };
+    expect(() => parseReversePromptResult(incomplete, run)).toThrowError(/@图片2.*@视频1/u);
+    const complete = {
+      ...incomplete,
+      mediaResponsibilities: [
+        incomplete.mediaResponsibilities[0],
+        { mention: '@图片2', sourceId: 'asset-scene', role: 'material_texture', priority: 'secondary' as const, inheritance: ['材质'], conflicts: [], usableElements: ['纹理'] },
+        { mention: '@视频1', sourceId: video.assetId, role: 'camera_motion', priority: 'supporting' as const, inheritance: ['运镜'], conflicts: [], usableElements: ['镜头运动'] },
+      ],
+    };
+    expect(parseReversePromptResult(complete, run)).toEqual(complete);
   });
 
   it('rejects a lease that does not pin the node-selected two knowledge bases', () => {

@@ -12,7 +12,9 @@
   "dependencies": {
     "@agent-canvas/domain": "file:../domain",
     "@agent-canvas/provider-comfly": "file:../provider-comfly",
+    "@agent-canvas/provider-relayme": "file:../provider-relayme",
     "@agent-canvas/skill-store": "file:../skill-store",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "archiver": "7.0.1",
     "yauzl": "3.2.0",
     "zod": "^3.25.76"

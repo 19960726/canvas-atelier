@@ -1,6 +1,6 @@
 import { gzip } from 'node:zlib';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 
@@ -32,6 +32,55 @@ describe('RecoveryScanner', () => {
     await Promise.all(
       tempRoots.splice(0).map((tempRoot) => rm(tempRoot, { force: true, recursive: true })),
     );
+  });
+
+  it('discovers the highest valid orphan recovery mirror without recreating its managed root', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'novus-orphan-recovery-'));
+    tempRoots.push(appDataRoot);
+    const projectId = 'orphan-recovery-project';
+    const olderProject = makeProject(projectId);
+    const newerProject = {
+      ...olderProject,
+      name: 'Recovered orphan project',
+      nodes: [makePromptNode('orphan-prompt')],
+    };
+    const sessionRoot = join(appDataRoot, 'recovery', 'project-orphan', 'session-latest');
+    await mkdir(sessionRoot, { recursive: true });
+    await writeFile(join(sessionRoot, 'candidate-2.json'), JSON.stringify({
+      createdAt: '2026-08-20T08:00:00.000Z',
+      project: olderProject,
+      projectId,
+      revision: 2,
+      snapshotId: 'snapshot-2',
+    }));
+    await writeFile(join(sessionRoot, 'candidate-5.json'), JSON.stringify({
+      createdAt: '2026-08-20T09:00:00.000Z',
+      project: newerProject,
+      projectId,
+      revision: 5,
+      snapshotId: 'snapshot-5',
+    }));
+    const olderHighRevisionProject = makeProject('older-high-revision-project');
+    const olderSessionRoot = join(appDataRoot, 'recovery', 'project-older', 'session-older');
+    await mkdir(olderSessionRoot, { recursive: true });
+    await writeFile(join(olderSessionRoot, 'candidate-71.json'), JSON.stringify({
+      createdAt: '2026-08-20T07:00:00.000Z',
+      project: olderHighRevisionProject,
+      projectId: olderHighRevisionProject.id,
+      revision: 71,
+      snapshotId: 'snapshot-71',
+    }));
+
+    const result = await new RecoveryScanner({ appDataRoot }).discoverLatestOrphanCandidate();
+
+    expect(result).toMatchObject({
+      project: { id: projectId, name: 'Recovered orphan project' },
+      projectId,
+      revision: 5,
+      snapshotId: 'snapshot-5',
+      tailStatus: 'complete',
+    });
+    await expect(stat(join(appDataRoot, 'projects', `${projectId}.novus-project`))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('auto-recovers one valid chain with a partial final line and mirrors the candidate to appData', async () => {

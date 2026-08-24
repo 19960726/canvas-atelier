@@ -108,6 +108,64 @@ describe('project image store actions', () => {
     });
   });
 
+  it('adds an Agent video reference without creating a canvas node', async () => {
+    const project = imageProject([]);
+    const importedProject = imageProject([], [videoAsset]);
+    const importAgentReferenceVideo = vi.fn(async () => ({ asset: { ...videoSummary, usageCount: 0 }, project: importedProject, revision: 5 }));
+    replaceProjectPersistenceClientForTests(persistenceClient({ importAgentReferenceVideo }));
+    useAppStore.setState({ project, desktopRevision: 4, persistenceMode: 'desktop', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().importAgentReferenceVideo(
+      new File([new Uint8Array([0])], 'reference.mp4', { type: 'video/mp4' }),
+    )).resolves.toMatchObject({ assetId: videoAsset.assetId, usageCount: 0 });
+
+    expect(importAgentReferenceVideo).toHaveBeenCalledWith(expect.objectContaining({ name: 'reference.mp4' }));
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 5,
+      project: importedProject,
+      projectVideos: [{ ...videoSummary, usageCount: 0 }],
+      saveStatus: 'saved',
+    });
+  });
+  it('adds an externally dropped managed MP4 to the video catalog and creates no image summary', async () => {
+    const project = imageProject([]);
+    const node = createCanvasModuleNode('dropped-video', 'video_input', { x: 96, y: -48 });
+    node.data.config = { assetId: videoAsset.assetId };
+    const importedProject = imageProject([node], [videoAsset]);
+    const importDroppedMedia = vi.fn(async () => ({ asset: videoSummary, project: importedProject, revision: 5 }));
+    replaceProjectPersistenceClientForTests(persistenceClient({ importDroppedMedia }));
+    useAppStore.setState({ project, desktopRevision: 4, persistenceMode: 'desktop', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().importDroppedMedia(
+      new File(['managed MP4'], 'drop.mp4', { type: 'video/mp4' }),
+      { x: 96, y: -48 },
+    )).resolves.toBe(true);
+
+    expect(importDroppedMedia).toHaveBeenCalledWith(expect.objectContaining({ position: { x: 96, y: -48 } }));
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 5,
+      project: importedProject,
+      projectImages: [],
+      projectVideos: [videoSummary],
+      saveStatus: 'saved',
+    });
+  });
+
+  it('forwards a cross-context dropped file object to the confined desktop importer', async () => {
+    const project = imageProject([]);
+    const imageNode = createCanvasModuleNode('cross-context-image', 'image_input', { x: 24, y: 48 });
+    imageNode.data.config = { assetId: assetRecord.assetId };
+    const importedProject = imageProject([imageNode], [assetRecord]);
+    const importDroppedMedia = vi.fn(async () => ({ asset: assetSummary, project: importedProject, revision: 6 }));
+    replaceProjectPersistenceClientForTests(persistenceClient({ importDroppedMedia }));
+    useAppStore.setState({ project, desktopRevision: 5, persistenceMode: 'desktop', saveStatus: 'saved' });
+    const proxiedFile = { name: 'drop.png', size: 12, type: 'image/png' } as unknown as File;
+
+    await expect(useAppStore.getState().importDroppedMedia(proxiedFile, { x: 24, y: 48 })).resolves.toBe(true);
+
+    expect(importDroppedMedia).toHaveBeenCalledWith(expect.objectContaining({ file: proxiedFile, position: { x: 24, y: 48 } }));
+  });
+
   it('pastes clipboard video before image fallback and applies one durable result', async () => {
     const project = imageProject([]);
     const node = createCanvasModuleNode('clipboard-video', 'video_input', { x: 80, y: 120 });
@@ -148,6 +206,25 @@ describe('project image store actions', () => {
     expect(pasteClipboardVideo).toHaveBeenCalledOnce();
     expect(pasteClipboardImage).toHaveBeenCalledOnce();
     expect(useAppStore.getState().projectImages).toEqual([assetSummary]);
+  });
+
+  it('reports a controlled error when the desktop clipboard has no importable media', async () => {
+    replaceProjectPersistenceClientForTests(persistenceClient({
+      pasteClipboardImage: vi.fn(async () => null),
+      pasteClipboardVideo: vi.fn(async () => null),
+    }));
+    useAppStore.setState({
+      project: imageProject([]),
+      desktopRevision: 1,
+      persistenceMode: 'desktop',
+      projectImageError: null,
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().pasteClipboardMedia({ x: 12, y: 34 })).resolves.toBe(false);
+
+    expect(useAppStore.getState().projectImageError).toBe('CLIPBOARD_MEDIA_UNAVAILABLE');
+    expect(useAppStore.getState().projectImageImportingNodeId).toBeNull();
   });
 
   it('persists clipboard media operation identities before the first desktop request', async () => {

@@ -90,6 +90,38 @@ describe('canConnectCanvasPorts', () => {
     expect(canConnectCanvasPorts(image, 'image', reverse, 'references')).toEqual({ ok: true });
   });
 
+  it('accepts image and video at the Reverse Agent primary media socket', () => {
+    const image = createCanvasModuleNode('image', 'image_input', { x: 0, y: 0 });
+    const video = createCanvasModuleNode('video', 'video_input', { x: 0, y: 0 });
+    const reverse = createCanvasModuleNode('reverse', 'reverse_agent', { x: 320, y: 0 });
+
+    expect(canConnectCanvasPorts(image, 'image', reverse, 'references')).toEqual({ ok: true });
+    expect(canConnectCanvasPorts(video, 'video', reverse, 'references')).toEqual({ ok: true });
+  });
+
+  it('accepts both managed image and video inputs at the one visible video-generation media port', () => {
+    const image = createCanvasModuleNode('image', 'image_input', { x: 0, y: 0 });
+    const video = createCanvasModuleNode('video', 'video_input', { x: 0, y: 0 });
+    const generation = createCanvasModuleNode('generation', 'video_generation', { x: 320, y: 0 });
+
+    expect(canConnectCanvasPorts(image, 'image', generation, 'media')).toEqual({ ok: true });
+    expect(canConnectCanvasPorts(video, 'video', generation, 'media')).toEqual({ ok: true });
+  });
+
+  it('accepts a generated video in the dedicated video result node', () => {
+    const generation = createCanvasModuleNode('generation', 'video_generation', { x: 0, y: 0 });
+    const result = createCanvasModuleNode('result', 'video_result', { x: 320, y: 0 });
+
+    expect(canConnectCanvasPorts(generation, 'result', result, 'video')).toEqual({ ok: true });
+  });
+
+  it('accepts reverse analysis in the dedicated reverse result node', () => {
+    const reverse = createCanvasModuleNode('reverse', 'reverse_agent', { x: 0, y: 0 });
+    const result = createCanvasModuleNode('result', 'reverse_result', { x: 320, y: 0 });
+
+    expect(canConnectCanvasPorts(reverse, 'analysis', result, 'analysis')).toEqual({ ok: true });
+  });
+
   it('returns typed failures for missing ports and reversed direction', () => {
     const prompt = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });
     const generator = createCanvasModuleNode('generator', 'image_generation', { x: 320, y: 0 });
@@ -309,6 +341,24 @@ describe('validateCanvasModuleExecutionReadiness', () => {
 });
 
 describe('reorderCanvasInputEdges', () => {
+  it('moves the twentieth connected media slot directly to the first position', () => {
+    const edges = Array.from({ length: 20 }, (_, index) => moduleEdge(
+      `edge-${index + 1}`,
+      `image-${index + 1}`,
+      'image',
+      'generator',
+      'references',
+      index,
+    ));
+    const requestedOrder = ['edge-20', ...edges.slice(0, 19).map((edge) => edge.id)];
+
+    const result = reorderCanvasInputEdges(edges, 'generator', 'references', requestedOrder);
+
+    expect([...result]
+      .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+      .map((edge) => edge.id)).toEqual(requestedOrder);
+  });
+
   it('reorders a many-input list without changing unrelated edges', () => {
     const edges = [
       moduleEdge('a', 'image-a', 'image', 'reverse', 'references', 0),

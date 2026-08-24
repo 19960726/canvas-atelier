@@ -10,8 +10,8 @@ import {
 
 import { GenerationHistoryStore } from './generation-history-store.js';
 
-const HISTORY_PROMPT_SUMMARY = 'Image generation request';
-const HISTORY_CAPABILITY_REVISION = 'image-generation-v1';
+const HISTORY_PROMPT_SUMMARIES = { image: 'Image generation request', video: 'Video generation request' } as const;
+const HISTORY_CAPABILITY_REVISIONS = { image: 'image-generation-v1', video: 'video-generation-v1' } as const;
 const MAX_PROVIDER_HISTORY_ASSET_BYTES = 64 * 1024 * 1024;
 const MAX_DECODED_IMAGE_BYTES = 256 * 1024 * 1024;
 
@@ -35,19 +35,28 @@ export interface GenerationHistorySubmissionReservation {
 export interface GenerationHistoryProviderSinkContract {
   reserveSubmission(input: {
     readonly jobId: string;
+    readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
+    readonly provider?: 'comfly' | 'relayme';
   }): Promise<GenerationHistorySubmissionReservation>;
   queued(input: {
     readonly jobId: string;
+    readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
+    readonly provider?: 'comfly' | 'relayme';
   }): Promise<string>;
   running(historyId: string): Promise<void>;
   getTerminal(historyId: string): Promise<GenerationHistoryDurableTerminal | null>;
   failed(historyId: string, code: GenerationHistoryFailureCode): Promise<GenerationHistoryDurableTerminal>;
   cancelled(historyId: string, code?: 'cancelled_by_user' | 'cancelled_by_system'): Promise<GenerationHistoryDurableTerminal>;
-  succeeded(historyId: string, bytes: Uint8Array): Promise<GenerationHistoryDurableTerminal>;
+  succeeded(historyId: string, bytes: Uint8Array, metadata?: GenerationHistoryVideoMetadata): Promise<GenerationHistoryDurableTerminal>;
 }
 
+export interface GenerationHistoryVideoMetadata {
+  readonly durationSeconds?: number;
+  readonly height?: number;
+  readonly width?: number;
+}
 export interface ElectronNativeImageLike {
   createFromBuffer(buffer: Buffer): {
     readonly isEmpty: () => boolean;
@@ -77,12 +86,17 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
 
   async reserveSubmission(input: {
     readonly jobId: string;
+    readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
+    readonly provider?: 'comfly' | 'relayme';
   }): Promise<GenerationHistorySubmissionReservation> {
     const identities = deriveHistoryIdentities(input.jobId);
     const timestamp = this.nowIso();
+    const kind = input.kind ?? 'image';
+    const provider = input.provider ?? 'comfly';
     const record = parseGenerationHistoryRecord({
       schemaVersion: GENERATION_HISTORY_SCHEMA_VERSION,
+      kind,
       id: identities.historyId,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -91,11 +105,11 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
       job: { jobId: identities.jobId },
       status: 'queued',
       provider: {
-        displayName: 'Comfly',
+        displayName: provider === 'relayme' ? 'RelayMe' : 'Comfly',
         modelDisplayName: input.modelDisplayName,
-        capabilityRevision: HISTORY_CAPABILITY_REVISION,
+        capabilityRevision: HISTORY_CAPABILITY_REVISIONS[kind],
       },
-      promptSummary: HISTORY_PROMPT_SUMMARY,
+      promptSummary: HISTORY_PROMPT_SUMMARIES[kind],
       parameters: {},
       output: null,
       favorite: false,
@@ -119,7 +133,9 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
 
   async queued(input: {
     readonly jobId: string;
+    readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
+    readonly provider?: 'comfly' | 'relayme';
   }): Promise<string> {
     return (await this.reserveSubmission(input)).historyId;
   }
@@ -191,7 +207,11 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
     return terminalFromRecord(stored) ?? { status: 'cancelled' };
   }
 
-  async succeeded(historyId: string, rawBytes: Uint8Array): Promise<GenerationHistoryDurableTerminal> {
+  async succeeded(
+    historyId: string,
+    rawBytes: Uint8Array,
+    metadata: GenerationHistoryVideoMetadata = {},
+  ): Promise<GenerationHistoryDurableTerminal> {
     const existing = await this.requireRecord(historyId);
     const prior = terminalFromRecord(existing);
     if (prior !== null) return prior;
@@ -199,12 +219,11 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
     if (bytes.byteLength === 0 || bytes.byteLength > MAX_PROVIDER_HISTORY_ASSET_BYTES) {
       throw new Error('Generated result was invalid');
     }
-    const image = inspectImage(bytes);
-    if (!await this.trustedImageDecoder(bytes, image)) {
-      throw new Error('Generated result was invalid');
-    }
     const timestamp = this.nowIso();
     const identityHash = historyId.replace(/^history_/u, '');
+    const output = existing.kind === 'video'
+      ? inspectVideoOutput(bytes, metadata)
+      : await this.inspectImageOutput(bytes);
     const record = parseGenerationHistoryRecord({
       ...existing,
       updatedAt: timestamp,
@@ -215,10 +234,7 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
       },
       status: 'succeeded',
       output: {
-        width: image.width,
-        height: image.height,
-        format: image.format,
-        mediaType: image.mediaType,
+        ...output,
         byteSize: bytes.byteLength,
         availability: 'available',
         historyAssetId: `historyasset_${identityHash}`,
@@ -231,9 +247,16 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
       record,
       source: Readable.from([bytes]),
     });
-    return terminalFromRecord(stored) ?? { status: 'succeeded', width: image.width, height: image.height };
+    return terminalFromRecord(stored) ?? { status: 'succeeded', width: output.width, height: output.height };
   }
 
+  private async inspectImageOutput(bytes: Buffer): Promise<InspectedImage> {
+    const image = inspectImage(bytes);
+    if (!await this.trustedImageDecoder(bytes, image)) {
+      throw new Error('Generated result was invalid');
+    }
+    return image;
+  }
   private async getRecord(historyId: string): Promise<GenerationHistoryRecord | undefined> {
     try {
       return (await this.store.getRecords([historyId]))[0];
@@ -326,6 +349,46 @@ interface InspectedImage {
   readonly height: number;
 }
 
+function inspectVideoOutput(bytes: Buffer, metadata: GenerationHistoryVideoMetadata): {
+  readonly durationSeconds: number;
+  readonly format: 'mp4';
+  readonly height: number;
+  readonly mediaType: 'video/mp4';
+  readonly width: number;
+} {
+  inspectMp4(bytes);
+  const width = parsePositiveVideoNumber(metadata.width, 32_768);
+  const height = parsePositiveVideoNumber(metadata.height, 32_768);
+  const durationSeconds = parsePositiveVideoNumber(metadata.durationSeconds, 86_400);
+  return { durationSeconds, format: 'mp4', height, mediaType: 'video/mp4', width };
+}
+
+function parsePositiveVideoNumber(value: number | undefined, maximum: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > maximum) {
+    throw new Error('Generated result was invalid');
+  }
+  return value;
+}
+
+function inspectMp4(bytes: Buffer): void {
+  let offset = 0;
+  let firstType: string | null = null;
+  let hasMoov = false;
+  let hasMdat = false;
+  while (offset < bytes.byteLength) {
+    if (offset + 8 > bytes.byteLength) throw new Error('Generated result was invalid');
+    const size = bytes.readUInt32BE(offset);
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    if (size < 8 || offset + size > bytes.byteLength) throw new Error('Generated result was invalid');
+    if (firstType === null) firstType = type;
+    if (type === 'moov' && size > 8) hasMoov = true;
+    if (type === 'mdat' && size > 8) hasMdat = true;
+    offset += size;
+  }
+  if (offset !== bytes.byteLength || firstType !== 'ftyp' || !hasMoov || !hasMdat) {
+    throw new Error('Generated result was invalid');
+  }
+}
 function inspectImage(bytes: Buffer): InspectedImage {
   const image = inspectPng(bytes) ?? inspectGif(bytes) ?? inspectJpeg(bytes) ?? inspectWebp(bytes);
   if (

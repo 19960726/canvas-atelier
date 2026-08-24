@@ -1,0 +1,616 @@
+/* CANVAS ATELIER RELEASE LAYOUT CONTRACT
+   This file is intentionally imported last. It owns the current product
+   surfaces and prevents historical prototype rules from reviving. */
+
+.workspace--ui-gate .agent-panel--skill-chat,
+.workspace--ui-gate .agent-panel--skill-chat > .agent-thread,
+.workspace--ui-gate .agent-panel--skill-chat .agent-thread__conversation,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat {
+  --agent-compact-control-size: 34px;
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  z-index: 140 !important;
+  width: 460px !important;
+  max-width: min(460px, 100vw) !important;
+  height: auto !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  padding: 0 !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 18px 0 0 18px !important;
+  box-shadow: -12px 0 36px rgb(20 42 54 / 12%) !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat > .agent-panel__header {
+  display: none !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench {
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) auto !important;
+  height: 100% !important;
+  color: var(--gate-text, var(--text)) !important;
+  background: var(--gate-card, var(--surface)) !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: auto auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 112px !important;
+  align-content: center !important;
+  gap: 8px !important;
+  padding: 12px 16px !important;
+  background: var(--gate-card, var(--surface)) !important;
+  border-bottom: 1px solid var(--gate-border, var(--border)) !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex > div:first-child {
+  display: block !important;
+  min-width: 0 !important;
+  align-items: center !important;
+  position: relative !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex h2,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex p {
+  margin: 0 !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex h2 {
+  min-width: 0 !important;
+  font-size: 14px !important;
+  white-space: nowrap !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex p {
+  position: absolute !important;
+  top: 47px !important;
+  left: 0 !important;
+  font-size: 10px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header-actions {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) var(--agent-compact-control-size) !important;
+  width: calc(100% - 64px) !important;
+  min-width: 0 !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin-left: 64px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__close {
+  box-sizing: border-box !important;
+  position: absolute !important;
+  top: 12px !important;
+  right: 14px !important;
+  z-index: 2 !important;
+  display: inline-grid !important;
+  width: var(--agent-compact-control-size) !important;
+  min-width: var(--agent-compact-control-size) !important;
+  max-width: var(--agent-compact-control-size) !important;
+  height: var(--agent-compact-control-size) !important;
+  min-height: var(--agent-compact-control-size) !important;
+  padding: 0 !important;
+  place-items: center !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header-actions :is(select, button) {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: var(--agent-compact-control-size) !important;
+  min-height: var(--agent-compact-control-size) !important;
+  max-height: var(--agent-compact-control-size) !important;
+  padding: 0 8px !important;
+  border-radius: 8px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__stream {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  padding: 16px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__stream > *,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__messages,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message {
+  box-sizing: border-box !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow-wrap: anywhere !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer {
+  box-sizing: border-box !important;
+  position: relative !important;
+  inset: auto !important;
+  width: auto !important;
+  max-width: calc(100% - 32px) !important;
+  min-width: 0 !important;
+  height: 136px !important;
+  min-height: 136px !important;
+  max-height: 136px !important;
+  grid-template-rows: minmax(54px, 1fr) auto !important;
+  gap: 6px !important;
+  margin: 10px 16px 4px !important;
+  padding: 10px !important;
+  overflow: visible !important;
+  background: var(--gate-card, var(--surface)) !important;
+  border: 1px solid var(--gate-border-strong, var(--border-strong)) !important;
+  border-color: var(--accent, var(--gate-border-strong, var(--border-strong))) !important;
+  border-radius: 26px !important;
+  box-shadow: 0 8px 22px rgb(30 62 76 / 8%) !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer > label,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea__editor {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea__editor {
+  min-height: 54px !important;
+  max-height: 110px !important;
+  padding: 7px 8px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  font-size: 11px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: 34px minmax(96px, 1.25fr) minmax(0, 1fr) 44px 34px 34px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  align-items: center !important;
+  justify-content: stretch !important;
+  gap: 6px !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not([data-agent-mode='codex']) {
+  grid-template-columns: 34px minmax(96px, 1.25fr) minmax(0, 1fr) 34px 34px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > *,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__mode-tabs,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__mode-tabs > button {
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__mode-tabs {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  width: 100% !important;
+  height: var(--agent-compact-control-size) !important;
+  padding: 2px !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+  border-radius: 17px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__mode-tabs > button {
+  width: 100% !important;
+  height: var(--agent-compact-control-size) !important;
+  padding: 0 4px !important;
+  overflow: hidden !important;
+  font-size: 9px !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  border-radius: 15px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__model-pill {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: var(--agent-compact-control-size) !important;
+  padding: 0 7px !important;
+  overflow: hidden !important;
+  font-size: 9px !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  border-radius: 17px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__effort {
+  box-sizing: border-box !important;
+  width: 42px !important;
+  min-width: 42px !important;
+  height: var(--agent-compact-control-size) !important;
+  padding: 0 4px !important;
+  font-size: 10px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > button[type='submit'] {
+  box-sizing: border-box !important;
+  display: inline-grid !important;
+  width: var(--agent-compact-control-size) !important;
+  min-width: var(--agent-compact-control-size) !important;
+  height: var(--agent-compact-control-size) !important;
+  min-height: var(--agent-compact-control-size) !important;
+  padding: 0 !important;
+  place-items: center !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > button[type='submit'] {
+  width: var(--agent-compact-control-size) !important;
+  min-width: var(--agent-compact-control-size) !important;
+  height: var(--agent-compact-control-size) !important;
+  min-height: var(--agent-compact-control-size) !important;
+  border-radius: 50% !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer :is(
+  .skill-chat-workbench__mode-tabs,
+  .skill-chat-workbench__mode-tabs > button,
+  .skill-chat-workbench__model-pill,
+  .skill-chat-workbench__effort,
+  .skill-chat-workbench__tool,
+  button[type='submit']
+) {
+  box-sizing: border-box !important;
+  height: var(--agent-compact-control-size) !important;
+  min-height: var(--agent-compact-control-size) !important;
+  max-height: var(--agent-compact-control-size) !important;
+}
+
+/* The header already owns new-task creation, so the duplicate footer reset
+   cannot consume width in the compact composer. */
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer
+  > .skill-chat-workbench__tool:not(.skill-chat-workbench__knowledge-compact):not(:first-of-type) {
+  display: none !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer
+  > button[data-testid='agent-model-trigger']::after,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer
+  > button[data-testid='knowledge-base-trigger']::after {
+  content: none !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__sheet[data-anchor='composer-footer'] {
+  box-sizing: border-box !important;
+  right: 10px !important;
+  left: 10px !important;
+  width: auto !important;
+  max-width: calc(100% - 20px) !important;
+  min-width: 0 !important;
+  overflow-x: hidden !important;
+}
+
+/* Ordered reference media: every one of the twenty items stays in the same
+   scrollable drag lane. Arrow controls are keyboard-only and never cover art. */
+.workspace--ui-gate .connected-agent-media-slots,
+.workspace--ui-gate .connected-agent-media-slots__row {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+.workspace--ui-gate .connected-agent-media-slots__row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 4px 6px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: none !important;
+}
+
+.workspace--ui-gate .connected-agent-media-slots__row::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.workspace--ui-gate .connected-agent-media-slots__item {
+  box-sizing: border-box !important;
+  position: relative !important;
+  flex: 0 0 36px !important;
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  overflow: hidden !important;
+  cursor: grab !important;
+  touch-action: none !important;
+}
+
+.workspace--ui-gate .connected-agent-media-slots__item:active {
+  cursor: grabbing !important;
+}
+
+.workspace--ui-gate .connected-agent-media-slots__item > :is(img, video) {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  pointer-events: none !important;
+}
+
+.workspace--ui-gate .connected-agent-media-slots__reorder {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.workspace--ui-gate .connected-agent-media-slots__reorder:focus-within {
+  right: 3px !important;
+  bottom: 3px !important;
+  left: 3px !important;
+  z-index: 8 !important;
+  display: flex !important;
+  width: auto !important;
+  height: 16px !important;
+  justify-content: center !important;
+  gap: 2px !important;
+  overflow: visible !important;
+  clip-path: none !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+/* Reference-inspired floating chrome.  The controls keep Canvas Atelier's
+   own behavior while matching the compact three-tab + Agent entry rhythm. */
+.workspace--ui-gate .canvas-stage {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.workspace--ui-gate .topbar {
+  box-sizing: border-box !important;
+  position: fixed !important;
+  z-index: 150 !important;
+  top: 12px !important;
+  right: auto !important;
+  left: 50% !important;
+  display: grid !important;
+  grid-template-columns: auto auto !important;
+  width: max-content !important;
+  max-width: calc(100vw - 32px) !important;
+  height: 52px !important;
+  min-height: 52px !important;
+  padding: 6px 8px !important;
+  transform: translateX(-50%) !important;
+  color: var(--gate-text, var(--text)) !important;
+  background: color-mix(in srgb, var(--gate-card, var(--surface)) 94%, transparent) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 12px 32px rgb(29 49 67 / 14%) !important;
+  backdrop-filter: blur(18px) !important;
+}
+
+.workspace--ui-gate[data-agent-collapsed='false'] .topbar {
+  left: calc((100vw - 460px) / 2) !important;
+}
+
+.workspace--ui-gate .topbar__identity {
+  box-sizing: border-box !important;
+  display: none !important;
+  flex: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  align-items: center !important;
+  gap: 8px !important;
+  overflow: hidden !important;
+}
+
+.workspace--ui-gate .product-mark {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  justify-content: flex-start !important;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+}
+
+.workspace--ui-gate .project-menu,
+.workspace--ui-gate .project-button {
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
+.workspace--ui-gate .project-button {
+  padding: 0 !important;
+  font-size: 10px !important;
+}
+
+.workspace--ui-gate .topbar__canvas-actions {
+  box-sizing: border-box !important;
+  display: flex !important;
+  flex: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  justify-self: center !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.workspace--ui-gate .save-project-control,
+.workspace--ui-gate .topbar-canvas-action {
+  height: 38px !important;
+  min-height: 38px !important;
+}
+
+.workspace--ui-gate .topbar-canvas-action {
+  width: auto !important;
+  min-width: 92px !important;
+  padding: 0 12px !important;
+  border-radius: 10px !important;
+}
+
+.workspace--ui-gate .topbar-canvas-action--history {
+  display: none !important;
+}
+
+.workspace--ui-gate .topbar__actions {
+  box-sizing: border-box !important;
+  display: flex !important;
+  flex: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  margin: 0 !important;
+  justify-self: end !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.topbar-agent-entry {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  width: auto !important;
+  min-width: 88px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  padding: 0 12px !important;
+  color: #3949a5 !important;
+  background: #eef0ff !important;
+  border: 1px solid #cbd2ff !important;
+  border-radius: 12px !important;
+  font: inherit !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+
+.topbar-agent-entry.is-active,
+.topbar-agent-entry:hover {
+  color: #ffffff !important;
+  background: #6574df !important;
+  border-color: #6574df !important;
+}
+
+.workspace--ui-gate .topbar__actions .theme-control--figma,
+.workspace--ui-gate .topbar-close-action {
+  box-sizing: border-box !important;
+  flex: 0 0 38px !important;
+  width: 38px !important;
+  min-width: 38px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  overflow: hidden !important;
+  border-radius: 10px !important;
+}
+
+.workspace--ui-gate .topbar__actions .theme-control--figma,
+.workspace--ui-gate .topbar-close-action {
+  display: none !important;
+}
+
+/* Compact node controls follow the visual reference without reviving its
+   colors.  Every node family shares the same Canvas Atelier geometry. */
+.workspace--ui-gate {
+  --node-compact-control-height: 32px;
+}
+
+.workspace--ui-gate :is(
+  .module-node__generation-control-bar,
+  .module-node__video-control-bar,
+  .module-node__parameter-row,
+  .module-node__storyboard-editor,
+  .module-node__workbench-actions,
+  .module-node__agent-actions
+) {
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.workspace--ui-gate .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--ui-gate .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--ui-gate .module-node__parameter-row > :is(select, button, input),
+.workspace--ui-gate .module-node__storyboard-editor :is(select, button),
+.workspace--ui-gate .module-node__workbench-actions button,
+.workspace--ui-gate .module-node__agent-actions > button,
+.workspace--ui-gate .module-node__generation-control-bar .generation-parameter-popover__trigger,
+.workspace--ui-gate .module-node__video-control-bar .generation-parameter-popover__trigger {
+  box-sizing: border-box !important;
+  height: var(--node-compact-control-height) !important;
+  min-height: var(--node-compact-control-height) !important;
+  max-height: var(--node-compact-control-height) !important;
+  padding-block: 0 !important;
+  border-radius: 8px !important;
+  line-height: 1 !important;
+}
+
+.workspace--ui-gate .module-node__generation-preview-item > :is(img, video),
+.workspace--ui-gate .module-node__generation-collapsed-open > :is(img, video),
+.workspace--ui-gate .module-node__video-output-stage > :is(img, video) {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  object-position: center !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+}
+
+@media (max-width: 1080px) {
+  .workspace--ui-gate .topbar {
+    grid-template-columns: auto auto !important;
+    width: max-content !important;
+    max-width: calc(100vw - 32px) !important;
+  }
+
+  .workspace--ui-gate .topbar__identity {
+    display: none !important;
+  }
+
+  .workspace--ui-gate .topbar__canvas-actions {
+    justify-self: start !important;
+  }
+}

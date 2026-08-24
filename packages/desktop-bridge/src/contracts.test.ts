@@ -84,6 +84,7 @@ describe('agentCanvas preload compatibility bridge', () => {
     expect(Object.keys(novusDesktop.lifecycle).sort()).toEqual([
       'ackCloseFlush',
       'chooseCloseDecision',
+      'requestClose',
       'subscribeCloseFlushRequest',
     ]);
     expect(agentCanvas).not.toHaveProperty('lifecycle');

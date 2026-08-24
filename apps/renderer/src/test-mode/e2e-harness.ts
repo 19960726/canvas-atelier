@@ -22,6 +22,7 @@ import {
   type ProjectVideoAsset,
   type ProjectMemoryEntry,
   type ProjectTransaction,
+  type ReversePromptRun,
   type SkillPromotionCandidate,
 } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
@@ -57,6 +58,7 @@ import {
   type ModelJobStorage,
 } from '../jobs/job-store';
 import { createDurableCanvasStressProject } from './stress-project';
+import { auditedComflyCanvasProfiles } from './comfly-audited-models';
 
 const installedFlag = '__NOVUS_E2E_INSTALLED__';
 const fixedNow = '2026-07-16T09:00:00.000Z';
@@ -64,12 +66,15 @@ const e2eNonce = import.meta.env.VITE_NOVUS_E2E_NONCE ?? 'novus-e2e-local';
 
 interface RuntimeState {
   assetSequence: number;
+  cacheDirectoryPath: string;
+  cacheDirectoryIsDefault: boolean;
   commitLog: ProjectTransaction[];
   currentProject: CanvasProject;
   failNextModelJobEnqueue: boolean;
   knowledgeListeners: Set<(states: KnowledgeBaseStateSummary[]) => void>;
   knowledgeStates: KnowledgeBaseStateSummary[];
   managedRules: Map<string, string>;
+  modelCancellationMode: 'complete' | 'hang';
   modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
   pendingImageImports: Array<{
     byteSize: number;
@@ -77,11 +82,13 @@ interface RuntimeState {
     label: string;
     mediaType: 'image/png';
     width: number;
+    displayUrl?: string;
   }>;
   pendingVideoImports: Array<{
     byteSize: number;
     label: string;
     mediaType: 'video/mp4';
+    displayUrl?: string;
   }>;
   projectImages: ProjectImageAssetSummary[];
   projectVideos: ProjectVideoAssetSummary[];
@@ -113,11 +120,14 @@ export function installRendererE2EHarness(): void {
     async reset() {
       runtime.currentProject = createStarterProject();
       runtime.assetSequence = 0;
+      runtime.cacheDirectoryPath = 'Browser acceptance cache';
+      runtime.cacheDirectoryIsDefault = true;
       runtime.revision = 0;
       runtime.commitLog = [];
       runtime.failNextModelJobEnqueue = false;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
+      runtime.modelCancellationMode = 'complete';
       runtime.modelSubmissions = [];
       runtime.pendingImageImports = [];
       runtime.pendingVideoImports = [];
@@ -135,11 +145,14 @@ export function installRendererE2EHarness(): void {
     async resetEmpty() {
       runtime.currentProject = createUntitledProject();
       runtime.assetSequence = 0;
+      runtime.cacheDirectoryPath = 'Browser acceptance cache';
+      runtime.cacheDirectoryIsDefault = true;
       runtime.revision = 0;
       runtime.commitLog = [];
       runtime.failNextModelJobEnqueue = false;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
+      runtime.modelCancellationMode = 'complete';
       runtime.modelSubmissions = [];
       runtime.pendingImageImports = [];
       runtime.pendingVideoImports = [];
@@ -154,8 +167,24 @@ export function installRendererE2EHarness(): void {
       useAppStore.setState({ project: runtime.currentProject });
       await useAppStore.getState().initializeKnowledge();
     },
+    async reopenProject() {
+      resetAppStoreForTests();
+      await useAppStore.getState().hydratePersistence();
+      await useAppStore.getState().initializeKnowledge();
+    },
+    async showLegacyStarterCanvas() {
+      runtime.currentProject = createStarterProject();
+      useAppStore.setState({
+        project: runtime.currentProject,
+        projectImages: [],
+        projectVideos: [],
+      });
+    },
     failNextModelJobEnqueue() {
       runtime.failNextModelJobEnqueue = true;
+    },
+    setModelCancellationMode(mode) {
+      runtime.modelCancellationMode = mode;
     },
     queueProjectImageImport(input) {
       runtime.pendingImageImports.push({
@@ -210,6 +239,44 @@ export function installRendererE2EHarness(): void {
       };
       runtime.currentProject = nextProject;
       useAppStore.setState({ project: nextProject });
+      return true;
+    },
+    async seedGeneratedImageResult() {
+      const state = useAppStore.getState();
+      const generationNode = findModuleNodeByType(state.project, 'image_generation');
+      if (generationNode === null) return false;
+      const asset: ProjectImageAsset = {
+        assetId: '0123456789abcdef',
+        byteSize: 2048,
+        extension: 'png',
+        height: 1024,
+        label: 'Generated result 1',
+        mediaType: 'image/png',
+        origin: 'generated',
+        sha256: '0123456789abcdef'.repeat(4),
+        width: 1024,
+      };
+      const project = {
+        ...state.project,
+        assets: [...(state.project.assets ?? []).filter((candidate) => candidate.assetId !== asset.assetId), asset],
+      };
+      const summary = createE2EProjectImageSummary(project, asset);
+      runtime.currentProject = project;
+      runtime.projectImages = [summary];
+      useAppStore.setState({
+        project,
+        projectImages: [summary],
+        modelJobs: [{
+          id: 'photoshop-e2e-job',
+          kind: 'image',
+          modelId: 'e2e-image-model',
+          status: 'completed',
+          promptNodeId: generationNode.id,
+          retryCount: 0,
+          referenceAssetIds: [],
+          resultAssetId: asset.assetId,
+        }],
+      });
       return true;
     },
     async seedSkillSyncDivergence() {
@@ -267,12 +334,15 @@ export function installRendererE2EHarness(): void {
 function createRuntimeState(): RuntimeState {
   const runtime: RuntimeState = {
     assetSequence: 0,
+    cacheDirectoryPath: 'Browser acceptance cache',
+    cacheDirectoryIsDefault: true,
     commitLog: [],
     currentProject: createStarterProject(),
     failNextModelJobEnqueue: false,
     knowledgeListeners: new Set(),
     knowledgeStates: [],
     managedRules: new Map(),
+    modelCancellationMode: 'complete',
     modelSubmissions: [],
     pendingImageImports: [],
     pendingVideoImports: [],
@@ -304,14 +374,36 @@ const e2eReferenceLayouts: Record<
   material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground' },
 };
 
+function importE2EDroppedMedia(
+  runtime: RuntimeState,
+  file: File,
+  position: { readonly x: number; readonly y: number },
+): ProjectImageImportResult | ProjectVideoImportResult | null {
+  if (file.type === 'video/mp4' || /\.mp4$/iu.test(file.name)) {
+    runtime.pendingVideoImports.unshift({
+      byteSize: file.size,
+      label: sanitizeE2EMediaLabel(file.name, 'Dropped video'),
+      mediaType: 'video/mp4',
+    });
+    return pasteE2EClipboardVideo(runtime, position);
+  }
+  if (!file.type.startsWith('image/')) return null;
+  runtime.pendingImageImports.unshift({
+    byteSize: file.size,
+    height: 1,
+    label: sanitizeE2EMediaLabel(file.name, 'Dropped image'),
+    mediaType: 'image/png',
+    width: 1,
+  });
+  return pasteE2EClipboardImage(runtime, position);
+}
+
 function importE2EProjectImage(
   runtime: RuntimeState,
   target: ProjectImageImportTarget,
 ): ProjectImageImportResult | null {
   const pending = runtime.pendingImageImports.shift();
   if (pending === undefined) return null;
-  const targetNode = runtime.currentProject.nodes.find((node) => node.id === target.nodeId);
-  if (targetNode === undefined) return null;
 
   runtime.assetSequence += 1;
   const assetId = runtime.assetSequence.toString(16).padStart(16, '0');
@@ -326,6 +418,23 @@ function importE2EProjectImage(
     sha256: assetId.repeat(4),
     width: pending.width,
   };
+  const assets = [...(runtime.currentProject.assets ?? []), asset];
+  if (target.kind === 'agent_reference') {
+    const transaction: ProjectTransaction = {
+      id: `e2e-import-agent-reference-${assetId}`,
+      label: 'Import managed E2E Agent reference',
+      operations: [{ kind: 'set_project_assets', assets }],
+    };
+    runtime.currentProject = { ...runtime.currentProject, assets };
+    runtime.revision += 1;
+    runtime.commitLog.push(transaction);
+    const summary = createE2EProjectImageSummary(runtime.currentProject, asset, pending.displayUrl);
+    runtime.projectImages = [...runtime.projectImages, summary];
+    return { asset: summary, project: runtime.currentProject, revision: runtime.revision };
+  }
+  const targetNode = runtime.currentProject.nodes.find((node) => node.id === target.nodeId);
+  if (targetNode === undefined) return null;
+
   let nextNode: CanvasProject['nodes'][number];
   if (target.kind === 'module') {
     if (targetNode.type !== 'module'
@@ -357,7 +466,6 @@ function importE2EProjectImage(
     };
   }
 
-  const assets = [...(runtime.currentProject.assets ?? []), asset];
   const transaction: ProjectTransaction = {
     id: `e2e-import-project-image-${assetId}`,
     label: 'Import managed E2E project image',
@@ -373,7 +481,7 @@ function importE2EProjectImage(
   };
   runtime.revision += 1;
   runtime.commitLog.push(transaction);
-  const summary = createE2EProjectImageSummary(runtime.currentProject, asset);
+  const summary = createE2EProjectImageSummary(runtime.currentProject, asset, pending.displayUrl);
   runtime.projectImages = [...runtime.projectImages, summary];
   return { asset: summary, project: runtime.currentProject, revision: runtime.revision };
 }
@@ -411,7 +519,7 @@ function pasteE2EClipboardImage(
   runtime.currentProject = { ...runtime.currentProject, assets, nodes: [...runtime.currentProject.nodes, boundNode] };
   runtime.revision += 1;
   runtime.commitLog.push(transaction);
-  const summary = createE2EProjectImageSummary(runtime.currentProject, asset);
+  const summary = createE2EProjectImageSummary(runtime.currentProject, asset, pending.displayUrl);
   runtime.projectImages = [...runtime.projectImages, summary];
   return { asset: summary, project: runtime.currentProject, revision: runtime.revision };
 }
@@ -419,10 +527,11 @@ function pasteE2EClipboardImage(
 function createE2EProjectImageSummary(
   project: CanvasProject,
   asset: ProjectImageAsset,
+  displayUrl?: string,
 ): ProjectImageAssetSummary {
   return {
     ...asset,
-    displayUrl: `${window.location.origin}/__novus_e2e_asset/${asset.assetId}.svg`,
+    displayUrl: displayUrl ?? `${window.location.origin}/__novus_e2e_asset/${asset.assetId}.svg`,
     usageCount: JSON.stringify(project.nodes).split(asset.assetId).length - 1,
   };
 }
@@ -445,9 +554,21 @@ function importE2EProjectVideo(runtime: RuntimeState, nodeId: string): ProjectVi
       { kind: 'set_project_assets', assets: [...(runtime.currentProject.assets ?? []), asset] },
       { kind: 'canvas', operation: { kind: 'update_node', node: boundNode } },
     ],
-  }, runtime.currentProject.nodes.map((node) => node.id === boundNode.id ? boundNode : node));
+  }, runtime.currentProject.nodes.map((node) => node.id === boundNode.id ? boundNode : node), pending.displayUrl);
 }
 
+function importE2EAgentReferenceVideo(runtime: RuntimeState): ProjectVideoImportResult | null {
+  const pending = runtime.pendingVideoImports.shift();
+  if (pending === undefined) return null;
+  const asset = createE2EProjectVideoAsset(runtime, pending);
+  return commitE2EProjectVideo(runtime, asset, {
+    id: `e2e-import-agent-reference-video-${asset.assetId}`,
+    label: 'Import managed E2E Agent reference video',
+    operations: [
+      { kind: 'set_project_assets', assets: [...(runtime.currentProject.assets ?? []), asset] },
+    ],
+  }, runtime.currentProject.nodes, pending.displayUrl);
+}
 function pasteE2EClipboardVideo(
   runtime: RuntimeState,
   position: { readonly x: number; readonly y: number },
@@ -464,7 +585,7 @@ function pasteE2EClipboardVideo(
       { kind: 'set_project_assets', assets: [...(runtime.currentProject.assets ?? []), asset] },
       { kind: 'canvas', operation: { kind: 'create_node', node: boundNode } },
     ],
-  }, [...runtime.currentProject.nodes, boundNode]);
+  }, [...runtime.currentProject.nodes, boundNode], pending.displayUrl);
 }
 
 function createE2EProjectVideoAsset(
@@ -476,14 +597,14 @@ function createE2EProjectVideoAsset(
   return {
     assetId,
     byteSize: pending.byteSize,
-    durationMs: null,
+    durationMs: 4_800,
     extension: 'mp4',
-    height: null,
+    height: 1_080,
     label: pending.label,
     mediaType: pending.mediaType,
     origin: 'imported',
     sha256: assetId.repeat(4),
-    width: null,
+    width: 1_920,
   };
 }
 
@@ -492,12 +613,13 @@ function commitE2EProjectVideo(
   asset: ProjectVideoAsset,
   transaction: ProjectTransaction,
   nodes: CanvasProject['nodes'],
+  displayUrl?: string,
 ): ProjectVideoImportResult {
   const assets = [...(runtime.currentProject.assets ?? []), asset];
   runtime.currentProject = { ...runtime.currentProject, assets, nodes };
   runtime.revision += 1;
   runtime.commitLog.push(transaction);
-  const summary = createE2EProjectVideoSummary(runtime.currentProject, asset);
+  const summary = createE2EProjectVideoSummary(runtime.currentProject, asset, displayUrl);
   runtime.projectVideos = [...runtime.projectVideos, summary];
   return { asset: summary, project: runtime.currentProject, revision: runtime.revision };
 }
@@ -505,14 +627,23 @@ function commitE2EProjectVideo(
 function createE2EProjectVideoSummary(
   project: CanvasProject,
   asset: ProjectVideoAsset,
+  displayUrl?: string,
 ): ProjectVideoAssetSummary {
   return {
     ...asset,
-    displayUrl: `${window.location.origin}/__novus_e2e_asset/${asset.assetId}.mp4`,
+    displayUrl: displayUrl ?? `${window.location.origin}/__novus_e2e_asset/${asset.assetId}.mp4`,
     usageCount: JSON.stringify(project.nodes).split(asset.assetId).length - 1,
   };
 }
 
+async function readManualAcceptanceFileUrl(file: File): Promise<string> {
+  return await new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
+  });
+}
 function sanitizeE2EImageLabel(value: string): string {
   return sanitizeE2EMediaLabel(value, 'Managed image');
 }
@@ -602,50 +733,101 @@ async function seedModuleStressGraph(runtime: RuntimeState, nodeCount: number, e
 
 function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesktop {
   return {
+    projectImages: {
+      importToPhotoshop: async () => ({ ok: true as const, layerName: 'Browser Photoshop mock' }),
+    },
     provider: {
       ackImageJobTerminal: async () => ({ acknowledged: true as const }),
       cancelImageJob: async () => ({ status: 'cancelled' as const }),
       configure: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
       getStatus: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
-      listProfiles: async () => runtime.providerProfiles.map((profile) => ({
-        ...profile,
-        capabilities: [...profile.capabilities],
-      })),
+      listProfiles: async (request?: { provider?: ProviderBridgeProfile['provider'] }) => runtime.providerProfiles
+        .filter((profile) => profile.provider === (request?.provider ?? 'comfly'))
+        .map((profile) => ({
+          ...profile,
+          capabilities: [...profile.capabilities],
+        })),
+      analyzeReversePrompt: async (input: { readonly run: ReversePromptRun }) => ({
+        sessionId: input.run.sessionId,
+        nonce: input.run.nonce,
+        knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+        analysis: 'The managed reference resolves to a clean commercial composition with a centered product hero, a cool blue studio field, and a restrained editorial lighting hierarchy.',
+        keywords: ['commercial still life', 'centered product hero', 'cool studio lighting'],
+        positivePrompt: 'Cinematic commercial product still of the connected reference, centered hero object on a precise cool-blue studio field, premium editorial product photography, controlled soft key light, subtle rim separation, measured negative space, crisp material detail, realistic texture, balanced composition, and no incidental objects or visual clutter.',
+        negativeConstraints: ['Do not alter the product identity or introduce unreferenced logos.'],
+        executionChecklist: ['Verify the product silhouette remains faithful to the managed reference.'],
+      }),
       pollImageJob: async () => ({ status: 'running' as const, progress: 0.35 }),
       submitImageJob: async (request: SubmitImageJobBridgeRequest) => ({
         providerTaskId: `e2e-bridge-task-${request.jobId}`,
       }),
       unlock: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
+      checkConnection: async () => ({ checkedAt: new Date().toISOString(), status: 'connected' as const }),
+      listAvailableModelIds: async (request?: { provider?: ProviderBridgeProfile['provider'] }) => runtime.providerProfiles
+        .filter((profile) => profile.provider === (request?.provider ?? 'comfly'))
+        .map((profile) => profile.modelId)
+        .filter((id): id is string => typeof id === 'string'),
+      updateProfiles: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
+    },
+    storage: {
+      getCacheDirectory: async () => ({ path: runtime.cacheDirectoryPath, isDefault: runtime.cacheDirectoryIsDefault, available: true, busy: false, error: null }),
+      chooseCacheDirectory: async () => {
+        runtime.cacheDirectoryPath = 'Browser acceptance custom cache';
+        runtime.cacheDirectoryIsDefault = false;
+        return { path: runtime.cacheDirectoryPath, isDefault: false, available: true, busy: false, error: null };
+      },
+      resetCacheDirectory: async () => {
+        runtime.cacheDirectoryPath = 'Browser acceptance cache';
+        runtime.cacheDirectoryIsDefault = true;
+        return { path: runtime.cacheDirectoryPath, isDefault: true, available: true, busy: false, error: null };
+      },
+      openCacheDirectory: async () => ({ opened: true }),
+    },
+    history: {
+      addProjectReferences: async () => ({ records: [], revision: 0 }),
+      compare: async () => [],
+      copyToProject: async () => ({ copiedCount: 0 }),
+      exportSelected: async () => ({ canceled: false, exportedCount: 0 }),
+      getCapacity: async () => ({ activeBytes: 0, activeCount: 0, missingOrCorruptCount: 0, trashBytes: 0, trashCount: 0 }),
+      getReusableSummary: async () => { throw new Error('No browser acceptance history record'); },
+      list: async () => ({ nextCursor: null, records: [], revision: 0, total: 0 }),
+      permanentlyDelete: async () => ({ protectedIds: [], purgedIds: [], revision: 0 }),
+      purgeExpired: async () => ({ purgedCount: 0, reclaimedBytes: 0 }),
+      restore: async () => ({ records: [], revision: 0 }),
+      setFavorite: async () => ({ records: [], revision: 0 }),
+      trash: async () => ({ records: [], revision: 0 }),
     },
   } as unknown as typeof window.novusDesktop;
 }
 
 function createE2EProviderProfiles(): ProviderBridgeProfile[] {
+  const imageConstraints = {
+    image: {
+      aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'],
+      resolutions: ['2K', '4K'],
+      outputCounts: [1, 2, 3, 4],
+    },
+  } satisfies NonNullable<ProviderBridgeProfile['constraints']>;
+  const videoConstraints = {
+    video: {
+      aspectRatios: ['1:1', '16:9', '9:16'],
+      resolutions: ['720p', '1080p', '2K', '4K'],
+      duration: { mode: 'options', defaultValue: 6, options: [4, 6, 8] },
+      outputCounts: [1, 2, 3, 4],
+    },
+  } satisfies NonNullable<ProviderBridgeProfile['constraints']>;
   return [
-    {
-      provider: 'comfly',
-      modelRoute: 'image-generation',
-      displayName: 'GPT Image',
-      modelId: 'gpt-image-1',
-      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
-    },
-    {
-      provider: 'comfly',
-      modelRoute: 'nano-banana-2-actual-route',
-      displayName: 'Nano Banana 2',
-      modelId: 'nano-banana-2',
-      capabilities: ['image_generation', 'async_tasks'],
-    },
-    {
-      provider: 'comfly',
-      modelRoute: 'image-edit-only-route',
-      displayName: 'Image Edit Only',
-      modelId: 'edit-only-model',
-      capabilities: ['image_edit', 'async_tasks'],
-    },
+    ...auditedComflyCanvasProfiles,
+    { provider: 'relayme', modelRoute: 'relay/chat/gemini-vision', displayName: 'Gemini Vision', modelId: 'relay-gemini-vision', capabilities: ['chat', 'vision', 'reverse_prompt', 'video_understanding'] },
+    { provider: 'relayme', modelRoute: 'relay/chat/gpt-vision', displayName: 'GPT Vision', modelId: 'relay-gpt-vision', capabilities: ['chat', 'vision', 'reverse_prompt'] },
+    { provider: 'relayme', modelRoute: 'relay/image/gpt-image-2', displayName: 'GPT Image 2', modelId: 'relay-gpt-image-2', capabilities: ['image_generation', 'async_tasks'], constraints: imageConstraints },
+    { provider: 'relayme', modelRoute: 'relay/image/gemini', displayName: 'Gemini Image', modelId: 'relay-gemini-image', capabilities: ['image_generation', 'async_tasks'], constraints: imageConstraints },
+    { provider: 'relayme', modelRoute: 'relay/image/seedream', displayName: 'Seedream', modelId: 'relay-seedream', capabilities: ['image_generation', 'async_tasks'], constraints: imageConstraints },
+    { provider: 'relayme', modelRoute: 'relay/video/veo', displayName: 'Veo', modelId: 'relay-veo', capabilities: ['video_generation', 'async_tasks'], constraints: videoConstraints },
+    { provider: 'relayme', modelRoute: 'relay/video/kling', displayName: 'Kling', modelId: 'relay-kling', capabilities: ['video_generation', 'async_tasks'], constraints: videoConstraints },
+    { provider: 'relayme', modelRoute: 'relay/video/seedance', displayName: 'Seedance', modelId: 'relay-seedance', capabilities: ['video_generation', 'async_tasks'], constraints: videoConstraints },
   ];
 }
-
 function createE2EModelJobStorage(runtime: RuntimeState): ModelJobStorage {
   const inner = createInMemoryModelJobStorage();
   return {
@@ -664,6 +846,42 @@ function createE2EModelJobStorage(runtime: RuntimeState): ModelJobStorage {
 
 function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClient {
   return {
+    getSessionId: () => 'browser-acceptance-session',
+    async analyzeReversePrompt(input) {
+      const provider = window.novusDesktop?.provider;
+      if (provider === undefined) throw new Error('E2E provider bridge is unavailable');
+      return provider.analyzeReversePrompt({
+        provider: input.provider,
+        sessionId: input.run.sessionId,
+        run: input.run,
+        media: input.media.map((item) => item.kind === 'image'
+          ? {
+              kind: 'image' as const,
+              assetId: item.assetId,
+              byteSize: item.byteSize,
+              mediaType: item.mediaType as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif',
+              sha256: item.sha256,
+            }
+          : {
+              kind: 'video' as const,
+              assetId: item.assetId,
+              byteSize: item.byteSize,
+              mediaType: 'video/mp4' as const,
+              sha256: item.sha256,
+            }),
+      });
+    },
+    async chatSkill(input) {
+      const latestMessage = input.messages[input.messages.length - 1]?.content.trim() ?? '';
+      if (latestMessage === 'force skill chat failure') {
+        throw new Error('E2E skill chat is unavailable');
+      }
+      return {
+        message: `Mock Skill reply: ${latestMessage}`,
+        modelRoute: input.modelRoute,
+        sources: [],
+      };
+    },
     async close() {},
     async commit(request: ProjectCommitRequest): Promise<ProjectCommitResult> {
       runtime.currentProject = request.nextProject;
@@ -685,11 +903,42 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
         saveStatus: 'saved',
       };
     },
-    async importProjectImage(target) {
+    async importProjectImage(target, file) {
+      if (file !== undefined && file.type.startsWith('image/')) {
+        runtime.pendingImageImports.unshift({
+          byteSize: file.size,
+          height: 1,
+          label: sanitizeE2EMediaLabel(file.name, 'Imported image'),
+          mediaType: 'image/png',
+          width: 1,
+          displayUrl: await readManualAcceptanceFileUrl(file),
+        });
+      }
       return importE2EProjectImage(runtime, target);
     },
-    async importProjectVideo(nodeId) {
+    async importProjectVideo(nodeId, file) {
+      if (file !== undefined && (file.type === 'video/mp4' || /\.mp4$/iu.test(file.name))) {
+        runtime.pendingVideoImports.unshift({
+          byteSize: file.size,
+          label: sanitizeE2EMediaLabel(file.name, 'Imported video'),
+          mediaType: 'video/mp4',
+          displayUrl: await readManualAcceptanceFileUrl(file),
+        });
+      }
       return importE2EProjectVideo(runtime, nodeId);
+    },
+    async importAgentReferenceVideo(file) {
+      if (file !== undefined && (file.type.startsWith('video/') || /\.(?:mp4|webm|mov)$/iu.test(file.name))) {
+        runtime.pendingVideoImports.unshift({
+          byteSize: file.size,
+          label: sanitizeE2EMediaLabel(file.name, 'Imported video'),
+          mediaType: 'video/mp4',
+          displayUrl: await readManualAcceptanceFileUrl(file),
+        });
+      }
+      return importE2EAgentReferenceVideo(runtime);
+    },    async importDroppedMedia(input) {
+      return importE2EDroppedMedia(runtime, input.file, input.position);
     },
     async listProjectImages() {
       return runtime.projectImages.map((asset) => ({
@@ -830,25 +1079,33 @@ function createKnowledgeClient(runtime: RuntimeState): KnowledgeClient {
         knowledgeState,
       };
     },
-    getLease(runId, capability, references, citations) {
+    getLease(runId, capability, references, citations, selectedKnowledgeBaseIds) {
+      const selectedIds = selectedKnowledgeBaseIds === undefined
+        ? null
+        : new Set(selectedKnowledgeBaseIds);
+      const snapshots = runtime.knowledgeStates
+        .filter((state) => (
+          state.activeVersion !== null &&
+          state.activeContentHash !== null &&
+          (selectedIds === null || selectedIds.has(state.knowledgeBaseId))
+        ))
+        .map((state) => ({
+          knowledgeBaseId: state.knowledgeBaseId,
+          version: state.activeVersion!,
+          contentHash: state.activeContentHash!,
+        }));
       return {
         schemaVersion: 1,
         leaseId: `e2e-lease-${runId}`,
         runId,
         createdAt: fixedNow,
         capability,
-        snapshots: runtime.knowledgeStates
-          .filter((state) => state.activeVersion !== null && state.activeContentHash !== null)
-          .map((state) => ({
-            knowledgeBaseId: state.knowledgeBaseId,
-            version: state.activeVersion!,
-            contentHash: state.activeContentHash!,
-          })),
+        snapshots,
         references,
         citations,
-        versionKey: runtime.knowledgeStates.length === 0
+        versionKey: snapshots.length === 0
           ? 'no-snapshots-configured'
-          : runtime.knowledgeStates.map((state) => `${state.knowledgeBaseId}@${state.activeVersion}:${state.activeContentHash?.slice(0, 12)}`).join('|'),
+          : snapshots.map((snapshot) => `${snapshot.knowledgeBaseId}@${snapshot.version}:${snapshot.contentHash.slice(0, 12)}`).join('|'),
       };
     },
   };
@@ -869,6 +1126,7 @@ function createModelExecutor(runtime: RuntimeState): ModelJobExecutor {
       return { status: 'running', progress: 0.35 };
     },
     async cancel() {
+      if (runtime.modelCancellationMode === 'hang') return new Promise<never>(() => undefined);
       return { status: 'cancelled' };
     },
   };
@@ -1064,6 +1322,7 @@ declare global {
         config?: Record<string, unknown>;
         execution?: { state: CanvasModuleExecutionState; latestExecutionId?: string };
       }): Promise<boolean>;
+      seedGeneratedImageResult(): Promise<boolean>;
       getState(): {
         commitCount: number;
         durableProjectContainsTransientImageUrl: boolean;
@@ -1089,6 +1348,7 @@ declare global {
         undoDepth: number;
       };
       failNextModelJobEnqueue(): void;
+      setModelCancellationMode(mode: 'complete' | 'hang'): void;
       nonce: string;
       queueProjectImageImport(input: {
         byteSize: number;
@@ -1102,8 +1362,10 @@ declare global {
         label: string;
         mediaType: 'video/mp4';
       }): void;
+      reopenProject(): Promise<void>;
       reset(): Promise<void>;
       resetEmpty(): Promise<void>;
+      showLegacyStarterCanvas(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
       seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;
     };

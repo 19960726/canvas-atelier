@@ -92,11 +92,14 @@ export class GenerationHistoryService {
       throw new Error('History comparison requires between two and twenty records');
     }
     const records = await this.store.getRecords(historyIds);
+    if (records.some((record) => record.kind !== 'image')) {
+      throw new Error('Image history comparison only accepts image records');
+    }
     return Object.freeze(records.map((record) => Object.freeze({
       availability: record.output?.availability ?? 'none',
       createdAt: record.createdAt,
       favorite: record.favorite,
-      format: record.output?.format ?? null,
+      format: record.output?.format === 'mp4' ? null : record.output?.format ?? null,
       height: record.output?.height ?? null,
       historyId: record.id,
       project: record.project,

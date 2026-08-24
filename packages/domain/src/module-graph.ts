@@ -99,6 +99,40 @@ const moduleNodeDataSchema = z.object({
     }
     return;
   }
+  if (moduleType === 'video_generation') {
+    const referenceAssetIds = config.referenceAssetIds;
+    if (referenceAssetIds !== undefined) {
+      if (!Array.isArray(referenceAssetIds) || referenceAssetIds.length > MAX_GENERATION_REFERENCES) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Video preview references are limited to ${MAX_GENERATION_REFERENCES} managed images`,
+          path: ['config', 'referenceAssetIds'],
+        });
+      } else {
+        const seen = new Set<string>();
+        referenceAssetIds.forEach((assetId, index) => {
+          if (typeof assetId !== 'string' || !isManagedProjectAssetId(assetId) || seen.has(assetId)) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Video preview references require unique content-addressed project image asset ids',
+              path: ['config', 'referenceAssetIds', index],
+            });
+          }
+          if (typeof assetId === 'string') seen.add(assetId);
+        });
+      }
+    }
+    for (const key of ['firstFrameAssetId', 'lastFrameAssetId', 'sourceVideoAssetId'] as const) {
+      if (config[key] !== undefined && !isManagedProjectAssetId(config[key])) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Video preview media requires content-addressed project asset ids',
+          path: ['config', key],
+        });
+      }
+    }
+    return;
+  }
   if (moduleType !== 'canvas_library' || config.assetIds === undefined) return;
   if (!Array.isArray(config.assetIds)) {
     context.addIssue({
@@ -315,6 +349,7 @@ export function canConnectCanvasPorts(
     source.dataType !== target.dataType
     && !(source.dataType === 'image_asset' && target.dataType === 'image_list')
     && !(source.dataType === 'video_asset' && target.dataType === 'video_ranges')
+    && !(target.dataType === 'media_asset' && (source.dataType === 'image_asset' || source.dataType === 'video_asset'))
   ) {
     return { ok: false, code: 'TYPE_MISMATCH', message: `${source.dataType} cannot connect to ${target.dataType}` };
   }

@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback } from 'node:crypto';
 import { promisify } from 'node:util';
+import { join } from 'node:path';
 
 import { acquireConfinedFileLock, releaseConfinedFileLock } from './confined-file-lock.js';
 import { NodeFileSystem, type FileSystem } from './file-system.js';
@@ -12,6 +13,7 @@ import {
 } from './provider-file-confinement.js';
 import {
   createProviderBridgeError,
+  type ProviderBridgeProvider,
   type ProviderConfigurationStatus,
 } from './provider-contracts.js';
 
@@ -29,10 +31,11 @@ export interface ProviderMappingSecrets {
 }
 
 export interface ProviderCredentialStore {
-  configure(request: { token: string; passphrase?: string }): Promise<void>;
+  configure(request: { token: string; imageToken?: string; languageToken?: string; imageTokens?: readonly string[]; reverseTokens?: readonly string[]; passphrase?: string }): Promise<void>;
   unlock(request: { passphrase: string }): Promise<void>;
   getStatus(): Promise<ProviderConfigurationStatus>;
-  getToken(): Promise<string>;
+  getPrimaryToken(): Promise<string>;
+  getToken(role?: 'image' | 'language'): Promise<string>;
   getMappingKey(): Promise<string>;
   getMappingSecrets(): Promise<ProviderMappingSecrets>;
 }
@@ -55,19 +58,25 @@ type ProviderCredentialEnvelope =
 
 interface ProviderCredentialPayload {
   readonly token: string;
+  readonly imageToken?: string;
+  readonly languageToken?: string;
+  readonly imageTokens?: readonly string[];
+  readonly reverseTokens?: readonly string[];
   readonly mappingKey: string;
   readonly legacyMappingKeys: readonly string[];
 }
 
 export function createSecureProviderCredentialStore(options: {
   readonly appDataRoot: string;
+  readonly provider?: ProviderBridgeProvider;
   readonly fileSystem?: FileSystem;
   readonly safeStorage?: SafeStorageAdapter;
 }): ProviderCredentialStore {
   const fileSystem = options.fileSystem ?? new NodeFileSystem();
   const safeStorage = options.safeStorage;
-  const targetPath = confinedCredentialsPath(options.appDataRoot);
-  const lockPath = confinedCredentialsLockPath(options.appDataRoot);
+  const credentialRoot = providerCredentialRoot(options.appDataRoot, options.provider ?? 'comfly');
+  const targetPath = confinedCredentialsPath(credentialRoot);
+  const lockPath = confinedCredentialsLockPath(credentialRoot);
   let unlockedCredentials: ProviderCredentialPayload | null = null;
   let operationTail: Promise<void> = Promise.resolve();
 
@@ -75,11 +84,19 @@ export function createSecureProviderCredentialStore(options: {
     async configure(request) {
       await enqueueCredentialOperation(async () => {
         const token = parseSecretString(request.token, 'token');
+        const imageToken = request.imageToken === undefined ? undefined : parseSecretString(request.imageToken, 'imageToken');
+        const languageToken = request.languageToken === undefined ? undefined : parseSecretString(request.languageToken, 'languageToken');
+        const imageTokens = request.imageTokens === undefined ? undefined : parseSecretList(request.imageTokens, 'imageTokens');
+        const reverseTokens = request.reverseTokens === undefined ? undefined : parseSecretList(request.reverseTokens, 'reverseTokens');
         await withCredentialLock(async () => {
           const existing = await readEnvelopeUnlocked();
           const existingPayload = await readExistingCredentialPayloadForRotation(existing, request.passphrase);
           const nextPayload: ProviderCredentialPayload = {
             token,
+            ...(imageToken === undefined ? {} : { imageToken }),
+            ...(languageToken === undefined ? {} : { languageToken }),
+            ...(imageTokens === undefined ? {} : { imageTokens }),
+            ...(reverseTokens === undefined ? {} : { reverseTokens }),
             mappingKey: existingPayload?.mappingKey ?? createMappingKey(),
             legacyMappingKeys: existingPayload?.legacyMappingKeys ?? [],
           };
@@ -113,6 +130,17 @@ export function createSecureProviderCredentialStore(options: {
             encryption: safeStorage?.isEncryptionAvailable() === true ? 'safeStorage' : 'unavailable',
           };
         }
+        if (unlockedCredentials === null && envelope.kind === 'safeStorage' && safeStorage?.isEncryptionAvailable() === true) {
+          try {
+            const decoded = await decryptCredentialEnvelope(envelope, '');
+            if (decoded.needsMigration) {
+              await writeEnvelopeUnlocked(await encryptCredentialPayload(decoded.payload, ''));
+            }
+            unlockedCredentials = decoded.payload;
+          } catch (error) {
+            if (!isCredentialsLockedError(error)) throw error;
+          }
+        }
         return {
           configured: true,
           locked: unlockedCredentials === null,
@@ -120,8 +148,16 @@ export function createSecureProviderCredentialStore(options: {
         };
       }));
     },
-    async getToken() {
+    async getPrimaryToken() {
       return (await getUnlockedCredentials()).token;
+    },
+    async getToken(role = 'language') {
+      const credentials = await getUnlockedCredentials();
+      if (role === 'image' && credentials.imageTokens?.[0]) return credentials.imageTokens[0];
+      if (role === 'language' && credentials.reverseTokens?.[0]) return credentials.reverseTokens[0];
+      if (role === 'image' && credentials.imageToken) return credentials.imageToken;
+      if (role === 'language' && credentials.languageToken) return credentials.languageToken;
+      return credentials.token;
     },
     async getMappingKey() {
       return (await getUnlockedCredentials()).mappingKey;
@@ -169,7 +205,17 @@ export function createSecureProviderCredentialStore(options: {
     if (unlockedCredentials !== null && envelope.kind === 'passphrase' && passphrase === undefined) {
       return unlockedCredentials;
     }
-    const decoded = await decryptCredentialEnvelope(envelope, passphrase ?? '');
+    let decoded: { payload: ProviderCredentialPayload; needsMigration: boolean };
+    try {
+      decoded = await decryptCredentialEnvelope(envelope, passphrase ?? '');
+    } catch (error) {
+      // An explicit new token must be able to recover from a stale DPAPI/
+      // safeStorage envelope left by another Windows profile or installation.
+      // Passphrase envelopes still require the correct passphrase so an
+      // accidental overwrite cannot bypass user-controlled encryption.
+      if (envelope.kind === 'safeStorage' && isCredentialsLockedError(error)) return null;
+      throw error;
+    }
     if (decoded.needsMigration) {
       await writeEnvelopeUnlocked(await encryptCredentialPayload(decoded.payload, passphrase));
     }
@@ -188,10 +234,10 @@ export function createSecureProviderCredentialStore(options: {
   }
 
   async function writeEnvelopeUnlocked(envelope: ProviderCredentialEnvelope): Promise<void> {
-    await fileSystem.mkdir(options.appDataRoot, { recursive: true });
+    await fileSystem.mkdir(credentialRoot, { recursive: true });
     try {
       await writeConfinedAtomicUpdate(fileSystem, {
-        appDataRoot: options.appDataRoot,
+        appDataRoot: credentialRoot,
         targetPath,
         data: `${JSON.stringify(envelope)}\n`,
         assertPathForRead: assertConfinedCredentialPathForRead,
@@ -206,19 +252,19 @@ export function createSecureProviderCredentialStore(options: {
   }
 
   async function withCredentialLock<T>(operation: () => Promise<T>): Promise<T> {
-    await fileSystem.mkdir(options.appDataRoot, { recursive: true });
+    await fileSystem.mkdir(credentialRoot, { recursive: true });
     const lock = await acquireConfinedFileLock(lockPath, {
       fileSystem,
       assertPathForRead: (path) => assertConfinedAppDataPathForRead(
         fileSystem,
-        options.appDataRoot,
+        credentialRoot,
         path,
         'CREDENTIALS_LOCKED',
         'Provider credential metadata path is invalid',
       ),
       assertPathForWrite: (path) => assertConfinedAppDataPathForWrite(
         fileSystem,
-        options.appDataRoot,
+        credentialRoot,
         path,
         'CREDENTIALS_LOCKED',
         'Provider credential metadata path is invalid',
@@ -278,7 +324,7 @@ export function createSecureProviderCredentialStore(options: {
   async function assertConfinedCredentialPathForWrite(): Promise<void> {
     await assertConfinedAppDataPathForWrite(
       fileSystem,
-      options.appDataRoot,
+      credentialRoot,
       targetPath,
       'CREDENTIALS_LOCKED',
       'Provider credential metadata path is invalid',
@@ -288,12 +334,18 @@ export function createSecureProviderCredentialStore(options: {
   async function assertConfinedCredentialPathForRead(): Promise<void> {
     await assertConfinedAppDataPathForRead(
       fileSystem,
-      options.appDataRoot,
+      credentialRoot,
       targetPath,
       'CREDENTIALS_LOCKED',
       'Provider credential metadata path is invalid',
     );
   }
+}
+
+function providerCredentialRoot(appDataRoot: string, provider: ProviderBridgeProvider): string {
+  if (provider === 'comfly') return appDataRoot;
+  if (provider === 'relayme') return join(appDataRoot, 'providers', 'relayme');
+  throw createProviderBridgeError('INVALID_REQUEST', '未知的模型供应商');
 }
 
 function parseCredentialEnvelope(value: unknown): ProviderCredentialEnvelope {
@@ -331,6 +383,10 @@ function parseCredentialPayload(plaintext: string, envelopeVersion: 1 | 2): { pa
       return {
         payload: {
           token: parseSecretString(value.token, 'token'),
+          ...(value.imageToken === undefined ? {} : { imageToken: parseSecretString(value.imageToken, 'imageToken') }),
+          ...(value.languageToken === undefined ? {} : { languageToken: parseSecretString(value.languageToken, 'languageToken') }),
+          ...(value.imageTokens === undefined ? {} : { imageTokens: parseSecretList(value.imageTokens, 'imageTokens') }),
+          ...(value.reverseTokens === undefined ? {} : { reverseTokens: parseSecretList(value.reverseTokens, 'reverseTokens') }),
           mappingKey: parseSecretString(value.mappingKey, 'mappingKey'),
           legacyMappingKeys: parseLegacyMappingKeys(value.legacyMappingKeys),
         },
@@ -357,6 +413,13 @@ function parseLegacyMappingKeys(value: unknown): string[] {
     throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata is invalid');
   }
   return [...new Set(value.map((item) => parseSecretString(item, 'legacyMappingKeys')))];
+}
+
+function parseSecretList(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 3) {
+    throw createProviderBridgeError('CREDENTIALS_LOCKED', 'Provider credential metadata is invalid');
+  }
+  return value.map((item) => parseSecretString(item, name));
 }
 
 function createMappingKey(): string {
@@ -407,6 +470,10 @@ function isProviderBridgeError(error: unknown): error is { readonly code: string
     && typeof error.code === 'string'
     && typeof error.message === 'string'
     && typeof error.retryable === 'boolean';
+}
+
+function isCredentialsLockedError(error: unknown): boolean {
+  return isProviderBridgeError(error) && error.code === 'CREDENTIALS_LOCKED';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCanvasModuleNode } from '@agent-canvas/domain';
+import { createCanvasModuleNode, type ReversePromptRun } from '@agent-canvas/domain';
 import { createStarterProject } from './app-store';
 import {
   createBrowserPersistenceClient,
   createDesktopPersistenceClient,
+  createProjectPersistenceClient,
+  getActiveProjectSessionId,
   migrateLegacyProject,
   type LegacyProjectImportClient,
   type ProjectHydrationResult,
@@ -13,6 +15,27 @@ import { PROJECT_STORAGE_KEY } from './project-persistence';
 describe('desktop persistence', () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+
+  it('exposes only the active factory client session identity', async () => {
+    const originalBridge = window.novusDesktop;
+    const project = createStarterProject();
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'photoshop-session', 0)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+      restore: vi.fn(),
+    };
+    window.novusDesktop = bridge as never;
+
+    try {
+      const client = createProjectPersistenceClient();
+      expect(getActiveProjectSessionId()).toBeNull();
+      await client.openProject?.();
+      expect(getActiveProjectSessionId()).toBe('photoshop-session');
+    } finally {
+      window.novusDesktop = originalBridge;
+    }
   });
 
   it('pastes a clipboard image through the narrow desktop bridge without image payloads', async () => {
@@ -102,6 +125,141 @@ describe('desktop persistence', () => {
     expect((await client.hydrate()).project.assets).toHaveLength(1);
   });
 
+  it('binds reverse analysis to its current desktop session and strips caller session overrides', async () => {
+    const project = createStarterProject();
+    const analyzeReversePrompt = vi.fn(async () => ({
+      sessionId: 'run-1', nonce: 'nonce-1', knowledgeSnapshotVersion: 'scene-skill@1:aaaaaaaaaaaa',
+      analysis: 'Safe analysis', keywords: ['safe'], positivePrompt: 'Safe prompt',
+      negativeConstraints: ['No changes'], executionChecklist: ['Review'],
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)), restore: vi.fn(),
+      provider: { analyzeReversePrompt },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    await client.analyzeReversePrompt?.({
+      provider: 'comfly', run: {} as ReversePromptRun, media: [] as never, sessionId: 'attacker-session',
+    } as never);
+
+    expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'desktop-session', provider: 'comfly', run: {}, media: [],
+    }));
+    expect(JSON.stringify(analyzeReversePrompt.mock.calls)).not.toMatch(/attacker-session|path|url|base64|bytes|credential/iu);
+  });
+
+  it('binds Skill chat image references to its current desktop session', async () => {
+    const project = createStarterProject();
+    const chat = vi.fn(async () => ({
+      message: 'Use the centered product framing.', modelRoute: 'vision-skill', sources: [],
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)), restore: vi.fn(),
+      provider: { chat },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    await client.chatSkill?.({
+      provider: 'comfly', modelRoute: 'vision-skill', referenceAssetIds: ['a'.repeat(16)],
+      messages: [{ role: 'user', content: 'Assess the selected product image.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    });
+
+    expect(chat).toHaveBeenCalledWith({
+      provider: 'comfly', modelRoute: 'vision-skill', sessionId: 'desktop-session', referenceAssetIds: ['a'.repeat(16)],
+      messages: [{ role: 'user', content: 'Assess the selected product image.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    });
+    expect(JSON.stringify(chat.mock.calls)).not.toMatch(/path|url|base64|bytes|credential/iu);
+  });
+
+  it('creates a writable desktop session before the first Skill chat on an untitled canvas', async () => {
+    const project = createStarterProject();
+    const chat = vi.fn(async () => ({
+      message: 'The untitled canvas can chat.', modelRoute: 'chat-default', sources: [],
+    }));
+    const createProject = vi.fn(async ({ project: createdProject }: { project: typeof project }) => (
+      createDesktopSession(createdProject, 'created-chat-session', 0)
+    ));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createProject, createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => null), restore: vi.fn(),
+      provider: { chat },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.hydrate();
+
+    const result = await client.chatSkill?.({
+      provider: 'comfly', modelRoute: 'chat-default',
+      messages: [{ role: 'user', content: 'Start from the empty canvas.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    });
+
+    expect(createProject).toHaveBeenCalledWith({
+      project: expect.objectContaining({ name: '未命名画布', nodes: [], edges: [] }),
+    });
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'comfly', modelRoute: 'chat-default', sessionId: 'created-chat-session',
+    }));
+    expect(result?.message).toBe('The untitled canvas can chat.');
+  });
+
+  it('creates a writable desktop session before reverse analysis on an untitled canvas', async () => {
+    const project = createStarterProject();
+    const analyzeReversePrompt = vi.fn(async () => ({
+      sessionId: 'run-1', nonce: 'nonce-1', knowledgeSnapshotVersion: 'scene-skill@1:aaaaaaaaaaaa',
+      analysis: 'Safe analysis', keywords: ['safe'], positivePrompt: 'Safe prompt',
+      negativeConstraints: ['No changes'], executionChecklist: ['Review'],
+    }));
+    const createProject = vi.fn(async ({ project: createdProject }: { project: typeof project }) => (
+      createDesktopSession(createdProject, 'created-reverse-session', 0)
+    ));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createProject, createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => null), restore: vi.fn(),
+      provider: { analyzeReversePrompt },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.hydrate();
+
+    await client.analyzeReversePrompt?.({
+      provider: 'comfly', run: {} as ReversePromptRun, media: [] as never,
+    });
+
+    expect(createProject).toHaveBeenCalledWith({ project: expect.objectContaining({ name: '未命名画布' }) });
+    expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'comfly', sessionId: 'created-reverse-session',
+    }));
+  });
+
+  it('receives a display-safe reverse provider error', async () => {
+    const project = createStarterProject();
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)), restore: vi.fn(),
+      provider: { analyzeReversePrompt: vi.fn(async () => Promise.reject({
+        code: 'PROVIDER_ERROR', retryable: true, message: 'https://provider.example/C:/private data:image/png;base64,unsafe Authorization: Bearer secret',
+      })) },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const error = await client.analyzeReversePrompt?.({ provider: 'comfly', run: {} as ReversePromptRun, media: [] as never })
+      .catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({ code: 'PROVIDER_ERROR', retryable: true });
+    expect(String((error as Error).message)).not.toMatch(/https?:\/\/|[A-Za-z]:\\|base64|authorization|bearer|secret/iu);
+  });
+
   it('retries one ambiguous clipboard paste with the exact same operation identity', async () => {
     const project = createStarterProject();
     const result = {
@@ -163,9 +321,196 @@ describe('desktop persistence', () => {
     expect(hydrated.saveStatus).toBe('pending');
   });
 
-  it('does not invoke the desktop project picker or auto-open a recent project during normal hydration', async () => {
+  it('prioritizes an orphan recovery preview over an accidental blank recent project', async () => {
+    const recoveredProject = { ...createStarterProject(), name: 'Recovered orphan project' };
+    const recentOpen = vi.fn(async () => createDesktopSession({
+      ...createStarterProject(),
+      id: 'accidental-blank-project',
+      name: '未命名画布',
+    }, 'blank-session', 0));
+    const openLatestRecoveryPreview = vi.fn(async () => ({
+      ...createDesktopSession(recoveredProject, 'orphan-recovery-session', 5),
+      recoveryRequired: true as const,
+      stableSnapshotId: 'snapshot-5',
+      stableSnapshotRevision: 5,
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createProject: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(recoveredProject.id, 'snapshot-5', 'candidate-5', 5)),
+      openLatestRecoveryPreview,
+      openProject: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+      recentProjects: {
+        list: vi.fn(async () => [{
+          availability: 'available' as const,
+          recentProjectId: 'recent-blank',
+        }]),
+        open: recentOpen,
+      },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    const hydrated = await client.hydrate();
+
+    expect(openLatestRecoveryPreview).toHaveBeenCalledOnce();
+    expect(recentOpen).not.toHaveBeenCalled();
+    expect(hydrated).toMatchObject({
+      lifecycle: 'durable',
+      project: { name: 'Recovered orphan project' },
+      recoveryRequired: true,
+      revision: 5,
+      saveStatus: 'error',
+    });
+  });
+
+  it('opens a meaningful recent project before a stale blank orphan recovery preview', async () => {
+    const meaningfulProject = {
+      ...createStarterProject(),
+      id: 'meaningful-recent-project',
+      name: 'Existing four-node canvas',
+      nodes: [createCanvasModuleNode('existing-generation', 'image_generation', { x: 200, y: 100 })],
+      edges: [],
+    };
+    const blankOrphan = { ...createStarterProject(), id: 'stale-blank-orphan', name: '未命名画布', nodes: [], edges: [] };
+    const openLatestRecoveryPreview = vi.fn(async () => ({
+      ...createDesktopSession(blankOrphan, 'blank-orphan-session', 0),
+      recoveryRequired: true as const,
+    }));
+    const recentOpen = vi.fn(async () => createDesktopSession(meaningfulProject, 'meaningful-session', 51));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createProject: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(meaningfulProject.id, 'stable-51', 'candidate-51', 51)),
+      openLatestRecoveryPreview,
+      openProject: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+      recentProjects: {
+        list: vi.fn(async () => [{
+          availability: 'available' as const,
+          imageCount: 1,
+          nodeCount: 1,
+          recentProjectId: 'recent-meaningful',
+          videoCount: 0,
+        }]),
+        open: recentOpen,
+      },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    const hydrated = await client.hydrate();
+
+    expect(recentOpen).toHaveBeenCalledWith({ recentProjectId: 'recent-meaningful', mode: 'write' });
+    expect(openLatestRecoveryPreview).not.toHaveBeenCalled();
+    expect(hydrated).toMatchObject({
+      project: { id: meaningfulProject.id, nodes: [{ id: 'existing-generation' }] },
+      recoveryRequired: false,
+      revision: 51,
+      saveStatus: 'saved',
+    });
+  });
+
+  it('imports a browser image file into an existing image input node', async () => {
+    const client = createBrowserPersistenceClient();
+    const hydrated = await client.hydrate();
+    const project = {
+      ...hydrated.project,
+      nodes: [createCanvasModuleNode('image-input', 'image_input', { x: 12, y: 24 })],
+    };
+    await client.commit({
+      baseRevision: hydrated.revision,
+      kind: 'canvas',
+      nextProject: project,
+      previousProject: hydrated.project,
+      projectId: project.id,
+      transaction: { id: 'seed-image-input', label: 'Seed image input', operations: [] },
+    });
+
+    const result = await client.importProjectImage(
+      { kind: 'module', nodeId: 'image-input' },
+      new File(['browser image'], 'reference.png', { type: 'image/png' }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.asset.mediaType).toBe('image/png');
+    expect(result?.asset.displayUrl).toMatch(/^(blob:|data:image\/png)/u);
+    expect(result?.project.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'image-input',
+        data: expect.objectContaining({ config: expect.objectContaining({ assetId: result?.asset.assetId }) }),
+      }),
+    ]));
+  });
+
+  it('restores an imported browser image preview after recreating the persistence client', async () => {
+    const firstClient = createBrowserPersistenceClient(localStorage);
+    const hydrated = await firstClient.hydrate();
+    const project = {
+      ...hydrated.project,
+      nodes: [createCanvasModuleNode('durable-image-input', 'image_input', { x: 12, y: 24 })],
+    };
+    await firstClient.commit({
+      baseRevision: hydrated.revision,
+      kind: 'canvas',
+      nextProject: project,
+      previousProject: hydrated.project,
+      projectId: project.id,
+      transaction: { id: 'seed-durable-image-input', label: 'Seed durable image input', operations: [] },
+    });
+    const imported = await firstClient.importProjectImage(
+      { kind: 'module', nodeId: 'durable-image-input' },
+      new File(['durable browser image'], 'durable-reference.png', { type: 'image/png' }),
+    );
+
+    const refreshedClient = createBrowserPersistenceClient(localStorage);
+    await refreshedClient.openProject?.();
+    const restored = await refreshedClient.listProjectImages();
+
+    expect(imported).not.toBeNull();
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({ assetId: imported?.asset.assetId, mediaType: 'image/png', usageCount: 1 });
+    expect(restored[0]?.displayUrl).toMatch(/^data:image\/png;base64,/u);
+  });
+
+  it('restores an imported browser video preview after recreating the persistence client', async () => {
+    const firstClient = createBrowserPersistenceClient(localStorage);
+    const hydrated = await firstClient.hydrate();
+    const project = {
+      ...hydrated.project,
+      nodes: [createCanvasModuleNode('durable-video-input', 'video_input', { x: 12, y: 24 })],
+    };
+    await firstClient.commit({
+      baseRevision: hydrated.revision,
+      kind: 'canvas',
+      nextProject: project,
+      previousProject: hydrated.project,
+      projectId: project.id,
+      transaction: { id: 'seed-durable-video-input', label: 'Seed durable video input', operations: [] },
+    });
+    const imported = await firstClient.importProjectVideo?.(
+      'durable-video-input',
+      new File([new Uint8Array([0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0])], 'durable-reference.mp4', { type: 'video/mp4' }),
+    );
+
+    const refreshedClient = createBrowserPersistenceClient(localStorage);
+    await refreshedClient.openProject?.();
+    const restored = await refreshedClient.listProjectVideos?.();
+
+    expect(imported).not.toBeNull();
+    expect(restored).toHaveLength(1);
+    expect(restored?.[0]).toMatchObject({ assetId: imported?.asset.assetId, mediaType: 'video/mp4', usageCount: 1 });
+    expect(restored?.[0]?.displayUrl).toMatch(/^data:video\/mp4;base64,/u);
+  });
+  it('automatically restores the most recently opened available project during first hydration', async () => {
     const recentProject = { ...createStarterProject(), name: 'Recent desktop project' };
-    const openProject = vi.fn(async () => ({
+    const openProject = vi.fn();
+    const openRecentProject = vi.fn(async () => ({
       currentRevision: 7,
       mode: 'write' as const,
       project: recentProject,
@@ -180,19 +525,48 @@ describe('desktop persistence', () => {
       commit: vi.fn(),
       createStablePoint: vi.fn(),
       exportPack: vi.fn(),
-      getRecoveryPlan: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(
+        recentProject.id,
+        'stable-7',
+        'candidate-7',
+        7,
+      )),
       importPack: vi.fn(),
       openProject,
+      recentProjects: {
+        list: vi.fn(async () => [{
+          recentProjectId: 'recent_0123456789abcdef01234567',
+          projectId: recentProject.id,
+          displayName: recentProject.name,
+          lastOpenedAt: '2026-08-12T00:00:00.000Z',
+          lastSavedAt: '2026-08-12T00:00:00.000Z',
+          availability: 'available' as const,
+          nodeCount: recentProject.nodes.length,
+          imageCount: 0,
+          videoCount: 0,
+          previewUrl: null,
+        }]),
+        open: openRecentProject,
+      },
       restore: vi.fn(),
     };
 
-    const hydrated = await createDesktopPersistenceClient(bridge).hydrate();
+    const client = createDesktopPersistenceClient(bridge as never);
+    const hydrated = await client.hydrate();
+    await client.hydrate();
 
     expect(openProject).not.toHaveBeenCalled();
-    expect(hydrated.project).toMatchObject({ name: '未命名画布', nodes: [], edges: [] });
-    expect(hydrated.availableSnapshotIds).toEqual([]);
-    expect(hydrated.lifecycle).toBe('untitled');
-    expect(hydrated.saveStatus).toBe('pending');
+    expect(bridge.recentProjects.list).toHaveBeenCalledOnce();
+    expect(openRecentProject).toHaveBeenCalledOnce();
+    expect(openRecentProject).toHaveBeenCalledWith({
+      recentProjectId: 'recent_0123456789abcdef01234567',
+      mode: 'write',
+    });
+    expect(hydrated.project).toMatchObject({ name: 'Recent desktop project' });
+    expect(hydrated.availableSnapshotIds).toEqual(['stable-7']);
+    expect(hydrated.lifecycle).toBe('durable');
+    expect(hydrated.revision).toBe(7);
+    expect(hydrated.saveStatus).toBe('saved');
     expect(hydrated.recoveryRequired).not.toBe(true);
   });
 
@@ -312,7 +686,6 @@ describe('desktop persistence', () => {
     const edited = { ...hydrated.project, name: 'Renamed in-memory draft' };
 
     await expect(client.listProjectImages()).resolves.toEqual([]);
-    await expect(client.importProjectImage({ kind: 'module', nodeId: 'module-1' })).resolves.toBeNull();
     const result = await client.commit({
       baseRevision: 0,
       kind: 'canvas',
@@ -392,18 +765,11 @@ describe('desktop persistence', () => {
     },
   );
 
-  it('releases the current lease without flush before reopening the durable project as writable', async () => {
+  it('refreshes the current writable lease in place before the next commit', async () => {
     const project = { ...createStarterProject(), name: 'Reload writable project' };
-    const events: string[] = [];
-    const openProject = vi.fn(async () => {
-      events.push('open:write');
-      return openProject.mock.calls.length === 1
-        ? createDesktopSession(project, 'first-session', 3)
-        : createDesktopSession(project, 'second-session', 4);
-    });
-    const closeProject = vi.fn(async (request: { sessionId: string; flush?: boolean }) => {
-      events.push(`close:${request.sessionId}:${request.flush === false ? 'no-flush' : 'flush'}`);
-    });
+    const openProject = vi.fn(async () => createDesktopSession(project, 'first-session', 3));
+    const refreshProject = vi.fn(async () => createDesktopSession(project, 'first-session', 4));
+    const closeProject = vi.fn(async () => undefined);
     const commit = vi.fn(async (request: { projectId: string; transaction: { id: string } }) => ({
       committedAt: '2026-07-19T00:00:00.000Z',
       projectId: request.projectId,
@@ -417,18 +783,19 @@ describe('desktop persistence', () => {
       createStablePoint: vi.fn(),
       getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
       openProject,
+      refreshProject,
       projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
       restore: vi.fn(),
     };
     const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
     await client.openProject?.();
-    events.length = 0;
-
     expect.soft(client.reloadDurableProject).toBeTypeOf('function');
     if (client.reloadDurableProject === undefined) return;
     const reloaded = await client.reloadDurableProject();
 
-    expect(events).toEqual(['close:first-session:no-flush', 'open:write']);
+    expect(refreshProject).toHaveBeenCalledWith({ sessionId: 'first-session' });
+    expect(closeProject).not.toHaveBeenCalled();
+    expect(openProject).toHaveBeenCalledOnce();
     expect(reloaded).toMatchObject({ lifecycle: 'durable', project: { name: 'Reload writable project' }, revision: 4, saveStatus: 'saved' });
     const edited = { ...project, name: 'Saved after reload' };
     await expect(client.commit({
@@ -439,15 +806,15 @@ describe('desktop persistence', () => {
       projectId: project.id,
       transaction: { id: 'tx-after-reload', label: 'Save after reload', operations: [] },
     })).resolves.toMatchObject({ ok: true, revision: 5 });
-    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'second-session' }));
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'first-session' }));
   });
 
-  it('can retry writable reload after open rejection without closing the released session twice', async () => {
+  it('can retry a silent refresh after one refresh rejection without closing the active session', async () => {
     const project = { ...createStarterProject(), name: 'Reload retry project' };
-    const openProject = vi.fn()
-      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 3))
-      .mockRejectedValueOnce(new Error('reload open rejected'))
-      .mockResolvedValueOnce(createDesktopSession(project, 'second-session', 4));
+    const openProject = vi.fn(async () => createDesktopSession(project, 'first-session', 3));
+    const refreshProject = vi.fn()
+      .mockRejectedValueOnce(new Error('silent refresh rejected'))
+      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 4));
     const closeProject = vi.fn(async () => undefined);
     const bridge = {
       closeProject,
@@ -455,6 +822,7 @@ describe('desktop persistence', () => {
       createStablePoint: vi.fn(),
       getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
       openProject,
+      refreshProject,
       projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
       restore: vi.fn(),
     };
@@ -463,57 +831,19 @@ describe('desktop persistence', () => {
 
     expect.soft(client.reloadDurableProject).toBeTypeOf('function');
     if (client.reloadDurableProject === undefined) return;
-    await expect(client.reloadDurableProject()).rejects.toThrow('reload open rejected');
+    await expect(client.reloadDurableProject()).rejects.toThrow('silent refresh rejected');
     await expect(client.reloadDurableProject()).resolves.toMatchObject({ revision: 4, saveStatus: 'saved' });
-    expect(closeProject).toHaveBeenCalledTimes(1);
-    expect(closeProject).toHaveBeenCalledWith({ sessionId: 'first-session', flush: false });
-    expect(openProject).toHaveBeenCalledTimes(3);
+    expect(closeProject).not.toHaveBeenCalled();
+    expect(openProject).toHaveBeenCalledOnce();
+    expect(refreshProject).toHaveBeenCalledTimes(2);
   });
 
-  it('retries the same no-flush session close after close rejection before reopening writable', async () => {
-    const project = { ...createStarterProject(), name: 'Close retry project' };
-    const openProject = vi.fn()
-      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 3))
-      .mockResolvedValueOnce(createDesktopSession(project, 'second-session', 4));
-    const closeProject = vi.fn()
-      .mockRejectedValueOnce(new Error('close failed after partial cleanup'))
-      .mockResolvedValueOnce(undefined);
-    const bridge = {
-      closeProject,
-      commit: vi.fn(),
-      createStablePoint: vi.fn(),
-      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
-      openProject,
-      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
-      restore: vi.fn(),
-    };
-    const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
-    await client.openProject?.();
-
-    await expect(client.reloadDurableProject?.()).rejects.toThrow('close failed after partial cleanup');
-    await expect(client.hydrate()).resolves.toMatchObject({
-      project: { name: 'Close retry project' },
-      revision: 3,
-      saveStatus: 'saved',
-    });
-    await expect(client.reloadDurableProject?.()).resolves.toMatchObject({
-      project: { name: 'Close retry project' },
-      revision: 4,
-      saveStatus: 'saved',
-    });
-
-    expect(closeProject).toHaveBeenCalledTimes(2);
-    expect(closeProject).toHaveBeenNthCalledWith(1, { sessionId: 'first-session', flush: false });
-    expect(closeProject).toHaveBeenNthCalledWith(2, { sessionId: 'first-session', flush: false });
-    expect(openProject).toHaveBeenCalledTimes(2);
-  });
-
-  it('does not accept a read-only result as a successful durable reload', async () => {
-    const project = { ...createStarterProject(), name: 'Reload lease project' };
-    const openProject = vi.fn()
-      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 3))
-      .mockResolvedValueOnce({ ...createDesktopSession(project, 'read-only-session', 3), mode: 'read_only' as const })
-      .mockResolvedValueOnce(createDesktopSession(project, 'second-session', 4));
+  it('keeps the current durable project adopted after a silent refresh failure', async () => {
+    const project = { ...createStarterProject(), name: 'Refresh failure project' };
+    const openProject = vi.fn(async () => createDesktopSession(project, 'first-session', 3));
+    const refreshProject = vi.fn()
+      .mockRejectedValueOnce(new Error('refresh failed before readback'))
+      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 4));
     const closeProject = vi.fn(async () => undefined);
     const bridge = {
       closeProject,
@@ -521,6 +851,43 @@ describe('desktop persistence', () => {
       createStablePoint: vi.fn(),
       getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
       openProject,
+      refreshProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
+    await client.openProject?.();
+
+    await expect(client.reloadDurableProject?.()).rejects.toThrow('refresh failed before readback');
+    await expect(client.hydrate()).resolves.toMatchObject({
+      project: { name: 'Refresh failure project' },
+      revision: 3,
+      saveStatus: 'saved',
+    });
+    await expect(client.reloadDurableProject?.()).resolves.toMatchObject({
+      project: { name: 'Refresh failure project' },
+      revision: 4,
+      saveStatus: 'saved',
+    });
+
+    expect(closeProject).not.toHaveBeenCalled();
+    expect(openProject).toHaveBeenCalledOnce();
+  });
+
+  it('does not accept a read-only result as a successful durable reload', async () => {
+    const project = { ...createStarterProject(), name: 'Reload lease project' };
+    const openProject = vi.fn(async () => createDesktopSession(project, 'first-session', 3));
+    const refreshProject = vi.fn()
+      .mockResolvedValueOnce({ ...createDesktopSession(project, 'first-session', 3), mode: 'read_only' as const })
+      .mockResolvedValueOnce(createDesktopSession(project, 'first-session', 4));
+    const closeProject = vi.fn(async () => undefined);
+    const bridge = {
+      closeProject,
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject,
+      refreshProject,
       projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
       restore: vi.fn(),
     };
@@ -531,8 +898,8 @@ describe('desktop persistence', () => {
     if (client.reloadDurableProject === undefined) return;
     await expect(client.reloadDurableProject()).resolves.toBeNull();
     await expect(client.reloadDurableProject()).resolves.toMatchObject({ revision: 4, saveStatus: 'saved' });
-    expect(closeProject).toHaveBeenNthCalledWith(1, { sessionId: 'first-session', flush: false });
-    expect(closeProject).toHaveBeenNthCalledWith(2, { sessionId: 'read-only-session', flush: false });
+    expect(closeProject).not.toHaveBeenCalled();
+    expect(openProject).toHaveBeenCalledOnce();
   });
 
   it('clears prior recovery candidates when the selected project recovery plan fails', async () => {
@@ -822,6 +1189,42 @@ describe('desktop persistence', () => {
     expect(result).toMatchObject({ ok: true, revision: 5 });
   });
 
+  it('opens a recent project by opaque id and adopts the returned desktop session', async () => {
+    const currentProject = { ...createStarterProject(), name: 'Current project' };
+    const recentProject = { ...createStarterProject(), name: 'Recent project' };
+    const openProject = vi.fn(async () => createDesktopSession(currentProject, 'current-session', 2));
+    const openRecentProject = vi.fn(async () => createDesktopSession(recentProject, 'recent-session', 7));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({
+        action: 'auto_recover' as const,
+        candidates: [],
+        issues: [],
+        projectId: recentProject.id,
+        recoveredRevision: null,
+        stableSnapshotId: null,
+        targetRevision: null,
+      })),
+      openProject,
+      recentProjects: { open: openRecentProject },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const result = await client.openProject?.('recent_0123456789abcdef01234567');
+
+    expect(openRecentProject).toHaveBeenCalledWith({
+      recentProjectId: 'recent_0123456789abcdef01234567',
+      mode: 'write',
+    });
+    expect(openProject).toHaveBeenCalledOnce();
+    expect(bridge.closeProject).toHaveBeenCalledWith({ sessionId: 'current-session' });
+    expect(result).toMatchObject({ project: { name: 'Recent project' }, revision: 7 });
+    expect((await client.hydrate()).project.name).toBe('Recent project');
+  });
   it('maps desktop snapshot ids to opaque recovery candidate ids before restore', async () => {
     const durableProject = createStarterProject();
     const restoredProject = { ...durableProject, name: 'Restored from bridge' };
@@ -993,6 +1396,200 @@ describe('desktop persistence', () => {
       target: { kind: 'module', nodeId: 'image-input' },
     });
   });
+
+  it('imports a pasted desktop image file directly into the selected module without opening the native picker', async () => {
+    const durableProject = createStarterProject();
+    const importedProject = { ...durableProject, assets: [] };
+    const asset = {
+      assetId: 'fedcba9876543210',
+      byteSize: 42,
+      displayUrl: 'novus-asset://project/desktop-session/fedcba9876543210',
+      extension: 'png' as const,
+      height: 3,
+      label: 'Pasted image',
+      mediaType: 'image/png' as const,
+      origin: 'imported' as const,
+      sha256: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+      usageCount: 1,
+      width: 2,
+    };
+    const importDroppedMedia = vi.fn(async () => ({ asset, currentRevision: 8, project: importedProject }));
+    const importImage = vi.fn();
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(durableProject.id, 'stable-7', 'candidate-7', 7)),
+      openProject: vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 7)),
+      projectImages: { importDroppedMedia, importImage, list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const file = new File(['pasted image'], 'pasted.png', { type: 'image/png' });
+
+    await expect(client.importProjectImage({ kind: 'module', nodeId: 'image-input' }, file)).resolves.toEqual({
+      asset,
+      project: importedProject,
+      revision: 8,
+    });
+    expect(importImage).not.toHaveBeenCalled();
+    expect(importDroppedMedia).toHaveBeenCalledWith({
+      sessionId: 'desktop-session',
+      target: expect.objectContaining({ kind: 'module', nodeId: 'image-input' }),
+    }, file);
+  });
+  it('creates a durable desktop project the first time an untitled canvas is saved', async () => {
+    const project = { ...createStarterProject(), name: '首次保存画布' };
+    const createProject = vi.fn(async (request: { project: typeof project }) => createDesktopSession(request.project, 'created-session', 0));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createProject,
+      createStablePoint: vi.fn(async () => ({ path: 'snapshot-0', reason: 'stable_point' as const, revision: 0, snapshotId: 'stable-0' })),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(project.id, 'stable-0', 'candidate-0', 0)),
+      openProject: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.commit({
+      baseRevision: 0,
+      kind: 'system',
+      nextProject: project,
+      previousProject: project,
+      projectId: project.id,
+      transaction: { id: 'save-untitled', label: 'Save untitled', operations: [] },
+    });
+
+    const saved = await client.stablePoint();
+
+    expect(createProject).toHaveBeenCalledWith({ project });
+    expect(saved).toMatchObject({ lifecycle: 'durable', revision: 0, availableSnapshotIds: ['stable-0'] });
+    expect((await client.hydrate()).saveStatus).toBe('saved');
+  });
+
+  it('creates only one desktop project when first-save boundaries overlap', async () => {
+    const project = { ...createStarterProject(), name: 'Concurrent first save' };
+    let releaseCreate: (() => void) | undefined;
+    const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    const createProject = vi.fn(async (request: { project: typeof project }) => {
+      await createGate;
+      return createDesktopSession(request.project, 'created-session', 0);
+    });
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createProject,
+      createStablePoint: vi.fn(async () => ({ path: 'snapshot-0', reason: 'stable_point' as const, revision: 0, snapshotId: 'stable-0' })),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(project.id, 'stable-0', 'candidate-0', 0)),
+      openProject: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.commit({
+      baseRevision: 0,
+      kind: 'system',
+      nextProject: project,
+      previousProject: project,
+      projectId: project.id,
+      transaction: { id: 'prepare-overlap', label: 'Prepare overlap', operations: [] },
+    });
+
+    const boundaries = Promise.all([
+      client.stablePoint(),
+      client.ensureModelExecutionSession?.(),
+      client.stablePoint(),
+    ]);
+    await vi.waitFor(() => expect(createProject).toHaveBeenCalled());
+    releaseCreate?.();
+    await boundaries;
+
+    expect(createProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates an internal desktop project before importing media into an untitled canvas', async () => {
+    const asset = {
+      assetId: 'abcdef0123456789', byteSize: 8, displayUrl: 'novus-asset://project/created-session/abcdef0123456789',
+      extension: 'png' as const, height: 1, label: 'Dropped image', mediaType: 'image/png' as const,
+      origin: 'imported' as const, sha256: `abcdef0123456789${'0'.repeat(48)}`, usageCount: 1, width: 1,
+    };
+    let createdProject = createStarterProject();
+    const createProject = vi.fn(async (request: { project: typeof createdProject }) => {
+      createdProject = request.project;
+      return createDesktopSession(request.project, 'created-session', 0);
+    });
+    const importDroppedMedia = vi.fn(async () => ({
+      asset,
+      currentRevision: 1,
+      project: {
+        ...createdProject,
+        assets: [{
+          assetId: asset.assetId, byteSize: asset.byteSize, extension: asset.extension, height: asset.height,
+          label: asset.label, mediaType: asset.mediaType, origin: asset.origin, sha256: asset.sha256, width: asset.width,
+        }],
+      },
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createProject,
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(createdProject.id, 'stable-0', 'candidate-0', 0)),
+      openProject: vi.fn(),
+      projectImages: { importDroppedMedia, importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    const project = (await client.hydrate()).project;
+    const file = new File([Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], 'drop.png', { type: 'image/png' });
+
+    const result = await client.importDroppedMedia?.({
+      file,
+      operationId: 'drop-untitled-image',
+      position: { x: 100, y: 120 },
+    });
+
+    expect(createProject).toHaveBeenCalledWith({ project });
+    expect(importDroppedMedia).toHaveBeenCalledWith({
+      sessionId: 'created-session',
+      target: { kind: 'new_media_input', operationId: 'drop-untitled-image', position: { x: 100, y: 120 } },
+    }, file);
+    expect(result).toMatchObject({ asset, revision: 1 });
+    expect(result?.project.assets).toEqual([expect.objectContaining({ assetId: asset.assetId })]);
+  });
+
+  it('reloads the active durable project without closing the session or opening a native project picker', async () => {
+    const initialProject = { ...createStarterProject(), name: 'Before provider asset commit' };
+    const refreshedProject = { ...initialProject, name: 'After provider asset commit' };
+    const openProject = vi.fn(async () => createDesktopSession(initialProject, 'active-session', 50));
+    const refreshProject = vi.fn(async () => createDesktopSession(refreshedProject, 'active-session', 51));
+    const closeProject = vi.fn(async () => undefined);
+    const bridge = {
+      closeProject,
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(initialProject.id, 'stable-50', 'candidate-50', 50)),
+      openProject,
+      refreshProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const result = await client.reloadDurableProject?.();
+
+    expect(refreshProject).toHaveBeenCalledWith({ sessionId: 'active-session' });
+    expect(openProject).toHaveBeenCalledOnce();
+    expect(closeProject).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      project: { name: 'After provider asset commit' },
+      revision: 51,
+      saveStatus: 'saved',
+    });
+  });
 });
 
 interface ReloadableDesktopClient {
@@ -1029,9 +1626,8 @@ async function runDesktopCommitBoundaryRace(
     .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3));
   if (boundary === 'open') {
     openProject.mockResolvedValueOnce(createDesktopSession(replacementProject, 'second-session', 7));
-  } else if (boundary === 'reload') {
-    openProject.mockResolvedValueOnce(createDesktopSession(replacementProject, 'reloaded-session', 7));
   }
+  const refreshProject = vi.fn(async () => createDesktopSession(replacementProject, 'first-session', 7));
   const bridge = {
     closeProject: vi.fn(async () => undefined),
     commit,
@@ -1051,6 +1647,7 @@ async function runDesktopCommitBoundaryRace(
       };
     }),
     openProject,
+    refreshProject,
     projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
     restore: vi.fn(async () => ({
       ...createDesktopSession(replacementProject, 'first-session', 7),
@@ -1146,3 +1743,34 @@ function createRecoveryPlan(
     targetRevision: revision,
   };
 }
+
+  it('imports a browser Agent reference into the asset library without changing canvas nodes', async () => {
+    const client = createBrowserPersistenceClient();
+    const hydrated = await client.hydrate();
+    const initialNodes = hydrated.project.nodes;
+
+    const result = await client.importProjectImage(
+      { kind: 'agent_reference' } as never,
+      new File(['browser image'], 'agent-reference.png', { type: 'image/png' }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.project.nodes).toEqual(initialNodes);
+    expect(result?.project.assets).toEqual([expect.objectContaining({ assetId: result?.asset.assetId })]);
+    expect(result?.asset.usageCount).toBe(0);
+  });
+
+  it('imports a browser Agent video reference into the asset library without changing canvas nodes', async () => {
+    const client = createBrowserPersistenceClient();
+    const hydrated = await client.hydrate();
+    const initialNodes = hydrated.project.nodes;
+
+    const result = await client.importAgentReferenceVideo?.(
+      new File([new Uint8Array([0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0])], 'agent-reference.mp4', { type: 'video/mp4' }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.project.nodes).toEqual(initialNodes);
+    expect(result?.project.assets).toEqual([expect.objectContaining({ assetId: result?.asset.assetId, mediaType: 'video/mp4' })]);
+    expect(result?.asset.usageCount).toBe(0);
+  });

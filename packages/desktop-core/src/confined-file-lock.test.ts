@@ -213,6 +213,31 @@ describe('confined file lock', () => {
     expect(staleTemps.some((path) => fileSystem.has(path))).toBe(true);
     await releaseConfinedFileLock(lock);
   });
+
+  it('waits long enough by default to reclaim a fresh lock after its owner dies', async () => {
+    const baseTime = Date.parse('2026-07-16T00:00:00.000Z');
+    const fileSystem = ownerFileSystem({
+      createdAt: new Date(baseTime).toISOString(),
+      processId: 91,
+    });
+    let elapsedMs = 0;
+
+    const lock = await acquireConfinedFileLock(LOCK_PATH, options(fileSystem, {
+      isLocalProcessAlive: async () => false,
+      monotonicNow: () => {
+        elapsedMs += 1_000;
+        return elapsedMs;
+      },
+      now: () => baseTime + elapsedMs,
+      retryMs: 0,
+      staleAgeMs: undefined,
+      timeoutMs: undefined,
+    }));
+
+    expect(elapsedMs).toBeGreaterThanOrEqual(15_000);
+    await releaseConfinedFileLock(lock);
+  });
+
   it('uses monotonic elapsed time for lock acquisition timeout', async () => {
     const fileSystem = ownerFileSystem({ token: 'live-token', processId: 91 });
     const monotonicNow = vi.fn()

@@ -12,6 +12,7 @@ import {
   createProviderBridgeError,
   parseProviderConfigurationSnapshot,
   type ProviderBridgeProfile,
+  type ProviderBridgeProvider,
 } from './provider-contracts.js';
 
 const PROVIDER_CONFIGURATION_FILE = 'provider-configuration.json';
@@ -35,11 +36,13 @@ export interface ProviderConfigurationStore {
 
 export function createProviderConfigurationStore(options: {
   readonly appDataRoot: string;
+  readonly provider?: ProviderBridgeProvider;
   readonly fileSystem?: FileSystem;
 }): ProviderConfigurationStore {
   const fileSystem = options.fileSystem ?? new NodeFileSystem();
-  const targetPath = confinedProviderConfigurationPath(options.appDataRoot, PROVIDER_CONFIGURATION_FILE);
-  const lockPath = confinedProviderConfigurationPath(options.appDataRoot, PROVIDER_CONFIGURATION_LOCK_FILE);
+  const configurationRoot = providerConfigurationRoot(options.appDataRoot, options.provider ?? 'comfly');
+  const targetPath = confinedProviderConfigurationPath(configurationRoot, PROVIDER_CONFIGURATION_FILE);
+  const lockPath = confinedProviderConfigurationPath(configurationRoot, PROVIDER_CONFIGURATION_LOCK_FILE);
 
   return {
     async read(fallback) {
@@ -72,9 +75,9 @@ export function createProviderConfigurationStore(options: {
   async function replace(snapshot: ProviderConfigurationSnapshot | null): Promise<void> {
     if (snapshot === null) {
       await withConfigurationLock(async () => {
-        await fileSystem.mkdir(options.appDataRoot, { recursive: true });
+        await fileSystem.mkdir(configurationRoot, { recursive: true });
         await deleteConfinedAppDataFile(fileSystem, {
-          appDataRoot: options.appDataRoot,
+          appDataRoot: configurationRoot,
           targetPath,
           errorCode: 'PROVIDER_UNAVAILABLE',
           errorMessage: 'Provider configuration path is invalid',
@@ -89,9 +92,9 @@ export function createProviderConfigurationStore(options: {
       profiles: snapshot.profiles,
     });
     await withConfigurationLock(async () => {
-      await fileSystem.mkdir(options.appDataRoot, { recursive: true });
+      await fileSystem.mkdir(configurationRoot, { recursive: true });
       await writeConfinedAtomicUpdate(fileSystem, {
-        appDataRoot: options.appDataRoot,
+        appDataRoot: configurationRoot,
         targetPath,
         data: `${JSON.stringify({
           version: 1,
@@ -107,7 +110,7 @@ export function createProviderConfigurationStore(options: {
   }
 
   async function withConfigurationLock<T>(operation: () => Promise<T>): Promise<T> {
-    await fileSystem.mkdir(options.appDataRoot, { recursive: true });
+    await fileSystem.mkdir(configurationRoot, { recursive: true });
     const lock = await acquireConfinedFileLock(lockPath, {
       fileSystem,
       assertPathForRead: assertConfigurationPathForRead,
@@ -124,7 +127,7 @@ export function createProviderConfigurationStore(options: {
   async function assertConfigurationPathForRead(path: string): Promise<void> {
     await assertConfinedAppDataPathForRead(
       fileSystem,
-      options.appDataRoot,
+      configurationRoot,
       path,
       'PROVIDER_UNAVAILABLE',
       'Provider configuration path is invalid',
@@ -134,12 +137,18 @@ export function createProviderConfigurationStore(options: {
   async function assertConfigurationPathForWrite(path: string): Promise<void> {
     await assertConfinedAppDataPathForWrite(
       fileSystem,
-      options.appDataRoot,
+      configurationRoot,
       path,
       'PROVIDER_UNAVAILABLE',
       'Provider configuration path is invalid',
     );
   }
+}
+
+function providerConfigurationRoot(appDataRoot: string, provider: ProviderBridgeProvider): string {
+  if (provider === 'comfly') return appDataRoot;
+  if (provider === 'relayme') return join(appDataRoot, 'providers', 'relayme');
+  throw createProviderBridgeError('INVALID_REQUEST', '未知的模型供应商');
 }
 
 function cloneConfiguration(snapshot: ProviderConfigurationSnapshot): ProviderConfigurationSnapshot {

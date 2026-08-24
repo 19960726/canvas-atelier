@@ -28,6 +28,8 @@ export interface CanvasNodePresentation {
 
 interface CanvasNodeCardProps extends CanvasNodePresentation {
   selected?: boolean;
+  inputConnected?: boolean;
+  outputConnected?: boolean;
   children?: ReactNode;
 }
 
@@ -37,6 +39,7 @@ const iconByKind: Record<CanvasNode['type'], LucideIcon> = {
   prompt: MessageSquare,
   model_job: Play,
   image_result: ImageIcon,
+  video_result: Play,
   review: Check,
   memory_diff: History,
   agent_plan: Sparkles,
@@ -51,19 +54,25 @@ export const CanvasNodeCard = memo(function CanvasNodeCard({
   subtitle,
   status,
   selected = false,
+  inputConnected = false,
+  outputConnected = false,
   children,
 }: CanvasNodeCardProps) {
   const Icon = iconByKind[kind];
 
   return (
     <div
-      className={`canvas-node tone-${tone}${selected ? ' is-selected' : ''}`}
+      className={`canvas-node${kind === 'image_result' ? '' : ' canvas-node--compact'} tone-${tone}${selected ? ' is-selected' : ''}`}
       data-testid="canvas-node-card"
       data-node-kind={kind}
       data-tone={tone}
     >
-      <Handle type="target" position={Position.Left} />
-      <span className="canvas-node__rail" aria-hidden="true" />
+      <Handle
+        type="target"
+        position={Position.Left}
+        data-port-direction="input"
+        data-port-connected={inputConnected ? 'true' : undefined}
+      />
       <header className="canvas-node__header">
         <span className="canvas-node__type-icon" aria-hidden="true">
           <Icon size={15} />
@@ -78,7 +87,12 @@ export const CanvasNodeCard = memo(function CanvasNodeCard({
         <span>{subtitle}</span>
         <b>{status}</b>
       </footer>
-      <Handle type="source" position={Position.Right} />
+      <Handle
+        type="source"
+        position={Position.Right}
+        data-port-direction="output"
+        data-port-connected={outputConnected ? 'true' : undefined}
+      />
     </div>
   );
 });

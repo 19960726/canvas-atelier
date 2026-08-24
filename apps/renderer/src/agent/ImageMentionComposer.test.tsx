@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import type { OrderedReference } from '@agent-canvas/domain';
 import { ImageMentionComposer } from './ImageMentionComposer';
 
@@ -26,6 +27,23 @@ describe('ImageMentionComposer', () => {
       text: '@Hero image',
       citations: [{ assetId: 'scene', label: 'Hero image' }],
     });
+  });
+
+  it('places the typing caret after a newly inserted citation when the message was empty', () => {
+    function ControlledComposer() {
+      const [value, setValue] = useState({ text: '', citations: [] as Array<{ assetId: string; label: string }> });
+      return <ImageMentionComposer references={duplicateLabels} value={value} onChange={setValue} />;
+    }
+    render(<ControlledComposer />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mention image' }));
+    fireEvent.click(screen.getByText('Hero image (product)'));
+
+    const input = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+    expect(input).toHaveFocus();
+    expect(input.value).toBe('@Hero image');
+    expect(input.selectionStart).toBe(input.value.length);
+    expect(input.selectionEnd).toBe(input.value.length);
   });
 
   it('does not duplicate an asset citation and drops citations removed from text', () => {

@@ -1,8 +1,10 @@
-export { ComflyClient, normalizeBaseUrl } from './client';
+export { ComflyClient, decodeGeminiInlineImage, normalizeBaseUrl, parseGeminiImageResponse } from './client';
 export { mergeComflyModelRegistries } from './model-registry';
 export { redactProviderLog } from './redact';
 
 export type {
+  ComflyAccessibleModelCatalog,
+  ComflyCatalogModel,
   ComflyChatRequest,
   ComflyClientOptions,
   ComflyFetch,
@@ -14,5 +16,7 @@ export type {
   ComflyMergedModelRegistration,
   ComflyModelCapability,
   ComflyModelRegistration,
+  ComflyParameterTable,
   ComflyResponsesRequest,
+  ComflyVideoGenerationRequest,
 } from './types';

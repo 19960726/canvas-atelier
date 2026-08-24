@@ -76,6 +76,37 @@ describe('generation history record contract', () => {
     expect(() => parseGenerationHistoryRecord(mutate(succeededRecord()))).toThrow();
   });
 
+  it('accepts version 2 image and video records with media-specific output metadata', () => {
+    const image = parseGenerationHistoryRecord(succeededRecord());
+    const video = parseGenerationHistoryRecord(videoRecord());
+
+    expect(image).toMatchObject({ schemaVersion: 2, kind: 'image', output: { format: 'png', mediaType: 'image/png' } });
+    expect(video).toMatchObject({
+      schemaVersion: 2,
+      kind: 'video',
+      output: { format: 'mp4', mediaType: 'video/mp4', durationSeconds: 8 },
+    });
+  });
+
+  it('migrates a legacy version 1 image record to the version 2 image contract', () => {
+    const legacy = { ...succeededRecord(), schemaVersion: 1 } as Record<string, unknown>;
+    delete legacy.kind;
+
+    const migrated = parseGenerationHistoryRecord(legacy);
+
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.kind).toBe('image');
+    expect(migrated.output?.format).toBe('png');
+  });
+
+  it('rejects media output metadata that does not match the record kind', () => {
+    expect(() => parseGenerationHistoryRecord({ ...succeededRecord(), kind: 'video' })).toThrow();
+    expect(() => parseGenerationHistoryRecord({ ...videoRecord(), kind: 'image' })).toThrow();
+    expect(() => parseGenerationHistoryRecord({
+      ...videoRecord(),
+      output: { ...(videoRecord().output as Record<string, unknown>), mediaType: 'image/png' },
+    })).toThrow();
+  });
   it('bounds reusable parameters, tags, references, and public strings', () => {
     expect(() => parseGenerationHistoryRecord({
       ...succeededRecord(),
@@ -135,6 +166,20 @@ describe('generation history query contract', () => {
     expect(() => parseList({ filters: { availability: 'none' } })).toThrow();
   });
 
+  it('filters image and video history before pagination', () => {
+    const image = parseGenerationHistoryRecord({ ...succeededRecord(), id: 'history_imageaaaaaaaaaaa' });
+    const video = parseGenerationHistoryRecord(videoRecord());
+
+    expect(filterAndSortGenerationHistory([image, video], {
+      filters: { kind: 'image' },
+    }).map((record) => record.id)).toEqual([image.id]);
+    expect(filterAndSortGenerationHistory([image, video], {
+      filters: { kind: 'video' },
+    }).map((record) => record.id)).toEqual([video.id]);
+    expect(filterAndSortGenerationHistory([image, video], {
+      filters: { kind: 'all' },
+    })).toHaveLength(2);
+  });
   it('filters reference and availability state before pagination', () => {
     const used = parseGenerationHistoryRecord({
       ...succeededRecord(),
@@ -209,7 +254,8 @@ describe('generation history query contract', () => {
 
 function succeededRecord(): Record<string, unknown> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    kind: 'image',
     id: 'history_0123456789abcdef',
     createdAt: '2026-07-18T12:00:00.000Z',
     updatedAt: completedAt,
@@ -258,6 +304,35 @@ function succeededRecord(): Record<string, unknown> {
   } satisfies GenerationHistoryRecord;
 }
 
+function videoRecord(): Record<string, unknown> {
+  return {
+    ...succeededRecord(),
+    schemaVersion: 2,
+    kind: 'video',
+    id: 'history_videoaaaaaaaaaaa',
+    job: {
+      jobId: 'job_videoaaaaaaaaaaaaaa',
+      resultId: 'result_videoaaaaaaaaaaa',
+    },
+    provider: {
+      displayName: 'RelayMe',
+      modelDisplayName: 'Seedance 2.0 Pro',
+      capabilityRevision: 'video-generation-v1',
+    },
+    promptSummary: 'Product reveal video on a quiet blue background',
+    output: {
+      width: 1920,
+      height: 1080,
+      durationSeconds: 8,
+      format: 'mp4',
+      mediaType: 'video/mp4',
+      byteSize: 1024,
+      availability: 'available',
+      historyAssetId: 'history_asset_videoaaaaaaa',
+      sha256: 'fedcba9876543210'.repeat(4),
+    },
+  };
+}
 function failedRecord(): Record<string, unknown> {
   return {
     ...succeededRecord(),

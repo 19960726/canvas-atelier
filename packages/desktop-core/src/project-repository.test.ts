@@ -1231,12 +1231,21 @@ async function expectLayout(projectRoot: string) {
   expect(await readdir(projectRoot)).toEqual(
     expect.arrayContaining([
       'assets',
+      'generated',
+      'history',
       'indexes',
       'journal',
       'project.novus.json',
       'recovery',
+      'reverse',
       'snapshots',
     ]),
+  );
+  expect(await readdir(join(projectRoot, 'generated'))).toEqual(
+    expect.arrayContaining(['images', 'videos']),
+  );
+  expect(await readdir(join(projectRoot, 'reverse'))).toEqual(
+    expect.arrayContaining(['results']),
   );
   expect(await readdir(join(projectRoot, 'journal'))).toEqual(
     expect.arrayContaining(['active.ndjson', 'archive']),

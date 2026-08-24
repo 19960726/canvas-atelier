@@ -13,6 +13,16 @@ afterEach(() => {
 });
 
 describe('GenerationHistoryDrawer', () => {
+  it('exposes the Figma history surface heading and keyboard close control', () => {
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    expect(screen.getByTestId('history-drawer')).toHaveAttribute('data-figma-surface', 'history');
+    expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('生图历史');
+    expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('统一生成历史');
+    expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('支持图片与视频筛选');
+    expect(screen.getByTestId('history-drawer-close')).toBeEnabled();
+  });
+
   it('loads an all-project gallery and opens a safe record detail', async () => {
     const available = historyRecord('history_availableaaaaaa', 'available');
     const corrupt = historyRecord('history_corruptaaaaaaaa', 'corrupt');
@@ -25,6 +35,7 @@ describe('GenerationHistoryDrawer', () => {
       pageSize: 50,
       sort: 'newest',
       filters: {
+        kind: 'all',
         availability: 'all',
         referenceState: 'all',
         trashState: 'active',
@@ -41,6 +52,22 @@ describe('GenerationHistoryDrawer', () => {
     expect(screen.getByRole('heading', { name: '生成详情' })).toBeVisible();
     expect(screen.getByText(available.promptSummary)).toBeVisible();
     expect(screen.getByText('2048 × 2048')).toBeVisible();
+  });
+
+  it('labels failed generations as failures instead of unavailable media files', async () => {
+    const failed = {
+      ...historyRecord('history_failedaaaaaa', 'available'),
+      output: null,
+      status: 'failed' as const,
+      termination: { code: 'provider_unavailable' as const, message: 'Provider unavailable' },
+    };
+    installHistoryBridge({ list: vi.fn(async () => ({ nextCursor: null, records: [failed], revision: 1, total: 1 })) });
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    expect(await screen.findByText('生成失败')).toBeVisible();
+    expect(screen.getByText('模型服务不可用')).toBeVisible();
+    expect(screen.queryByText('无可用文件')).not.toBeInTheDocument();
   });
 
   it('filters before pagination and favorites with an idempotent operation id', async () => {
@@ -62,6 +89,21 @@ describe('GenerationHistoryDrawer', () => {
       historyIds: [record.id],
       operationId: expect.stringMatching(/^operation_history_favorite_[a-z0-9_-]{8,}$/u),
     }));
+  });
+
+  it('filters image and video history before pagination', async () => {
+    const record = historyRecord('history_availableaaaaaa', 'available');
+    const list = vi.fn(async () => ({ nextCursor: null, records: [record], revision: 1, total: 1 }));
+    installHistoryBridge({ list });
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+    await screen.findByRole('button', { name: `查看 ${record.promptSummary}` });
+    expect(screen.getByRole('button', { name: '全部媒体' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: '视频' }));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({
+      filters: expect.objectContaining({ kind: 'video' }),
+    })));
+    expect(screen.getByRole('button', { name: '视频' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('filters by project, model, and status before pagination', async () => {
@@ -238,6 +280,18 @@ describe('GenerationHistoryDrawer', () => {
     await waitFor(() => expect(compare).toHaveBeenCalledWith({ historyIds: [first.id, second.id] }));
     expect(await screen.findByLabelText('历史比较 / History comparison')).toHaveTextContent('2048 × 2048');
   });
+  it('keeps the history surface mounted when the desktop history bridge is incomplete', async () => {
+    window.novusDesktop = {
+      history: {
+        getCapacity: vi.fn(async () => ({ activeBytes: 0, activeCount: 0, missingOrCorruptCount: 0, trashBytes: 0, trashCount: 0 })),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    expect(await screen.findByRole('status')).toHaveTextContent('当前环境暂不支持历史记录');
+    expect(screen.getByTestId('history-drawer')).toBeVisible();
+  });
 });
 
 function installHistoryBridge(overrides: Record<string, unknown>) {
@@ -262,7 +316,8 @@ function installHistoryBridge(overrides: Record<string, unknown>) {
 
 function historyRecord(id: string, availability: 'available' | 'corrupt'): GenerationHistoryRecord {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    kind: 'image',
     id,
     createdAt: '2026-07-21T10:00:00.000Z',
     updatedAt: '2026-07-21T10:00:02.000Z',

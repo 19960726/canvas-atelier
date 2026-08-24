@@ -232,6 +232,7 @@ export const reversePromptRunSchema = z.object({
 const professionalDetailListSchema = z.array(nonEmptyTrimmedStringSchema).min(1);
 
 const mediaResponsibilitySchema = z.object({
+  mention: z.string().regex(/^@(图片|视频)\d{1,2}$/u).optional(),
   sourceId: nonEmptyTrimmedStringSchema,
   label: nonEmptyTrimmedStringSchema.optional(),
   role: nonEmptyTrimmedStringSchema,
@@ -367,6 +368,7 @@ export const reversePromptResultSchema = z.object({
   mediaResponsibilities: z.array(mediaResponsibilitySchema).optional(),
   sceneDecomposition: z.object({
     spatialStructure: nonEmptyTrimmedStringSchema,
+    spatialDepth: nonEmptyTrimmedStringSchema.optional(),
     objects: z.array(sceneObjectSchema).min(1),
   }).strict().optional(),
   composition: z.object({
@@ -498,7 +500,39 @@ export function parseReversePromptResult(input: unknown, run: ReversePromptRun):
   ) {
     throw new Error('反推结果运行身份不匹配');
   }
+  validateMediaResponsibilities(result, run);
   return result;
+}
+
+function validateMediaResponsibilities(result: ReversePromptResult, run: ReversePromptRun): void {
+  // Keep compatibility with older provider responses that predate the
+  // structured responsibility section. New responses that include the
+  // section are validated strictly so no cited asset can be silently omitted.
+  if (run.orderedMedia.length === 0 || result.mediaResponsibilities === undefined) return;
+  const expected = new Map<string, string>();
+  let imageNumber = 0;
+  let videoNumber = 0;
+  for (const item of [...run.orderedMedia].sort((left, right) => left.order - right.order)) {
+    const mention = item.kind === 'image'
+      ? `@图片${++imageNumber}`
+      : `@视频${++videoNumber}`;
+    expected.set(mention, item.assetId);
+  }
+  const actual = result.mediaResponsibilities ?? [];
+  const actualMentions = new Set<string>();
+  const mismatches: string[] = [];
+  for (const responsibility of actual) {
+    if (responsibility.mention === undefined) continue;
+    actualMentions.add(responsibility.mention);
+    const expectedSourceId = expected.get(responsibility.mention);
+    if (expectedSourceId !== undefined && responsibility.sourceId !== expectedSourceId) {
+      mismatches.push(`${responsibility.mention} 应对应 ${expectedSourceId}，实际为 ${responsibility.sourceId}`);
+    }
+  }
+  const missing = [...expected.keys()].filter((mention) => !actualMentions.has(mention));
+  if (missing.length > 0 || mismatches.length > 0) {
+    throw new Error(`反推结果必须逐张输出素材职责；缺少 ${missing.join('、') || '无'}${mismatches.length > 0 ? `；映射错误：${mismatches.join('；')}` : ''}`);
+  }
 }
 
 function createUniqueValue(): string {

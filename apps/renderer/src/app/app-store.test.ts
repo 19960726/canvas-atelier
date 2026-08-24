@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CommitAck } from '@agent-canvas/desktop-core';
+import type { CommitAck, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { buildProjectMemoryContext, createAgentKnowledgeLease, createCanvasModuleNode, createSkillPromotionCandidateFingerprint, parseCanvasProject } from '@agent-canvas/domain';
-import type { CanvasProject, ModelJob, OrderedReference, ProjectTransaction, SkillPromotionCandidate } from '@agent-canvas/domain';
+import type { CanvasNode, CanvasProject, ModelJob, OrderedReference, ProjectTransaction, ReversePromptResult, SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   createStarterProject,
@@ -12,7 +12,7 @@ import {
   resetAppStoreForTests,
   useAppStore,
 } from './app-store';
-import type { KnowledgeClient } from './knowledge-client';
+import { createKnowledgeClient, type KnowledgeClient } from './knowledge-client';
 import { createBrowserPersistenceClient } from './desktop-persistence';
 import type {
   ProjectCommitRequest,
@@ -32,7 +32,7 @@ describe('project optimization memory', () => {
     resetAppStoreForTests();
   });
 
-  it('starts every normal renderer session as a unique clean untitled canvas without browser-local restoration', () => {
+  it('starts an explicit empty test canvas without browser-local restoration', () => {
     localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify({
       current: { ...createStarterProject(), name: '不应自动恢复的浏览器项目' },
       schemaVersion: 2,
@@ -50,6 +50,578 @@ describe('project optimization memory', () => {
     expect(first.saveStatus).toBe('pending');
     expect(first.project.id).not.toBe(second.project.id);
     expect(first.project.name).not.toBe('不应自动恢复的浏览器项目');
+  });
+
+  it('creates a true blank canvas when starting a new workflow', async () => {
+    await useAppStore.getState().newWorkflow();
+
+    expect(useAppStore.getState().project.nodes).toEqual([]);
+    expect(useAppStore.getState().project.edges).toEqual([]);
+  });
+  it('keeps the Agent workspace collapsed for an initial and fresh canvas', async () => {
+    expect(useAppStore.getState().agentPanelCollapsed).toBe(true);
+
+    await useAppStore.getState().newWorkflow();
+
+    expect(useAppStore.getState().agentPanelCollapsed).toBe(true);
+  });
+
+  it('migrates only the legacy starter canvas into the reversible Figma workbench', async () => {
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['legacy-before-ui-gate'],
+      project: createStarterProject(),
+      revision: 4,
+    }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, stablePoint }));
+    useAppStore.setState({
+      desktopRevision: 4,
+      persistenceMode: 'desktop',
+      project: createStarterProject(),
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().migrateLegacyStarterProjectToFigmaWorkbench()).resolves.toBe(true);
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.map((node) => node.type)).toEqual(['module', 'module', 'module', 'module', 'module', 'module', 'module']);
+    expect(useAppStore.getState().project.nodes.map((node) => (
+      node.type === 'module' ? node.data.moduleType : node.type
+    ))).toEqual(['image_input', 'image_generation', 'result_output', 'video_generation', 'reverse_agent', 'reverse_result', 'video_result']);
+    expect(useAppStore.getState().project.nodes.map((node) => node.position)).toEqual([
+      { x: 20, y: 197 },
+      { x: 340, y: 132 },
+      { x: 820, y: 282 },
+      { x: 1174, y: 146 },
+      { x: 340, y: 1062 },
+      { x: 1010, y: 1062 },
+      { x: 1860, y: 732 },
+    ]);
+    expect(useAppStore.getState().project.edges).toEqual([
+      expect.objectContaining({ source: 'figma-image-input', sourcePortId: 'image', target: 'figma-image-generation', targetPortId: 'references', order: 0 }),
+      expect.objectContaining({ source: 'figma-image-generation', sourcePortId: 'result', target: 'figma-image-result', targetPortId: 'result', order: 0 }),
+      expect.objectContaining({ source: 'figma-image-input', sourcePortId: 'image', target: 'figma-video-generation', targetPortId: 'media', order: 0 }),
+      expect.objectContaining({ source: 'figma-image-input', sourcePortId: 'image', target: 'figma-reverse-agent', targetPortId: 'references', order: 0 }),
+      expect.objectContaining({ source: 'figma-reverse-agent', sourcePortId: 'analysis', target: 'figma-reverse-result', targetPortId: 'analysis', order: 0 }),
+      expect.objectContaining({ source: 'figma-video-generation', sourcePortId: 'result', target: 'figma-video-result', targetPortId: 'video', order: 0 }),
+    ]);
+    expect(useAppStore.getState().project.nodes[1]).toMatchObject({
+      type: 'module',
+      data: {
+        config: {
+          outputCount: 4,
+          resultState: 'fresh',
+        },
+      },
+    });
+    expect(useAppStore.getState().project.nodes[4]).toMatchObject({
+      type: 'module',
+      id: 'figma-reverse-agent',
+      data: {
+        moduleType: 'reverse_agent',
+        config: {
+          knowledgeBaseIds: ['scene-skill', 'ecommerce-detail-knowledge'],
+        },
+      },
+    });
+    const migrationMemory = useAppStore.getState().project.projectMemory[
+      useAppStore.getState().project.projectMemory.length - 1
+    ];
+    expect(migrationMemory).toMatchObject({
+      kind: 'decision',
+      title: '迁移到 Figma 画布工作台',
+      snapshots: expect.objectContaining({ beforeId: expect.stringContaining('figma-ui-gate') }),
+    });
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({
+      transaction: expect.objectContaining({
+        label: 'Migrate legacy starter canvas to Figma workbench',
+        operations: expect.arrayContaining([
+          expect.objectContaining({ kind: 'replace_canvas_state' }),
+          expect.objectContaining({ kind: 'append_project_memory' }),
+        ]),
+      }),
+    }));
+  });
+
+  it('migrates the retired topology even when starter metadata is persisted', async () => {
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      project: createStarterProject(),
+      revision: 4,
+    }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    const legacyWithStarterMetadata = {
+      ...createStarterProject(),
+      assets: [{ assetId: 'starter-product' }],
+    } as never;
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, stablePoint }));
+    useAppStore.setState({
+      desktopRevision: 4,
+      persistenceMode: 'desktop',
+      project: legacyWithStarterMetadata,
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().migrateLegacyStarterProjectToFigmaWorkbench()).resolves.toBe(true);
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.map((node) => node.type === 'module' ? node.data.moduleType : node.type)).toEqual([
+      'image_input',
+      'image_generation',
+      'result_output',
+      'video_generation',
+      'reverse_agent',
+      'reverse_result',
+      'video_result',
+    ]);
+    expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
+  });
+
+  it('migrates the retired Reference → Placement → Agent plan starter variant during hydration', async () => {
+    const starter = createStarterProject();
+    const agentPlanStarter = {
+      ...starter,
+      nodes: starter.nodes.map((node) => node.type === 'prompt'
+        ? {
+            id: 'agent-plan-start',
+            type: 'agent_plan',
+            position: node.position,
+            data: {
+              plan: {
+                id: 'starter-agent-plan',
+                state: 'waiting_for_confirmation',
+                proposedOperationIds: [],
+                requiresModelConfirmation: false,
+              },
+            },
+          }
+        : node),
+      edges: starter.edges.map((edge) => edge.target === 'prompt-start'
+        ? { ...edge, target: 'agent-plan-start' }
+        : edge),
+    } as never;
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['legacy-agent-plan-before-ui-gate'],
+      project: agentPlanStarter,
+      revision: 4,
+    }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: agentPlanStarter,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.map((node) => node.type === 'module' ? node.data.moduleType : node.type)).toEqual([
+      'image_input',
+      'image_generation',
+      'result_output',
+      'video_generation',
+      'reverse_agent',
+      'reverse_result',
+      'video_result',
+    ]);
+  });
+
+  it('automatically migrates an exact legacy starter during durable hydration', async () => {
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['legacy-before-ui-gate'],
+      project: createStarterProject(),
+      revision: 4,
+    }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: createStarterProject(),
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.map((node) => node.type === 'module' ? node.data.moduleType : node.type)).toEqual([
+      'image_input',
+      'image_generation',
+      'result_output',
+      'video_generation',
+      'reverse_agent',
+      'reverse_result',
+      'video_result',
+    ]);
+  });
+
+  it('automatically migrates a legacy starter restored from browser persistence', async () => {
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      project: createStarterProject(),
+      revision: 4,
+    }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'browser' as const,
+        project: createStarterProject(),
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.map((node) => node.type === 'module' ? node.data.moduleType : node.type)).toEqual([
+      'image_input',
+      'image_generation',
+      'result_output',
+      'video_generation',
+      'reverse_agent',
+      'reverse_result',
+      'video_result',
+    ]);
+  });
+
+  it('automatically migrates a legacy starter normalized with unlocked node metadata', async () => {
+    const normalizedStarter = {
+      ...createStarterProject(),
+      graphVersion: 2 as const,
+      nodes: createStarterProject().nodes.map((node) => ({ ...node, locked: false })),
+    };
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['legacy-before-ui-gate'],
+      project: normalizedStarter,
+      revision: 4,
+    }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: normalizedStarter,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.map((node) => node.type === 'module' ? node.data.moduleType : node.type)).toEqual([
+      'image_input',
+      'image_generation',
+      'result_output',
+      'video_generation',
+      'reverse_agent',
+      'reverse_result',
+      'video_result',
+    ]);
+  });
+
+  it('migrates the retired starter during hydration even when historical model jobs remain', async () => {
+    const legacyProject = createStarterProject();
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['legacy-before-ui-gate'],
+      project: legacyProject,
+      revision: 4,
+    }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    replaceModelJobStorageForTests(createTestModelJobStorage([{
+      id: 'historic-legacy-job',
+      kind: 'image',
+      modelId: 'historic-model',
+      status: 'queued',
+      promptNodeId: 'prompt-start',
+      confirmedAt: '2026-07-29T00:00:00.000Z',
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'historic-route',
+      displayName: 'Historic model',
+      conversationId: legacyProject.id,
+      referenceAssetIds: [],
+      createdAt: '2026-07-29T00:00:00.000Z',
+      updatedAt: '2026-07-29T00:00:00.000Z',
+    }]));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: legacyProject,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.map((node) => node.type === 'module' ? node.data.moduleType : node.type)).toEqual([
+      'image_input',
+      'image_generation',
+      'result_output',
+      'video_generation',
+      'reverse_agent',
+      'reverse_result',
+      'video_result',
+    ]);
+  });
+
+  it('does not replace a user project during durable hydration', async () => {
+    const stablePoint = vi.fn();
+    const userProject = {
+      ...createStarterProject(),
+      nodes: [createCanvasModuleNode('user-prompt', 'text_prompt', { x: 240, y: 160 })],
+      edges: [],
+      name: '用户画布',
+    };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: userProject,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(stablePoint).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project).toMatchObject({
+      id: userProject.id,
+      name: '用户画布',
+      nodes: [expect.objectContaining({ id: 'user-prompt' })],
+    });
+  });
+
+  it('replaces a renamed and repositioned retired canvas during durable hydration so old nodes cannot reappear', async () => {
+    const stablePoint = vi.fn();
+    const userProject = {
+      ...createStarterProject(),
+      graphVersion: 2 as const,
+      name: '已命名的用户项目',
+      nodes: createStarterProject().nodes.map((node, index) => ({
+        ...node,
+        locked: false,
+        position: { x: node.position.x + (index + 1) * 24, y: node.position.y + 18 },
+      })),
+    };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: userProject,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(stablePoint).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.name).toBe('已命名的用户项目');
+    expect(useAppStore.getState().project.nodes.map((node) => node.type)).toEqual([
+      'module',
+      'module',
+      'module',
+      'module',
+      'module',
+      'module',
+      'module',
+    ]);
+  });
+
+  it('replaces a legacy starter variant when persisted metadata or copy drifted', async () => {
+    const starter = createStarterProject();
+    const driftedLegacy = {
+      ...starter,
+      // Older durable snapshots used a bumped graph version and a generated
+      // project id, while keeping the retired Reference -> Placement -> Prompt
+      // topology.  Those snapshots must not keep rendering the old cards.
+      id: starter.id,
+      version: starter.version,
+      name: 'Canvas draft',
+      nodes: starter.nodes.map((node, index) => ({
+        ...node,
+        position: { x: node.position.x + index * 12, y: node.position.y + 8 },
+        data: node.data,
+      })),
+      edges: starter.edges.map((edge) => ({ ...edge, label: edge.label === 'agent-plan' ? 'plan' : edge.label })),
+    } as unknown as CanvasProject;
+    const stablePoint = vi.fn();
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 5,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: driftedLegacy,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.map((node) => node.type === 'module' ? node.data.moduleType : node.type)).toEqual([
+      'image_input',
+      'image_generation',
+      'result_output',
+      'video_generation',
+      'reverse_agent',
+      'reverse_result',
+      'video_result',
+    ]);
+  });
+
+  it('replaces a retired canvas immediately after it is opened', async () => {
+    const retiredProject = { ...createStarterProject(), name: '从磁盘打开的旧画布' };
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['legacy-before-ui-gate'],
+      project: retiredProject,
+      revision: 6,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      openProject: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: retiredProject,
+        revision: 6,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await expect(useAppStore.getState().openProject()).resolves.toBe(true);
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes).toHaveLength(7);
+    expect(useAppStore.getState().project.nodes.every((node) => node.type === 'module')).toBe(true);
+  });
+
+  it('replaces a retired canvas opened with historical model jobs so old cards cannot return', async () => {
+    const retiredProject = { ...createStarterProject(), name: 'Opened legacy canvas with historical jobs' };
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['legacy-before-ui-gate'],
+      project: retiredProject,
+      revision: 6,
+    }));
+    replaceModelJobStorageForTests(createTestModelJobStorage([{
+      id: 'opened-legacy-job',
+      kind: 'image',
+      modelId: 'historic-model',
+      status: 'queued',
+      promptNodeId: 'prompt-start',
+      confirmedAt: '2026-07-29T00:00:00.000Z',
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'historic-route',
+      displayName: 'Historic model',
+      conversationId: retiredProject.id,
+      referenceAssetIds: [],
+      createdAt: '2026-07-29T00:00:00.000Z',
+      updatedAt: '2026-07-29T00:00:00.000Z',
+    }]));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      openProject: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: retiredProject,
+        revision: 6,
+        saveStatus: 'saved' as const,
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await expect(useAppStore.getState().openProject()).resolves.toBe(true);
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.every((node) => node.type === 'module')).toBe(true);
   });
 
   it('keeps untitled edits pending in memory and switches lifecycle identity only after explicit open', async () => {
@@ -76,6 +648,149 @@ describe('project optimization memory', () => {
       project: { name: '未命名画布' },
       saveStatus: 'saved',
     });
+  });
+
+  it('forwards an opaque recent project id through the store open boundary', async () => {
+    const durableProject = { ...createStarterProject(), name: 'Recent project opened by id' };
+    const openProject = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      mode: 'desktop' as const,
+      project: durableProject,
+      revision: 6,
+      saveStatus: 'saved' as const,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ openProject }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await expect(useAppStore.getState().openProject('recent_0123456789abcdef01234567')).resolves.toBe(true);
+
+    expect(openProject).toHaveBeenCalledWith('recent_0123456789abcdef01234567');
+    expect(useAppStore.getState().project.name).toBe('Recent project opened by id');
+  });
+  it('deletes selected canvas nodes together with their connected edges in one durable transaction', async () => {
+    const first = createCanvasModuleNode('delete-first', 'text_prompt', { x: 80, y: 120 });
+    const second = createCanvasModuleNode('delete-second', 'image_generation', { x: 360, y: 120 });
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({
+      project: {
+        version: 1,
+        id: 'delete-selection-project',
+        name: 'Delete selection',
+        nodes: [first, second],
+        edges: [{ id: 'delete-selection-edge', source: first.id, target: second.id }],
+        projectMemory: [],
+        skillPromotionCandidates: [],
+      },
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().deleteCanvasNodes([first.id])).resolves.toBe(true);
+
+    expect(useAppStore.getState().project.nodes.map((node) => node.id)).toEqual([second.id]);
+    expect(useAppStore.getState().project.edges).toEqual([]);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves locked nodes when deleting a mixed canvas selection', async () => {
+    const unlocked = createCanvasModuleNode('delete-unlocked', 'text_prompt', { x: 80, y: 120 });
+    const locked = { ...createCanvasModuleNode('delete-locked', 'image_generation', { x: 360, y: 120 }), locked: true };
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({
+      project: {
+        version: 1,
+        id: 'delete-mixed-selection-project',
+        name: 'Delete mixed selection',
+        nodes: [unlocked, locked],
+        edges: [{ id: 'delete-mixed-edge', source: unlocked.id, target: locked.id }],
+        projectMemory: [],
+        skillPromotionCandidates: [],
+      },
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().deleteCanvasNodes([unlocked.id, locked.id])).resolves.toBe(true);
+
+    expect(useAppStore.getState().project.nodes.map((node) => node.id)).toEqual([locked.id]);
+    expect(useAppStore.getState().project.edges).toEqual([]);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+  it('moves selected unlocked nodes in one durable transaction and ignores locked nodes', async () => {
+    const first = createCanvasModuleNode('move-first', 'text_prompt', { x: 10, y: 20 });
+    const second = createCanvasModuleNode('move-second', 'image_generation', { x: 100, y: 120 });
+    const locked = { ...createCanvasModuleNode('move-locked', 'video_generation', { x: 300, y: 320 }), locked: true };
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({
+      project: {
+        version: 1,
+        id: 'move-selection-project',
+        name: 'Move selection',
+        nodes: [first, second, locked],
+        edges: [],
+        projectMemory: [],
+        skillPromotionCandidates: [],
+      },
+      saveStatus: 'saved',
+    });
+
+    const state = useAppStore.getState() as typeof useAppStore extends { getState(): infer T }
+      ? T & { commitNodePositions?: (updates: readonly { nodeId: string; position: { x: number; y: number } }[]) => Promise<boolean> }
+      : never;
+    expect(state.commitNodePositions).toBeTypeOf('function');
+    await expect(state.commitNodePositions!([
+      { nodeId: first.id, position: { x: 40, y: 60 } },
+      { nodeId: second.id, position: { x: 180, y: 220 } },
+      { nodeId: locked.id, position: { x: 900, y: 920 } },
+    ])).resolves.toBe(true);
+
+    expect(useAppStore.getState().project.nodes.map((node) => [node.id, node.position])).toEqual([
+      [first.id, { x: 40, y: 60 }],
+      [second.id, { x: 180, y: 220 }],
+      [locked.id, { x: 300, y: 320 }],
+    ]);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+  it('cancels one canvas edge through a durable delete transaction', async () => {
+    const source = createCanvasModuleNode('cancel-source', 'text_prompt', { x: 80, y: 120 });
+    const target = createCanvasModuleNode('cancel-target', 'image_generation', { x: 360, y: 120 });
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({
+      project: {
+        version: 1,
+        id: 'cancel-edge-project',
+        name: 'Cancel edge',
+        nodes: [source, target],
+        edges: [{ id: 'cancel-edge', source: source.id, target: target.id }],
+        projectMemory: [],
+        skillPromotionCandidates: [],
+      },
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().deleteCanvasEdge('cancel-edge')).resolves.toBe(true);
+
+    expect(useAppStore.getState().project.edges).toEqual([]);
+    expect(commit).toHaveBeenCalledTimes(1);
   });
 
   it('shows saved only after desktop acknowledgement', async () => {
@@ -149,6 +864,69 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().projectImageError).toBeNull();
   });
 
+  it('does not let delayed startup hydration overwrite edits made while the app is opening', async () => {
+    const hydration = deferred<Awaited<ReturnType<ProjectPersistenceClient['hydrate']>>>();
+    replaceProjectPersistenceClientForTests(createMockClient({ hydrate: vi.fn(() => hydration.promise) }));
+    resetAppStoreForTests();
+    const initialProject = useAppStore.getState().project;
+    const reverse = createCanvasModuleNode('edited-during-hydration', 'reverse_agent', { x: 40, y: 60 });
+    const editedProject = parseCanvasProject({
+      ...initialProject,
+      nodes: [{
+        ...reverse,
+        data: { ...reverse.data, config: { ...reverse.data.config, role: 'Startup edit', task: 'Keep this text' } },
+      }],
+      edges: [],
+    });
+
+    const pendingHydration = useAppStore.getState().hydratePersistence();
+    useAppStore.getState().setProject(editedProject, { schedulePersist: false });
+    hydration.resolve({
+      availableSnapshotIds: [],
+      lifecycle: 'durable',
+      mode: 'desktop',
+      project: initialProject,
+      revision: 7,
+      saveStatus: 'saved',
+    });
+    await pendingHydration;
+
+    expect(useAppStore.getState().project).toEqual(editedProject);
+    expect(useAppStore.getState().project.nodes[0]).toMatchObject({
+      data: { config: { role: 'Startup edit', task: 'Keep this text' } },
+    });
+  });
+
+  it('keeps nodes created while startup hydration is still pending', async () => {
+    const hydration = deferred<Awaited<ReturnType<ProjectPersistenceClient['hydrate']>>>();
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 0,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: vi.fn(() => hydration.promise),
+      commit,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+    const initialProject = useAppStore.getState().project;
+    const pendingHydration = useAppStore.getState().hydratePersistence();
+
+    expect(await useAppStore.getState().addModuleNode('reverse_agent', { x: 80, y: 120 })).toBe(true);
+    hydration.resolve({
+      availableSnapshotIds: [],
+      lifecycle: 'untitled',
+      mode: 'desktop',
+      project: initialProject,
+      revision: 0,
+      saveStatus: 'pending',
+    });
+    await pendingHydration;
+
+    expect(useAppStore.getState().project.nodes).toHaveLength(1);
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
   it('uses one durable transaction to create a module node', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -165,6 +943,263 @@ describe('project optimization memory', () => {
     const nodes = useAppStore.getState().project.nodes;
     expect(nodes[nodes.length - 1]).toMatchObject({ type: 'module', data: { moduleType: 'text_prompt' } });
     expect(useAppStore.getState().saveStatus).toBe('saved');
+  });
+
+  it('enqueues one real video job per requested output using a video-capable profile', async () => {
+    const preview = createCanvasModuleNode('video-real-jobs', 'video_generation' as never, { x: 120, y: 120 });
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme',
+      modelRoute: 'relayme-video-pro',
+      displayName: 'Relay Video Pro',
+      modelId: 'video-pro',
+      capabilities: ['video_generation', 'async_tasks'],
+    }]);
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: {
+        ...createStarterProject(),
+        nodes: [preview],
+        edges: [],
+        assets: [{
+          assetId: '0123456789abcdef',
+          sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          byteSize: 1024,
+          extension: 'png',
+          height: 720,
+          label: 'Managed frame',
+          mediaType: 'image/png',
+          origin: 'imported',
+          width: 1280,
+        }],
+      },
+    });
+
+    await expect(useAppStore.getState().runVideoPreviewNode(preview.id, {
+      prompt: 'A product rotates slowly',
+      modelRoute: 'relayme-video-pro',
+      referenceAssetIds: ['0123456789abcdef'],
+      aspectRatio: '16:9',
+      keyframe: 'auto',
+      durationSeconds: 8,
+      resolution: '1080p',
+      outputCount: 4,
+      audioEnabled: true,
+    })).resolves.toBe(true);
+
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 4);
+    expect(useAppStore.getState().modelJobs).toHaveLength(4);
+    expect(useAppStore.getState().modelJobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'video',
+        provider: 'relayme',
+        modelRoute: 'relayme-video-pro',
+        videoResolution: '1080p',
+        durationSeconds: 8,
+        audioEnabled: true,
+        outputCount: 1,
+        referenceAssetIds: ['0123456789abcdef'],
+      }),
+    ]));
+    const saved = useAppStore.getState().project.nodes[0] as typeof preview;
+    expect(saved.data).toMatchObject({
+      execution: { state: 'queued' },
+      config: {
+        modelRoute: 'relayme-video-pro',
+        referenceAssetIds: ['0123456789abcdef'],
+        outputCount: 4,
+        resultState: 'pending',
+      },
+    });
+    expect(saved.data.config).not.toHaveProperty('mode', 'mock');
+    expect(saved.data.config).not.toHaveProperty('videoResults');
+  });
+
+  it('establishes a desktop project session before enqueueing video jobs', async () => {
+    installVideoProviderForModelJobTests();
+    const ensureModelExecutionSession = vi.fn(async () => 'desktop-session-video');
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession,
+    }));
+    resetAppStoreForTests();
+    const preview = createCanvasModuleNode('session-video-node', 'video_generation' as never, { x: 120, y: 120 });
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [preview], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runVideoPreviewNode(preview.id, {
+      prompt: 'Create video inside a durable project session',
+      modelRoute: 'relayme-video-pro',
+      referenceAssetIds: [],
+      aspectRatio: '16:9',
+      keyframe: 'auto',
+      durationSeconds: 4,
+      resolution: '720p',
+      outputCount: 1,
+      audioEnabled: true,
+    })).resolves.toBe(true);
+
+    expect(ensureModelExecutionSession).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().modelJobs[0]?.projectSessionId).toBe('desktop-session-video');
+  });
+
+  it('rejects unmanaged video references before enqueueing provider jobs', async () => {
+    const preview = createCanvasModuleNode('video-invalid-reference', 'video_generation' as never, { x: 120, y: 120 });
+    installVideoProviderForModelJobTests();
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [preview], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runVideoPreviewNode(preview.id, {
+      prompt: 'Never read an external frame',
+      referenceAssetIds: ['outside-project'],
+      aspectRatio: '16:9',
+      keyframe: 'auto',
+      durationSeconds: 4,
+      resolution: '720p',
+      outputCount: 1,
+      audioEnabled: true,
+    })).resolves.toBe(false);
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+  });
+  it('uses the managed image connected to the video media port when running a preview', async () => {
+    installVideoProviderForModelJobTests();
+    const image = createCanvasModuleNode('video-connected-image', 'image_input', { x: 20, y: 20 });
+    image.data.config = { assetId: '0123456789abcdef' };
+    const preview = createCanvasModuleNode('video-connected-preview', 'video_generation', { x: 420, y: 20 });
+    useAppStore.setState({
+      project: {
+        ...createStarterProject(),
+        nodes: [image, preview],
+        edges: [{
+          id: 'image-to-video-media',
+          source: image.id,
+          sourcePortId: 'image',
+          target: preview.id,
+          targetPortId: 'media',
+          order: 0,
+        }],
+        assets: [{
+          assetId: '0123456789abcdef',
+          sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          byteSize: 1024,
+          extension: 'png',
+          height: 720,
+          label: 'Connected frame',
+          mediaType: 'image/png',
+          origin: 'imported',
+          width: 1280,
+        }],
+      },
+    });
+
+    expect(await useAppStore.getState().runVideoPreviewNode(preview.id, {
+      prompt: 'A product rotates slowly',
+      referenceAssetIds: [],
+      aspectRatio: '16:9',
+      keyframe: 'auto',
+      durationSeconds: 4,
+      resolution: '720p',
+      outputCount: 1,
+      audioEnabled: true,
+    })).toBe(true);
+
+    expect((useAppStore.getState().project.nodes[1] as typeof preview).data.config).toMatchObject({
+      referenceAssetIds: ['0123456789abcdef'],
+      firstFrameAssetId: '0123456789abcdef',
+    });
+  });
+
+  it('records a managed video connected to the video media port without treating it as an image frame', async () => {
+    installVideoProviderForModelJobTests();
+    const video = createCanvasModuleNode('video-connected-source', 'video_input', { x: 20, y: 20 });
+    video.data.config = { assetId: 'fedcba9876543210' };
+    const preview = createCanvasModuleNode('video-connected-preview', 'video_generation', { x: 420, y: 20 });
+    useAppStore.setState({
+      project: {
+        ...createStarterProject(),
+        nodes: [video, preview],
+        edges: [{
+          id: 'video-to-video-media',
+          source: video.id,
+          sourcePortId: 'video',
+          target: preview.id,
+          targetPortId: 'media',
+          order: 0,
+        }],
+        assets: [{
+          assetId: 'fedcba9876543210',
+          sha256: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+          byteSize: 2048,
+          durationMs: 4_000,
+          extension: 'mp4',
+          height: 720,
+          label: 'Connected video',
+          mediaType: 'video/mp4',
+          origin: 'imported',
+          width: 1280,
+        }],
+      },
+    });
+
+    expect(await useAppStore.getState().runVideoPreviewNode(preview.id, {
+      prompt: 'A product rotates slowly',
+      referenceAssetIds: [],
+      aspectRatio: '16:9',
+      keyframe: 'auto',
+      durationSeconds: 4,
+      resolution: '720p',
+      outputCount: 1,
+      audioEnabled: true,
+    })).toBe(true);
+
+    expect((useAppStore.getState().project.nodes[1] as typeof preview).data.config).toMatchObject({
+      referenceAssetIds: [],
+      sourceVideoAssetId: 'fedcba9876543210',
+    });
+  });
+
+  it('snapshots only managed images connected to a storyboard before calling the bridge', async () => {
+    const image = createCanvasModuleNode('storyboard-image', 'image_input', { x: 20, y: 40 });
+    image.data.config = { assetId: '0123456789abcdef' };
+    const storyboard = createCanvasModuleNode('storyboard-target', 'storyboard_sheet', { x: 420, y: 40 });
+    const generateStoryboard = vi.fn(async () => ({
+      modelRoute: 'scene-chat',
+      shots: [{
+        id: 'shot-1', order: 1, title: 'Opening', composition: 'A calm opening frame.', durationSeconds: 4,
+        referenceAssetIds: ['0123456789abcdef'],
+      }],
+    }));
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async () => [{ provider: 'comfly', modelRoute: 'scene-chat', displayName: 'Scene Chat', modelId: 'scene-chat', capabilities: ['chat'] }]),
+        generateStoryboard,
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({
+      project: {
+        ...createStarterProject(),
+        nodes: [image, storyboard],
+        edges: [{ id: 'storyboard-image-edge', source: image.id, sourcePortId: 'image', target: storyboard.id, targetPortId: 'images', order: 0 }],
+        assets: [{
+          assetId: '0123456789abcdef', sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          byteSize: 1024, extension: 'png', height: 720, label: 'Storyboard image', mediaType: 'image/png', origin: 'imported', width: 1280,
+        }],
+      },
+    });
+    const canvasBefore = useAppStore.getState().project;
+
+    expect(await useAppStore.getState().generateStoryboardNode(storyboard.id, {
+      modelRoute: 'scene-chat', script: 'A quiet studio reveal.', shotCount: 1, referenceAssetIds: ['untrusted-renderer-id'],
+    })).toBe(true);
+
+    expect(generateStoryboard).toHaveBeenCalledWith(expect.objectContaining({ referenceAssetIds: ['0123456789abcdef'] }));
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === storyboard.id)).toMatchObject({
+      data: { config: { referenceAssetIds: ['0123456789abcdef'] } },
+    });
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === image.id)?.position).toEqual(canvasBefore.nodes[0]?.position);
+    expect(useAppStore.getState().project.edges).toEqual(canvasBefore.edges);
   });
 
   it('serializes rapid module creation until each desktop ACK advances the revision', async () => {
@@ -322,8 +1357,313 @@ describe('project optimization memory', () => {
     });
   });
 
+  it('rebuilds a generated result against the latest durable revision before completing the job', async () => {
+    const generation = createCanvasModuleNode('revision-image-node', 'image_generation', { x: 0, y: 0 });
+    const generatedAsset = {
+      assetId: 'dddddddddddddddd', byteSize: 128, extension: 'png' as const, height: 512,
+      label: 'Generated image', mediaType: 'image/png' as const, origin: 'generated' as const,
+      sha256: 'd'.repeat(64), width: 512,
+    };
+    let durableProject: CanvasProject | undefined;
+    let resultCommitAttempts = 0;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (request.transaction.id.startsWith('run-image-generation-')) {
+        durableProject = {
+          ...request.nextProject,
+          assets: [generatedAsset],
+          nodes: request.nextProject.nodes.map((node) => (
+            node.id === generation.id && node.type === 'module'
+              ? { ...node, data: { ...node.data, config: { ...node.data.config, prompt: 'old durable prompt' } } }
+              : node
+          )),
+        };
+        return { ok: true, project: request.nextProject, revision: 1 };
+      }
+      if (request.transaction.id.startsWith('model-job-inline-result-')) {
+        resultCommitAttempts += 1;
+        return resultCommitAttempts === 1
+          ? { ok: false, code: 'REVISION_CONFLICT', project: durableProject!, revision: 2 }
+          : { ok: true, project: request.nextProject, revision: 3 };
+      }
+      return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+    });
+    const reloadDurableProject = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      mode: 'desktop' as const,
+      project: durableProject!,
+      revision: 2,
+      saveStatus: 'saved' as const,
+    }));
+    const listProjectImages = vi.fn(async () => []);
+    const listProjectVideos = vi.fn(async () => []);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn(async () => ({
+        status: 'completed' as const,
+        result: { assetId: generatedAsset.assetId, width: 512, height: 512 },
+      })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      listProjectImages,
+      listProjectVideos,
+      reloadDurableProject,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] },
+      desktopRevision: 0,
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'image-generation',
+      prompt: 'new local prompt',
+      outputCount: 1,
+    })).resolves.toBe(true);
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+
+    expect(reloadDurableProject).toHaveBeenCalledOnce();
+    expect(resultCommitAttempts).toBe(2);
+    const resultCommitCalls = commit.mock.calls.filter(([request]) => (
+      request.transaction.id.startsWith('model-job-inline-result-')
+    ));
+    expect(resultCommitCalls[resultCommitCalls.length - 1]?.[0]).toMatchObject({
+      baseRevision: 2,
+      previousProject: { assets: [generatedAsset] },
+      nextProject: { assets: [generatedAsset] },
+    });
+    expect(useAppStore.getState().project.assets).toEqual([generatedAsset]);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === generation.id)).toMatchObject({
+      type: 'module',
+      data: { config: { prompt: 'new local prompt', resultAssetIds: [generatedAsset.assetId] } },
+    });
+    expect(useAppStore.getState()).toMatchObject({
+      canReloadDurableProject: false,
+      desktopRevision: 3,
+      projectCommitConflictCode: null,
+      saveStatus: 'saved',
+    });
+    expect(listProjectImages).toHaveBeenCalledOnce();
+    expect(listProjectVideos).toHaveBeenCalledOnce();
+  });
+
+  it('does not adopt or retry a generated result when the model-job-store generation changes during reload', async () => {
+      const generation = createCanvasModuleNode('guard-generation-node', 'image_generation', { x: 0, y: 0 });
+      const generatedAsset = {
+        assetId: 'eeeeeeeeeeeeeeee',
+        byteSize: 128, extension: 'png' as const, height: 512,
+        label: 'Generated image', mediaType: 'image/png' as const, origin: 'generated' as const,
+        sha256: 'e'.repeat(64), width: 512,
+      };
+      const reload = deferred<ProjectHydrationResult>();
+      const storage = createTestModelJobStorage();
+      let durableProject: CanvasProject | undefined;
+      let resultCommitAttempts = 0;
+      const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+        if (request.transaction.id.startsWith('run-image-generation-')) {
+          durableProject = { ...request.nextProject, assets: [generatedAsset] };
+          return { ok: true, project: request.nextProject, revision: 1 };
+        }
+        if (request.transaction.id.startsWith('model-job-inline-result-')) {
+          resultCommitAttempts += 1;
+          return resultCommitAttempts === 1
+            ? { ok: false, code: 'REVISION_CONFLICT', project: durableProject!, revision: 2 }
+            : { ok: true, project: request.nextProject, revision: 3 };
+        }
+        return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+      });
+      const reloadDurableProject = vi.fn(() => reload.promise);
+      replaceModelJobExecutorForTests({
+        submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: generatedAsset.assetId } })),
+        cancel: vi.fn(async () => {}),
+      });
+      replaceModelJobStorageForTests(storage);
+      installProviderProfilesForModelJobTests();
+      replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit, reloadDurableProject }), {
+        ensureModelExecutionSession: vi.fn(async () => 'desktop-session-a'),
+        getSessionId: () => 'desktop-session-a',
+      }));
+      resetAppStoreForTests();
+      useAppStore.setState({
+        project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] },
+        desktopRevision: 0,
+        persistenceMode: 'desktop',
+        projectLifecycle: 'durable',
+        saveStatus: 'saved',
+      });
+
+      await useAppStore.getState().runImageGenerationNode(generation.id, {
+        modelRoute: 'image-generation', prompt: 'guarded prompt', outputCount: 1,
+      });
+      await vi.waitFor(() => expect(reloadDurableProject).toHaveBeenCalledOnce());
+      replaceModelJobStorageForTests(createTestModelJobStorage());
+      reload.resolve({
+        availableSnapshotIds: [], lifecycle: 'durable', mode: 'desktop',
+        project: durableProject!, revision: 2, saveStatus: 'saved',
+      });
+      await delay(20);
+
+      expect(resultCommitAttempts).toBe(1);
+      expect(useAppStore.getState().project.assets).toEqual([]);
+      expect((await storage.list())[0]).toMatchObject({ status: 'running' });
+      expect((await storage.list())[0]).not.toHaveProperty('resultAssetId');
+  });
+
+  it('retries a generated result after reload rotates the session while the source node still owns the job', async () => {
+    const generation = createCanvasModuleNode('guard-session-owner-node', 'image_generation', { x: 0, y: 0 });
+    const generatedAsset = {
+      assetId: 'ffffffffffffffff', byteSize: 128, extension: 'png' as const, height: 512,
+      label: 'Generated image', mediaType: 'image/png' as const, origin: 'generated' as const,
+      sha256: 'f'.repeat(64), width: 512,
+    };
+    const reload = deferred<ProjectHydrationResult>();
+    const storage = createTestModelJobStorage();
+    let currentSession = 'desktop-session-a';
+    let durableProject: CanvasProject | undefined;
+    let resultCommitAttempts = 0;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (request.transaction.id.startsWith('run-image-generation-')) {
+        durableProject = { ...request.nextProject, assets: [generatedAsset] };
+        return { ok: true, project: request.nextProject, revision: 1 };
+      }
+      if (request.transaction.id.startsWith('model-job-inline-result-')) {
+        resultCommitAttempts += 1;
+        return resultCommitAttempts === 1
+          ? { ok: false, code: 'REVISION_CONFLICT', project: durableProject!, revision: 2 }
+          : { ok: true, project: request.nextProject, revision: 3 };
+      }
+      return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+    });
+    const reloadDurableProject = vi.fn(() => reload.promise);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: generatedAsset.assetId } })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceModelJobStorageForTests(storage);
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit, reloadDurableProject }), {
+      ensureModelExecutionSession: vi.fn(async () => 'desktop-session-a'),
+      getSessionId: () => currentSession,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] },
+      desktopRevision: 0,
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'image-generation', prompt: 'owned session recovery', outputCount: 1,
+    });
+    await vi.waitFor(() => expect(reloadDurableProject).toHaveBeenCalledOnce());
+    currentSession = 'desktop-session-b';
+    reload.resolve({
+      availableSnapshotIds: [], lifecycle: 'durable', mode: 'desktop',
+      project: durableProject!, revision: 2, saveStatus: 'saved',
+    });
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+
+    expect(resultCommitAttempts).toBe(2);
+    expect((await storage.list())[0]).toMatchObject({
+      status: 'completed',
+      resultAssetId: generatedAsset.assetId,
+    });
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === generation.id)).toMatchObject({
+      type: 'module',
+      data: {
+        config: { resultAssetIds: [generatedAsset.assetId], resultState: 'fresh' },
+        execution: { state: 'completed' },
+      },
+    });
+  });
+
+  it('does not retry a generated result after session rotation when the source node owns a newer job', async () => {
+    const generation = createCanvasModuleNode('guard-session-stale-node', 'image_generation', { x: 0, y: 0 });
+    const generatedAsset = {
+      assetId: 'abababababababab', byteSize: 128, extension: 'png' as const, height: 512,
+      label: 'Generated image', mediaType: 'image/png' as const, origin: 'generated' as const,
+      sha256: 'a'.repeat(64), width: 512,
+    };
+    const reload = deferred<ProjectHydrationResult>();
+    const storage = createTestModelJobStorage();
+    let currentSession = 'desktop-session-a';
+    let durableProject: CanvasProject | undefined;
+    let resultCommitAttempts = 0;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (request.transaction.id.startsWith('run-image-generation-')) {
+        durableProject = { ...request.nextProject, assets: [generatedAsset] };
+        return { ok: true, project: request.nextProject, revision: 1 };
+      }
+      if (request.transaction.id.startsWith('model-job-inline-result-')) {
+        resultCommitAttempts += 1;
+        return { ok: false, code: 'REVISION_CONFLICT', project: durableProject!, revision: 2 };
+      }
+      return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+    });
+    const reloadDurableProject = vi.fn(() => reload.promise);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
+      poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: generatedAsset.assetId } })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceModelJobStorageForTests(storage);
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit, reloadDurableProject }), {
+      ensureModelExecutionSession: vi.fn(async () => 'desktop-session-a'),
+      getSessionId: () => currentSession,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] },
+      desktopRevision: 0,
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'image-generation', prompt: 'stale session recovery', outputCount: 1,
+    });
+    await vi.waitFor(() => expect(reloadDurableProject).toHaveBeenCalledOnce());
+    currentSession = 'desktop-session-b';
+    useAppStore.setState((state) => ({
+      project: {
+        ...state.project,
+        nodes: state.project.nodes.map((node) => node.id === generation.id && node.type === 'module'
+          ? { ...node, data: { ...node.data, config: { ...node.data.config, lastResultJobId: 'newer-model-job' } } }
+          : node),
+      },
+    }));
+    reload.resolve({
+      availableSnapshotIds: [], lifecycle: 'durable', mode: 'desktop',
+      project: durableProject!, revision: 2, saveStatus: 'saved',
+    });
+    await delay(20);
+
+    expect(resultCommitAttempts).toBe(1);
+    expect((await storage.list())[0]).toMatchObject({ status: 'running' });
+    expect(commit.mock.calls.filter(([request]) => (
+      request.transaction.id.startsWith('model-job-inline-result-')
+    ))).toHaveLength(1);
+  });
+
   it('blocks normal persistence boundaries until a recovery preview is restored or discarded', async () => {
-    const previewProject = { ...createStarterProject(), name: 'Recovery preview' };
+    const recoveryGenerationNode = createCanvasModuleNode('recovery-generation', 'image_generation', { x: 20, y: 20 });
+    const previewProject = {
+      ...createStarterProject(),
+      name: 'Recovery preview',
+      nodes: [...createStarterProject().nodes, recoveryGenerationNode],
+    };
     const restoredProject = { ...previewProject, name: 'Recovered project' };
     const close = vi.fn(async () => undefined);
     const commit = vi.fn(async (): Promise<ProjectCommitResult> => ({
@@ -368,6 +1708,11 @@ describe('project optimization memory', () => {
       saveStatus: 'error',
     });
     expect(await useAppStore.getState().addModuleNode('text_prompt', { x: 10, y: 10 })).toBe(false);
+    await expect(useAppStore.getState().runImageGenerationNode(recoveryGenerationNode.id, {
+      modelRoute: 'image-generation',
+      outputCount: 1,
+      prompt: 'recovery preview must explain why generation is blocked',
+    })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
     expect(await useAppStore.getState().flushProjectSave('blur')).toBe(false);
     expect(await useAppStore.getState().closePersistence()).toBe(false);
     expect(commit).not.toHaveBeenCalled();
@@ -510,6 +1855,240 @@ describe('project optimization memory', () => {
     });
   });
 
+  it('adapts an unsupported Comfly 4K tier to the documented 2K bridge request', async () => {
+    const generation = createCanvasModuleNode('tier-image-node', 'image_generation', { x: 0, y: 0 });
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-tier' }));
+    window.novusDesktop = {
+      provider: {
+        ackImageJobTerminal: vi.fn(),
+        cancelImageJob: vi.fn(),
+        configure: vi.fn(),
+        getStatus: vi.fn(),
+        listProfiles: vi.fn(async () => [{
+          provider: 'comfly' as const,
+          modelRoute: 'gpt-image',
+          displayName: 'GPT Image',
+          capabilities: ['image_generation' as const, 'async_tasks' as const],
+          constraints: { image: { aspectRatios: ['1:1', '4:3', '3:4', '16:9', '9:16'], resolutions: ['1K', '2K'], outputCounts: [1, 2, 3, 4] } },
+        }]),
+        pollImageJob: vi.fn(async () => ({ status: 'running' as const })),
+        submitImageJob,
+        unlock: vi.fn(),
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({
+      project: { ...createStarterProject(), nodes: [generation], edges: [] },
+    });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'gpt-image',
+      prompt: 'A native 4K product image',
+      aspectRatio: '16:9',
+      resolution: '4K',
+      outputCount: 1,
+    })).resolves.toBe(true);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(useAppStore.getState().modelJobs[0]?.resolution).toBe('2K');
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
+      aspectRatio: '16:9',
+      resolution: '2K',
+    }));
+  });
+
+  it('accepts a complete image model that declares 1K output', async () => {
+    const generation = createCanvasModuleNode('one-k-only-image-node', 'image_generation', { x: 0, y: 0 });
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-one-k' }));
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async () => [{
+          provider: 'comfly' as const,
+          modelRoute: 'one-k-image',
+          displayName: 'One K Image',
+          capabilities: ['image_generation' as const],
+          capabilityStatus: 'complete' as const,
+          constraints: { image: { aspectRatios: ['1:1'], resolutions: ['1K'], outputCounts: [1] } },
+        }]),
+        submitImageJob,
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'one-k-image', prompt: 'Generate at 1K', aspectRatio: '1:1', resolution: '2K', outputCount: 1,
+    })).resolves.toBe(true);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({ resolution: '1K' }));
+  });
+  it('reports an unavailable selected image route instead of silently returning false', async () => {
+    const generation = createCanvasModuleNode('missing-route-image-node', 'image_generation', { x: 0, y: 0 });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'different-image-route', displayName: 'Different image route', modelId: 'different-image-route',
+      capabilities: ['image_generation'],
+    }]);
+    resetAppStoreForTests();
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'stale-image-route', prompt: 'Generate with the selected route', aspectRatio: '1:1', resolution: '2K', outputCount: 1,
+    })).rejects.toMatchObject({ code: 'MODEL_ROUTE_UNAVAILABLE' });
+  });
+  it('adapts an image-node request to the selected model constraints before enqueueing', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: 'provider-' + job.id })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme', modelRoute: 'relay-image-constrained', displayName: 'Relay Image Constrained', modelId: 'relay-image-constrained',
+      capabilities: ['image_generation', 'async_tasks'],
+      constraints: { image: { aspectRatios: ['1:1'], resolutions: ['2K'], outputCounts: [1] } },
+    }]);
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('adapted-image-node', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'relay-image-constrained', prompt: 'Adapt this image request',
+      aspectRatio: '16:9', resolution: '4K', outputCount: 4,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs).toHaveLength(4);
+    expect(useAppStore.getState().modelJobs.every((job) => job.outputCount === 1)).toBe(true);
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      aspectRatio: '1:1', resolution: '2K', outputCount: 1,
+    });
+  });
+
+  it('creates one image job per requested output so every result can materialize into the 1-4 grid', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: 'provider-' + job.id })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'four-up-image', displayName: 'Four Up Image', modelId: 'four-up-image',
+      capabilities: ['image_generation', 'async_tasks'],
+      constraints: { image: { aspectRatios: ['1:1'], resolutions: ['2K'], outputCounts: [1, 2, 3, 4] } },
+    }]);
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('multi-image-node', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'four-up-image', prompt: 'Generate a three-image product study',
+      aspectRatio: '1:1', resolution: '2K', outputCount: 3,
+    })).resolves.toBe(true);
+
+    const jobs = useAppStore.getState().modelJobs;
+    expect(jobs).toHaveLength(3);
+    expect(jobs.every((job) => job.promptNodeId === generation.id && job.kind === 'image' && job.outputCount === 1)).toBe(true);
+    expect(new Set(jobs.map((job) => job.confirmedAt)).size).toBe(1);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === generation.id)).toMatchObject({
+      data: { config: { lastResultJobId: jobs[0]?.id, resultState: 'pending' } },
+    });
+  });
+
+  it('establishes a desktop project session before enqueueing image jobs', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme', modelRoute: 'session-image', displayName: 'Session Image', modelId: 'session-image',
+      capabilities: ['image_generation'],
+    }]);
+    const ensureModelExecutionSession = vi.fn(async () => 'desktop-session-image');
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession,
+    }));
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('session-image-node', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'session-image', prompt: 'Create inside a durable project session',
+      aspectRatio: '1:1', resolution: '1K', outputCount: 1,
+    })).resolves.toBe(true);
+
+    expect(ensureModelExecutionSession).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().modelJobs[0]?.projectSessionId).toBe('desktop-session-image');
+  });
+
+  it('omits image parameters that a complete provider profile does not declare', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: 'provider-' + job.id })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'dall-e-3', displayName: 'DALL-E 3', modelId: 'dall-e-3',
+      capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete',
+      constraints: { image: { outputCounts: [1] } },
+    }]);
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('provider-default-image-node', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'dall-e-3', prompt: 'Use model defaults', aspectRatio: '自由比例', resolution: 'Auto', outputCount: 1,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs[0]?.outputCount).toBe(1);
+    expect(useAppStore.getState().modelJobs[0]?.aspectRatio).toBeUndefined();
+    expect(useAppStore.getState().modelJobs[0]?.resolution).toBeUndefined();
+  });
+  it('adapts a video-node request to the selected model constraints before enqueueing', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: 'provider-' + job.id })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme', modelRoute: 'relay-video-constrained', displayName: 'Relay Video Constrained', modelId: 'relay-video-constrained',
+      capabilities: ['video_generation', 'async_tasks'],
+      constraints: { video: { aspectRatios: ['9:16'], resolutions: ['720p'], duration: { mode: 'options', options: [4, 6] }, outputCounts: [1] } },
+    }]);
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('adapted-video-node', 'video_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runVideoPreviewNode(generation.id, {
+      modelRoute: 'relay-video-constrained', prompt: 'Adapt this video request', referenceAssetIds: [], keyframe: 'auto',
+      aspectRatio: '16:9', resolution: '4K', durationSeconds: 8, outputCount: 4, audioEnabled: true,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs).toHaveLength(4);
+    expect(useAppStore.getState().modelJobs.every((job) => job.outputCount === 1)).toBe(true);
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      aspectRatio: '9:16', videoResolution: '720p', durationSeconds: 6, outputCount: 1,
+    });
+  });
+  it('omits video parameters that a complete provider profile does not declare', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: 'provider-' + job.id })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'kling-duration-only', displayName: 'Kling duration only', modelId: 'kling-duration-only',
+      capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
+      constraints: { video: { duration: { mode: 'options', options: [5, 10] }, outputCounts: [1] } },
+    }]);
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('provider-default-video-node', 'video_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runVideoPreviewNode(generation.id, {
+      modelRoute: 'kling-duration-only', prompt: 'Use model defaults', referenceAssetIds: [], keyframe: 'auto',
+      aspectRatio: 'Auto', resolution: 'Auto', durationSeconds: 5, outputCount: 1, audioEnabled: true,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({ durationSeconds: 5, outputCount: 1 });
+    expect(useAppStore.getState().modelJobs[0]?.aspectRatio).toBeUndefined();
+    expect(useAppStore.getState().modelJobs[0]?.videoResolution).toBeUndefined();
+  });
   it('uses the desktop provider bridge executor for confirmed model plans without exposing tokens', async () => {
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-task-app-store' }));
     const pollImageJob = vi.fn(async () => ({ status: 'running' as const, progress: 0.42 }));
@@ -581,7 +2160,9 @@ describe('project optimization memory', () => {
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
-    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(submitImageJob).toHaveBeenCalledWith({
       jobId: expect.stringMatching(/^model-job-/),
       provider: 'comfly',
@@ -646,9 +2227,11 @@ describe('project optimization memory', () => {
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
-    expect(events.slice(0, 2)).toEqual(['profiles', 'commit']);
+    expect(events.slice(0, 3)).toEqual(['profiles', 'profiles', 'commit']);
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(submitImageJob).toHaveBeenCalledWith({
       jobId: expect.stringMatching(/^model-job-/),
       provider: 'comfly',
@@ -705,7 +2288,9 @@ describe('project optimization memory', () => {
       skillWriteback: false,
     })).resolves.toBeUndefined();
 
-    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(commit).not.toHaveBeenCalled();
     expect(submitImageJob).not.toHaveBeenCalled();
     expect(useAppStore.getState().project).toEqual(beforeProject);
@@ -752,7 +2337,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
     });
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    await waitForStore(() => listProfiles.mock.calls.length === 2);
 
     useAppStore.getState().cancelAgentPlan();
     expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'confirming' });
@@ -808,7 +2393,7 @@ describe('project optimization memory', () => {
     });
     const originalPlanId = useAppStore.getState().agentPlan?.id;
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    await waitForStore(() => listProfiles.mock.calls.length === 2);
 
     useAppStore.getState().draftAgentPlan('Replacement plan must stay waiting', {
       modelRoute: 'nano-banana-2-actual-route',
@@ -873,7 +2458,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
     });
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    await waitForStore(() => listProfiles.mock.calls.length === 2);
 
     useAppStore.getState().setProject({
       ...useAppStore.getState().project,
@@ -933,7 +2518,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
     });
     const firstConfirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    await waitForStore(() => listProfiles.mock.calls.length === 2);
     const secondConfirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
 
     profileResolution.resolve([{
@@ -947,7 +2532,9 @@ describe('project optimization memory', () => {
     await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
-    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(commit).toHaveBeenCalledTimes(1);
     expect(submitImageJob).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().project.projectMemory).toHaveLength(1);
@@ -987,7 +2574,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
     });
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    await waitForStore(() => listProfiles.mock.calls.length === 2);
     profileResolution.resolve([{
       provider: 'comfly',
       modelRoute: 'image-generation',
@@ -1045,7 +2632,7 @@ describe('project optimization memory', () => {
     });
     const originalPlanId = useAppStore.getState().agentPlan?.id;
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 1);
+    await waitForStore(() => listProfiles.mock.calls.length === 2);
     profileResolution.resolve([{
       provider: 'comfly',
       modelRoute: 'image-generation',
@@ -1319,7 +2906,9 @@ describe('project optimization memory', () => {
     });
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
 
-    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(commit).not.toHaveBeenCalled();
     expect(submitImageJob).not.toHaveBeenCalled();
     expect(useAppStore.getState().project.projectMemory).toEqual([]);
@@ -1355,14 +2944,16 @@ describe('project optimization memory', () => {
     await expect(
       useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false }),
     ).resolves.toBeUndefined();
-    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(commit).not.toHaveBeenCalled();
     expect(submitImageJob).not.toHaveBeenCalled();
     expect(useAppStore.getState().modelJobs).toEqual([]);
     expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/model profile/i);
   });
 
-  it('hydrates durable project before deferred model job recovery finishes', async () => {
+  it('hydrates the durable project and stops an interrupted model job without waiting for its provider', async () => {
     const finalPoll = deferred<{ status: 'completed'; result: { assetId: string } }>();
     replaceModelJobExecutorForTests({
       submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
@@ -1377,7 +2968,11 @@ describe('project optimization memory', () => {
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
 
-    const durableProject = { ...createStarterProject(), name: 'hydrated-before-recovery-finishes' };
+    const durableProject = {
+      ...createStarterProject(),
+      id: 'hydrated-recovery-before-finish',
+      name: 'hydrated-before-recovery-finishes',
+    };
     replaceProjectPersistenceClientForTests(createMockClient({
       hydrate: async () => ({
         availableSnapshotIds: ['snapshot-hydrated'],
@@ -1399,11 +2994,237 @@ describe('project optimization memory', () => {
       expect(resolvedBeforeProvider).toBe(true);
       expect(useAppStore.getState().project.name).toBe('hydrated-before-recovery-finishes');
       expect(useAppStore.getState().desktopRevision).toBe(12);
-      expect(useAppStore.getState().modelJobs[0]?.status).toBe('running');
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('cancelled');
     } finally {
       finalPoll.resolve({ status: 'completed', result: { assetId: 'asset-after-hydrate' } });
       await Promise.race([hydration.catch(() => undefined), delay(100)]);
     }
+  });
+
+  it('hydrates and resumes a persisted running image job when its source node still owns the result', async () => {
+    const jobId = 'persisted-owned-image-job';
+    const source: Extract<CanvasNode, { type: 'module' }> = createCanvasModuleNode('persisted-owned-image-node', 'image_generation', { x: 0, y: 0 });
+    source.data.config = {
+      ...source.data.config,
+      lastResultJobId: jobId,
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    source.data.execution = { ...source.data.execution, state: 'queued' };
+    const generatedAsset = {
+      assetId: 'cccccccccccccccc', byteSize: 128, extension: 'png' as const, height: 512,
+      label: 'Generated image', mediaType: 'image/png' as const, origin: 'generated' as const,
+      sha256: 'c'.repeat(64), width: 512,
+    };
+    const durableProject = {
+      ...createStarterProject(),
+      id: 'persisted-owned-image-project',
+      nodes: [source],
+      edges: [],
+      assets: [generatedAsset],
+    };
+    const storage = createTestModelJobStorage([{
+      id: jobId,
+      kind: 'image',
+      modelId: 'gpt-image-1',
+      status: 'running',
+      promptNodeId: source.id,
+      providerTaskId: 'provider-persisted-owned-image-job',
+      confirmedAt: '2026-08-20T07:16:44.000Z',
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      conversationId: `image-node-${source.id}`,
+      projectSessionId: 'old-session',
+      referenceAssetIds: [],
+      createdAt: '2026-08-20T07:16:44.000Z',
+      updatedAt: '2026-08-20T07:17:25.000Z',
+    }]);
+    const poll = vi.fn(async () => ({
+      status: 'completed' as const,
+      result: { assetId: generatedAsset.assetId, width: 512, height: 512 },
+    }));
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: request.nextProject,
+      revision: request.baseRevision + 1,
+    }));
+    replaceModelJobStorageForTests(storage);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async () => ({ providerTaskId: 'unused-submit' })),
+      poll,
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: durableProject,
+        revision: 5,
+        saveStatus: 'saved',
+      }),
+    }), {
+      getSessionId: () => 'new-session',
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('completed');
+    }, { timeout: 2_000 });
+
+    expect(poll).toHaveBeenCalledWith(expect.objectContaining({ id: jobId, status: 'running' }));
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === source.id)).toMatchObject({
+      type: 'module',
+      data: {
+        config: { resultAssetIds: [generatedAsset.assetId], resultState: 'fresh' },
+        execution: { state: 'completed' },
+      },
+    });
+  });
+
+  it('waits for durable recovery before resuming the exact owned running image job', async () => {
+    const jobId = 'recovery-owned-image-job';
+    const source: Extract<CanvasNode, { type: 'module' }> = createCanvasModuleNode('recovery-owned-image-node', 'image_generation', { x: 0, y: 0 });
+    source.data.config = {
+      ...source.data.config,
+      lastResultJobId: jobId,
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    source.data.execution = { ...source.data.execution, state: 'queued' };
+    const generatedAsset = {
+      assetId: 'dddddddddddddddd', byteSize: 128, extension: 'png' as const, height: 512,
+      label: 'Recovered generated image', mediaType: 'image/png' as const, origin: 'generated' as const,
+      sha256: 'd'.repeat(64), width: 512,
+    };
+    const recoveryProject = {
+      ...createStarterProject(),
+      id: 'recovery-owned-image-project',
+      nodes: [source],
+      edges: [],
+      assets: [generatedAsset],
+    };
+    const storage = createTestModelJobStorage([{
+      id: jobId,
+      kind: 'image',
+      modelId: 'gpt-image-1',
+      status: 'running',
+      promptNodeId: source.id,
+      providerTaskId: 'provider-recovery-owned-image-job',
+      confirmedAt: '2026-08-20T07:16:44.000Z',
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      conversationId: `image-node-${source.id}`,
+      projectSessionId: 'old-session',
+      referenceAssetIds: [],
+      createdAt: '2026-08-20T07:16:44.000Z',
+      updatedAt: '2026-08-20T07:17:25.000Z',
+    }]);
+    const poll = vi.fn(async () => ({
+      status: 'completed' as const,
+      result: { assetId: generatedAsset.assetId, width: 512, height: 512 },
+    }));
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: request.nextProject,
+      revision: request.baseRevision + 1,
+    }));
+    replaceModelJobStorageForTests(storage);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async () => ({ providerTaskId: 'unused-submit' })),
+      poll,
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: ['snapshot-recovery'],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: recoveryProject,
+        recoveryRequired: true,
+        revision: 5,
+        saveStatus: 'error',
+      }),
+      restore: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        project: recoveryProject,
+        recoveryRequired: false,
+        revision: 5,
+        saveStatus: 'saved',
+      }),
+    }), {
+      getSessionId: () => 'recovered-session',
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+    await delay(20);
+    expect(poll).not.toHaveBeenCalled();
+
+    await useAppStore.getState().restoreProjectSnapshot('snapshot-recovery');
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('completed');
+    }, { timeout: 2_000 });
+
+    expect(poll).toHaveBeenCalledWith(expect.objectContaining({ id: jobId, status: 'running' }));
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === source.id)).toMatchObject({
+      type: 'module',
+      data: {
+        config: { resultAssetIds: [generatedAsset.assetId], resultState: 'fresh' },
+        execution: { state: 'completed' },
+      },
+    });
+  });
+
+  it('marks a persisted running reverse task cancelled during hydration', async () => {
+    const reverse = createCanvasModuleNode('reverse-interrupted-on-startup', 'reverse_agent', { x: 0, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'gemini-reverse',
+      role: 'Analyst',
+      task: 'Analyze the image',
+      knowledgeBaseIds: [],
+      reverseAgentRunId: 'stale-reverse-run',
+      reverseAgentRunState: 'running',
+      reverseAgentStartedAt: '2026-08-19T01:00:00.000Z',
+    };
+    const durableProject = parseCanvasProject({ ...createStarterProject(), nodes: [reverse], edges: [] });
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: request.nextProject,
+      revision: request.baseRevision + 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: durableProject,
+        revision: 9,
+        saveStatus: 'saved',
+      }),
+    }));
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: {
+        reverseAgentRunState: 'cancelled',
+        reverseAgentCompletedAt: expect.any(String),
+        reverseAgentError: null,
+      } },
+    });
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({
+      transaction: expect.objectContaining({ label: 'Stop interrupted reverse Agent runs' }),
+    }));
   });
 
   it('keeps desktop provider jobs running while credentials are locked and completes after unlock', async () => {
@@ -1466,7 +3287,7 @@ describe('project optimization memory', () => {
     });
   });
 
-  it('commits recovered model result against hydrated project revision', async () => {
+  it('ignores a late provider result from a model job stopped during hydration', async () => {
     const finalPoll = deferred<{ status: 'completed'; result: { assetId: string } }>();
     const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -1487,7 +3308,11 @@ describe('project optimization memory', () => {
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
 
-    const durableProject = { ...createStarterProject(), name: 'hydrated-result-target' };
+    const durableProject = {
+      ...createStarterProject(),
+      id: 'hydrated-recovery-result-target',
+      name: 'hydrated-result-target',
+    };
     replaceProjectPersistenceClientForTests(createMockClient({
       commit,
       hydrate: async () => ({
@@ -1505,20 +3330,17 @@ describe('project optimization memory', () => {
       await waitForStore(() => useAppStore.getState().project.name === 'hydrated-result-target');
       finalPoll.resolve({ status: 'completed', result: { assetId: 'asset-hydrated-result' } });
       await hydration;
-      await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+      await delay(20);
 
-      const resultCommit = commit.mock.calls
-        .map(([request]) => request)
-        .find((request) => request.transaction.id.startsWith('model-job-result-'));
-      expect(resultCommit?.baseRevision).toBe(41);
-      expect(resultCommit?.previousProject.name).toBe('hydrated-result-target');
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('cancelled');
+      expect(commit.mock.calls.map(([request]) => request).some((request) => request.transaction.id.startsWith('model-job-result-'))).toBe(false);
     } finally {
       finalPoll.resolve({ status: 'completed', result: { assetId: 'asset-hydrated-result' } });
       await Promise.race([hydration.catch(() => undefined), delay(100)]);
     }
   });
 
-  it('streams recovered model job progress and terminal updates after hydration', async () => {
+  it('does not stream progress or terminal updates from an interrupted job after hydration', async () => {
     const finalPoll = deferred<{ status: 'completed'; progress: number; result: { assetId: string } }>();
     replaceModelJobExecutorForTests({
       submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
@@ -1534,7 +3356,11 @@ describe('project optimization memory', () => {
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'running');
 
-    const durableProject = { ...createStarterProject(), name: 'hydrated-live-progress' };
+    const durableProject = {
+      ...createStarterProject(),
+      id: 'hydrated-recovery-live-progress',
+      name: 'hydrated-live-progress',
+    };
     replaceProjectPersistenceClientForTests(createMockClient({
       hydrate: async () => ({
         availableSnapshotIds: [],
@@ -1549,16 +3375,16 @@ describe('project optimization memory', () => {
     const hydration = useAppStore.getState().hydratePersistence();
     try {
       await hydration;
-      expect(useAppStore.getState().modelJobs[0]?.status).toBe('running');
-      await waitForStore(() => useAppStore.getState().modelJobs[0]?.progress === 0.65);
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('cancelled');
+      expect(useAppStore.getState().modelJobs[0]?.progress).not.toBe(0.65);
 
       finalPoll.resolve({ status: 'completed', progress: 1, result: { assetId: 'asset-live-recovered' } });
-      await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'completed');
+      await delay(20);
 
       expect(useAppStore.getState().modelJobs[0]).toMatchObject({
-        resultAssetId: 'asset-live-recovered',
-        status: 'completed',
+        status: 'cancelled',
       });
+      expect(useAppStore.getState().modelJobs[0]).not.toHaveProperty('resultAssetId');
     } finally {
       finalPoll.resolve({ status: 'completed', progress: 1, result: { assetId: 'asset-live-recovered' } });
       await Promise.race([hydration.catch(() => undefined), delay(100)]);
@@ -3135,14 +4961,55 @@ describe('stable module graph commits', () => {
     expect(useAppStore.getState().project.nodes.find((node) => node.id === 'prompt')?.position).toEqual({ x: 20, y: 30 });
   });
 
+  it('keeps a delayed reverse draft valid across same-project layout synchronization', async () => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const commit = vi.fn().mockReturnValue(commitResult.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    const reverse = createCanvasModuleNode('same-project-reverse-draft', 'reverse_agent', { x: 0, y: 0 });
+    useAppStore.setState({
+      desktopRevision: 0,
+      persistenceMode: 'desktop',
+      project: { ...createStarterProject(), nodes: [reverse], edges: [] },
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    const pendingPosition = useAppStore.getState().commitNodePosition(reverse.id, { x: 20, y: 30 });
+    const pendingDraft = useAppStore.getState().draftReverseAgentConfig(reverse.id, {
+      modelRoute: 'gemini-reverse',
+      role: 'Latest analyst role',
+      task: 'Latest analysis task',
+      knowledgeBaseIds: [],
+      referenceAssetIds: [],
+    });
+    useAppStore.getState().setProject({
+      ...useAppStore.getState().project,
+      name: 'Same project layout synchronization',
+    }, { schedulePersist: false });
+
+    const request = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    commitResult.resolve({ ok: true, project: request.nextProject, revision: 1 });
+
+    await expect(pendingPosition).resolves.toBe(true);
+    await expect(pendingDraft).resolves.toBe(true);
+    expect(useAppStore.getState().project.nodes[0]).toMatchObject({
+      data: { config: { role: 'Latest analyst role', task: 'Latest analysis task' } },
+      position: { x: 20, y: 30 },
+    });
+  });
+
   it.each(
     (['success', 'failure'] as const).flatMap((resultKind) => (
-      ['open', 'hydrate', 'new', 'reset', 'close', 'discard', 'set_project'] as const
+      ['open', 'hydrate', 'new', 'reset', 'discard', 'set_project'] as const
     ).map((boundary) => ({ boundary, resultKind }))),
   )('ignores a delayed $resultKind commit result after the $boundary project boundary', async ({ boundary, resultKind }) => {
     const commitResult = deferred<ProjectCommitResult>();
     const initialProject = moduleGraphProject();
-    const boundaryProject = { ...moduleGraphProject(), name: `Boundary ${boundary}` };
+    const boundaryProject = {
+      ...moduleGraphProject(),
+      ...(boundary === 'set_project' ? { id: 'replacement-project-boundary' } : {}),
+      name: `Boundary ${boundary}`,
+    };
     const close = vi.fn(async () => undefined);
     const durableResult = {
       availableSnapshotIds: [],
@@ -3190,9 +5057,6 @@ describe('stable module graph commits', () => {
       case 'reset':
         resetAppStoreForTests({ project: 'empty' });
         break;
-      case 'close':
-        expect(await useAppStore.getState().closePersistence()).toBe(false);
-        break;
       case 'discard':
         expect(await useAppStore.getState().discardPersistence()).toBe(true);
         break;
@@ -3215,13 +5079,52 @@ describe('stable module graph commits', () => {
     if (boundary === 'new' || boundary === 'reset') {
       expect(useAppStore.getState().projectLifecycle).toBe('untitled');
     }
-    if (boundary === 'close') {
-      expect(useAppStore.getState()).toMatchObject({
-        canRetryProjectCommit: true,
-        saveErrorCode: 'DURABLE_WRITE_FAILED',
-        saveStatus: 'error',
-      });
-    }
+  });
+
+  it('waits for an active project commit before creating the close stable point and closing persistence', async () => {
+    const commitResult = deferred<ProjectCommitResult>();
+    const initialProject = moduleGraphProject();
+    const close = vi.fn(async () => undefined);
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['close-after-active-commit'],
+      lifecycle: 'durable' as const,
+      project: useAppStore.getState().project,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      close,
+      commit: vi.fn().mockReturnValue(commitResult.promise),
+      stablePoint,
+    }));
+    useAppStore.setState({
+      desktopRevision: 0,
+      persistenceMode: 'desktop',
+      project: initialProject,
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    const pendingCommit = useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 });
+    const closing = useAppStore.getState().closePersistence();
+
+    await expect(Promise.race([closing, Promise.resolve('still-pending')])).resolves.toBe('still-pending');
+    expect(stablePoint).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+
+    const request = (useAppStore.getState().saveStatus === 'saving'
+      ? (useAppStore.getState().project)
+      : initialProject);
+    commitResult.resolve({ ok: true, project: request, revision: 1 });
+
+    await expect(pendingCommit).resolves.toBe(true);
+    await expect(closing).resolves.toBe(true);
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({
+      availableSnapshotIds: ['close-after-active-commit'],
+      saveErrorCode: null,
+      saveStatus: 'saved',
+    });
   });
 
   it('serializes rapid stable graph operations against the latest acknowledged revision and continues after failure', async () => {
@@ -3441,6 +5344,43 @@ describe('stable module graph commits', () => {
     ]);
   });
 
+  it('atomically reorders mixed image and video edges connected to an Agent media input', async () => {
+    const imageInput = createCanvasModuleNode('mixed-reorder-image', 'image_input', { x: 0, y: 0 });
+    imageInput.data.config = { assetId: '1111111111111111' };
+    const firstVideo = createCanvasModuleNode('mixed-reorder-video-a', 'video_input', { x: 0, y: 100 });
+    firstVideo.data.config = { assetId: '2222222222222222' };
+    const secondVideo = createCanvasModuleNode('mixed-reorder-video-b', 'video_input', { x: 0, y: 200 });
+    secondVideo.data.config = { assetId: '3333333333333333' };
+    const reverse = createCanvasModuleNode('mixed-reorder-agent', 'reverse_agent', { x: 400, y: 0 });
+    const project = parseCanvasProject({
+      ...createStarterProject(),
+      nodes: [imageInput, firstVideo, secondVideo, reverse],
+      edges: [
+        { id: 'mixed-image-edge', source: imageInput.id, sourcePortId: 'image', target: reverse.id, targetPortId: 'references', order: 0 },
+        { id: 'mixed-video-a-edge', source: firstVideo.id, sourcePortId: 'video', target: reverse.id, targetPortId: 'references', order: 1 },
+        { id: 'mixed-video-b-edge', source: secondVideo.id, sourcePortId: 'video', target: reverse.id, targetPortId: 'references', order: 2 },
+      ],
+      assets: [
+        { assetId: '1111111111111111', byteSize: 42, extension: 'png', height: 100, label: 'Image', mediaType: 'image/png', origin: 'imported', sha256: '1'.repeat(64), width: 100 },
+        { assetId: '2222222222222222', byteSize: 1_024, durationMs: 4_000, extension: 'mp4', height: 720, label: 'Video A', mediaType: 'video/mp4', origin: 'imported', sha256: '2'.repeat(64), width: 1280 },
+        { assetId: '3333333333333333', byteSize: 2_048, durationMs: 5_000, extension: 'mp4', height: 720, label: 'Video B', mediaType: 'video/mp4', origin: 'imported', sha256: '3'.repeat(64), width: 1280 },
+      ],
+    });
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true, project: nextProject, revision: 9,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project, desktopRevision: 8, saveStatus: 'saved' });
+
+    expect(await useAppStore.getState().reorderModuleInput(reverse.id, 'references', [
+      'mixed-video-b-edge', 'mixed-image-edge', 'mixed-video-a-edge',
+    ])).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.edges
+      .filter((edge) => edge.target === reverse.id)
+      .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+      .map((edge) => edge.id)).toEqual(['mixed-video-b-edge', 'mixed-image-edge', 'mixed-video-a-edge']);
+  });
   it('treats an already ordered many-input request as a saved no-op', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -3539,6 +5479,617 @@ describe('stable module graph commits', () => {
     }));
   });
 
+  it('runs an applied reverse Agent node only with its connected managed media and selected knowledge snapshots', async () => {
+    const reverse = createCanvasModuleNode('reverse-direct-run', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'gemini-reverse',
+      role: 'Commercial visual analyst',
+      task: 'Return a concise image-generation prompt.',
+      knowledgeBaseIds: [],
+      mode: 'auto',
+      orderedMedia: [],
+      resultState: 'empty',
+    };
+    const imageInput = createCanvasModuleNode('reverse-image', 'image_input', { x: 0, y: 0 });
+    imageInput.data.config = { assetId: 'aaaaaaaaaaaaaaaa' };
+    const project = parseCanvasProject({
+      ...createStarterProject(),
+      assets: [{
+        assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png', height: 100,
+        label: 'Managed product', mediaType: 'image/png', origin: 'imported', sha256: 'a'.repeat(64), width: 100,
+      }],
+      nodes: [imageInput, reverse],
+      edges: [{ id: 'reverse-image-edge', source: imageInput.id, sourcePortId: 'image', target: reverse.id, targetPortId: 'references', order: 0 }],
+    });
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId,
+      nonce: input.run.nonce,
+      knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'A centered product with soft studio light.',
+      keywords: ['product', 'studio'],
+      positivePrompt: 'Centered product hero shot with soft studio light.',
+      negativeConstraints: ['Do not alter the logo'],
+      executionChecklist: ['Verify product identity'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    useAppStore.setState({
+      project,
+      projectImages: [{
+        assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', extension: 'png', height: 100,
+        label: 'Managed product', mediaType: 'image/png', origin: 'imported', sha256: 'a'.repeat(64), usageCount: 1, width: 100,
+      }],
+    });
+
+    const result = await useAppStore.getState().runReverseAgentNode(reverse.id);
+
+    expect(result?.positivePrompt).toBe('Centered product hero shot with soft studio light.');
+    expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'comfly',
+      media: [{ kind: 'image', assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, mediaType: 'image/png', sha256: 'a'.repeat(64) }],
+      run: expect.objectContaining({ agentConfig: {
+        modelRoute: 'gemini-reverse',
+        role: 'Commercial visual analyst',
+        task: 'Return a concise image-generation prompt.',
+        knowledgeBaseIds: [],
+      } }),
+    }));
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: {
+        config: {
+          reverseAgentResult: {
+            positivePrompt: 'Centered product hero shot with soft studio light.',
+          },
+          reverseAgentRunState: 'completed',
+        },
+      },
+    });
+    const reverseResult = useAppStore.getState().project.nodes.find((node) => (
+      node.type === 'module' && node.data.moduleType === 'reverse_result'
+    ));
+    expect(reverseResult).toMatchObject({
+      position: { x: reverse.position.x + 680, y: reverse.position.y },
+    });
+    expect(useAppStore.getState().project.edges).toContainEqual(expect.objectContaining({
+      source: reverse.id,
+      sourcePortId: 'analysis',
+      target: reverseResult?.id,
+      targetPortId: 'analysis',
+    }));
+  });
+
+  it('durably updates an edited reverse result without dropping its run identity', async () => {
+    const reverse = createCanvasModuleNode('reverse-edit-durable', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      reverseAgentResult: {
+        sessionId: 'reverse-session-edit',
+        nonce: 'reverse-nonce-edit',
+        knowledgeSnapshotVersion: 'knowledge-version-edit',
+        analysis: 'Original analysis',
+        keywords: ['original'],
+        positivePrompt: 'Original prompt',
+        negativeConstraints: ['Original constraint'],
+        executionChecklist: ['Original check'],
+      },
+    };
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [reverse], edges: [] });
+    const commit = vi.fn(async (request: ProjectCommitRequest) => ({
+      ok: true as const,
+      project: request.nextProject,
+      revision: request.baseRevision + 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ desktopRevision: 4, persistenceMode: 'desktop', project, projectLifecycle: 'durable', saveStatus: 'saved' });
+    const update = (useAppStore.getState() as unknown as {
+      updateReverseAgentResult?: (nodeId: string, result: Record<string, unknown>) => Promise<boolean>;
+    }).updateReverseAgentResult;
+
+    expect(typeof update).toBe('function');
+    await expect(update!(reverse.id, {
+      analysis: 'Edited analysis',
+      keywords: ['edited'],
+      positivePrompt: 'Edited prompt',
+      negativeConstraints: ['Edited constraint'],
+      executionChecklist: ['Edited check'],
+    })).resolves.toBe(true);
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: { reverseAgentResult: {
+        sessionId: 'reverse-session-edit',
+        nonce: 'reverse-nonce-edit',
+        knowledgeSnapshotVersion: 'knowledge-version-edit',
+        analysis: 'Edited analysis',
+        positivePrompt: 'Edited prompt',
+      } } },
+    });
+  });
+
+  it('terminates a reverse Agent request that never returns and persists a visible timeout failure', async () => {
+    vi.useFakeTimers();
+    try {
+      const reverse = createCanvasModuleNode('reverse-timeout-run', 'reverse_agent', { x: 360, y: 0 });
+      reverse.data.config = {
+        modelRoute: 'gemini-reverse', role: 'Analyst', task: 'Analyze the cited image.',
+        knowledgeBaseIds: [], referenceAssetIds: ['cccccccccccccccc'],
+      };
+      const project = parseCanvasProject({
+        ...createStarterProject(),
+        assets: [{
+          assetId: 'cccccccccccccccc', byteSize: 64, extension: 'png', height: 120,
+          label: 'Timeout product', mediaType: 'image/png', origin: 'imported', sha256: 'c'.repeat(64), width: 160,
+        }],
+        nodes: [reverse],
+        edges: [],
+      });
+      replaceProjectPersistenceClientForTests(createMockClient({
+        analyzeReversePrompt: vi.fn(() => new Promise<ReversePromptResult>(() => undefined)),
+      }));
+      replaceKnowledgeClientForTests(createKnowledgeClient());
+      useAppStore.setState({
+        project,
+        projectImages: [{
+          assetId: 'cccccccccccccccc', byteSize: 64, displayUrl: 'novus-asset://project/session/cccccccccccccccc', extension: 'png', height: 120,
+          label: 'Timeout product', mediaType: 'image/png', origin: 'imported', sha256: 'c'.repeat(64), usageCount: 0, width: 160,
+        }],
+      });
+
+      let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+      void useAppStore.getState().runReverseAgentNode(reverse.id).then(
+        () => { outcome = 'resolved'; },
+        () => { outcome = 'rejected'; },
+      );
+      await vi.advanceTimersByTimeAsync(120_000);
+      await Promise.resolve();
+
+      expect(outcome).toBe('pending');
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      await Promise.resolve();
+
+      expect(outcome).toBe('rejected');
+      expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+        data: { config: {
+          reverseAgentRunState: 'failed',
+          reverseAgentCompletedAt: expect.any(String),
+          reverseAgentError: expect.stringMatching(/timeout|timed out|超时/iu),
+        } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a running reverse request locally and ignores its late provider result', async () => {
+    const reverse = createCanvasModuleNode('reverse-local-cancel', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'gemini-reverse', role: 'Analyst', task: 'Analyze the cited image.',
+      knowledgeBaseIds: [], referenceAssetIds: ['dddddddddddddddd'],
+    };
+    const project = parseCanvasProject({
+      ...createStarterProject(),
+      assets: [{
+        assetId: 'dddddddddddddddd', byteSize: 64, extension: 'png', height: 120,
+        label: 'Cancelable product', mediaType: 'image/png', origin: 'imported', sha256: 'd'.repeat(64), width: 160,
+      }],
+      nodes: [reverse],
+      edges: [],
+    });
+    const providerResult = deferred<ReversePromptResult>();
+    let startedRun: Parameters<NonNullable<ProjectPersistenceClient['analyzeReversePrompt']>>[0]['run'] | undefined;
+    replaceProjectPersistenceClientForTests(createMockClient({
+      analyzeReversePrompt: vi.fn((input) => {
+        startedRun = input.run;
+        return providerResult.promise;
+      }),
+    }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    useAppStore.setState({
+      project,
+      projectImages: [{
+        assetId: 'dddddddddddddddd', byteSize: 64, displayUrl: 'novus-asset://project/session/dddddddddddddddd', extension: 'png', height: 120,
+        label: 'Cancelable product', mediaType: 'image/png', origin: 'imported', sha256: 'd'.repeat(64), usageCount: 0, width: 160,
+      }],
+    });
+
+    const running = useAppStore.getState().runReverseAgentNode(reverse.id);
+    await waitForStore(() => useAppStore.getState().project.nodes.some((node) => (
+      node.id === reverse.id && node.type === 'module' && node.data.config.reverseAgentRunState === 'running'
+    )));
+    await expect(useAppStore.getState().cancelReverseAgentNode(reverse.id)).resolves.toBe(true);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: { reverseAgentRunState: 'cancelled', reverseAgentError: null } },
+    });
+
+    providerResult.resolve({
+      sessionId: startedRun!.sessionId,
+      nonce: startedRun!.nonce,
+      knowledgeSnapshotVersion: startedRun!.knowledgeLease.versionKey,
+      analysis: 'Late analysis must be ignored.',
+      keywords: ['late'],
+      positivePrompt: 'Late reverse prompt must be ignored.',
+      negativeConstraints: [],
+      executionChecklist: [],
+    });
+
+    await expect(running).rejects.toMatchObject({ code: 'REVERSE_RUN_CANCELLED' });
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: { reverseAgentRunState: 'cancelled' } },
+    });
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).not.toMatchObject({
+      data: { config: { reverseAgentResult: { positivePrompt: 'Late reverse prompt must be ignored.' } } },
+    });
+  });
+
+  it('applies and runs a reverse Agent task as one durable store operation with terminal timing', async () => {
+    const reverse = createCanvasModuleNode('reverse-configured-run', 'reverse_agent', { x: 360, y: 0 });
+    const imageInput = createCanvasModuleNode('reverse-configured-image', 'image_input', { x: 0, y: 0 });
+    imageInput.data.config = { assetId: 'aaaaaaaaaaaaaaaa' };
+    const project = parseCanvasProject({
+      ...createStarterProject(),
+      assets: [{
+        assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png', height: 100,
+        label: 'Managed product', mediaType: 'image/png', origin: 'imported', sha256: 'a'.repeat(64), width: 100,
+      }],
+      nodes: [imageInput, reverse],
+      edges: [{ id: 'reverse-configured-edge', source: imageInput.id, sourcePortId: 'image', target: reverse.id, targetPortId: 'references', order: 0 }],
+    });
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId,
+      nonce: input.run.nonce,
+      knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'Configured run analysis.',
+      keywords: ['configured'],
+      positivePrompt: 'Configured reverse prompt.',
+      negativeConstraints: ['No identity changes'],
+      executionChecklist: ['Review the result'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    useAppStore.setState({
+      project,
+      projectImages: [{
+        assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', extension: 'png', height: 100,
+        label: 'Managed product', mediaType: 'image/png', origin: 'imported', sha256: 'a'.repeat(64), usageCount: 1, width: 100,
+      }],
+    });
+
+    const result = await useAppStore.getState().runReverseAgentNode(reverse.id, {
+      modelRoute: 'gemini-reverse',
+      role: 'Commercial visual analyst',
+      task: 'Analyze the connected managed image.',
+      knowledgeBaseIds: [],
+    });
+
+    expect(result.positivePrompt).toBe('Configured reverse prompt.');
+    expect(analyzeReversePrompt).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: {
+        modelRoute: 'gemini-reverse',
+        reverseAgentRunState: 'completed',
+        reverseAgentResult: { positivePrompt: 'Configured reverse prompt.' },
+        reverseAgentStartedAt: expect.any(String),
+        reverseAgentCompletedAt: expect.any(String),
+        reverseAgentError: null,
+      } },
+    });
+  });
+
+  it('autosaves reverse Agent draft fields before the task is run', async () => {
+    const reverse = createCanvasModuleNode('reverse-draft-autosave', 'reverse_agent', { x: 360, y: 0 });
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [reverse], edges: [] });
+    let durableProject = project;
+    let revision = 8;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      durableProject = request.nextProject;
+      revision += 1;
+      return { ok: true, project: durableProject, revision };
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      stablePoint: async () => ({ availableSnapshotIds: [], project: durableProject, revision }),
+    }));
+    useAppStore.setState({
+      desktopRevision: revision,
+      persistenceMode: 'desktop',
+      project,
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().draftReverseAgentConfig(reverse.id, {
+      modelRoute: 'gemini-reverse',
+      role: 'Commercial visual analyst',
+      task: 'Analyze @image1 before the user presses Start.',
+      knowledgeBaseIds: [],
+      referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+    })).resolves.toBe(true);
+    expect(useAppStore.getState().saveStatus).toBe('pending');
+    await expect(useAppStore.getState().flushProjectSave('blur')).resolves.toBe(true);
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(durableProject.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: {
+        modelRoute: 'gemini-reverse',
+        role: 'Commercial visual analyst',
+        task: 'Analyze @image1 before the user presses Start.',
+        knowledgeBaseIds: [],
+        referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+      } },
+    });
+  });
+
+  it('autosaves image-generation draft text and controls before the task is run', async () => {
+    const generation = createCanvasModuleNode('image-draft-autosave', 'image_generation', { x: 360, y: 0 });
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [generation], edges: [] });
+    let durableProject = project;
+    let revision = 8;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      durableProject = request.nextProject;
+      revision += 1;
+      return { ok: true, project: durableProject, revision };
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      stablePoint: async () => ({ availableSnapshotIds: [], project: durableProject, revision }),
+    }));
+    useAppStore.setState({ desktopRevision: revision, persistenceMode: 'desktop', project, projectLifecycle: 'durable', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().draftGenerationNodeConfig(generation.id, {
+      prompt: 'Durable image prompt', modelRoute: 'image-route', aspectRatio: '4:5', resolution: '2K', outputCount: 2,
+    })).resolves.toBe(true);
+    await expect(useAppStore.getState().flushProjectSave('blur')).resolves.toBe(true);
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(durableProject.nodes.find((node) => node.id === generation.id)).toMatchObject({
+      data: { config: { prompt: 'Durable image prompt', modelRoute: 'image-route', aspectRatio: '4:5', resolution: '2K', outputCount: 2 } },
+    });
+  });
+
+  it('serializes a newer reverse draft behind an in-flight autosave revision', async () => {
+    vi.useFakeTimers();
+    const reverse = createCanvasModuleNode('reverse-draft-race', 'reverse_agent', { x: 360, y: 0 });
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [reverse], edges: [] });
+    const firstAck = deferred<ProjectCommitResult>();
+    let durableProject = project;
+    let revision = 8;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (commit.mock.calls.length === 1) {
+        const result = await firstAck.promise;
+        if (result.ok) {
+          durableProject = result.project;
+          revision = result.revision;
+        }
+        return result;
+      }
+      if (request.baseRevision !== revision) {
+        return { code: 'REVISION_CONFLICT', ok: false, project: durableProject, revision };
+      }
+      durableProject = request.nextProject;
+      revision += 1;
+      return { ok: true, project: durableProject, revision };
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      stablePoint: async () => ({ availableSnapshotIds: [], project: durableProject, revision }),
+    }));
+    useAppStore.setState({ desktopRevision: revision, persistenceMode: 'desktop', project, projectLifecycle: 'durable', saveStatus: 'saved' });
+
+    await useAppStore.getState().draftReverseAgentConfig(reverse.id, {
+      modelRoute: 'gemini-reverse', role: 'First role', task: 'First task', knowledgeBaseIds: [], referenceAssetIds: [],
+    });
+    vi.advanceTimersByTime(750);
+    await Promise.resolve();
+    expect(commit).toHaveBeenCalledOnce();
+    const firstRequest = commit.mock.calls[0]![0];
+
+    const newerDraft = useAppStore.getState().draftReverseAgentConfig(reverse.id, {
+      modelRoute: 'gemini-reverse', role: 'Latest role', task: 'Latest task', knowledgeBaseIds: ['scene-skill'], referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+    });
+    let newerDraftResolved = false;
+    void newerDraft.then(() => { newerDraftResolved = true; });
+    await Promise.resolve();
+    expect(newerDraftResolved).toBe(true);
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: { role: 'Latest role', task: 'Latest task' } },
+    });
+    firstAck.resolve({ ok: true, project: firstRequest.nextProject, revision: 9 });
+    await expect(newerDraft).resolves.toBe(true);
+    await expect(useAppStore.getState().flushProjectSave('blur')).resolves.toBe(true);
+
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]![0].baseRevision).toBe(9);
+    expect(durableProject.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: { role: 'Latest role', task: 'Latest task', knowledgeBaseIds: ['scene-skill'], referenceAssetIds: ['aaaaaaaaaaaaaaaa'] } },
+    });
+    expect(useAppStore.getState().projectCommitConflictCode).toBeNull();
+  });
+
+  it('starts with the latest reverse draft while an earlier autosave is still in flight', async () => {
+    vi.useFakeTimers();
+    const reverse = createCanvasModuleNode('reverse-draft-start-race', 'reverse_agent', { x: 360, y: 0 });
+    const asset = { assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100, label: 'Managed product', mediaType: 'image/png' as const, origin: 'imported' as const, sha256: 'a'.repeat(64), width: 100 };
+    const project = parseCanvasProject({ ...createStarterProject(), assets: [asset], nodes: [reverse], edges: [] });
+    const firstAck = deferred<ProjectCommitResult>();
+    let durableProject = project;
+    let revision = 12;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (commit.mock.calls.length === 1) {
+        const result = await firstAck.promise;
+        if (result.ok) { durableProject = result.project; revision = result.revision; }
+        return result;
+      }
+      if (request.baseRevision !== revision) return { code: 'REVISION_CONFLICT', ok: false, project: durableProject, revision };
+      durableProject = request.nextProject;
+      revision += 1;
+      return { ok: true, project: durableProject, revision };
+    });
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId, nonce: input.run.nonce, knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'Latest draft analysis.', keywords: ['latest'], positivePrompt: 'Latest draft prompt.',
+      negativeConstraints: ['No distortion'], executionChecklist: ['Verify identity'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      analyzeReversePrompt,
+      commit,
+      stablePoint: async () => ({ availableSnapshotIds: [], project: durableProject, revision }),
+    }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    useAppStore.setState({
+      desktopRevision: revision, persistenceMode: 'desktop', project, projectLifecycle: 'durable', saveStatus: 'saved',
+      projectImages: [{ ...asset, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', usageCount: 0 }],
+    });
+    const firstConfig = { modelRoute: 'gemini-reverse', role: 'First role', task: 'First task', knowledgeBaseIds: [], referenceAssetIds: [asset.assetId] };
+    const latestConfig = { ...firstConfig, role: 'Latest role', task: 'Latest task' };
+
+    await useAppStore.getState().draftReverseAgentConfig(reverse.id, firstConfig);
+    vi.advanceTimersByTime(750);
+    await Promise.resolve();
+    const firstRequest = commit.mock.calls[0]![0];
+    const newerDraft = useAppStore.getState().draftReverseAgentConfig(reverse.id, latestConfig);
+    const running = useAppStore.getState().runReverseAgentNode(reverse.id, latestConfig);
+    firstAck.resolve({ ok: true, project: firstRequest.nextProject, revision: 13 });
+
+    await expect(newerDraft).resolves.toBe(true);
+    await expect(running).resolves.toMatchObject({ positivePrompt: 'Latest draft prompt.' });
+    expect(analyzeReversePrompt).toHaveBeenCalledOnce();
+    expect(durableProject.nodes.find((node) => node.id === reverse.id)).toMatchObject({ data: { config: { role: 'Latest role', task: 'Latest task' } } });
+    expect(useAppStore.getState().projectCommitConflictCode).toBeNull();
+  });
+
+  it('retries one prior save failure before starting an already-configured reverse task', async () => {
+    const reverse = createCanvasModuleNode('reverse-run-after-save-retry', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'gemini-reverse', role: 'Analyst', task: 'Analyze the cited image.', knowledgeBaseIds: [], referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+    };
+    const project = parseCanvasProject({
+      ...createStarterProject(),
+      assets: [{ assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png', height: 100, label: 'Managed product', mediaType: 'image/png', origin: 'imported', sha256: 'a'.repeat(64), width: 100 }],
+      nodes: [reverse], edges: [],
+    });
+    let revision = 4;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (commit.mock.calls.length === 1) return { code: 'INVALID_REQUEST', ok: false, project: request.previousProject, revision };
+      revision += 1;
+      return { ok: true, project: request.nextProject, revision };
+    });
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId,
+      nonce: input.run.nonce,
+      knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'Recovered analysis.',
+      keywords: ['recovered'],
+      positivePrompt: 'Recovered reverse prompt.',
+      negativeConstraints: ['No distortion'],
+      executionChecklist: ['Verify product identity'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt, commit }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    useAppStore.setState({
+      desktopRevision: revision,
+      persistenceMode: 'desktop',
+      project,
+      projectLifecycle: 'durable',
+      projectImages: [{ assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', extension: 'png', height: 100, label: 'Managed product', mediaType: 'image/png', origin: 'imported', sha256: 'a'.repeat(64), usageCount: 0, width: 100 }],
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().commitNodePosition(reverse.id, { x: 400, y: 20 })).resolves.toBe(false);
+    expect(useAppStore.getState().canRetryProjectCommit).toBe(true);
+
+    await expect(useAppStore.getState().runReverseAgentNode(reverse.id)).resolves.toMatchObject({ positivePrompt: 'Recovered reverse prompt.' });
+    expect(analyzeReversePrompt).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().canRetryProjectCommit).toBe(false);
+  });
+
+  it('persists a display-safe reverse Agent failure instead of returning to a blank idle node', async () => {
+    const reverse = createCanvasModuleNode('reverse-failed-run', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'gemini-reverse', role: 'Analyst', task: 'Analyze the cited image.',
+      knowledgeBaseIds: [], referenceAssetIds: ['bbbbbbbbbbbbbbbb'],
+    };
+    const project = parseCanvasProject({
+      ...createStarterProject(),
+      assets: [{
+        assetId: 'bbbbbbbbbbbbbbbb', byteSize: 64, extension: 'png', height: 120,
+        label: 'Cited product', mediaType: 'image/png', origin: 'imported', sha256: 'b'.repeat(64), width: 160,
+      }],
+      nodes: [reverse],
+      edges: [],
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({
+      analyzeReversePrompt: vi.fn(async () => {
+        throw Object.assign(new Error('Provider timeout at C:\\private\\request.json Authorization: Bearer secret'), { code: 'PROVIDER_TIMEOUT' });
+      }),
+    }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    useAppStore.setState({
+      project,
+      projectImages: [{
+        assetId: 'bbbbbbbbbbbbbbbb', byteSize: 64, displayUrl: 'novus-asset://project/session/bbbbbbbbbbbbbbbb', extension: 'png', height: 120,
+        label: 'Cited product', mediaType: 'image/png', origin: 'imported', sha256: 'b'.repeat(64), usageCount: 0, width: 160,
+      }],
+    });
+
+    await expect(useAppStore.getState().runReverseAgentNode(reverse.id)).rejects.toThrow();
+
+    const failed = useAppStore.getState().project.nodes.find((node) => node.id === reverse.id);
+    expect(failed).toMatchObject({ data: { config: {
+      reverseAgentRunState: 'failed',
+      reverseAgentCompletedAt: expect.any(String),
+      reverseAgentError: expect.stringContaining('Provider timeout'),
+    } } });
+    expect(JSON.stringify(failed)).not.toMatch(/Authorization|Bearer|secret|C:\\private/iu);
+  });
+
+  it('sends a reverse Agent cited managed image to analysis without requiring a graph edge', async () => {
+    const reverse = createCanvasModuleNode('reverse-cited-run', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'gemini-reverse',
+      role: 'Commercial visual analyst',
+      task: 'Analyze @1.',
+      knowledgeBaseIds: [],
+      referenceAssetIds: ['bbbbbbbbbbbbbbbb'],
+    };
+    const project = parseCanvasProject({
+      ...createStarterProject(),
+      assets: [{
+        assetId: 'bbbbbbbbbbbbbbbb', byteSize: 64, extension: 'png', height: 120,
+        label: 'Cited product', mediaType: 'image/png', origin: 'imported', sha256: 'b'.repeat(64), width: 160,
+      }],
+      nodes: [reverse],
+      edges: [],
+    });
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId,
+      nonce: input.run.nonce,
+      knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'A cited product reference.',
+      keywords: ['product'],
+      positivePrompt: 'Cited product hero shot.',
+      negativeConstraints: ['No distortion'],
+      executionChecklist: ['Preserve product identity'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    useAppStore.setState({
+      project,
+      projectImages: [{
+        assetId: 'bbbbbbbbbbbbbbbb', byteSize: 64, displayUrl: 'novus-asset://project/session/bbbbbbbbbbbbbbbb', extension: 'png', height: 120,
+        label: 'Cited product', mediaType: 'image/png', origin: 'imported', sha256: 'b'.repeat(64), usageCount: 0, width: 160,
+      }],
+    });
+
+    await useAppStore.getState().runReverseAgentNode(reverse.id);
+
+    expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      media: [{ kind: 'image', assetId: 'bbbbbbbbbbbbbbbb', byteSize: 64, mediaType: 'image/png', sha256: 'b'.repeat(64) }],
+      run: expect.objectContaining({
+        references: [{ assetId: 'bbbbbbbbbbbbbbbb', label: 'Cited product', position: 0, role: 'scene_composition' }],
+        orderedMedia: [expect.objectContaining({ kind: 'image', assetId: 'bbbbbbbbbbbbbbbb', order: 0 })],
+      }),
+    }));
+  });
   it('rejects self and multi-node cycles before persistence', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -3714,7 +6265,7 @@ function createMutableModelJobStorage(
   };
 }
 
-function installProviderProfilesForModelJobTests(profiles = [{
+function installProviderProfilesForModelJobTests(profiles: ProviderBridgeProfile[] = [{
   provider: 'comfly',
   modelRoute: 'image-generation',
   displayName: 'GPT Image',
@@ -3735,6 +6286,21 @@ function installProviderProfilesForModelJobTests(profiles = [{
   } as unknown as typeof window.novusDesktop;
 }
 
+function installVideoProviderForModelJobTests(): void {
+  replaceModelJobExecutorForTests({
+    submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+    poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+    cancel: vi.fn(async () => {}),
+  });
+  installProviderProfilesForModelJobTests([{
+    provider: 'relayme',
+    modelRoute: 'relayme-video-pro',
+    displayName: 'Relay Video Pro',
+    modelId: 'video-pro',
+    capabilities: ['video_generation', 'async_tasks'],
+  }]);
+  resetAppStoreForTests();
+}
 function createDesktopProviderBridgeForCancel(options: {
   ackImageJobTerminal: NonNullable<NonNullable<typeof window.novusDesktop>['provider']>['ackImageJobTerminal'];
   cancelImageJob: NonNullable<NonNullable<typeof window.novusDesktop>['provider']>['cancelImageJob'];
@@ -3778,6 +6344,7 @@ function createMockClient(overrides: Partial<ReloadableTestProjectPersistenceCli
     saveStatus: 'pending',
   }));
   return {
+    analyzeReversePrompt: overrides.analyzeReversePrompt,
     close: overrides.close ?? (async () => {}),
     copyHistoryToProject: overrides.copyHistoryToProject,
     commit: async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
@@ -3806,6 +6373,7 @@ function createMockClient(overrides: Partial<ReloadableTestProjectPersistenceCli
     reloadDurableProject: overrides.reloadDurableProject,
     importProjectImage: overrides.importProjectImage ?? (async () => null),
     listProjectImages: overrides.listProjectImages ?? (async () => []),
+    listProjectVideos: overrides.listProjectVideos ?? (async () => []),
     pasteClipboardImage: overrides.pasteClipboardImage ?? (async () => null),
     restore: overrides.restore ?? (async () => {
       const result = await hydrate();
@@ -3910,3 +6478,96 @@ function knowledgeState(options: {
     lastRollbackAt: null,
   };
 }
+  it('advances the project revision atomically for an Agent reference before the next stable operation', async () => {
+    const importedAsset = {
+      assetId: 'a'.repeat(16), byteSize: 16, displayUrl: 'novus-asset://imported', extension: 'png' as const,
+      height: 10, label: 'reference.png', mediaType: 'image/png' as const, origin: 'imported' as const,
+      sha256: 'a'.repeat(64), usageCount: 0, width: 10,
+    };
+    const { displayUrl: _displayUrl, usageCount: _usageCount, ...projectAsset } = importedAsset;
+    const resultProject = { ...createStarterProject(), assets: [projectAsset] };
+    const importProjectImage = vi.fn(async () => ({ asset: importedAsset, project: resultProject, revision: 3 }));
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 4,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, importProjectImage }));
+    resetAppStoreForTests();
+
+    await expect(useAppStore.getState().importAgentReferenceImage()).resolves.toEqual(importedAsset);
+
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 3, project: resultProject, projectImages: [importedAsset] });
+    await expect(useAppStore.getState().addModuleNode('text_prompt', { x: 24, y: 48 })).resolves.toBe(true);
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({
+      baseRevision: 3,
+      previousProject: expect.objectContaining({ assets: [projectAsset] }),
+      nextProject: expect.objectContaining({ assets: [projectAsset] }),
+    }));
+    expect(useAppStore.getState().project.assets).toEqual([projectAsset]);
+    expect(useAppStore.getState().desktopRevision).toBe(4);
+  });
+
+  it('keeps project and revision unchanged when an Agent reference import is cancelled', async () => {
+    const project = createStarterProject();
+    replaceProjectPersistenceClientForTests(createMockClient({ importProjectImage: async () => null }));
+    resetAppStoreForTests();
+    useAppStore.setState({ desktopRevision: 7, project, projectImages: [], saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().importAgentReferenceImage()).resolves.toBeNull();
+
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 7,
+      project,
+      projectImageError: null,
+      projectImageImportingNodeId: null,
+      projectImages: [],
+      saveStatus: 'saved',
+    });
+  });
+
+  it('does not partially apply project state when an Agent reference import fails', async () => {
+    const project = createStarterProject();
+    replaceProjectPersistenceClientForTests(createMockClient({
+      importProjectImage: async () => Promise.reject({ code: 'DURABLE_WRITE_FAILED' }),
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({ desktopRevision: 7, project, projectImages: [], saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().importAgentReferenceImage()).resolves.toBeNull();
+
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 7,
+      project,
+      projectImageError: 'DURABLE_WRITE_FAILED',
+      projectImageImportingNodeId: null,
+      projectImages: [],
+      saveErrorCode: 'DURABLE_WRITE_FAILED',
+      saveStatus: 'error',
+    });
+  });
+
+describe('explicit project save', () => {
+  it('creates a durable project even when an empty untitled canvas has no pending autosave draft', async () => {
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['manual-save-1'],
+      lifecycle: 'durable' as const,
+      project,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'untitled', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().saveProjectExplicitly()).resolves.toBe(true);
+
+    expect(stablePoint).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({
+      availableSnapshotIds: ['manual-save-1'],
+      desktopRevision: 1,
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+  });
+});

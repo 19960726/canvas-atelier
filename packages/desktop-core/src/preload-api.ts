@@ -3,10 +3,14 @@ import type {
   CommitAck,
   CommitBridgeRequest,
   ConfigureKnowledgeBaseBridgeRequest,
+  CreateProjectBridgeRequest,
+  CreateProjectBridgeResult,
   ExportPackBridgeRequest,
   ExportPackBridgeResult,
   ImportPackBridgeRequest,
   ImportPackBridgeResult,
+  ImportDroppedProjectMediaBridgeRequest,
+  ImportDroppedProjectMediaBridgeResult,
   ImportProjectImageBridgeRequest,
   ImportProjectImageBridgeResult,
   ImportProjectVideoBridgeRequest,
@@ -21,10 +25,14 @@ import type {
   ListProjectVideosBridgeRequest,
   OpenProjectBridgeRequest,
   OpenProjectBridgeResult,
+  OpenRecentProjectBridgeRequest,
+  RecentProjectRequest,
+  RecentProjectSummary,
   PrepareSkillCandidateReviewBridgeRequest,
   PrepareSkillCandidateReviewBridgeResult,
   RecoveryPlanBridgeRequest,
   RecoveryPlanBridgeResult,
+  RefreshProjectBridgeRequest,
   ReviewSkillCandidateBridgeRequest,
   ReviewSkillCandidateBridgeResult,
   RestoreBridgeRequest,
@@ -50,7 +58,13 @@ import type {
   ListGenerationHistoryBridgeRequest,
   ListGenerationHistoryBridgeResult,
   SetGenerationHistoryFavoriteBridgeRequest,
+  McpRuntimePublicStatus,
+  McpRuntimeRendererRequest,
+  McpRuntimeRendererResponse,
+  PhotoshopImportRequest,
+  PhotoshopImportResult,
 } from './contracts.js';
+import { CanvasMcpRequestSchema, CanvasMcpResponseSchema } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   parseCloseFlushAck,
@@ -70,26 +84,48 @@ import {
   parseProviderBridgeEnvelope,
   type AckImageJobTerminalBridgeRequest,
   type AckImageJobTerminalBridgeResult,
+  type AckVideoJobTerminalBridgeRequest,
+  type AckVideoJobTerminalBridgeResult,
+  type AnalyzeReversePromptBridgeRequest,
+  type AnalyzeReversePromptBridgeResult,
+  type ChatSkillBridgeRequest,
+  type ChatSkillBridgeResult,
+  type GenerateStoryboardBridgeRequest,
+  type GenerateStoryboardBridgeResult,
   type CancelImageJobBridgeRequest,
+  type CancelVideoJobBridgeRequest,
+  type CancelVideoJobBridgeResult,
   type ConfigureProviderBridgeRequest,
+  type UpdateProviderProfilesBridgeRequest,
   type PollImageJobBridgeRequest,
   type PollImageJobBridgeResult,
+  type PollVideoJobBridgeRequest,
+  type PollVideoJobBridgeResult,
   type ProviderBridgeProfile,
   type ProviderConfigurationStatus,
   type ProviderConnectionCheckResult,
+  type RevealProviderCredentialBridgeResult,
+  type ProviderSelectionBridgeRequest,
   type SubmitImageJobBridgeRequest,
   type SubmitImageJobBridgeResult,
+  type SubmitVideoJobBridgeRequest,
+  type SubmitVideoJobBridgeResult,
   type UnlockProviderBridgeRequest,
   type CancelImageJobBridgeResult,
 } from './provider-contracts.js';
+import type { CacheDirectoryState } from './cache-directory-service.js';
+import type { McpClientId, McpClientStatus } from './mcp-client-config.js';
+import type { UpdateCheckResult, UpdateRestartResult, UpdateState } from './update-client.js';
 
 export const DESKTOP_BRIDGE_PRELOAD_KEY = 'novusDesktop';
 
 export const BRIDGE_CHANNELS = {
   closeChoice: 'novus-desktop:close-choice',
+  closeRequest: 'novus-desktop:close-request',
   closeFlushAck: 'novus-desktop:close-flush-ack',
   closeFlushRequest: 'novus-desktop:close-flush-request',
   closeProject: 'novus-desktop:close-project',
+  createProject: 'novus-desktop:create-project',
   commit: 'novus-desktop:commit',
   configureKnowledgeBase: 'novus-desktop:configure-knowledge-base',
   createStablePoint: 'novus-desktop:create-stable-point',
@@ -97,7 +133,9 @@ export const BRIDGE_CHANNELS = {
   getKnowledgeState: 'novus-desktop:get-knowledge-state',
   getRecoveryPlan: 'novus-desktop:get-recovery-plan',
   importPack: 'novus-desktop:import-pack',
+  importDroppedProjectMedia: 'novus-desktop:import-dropped-project-media',
   importProjectImage: 'novus-desktop:import-project-image',
+  importProjectImageToPhotoshop: 'novus-desktop:import-project-image-to-photoshop',
   importProjectVideo: 'novus-desktop:import-project-video',
   pasteProjectClipboardImage: 'novus-desktop:paste-project-clipboard-image',
   pasteProjectClipboardVideo: 'novus-desktop:paste-project-clipboard-video',
@@ -105,7 +143,15 @@ export const BRIDGE_CHANNELS = {
   knowledgeSyncStatusChanged: 'novus-desktop:knowledge-sync-status-changed',
   listProjectImages: 'novus-desktop:list-project-images',
   listProjectVideos: 'novus-desktop:list-project-videos',
+  openLatestRecoveryPreview: 'novus-desktop:open-latest-recovery-preview',
   openProject: 'novus-desktop:open-project',
+  refreshProject: 'novus-desktop:refresh-project',
+  recentProjects: {
+    list: 'novus-desktop:recent-projects:list',
+    open: 'novus-desktop:recent-projects:open',
+    remove: 'novus-desktop:recent-projects:remove',
+    relocate: 'novus-desktop:recent-projects:relocate',
+  },
   prepareSkillCandidateReview: 'novus-desktop:prepare-skill-candidate-review',
   reviewSkillCandidate: 'novus-desktop:review-skill-candidate',
   restore: 'novus-desktop:restore',
@@ -123,17 +169,52 @@ export const BRIDGE_CHANNELS = {
     permanentlyDelete: 'novus-desktop:history:permanently-delete',
     purgeExpired: 'novus-desktop:history:purge-expired',
   },
+  storage: {
+    getCacheDirectory: 'novus-desktop:storage:get-cache-directory',
+    chooseCacheDirectory: 'novus-desktop:storage:choose-cache-directory',
+    resetCacheDirectory: 'novus-desktop:storage:reset-cache-directory',
+    openCacheDirectory: 'novus-desktop:storage:open-cache-directory',
+  },
+  updates: {
+    getState: 'novus-desktop:updates:get-state',
+    check: 'novus-desktop:updates:check',
+    download: 'novus-desktop:updates:download',
+    defer: 'novus-desktop:updates:defer',
+    retry: 'novus-desktop:updates:retry',
+    restart: 'novus-desktop:updates:restart',
+  },
+  mcpRuntime: {
+    status: 'novus-desktop:mcp-runtime:status',
+    request: 'novus-desktop:mcp-runtime:request',
+    response: 'novus-desktop:mcp-runtime:response',
+  },
+  mcpIntegration: {
+    status: 'novus-desktop:mcp-integration:status',
+    connect: 'novus-desktop:mcp-integration:connect',
+    copyConfig: 'novus-desktop:mcp-integration:copy-config',
+    test: 'novus-desktop:mcp-integration:test',
+    disconnect: 'novus-desktop:mcp-integration:disconnect',
+  },
   provider: PROVIDER_BRIDGE_CHANNELS,
 } as const;
 
 const SAFE_MODE_BRIDGE_CHANNELS = {
   getRecoveryPlan: 'novus-desktop:get-recovery-plan',
   openProject: 'novus-desktop:open-project',
+  recentProjects: {
+    list: 'novus-desktop:recent-projects:list',
+    open: 'novus-desktop:recent-projects:open',
+    remove: 'novus-desktop:recent-projects:remove',
+    relocate: 'novus-desktop:recent-projects:relocate',
+  },
   restore: 'novus-desktop:restore',
 } as const;
 
 export interface DesktopBridgeApi {
+  openLatestRecoveryPreview(): Promise<OpenProjectBridgeResult | null>;
   openProject(request: OpenProjectBridgeRequest): Promise<OpenProjectBridgeResult | null>;
+  refreshProject(request: RefreshProjectBridgeRequest): Promise<OpenProjectBridgeResult>;
+  createProject(request: CreateProjectBridgeRequest): Promise<CreateProjectBridgeResult | null>;
   commit(request: CommitBridgeRequest): Promise<CommitAck>;
   createStablePoint(request: StablePointBridgeRequest): Promise<StablePointBridgeResult>;
   restore(request: RestoreBridgeRequest): Promise<RestoreBridgeResult>;
@@ -148,10 +229,50 @@ export interface DesktopBridgeApi {
   subscribeKnowledgeState(listener: (state: KnowledgeBaseStateSummary) => void): () => void;
   subscribeKnowledgeSyncStatus(listener: (status: KnowledgeSyncStatusSummary) => void): () => void;
   lifecycle: DesktopLifecycleBridgeApi;
+  mcpRuntime: DesktopMcpRuntimeBridgeApi;
+  mcpIntegration: DesktopMcpIntegrationBridgeApi;
   provider: DesktopProviderBridgeApi;
   projectImages: DesktopProjectImageBridgeApi;
   projectVideos: DesktopProjectVideoBridgeApi;
+  recentProjects: DesktopRecentProjectBridgeApi;
   history: DesktopGenerationHistoryBridgeApi;
+  storage: DesktopStorageBridgeApi;
+  updates: DesktopUpdateBridgeApi;
+}
+
+export interface DesktopRecentProjectBridgeApi {
+  list(): Promise<readonly RecentProjectSummary[]>;
+  open(request: OpenRecentProjectBridgeRequest): Promise<OpenProjectBridgeResult | null>;
+  remove(request: RecentProjectRequest): Promise<readonly RecentProjectSummary[]>;
+  relocate(request: RecentProjectRequest): Promise<RecentProjectSummary | null>;
+}
+export interface DesktopMcpIntegrationBridgeApi {
+  getStatus(): Promise<readonly McpClientStatus[]>;
+  connect(client: McpClientId): Promise<McpClientStatus>;
+  copyConfig(client: McpClientId): Promise<{ readonly client: McpClientId; readonly config: string }>;
+  test(client: McpClientId): Promise<McpClientStatus>;
+  disconnect(client: McpClientId): Promise<McpClientStatus>;
+}
+export interface DesktopMcpRuntimeBridgeApi {
+  getStatus(): Promise<McpRuntimePublicStatus>;
+  onRequest(listener: (request: McpRuntimeRendererRequest) => void | Promise<void>): () => void;
+  respond(response: McpRuntimeRendererResponse): boolean;
+}
+
+export interface DesktopStorageBridgeApi {
+  getCacheDirectory(): Promise<CacheDirectoryState>;
+  chooseCacheDirectory(): Promise<CacheDirectoryState | null>;
+  resetCacheDirectory(): Promise<CacheDirectoryState>;
+  openCacheDirectory(): Promise<{ opened: boolean }>;
+}
+
+export interface DesktopUpdateBridgeApi {
+  getState(): Promise<UpdateState>;
+  check(): Promise<UpdateCheckResult>;
+  download(): Promise<UpdateCheckResult>;
+  defer(): Promise<UpdateCheckResult>;
+  retry(): Promise<UpdateCheckResult>;
+  restart(): Promise<UpdateRestartResult>;
 }
 
 export interface DesktopProjectVideoBridgeApi {
@@ -177,26 +298,39 @@ export interface DesktopGenerationHistoryBridgeApi {
 
 export interface DesktopProjectImageBridgeApi {
   importImage(request: ImportProjectImageBridgeRequest): Promise<ImportProjectImageBridgeResult | null>;
+  importToPhotoshop(request: PhotoshopImportRequest): Promise<PhotoshopImportResult>;
+  importDroppedMedia(request: ImportDroppedProjectMediaBridgeRequest, file: unknown): Promise<ImportDroppedProjectMediaBridgeResult | null>;
   list(request: ListProjectImagesBridgeRequest): Promise<ProjectImageAssetSummary[]>;
   pasteClipboardImage(request: PasteProjectClipboardImageBridgeRequest): Promise<PasteProjectClipboardImageBridgeResult | null>;
 }
 
 export interface DesktopLifecycleBridgeApi {
+  requestClose(): Promise<void>;
   ackCloseFlush(ack: CloseFlushAck): boolean;
   chooseCloseDecision(request: CloseChoiceRequest): Promise<CloseChoiceDecision>;
   subscribeCloseFlushRequest(listener: (request: CloseFlushRequest) => void | Promise<void>): () => void;
 }
 
 export interface DesktopProviderBridgeApi {
-  getStatus(): Promise<ProviderConfigurationStatus>;
-  checkConnection(): Promise<ProviderConnectionCheckResult>;
+  getStatus(request?: ProviderSelectionBridgeRequest): Promise<ProviderConfigurationStatus>;
+  revealCredential(request?: ProviderSelectionBridgeRequest): Promise<RevealProviderCredentialBridgeResult>;
+  checkConnection(request?: ProviderSelectionBridgeRequest): Promise<ProviderConnectionCheckResult>;
   configure(request: ConfigureProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
+  updateProfiles(request: UpdateProviderProfilesBridgeRequest): Promise<ProviderConfigurationStatus>;
   unlock(request: UnlockProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
-  listProfiles(): Promise<ProviderBridgeProfile[]>;
+  listAvailableModelIds(request?: ProviderSelectionBridgeRequest): Promise<string[]>;
+  listProfiles(request?: ProviderSelectionBridgeRequest): Promise<ProviderBridgeProfile[]>;
   submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
   cancelImageJob(request: CancelImageJobBridgeRequest): Promise<CancelImageJobBridgeResult>;
   ackImageJobTerminal(request: AckImageJobTerminalBridgeRequest): Promise<AckImageJobTerminalBridgeResult>;
+  submitVideoJob(request: SubmitVideoJobBridgeRequest): Promise<SubmitVideoJobBridgeResult>;
+  pollVideoJob(request: PollVideoJobBridgeRequest): Promise<PollVideoJobBridgeResult>;
+  cancelVideoJob(request: CancelVideoJobBridgeRequest): Promise<CancelVideoJobBridgeResult>;
+  ackVideoJobTerminal(request: AckVideoJobTerminalBridgeRequest): Promise<AckVideoJobTerminalBridgeResult>;
+  analyzeReversePrompt(request: AnalyzeReversePromptBridgeRequest): Promise<AnalyzeReversePromptBridgeResult>;
+  chat(request: ChatSkillBridgeRequest): Promise<ChatSkillBridgeResult>;
+  generateStoryboard(request: GenerateStoryboardBridgeRequest): Promise<GenerateStoryboardBridgeResult>;
 }
 
 export interface SafeModeBridgeApi {
@@ -226,8 +360,66 @@ export function createPreloadApi(
   send: DesktopBridgeSend = () => undefined,
 ): DesktopBridgeApi {
   return {
+    mcpIntegration: {
+      async getStatus() {
+        return parseMcpClientStatusList(await invoke<unknown>(BRIDGE_CHANNELS.mcpIntegration.status));
+      },
+      async connect(client) {
+        return parseMcpClientStatus(await invoke<unknown>(BRIDGE_CHANNELS.mcpIntegration.connect, { client: parseMcpClientId(client) }));
+      },
+      async copyConfig(client) {
+        return parseMcpClientConfigCopy(await invoke<unknown>(BRIDGE_CHANNELS.mcpIntegration.copyConfig, { client: parseMcpClientId(client) }));
+      },
+      async test(client) {
+        return parseMcpClientStatus(await invoke<unknown>(BRIDGE_CHANNELS.mcpIntegration.test, { client: parseMcpClientId(client) }));
+      },
+      async disconnect(client) {
+        return parseMcpClientStatus(await invoke<unknown>(BRIDGE_CHANNELS.mcpIntegration.disconnect, { client: parseMcpClientId(client) }));
+      },
+    },
+    mcpRuntime: {
+      async getStatus() {
+        return parseMcpRuntimePublicStatus(await invoke<unknown>(BRIDGE_CHANNELS.mcpRuntime.status));
+      },
+      onRequest(listener) {
+        return subscribe(BRIDGE_CHANNELS.mcpRuntime.request, (payload) => {
+          const parsed = parseMcpRuntimeRendererRequest(payload);
+          if (parsed === null) return;
+          void listener(parsed);
+        });
+      },
+      respond(payload) {
+        const parsed = parseMcpRuntimeRendererResponse(payload);
+        if (parsed === null) return false;
+        send(BRIDGE_CHANNELS.mcpRuntime.response, parsed);
+        return true;
+      },
+    },
+    recentProjects: {
+      list() {
+        return invoke<readonly RecentProjectSummary[]>(BRIDGE_CHANNELS.recentProjects.list);
+      },
+      open(request) {
+        return invoke<OpenProjectBridgeResult | null>(BRIDGE_CHANNELS.recentProjects.open, request);
+      },
+      remove(request) {
+        return invoke<readonly RecentProjectSummary[]>(BRIDGE_CHANNELS.recentProjects.remove, request);
+      },
+      relocate(request) {
+        return invoke<RecentProjectSummary | null>(BRIDGE_CHANNELS.recentProjects.relocate, request);
+      },
+    },
+    openLatestRecoveryPreview() {
+      return invoke<OpenProjectBridgeResult | null>(BRIDGE_CHANNELS.openLatestRecoveryPreview);
+    },
     openProject(request) {
       return invoke<OpenProjectBridgeResult | null>(BRIDGE_CHANNELS.openProject, request);
+    },
+    refreshProject(request) {
+      return invoke<OpenProjectBridgeResult>(BRIDGE_CHANNELS.refreshProject, request);
+    },
+    createProject(request) {
+      return invoke<CreateProjectBridgeResult | null>(BRIDGE_CHANNELS.createProject, request);
     },
     commit(request) {
       return invoke<CommitAck>(BRIDGE_CHANNELS.commit, request);
@@ -277,6 +469,14 @@ export function createPreloadApi(
     projectImages: {
       importImage(request) {
         return invoke<ImportProjectImageBridgeResult | null>(BRIDGE_CHANNELS.importProjectImage, request);
+      },
+      importToPhotoshop(request) {
+        return invoke<PhotoshopImportResult>(BRIDGE_CHANNELS.importProjectImageToPhotoshop, request);
+      },
+      async importDroppedMedia() {
+        // A native preload replaces this method after resolving the dropped
+        // File to a private path. Generic/browser bridges must never accept paths.
+        return null;
       },
       list(request) {
         return invoke<ProjectImageAssetSummary[]>(BRIDGE_CHANNELS.listProjectImages, request);
@@ -334,7 +534,34 @@ export function createPreloadApi(
         return invoke<GenerationHistoryPurgeBridgeResult>(BRIDGE_CHANNELS.history.purgeExpired, request);
       },
     },
+    storage: {
+      async getCacheDirectory() {
+        return cloneCacheDirectoryState(await invoke<CacheDirectoryState>(BRIDGE_CHANNELS.storage.getCacheDirectory));
+      },
+      async chooseCacheDirectory() {
+        const state = await invoke<CacheDirectoryState | null>(BRIDGE_CHANNELS.storage.chooseCacheDirectory);
+        return state === null ? null : cloneCacheDirectoryState(state);
+      },
+      async resetCacheDirectory() {
+        return cloneCacheDirectoryState(await invoke<CacheDirectoryState>(BRIDGE_CHANNELS.storage.resetCacheDirectory));
+      },
+      async openCacheDirectory() {
+        const result = await invoke<{ opened: boolean }>(BRIDGE_CHANNELS.storage.openCacheDirectory);
+        return { opened: result.opened === true };
+      },
+    },
+    updates: {
+      getState() { return invoke<UpdateState>(BRIDGE_CHANNELS.updates.getState); },
+      check() { return invoke<UpdateCheckResult>(BRIDGE_CHANNELS.updates.check); },
+      download() { return invoke<UpdateCheckResult>(BRIDGE_CHANNELS.updates.download); },
+      defer() { return invoke<UpdateCheckResult>(BRIDGE_CHANNELS.updates.defer); },
+      retry() { return invoke<UpdateCheckResult>(BRIDGE_CHANNELS.updates.retry); },
+      restart() { return invoke<UpdateRestartResult>(BRIDGE_CHANNELS.updates.restart); },
+    },
     lifecycle: {
+      requestClose() {
+        return invoke<void>(BRIDGE_CHANNELS.closeRequest);
+      },
       ackCloseFlush(ack) {
         const parsed = parseCloseFlushAck(ack);
         if (parsed === null) return false;
@@ -356,20 +583,29 @@ export function createPreloadApi(
       },
     },
     provider: {
-      getStatus() {
-        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.getStatus);
+      getStatus(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.getStatus, request);
       },
-      checkConnection() {
-        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.checkConnection);
+      revealCredential(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.revealCredential, request);
+      },
+      checkConnection(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.checkConnection, request);
       },
       configure(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.configure, request);
       },
+      updateProfiles(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.updateProfiles, request);
+      },
       unlock(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.unlock, request);
       },
-      listProfiles() {
-        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.listProfiles);
+      listAvailableModelIds(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.listAvailableModelIds, request);
+      },
+      listProfiles(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.listProfiles, request);
       },
       submitImageJob(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.submitImageJob, request);
@@ -382,6 +618,27 @@ export function createPreloadApi(
       },
       ackImageJobTerminal(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, request);
+      },
+      submitVideoJob(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.submitVideoJob, request);
+      },
+      pollVideoJob(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.pollVideoJob, request);
+      },
+      cancelVideoJob(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.cancelVideoJob, request);
+      },
+      ackVideoJobTerminal(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.ackVideoJobTerminal, request);
+      },
+      analyzeReversePrompt(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt, request);
+      },
+      chat(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.chat, request);
+      },
+      generateStoryboard(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.generateStoryboard, request);
       },
     },
   };
@@ -399,9 +656,19 @@ async function invokeProvider<TResponse>(
   }
 }
 
+function cloneCacheDirectoryState(state: CacheDirectoryState): CacheDirectoryState {
+  return {
+    path: state.path,
+    isDefault: state.isDefault,
+    available: state.available,
+    busy: state.busy,
+    error: state.error,
+  };
+}
 export function createSafeModePreloadApi(invoke: DesktopBridgeInvoke): SafeModeBridgeApi {
   return {
     openProject(request) {
+
       return invoke<OpenProjectBridgeResult | null>(SAFE_MODE_BRIDGE_CHANNELS.openProject, request);
     },
     restore(request) {
@@ -423,6 +690,84 @@ export function redactBridgeDiagnostics(input: string): string {
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, '[redacted-image]');
 }
 
+function parseMcpClientId(value: unknown): McpClientId {
+  if (value === 'codex' || value === 'workbuddy') return value;
+  throw new Error('MCP_CLIENT_INVALID_REQUEST');
+}
+
+function parseMcpClientStatus(value: unknown): McpClientStatus {
+  if (
+    !isPlainBridgeRecord(value)
+    || !hasOnlyKeys(value, ['client', 'state', 'toolCount', 'lastError'])
+    || (value.client !== 'codex' && value.client !== 'workbuddy')
+    || !['unconfigured', 'configured', 'connected', 'connection_failed'].includes(String(value.state))
+    || (value.toolCount !== 0 && value.toolCount !== 14)
+    || !(value.lastError === null || (typeof value.lastError === 'string' && value.lastError.length <= 160))
+  ) throw new Error('MCP_CLIENT_INVALID_RESPONSE');
+  return value as unknown as McpClientStatus;
+}
+
+function parseMcpClientStatusList(value: unknown): readonly McpClientStatus[] {
+  if (!Array.isArray(value) || value.length !== 2) throw new Error('MCP_CLIENT_INVALID_RESPONSE');
+  const statuses = value.map(parseMcpClientStatus);
+  if (new Set(statuses.map((status) => status.client)).size !== 2) throw new Error('MCP_CLIENT_INVALID_RESPONSE');
+  return statuses;
+}
+
+function parseMcpClientConfigCopy(value: unknown): { readonly client: McpClientId; readonly config: string } {
+  if (
+    !isPlainBridgeRecord(value)
+    || !hasOnlyKeys(value, ['client', 'config'])
+    || (value.client !== 'codex' && value.client !== 'workbuddy')
+    || typeof value.config !== 'string'
+    || value.config.length === 0
+    || value.config.length > 65_536
+    || /authToken|pipeName|apiKey|authorization/iu.test(value.config)
+  ) throw new Error('MCP_CLIENT_INVALID_RESPONSE');
+  return { client: value.client, config: value.config };
+}
+function parseMcpRuntimeRendererRequest(value: unknown): McpRuntimeRendererRequest | null {
+  if (!isPlainBridgeRecord(value) || !hasOnlyKeys(value, ['requestId', 'request']) || !isMcpRequestId(value.requestId)) return null;
+  const request = CanvasMcpRequestSchema.safeParse(value.request);
+  return request.success ? { requestId: value.requestId, request: request.data } : null;
+}
+
+function parseMcpRuntimeRendererResponse(value: unknown): McpRuntimeRendererResponse | null {
+  if (!isPlainBridgeRecord(value) || !hasOnlyKeys(value, ['requestId', 'response']) || !isMcpRequestId(value.requestId)) return null;
+  const response = CanvasMcpResponseSchema.safeParse(value.response);
+  return response.success ? { requestId: value.requestId, response: response.data } : null;
+}
+
+function parseMcpRuntimePublicStatus(value: unknown): McpRuntimePublicStatus {
+  if (
+    !isPlainBridgeRecord(value)
+    || !hasOnlyKeys(value, ['state', 'rendererConnected', 'serverVersion', 'toolCount', 'lastError'])
+    || !['stopped', 'waiting_for_canvas', 'running', 'error'].includes(String(value.state))
+    || typeof value.rendererConnected !== 'boolean'
+    || typeof value.serverVersion !== 'string'
+    || value.serverVersion.length < 1
+    || value.serverVersion.length > 80
+    || value.toolCount !== 14
+    || !(value.lastError === null || (typeof value.lastError === 'string' && value.lastError.length <= 160 && !containsProtectedSyncValue(value.lastError)))
+  ) {
+    throw new Error('MCP_RUNTIME_INVALID_STATUS');
+  }
+  return {
+    state: value.state as McpRuntimePublicStatus['state'],
+    rendererConnected: value.rendererConnected,
+    serverVersion: value.serverVersion,
+    toolCount: 14,
+    lastError: value.lastError as string | null,
+  };
+}
+
+function isPlainBridgeRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function isMcpRequestId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 160;
+}
 function isKnowledgeSyncStatusSummary(value: unknown): value is KnowledgeSyncStatusSummary {
   if (typeof value !== 'object' || value === null) return false;
   if (!hasOnlyKeys(value, ['schemaVersion', 'knowledgeBaseId', 'status', 'changedAt', 'lastFailure'])) return false;

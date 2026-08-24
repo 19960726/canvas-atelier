@@ -17,8 +17,10 @@ import {
   isProviderBridgeErrorCode,
   normalizeProviderBridgeError,
   type PollImageJobBridgeResult,
+  type PollVideoJobBridgeResult,
   type ProviderBridgeError,
   type ProviderImageJobResult,
+  type ProviderVideoJobResult,
   type ProviderImageJobTerminalStatus,
 } from './provider-contracts.js';
 import type { ProviderMappingSecrets } from './provider-credential-vault.js';
@@ -28,15 +30,17 @@ const scrypt = promisify(scryptCallback);
 export type ProviderTaskMappingState = 'running' | ProviderImageJobTerminalStatus;
 
 export interface ProviderTaskMappingRecord {
-  readonly provider: 'comfly';
+  readonly provider: 'comfly' | 'relayme';
   readonly publicTaskId: string;
   readonly rawTaskId: string;
+  readonly kind?: 'image' | 'video';
+  readonly sessionId?: string;
   readonly historyId?: string;
   readonly state: ProviderTaskMappingState;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly terminalAt?: string;
-  readonly result?: ProviderImageJobResult;
+  readonly result?: ProviderImageJobResult | ProviderVideoJobResult;
   readonly error?: ProviderBridgeError;
 }
 
@@ -48,7 +52,7 @@ export interface ProviderTaskMappingStore {
   markCancelled(publicTaskId: string, now: string): Promise<ProviderTaskMappingRecord | undefined>;
   markTerminal(
     publicTaskId: string,
-    result: Extract<PollImageJobBridgeResult, { status: 'completed' | 'failed' }>,
+    result: Extract<PollImageJobBridgeResult | PollVideoJobBridgeResult, { status: 'completed' | 'failed' }>,
     now: string,
   ): Promise<ProviderTaskMappingRecord | undefined>;
   reserveSubmission(input: {
@@ -325,6 +329,8 @@ function parseTaskMappingPayload(value: unknown): ProviderTaskMappingPayload {
       'provider',
       'publicTaskId',
       'rawTaskId',
+      'kind',
+      'sessionId',
       'historyId',
       'state',
       'createdAt',
@@ -334,19 +340,26 @@ function parseTaskMappingPayload(value: unknown): ProviderTaskMappingPayload {
       'error',
     ]);
     const state = item.state === undefined ? 'running' : parseMappingState(item.state);
+    const provider = parseProvider(item.provider);
     const createdAt = item.createdAt === undefined ? new Date(0).toISOString() : parseIsoTimestamp(item.createdAt, 'createdAt');
     const updatedAt = item.updatedAt === undefined ? createdAt : parseIsoTimestamp(item.updatedAt, 'updatedAt');
     const terminalAt = item.terminalAt === undefined ? undefined : parseIsoTimestamp(item.terminalAt, 'terminalAt');
     return {
-      provider: parseProvider(item.provider),
+      provider,
       publicTaskId: parseNonEmptyString(item.publicTaskId, 'publicTaskId'),
       rawTaskId: parseNonEmptyString(item.rawTaskId, 'rawTaskId'),
-      ...(item.historyId === undefined ? {} : { historyId: parseHistoryId(item.historyId) }),
+      kind: item.kind === 'video' ? 'video' as const : 'image' as const,
+      ...(item.sessionId === undefined ? {} : { sessionId: parseNonEmptyString(item.sessionId, 'sessionId') }),
+      ...(item.historyId === undefined ? {} : {
+        historyId: provider === 'relayme'
+          ? parseNonEmptyString(item.historyId, 'historyId')
+          : parseHistoryId(item.historyId),
+      }),
       state,
       createdAt,
       updatedAt,
       ...(terminalAt === undefined ? {} : { terminalAt }),
-      ...(item.result === undefined ? {} : { result: validateProviderImageJobResult(item.result) }),
+      ...(item.result === undefined ? {} : { result: validateProviderJobResult(item.result, item.kind === 'video' ? 'video' : 'image') }),
       ...(item.error === undefined ? {} : { error: validateProviderError(item.error) }),
     };
   });
@@ -449,17 +462,18 @@ function validateProviderError(value: unknown): ProviderBridgeError {
   });
 }
 
-function validateProviderImageJobResult(value: unknown): ProviderImageJobResult {
-  const record = expectStrictRecord(value, ['assetId', 'width', 'height']);
+function validateProviderJobResult(value: unknown, kind: 'image' | 'video'): ProviderImageJobResult | ProviderVideoJobResult {
+  const record = expectStrictRecord(value, ['assetId', 'width', 'height', 'durationSeconds']);
   return {
     assetId: parseNonEmptyString(record.assetId, 'assetId'),
     ...(record.width === undefined ? {} : { width: parseFiniteNumber(record.width, 'width') }),
     ...(record.height === undefined ? {} : { height: parseFiniteNumber(record.height, 'height') }),
+    ...(kind === 'video' && record.durationSeconds !== undefined ? { durationSeconds: parseFiniteNumber(record.durationSeconds, 'durationSeconds') } : {}),
   };
 }
 
-function parseProvider(value: unknown): 'comfly' {
-  if (value === 'comfly') return value;
+function parseProvider(value: unknown): 'comfly' | 'relayme' {
+  if (value === 'comfly' || value === 'relayme') return value;
   throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
 }
 

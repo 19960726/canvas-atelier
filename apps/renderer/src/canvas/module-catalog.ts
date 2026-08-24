@@ -4,10 +4,22 @@ import {
 } from '@agent-canvas/domain';
 import type { ModulePreferences } from './module-preferences';
 
-const AGENT_CAPABILITY_MODULE_TYPES = new Set([
-  'skill_agent',
-  'detail_page_agent',
-  'line_art_material',
+/* The UI Gate ships one canonical canvas vocabulary.  Older editing,
+   storyboard, audio, Comfy and auxiliary Agent cards remain valid in the
+   domain for opening existing projects, but they are no longer offered by
+   the new module library/Quick Insert surface. */
+const UI_GATE_MODULE_TYPES = new Set([
+  'image_input',
+  'upload_image',
+  'video_input',
+  'canvas_library',
+  'text_prompt',
+  'image_generation',
+  'video_generation',
+  'reverse_agent',
+  'result_output',
+  'video_result',
+  'reverse_result',
 ]);
 
 export type ModuleCatalogCategory =
@@ -57,7 +69,5 @@ export function listFilteredModuleDefinitions(
 }
 
 export function listDiscoverableModuleDefinitions(): CanvasModuleDefinition[] {
-  return listCanvasModuleDefinitions().filter((definition) => (
-    !AGENT_CAPABILITY_MODULE_TYPES.has(definition.type)
-  ));
+  return listCanvasModuleDefinitions().filter((definition) => UI_GATE_MODULE_TYPES.has(definition.type));
 }
