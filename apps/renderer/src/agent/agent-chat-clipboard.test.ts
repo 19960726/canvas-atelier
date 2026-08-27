@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { readAgentChatClipboard } from './agent-chat-clipboard';
 
@@ -103,6 +103,17 @@ describe('readAgentChatClipboard', () => {
     expect(readAgentChatClipboard(clipboardData({
       html: '<div>可读内容</div><script>alert("危险")</script><style>.x{}</style>',
     })).text).toBe('可读内容');
+  });
+
+  it('safely strips invisible content when DOMParser is unavailable', () => {
+    vi.stubGlobal('DOMParser', undefined);
+    try {
+      expect(readAgentChatClipboard(clipboardData({
+        html: '<div>第一段<br>第二行</div><script>危险脚本()</script><style>不可见样式</style><template>模板内容</template><noscript>无脚本内容</noscript>',
+      })).text).toBe('第一段\n第二行');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('returns an empty payload when no clipboard data is available', () => {

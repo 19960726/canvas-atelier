@@ -53,6 +53,10 @@ function htmlToReadableText(html: string): string {
   if (typeof parserConstructor !== 'function') {
     return normalizeReadableText(html
       .replace(/<!--[\s\S]*?-->/gu, '')
+      .replace(/<script\b[\s\S]*?(?:<\/script\s*>|$)/giu, '')
+      .replace(/<style\b[\s\S]*?(?:<\/style\s*>|$)/giu, '')
+      .replace(/<template\b[\s\S]*?(?:<\/template\s*>|$)/giu, '')
+      .replace(/<noscript\b[\s\S]*?(?:<\/noscript\s*>|$)/giu, '')
       .replace(/<\/?(?:br|address|article|aside|blockquote|div|dl|dt|dd|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)[^>]*>/giu, '\n')
       .replace(/<[^>]*>/gu, ''));
   }
