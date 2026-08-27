@@ -2886,6 +2886,7 @@ describe('Comfly provider service', () => {
         await gate.promise;
         activeToken = nextToken;
       }),
+      clear: vi.fn(async () => undefined),
       unlock: vi.fn(async () => undefined),
       getStatus: vi.fn(async () => ({ configured: Boolean(activeToken), locked: !activeToken, encryption: 'safeStorage' as const })),
       getPrimaryToken: vi.fn(async () => activeToken),

@@ -404,6 +404,7 @@ async function createService(
 function credentialStore(status: { configured: boolean; locked: boolean }): ProviderCredentialStore {
   return {
     configure: vi.fn(async () => undefined),
+    clear: vi.fn(async () => undefined),
     unlock: vi.fn(async () => undefined),
     getStatus: vi.fn(async () => ({ ...status, encryption: 'safeStorage' as const })),
     getPrimaryToken: vi.fn(async () => {

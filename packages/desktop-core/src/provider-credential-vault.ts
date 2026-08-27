@@ -9,6 +9,7 @@ import {
   assertConfinedAppDataPathForWrite,
   confinedCredentialsLockPath,
   confinedCredentialsPath,
+  deleteConfinedAppDataFile,
   writeConfinedAtomicUpdate,
 } from './provider-file-confinement.js';
 import {
@@ -32,6 +33,7 @@ export interface ProviderMappingSecrets {
 
 export interface ProviderCredentialStore {
   configure(request: { token: string; imageToken?: string; languageToken?: string; imageTokens?: readonly string[]; reverseTokens?: readonly string[]; passphrase?: string }): Promise<void>;
+  clear(): Promise<void>;
   unlock(request: { passphrase: string }): Promise<void>;
   getStatus(): Promise<ProviderConfigurationStatus>;
   getPrimaryToken(): Promise<string>;
@@ -81,6 +83,19 @@ export function createSecureProviderCredentialStore(options: {
   let operationTail: Promise<void> = Promise.resolve();
 
   return {
+    async clear() {
+      await enqueueCredentialOperation(async () => {
+        await withCredentialLock(async () => {
+          await deleteConfinedAppDataFile(fileSystem, {
+            appDataRoot: credentialRoot,
+            targetPath,
+            errorCode: 'CREDENTIALS_LOCKED',
+            errorMessage: 'Provider credential metadata path is invalid',
+          });
+          unlockedCredentials = null;
+        });
+      });
+    },
     async configure(request) {
       await enqueueCredentialOperation(async () => {
         const token = parseSecretString(request.token, 'token');

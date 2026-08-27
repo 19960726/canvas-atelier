@@ -933,6 +933,7 @@ function credentialStore(): ProviderCredentialStore {
   const mappingKey = '11'.repeat(32);
   return {
     configure: async () => undefined,
+    clear: async () => undefined,
     unlock: async () => undefined,
     getStatus: async () => ({ configured: true, locked: false, encryption: 'safeStorage' }),
     getPrimaryToken: async () => ['provider', 'credential'].join('-'),
