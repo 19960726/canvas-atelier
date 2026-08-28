@@ -168,10 +168,11 @@ async function parseResponseBody(response: RelayMeAccountAuthFetchResponse): Pro
 
 function extractToken(value: unknown): string | null {
   if (!isRecord(value)) return null;
-  const direct = firstNonEmptyString(value.token, value.jwt, value.accessToken, value.access_token);
-  if (direct !== null) return direct;
+  const direct = firstString(value.token, value.jwt, value.accessToken, value.access_token);
+  if (direct !== null) return isJwtCompactForm(direct) ? direct : null;
   if (!isRecord(value.data)) return null;
-  return firstNonEmptyString(value.data.token, value.data.jwt, value.data.accessToken, value.data.access_token);
+  const nested = firstString(value.data.token, value.data.jwt, value.data.accessToken, value.data.access_token);
+  return nested !== null && isJwtCompactForm(nested) ? nested : null;
 }
 
 function hasRestrictedAccountMarker(value: unknown): boolean {
@@ -200,6 +201,17 @@ function firstNonEmptyString(...values: readonly unknown[]): string | null {
     if (isNonEmptyString(value)) return value;
   }
   return null;
+}
+
+function firstString(...values: readonly unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string') return value;
+  }
+  return null;
+}
+
+function isJwtCompactForm(value: string): boolean {
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

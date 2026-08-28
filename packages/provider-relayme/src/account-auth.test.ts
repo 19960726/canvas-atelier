@@ -115,6 +115,35 @@ describe('RelayMe account authentication public API', () => {
     expectSerializedErrorToBeSafe(error);
   });
 
+  it('rejects a non-JWT token with the stable missing-token error', async () => {
+    const invalidToken = 'not-a-jwt-token';
+    const client = createClient(async () => jsonResponse({ token: invalidToken }));
+
+    const error = await client.login({ username: fixtureUsername, password: fixturePassword }).catch(identity);
+
+    expect(error).toMatchObject({ code: 'TOKEN_MISSING', retryable: false });
+    expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain(invalidToken);
+  });
+
+  it('rejects a JWT with surrounding whitespace without exposing it', async () => {
+    const paddedToken = ` ${fixtureJwt} `;
+    const client = createClient(async () => jsonResponse({ token: paddedToken }));
+
+    const error = await client.login({ username: fixtureUsername, password: fixturePassword }).catch(identity);
+
+    expect(error).toMatchObject({ code: 'TOKEN_MISSING', retryable: false });
+    expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain(fixtureJwt);
+  });
+
+  it('rejects a whitespace-only token with the stable missing-token error', async () => {
+    const client = createClient(async () => jsonResponse({ token: '   ' }));
+
+    const error = await client.login({ username: fixtureUsername, password: fixturePassword }).catch(identity);
+
+    expect(error).toMatchObject({ code: 'TOKEN_MISSING', retryable: false });
+    expectSerializedErrorToBeSafe(error);
+  });
+
   it('rejects non-AI-Tools base URLs instead of accepting an injected login URL', async () => {
     const fetch = vi.fn(async () => jsonResponse({ token: fixtureJwt }));
 
