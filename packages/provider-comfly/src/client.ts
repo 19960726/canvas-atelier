@@ -28,6 +28,7 @@ const chatResponseSchema = z.object({
   id: nonEmptyStringSchema,
   model: nonEmptyStringSchema,
   choices: z.array(z.object({
+    finish_reason: z.string().optional(),
     message: z.object({
       role: nonEmptyStringSchema,
       content: z.unknown(),

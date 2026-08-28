@@ -121,6 +121,13 @@ describe('RelayMeClient', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('accepts RelayMe task polling responses nested under data.task', async () => {
+    const fetch = vi.fn(async () => jsonResponse({ data: { task: { id: 'task-2', state: 'SUCCEEDED', output: { images: [{ url: 'https://cdn.example/result.png' }] } } } }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'account-login-token', fetch });
+
+    await expect(client.getTask('task-2')).resolves.toMatchObject({ status: 'SUCCEEDED', result: { images: [{ url: 'https://cdn.example/result.png' }] } });
+  });
+
   it('preserves explicit media input metadata needed for reverse-prompt routing', async () => {
     const fetch = vi.fn(async () => jsonResponse({ data: { models: [
       {

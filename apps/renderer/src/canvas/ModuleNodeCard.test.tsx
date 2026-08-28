@@ -659,18 +659,18 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByTestId('module-node-card')).not.toHaveClass('module-node--minimal-media');
 
     rerender(<ReactFlowProvider><ModuleNodeCard id={generation.id} data={generation.data} selected={false} /></ReactFlowProvider>);
-    expect(screen.getByTestId('module-node-card')).toHaveClass('module-node--image-figma');
+    expect(screen.getByTestId('module-node-card')).toHaveClass('module-node--image-generation');
     expect(screen.getByTestId('module-node-card')).not.toHaveClass('module-node--workbench');
     expect(screen.getByTestId('module-node-card')).not.toHaveClass('module-node--minimal-generation');
     expect(screen.getByRole('button', { name: 'Open image generation editor' })).toBeVisible();
     expect(screen.queryByLabelText('Image generation prompt workspace')).not.toBeInTheDocument();
 
     rerender(<ReactFlowProvider><ModuleNodeCard id={video.id} data={video.data} selected={false} /></ReactFlowProvider>);
-    expect(screen.getByTestId('module-node-card')).toHaveClass('module-node--video-figma');
+    expect(screen.getByTestId('module-node-card')).toHaveClass('module-node--video-generation');
     expect(screen.getByTestId('module-node-card')).not.toHaveClass('module-node--workbench');
 
     rerender(<ReactFlowProvider><ModuleNodeCard id={reverse.id} data={reverse.data} selected={false} /></ReactFlowProvider>);
-    expect(screen.getByTestId('module-node-card')).toHaveClass('module-node--reverse-figma');
+    expect(screen.getByTestId('module-node-card')).toHaveClass('module-node--reverse');
     expect(screen.getByTestId('module-node-card')).not.toHaveClass('module-node--minimal-agent');
     expect(screen.getByLabelText('Agent task configuration')).toBeVisible();
   });
@@ -1076,7 +1076,10 @@ describe('ModuleNodeCard', () => {
   });
 
   it('locks the expanded universal thumbnail row between preview and prompt for both generation nodes', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const css = [
+      readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8'),
+      readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8'),
+    ].join('\n');
     const finalLayout = css.slice(css.lastIndexOf('Final expanded universal media row layout'));
 
     expect(finalLayout).toMatch(/module-node__unified-media-slots[\s\S]*?top:\s*488px[\s\S]*?height:\s*54px/);
@@ -1086,6 +1089,9 @@ describe('ModuleNodeCard', () => {
     expect(finalLayout).toMatch(/Video preview mode'[\s\S]*?display:\s*none !important/);
     expect(finalLayout).toMatch(/height:\s*830px[\s\S]*?min-height:\s*830px/);
     expect(finalLayout).toMatch(/generation-preview-gallery--3[\s\S]*?generation-preview-item:first-child[\s\S]*?grid-row:\s*span 2/);
+    expect(finalLayout).toMatch(/generation-preview-gallery--2\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)[\s\S]*?grid-template-rows:\s*minmax\(0,\s*1fr\)/);
+    expect(finalLayout).toMatch(/generation-preview-gallery--4\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)[\s\S]*?grid-template-rows:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    expect(finalLayout).toMatch(/generation-preview-gallery--collapsed[\s\S]*?generation-preview-item\s*>\s*:is\(img,\s*video\)[\s\S]*?object-fit:\s*cover/);
   });
   it.each([
     ['image_generation', 'Open image generation editor'],
@@ -1503,6 +1509,28 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Image generation quantity')).toHaveTextContent('3');
     expect(screen.getByLabelText('Image generation quantity')).toHaveTextContent('4');
     expect(controlBar).toContainElement(screen.getByRole('button', { name: 'Generate image' }));
+  });
+
+  it('explains when the active provider account has no image generation model', () => {
+    const node = createCanvasModuleNode('image-no-active-capability', 'image_generation', { x: 0, y: 0 });
+    const data = { ...node.data, imageGenerationRoutes: [] } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByRole('note')).toHaveTextContent('该账号没有此类模型，请先在设置中切换供应商。');
+    expect(screen.getByRole('button', { name: 'Generate image' })).toBeDisabled();
+  });
+
+  it('explains when the active provider account has no video generation model', () => {
+    const node = createCanvasModuleNode('video-no-active-capability', 'video_generation', { x: 0, y: 0 });
+    const data = { ...node.data, videoGenerationRoutes: [] } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+
+    expect(screen.getByRole('note')).toHaveTextContent('该账号没有此类模型，请先在设置中切换供应商。');
+    expect(screen.getByRole('button', { name: '生成视频' })).toBeDisabled();
   });
 
   it('limits image controls to the selected provider model constraints', () => {
@@ -2321,6 +2349,8 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('生成未启动'));
+    fireEvent.click(screen.getByRole('button', { name: '重新尝试生成' }));
+    await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledTimes(2));
   });
 
   it('shows the real safe reason when the selected image model route is unavailable', async () => {
@@ -2384,6 +2414,30 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
 
     expect(screen.getByRole('alert')).toHaveTextContent('API 密钥认证失败');
+  });
+
+  it('shows an actionable local-state reason when the provider task ledger is unavailable', () => {
+    const node = createCanvasModuleNode('generator-task-ledger-failure', 'image_generation', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'relayme', modelRoute: 'relay-image', displayName: 'Nano Banana Pro', modelId: 'nano-banana-pro', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({
+      modelJobs: [{
+        id: 'failed-task-ledger-job',
+        kind: 'image',
+        promptNodeId: node.id,
+        status: 'failed',
+        error: 'Provider task mapping is unavailable',
+        updatedAt: '2026-08-28T08:28:24.941Z',
+      }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('本地模型任务状态不可用');
+    expect(screen.getByRole('alert')).toHaveTextContent('重启应用');
   });
 
   it('does not show a failed job from a previously selected image model', () => {
@@ -3343,6 +3397,18 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('运行完成后，反推提示词与分析要点会保留在这里。')).toBeVisible();
   });
 
+  it('uses the approved equal secondary and primary reverse action button contract', () => {
+    const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('/* FINAL REVERSE ACTION BUTTON CONTRACT */'));
+
+    expect(contract).toContain('grid-template-columns: repeat(2, minmax(0, 1fr)) !important');
+    expect(contract).toContain('gap: 10px !important');
+    expect(contract).toContain('height: 34px !important');
+    expect(contract).toContain('.module-node__apply-agent');
+    expect(contract).toContain('.module-node__run-agent');
+    expect(contract).toContain('opacity: .55 !important');
+  });
+
   it('renders edge-backed reverse media as visual slots above the model controls', () => {
     const image = createCanvasModuleNode('reverse-media-source', 'image_input', { x: 0, y: 0 });
     image.data.config = { assetId: projectImage.assetId };
@@ -3557,7 +3623,7 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
     const card = screen.getByLabelText('Agent task configuration').closest('article');
-    expect(card).toHaveClass('module-node--reverse-figma');
+    expect(card).toHaveClass('module-node--reverse');
     expect(card).not.toHaveClass('module-node--workbench');
   });
 
@@ -3656,7 +3722,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('详情页结构、卖点表达与视觉规范')).toBeVisible();
   });
 
-  it('replaces a stale saved Agent route with the first compatible route', async () => {
+  it('preserves a stale saved Agent route and requires an explicit provider switch', async () => {
     const node = createCanvasModuleNode('reverse-unavailable', 'reverse_agent', { x: 0, y: 0 });
     node.data.config = {
       modelRoute: 'removed-route',
@@ -3673,24 +3739,25 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Start reverse analysis' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: 'Start reverse analysis' }));
-    expect(runReverseAgentNode).toHaveBeenCalledWith('reverse-unavailable', {
-      modelRoute: 'available-route',
-      role: 'Video director',
-      task: 'Analyze the original MP4',
-      knowledgeBaseIds: ['scene-skill'],
-    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start reverse analysis' })).toBeDisabled());
+    expect(screen.getByRole('status')).toHaveTextContent('当前模型路线不可用，请先切换供应商或重新选择模型。');
+    expect(runReverseAgentNode).not.toHaveBeenCalled();
   });
 
   it.each([
     ['CREDENTIALS_LOCKED', 'The encrypted credential is locked.', 'API 密钥已锁定，请重新解锁后再反推。'],
     ['PROVIDER_UNAVAILABLE', 'Selected reverse route is unavailable.', '所选反推模型当前不可用，请重新选择模型。'],
     ['PROVIDER_INVALID_RESPONSE', 'The provider answered with an unexpected body.', '模型已返回内容，但反推结果格式无效。'],
+    ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型输出达到长度上限而被截断，请减少素材或缩短任务后重试。', 'TRUNCATED'],
+    ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型返回的内容不是有效 JSON，请重试或更换反推模型。', 'INVALID_JSON'],
+    ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型返回内容缺少反推必填字段，请重试或更换反推模型。', 'CORE_SCHEMA_INVALID'],
+    ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型返回结果不属于本次反推运行，已拒绝使用。', 'IDENTITY_MISMATCH'],
+    ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型没有完整说明每个素材的职责，请重试或减少素材。', 'MEDIA_RESPONSIBILITIES_INVALID'],
     ['PROVIDER_TIMEOUT', 'Provider request timed out after 120000ms.', '反推等待超时，请重试或更换响应更快的模型。'],
     ['MISSING_ASSET', 'Managed media read failed.', '反推素材读取失败，请重新连接素材。'],
     ['PROJECT_CONFIG_SAVE_FAILED', 'Reverse configuration could not be saved.', '反推配置保存失败，请先确认画布可以保存后重试。'],
-  ])('shows a safe reverse-analysis error for %s', async (code, message, expected) => {
+  ])('shows a safe reverse-analysis error for %s', async (...args) => {
+    const [code, message, expected, reason] = args;
     const node = createCanvasModuleNode(`reverse-error-${code}`, 'reverse_agent', { x: 0, y: 0 });
     node.data.config = {
       modelRoute: 'reverse-gemini',
@@ -3700,7 +3767,7 @@ describe('ModuleNodeCard', () => {
     };
     useAppStore.setState({
       runReverseAgentNode: vi.fn(async () => {
-        throw Object.assign(new Error(message), { code });
+        throw Object.assign(new Error(message), { code, ...(reason === undefined ? {} : { reason }) });
       }),
     } as never);
     const data = {

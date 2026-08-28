@@ -67,6 +67,17 @@ describe('SettingsDrawer', () => {
     expect(contract).toContain('align-items: center');
   });
 
+  it('keeps RelayMe compatibility actions horizontal instead of collapsing the copy into a narrow column', () => {
+    const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('/* FINAL PROVIDER COMPATIBILITY ACTIONS CONTRACT */'));
+
+    expect(contract).toContain('.settings-key-actions');
+    expect(contract).toContain('grid-template-columns: minmax(0, 1fr) !important');
+    expect(contract).toContain('.settings-provider-compatibility');
+    expect(contract).toContain('white-space: nowrap');
+    expect(contract).toContain('flex-wrap: wrap');
+  });
+
   it('keeps long model names readable with a simple checkbox-and-name model row', () => {
     const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('/* Final simple model-row contract: checkbox plus model name only. */'));
@@ -89,6 +100,8 @@ describe('SettingsDrawer', () => {
     const link = screen.getByRole('link', { name: '打开 RelayMe 工作台' });
     expect(link).toHaveAttribute('href', 'https://www.ml.relayme.uk/workflow');
     expect(screen.queryByRole('link', { name: '创建 API Key' })).not.toBeInTheDocument();
+    expect(screen.queryByText('高级兼容方式')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '配置隐藏密钥' })).not.toBeInTheDocument();
   });
   it('renders a compact API and model screen with only populated capability groups', async () => {
     window.novusDesktop = {
@@ -167,6 +180,125 @@ describe('SettingsDrawer', () => {
     await waitFor(() => expect(checkConnection).toHaveBeenCalledWith({ provider: 'relayme' }));
   });
 
+  it('organizes the API tab as a layered workbench with chat adaptation guidance', async () => {
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    expect(screen.getByTestId('settings-api-status-layer')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-provider-layer')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-model-layer')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-diagnostics-layer')).toBeInTheDocument();
+    expect(screen.getByText(/对话模型适配/u)).toBeVisible();
+  });
+
+  it('marks storage, MCP, and sync surfaces as layered workbench sections', async () => {
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: '存储与备份' }));
+    expect(screen.getByTestId('settings-storage-directory-layer')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-storage-local-layer')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'MCP 联动' }));
+    expect(screen.getByTestId('settings-mcp-card')).toHaveClass('settings-layer');
+    fireEvent.click(screen.getByRole('tab', { name: '同步' }));
+    expect(screen.getByTestId('settings-sync-card')).toHaveClass('settings-layer');
+    expect(screen.getByTestId('settings-sync-diagnostics-layer')).toHaveClass('settings-layer');
+  });
+
+  it('logs into RelayMe with account credentials, activates it, and clears the password on close', async () => {
+    const getActiveProvider = vi.fn(async () => ({ activeProvider: null }));
+    const setActiveProvider = vi.fn(async ({ activeProvider }: { activeProvider: 'comfly' | 'relayme' }) => ({ activeProvider }));
+    const loginRelayMe = vi.fn(async ({ username, password }: { username: string; password: string }) => {
+      expect(username).toBe('artist@example.test');
+      expect(password).toBe('not-a-real-password');
+      return { activeProvider: 'relayme' as const };
+    });
+    const getStatus = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => ({
+      configured: provider === 'relayme',
+      locked: false,
+      encryption: 'safeStorage' as const,
+    }));
+    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme'
+      ? [{ provider: 'relayme' as const, modelRoute: 'chat/general', displayName: 'Relay Chat', modelId: 'relay-chat', capabilities: ['chat' as const] }]
+      : []);
+    window.novusDesktop = {
+      provider: { getActiveProvider, setActiveProvider, loginRelayMe, getStatus, listProfiles },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
+    const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
+    fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '登录 RelayMe' }));
+
+    await waitFor(() => expect(loginRelayMe).toHaveBeenCalledWith({
+      username: 'artist@example.test',
+      password: 'not-a-real-password',
+    }));
+    await waitFor(() => expect(screen.getByRole('listitem', { name: /RelayMe/u })).toHaveAttribute('aria-pressed', 'true'));
+    expect(screen.queryByRole('dialog', { name: '登录 RelayMe' })).not.toBeInTheDocument();
+    expect((await screen.findAllByText('Relay Chat')).length).toBeGreaterThanOrEqual(1);
+    expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' });
+
+    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
+    const reopenedDialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
+    expect(within(reopenedDialog).getByLabelText('RelayMe 密码')).toHaveValue('');
+    fireEvent.click(within(reopenedDialog).getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog', { name: '登录 RelayMe' })).not.toBeInTheDocument();
+  });
+
+  it('does not show inactive provider models when the active-provider bridge is available', async () => {
+    const getActiveProvider = vi.fn(async () => ({ activeProvider: 'comfly' as const }));
+    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => [
+      { provider: 'comfly' as const, modelRoute: 'chat/comfly', displayName: 'Comfly Chat', modelId: 'comfly-chat', capabilities: ['chat' as const] },
+      ...(provider === 'relayme'
+        ? [{ provider: 'relayme' as const, modelRoute: 'chat/relay', displayName: 'Relay Chat', modelId: 'relay-chat', capabilities: ['chat' as const] }]
+        : []),
+    ]);
+    window.novusDesktop = {
+      provider: { getActiveProvider, setActiveProvider: vi.fn(), getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })), listProfiles },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+
+    expect((await screen.findAllByText('Comfly Chat')).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('Relay Chat')).not.toBeInTheDocument();
+    expect(listProfiles).toHaveBeenCalledWith({ provider: 'comfly' });
+  });
+
+  it('clears the previous provider catalog while a newly activated provider is still loading', async () => {
+    let rejectRelayProfiles!: (error: Error) => void;
+    const relayProfiles = new Promise<never>((_resolve, reject) => { rejectRelayProfiles = reject; });
+    const getActiveProvider = vi.fn(async () => ({ activeProvider: 'comfly' as const }));
+    const setActiveProvider = vi.fn(async () => ({ activeProvider: 'relayme' as const }));
+    const listProfiles = vi.fn(({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme'
+      ? relayProfiles
+      : Promise.resolve([{
+        provider: 'comfly' as const,
+        modelRoute: 'comfly-image',
+        displayName: 'Comfly Previous Model',
+        modelId: 'comfly-image',
+        capabilities: ['image_generation' as const],
+      }]));
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider,
+        setActiveProvider,
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    expect((await screen.findAllByText('Comfly Previous Model')).length).toBeGreaterThanOrEqual(1);
+
+    fireEvent.click(screen.getByRole('listitem', { name: /RelayMe/u }));
+    await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' }));
+
+    expect(screen.queryAllByText('Comfly Previous Model')).toHaveLength(0);
+    expect(screen.getByText('当前供应商尚未加载模型')).toBeVisible();
+    rejectRelayProfiles(new Error('temporary RelayMe catalog failure'));
+  });
+
   it('shows a safe saved-key mask when an already configured provider is reopened', async () => {
     window.novusDesktop = {
       provider: {
@@ -216,135 +348,6 @@ describe('SettingsDrawer', () => {
     await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'comfly' }));
     expect(await screen.findByText('连接成功，已同步 1 个模型，但没有模型声明反推能力')).toBeVisible();
     expect(screen.getByRole('button', { name: '检测连接' })).toBeEnabled();
-  });
-  it('saves the selected RelayMe hidden key through the RelayMe credential vault', async () => {
-    const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
-    window.novusDesktop = {
-      provider: {
-        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
-        listProfiles: vi.fn(async () => []),
-        configure,
-      },
-    } as unknown as typeof window.novusDesktop;
-    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    fireEvent.click(screen.getByRole('button', { name: '配置隐藏密钥' }));
-    const token = screen.getByLabelText('RelayMe API 密钥');
-    expect(token).toHaveAttribute('type', 'password');
-    fireEvent.change(token, { target: { value: 'relay-secret' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存隐藏密钥' }));
-
-    await waitFor(() => expect(configure).toHaveBeenCalledWith(expect.objectContaining({
-      provider: 'relayme', token: 'relay-secret',
-    })));
-  });
-  it('validates a saved RelayMe key before reporting success and synchronizes the verified model count', async () => {
-    const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
-    const checkConnection = vi.fn(async () => ({ checkedAt: '2026-08-09T00:00:00.000Z', status: 'connected' as const }));
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [
-      { provider: 'relayme' as const, modelRoute: 'chat/general', displayName: 'Relay Chat', modelId: 'relay-chat', capabilities: ['chat' as const] },
-      { provider: 'relayme' as const, modelRoute: 'video/generate', displayName: 'Relay Video', modelId: 'relay-video', capabilities: ['video_generation' as const] },
-    ] : []);
-    window.novusDesktop = {
-      provider: {
-        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
-        listProfiles,
-        configure,
-        checkConnection,
-      },
-    } as unknown as typeof window.novusDesktop;
-    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' }));
-    listProfiles.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: '\u914d\u7f6e\u9690\u85cf\u5bc6\u94a5' }));
-    fireEvent.change(screen.getByLabelText('RelayMe API \u5bc6\u94a5'), { target: { value: 'relay-secret' } });
-    fireEvent.click(screen.getByRole('button', { name: '\u4fdd\u5b58\u9690\u85cf\u5bc6\u94a5' }));
-
-    await waitFor(() => expect(checkConnection).toHaveBeenCalledWith({ provider: 'relayme' }));
-    await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' }));
-    expect(screen.getByRole('status')).toHaveTextContent('RelayMe \u8fde\u63a5\u6210\u529f\uff0c\u5df2\u540c\u6b65 2 \u4e2a\u6a21\u578b\uff0c\u4f46\u6ca1\u6709\u6a21\u578b\u58f0\u660e\u53cd\u63a8\u80fd\u529b');
-    expect(screen.getAllByText('Relay Chat').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Relay Video').length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('reports an invalid RelayMe key and does not refresh the model catalog after authentication fails', async () => {
-    const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
-    const checkConnection = vi.fn(async () => ({ checkedAt: '2026-08-09T00:00:00.000Z', status: 'authentication_failed' as const }));
-    const listProfiles = vi.fn(async () => []);
-    window.novusDesktop = {
-      provider: {
-        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
-        listProfiles,
-        configure,
-        checkConnection,
-      },
-    } as unknown as typeof window.novusDesktop;
-    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' }));
-    listProfiles.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: '\u914d\u7f6e\u9690\u85cf\u5bc6\u94a5' }));
-    fireEvent.change(screen.getByLabelText('RelayMe API \u5bc6\u94a5'), { target: { value: 'invalid-relay-secret' } });
-    fireEvent.click(screen.getByRole('button', { name: '\u4fdd\u5b58\u9690\u85cf\u5bc6\u94a5' }));
-
-    await waitFor(() => expect(checkConnection).toHaveBeenCalledWith({ provider: 'relayme' }));
-    expect(listProfiles).not.toHaveBeenCalled();
-    expect(screen.getByRole('status')).toHaveTextContent('RelayMe \u5bc6\u94a5\u5df2\u4fdd\u5b58\uff0c\u4f46\u5bc6\u94a5\u65e0\u6548');
-  });
-
-  it('keeps the saved RelayMe credential but reports a temporary connection failure without syncing models', async () => {
-    const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
-    const checkConnection = vi.fn(async () => ({ checkedAt: '2026-08-09T00:00:00.000Z', status: 'network_unavailable' as const }));
-    const listProfiles = vi.fn(async () => []);
-    window.novusDesktop = {
-      provider: {
-        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
-        listProfiles,
-        configure,
-        checkConnection,
-      },
-    } as unknown as typeof window.novusDesktop;
-    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' }));
-    listProfiles.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: '\u914d\u7f6e\u9690\u85cf\u5bc6\u94a5' }));
-    fireEvent.change(screen.getByLabelText('RelayMe API \u5bc6\u94a5'), { target: { value: 'relay-secret' } });
-    fireEvent.click(screen.getByRole('button', { name: '\u4fdd\u5b58\u9690\u85cf\u5bc6\u94a5' }));
-
-    await waitFor(() => expect(checkConnection).toHaveBeenCalledWith({ provider: 'relayme' }));
-    expect(listProfiles).not.toHaveBeenCalled();
-    expect(screen.getByRole('status')).toHaveTextContent('RelayMe \u5bc6\u94a5\u5df2\u4fdd\u5b58\uff0c\u4f46\u6682\u65f6\u65e0\u6cd5\u8fde\u63a5');
-  });
-  it('reports RelayMe service limiting separately from an invalid key and does not sync models', async () => {
-    const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
-    const checkConnection = vi.fn(async () => ({ checkedAt: '2026-08-09T00:00:00.000Z', status: 'service_limited' as const }));
-    const listProfiles = vi.fn(async () => []);
-    window.novusDesktop = {
-      provider: {
-        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
-        listProfiles,
-        configure,
-        checkConnection,
-      },
-    } as unknown as typeof window.novusDesktop;
-    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' }));
-    listProfiles.mockClear();
-    fireEvent.click(screen.getByRole('button', { name: '\u914d\u7f6e\u9690\u85cf\u5bc6\u94a5' }));
-    fireEvent.change(screen.getByLabelText('RelayMe API \u5bc6\u94a5'), { target: { value: 'relay-secret' } });
-    fireEvent.click(screen.getByRole('button', { name: '\u4fdd\u5b58\u9690\u85cf\u5bc6\u94a5' }));
-
-    await waitFor(() => expect(checkConnection).toHaveBeenCalledWith({ provider: 'relayme' }));
-    expect(listProfiles).not.toHaveBeenCalled();
-    expect(screen.getByRole('status')).toHaveTextContent('RelayMe \u5bc6\u94a5\u5df2\u4fdd\u5b58\uff0c\u4f46\u670d\u52a1\u6682\u65f6\u53d7\u9650\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5');
   });
   it('uses one Comfly API key for Agent, reverse prompt, image, and video capabilities', async () => {
     const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
@@ -422,8 +425,7 @@ describe('SettingsDrawer', () => {
     fireEvent.click(screen.getByRole('listitem', { name: /RelayMe/u }));
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '配置隐藏密钥' })).not.toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: '配置隐藏密钥' }));
-    expect(screen.getByLabelText('RelayMe API 密钥')).toHaveValue('••••••••••••••••');
+    expect(screen.queryByRole('button', { name: '配置隐藏密钥' })).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue('sk-comfly-visible-key')).not.toBeInTheDocument();
   });
 
@@ -586,10 +588,37 @@ describe('SettingsDrawer', () => {
 
     expect(screen.getByLabelText('下载输出目录')).toBeVisible();
     expect(screen.getByLabelText('本地保存')).toBeVisible();
+    expect(screen.getByRole('button', { name: '刷新' }).querySelector(':scope > .settings-action-content')).not.toBeNull();
     expect(screen.getByTestId('settings-storage-card')).toHaveAttribute('data-figma-layout', 'storage');
     expect(screen.getByRole('button', { name: '清理全部缓存' })).toBeVisible();
     expect(screen.getAllByRole('button', { name: '清理' })).toHaveLength(4);
     expect(screen.queryByRole('button', { name: '10GB 清理预览' })).toBeNull();
+  });
+
+  it('uses the final shared button contract for cache and update actions', () => {
+    const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('/* FINAL SETTINGS BUTTON CONTRACT */'));
+
+    expect(contract).toContain('.settings-cache-action');
+    expect(contract).toContain('.settings-cache-primary-action');
+    expect(contract).toContain('.settings-cache-item-action');
+    expect(contract).toContain('.settings-update-action');
+    expect(contract).toContain('.settings-connection-check');
+    expect(contract).toContain('.settings-storage-refresh');
+    expect(contract).toContain('height: 34px !important');
+    expect(contract).toContain('min-height: 34px !important');
+    expect(contract).toContain('flex-direction: row !important');
+    expect(contract).toContain('flex: 0 0 auto !important');
+    expect(contract).toContain(':hover:not(:disabled)');
+  });
+
+  it('keeps the settings drawer opaque so the canvas minimap cannot bleed through it', () => {
+    const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('/* FINAL SETTINGS DRAWER OCCLUSION CONTRACT */'));
+
+    expect(contract).toContain('.workspace--ui-gate .settings-drawer');
+    expect(contract).toContain('background: var(--gate-card) !important');
+    expect(contract).toContain('backdrop-filter: none !important');
   });
 
   it('uses the Sync tab as the knowledge-base sync UI with the two required project knowledge bases', () => {
@@ -736,6 +765,8 @@ it('keeps safe permission defaults and the workflow capability summary below the
     fireEvent.click(screen.getByText('高级故障排查'));
     expect(screen.getByRole('region', { name: '连接与恢复' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: '应用更新' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '检查连接' }).querySelector(':scope > .settings-action-content')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Check for updates' }).querySelector(':scope > .settings-action-content')).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '检查连接' }));
 
     await waitFor(() => expect(checkConnection).toHaveBeenCalledTimes(1));
@@ -743,21 +774,47 @@ it('keeps safe permission defaults and the workflow capability summary below the
     expect(submitImageJob).not.toHaveBeenCalled();
   });
 
-  it('checks the mock-only update feed and shows its release announcement without downloading an installer', async () => {
-    const check = vi.fn(async () => ({ state: { status: 'available' as const, version: '1.2.0', notes: 'Improved canvas stability.' } }));
-    const download = vi.fn();
+  it('subscribes to updater events and requires explicit download and restart actions', async () => {
+    let publishUpdate: ((state: import('@agent-canvas/desktop-core').UpdateState) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const subscribeState = vi.fn((listener: (state: import('@agent-canvas/desktop-core').UpdateState) => void) => {
+      publishUpdate = listener;
+      return unsubscribe;
+    });
+    const check = vi.fn(async () => ({ state: { status: 'checking' as const } }));
+    const download = vi.fn(async () => ({ state: { status: 'downloading' as const, version: '1.6.63', progress: 0 } }));
+    const restart = vi.fn(async () => ({ accepted: true as const }));
     window.novusDesktop = {
-      updates: { getState: vi.fn(async () => ({ status: 'idle' })), check, download, defer: vi.fn(), retry: vi.fn(), restart: vi.fn() },
+      updates: { getState: vi.fn(async () => ({ status: 'idle' })), subscribeState, check, download, defer: vi.fn(), retry: vi.fn(), restart },
     } as unknown as typeof window.novusDesktop;
 
-    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    const rendered = render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: '同步' }));
     fireEvent.click(screen.getByText('高级故障排查'));
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
 
-    expect(await screen.findByText('1.2.0')).toBeVisible();
+    expect(await screen.findByRole('dialog', { name: '应用更新' })).toBeVisible();
+    expect(screen.getByText('正在检查更新…')).toBeVisible();
+
+    await waitFor(() => expect(subscribeState).toHaveBeenCalledTimes(1));
+    publishUpdate?.({ status: 'available', version: '1.6.63', notes: 'Improved canvas stability.' });
+    expect(await screen.findByRole('dialog', { name: '应用更新' })).toBeVisible();
+    expect(screen.getByText('发现新版本 1.6.63')).toBeVisible();
     expect(screen.getByText('Improved canvas stability.')).toBeVisible();
     expect(download).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '下载更新' }));
+    await waitFor(() => expect(download).toHaveBeenCalledTimes(1));
+
+    publishUpdate?.({ status: 'downloading', version: '1.6.63', progress: 0.42 });
+    expect(await screen.findByText('下载进度 42%')).toBeVisible();
+    publishUpdate?.({ status: 'ready_to_restart', version: '1.6.63', progress: 1 });
+    expect(await screen.findByRole('button', { name: '重启并安装' })).toBeVisible();
+    expect(restart).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '重启并安装' }));
+    await waitFor(() => expect(restart).toHaveBeenCalledTimes(1));
+
+    rendered.unmount();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it('saves the selected default image route without resubmitting a credential', async () => {
@@ -806,28 +863,6 @@ it('keeps safe permission defaults and the workflow capability summary below the
     expect(screen.getByLabelText('Comfly API 密钥')).toHaveValue('secret-token');
   });
 
-  it('accepts a pasted RelayMe Authorization header without storing a duplicated Bearer prefix', async () => {
-    const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
-    window.novusDesktop = {
-      provider: {
-        configure,
-        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
-        listProfiles: vi.fn(async () => []),
-        checkConnection: vi.fn(async () => ({ status: 'authentication_failed' as const })),
-      },
-    } as unknown as typeof window.novusDesktop;
-    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    fireEvent.click(screen.getByRole('button', { name: '配置隐藏密钥' }));
-    fireEvent.change(screen.getByLabelText('RelayMe API 密钥'), { target: { value: '  Bearer sk_ai_example_key  ' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存隐藏密钥' }));
-
-    await waitFor(() => expect(configure).toHaveBeenCalledWith(expect.objectContaining({
-      provider: 'relayme',
-      token: 'sk_ai_example_key',
-    })));
-  });
   it.each([
     ['INVALID_REQUEST', '密钥或接口地址格式不正确'],
     ['CREDENTIALS_LOCKED', '系统凭据库暂不可用'],

@@ -1,5 +1,10 @@
 appId: com.canvasatelier.desktop
 productName: Canvas Atelier
+publish:
+  provider: github
+  owner: "19960726"
+  repo: canvas-atelier
+  releaseType: release
 directories:
   output: dist-builder/desktop-modern
   buildResources: build

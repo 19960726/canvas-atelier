@@ -49,7 +49,7 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
   if (profile === undefined) {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested Skill chat model profile is unavailable');
   }
-  if (referenceAssetIds.length > 0 && !profile.capabilities.includes('vision')) {
+  if (referenceAssetIds.length > 0 && !supportsManagedSkillChatImages(profile, validated.agentMode)) {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Selected Skill chat model does not support managed image references');
   }
   const images = await resolveManagedSkillChatImages(
@@ -109,6 +109,17 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
     modelRoute: validated.modelRoute,
     sources: knowledge.map(({ knowledgeBaseId, version, displayName }) => ({ knowledgeBaseId, version, displayName })),
   }) as ChatSkillBridgeResult;
+}
+
+function supportsManagedSkillChatImages(
+  profile: ProviderBridgeProfile,
+  agentMode: ChatSkillBridgeRequest['agentMode'],
+): boolean {
+  if (profile.capabilities.includes('vision')) return true;
+  return agentMode === 'codex' && (
+    profile.capabilities.includes('chat')
+    || profile.capabilities.includes('responses')
+  );
 }
 
 function extractResponsesText(output: readonly unknown[]): string | undefined {

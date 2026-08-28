@@ -102,9 +102,12 @@ import {
   type PollVideoJobBridgeRequest,
   type PollVideoJobBridgeResult,
   type ProviderBridgeProfile,
+  type ProviderActiveState,
   type ProviderConfigurationStatus,
   type ProviderConnectionCheckResult,
   type RevealProviderCredentialBridgeResult,
+  type SetActiveProviderBridgeRequest,
+  type LoginRelayMeBridgeRequest,
   type ProviderSelectionBridgeRequest,
   type SubmitImageJobBridgeRequest,
   type SubmitImageJobBridgeResult,
@@ -177,6 +180,7 @@ export const BRIDGE_CHANNELS = {
   },
   updates: {
     getState: 'novus-desktop:updates:get-state',
+    stateChanged: 'novus-desktop:updates:state-changed',
     check: 'novus-desktop:updates:check',
     download: 'novus-desktop:updates:download',
     defer: 'novus-desktop:updates:defer',
@@ -268,6 +272,7 @@ export interface DesktopStorageBridgeApi {
 
 export interface DesktopUpdateBridgeApi {
   getState(): Promise<UpdateState>;
+  subscribeState(listener: (state: UpdateState) => void): () => void;
   check(): Promise<UpdateCheckResult>;
   download(): Promise<UpdateCheckResult>;
   defer(): Promise<UpdateCheckResult>;
@@ -312,6 +317,10 @@ export interface DesktopLifecycleBridgeApi {
 }
 
 export interface DesktopProviderBridgeApi {
+  getActiveProvider(): Promise<ProviderActiveState>;
+  setActiveProvider(request: SetActiveProviderBridgeRequest): Promise<ProviderActiveState>;
+  loginRelayMe(request: LoginRelayMeBridgeRequest): Promise<ProviderActiveState>;
+  logoutRelayMe(): Promise<ProviderActiveState>;
   getStatus(request?: ProviderSelectionBridgeRequest): Promise<ProviderConfigurationStatus>;
   revealCredential(request?: ProviderSelectionBridgeRequest): Promise<RevealProviderCredentialBridgeResult>;
   checkConnection(request?: ProviderSelectionBridgeRequest): Promise<ProviderConnectionCheckResult>;
@@ -552,6 +561,11 @@ export function createPreloadApi(
     },
     updates: {
       getState() { return invoke<UpdateState>(BRIDGE_CHANNELS.updates.getState); },
+      subscribeState(listener) {
+        return subscribe(BRIDGE_CHANNELS.updates.stateChanged, (payload) => {
+          if (isUpdateState(payload)) listener(payload);
+        });
+      },
       check() { return invoke<UpdateCheckResult>(BRIDGE_CHANNELS.updates.check); },
       download() { return invoke<UpdateCheckResult>(BRIDGE_CHANNELS.updates.download); },
       defer() { return invoke<UpdateCheckResult>(BRIDGE_CHANNELS.updates.defer); },
@@ -583,6 +597,18 @@ export function createPreloadApi(
       },
     },
     provider: {
+      getActiveProvider() {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.getActiveProvider);
+      },
+      setActiveProvider(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.setActiveProvider, request);
+      },
+      loginRelayMe(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.loginRelayMe, request);
+      },
+      logoutRelayMe() {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.logoutRelayMe);
+      },
       getStatus(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.getStatus, request);
       },
@@ -642,6 +668,16 @@ export function createPreloadApi(
       },
     },
   };
+}
+
+function isUpdateState(value: unknown): value is UpdateState {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const state = value as Record<string, unknown>;
+  if (!['idle', 'checking', 'available', 'downloading', 'ready_to_restart', 'error'].includes(String(state.status))) return false;
+  if (state.version !== undefined && typeof state.version !== 'string') return false;
+  if (state.notes !== undefined && typeof state.notes !== 'string') return false;
+  if (state.message !== undefined && typeof state.message !== 'string') return false;
+  return state.progress === undefined || (typeof state.progress === 'number' && Number.isFinite(state.progress) && state.progress >= 0 && state.progress <= 1);
 }
 
 async function invokeProvider<TResponse>(

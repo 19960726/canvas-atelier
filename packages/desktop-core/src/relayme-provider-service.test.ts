@@ -6,6 +6,7 @@ import type { RelayMeFetch } from '@agent-canvas/provider-relayme';
 import { createAgentKnowledgeLease, createReversePromptRun } from '@agent-canvas/domain';
 import { createRelayMeProviderService } from './relayme-provider-service';
 import type { ProviderCredentialStore } from './provider-credential-vault';
+import { createProviderTaskMappingStore } from './provider-task-ledger';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -13,6 +14,33 @@ afterEach(async () => {
 });
 
 describe('RelayMe provider service', () => {
+  it('maps RelayMe image authentication, quota, and capability failures to actionable bridge errors', async () => {
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ message: 'quota exceeded' }, { ok: false, status: 429 }),
+    ]);
+    await expect(service.submitImageJob({
+      jobId: 'job-quota', provider: 'relayme', modelRoute: 'relayme-gpt-image-2', prompt: 'test',
+      conversationId: 'conversation-quota', referenceAssetIds: [],
+    })).rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: true, message: expect.stringMatching(/额度|频率/u) });
+  });
+
+  it('validates a temporary account JWT against models before persisting it', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-login-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: false, locked: true });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch: vi.fn(async () => jsonResponse({ message: 'unavailable' }, { ok: false, status: 503 })),
+      loginAccount: vi.fn(async () => 'header.payload.signature'),
+    });
+
+    await expect(service.loginRelayMe?.({ username: 'artist@example.test', password: 'not-a-real-password' }))
+      .rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+    expect(credentials.configure).not.toHaveBeenCalled();
+  });
+
   it('uses the live RelayMe model catalog and routes Agent chat to chat completions', async () => {
     const { service, fetch } = await createService([
       jsonResponse({ success: true, data: { models: [
@@ -93,6 +121,42 @@ describe('RelayMe provider service', () => {
       }),
     );
   });
+
+  it('reports a retryable truncation when RelayMe reverse chat finishes because of length', async () => {
+    const imageAssetId = 'c'.repeat(16);
+    const imageSha256 = 'c'.repeat(64);
+    const references = [{ assetId: imageAssetId, label: 'Product', position: 0, role: 'product_identity' as const }];
+    const run = createReversePromptRun({
+      projectId: 'project-truncated',
+      skill: { id: 'reverse-prompt', version: 'v1' },
+      agentConfig: { modelRoute: 'relayme-vision-chat', role: 'Analyst', task: 'Analyze image.', knowledgeBaseIds: [] },
+      knowledgeLease: createAgentKnowledgeLease({
+        runId: 'reverse-run-truncated', capability: 'reverse_prompt', snapshots: [], references, citations: [],
+      }, { leaseId: 'lease-truncated', createdAt: '2026-08-09T00:00:00.000Z' }),
+      approvedMemorySnapshot: { version: 'approved-truncated', approvedAt: '2026-08-09T00:00:00.000Z', approvedMemoryIds: [] },
+      references,
+    }, { createNonce: () => 'nonce-truncated', now: () => '2026-08-09T00:00:00.000Z' });
+    const { service } = await createService([
+      jsonResponse({ success: true, data: { models: [{
+        id: '22', name: 'Vision Chat', model: 'vision-chat', capability: 'text', modelType: 'TEXT',
+        inputModalities: ['text', 'image'], supportsVision: true,
+        endpoints: ['/api/ai-tools/v1/chat/completions'],
+      }] } }),
+      jsonResponse({
+        id: 'reverse-length', model: 'vision-chat',
+        choices: [{ finish_reason: 'length', message: { role: 'assistant', content: '{"analysis":"truncated' } }],
+      }),
+    ], { readManagedReverseMedia: async () => [{ bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), mediaType: 'image/png' }] });
+
+    await expect(service.analyzeReversePrompt?.({
+      sessionId: 'desktop-session-truncated', provider: 'relayme', run,
+      media: [{ kind: 'image', assetId: imageAssetId, sha256: imageSha256, byteSize: 4, mediaType: 'image/png' }],
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+      message: 'Reverse-analysis response was truncated at the model output limit',
+      retryable: true,
+    });
+  });
   it('keeps RelayMe raw task ids internal and maps exactly one image result', async () => {
     const storedImage = vi.fn(async () => ({ assetId: '0123456789abcdef', width: 1536, height: 1024 }));
     const historySink = {
@@ -140,6 +204,49 @@ describe('RelayMe provider service', () => {
       'https://cdn.example/result.png',
       expect.objectContaining({ trustedResolvedAddress: '8.8.8.8' }),
     );
+  });
+
+  it('submits RelayMe jobs when the legacy global task ledger belongs to Comfly', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-ledger-isolation-'));
+    roots.push(appDataRoot);
+    const comflyLedger = createProviderTaskMappingStore({
+      appDataRoot,
+      secretSupplier: async () => ({ primary: 'comfly-mapping-key', fallback: [] }),
+    });
+    const existingComflyTaskId = `provider-job-${'a'.repeat(32)}`;
+    await comflyLedger.set({
+      provider: 'comfly',
+      publicTaskId: existingComflyTaskId,
+      rawTaskId: 'comfly-raw-task',
+      kind: 'image',
+      state: 'running',
+      createdAt: '2026-08-08T11:00:00.000Z',
+      updatedAt: '2026-08-08T11:00:00.000Z',
+    });
+    const responses = [
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-raw-image-isolated', status: 'queued' }),
+    ];
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      fetch: vi.fn(async () => responses.shift() as ReturnType<typeof jsonResponse>),
+      now: () => Date.parse('2026-08-08T12:00:00.000Z'),
+    });
+
+    await expect(service.submitImageJob({
+      jobId: 'model-job-v2-relay-ledger-isolation',
+      provider: 'relayme',
+      modelRoute: 'relayme-gpt-image-2',
+      prompt: 'isolated ledger',
+      conversationId: 'conversation-ledger-isolation',
+      sessionId: 'desktop-session-ledger-isolation',
+      referenceAssetIds: [],
+      aspectRatio: '1:1',
+      resolution: '2K',
+      outputCount: 1,
+    })).resolves.toMatchObject({ providerTaskId: expect.stringMatching(/^provider-job-[a-f0-9]{32}$/u) });
+    await expect(comflyLedger.get(existingComflyTaskId)).resolves.toMatchObject({ rawTaskId: 'comfly-raw-task' });
   });
 
   it('recovers an image task mapping after the provider service restarts', async () => {
@@ -331,7 +438,7 @@ describe('RelayMe provider service', () => {
       code: 'CREDENTIALS_LOCKED', message: expect.stringMatching(/密钥|凭据/u),
     });
   });
-  it('saves a newly created RelayMe key without waiting on its own configure queue', async () => {
+  it('rejects manually configured RelayMe tokens because credentials come only from account login', async () => {
     const root = await mkdtemp(join(tmpdir(), 'relayme-service-'));
     roots.push(root);
     const store = credentialStore({ configured: false, locked: true });
@@ -341,14 +448,9 @@ describe('RelayMe provider service', () => {
       fetch: vi.fn(),
     });
 
-    const outcome = await Promise.race([
-      service.configure({ provider: 'relayme', token: 'relay-created-key' }).then(() => 'saved' as const),
-      new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
-    ]);
-
-    expect(outcome).toBe('saved');
-    expect(store.configure).toHaveBeenCalledOnce();
-    expect(store.configure).toHaveBeenCalledWith({ token: 'relay-created-key', passphrase: undefined });
+    await expect(service.configure({ provider: 'relayme', token: 'relay-created-key' }))
+      .rejects.toMatchObject({ code: 'INVALID_REQUEST', message: 'RelayMe 仅支持账号登录，不接受独立 API 密钥' });
+    expect(store.configure).not.toHaveBeenCalled();
   });
 
   it('migrates the retired RelayMe host before reading the model catalog', async () => {

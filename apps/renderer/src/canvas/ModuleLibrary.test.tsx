@@ -111,6 +111,16 @@ describe('ModuleLibrary', () => {
     expect(onCreate).not.toHaveBeenCalled();
   });
 
+  it('keeps the retired standalone image result node out of the current module library', () => {
+    render(<ModuleLibrary onCreate={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('tab', { name: '输出 / Output' }));
+
+    expect(screen.queryByRole('button', { name: '查看 结果输出 / Result Output' })).toBeNull();
+    expect(screen.getByRole('button', { name: '查看 视频结果 / Video Result' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '查看 反推结果 / Reverse Result' })).toBeVisible();
+  });
+
   it('provides roving category tabs and moves focus with keyboard navigation', () => {
     render(<ModuleLibrary onCreate={vi.fn()} />);
 

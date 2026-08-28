@@ -123,6 +123,30 @@
   place-items: center !important;
 }
 
+/* FINAL AGENT CLOSE CONTROL CONTRACT: keep the close action quiet and aligned
+   with the current Canvas Atelier compact controls. */
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__close {
+  top: 10px !important;
+  right: 10px !important;
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  color: var(--gate-muted, var(--muted)) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__close:hover,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__close:focus-visible {
+  color: var(--gate-text, var(--text)) !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+}
+
 .workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header-actions :is(select, button) {
   box-sizing: border-box !important;
   width: 100% !important;
@@ -614,3 +638,980 @@
     justify-self: start !important;
   }
 }
+
+/* MODULE NODE CONTROL SIZE CONTRACT
+   Historical node selectors use several incompatible heights. This final
+   contract keeps controls visually aligned while preserving small square
+   affordances for icons and media thumbnails. */
+.workspace--ui-gate .module-node :is(button, select, input) {
+  box-sizing: border-box !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  line-height: 1 !important;
+}
+
+/* Generated previews are media stages, not compact controls. Keep this after
+   the broad control-size contract so a completed image fills the preview
+   instead of collapsing into a 38px strip. */
+.workspace--ui-gate .module-node .module-node__generation-preview-item {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: none !important;
+}
+
+.workspace--ui-gate .module-node :is(.module-node__icon-button, .module-node__collapse-editor) {
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  padding: 0 !important;
+}
+
+.workspace--ui-gate .module-node :is(.module-node__agent-media-slot, .connected-agent-media-slots__item) {
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  padding: 0 !important;
+}
+
+/* FINAL GENERATION RAIL CONTRACT
+   Popover controls have a wrapper plus an inner trigger. Both layers must
+   occupy the same fixed rail so native selects and the green primary action
+   share one baseline. */
+.workspace--ui-gate .module-node__generation-control-bar > :is(
+  select,
+  .generation-parameter-popover,
+  .module-node__run-generation
+),
+.workspace--ui-gate .module-node__video-control-bar > :is(
+  select,
+  .generation-parameter-popover,
+  .module-node__run-generation
+),
+.workspace--ui-gate .module-node__generation-control-bar > .generation-parameter-popover > .generation-parameter-popover__trigger,
+.workspace--ui-gate .module-node__video-control-bar > .generation-parameter-popover > .generation-parameter-popover__trigger {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  align-self: stretch !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding-block: 0 !important;
+  line-height: 1 !important;
+  border-radius: 10px !important;
+}
+
+.workspace--ui-gate .module-node__generation-control-bar > .generation-parameter-popover,
+.workspace--ui-gate .module-node__video-control-bar > .generation-parameter-popover {
+  overflow: visible !important;
+}
+
+/* FINAL CHAT COMPOSER CONTRACT
+   The footer contains five direct children; the action group owns the last
+   three icon buttons. Keep the visible controls on one compact baseline. */
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+  grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1.12fr) 44px minmax(0, auto) !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > :is(
+  .skill-chat-workbench__tool,
+  .skill-chat-workbench__mode-tabs,
+  .skill-chat-workbench__model-pill,
+  .skill-chat-workbench__effort,
+  .skill-chat-workbench__composer-actions
+) {
+  box-sizing: border-box !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  align-self: center !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-actions {
+  display: flex !important;
+  width: auto !important;
+  min-width: 0 !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 6px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-actions > :is(button, select),
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool {
+  box-sizing: border-box !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  padding: 0 !important;
+  display: inline-grid !important;
+  place-items: center !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-actions > .skill-chat-workbench__submit-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  min-width: 1px !important;
+  height: 1px !important;
+  min-height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort {
+  width: 100% !important;
+  min-width: 0 !important;
+  padding: 0 8px !important;
+}
+
+/* FINAL NODE ACTION CONTRACT
+   Keep every executable node action on one predictable hit target while
+   preserving square icon affordances and the wider primary generation action. */
+.workspace--ui-gate .module-node :is(
+  .module-node__run-generation,
+  .module-node__reference-add,
+  .module-node__agent-actions > button,
+  .module-node__workbench-actions > button,
+  .module-node__parameter-row > button,
+  .module-node__parameter-row > select,
+  .module-node__storyboard-editor > button,
+  .module-node__storyboard-editor select
+) {
+  box-sizing: border-box !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  min-width: 0 !important;
+  align-self: center !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding-block: 0 !important;
+  line-height: 1 !important;
+  border-radius: 10px !important;
+}
+
+.workspace--ui-gate .module-node :is(
+  .module-node__icon-button,
+  .module-node__collapse-editor,
+  .module-node__agent-media-add,
+  .connected-agent-media-slots__reorder > button,
+  .connected-agent-media-slots__remove
+) {
+  box-sizing: border-box !important;
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  padding: 0 !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  line-height: 1 !important;
+  border-radius: 10px !important;
+}
+
+.workspace--ui-gate .module-node .module-node__run-generation {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+.workspace--ui-gate .module-node .connected-agent-media-slots__reorder {
+  gap: 4px !important;
+}
+
+/* FINAL CURRENT IMAGE NODE OVERRIDE
+   This owns the current Canvas Atelier image-generation bar directly. It
+   does not depend on the retired Figma node class or any reference geometry. */
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__generation-control-bar {
+  grid-template-columns: minmax(0, 1fr) minmax(0, .64fr) minmax(0, .64fr) minmax(0, .64fr) minmax(0, .76fr) !important;
+  gap: 5px !important;
+  grid-template-rows: 30px !important;
+  height: 48px !important;
+  min-height: 48px !important;
+  max-height: 48px !important;
+  padding: 9px 0 !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__generation-control-bar > :is(
+  select,
+  .generation-parameter-popover,
+  .generation-parameter-popover > .generation-parameter-popover__trigger,
+  .module-node__run-generation
+) {
+  box-sizing: border-box !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  min-width: 0 !important;
+  padding: 0 8px !important;
+  border-radius: 8px !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__generation-control-bar .generation-parameter-popover__trigger {
+  width: 100% !important;
+  padding: 0 7px !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, .45fr) minmax(0, .45fr) minmax(0, .5fr) minmax(0, .76fr) !important;
+  gap: 5px !important;
+  grid-template-rows: 30px !important;
+  height: 48px !important;
+  min-height: 48px !important;
+  max-height: 48px !important;
+  padding: 9px 0 !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-control-bar > :is(
+  select,
+  .generation-parameter-popover,
+  .generation-parameter-popover > .generation-parameter-popover__trigger,
+  .module-node__run-generation
+) {
+  box-sizing: border-box !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  min-width: 0 !important;
+  padding: 0 8px !important;
+  border-radius: 8px !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-control-bar .generation-parameter-popover__trigger {
+  width: 100% !important;
+  padding: 0 7px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__model-pill {
+  width: min(100%, 132px) !important;
+  max-width: 132px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding: 0 7px !important;
+  font-size: 10px !important;
+  border-radius: 8px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-actions > .skill-chat-workbench__tool,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool {
+  width: 30px !important;
+  min-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+}
+
+/* FINAL TOPBAR SAVE SPLIT BUTTON CONTRACT
+   Keep the primary save label readable while retaining a separate manager
+   toggle with the same visual height as the neighboring actions. */
+.workspace--ui-gate .save-project-control {
+  grid-template-columns: 108px 30px !important;
+  width: 138px !important;
+  min-width: 138px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+}
+
+.workspace--ui-gate .save-project-control__main {
+  width: 108px !important;
+  min-width: 108px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  padding: 0 10px !important;
+  border-radius: 10px 0 0 10px !important;
+}
+
+.workspace--ui-gate .save-project-control__toggle {
+  width: 30px !important;
+  min-width: 30px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+}
+
+/* FINAL BUTTON SIZE LOCK
+   Legacy generation selectors still target the same data attributes. Repeat
+   the node class here so the current compact contract wins the cascade. */
+.workspace--ui-gate .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar,
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+  grid-template-rows: 30px !important;
+  height: 48px !important;
+  min-height: 48px !important;
+  max-height: 48px !important;
+  padding-block: 9px !important;
+  gap: 4px !important;
+}
+
+.workspace--ui-gate .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--ui-gate .module-node.module-node[data-module-type='image_generation'] .generation-parameter-popover__trigger,
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation'] .generation-parameter-popover__trigger {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding-block: 0 !important;
+  border-radius: 8px !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+}
+
+/* FINAL AGENT BUTTON SIZE LOCK */
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > :is(
+  .skill-chat-workbench__tool,
+  .skill-chat-workbench__mode-tabs,
+  .skill-chat-workbench__model-pill,
+  .skill-chat-workbench__effort,
+  .skill-chat-workbench__composer-actions
+) {
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort {
+  width: min(100%, 132px) !important;
+  max-width: 132px !important;
+  min-width: 0 !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-actions > :is(button, select),
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool,
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__close {
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding: 0 !important;
+}
+
+/* FINAL AGENT COMPOSER BOUNDARY LOCK
+   The composer is a padded grid item. A percentage width on its footer can
+   resolve against the padding box and add a second copy of that padding to
+   the right edge. Use the content width explicitly and keep the action group
+   in a fixed compact column so no icon can cross the rounded border. */
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+  box-sizing: border-box !important;
+  width: calc(100% - 20px) !important;
+  max-width: calc(100% - 20px) !important;
+  min-width: 0 !important;
+  grid-template-columns: 30px minmax(0, 1fr) minmax(0, 132px) 30px 30px !important;
+  gap: 5px !important;
+  overflow: visible !important;
+  position: relative !important;
+  z-index: 3 !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__mention-menu {
+  z-index: 4 !important;
+  pointer-events: auto !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs,
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort,
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs > button {
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+}
+
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  overflow: hidden !important;
+  gap: 0 !important;
+}
+
+/* FINAL GENERATION RAIL SPECIFICITY LOCK
+   Expanded generation cards still carry a legacy :has() rail selector. Match
+   that specificity here so the current compact geometry wins after hydration
+   for both image and video nodes. */
+.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
+  grid-template-rows: 30px !important;
+  height: 48px !important;
+  min-height: 48px !important;
+  max-height: 48px !important;
+  padding-block: 9px !important;
+  gap: 4px !important;
+}
+
+.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, .45fr) minmax(0, .45fr) minmax(0, .5fr) minmax(0, .76fr) !important;
+}
+
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, .44fr) minmax(0, .44fr) minmax(0, .52fr) minmax(0, .76fr) !important;
+}
+
+.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .generation-parameter-popover__trigger,
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .generation-parameter-popover__trigger {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding-block: 0 !important;
+  border-radius: 8px !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+}
+
+.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > .module-node__run-generation,
+.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > .module-node__run-generation {
+  grid-column: 5 !important;
+  width: calc(100% - 2px) !important;
+  justify-self: end !important;
+  margin-right: 2px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+}
+
+/* FINAL AGENT EFFORT CHEVRON CENTER
+   The compact reasoning control is intentionally icon-only. Remove the
+   browser-specific select arrow and draw one centered chevron so Chromium
+   and Electron do not place it against the right edge of the 30px button. */
+.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__effort {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  box-sizing: border-box !important;
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding: 0 !important;
+  color: transparent !important;
+  text-align: center !important;
+  text-align-last: center !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%2358707d' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: 12px 12px !important;
+}
+
+/* FINAL SETTINGS BUTTON CONTRACT */
+.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh) {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  padding: 0 12px !important;
+  border-radius: 9px !important;
+  font-size: 11px !important;
+  font-weight: 650 !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease, opacity 120ms ease !important;
+}
+
+.workspace--ui-gate .settings-drawer .settings-action-content {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  white-space: nowrap !important;
+}
+
+.workspace--ui-gate .settings-drawer .settings-action-content > svg {
+  flex: 0 0 auto !important;
+}
+
+.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh) {
+  color: var(--text) !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--border-strong) !important;
+}
+
+.workspace--ui-gate .settings-drawer .settings-storage-refresh {
+  min-width: 84px !important;
+}
+
+.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):hover:not(:disabled) {
+  border-color: var(--accent) !important;
+  background: var(--surface-raised) !important;
+}
+
+.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):active:not(:disabled) {
+  transform: translateY(1px) !important;
+}
+
+.workspace--ui-gate .settings-drawer .settings-cache-primary-action {
+  min-width: 112px !important;
+  color: var(--on-accent) !important;
+  background: var(--accent) !important;
+  border: 1px solid var(--accent) !important;
+}
+
+.workspace--ui-gate .settings-drawer .settings-cache-primary-action:hover:not(:disabled) {
+  background: var(--accent-strong, var(--accent)) !important;
+  border-color: var(--accent-strong, var(--accent)) !important;
+}
+
+.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent) !important;
+  outline-offset: 2px !important;
+}
+
+.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):disabled {
+  cursor: not-allowed !important;
+  opacity: .55 !important;
+}
+
+.workspace--ui-gate .settings-drawer .settings-cache-item-action {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: auto !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 8px !important;
+  font-size: 10px !important;
+  font-weight: 650 !important;
+  line-height: 1 !important;
+}
+
+.workspace--ui-gate .settings-drawer .settings-cache-item-action:hover:not(:disabled) {
+  color: var(--accent) !important;
+  border-color: var(--accent) !important;
+  background: var(--surface-raised) !important;
+}
+
+@media (max-width: 620px) {
+  .workspace--ui-gate .settings-drawer .settings-cache-directory-actions {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+/* FINAL SETTINGS DRAWER OCCLUSION CONTRACT */
+.workspace--ui-gate .settings-drawer {
+  background: var(--gate-card) !important;
+  backdrop-filter: none !important;
+}
+
+/* FINAL REVERSE ACTION BUTTON CONTRACT */
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__workbench-actions {
+  box-sizing: border-box !important;
+  position: absolute !important;
+  top: auto !important;
+  right: 18px !important;
+  bottom: 18px !important;
+  left: 18px !important;
+  width: auto !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  padding: 0 !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  align-items: stretch !important;
+  gap: 10px !important;
+  width: 100% !important;
+  height: 34px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions > button {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  padding: 0 12px !important;
+  border-radius: 9px !important;
+  font-size: 11px !important;
+  font-weight: 650 !important;
+  line-height: 1 !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions .module-node__apply-agent {
+  color: var(--gate-text) !important;
+  background: var(--gate-card) !important;
+  border: 1px solid var(--gate-border-strong, var(--gate-border)) !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions .module-node__run-agent {
+  color: var(--on-accent, #fff) !important;
+  background: var(--gate-accent, var(--accent)) !important;
+  border: 1px solid var(--gate-accent, var(--accent)) !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions > button:disabled {
+  cursor: not-allowed !important;
+  opacity: .55 !important;
+}
+
+/* Keep the inset reverse output socket draggable above the workbench. The
+   transparent port rail must not intercept any other form controls. */
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports {
+  z-index: 30 !important;
+  pointer-events: none !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports .react-flow__handle {
+  z-index: 31 !important;
+  pointer-events: auto !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports :is(
+  .module-node__ports-column--outputs,
+  .module-node__port-row--output
+) {
+  overflow: clip !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports .module-node__ports-column--outputs {
+  margin-right: 0 !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports .react-flow__handle-right {
+  right: 0 !important;
+  transform: translate(0, -50%) !important;
+}
+
+/* FINAL CONNECTED MEDIA REORDER HIT TARGET CONTRACT */
+.workspace--ui-gate .module-node .connected-agent-media-slots__reorder,
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__reorder {
+  box-sizing: border-box !important;
+  position: absolute !important;
+  z-index: 9 !important;
+  right: 2px !important;
+  bottom: 2px !important;
+  left: 2px !important;
+  display: flex !important;
+  width: auto !important;
+  height: 16px !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 2px !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  clip-path: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.workspace--ui-gate .module-node .connected-agent-media-slots__item:hover .connected-agent-media-slots__reorder,
+.workspace--ui-gate .module-node .connected-agent-media-slots__item:focus-within .connected-agent-media-slots__reorder,
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__item:hover .connected-agent-media-slots__reorder,
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__item:focus-within .connected-agent-media-slots__reorder {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.workspace--ui-gate .module-node .connected-agent-media-slots__reorder > button,
+.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__reorder > button {
+  box-sizing: border-box !important;
+  display: inline-grid !important;
+  width: 16px !important;
+  min-width: 16px !important;
+  max-width: 16px !important;
+  height: 16px !important;
+  min-height: 16px !important;
+  max-height: 16px !important;
+  place-items: center !important;
+  padding: 0 !important;
+  border-radius: 4px !important;
+}
+
+/* FINAL COMPLETED GENERATION GALLERY CONTRACT
+   Completed image/video nodes return to a media-only canvas surface. Prompt,
+   references and parameters remain available only after explicitly opening
+   the editor again. */
+.workspace--ui-gate .module-node:is([data-module-type='image_generation'], [data-module-type='video_generation']):has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+) {
+  width: 760px !important;
+  min-width: 760px !important;
+  height: 540px !important;
+  min-height: 540px !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true'][data-result-count='1'][data-result-orientation='portrait']
+) {
+  width: 520px !important;
+  min-width: 520px !important;
+  height: 650px !important;
+  min-height: 650px !important;
+}
+
+.workspace--ui-gate .module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true'][data-result-count='1'][data-result-orientation='square']
+) {
+  width: 600px !important;
+  min-width: 600px !important;
+  height: 620px !important;
+  min-height: 620px !important;
+}
+
+.workspace--ui-gate .module-node:is([data-module-type='image_generation'], [data-module-type='video_generation'])
+  .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+  .module-node__generation-collapsed-open {
+  top: 46px !important;
+  right: 8px !important;
+  bottom: 8px !important;
+  left: 8px !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 18px !important;
+}
+
+.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+  .module-node__generation-preview-gallery--collapsed {
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  padding: 0 !important;
+  gap: 3px !important;
+}
+
+.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+  .module-node__generation-preview-gallery--collapsed.module-node__generation-preview-gallery--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  align-content: stretch !important;
+}
+
+.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+  .module-node__generation-preview-gallery--collapsed.module-node__generation-preview-gallery--3 {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+}
+
+.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+  .module-node__generation-preview-gallery--collapsed.module-node__generation-preview-gallery--3
+  .module-node__generation-preview-item:first-child {
+  grid-row: span 2 !important;
+}
+
+.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+  .module-node__generation-preview-gallery--collapsed.module-node__generation-preview-gallery--4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+}
+
+.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+  .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item {
+  border: 0 !important;
+  border-radius: 14px !important;
+}
+
+.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+  .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item > :is(img, video) {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover !important;
+  object-position: center !important;
+}
+
+/* FINAL PORTALED IMAGE ACTION MENU CONTRACT
+   This menu is rendered under document.body, outside .workspace--ui-gate, so
+   it must not depend on workspace-scoped --gate-* variables. */
+:root[data-theme='light'] .generated-image-action-menu,
+:root:not([data-theme='dark']) .generated-image-action-menu {
+  color: #172330 !important;
+  background: #f8fbfd !important;
+  border-color: #aebfcb !important;
+  box-shadow: 0 18px 48px rgb(25 43 56 / 22%) !important;
+}
+
+:root[data-theme='dark'] .generated-image-action-menu {
+  color: #f1f6f8 !important;
+  background: #172129 !important;
+  border-color: #526874 !important;
+  box-shadow: 0 18px 52px rgb(0 0 0 / 48%) !important;
+}
+
+.generated-image-action-menu > strong {
+  color: inherit !important;
+  opacity: .78 !important;
+}
+
+.generated-image-action-menu > button {
+  color: inherit !important;
+  background: transparent !important;
+}
+
+.generated-image-action-menu > button:not(:disabled):hover,
+.generated-image-action-menu > button:not(:disabled):focus-visible {
+  color: inherit !important;
+  background: rgb(41 113 124 / 14%) !important;
+  outline: 2px solid rgb(27 153 157 / 42%) !important;
+  outline-offset: -2px !important;
+}
+
+.generated-image-action-menu > button.is-featured {
+  color: #ecffff !important;
+  background: #155b58 !important;
+}
+
+.generated-image-action-menu > button:disabled {
+  color: inherit !important;
+  background: transparent !important;
+  opacity: .42 !important;
+}
+
+/* FINAL PROVIDER COMPATIBILITY ACTIONS CONTRACT */
+.workspace--ui-gate .settings-key-actions {
+  grid-template-columns: minmax(0, 1fr) !important;
+  align-items: start !important;
+}
+
+.workspace--ui-gate .settings-key-actions > div:first-child {
+  min-width: 0 !important;
+  width: 100% !important;
+}
+
+.workspace--ui-gate .settings-key-actions > div:last-child {
+  width: 100% !important;
+  min-width: 0 !important;
+  justify-content: flex-start !important;
+  flex-wrap: wrap !important;
+}
+
+.workspace--ui-gate .settings-provider-compatibility {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  flex: 1 1 100% !important;
+}
+
+.workspace--ui-gate .settings-provider-compatibility summary {
+  white-space: nowrap !important;
+}
+
+.workspace--ui-gate .settings-provider-compatibility small {
+  min-width: 0 !important;
+  overflow-wrap: normal !important;
+  white-space: nowrap !important;
+}
+
+.workspace--ui-gate .settings-provider-compatibility button {
+  white-space: nowrap !important;
+}
+
+/* FINAL LAYERED SETTINGS WORKBENCH CONTRACT */
+.workspace--ui-gate .settings-provider-overview.settings-layer,
+.workspace--ui-gate .settings-provider-panel.settings-layer,
+.workspace--ui-gate .settings-model-layer,
+.workspace--ui-gate .settings-diagnostics-layer { min-width: 0 !important; border-radius: 12px !important; }
+.workspace--ui-gate .settings-provider-panel.settings-layer,
+.workspace--ui-gate .settings-diagnostics-layer { margin-inline: 12px !important; }
+.workspace--ui-gate .settings-model-layer { margin: 12px !important; overflow: hidden !important; }
+.workspace--ui-gate .settings-chat-adaptation { color: var(--accent) !important; font-weight: 650 !important; }
+.workspace--ui-gate .settings-diagnostics-summary { display: flex !important; flex-wrap: wrap !important; gap: 8px !important; }
+
+/* FINAL CANVAS-STYLE MODEL CATALOG AND TOOL ACTIONS */
+.workspace--ui-gate .settings-model-catalog { gap: 14px !important; padding: 16px !important; background: transparent !important; }
+.workspace--ui-gate .settings-model-catalog__summary { padding: 2px 2px 12px !important; border-bottom: 1px solid var(--gate-border) !important; }
+.workspace--ui-gate .settings-model-catalog__summary > span { padding: 5px 10px !important; border-radius: 999px !important; background: var(--gate-card-muted) !important; }
+.workspace--ui-gate .settings-model-group {
+  grid-template-columns: minmax(150px, .42fr) minmax(0, 1fr) !important;
+  gap: 12px 16px !important;
+  padding: 14px !important;
+  border: 1px solid var(--gate-border) !important;
+  border-left: 3px solid var(--gate-accent) !important;
+  border-radius: 12px !important;
+  background: var(--gate-card) !important;
+  box-shadow: 0 4px 12px rgba(28, 44, 66, .04) !important;
+}
+.workspace--ui-gate .settings-model-group > header { display: grid !important; grid-template-columns: 34px minmax(0, 1fr) !important; align-content: start !important; justify-content: stretch !important; gap: 10px !important; padding-bottom: 10px !important; border-bottom: 1px solid var(--gate-border) !important; }
+.workspace--ui-gate .settings-model-group > header > i { width: 34px !important; height: 34px !important; display: grid !important; place-items: center !important; color: var(--gate-accent) !important; background: var(--gate-accent-soft) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 9px !important; font-size: 9px !important; font-style: normal !important; font-weight: 800 !important; }
+.workspace--ui-gate .settings-model-list { grid-column: 2 !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; align-content: start !important; }
+.workspace--ui-gate .settings-model-list > article { min-height: 52px !important; grid-template-columns: 20px minmax(0, 1fr) auto !important; padding: 7px 9px !important; border: 1px solid var(--gate-border) !important; border-radius: 8px !important; background: var(--gate-card-muted) !important; }
+.workspace--ui-gate .settings-model-list > article.is-enabled { border-color: color-mix(in srgb, var(--gate-accent) 32%, var(--gate-border)) !important; background: color-mix(in srgb, var(--gate-accent-soft) 48%, var(--gate-card)) !important; }
+.workspace--ui-gate .settings-model-identity { display: grid !important; gap: 3px !important; }
+.workspace--ui-gate .settings-model-identity small { display: block !important; color: var(--gate-muted) !important; font-size: 9px !important; }
+.workspace--ui-gate .settings-model-identity em { display: none !important; }
+.workspace--ui-gate .settings-model-list > article > em { padding: 3px 7px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 999px !important; font-size: 9px !important; font-style: normal !important; font-weight: 750 !important; }
+.workspace--ui-gate .settings-model-default { grid-column: 1 !important; align-self: end !important; padding: 9px !important; background: var(--gate-card-muted) !important; border: 1px solid var(--gate-border) !important; border-radius: 8px !important; }
+.workspace--ui-gate .settings-model-default select { width: 100% !important; height: 38px !important; color: var(--gate-text) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-border-strong) !important; border-radius: 8px !important; }
+.workspace--ui-gate .settings-tool-card { min-height: 220px !important; padding: 16px !important; border-top: 3px solid var(--gate-accent) !important; background: linear-gradient(160deg, var(--gate-card), var(--gate-card-muted)) !important; }
+.workspace--ui-gate .settings-tool-card > p { min-height: 32px !important; color: var(--gate-muted) !important; }
+.workspace--ui-gate .settings-tool-card__status { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 12px !important; padding: 10px 12px !important; background: var(--gate-card) !important; border: 1px solid var(--gate-border) !important; border-radius: 9px !important; }
+.workspace--ui-gate .settings-tool-card__status span { color: var(--gate-muted) !important; font-size: 10px !important; }
+.workspace--ui-gate .settings-tool-card__status strong { font-size: 11px !important; }
+.workspace--ui-gate .settings-tool-action { min-height: 40px !important; color: var(--gate-on-accent) !important; background: var(--gate-accent) !important; border-color: var(--gate-accent) !important; border-radius: 9px !important; box-shadow: 0 8px 18px color-mix(in srgb, var(--gate-accent) 20%, transparent) !important; }
+.workspace--ui-gate .settings-tool-action:hover:not(:disabled) { filter: brightness(1.05) !important; transform: translateY(-1px) !important; }
+@media (max-width: 900px) {
+  .workspace--ui-gate .settings-model-group { grid-template-columns: 1fr !important; }
+  .workspace--ui-gate .settings-model-list, .workspace--ui-gate .settings-model-default { grid-column: 1 !important; }
+  .workspace--ui-gate .settings-model-list { grid-template-columns: 1fr !important; }
+}
+@media (max-width: 560px) {
+  .workspace--ui-gate .settings-model-list { grid-template-columns: 1fr !important; }
+}
+.workspace--ui-gate .module-node__generation-error { display: grid !important; gap: 10px !important; pointer-events: auto !important; }
+.workspace--ui-gate .module-node__generation-error > button { min-height: 34px !important; padding: 0 12px !important; color: #fff !important; background: #d9485f !important; border: 0 !important; border-radius: 8px !important; cursor: pointer !important; font-weight: 700 !important; }

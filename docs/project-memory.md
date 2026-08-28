@@ -217,3 +217,177 @@ Before producing an installer, verify at minimum:
 - Root cause: the repository ignored generic `dist/` but not root `.tmp-*` QA roots, `artifacts/`, either Electron Builder output location, the root runtime index, or the copied root desktop entry. This exposed 21,404 generated files as untracked changes alongside the real source work.
 - Protected boundary: `.gitignore` now excludes only those proven generated/runtime paths while retaining all source, tests, installer configuration, and project documentation. One accidental 16 KB `tatus --short` file containing only redirected Git line-ending warnings was removed after its exact workspace path and content were verified.
 - After the ignore correction, untracked paths fell from 21,404 to 237; the remaining paths were real source/tests/docs. They and 140 tracked changes were preserved in one local checkpoint instead of using reset/clean. Pre-checkpoint verification remained the fresh full Vitest result of 196 files and 2,344 passing tests (2 performance tests skipped by design), plus a successful no-emit workspace typecheck. No application runtime was launched for this cleanup audit.
+
+## 2026-08-25 continuation verification
+
+- The current checkout still has exactly two unrelated user-owned source edits: the untitled-project stable-save boundary in `apps/renderer/src/app/app-store.ts` and the terminal generation/Agent layout cascade in `apps/renderer/src/styles/app.css`. No source edits were made during this continuation.
+- Fresh focused verification passed: renderer styles, `SkillChatWorkbench`, `ModuleNodeCard`, and `CanvasWorkspace` passed `393/393`; app-store, autosave, desktop-persistence, and durable-canvas semantics passed `228/228`.
+- Fresh workspace `npm.cmd run typecheck` passed with exit code 0. The first in-sandbox Vitest attempt was blocked at Vite/esbuild startup by `spawn EPERM`; the same command was rerun in the permitted environment and reached the tests successfully.
+- No packaged runtime or installer was produced in this continuation. Existing generated QA roots remain ignored and no unrelated worktree changes were discarded.
+
+## 2026-08-25 Agent reverse workflow continuation
+
+- Reproduced the remaining reverse failure in the renderer: a request containing ordered media references was intercepted by the selected-node canvas action branch, so it never reached visual chat when no reverse node was selected. The guard now bypasses that branch only for `reverse_agent` requests that carry references; node-targeted reverse execution remains confirmation-gated.
+- The desktop bridge already supplies the ordered `referenceMentions` and `visualAnalysis` contract to the provider. No project-memory IDs or private metadata were added to the provider prompt.
+- Added a deterministic structured reverse contract and workflow proposal model. JSON and fenced-JSON assistant responses are parsed into the contract; legacy prose remains readable and is marked non-runnable until required visual/prompt sections are present.
+- Added a compact Agent summary showing subject, composition, Chinese prompt, and missing required sections before workflow drafting. Existing durable plan confirmation remains the single canvas/model execution boundary.
+- Fresh verification: `SkillChatWorkbench` plus reverse contract passed 59/59; renderer interaction suite (styles, media slots, module nodes, workspace, app-store) passed 569/569; desktop visual-analysis/provider tests and proposal test passed 8/8; renderer no-emit TypeScript check passed.
+
+## 2026-08-25 browser runtime continuation
+
+- Renderer production build completed successfully with Vite. The first browser run exposed two stale E2E assumptions in `agent-reference-workflow.spec.ts`: a hard-coded `Gemini Vision` route label and an input-value assertion against the contenteditable Agent composer. The test now selects the first configured route from the model list, reads the selected display label, and asserts the rendered `@图片1` text.
+- Fresh browser verification passed: Agent managed-image reference flow and compact Agent layout both passed `2/2`. The flow confirmed no canvas commit, model job, or model submission was created by citation-only chat.
+
+## 2026-08-26 settings button contract continuation
+
+- Settings storage/update controls now use a terminal `release-layout-contract.css` button contract: cache directory actions, the primary cache cleanup action, and update check share 34px height, centered icon/text, radius, focus, hover, active, and disabled states. Per-cache cleanup actions use the same geometry at 30px for compact cards.
+- Cache directory actions now report successful open, custom-path migration, and default-path restore in the storage card. Cleanup buttons visibly switch to `清理中…`; update checking includes a spinning refresh icon and Chinese loading label.
+- Fresh focused `SettingsDrawer` verification passed `47/47`; workspace typecheck and production build passed. Real packaged renderer screenshot: `E:\\画布项目\\staging-canvas-build\\.tmp-settings-storage-buttons.png`. Electron DOM smoke confirmed one `.settings-update-action`; the update-card screenshot was blocked by Electron screenshot stability timeout, so it is not claimed as visual evidence.
+## 2026-08-26 1.6.56 release-contract integrity verification
+
+- Root cause: the desktop package version had already advanced to `1.6.56`, while two release-contract tests and one installer-path assertion still expected `1.6.55`.
+- Minimal fix: updated only the stale expectations in `apps/desktop-modern/src/packaging-boundary.test.ts` and `apps/desktop-modern/src/runtime-entry-contract.test.ts`; no production code was changed.
+- Protected behavior: packaging/runtime contract tests now track the current package version and the `CanvasAtelier-Win10-11-x64-1.6.56.exe` installer identity.
+- Focused verification: both release-contract test files passed, 16/16 tests.
+- Type verification: the full workspace `npm run typecheck` passed.
+- Full verification: Vitest passed 198 test files and 2367 tests; 2 performance tests were skipped by design; 0 failures.
+- Existing installer confirmed at `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.56.exe` (103111963 bytes; last modified 2026-08-25 21:59:21). A fresh installer rebuild/runtime smoke was not performed in this verification pass.
+- Workspace note: all unrelated pre-existing dirty changes were preserved.
+## 2026-08-26 1.6.56 rebuilt release verification
+
+- Fresh production build passed, including full workspace TypeScript checks, renderer build, desktop bridge/core builds, and the Electron main/preload bundles.
+- Electron Builder 26.0.12 completed Windows x64 NSIS packaging for Electron 43.1.0 with exit code 0.
+- Rebuilt installer: `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.56.exe`; size `103112336` bytes; last write `2026-08-26 13:24:36`; SHA-256 `1A38BC87427DDA56C93A51864CF5B8D1C401EDD78F23FA90644440CA9DD3891D`; Authenticode status `NotSigned`.
+- Fresh packaged runtime smoke used the rebuilt `win-unpacked/Canvas Atelier.exe` with an isolated temporary user-data directory. It returned `title=Canvas Atelier`, `canvasVisible=true`, `fatalAlertCount=0`, `pageErrors=[]`, and `dialogs=[]`, then closed normally and removed its temporary profile.
+- The build reported the existing Vite large-chunk advisory and missing package `description`/`author` metadata; neither warning blocked packaging or runtime startup.
+- The existing user installation was not overwritten in this pass.
+
+## 2026-08-26 Agent media, reverse-port, and final 1.6.56 release verification
+
+- The Codex Agent accepts pasted image/video attachments, Codex mode exposes only Codex routes, and ordinary chat no longer renders the workflow request/reverse-analysis cards. Current browser coverage also confirms managed media mentions, structured reverse analysis, image generation, and video generation behavior.
+- Root cause of the reverse-card black edge and unreliable output drag was a 16px output column clipping a handle centered on its right boundary. The terminal layout contract keeps the port row clipped, places the full output handle inside the card, and gives handles their own pointer-active stacking layer; this preserves drag hit testing without adding horizontal overflow.
+- Updated stale E2E expectations to the current 460px Agent panel, the current project-memory disclosure, and clipboard-file naming. Full Playwright passed `136/136`, including both themes, 1366/1440/1920 desktop layouts, reverse-result overflow, real port dragging, Agent chat, image paste, and image/video generation flows.
+- Full workspace TypeScript passed. Full Vitest passed `198` files and `2374` tests; `2` performance tests were skipped by design. The first restricted Vitest run hit only expected `EPERM` errors while security tests created simulated secret files and desktop contract tests rewrote `dist`; the permitted rerun passed with zero failures. `git diff --check` reported no whitespace errors.
+- Fresh production build and Electron Builder 26.0.12 Windows x64 NSIS packaging passed. Packaged hidden runtime returned `fatalAlertCount=0`, `nodeCount=2`, `pageErrors=[]`, and `failures=[]` after inserting image/video nodes, editing, and saving.
+- Final installer: `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.56.exe`; size `103112725` bytes; SHA-256 `25202A734D67E2228028F1E52AA9D222B6365F4222D30BC944A16C770A13E374`; Product/File version `1.6.56`; Authenticode status `NotSigned`. The existing user installation was not overwritten.
+
+## 2026-08-27 Agent paste, reverse reliability, generated preview, and 1.6.58 release
+
+- Agent clipboard image paste now imports directly into the current conversation reference list. Files with a usable path go through the managed dropped-media transaction; in-memory clipboard bitmaps fall back to the native clipboard bridge. Neither path opens the Windows image picker or creates an extra canvas node.
+- Codex/Agent conversation messages no longer render the internal `知识库请求` card. Request metadata remains in task state for execution and diagnostics, while ordinary chat displays only the user and assistant conversation.
+- Reverse Agent now reloads and reconciles one recoverable durable revision conflict inside the first click before starting the provider request. Provider timeouts were raised from 120 seconds to 300 seconds, with the renderer operation boundary at 315 seconds, so a slow provider is not reported as an exact two-minute failure.
+- Generated-image preview buttons are exempt from the shared 38px form-control rule. The preview stage and image now fill the available gallery in both dimensions instead of collapsing into a thin strip.
+- Fresh verification: focused unit coverage passed `415/415`, the final full Vitest run passed `2382/2382` with `2` performance tests skipped by design, TypeScript passed, and full Playwright passed `139/139`. The packaged hidden runtime returned `title=Canvas Atelier`, `canvasVisible=true`, `fatalAlertCount=0`, and `pageErrors=[]`.
+- Release 1.6.58 production build and NSIS packaging passed. Installer: `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.58.exe`; size `103113039` bytes; SHA-256 `188EB241C3EA42A83054C98358B1D405261AAC8DE4BE204469ED973889999995`; Authenticode `NotSigned`. Packaged `app.asar` reports version `1.6.58`. The existing user installation was not overwritten.
+- Online update audit: the settings button currently uses `MockReleaseFeed`, performs no HTTP request, and restart installation returns `REAL_INSTALL_DISABLED`. Uploading only the EXE to GitHub will not notify or update users; a later release must add the real GitHub Releases feed, `latest.yml` publication, integrity/signing policy, download/restart installation, and startup or scheduled checks.
+- Fixed release habit: every change batch ends with a written root-cause retrospective, an exact change list, fresh verification evidence, release artifact identity, and explicit remaining risks/next steps. Update this project memory before declaring the batch complete.
+
+## 2026-08-27 result-only generation gallery follow-up
+
+- User reference established the final completion contract: generated image/video nodes should return to a media-only canvas surface instead of leaving the prompt editor visible. A newly completed image or video now closes only its own open generation editor; opening an already completed node still intentionally reveals the full editor for a new run.
+- Completed nodes hide prompt, parameter, and connected-reference surfaces until the user explicitly opens the editor. Single images adapt the result node to portrait, square, or landscape orientation; two results fill two equal columns; three results use one tall primary tile plus two secondary tiles; four results use a full 2x2 grid. Completed video posters use the same result-only gallery contract.
+- The shared 38px button rule also applied to the collapsed preview opener and initially reproduced the thin-strip defect. The terminal gallery rule now clears that button's `max-height`, while each result tile and its image/video fill the assigned cell with `object-fit: cover`.
+- Added reducer, component style-contract, one-result completion, and four-result E2E coverage. The E2E harness can seed 1-4 deterministic generated images for layout verification.
+- Release version advanced to `1.6.59` because these changes were made after the 1.6.58 installer had already been built. Fresh full Vitest passed `199` files and `2383` tests with `2` files / `2` performance tests skipped by design. The first full Playwright pass exposed six stale video assertions that still expected connected input media in the result-only state; the assertions were updated to require it only after the editor is opened. The six focused video cases then passed, followed by a fresh full Playwright pass of `141/141`.
+- Full workspace TypeScript and production builds passed. Electron Builder 26.0.12 completed Windows x64 NSIS packaging; packaged `app.asar` reports version `1.6.59`. The packaged hidden runtime returned `title=Canvas Atelier`, `canvasVisible=true`, `fatalAlertCount=0`, and `pageErrors=[]`.
+- Final installer: `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.59.exe`; size `103113376` bytes; SHA-256 `07E87E8B51BDE4A1A843F094F902F72CB7277575094BE83BF5AEECA64DB08DAD`; Authenticode `NotSigned`. `git diff --check` exited successfully; its only output was the repository's existing LF-to-CRLF conversion warnings. The existing user installation was not overwritten and no GitHub release was uploaded.
+- Remaining release risk: deterministic and mocked provider paths are covered, but no paid live image/video/reverse provider request was issued during final packaging. Online update remains intentionally disabled until the user finishes manual acceptance and explicitly requests GitHub release/update work.
+
+## 2026-08-27 Codex media, reverse normalization, Photoshop runner, portal menu, and 1.6.60 release candidate
+
+- Root cause of the Codex attachment failure: the renderer allowed managed media for Codex `chat`/`responses` routes when discovery omitted `vision`, but `provider-skill-chat.ts` still rejected every referenced request without the flag. The desktop gate now applies the same narrow rule only when `agentMode` is `codex`; ordinary chat/original routes still require explicit `vision`. A provider-level regression proves the managed PNG reaches the Responses request as a data URL.
+- Reverse-provider normalization now joins every Gemini text part, unwraps common `reversePromptResult`/`result`/`output`/`data` envelopes, removes unknown top-level fields, maps common aliases, and fills only missing current-run identity. Explicit mismatched provider identity remains intact so the domain schema rejects it rather than masking a cross-run response.
+- The Photoshop Windows Script Host runner uses legacy-JScript-compatible `/i` regular expressions. Its contract test protects the real `GetObject('', 'Photoshop.Application')`, `DoJavaScript`, version/document checks, and the absence of unsupported `/iu` or `/gu` flags.
+- The body-portaled generated-image action menu has independent opaque light/dark surfaces, high-contrast text, hover, focus, and disabled styling. The contract test reads the terminal release stylesheet through a workspace path that works under Vitest's browser environment.
+- Startup remains restore-first: desktop hydration selects the first available entry from the recent-project store, whose list is ordered by `lastOpenedAt`; automatic blank creation was not introduced. A blank canvas is created only through the explicit New Project workflow.
+- Fresh focused regressions passed after the Codex server gate fix. Fresh full Vitest passed `202` files and `2391` tests with `2` performance files/tests skipped by design and zero failures. Full Playwright passed `141/141`. Full workspace typecheck and production build passed; Vite emitted only the existing large-chunk advisory.
+- Version advanced from `1.6.59` to `1.6.60`; package metadata, lockfile, packaging contract, and runtime-entry contract agree. Electron Builder 26.0.12 completed Windows x64 NSIS packaging from `apps/desktop-modern`.
+- Release candidate installer: `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.60.exe`; size `103113993` bytes; SHA-256 `72EE501E69B4F78DEE136968D13D05774AE3EDDFFAD99DF6FD9227BCC0017770`; Authenticode `NotSigned`. Packaged `app.asar` reports version `1.6.60`, size `4985964` bytes, SHA-256 `346DDB60B23E07B89F9EF116A3D1C1063F445CF1C456C6C769500743A31732C3`.
+- Browser screenshot evidence for the image-generation toolbar is `artifacts/2026-08-10-complete-project-release/05-image-node-compact-dark.png`; model, ratio, resolution, quantity, and Generate controls remain aligned in one contained row.
+- Remaining release gate: the final `win-unpacked` isolated-profile restart smoke and packaged screenshot are not yet claimed. The application reached the real New Project confirmation and durable `saved` state in earlier attempts, but the QA script initially assumed a production E2E global, then omitted the confirmation, then incorrectly required the intentionally hidden save-state element to be visible. After those harness corrections, the local command helper failed during setup and prevented collection of the final run. Do not overwrite the user's installed application or call this candidate fully accepted until that smoke is rerun and recorded.
+
+## 2026-08-27 Agent chat complete clipboard regression
+
+- Root cause: the earlier Agent composer paste path consumed only one clipboard file and lacked an Agent-local clipboard event boundary. Mixed clipboard payloads could therefore lose later attachments, while copy/cut/paste events from the Agent surface could bubble to the canvas clipboard owners.
+- Protected behavior: clipboard parsing preserves readable text plus every supported image/video in `DataTransfer.items` order. Managed imports run sequentially, successful earlier references remain when a later import fails, and the canonical composer order is text followed by `@图片1 @视频1`. Reference updates and pending imports are scoped to the active conversation/model/mode generation so stale completions cannot mutate a replacement draft.
+- Event boundary: the Agent workbench stops copy, cut, and paste propagation locally, while the terminal message/reverse/request/source style contract restores native `user-select: text`. This keeps visible Agent content selectable without routing Agent clipboard events into Canvas handlers.
+- Regression locations: `apps/renderer/src/agent/agent-chat-clipboard.test.ts`, `apps/renderer/src/agent/agent-chat-paste-state.test.ts`, `apps/renderer/src/agent/SkillChatWorkbench.test.tsx`, `apps/renderer/src/main.styles.test.ts`, `apps/renderer/src/canvas/CanvasWorkspace.test.tsx`, and `tests/e2e/agent-chat-image-picker.spec.ts`.
+- Fresh Task 4 browser evidence: `npm.cmd exec playwright test tests/e2e/agent-chat-image-picker.spec.ts --workers=1` passed `4/4` with one worker. The added real composer case dispatched one `DataTransfer` containing plain text, one PNG, and one MP4, then observed the canonical value `同时分析这两个素材 @图片1 @视频1` and both visible media chips. The first run passed the three existing cases and failed only because the new assertion omitted the expected spaces between canonical references; correcting that test expectation produced the fresh green run.
+- Final fresh verification: the related Agent/Canvas/style/server suite passed `336/336`; full workspace typecheck passed; full Vitest passed `204` files and `2434` tests with `2` performance files/tests skipped by design; after the browser-level Minor closure, full Playwright passed `143/143` in `4.1m`; and the complete production build exited `0`. Playwright emitted only the existing `NO_COLOR`/`FORCE_COLOR` warning and intermittent non-blocking Vite `ResizeObserver loop` logs. Vite build emitted the existing large-chunk advisory.
+- No packaging, installer, GitHub upload, installed-app overwrite, or packaged-runtime smoke was performed for this clipboard change. The existing `1.6.60` release-candidate artifact and its remaining isolated-profile restart smoke gate are unchanged.
+- Browser-level Minor closure: `agent-chat-image-picker.spec.ts` now creates a real mock Agent reply, selects its visible text with a DOM `Range`, and dispatches copy/cut plus composer paste while monitoring the browser `window` bubbling boundary used by Canvas clipboard listeners. Selection was non-empty, copy/cut kept their browser defaults, and all three window counters remained zero. The focused Agent clipboard spec passed `5/5`, followed by full Playwright `143/143`. Two earlier runs correctly exposed test assumptions rather than production defects: selection was initially read after default cut cleared it, and controlled contenteditable paste intentionally prevents the browser default while remaining local.
+
+## 2026-08-27 Reverse provider truncation and schema diagnostics
+
+- Root cause: the Gemini client already preserved candidate `finishReason`, but reverse orchestration ignored it and wrapped JSON parsing, bridge-schema parsing, run-identity checks, and media-responsibility validation in one unconditional catch. A `MAX_TOKENS` response, malformed optional professional section, and explicit identity mismatch therefore all became the same non-actionable `PROVIDER_INVALID_RESPONSE` message.
+- Gemini reverse requests now use JSON output with `maxOutputTokens: 16384`. A `MAX_TOKENS` finish is reported as a retryable truncation before JSON parsing. Missing text, invalid JSON, schema failure, run-identity mismatch, and incomplete media responsibilities retain separate sanitized categories without exposing provider output.
+- Normalization tolerates malformed non-core professional sections such as camera or composition when the required reverse core is complete. It does not overwrite explicit provider identity and does not drop a provided malformed `mediaResponsibilities` section; that section still fails strict schema and per-media validation.
+- Renderer errors now provide actionable Chinese guidance for truncation, invalid JSON, missing required fields, run-identity mismatch, and incomplete material responsibility instead of always displaying “反推结果格式无效”.
+- TDD evidence: the first focused run failed 7 new regressions as expected; a later safety RED proved malformed media responsibilities were incorrectly being dropped, then passed after the boundary was tightened. Final focused safety verification passed `11/11`; reverse-related wide verification passed `488/488`; full Vitest passed `204` files and `2443` tests with `2` performance files/tests skipped by design. Full workspace typecheck and production build passed; Vite emitted only the existing large-chunk advisory.
+- No installer was rebuilt, no installed application was overwritten, and no GitHub upload was performed in this repair pass. A paid live Gemini reverse call is still required to confirm the exact provider behavior for the user's nine-image workload.
+
+## 2026-08-27 Cross-provider reverse truncation hardening and 1.6.61 release
+
+- The reverse-response boundary now handles truncation consistently across Gemini native, Comfly OpenAI-compatible Chat Completions, and RelayMe Chat Completions. Gemini `finishReason` and Chat-compatible `finish_reason` values are preserved and normalized; `LENGTH`, `MAX_TOKENS`, and `MAX_OUTPUT_TOKENS` are reported as retryable output truncation before JSON/schema parsing.
+- A shared staged parser distinguishes missing text, invalid JSON, bridge-schema failure, explicit run-identity mismatch, and incomplete media responsibilities. Explicit mismatched identity remains non-retryable and is never replaced with the current run identity. Malformed optional professional sections may be filtered only when the required reverse core remains valid; malformed supplied media responsibilities are never silently dropped.
+- Gemini reverse requests explicitly ask for `application/json` and set `maxOutputTokens` to `16384`. Renderer messages now explain in Chinese whether the user should retry with fewer references, repair provider output, or start a fresh run instead of collapsing every case into “反推结果格式无效”.
+- Cross-provider TDD coverage lives in `packages/desktop-core/src/provider-bridge.test.ts`, `packages/desktop-core/src/relayme-provider-service.test.ts`, `packages/desktop-core/src/reverse-provider-result.test.ts`, and `apps/renderer/src/canvas/ModuleNodeCard.test.tsx`. Fresh final verification passed full Vitest: `204` files and `2445` tests, with `2` performance files/tests skipped by design; full Playwright passed `143/143` in `4.2m`. Full workspace typecheck and production build passed before packaging.
+- Version advanced to `1.6.61`; desktop package metadata, lockfile, packaging boundary, and runtime entry contract agree. Windows x64 NSIS packaging completed. Installer: `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.61.exe`; size `103116905` bytes; SHA-256 `DF2C24E596D2EC3755E5C95BA0205559FB84A6795451784183EFFF8C635B8558`; Authenticode `NotSigned`. Packaged `app.asar` reports `1.6.61`, size `4987716` bytes, SHA-256 `0948D7D339AA6AC8E6A23FF3FAA8BA960BE6CDCE8C417C3C4B8EF530B2F1A919`.
+- The final isolated `win-unpacked` restart smoke used a `canvasforge-qa-*` user-data root and returned `title=Canvas Atelier`, `firstVersion=1.6.61`, `secondVersion=1.6.61`, `canvasVisible=true`, `fatalAlertCount=0`, `pageErrors=[]`, and `restoredImageNodes=1`. It also found all five visible image-generation toolbar controls: model route, aspect ratio, resolution, quantity, and Generate. This protects the restore-most-recent-canvas startup rule without auto-creating a blank project.
+- QA incident record: earlier smoke attempts used an invalid isolation prefix, so the packaged app rejected the QA root and may have created one blank/test project in the user's real application data. No installed files were overwritten and no automatic deletion was attempted because a test project could not be distinguished safely from user data. Later smoke runs used the accepted isolated prefix.
+- Remaining risks: the installer is unsigned; no paid live nine-image Gemini/Comfly/RelayMe reverse request was submitted during release verification; hidden Electron pixel capture remained unstable, so the existing verified toolbar screenshot is retained as layout evidence while the 1.6.61 packaged DOM smoke supplies current control-presence evidence. No GitHub release was uploaded and the user's existing installation was not overwritten.
+
+## 2026-08-28 RelayMe、反推兼容与 GitHub 更新引导版 1.6.62
+
+- RelayMe 现支持账号密码登录事务：密码只存在于登录调用期间，JWT 仅进入桌面安全凭据库；登录后模型目录验证成功才激活 RelayMe，退出或认证失效会清凭据并失活。
+- Comfly 与 RelayMe 使用持久化单一 `activeProvider`，Renderer 过滤目录并在执行前提示，主进程对 Agent、反推、图片和视频执行做权威 `PROVIDER_INACTIVE` 门禁，禁止跨供应商静默回退。
+- 反推失败原因改为六种稳定分类：`TRUNCATED`、`NO_TEXT`、`INVALID_JSON`、`CORE_SCHEMA_INVALID`、`IDENTITY_MISMATCH`、`MEDIA_RESPONSIBILITIES_INVALID`。常见 wrapper、多文本 part、字符串/对象列表和中英文字段别名会被安全规范化；显式错误身份与缺损素材职责仍拒绝。
+- 更新检查原先始终使用 `MockReleaseFeed`，重启固定返回 `REAL_INSTALL_DISABLED`，因此设置页不可能真实发现或安装 GitHub Release。现由 `electron-updater@6.8.9` 驱动 packaged 模式，`autoDownload=false`、`autoInstallOnAppQuit=false`；Renderer 通过窄 IPC 订阅状态，只有用户点击才下载或重启安装。
+- 发布前修复了两类过期回归：preload 安全方法表遗漏四个受控 provider 通道；Playwright 仍选择已被单活动供应商正确隐藏的 RelayMe `Gemini Vision` 与旧反推路线。测试现改用带明确 `chat + vision + reverse_prompt` 能力的活动 Comfly 路由。
+- 最新验证：`scan:e2e` 通过；全工作区 typecheck 通过；完整 Vitest 为 209 个文件、2498 个测试通过，2 个性能测试按设计跳过；完整 Playwright 144/144；最终生产 build 通过。
+- 1.6.62 Windows x64 NSIS：`CanvasAtelier-Win10-11-x64-1.6.62.exe`，103182785 字节，SHA-256 `6E4FF3FB8BEA6B392AB08C358D4DFB41FA94C01FB469A2D6D7AAAA2F866E9E51`，Authenticode `NotSigned`。
+- updater 资产：`.blockmap` 109428 字节，SHA-256 `E64E82F034EEA3039C774103AE3536D57CB73C1D4BD41BD4814B562BB3AC2AEC`；`latest.yml` 372 字节，SHA-256 `0DEA7E3FB7DBCDA96AFE3379021F9FBBCE45A400081CF6F5BC97401227241D56`。
+- `win-unpacked/resources/app.asar`：版本 1.6.62，5592001 字节，SHA-256 `2C556A0C263B6C562B7C8AFC3BECEE3CD61492D4814CD9B8EDF4293B7C146C1A`。隔离 QA 数据根启动 8 秒保持存活，随后按精确 PID 终止且无遗留进程；未运行安装器、未覆盖现有安装。
+- 剩余风险：Windows 产物未签名，SmartScreen 可能警告；真实 GitHub 1.6.62→1.6.63 下载/升级链路尚未完成远端发布验收，未获精确 QA 安装许可前不得点击“重启并安装”。
+
+## 2026-08-28 GitHub 更新验证版 1.6.63
+
+- GitHub Release：[v1.6.63](https://github.com/19960726/canvas-atelier/releases/tag/v1.6.63)，仅上传 EXE、blockmap、latest.yml 与 SHA-256 清单；未上传 dirty 源码、凭据或用户素材。
+- `CanvasAtelier-Win10-11-x64-1.6.63.exe`：103182810 bytes，SHA-256 `9CA525C85B69E9E359500C7D1833B908EA1324BBCDAF421A109D75E00080A141`；blockmap 109446 bytes，SHA-256 `6E3DB4F920AD4AF5EE0529A19B763D3B6B30C3B4E369C7D03C16F601F3071DDF`；latest.yml 372 bytes，SHA-256 `BAB6822958934D10693DEA02C8838B8043465F96A730F71C9A7A4389E1054874`。
+- `app.asar` 为 5592001 bytes，SHA-256 `A5766FA4A7DC4CE14C16B224007026F39A99BED24CED080670F8BEC4EE200199`，包内版本 1.6.63；EXE 与 unpacked 运行体均未签名。
+- 验证：版本契约 17/17；scan:e2e、typecheck、Vitest 209/2498（2 skips）通过；Playwright 首次 143/144（单次 280ms 压力抖动），失败场景隔离重跑 6/6 通过；build、NSIS、隐藏隔离启动冒烟通过。远端 latest.yml 与 EXE 均 HTTP 200，EXE 长度 103182810。
+- 更新验收实际停在远端元数据和安装包可下载性核验：本地 1.6.62 运行体在 1.6.63 重建时被覆盖，因此未声称完成旧版设置页 UI 下载；未执行重启/安装，也未触碰用户现有安装。
+- 未解决风险：Windows 包未签名；需保留一份 1.6.62 运行体后再做一次真实设置页“检查更新→下载完成”验收。
+
+## 2026-08-28 画布性能验收
+
+- 当前实现已启用视口裁剪、选中/活动节点保留和交互期间低质量渲染；拖动、平移、缩放和连接预览均通过统一长任务观测器检查。
+- 新鲜 Playwright 验证：`durable-canvas-stress.spec.ts` 在 1366x768、1440x900、1920x1080 的浅色/深色组合共 6/6 通过，300 节点、500 连线的所有操作最大 stall 为 200ms，低于 250ms 门槛；渲染节点数保持低于 50。
+- `visual-layout.spec.ts` 15/15 通过，覆盖 100 节点压力图、布局无重叠和 pan/zoom frame marks；未发现水平溢出或交互回写异常。
+- 本轮未修改性能实现；结论是性能项从“待验证”提升为“已验证”。仍未覆盖真实 Windows 7/10/11 多机 FPS，兼容性矩阵中的系统级项目继续保持 pending。
+
+## 2026-08-28 持久化与恢复专项验收
+
+- 凭据库、最近项目排序、关闭前保存、恢复扫描、Renderer 持久化和项目保存状态专项测试共 `85/85` 通过。
+- `project-save-manager.spec.ts` 与设置更新流程 E2E 共 `2/2` 通过；项目管理列表、缺失项目状态、恢复版本和显式更新检查均正常。
+- 本轮未运行安装器、未覆盖用户安装、未读取或写入真实用户凭据；跨版本真实覆盖安装仍需保留旧版运行体后单独验收。
+
+## 2026-08-28 画布管理、模型目录、RelayMe 错误映射与 1.6.64 候选版
+
+- 画布管理弹层透明的根因是 `.canvas-manager` 引用了未定义的 `--gate-panel-surface`。浅色和深色主题现分别提供不透明表面值，并由终端样式契约测试保护。
+- Comfly 模型目录在生成 profile 前过滤空 key、空名称和重复精确 key，重复项保留第一条，避免无效或重复模型进入设置和执行路线。
+- RelayMe 图片生成错误现区分认证失效、额度或频率限制、模型能力不支持以及网络超时，并保留可重试语义；用户可以据此重新登录、切换模型或稍后重试。
+- 新鲜验证：完整 Vitest 209 个文件通过、2 个按设计跳过，共 2501 个测试通过、2 个跳过；完整 Playwright `144/144`；全工作区 typecheck 与 production build 均通过。压力验收为 `6/6`，300 节点和 500 连线下最大 stall 200ms；视觉布局 `15/15`；持久化专项 `85/85`。
+- Windows x64 NSIS 候选包：`apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.64.exe`，103183411 字节，SHA-256 `2B6CE33DF36B6FAF49778AC24F19B1A950810125E4DD06EF8E8815DA92CCD93E`，Authenticode `NotSigned`。blockmap 为 109515 字节，SHA-256 `E83F956925F7679E90C22CDD94E8F0AF4B0F6C7E88B3D14EC2E95944C9B5A23C`。
+- 最终隔离 `win-unpacked` 重启冒烟返回 `firstVersion=1.6.64`、`secondVersion=1.6.64`、`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、`restoredImageNodes=1`；图片生成的模型、比例、分辨率、数量和生成按钮均可见且高度为 30px。
+- 未执行安装器、未覆盖现有安装、未提交或推送代码、未创建 GitHub Release。剩余风险是 Windows 包未签名、未做真实跨版本覆盖升级，也未发起付费的 Gemini/Comfly/RelayMe 在线请求。
+
+## 2026-08-28 1.6.63 → 1.6.64 隔离更新发现与下载验收
+
+- 从保留的 `CanvasAtelier-Win10-11-x64-1.6.63.exe` 直接提取真实 packaged 运行体，不执行 NSIS 安装器；其大小为 103182810 字节，SHA-256 为 `9CA525C85B69E9E359500C7D1833B908EA1324BBCDAF421A109D75E00080A141`。
+- `work/release-1.6.63-to-1.6.64-update-smoke.mjs` 在脚本专属临时目录中启动 1.6.63，并通过随机本机 HTTP 端口提供当前 `latest.yml`、1.6.63/1.6.64 blockmap 和 1.6.64 EXE。设置页真实完成“检查更新 → 发现 1.6.64 → 下载更新 → 版本 1.6.64 已准备好”。
+- 下载缓存 EXE 为 103183411 字节，SHA-256 `2B6CE33DF36B6FAF49778AC24F19B1A950810125E4DD06EF8E8815DA92CCD93E`，与 1.6.64 源安装包完全一致；HTTP 请求全部返回 200，页面错误为空，`restartInvoked=false`。
+- QA 隔离事故：只设置应用 `userData` 不会改变 electron-updater 的 `baseCachePath`，第一次下载在真实 `%LOCALAPPDATA%` 测试专用缓存中因跨卷重命名 `EXDEV` 失败。验收脚本现同时把 `APPDATA` 和 `LOCALAPPDATA` 指向 E: 临时根，既修复跨卷改名，也保证下载缓存不会进入真实用户目录。
+- 隐藏 Electron 的截图 API 在文件已经写入后仍返回超时；当前证据图已人工核对为“版本 1.6.64 已准备好”。最终脚本把已生成的非空截图视为成功证据，但下载完成的权威证据仍是 UI 状态、electron-updater 日志和缓存文件哈希。
+- finally 清理后确认：无 `work/update-smoke-*` 临时目录、无 `%LOCALAPPDATA%/canvas-atelier-updater-smoke` 缓存、无隔离 Canvas Atelier 进程。没有点击“重启并安装”，没有覆盖用户现有安装。
+- 本次是使用真实 packaged updater 与真实发布资产的本机 HTTP 验收，不等同于 GitHub 远端 1.6.64 Release 验收；1.6.64 尚未发布到 GitHub，远端发现/下载和真实覆盖升级仍保持未验证。

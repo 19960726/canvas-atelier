@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { BlockList, isIP } from 'node:net';
-import { RelayMeClient, type RelayMeFetch } from '@agent-canvas/provider-relayme';
-import { parseReversePromptResult } from '@agent-canvas/domain';
-import type { FileSystem } from './file-system.js';
+import { join } from 'node:path';
+import { RelayMeClient, loginRelayMeAccount, type RelayMeFetch } from '@agent-canvas/provider-relayme';
+import { parseReverseProviderResponse } from './reverse-provider-response.js';
+import { NodeFileSystem, type FileSystem } from './file-system.js';
 import type { GenerationHistoryProviderSinkContract } from './generation-history-provider-sink.js';
 import { createProviderConfigurationStore } from './provider-configuration-store.js';
 import type { ProviderCredentialStore } from './provider-credential-vault.js';
@@ -22,7 +23,6 @@ import {
   type AckImageJobTerminalBridgeRequest,
   type AckVideoJobTerminalBridgeRequest,
   type AnalyzeReversePromptBridgeRequest,
-  type AnalyzeReversePromptBridgeResult,
   type CancelImageJobBridgeRequest,
   type CancelImageJobBridgeResult,
   type CancelVideoJobBridgeRequest,
@@ -33,6 +33,7 @@ import {
   type PollImageJobBridgeResult,
   type PollVideoJobBridgeRequest,
   type PollVideoJobBridgeResult,
+  type LoginRelayMeBridgeRequest,
   type ProviderBridgeException,
   type ProviderBridgeProfile,
   type ProviderImageJobResult,
@@ -68,6 +69,7 @@ export function createRelayMeProviderService(options: {
   readonly readManagedReverseMedia?: (sessionId: string, media: AnalyzeReversePromptBridgeRequest['media']) => Promise<readonly { readonly bytes: Uint8Array; readonly mediaType: string }[]>;
   readonly storeGeneratedImage?: (sessionId: string, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
   readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+  readonly loginAccount?: (request: LoginRelayMeBridgeRequest & { readonly baseUrl: string }) => Promise<string>;
 }): ProviderService {
   let configurationCache: ConfigurationSnapshot = {
     baseUrl: options.baseUrl ?? DEFAULT_RELAYME_BASE_URL,
@@ -84,12 +86,43 @@ export function createRelayMeProviderService(options: {
     fileSystem: options.fileSystem,
   });
   const taskMappings = createProviderTaskMappingStore({
-    appDataRoot: options.appDataRoot,
+    appDataRoot: join(options.appDataRoot, 'providers', 'relayme'),
     fileSystem: options.fileSystem,
     secretSupplier: () => options.credentialStore.getMappingSecrets(),
   });
+  const fileSystem = options.fileSystem ?? new NodeFileSystem();
 
   return {
+    async loginRelayMe(request) {
+      const validated = parseProviderBridgeRequest(
+        PROVIDER_BRIDGE_CHANNELS.loginRelayMe,
+        request,
+      ) as LoginRelayMeBridgeRequest;
+      const configuration = await captureConfiguration();
+      const token = await (options.loginAccount === undefined
+        ? loginRelayMeAccount({ baseUrl: configuration.baseUrl, fetch: options.fetch }, validated)
+        : options.loginAccount({ ...validated, baseUrl: configuration.baseUrl }));
+      const models = await translateRelayMeCall(
+        () => new RelayMeClient({
+          baseUrl: configuration.baseUrl,
+          fetch: options.fetch,
+          timeoutMs: options.timeoutMs,
+          tokenSupplier: async () => token,
+        }).listModels(),
+        'RelayMe account validation failed',
+      );
+      const profiles = buildRelayMeModelProfiles(models);
+      await options.credentialStore.configure({ token });
+      discoveredProfiles = profiles;
+    },
+    async logoutRelayMe() {
+      await options.credentialStore.clear();
+      tasks.clear();
+      discoveredProfiles = null;
+      configurationCache = { baseUrl: options.baseUrl ?? DEFAULT_RELAYME_BASE_URL, profiles: [] };
+      await configurationStore.replace(null);
+      await fileSystem.rm(join(options.appDataRoot, 'providers', 'relayme'), { force: true, recursive: true });
+    },
     getStatus: () => options.credentialStore.getStatus(),
     async revealCredential() {
       return { token: await options.credentialStore.getPrimaryToken() };
@@ -119,10 +152,9 @@ export function createRelayMeProviderService(options: {
           profiles: validated.profiles === undefined ? current.profiles : sanitizeProfiles(validated.profiles),
         };
         if (validated.token !== undefined) {
-          await options.credentialStore.configure({ token: validated.token, passphrase: validated.passphrase });
-        } else {
-          await requireUnlockedCredentials();
+          throw createProviderBridgeError('INVALID_REQUEST', 'RelayMe 仅支持账号登录，不接受独立 API 密钥');
         }
+        await requireUnlockedCredentials();
         await configurationStore.write(next);
         configurationCache = cloneConfiguration(next);
         discoveredProfiles = null;
@@ -181,17 +213,10 @@ export function createRelayMeProviderService(options: {
         })),
         'RelayMe 反推请求失败',
       );
-      const responseText = extractChatText(response.choices[0]?.message?.content);
-      if (responseText === null) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回了无效的反推结果');
-      try {
-        const parsed = parseProviderBridgeResponse(
-          PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt,
-          JSON.parse(responseText),
-        ) as AnalyzeReversePromptBridgeResult;
-        return parseReversePromptResult(parsed, validated.run);
-      } catch {
-        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回了无效的反推结果');
-      }
+      const choice = response.choices[0];
+      const responseText = extractChatText(choice?.message?.content);
+      const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
+      return parseReverseProviderResponse({ text: responseText ?? undefined, finishReason }, validated.run);
     },    async chat(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, request) as ChatSkillBridgeRequest;
       assertRelayMeProvider(validated.provider);
@@ -359,8 +384,8 @@ export function createRelayMeProviderService(options: {
 
   async function requireUnlockedCredentials() {
     const status = await options.credentialStore.getStatus();
-    if (!status.configured) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '请先配置 RelayMe API 密钥');
-    if (status.locked) throw createProviderBridgeError('CREDENTIALS_LOCKED', 'RelayMe API 密钥已锁定，请先解锁', true);
+    if (!status.configured) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '请先登录 RelayMe 账号');
+    if (status.locked) throw createProviderBridgeError('CREDENTIALS_LOCKED', 'RelayMe 登录凭据已锁定，请重新登录', true);
   }
 
   async function captureConfiguration() {
@@ -587,6 +612,8 @@ function firstResultItem(value: unknown, kind: RelayTask['kind']): Record<string
   const candidate = Array.isArray(value) ? value[0] : value;
   if (isPlainRecord(candidate)) {
     if (Array.isArray(candidate.data)) return firstResultItem(candidate.data, kind);
+    if (Array.isArray(candidate.images)) return firstResultItem(candidate.images, kind);
+    if (Array.isArray(candidate.videos)) return firstResultItem(candidate.videos, kind);
     if (isPlainRecord(candidate.result)) return firstResultItem(candidate.result, kind);
     const contentKey = kind === 'image' ? 'imageContent' : 'videoContent';
     if (typeof candidate[contentKey] === 'string' && candidate[contentKey].trim().length > 0) return candidate;
@@ -757,8 +784,16 @@ async function translateRelayMeCall<T>(call: () => Promise<T>, fallback: string)
 function translateRelayMeError(error: unknown, fallback: string): ProviderBridgeException {
   if (isProviderBridgeException(error)) return error;
   const message = error instanceof Error ? error.message : String(error ?? '');
-  if (/\b(?:401|403)\b/u.test(message)) return createProviderBridgeError('PROVIDER_ERROR', 'RelayMe API 密钥验证失败');
-  if (/timed out|timeout|network|fetch/iu.test(message)) return createProviderBridgeError('PROVIDER_ERROR', fallback, true);
+  if (/\b(?:401|403)\b/u.test(message)) {
+    return createProviderBridgeError('CREDENTIALS_LOCKED', 'RelayMe 登录已失效，请重新登录', true);
+  }
+  if (/quota|额度|余额|rate[ -]?limit|too many requests|\b429\b/iu.test(message)) {
+    return createProviderBridgeError('PROVIDER_ERROR', 'RelayMe 当前额度或请求频率受限，请稍后重试', true);
+  }
+  if (/unsupported|not supported|不支持|model.*(?:invalid|not found|不存在)|模型.*(?:不可用|不存在)/iu.test(message)) {
+    return createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'RelayMe 当前模型不支持此生图能力');
+  }
+  if (/timed out|timeout|network|fetch/iu.test(message)) return createProviderBridgeError('PROVIDER_ERROR', `${fallback}，请检查网络后重试`, true);
   if (/响应格式|invalid.*response/iu.test(message)) return createProviderBridgeError('PROVIDER_INVALID_RESPONSE', fallback);
   return createProviderBridgeError('PROVIDER_ERROR', fallback, false);
 }

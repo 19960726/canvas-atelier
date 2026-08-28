@@ -57,7 +57,7 @@ for (const theme of ['light', 'dark'] as const) {
       await window.__NOVUS_E2E__!.connectModules('reverse_agent', 'analysis', 'reverse_result', 'analysis');
       await window.__NOVUS_E2E__!.configureModule('reverse_agent', {
         config: {
-          modelRoute: 'reverse/e2e-gemini-native',
+          modelRoute: 'comfly-gpt-5-6-sol',
           role: 'Commercial visual analyst',
           task: 'Analyze the managed image.',
           knowledgeBaseIds: [],
@@ -68,9 +68,13 @@ for (const theme of ['light', 'dark'] as const) {
     const reverse = page.locator('[data-module-type="reverse_agent"]');
     await queueProjectImageImport(page, makeReferenceImage('Citation product.png', [38, 118, 102, 255], { width: 1024, height: 1024 }));
     await imageNode.getByRole('button', { name: '导入图像 / Import image' }).click();
+    await page.evaluate(async () => {
+      await window.__NOVUS_E2E__!.connectModules('image_input', 'image', 'reverse_agent', 'references');
+    });
+    await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(2);
 
     await reverse.getByLabel('Role positioning').fill('Commercial visual analyst');
-    await reverse.getByLabel('Analysis task').fill('@');
+    await reverse.getByLabel('Analysis task').pressSequentially('@');
     const picker = reverse.getByRole('menu', { name: 'Select reference image' });
     await expect(picker).toBeVisible();
     const item = picker.getByRole('menuitem', { name: 'Citation product' });
@@ -78,10 +82,10 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(item).toContainText('@图片1');
     await page.screenshot({ path: artifact(`reverse-image-picker-${theme}.png`), fullPage: true });
     await item.click();
-    await expect(reverse.getByLabel('Analysis task')).toHaveValue('@图片1');
-    const presentation = reverse.getByTestId('media-mention-presentation');
-    await expect(presentation.locator('mark[data-media-mention="image"]')).toHaveText('图片1');
-    await expect(presentation).not.toContainText('@');
+    const taskEditor = reverse.getByLabel('Analysis task');
+    await expect(taskEditor).toContainText('图片1');
+    await expect(taskEditor.locator('[data-media-mention="image"]', { hasText: '图片1' })).toBeVisible();
+    await expect(taskEditor).not.toContainText('@');
 
     await reverse.getByRole('button', { name: 'Start reverse analysis' }).click();
     const reverseResult = page.locator('[data-module-type="reverse_result"]');

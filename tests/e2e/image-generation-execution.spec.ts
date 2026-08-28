@@ -1,6 +1,9 @@
+import path from 'node:path';
 import { test, expect } from './helpers/e2e-test';
-import { e2eState, openEmptyApp, queueProjectImageImport, waitForModelSubmissions } from './helpers/app';
+import { e2eState, failNextModelJobEnqueue, openEmptyApp, queueProjectImageImport, waitForModelSubmissions } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
+
+const artifact = (name: string) => path.join(process.cwd(), 'artifacts', '2026-08-28-generation-retry', name);
 
 test('Generate image submits the selected model job and exposes a running state', async ({ page }) => {
   await openEmptyApp(page);
@@ -23,6 +26,26 @@ test('Generate image submits the selected model job and exposes a running state'
   expect(state.modelJobs[0]?.status).toMatch(/submitting|running/);
   await expect(generation.locator('.module-node__run-generation')).not.toHaveAttribute('aria-label', 'Generate image');
   expect((await e2eState(page)).modelJobs).toHaveLength(1);
+});
+
+test('a generation start error exposes a clickable retry that starts the next attempt', async ({ page }) => {
+  await openEmptyApp(page);
+  await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_generation', { x: 420, y: 140 }));
+  const generation = page.locator('[data-module-type="image_generation"]');
+  await generation.getByRole('button', { name: 'Open image generation editor' }).click();
+  await generation.getByRole('textbox', { name: 'Image generation prompt' }).fill('A clean studio product photograph');
+  await failNextModelJobEnqueue(page);
+
+  await generation.getByRole('button', { name: 'Generate image' }).click();
+  const retry = generation.getByRole('button', { name: '重新尝试生成' });
+  await expect(retry).toBeVisible();
+  await expect(retry).toBeEnabled();
+  await generation.screenshot({ path: artifact('generation-retry-light.png') });
+
+  await retry.click();
+  await waitForModelSubmissions(page, 1);
+  await expect(retry).toHaveCount(0);
+  await expect(generation.getByRole('button', { name: '停止生成' })).toBeVisible();
 });
 
 test('Stop image generation finishes even when provider cancellation never responds', async ({ page }) => {

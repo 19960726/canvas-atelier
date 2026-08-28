@@ -6,12 +6,21 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readMcpRuntimeFile } from './mcp-runtime-file.js';
-import { createMcpRuntimeService, type McpPipeResponseEnvelope } from './mcp-runtime-service.js';
+import { createMcpRuntimeService, presentMcpRuntimeStatus, type McpPipeResponseEnvelope } from './mcp-runtime-service.js';
 
 describe('MCP named-pipe runtime broker', () => {
   let root: string;
   let runtimeFilePath: string;
   const services: { stop(): Promise<void> }[] = [];
+
+  it('reports a loaded canvas as ready before the first external tool request', () => {
+    expect(presentMcpRuntimeStatus({
+      state: 'waiting_for_canvas', rendererConnected: false, serverVersion: '1.6.66', toolCount: 14,
+      lastError: 'MCP_RENDERER_UNAVAILABLE',
+    }, true)).toEqual({
+      state: 'running', rendererConnected: true, serverVersion: '1.6.66', toolCount: 14, lastError: null,
+    });
+  });
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'canvasforge-mcp-broker-'));

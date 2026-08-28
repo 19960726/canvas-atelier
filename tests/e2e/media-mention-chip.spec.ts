@@ -9,7 +9,7 @@ for (const theme of ['light', 'dark'] as const) {
     await openEmptyApp(page);
     await page.evaluate(async () => {
       await window.__NOVUS_E2E__!.createModule('image_input', { x: 180, y: 220 });
-      await window.__NOVUS_E2E__!.createModule('video_input', { x: 180, y: 520 });
+      await window.__NOVUS_E2E__!.createModule('video_input', { x: 680, y: 220 });
     });
 
     const imageNode = page.locator('[data-module-type="image_input"]');
@@ -21,8 +21,9 @@ for (const theme of ['light', 'dark'] as const) {
 
     await openAgentPanel(page);
     const panel = page.getByTestId('agent-panel');
+    await panel.getByRole('tab', { name: '对话' }).click();
     await panel.getByTestId('agent-model-trigger').click();
-    await panel.getByRole('button', { name: '使用 Gemini Vision' }).first().click();
+    await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
 
     const input = panel.getByTestId('agent-composer-input');
     await input.fill('@');

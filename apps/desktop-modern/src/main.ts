@@ -22,6 +22,7 @@ import {
   createMcpStdioHealthCheck,
   createMcpRendererBridge,
   createMcpRuntimeService,
+  presentMcpRuntimeStatus,
   createDesktopBridgeHandlers,
   createCacheDirectoryService,
   createNodeCacheDirectoryServiceAdapters,
@@ -33,6 +34,7 @@ import {
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
   createProviderBridgeHandlers,
+  createProviderActiveStore,
   isHistoryNetworkPath,
   migrateLegacyUserData,
   createPersistenceError,
@@ -41,6 +43,8 @@ import {
   NodeFileSystem,
   SnapshotScheduler,
   UpdateClient,
+  type UpdateDriver,
+  type UpdateDriverEvent,
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
   registerMcpClientConfigIpc,
@@ -60,6 +64,7 @@ import {
   type SnapshotWorkerInput,
   type SnapshotWorkerOutput,
 } from '@agent-canvas/desktop-core';
+import { createElectronUpdaterDriver } from './electron-updater-adapter';
 import { resolveRendererHtmlPath } from './renderer-path';
 import { resolveQaUserDataRoot, shouldShowQaWindow } from './qa-user-data-root';
 import { installBrokenPipeExceptionCapture, installBrokenPipeGuard } from './broken-pipe-guard';
@@ -136,6 +141,16 @@ let mcpRendererBridge: McpRendererBridge | null = null;
 let mcpRuntimeService: McpRuntimeService | null = null;
 let mcpClientConfigRegistration: McpClientConfigIpcRegistration | null = null;
 
+function createDevelopmentUpdateDriver(): UpdateDriver {
+  let listener: ((event: UpdateDriverEvent) => void) | null = null;
+  return {
+    subscribe(next) { listener = next; return () => { listener = null; }; },
+    async checkForUpdates() { listener?.({ type: 'error', message: 'Updates are available only in the packaged app.' }); },
+    async downloadUpdate() {},
+    quitAndInstall() {},
+  };
+}
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -170,14 +185,22 @@ app.whenReady().then(async () => {
       return (await shell.openPath(path)) === '';
     },
   }));
-  updateClient = new UpdateClient({
-    currentVersion: app.getVersion(),
-    feed: new MockReleaseFeed({
-      channel: 'stable',
-      version: process.env.NOVUS_MOCK_UPDATE_VERSION ?? app.getVersion(),
-      notes: process.env.NOVUS_MOCK_UPDATE_NOTES ?? 'Mock update feed is active for local verification only.',
-      signatureStatus: 'verified',
-    }),
+  const mockUpdateVersion = process.env.NOVUS_MOCK_UPDATE_VERSION;
+  updateClient = app.isPackaged
+    ? new UpdateClient({ driver: createElectronUpdaterDriver() })
+    : mockUpdateVersion !== undefined
+      ? new UpdateClient({
+          currentVersion: app.getVersion(),
+          feed: new MockReleaseFeed({
+            channel: 'stable',
+            version: mockUpdateVersion,
+            notes: process.env.NOVUS_MOCK_UPDATE_NOTES ?? 'Mock update feed is active for local verification only.',
+            signatureStatus: 'verified',
+          }),
+        })
+      : new UpdateClient({ driver: createDevelopmentUpdateDriver() });
+  updateClient.subscribe((state) => {
+    mainWindow?.webContents.send(BRIDGE_CHANNELS.updates.stateChanged, state);
   });
   const generationHistoryStore = new GenerationHistoryStore({
     historyRoot: join(appDataRoot, 'generation-history'),
@@ -289,6 +312,7 @@ app.whenReady().then(async () => {
     store: generationHistoryStore,
     trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
   });
+  const providerActiveStore = createProviderActiveStore({ appDataRoot: app.getPath('userData') });
   registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createProviderRegistry({
     comfly: createComflyProviderService({
       appDataRoot: app.getPath('userData'),
@@ -323,7 +347,7 @@ app.whenReady().then(async () => {
       storeGeneratedImage: desktopHandlers.storeGeneratedImage,
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
     }),
-  })), { getTrustedSender: () => mainWindow?.webContents ?? null });
+  }), { activeStore: providerActiveStore }), { getTrustedSender: () => mainWindow?.webContents ?? null });
   ipcMain.on(diagnosticsChannel, (_event, message) => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
   });
@@ -385,13 +409,9 @@ async function startMcpRuntime(): Promise<void> {
         send: (channel, payload) => window.webContents.send(channel, payload),
       };
     },
-    getStatus: () => service?.getStatus() ?? {
-      state: 'stopped',
-      rendererConnected: false,
-      serverVersion: app.getVersion(),
-      toolCount: 14,
-      lastError: null,
-    },
+    getStatus: () => presentMcpRuntimeStatus(service?.getStatus() ?? {
+      state: 'stopped', rendererConnected: false, serverVersion: app.getVersion(), toolCount: 14, lastError: null,
+    }, isMcpRendererAvailable()),
   });
   service = createMcpRuntimeService({
     runtimeFilePath: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-v1.json'),
@@ -431,6 +451,16 @@ async function startMcpRuntime(): Promise<void> {
     mcpRuntimeService = null;
     throw error;
   }
+}
+
+function isMcpRendererAvailable(): boolean {
+  const window = mainWindow;
+  return window !== null
+    && rendererLoaded
+    && !safeModeLoaded
+    && !window.isDestroyed()
+    && !window.webContents.isCrashed()
+    && !window.webContents.isDestroyed();
 }
 
 async function stopMcpRuntime(): Promise<void> {

@@ -1,0 +1,434 @@
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@agent-canvas/renderer| apps/renderer/src/agent/SkillChatWorkbench.test.tsx > SkillChatWorkbench > allows text chat on a vision-capable responses route
+AssertionError: expected "spy" to be called once, but got 0 times
+
+Ignored nodes: comments, script, style
+[36m<html>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Agent 对话工作台"[39m
+        [33mclass[39m=[32m"skill-chat-workbench"[39m
+      [36m>[39m
+        [36m<header[39m
+          [33mclass[39m=[32m"skill-chat-workbench__header skill-chat-workbench__header--codex"[39m
+        [36m>[39m
+          [36m<div>[39m
+            [36m<h2>[39m
+              [0mCodex Agent [0m
+              [36m<small>[39m
+                [0m画布接入[0m
+              [36m</small>[39m
+            [36m</h2>[39m
+            [36m<p>[39m
+              [36m<i[39m
+                [33maria-hidden[39m=[32m"true"[39m
+              [36m/>[39m
+              [0m运行就绪[0m
+            [36m</p>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"skill-chat-workbench__header-actions"[39m
+          [36m>[39m
+            [36m<select[39m
+              [33maria-label[39m=[32m"Codex 任务"[39m
+            [36m>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"conversation-1787791014008"[39m
+              [36m>[39m
+                [0m新任务[0m
+              [36m</option>[39m
+            [36m</select>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"新建任务"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__new-chat"[39m
+              [33mdata-testid[39m=[32m"agent-new-chat"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+              [36m>[39m
+                [0m+[0m
+              [36m</span>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"sr-only"[39m
+              [36m>[39m
+                [0m新对话[0m
+              [36m</span>[39m
+            [36m</button>[39m
+          [36m</div>[39m
+        [36m</header>[39m
+        [36m<section[39m
+          [33maria-label[39m=[32m"对话上下文"[39m
+          [33mclass[39m=[32m"skill-chat-workbench__context"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33maria-expanded[39m=[32m"false"[39m
+            [33mtype[39m=[32m"button"[39m
+          [36m>[39m
+            [0m展开上下文[0m
+          [36m</button>[39m
+        [36m</section>[39m
+        [36m<div[39m
+          [33maria-label[39m=[32m"Agent 消息流"[39m
+          [33mclass[39m=[32m"skill-chat-workbench__stream"[39m
+          [33mtabindex[39m=[32m"0"[39m
+        [36m>[39m
+          [36m<section[39m
+            [33maria-label[39m=[32m"对话消息"[39m
+            [33mclass[39m=[32m"skill-chat-workbench__messages"[39m
+          [36m>[39m
+            [36m<section[39m
+              [33maria-label[39m=[32m"Agent conversation empty state"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__empty-state"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"skill-chat-workbench__figma-intro skill-chat-workbench__figma-intro--codex"[39m
+              [36m>[39m
+                [36m<i[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-bot"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"22"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"1.6"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"22"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M12 8V4H8"[39m
+                    [36m/>[39m
+                    [36m<rect[39m
+                      [33mheight[39m=[32m"12"[39m
+                      [33mrx[39m=[32m"2"[39m
+                      [33mwidth[39m=[32m"16"[39m
+                      [33mx[39m=[32m"4"[39m
+                      [33my[39m=[32m"8"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M2 14h2"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M20 14h2"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M15 13v2"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M9 13v2"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</i>[39m
+                [36m<strong>[39m
+                  [0mCodex 已接入当前画布[0m
+                [36m</strong>[39m
+                [36m<p>[39m
+                  [0m它会读取画布上下文，通过 CanvasForge MCP 完成操作。命令和文件改写会按确认流程执行。[0m
+                [36m</p>[39m
+              [36m</div>[39m
+              [36m<div[39m
+                [33maria-label[39m=[32m"推荐 Skill"[39m
+                [33mclass[39m=[32m"skill-chat-workbench__suggestions"[39m
+              [36m>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"分析当前画布"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"skill-chat-workbench__suggestion-icon"[39m
+                  [36m>[39m
+                    [0m⌁[0m
+                  [36m</span>[39m
+                  [36m<span>[39m
+                    [36m<strong>[39m
+                      [0m产品分析[0m
+                    [36m</strong>[39m
+                    [36m<small>[39m
+                      [0m点击填入任务[0m
+                    [36m</small>[39m
+                  [36m</span>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"生成视觉方向"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"skill-chat-workbench__suggestion-icon"[39m
+                  [36m>[39m
+                    [0m✦[0m
+                  [36m</span>[39m
+                  [36m<span>[39m
+                    [36m<strong>[39m
+                      [0m提示词优化[0m
+                    [36m</strong>[39m
+                    [36m<small>[39m
+                      [0m点击填入任务[0m
+                    [36m</small>[39m
+                  [36m</span>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"调用知识库"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"skill-chat-workbench__suggestion-icon"[39m
+                  [36m>[39m
+                    [0m◌[0m
+                  [36m</span>[39m
+                  [36m<span>[39m
+                    [36m<strong>[39m
+                      [0m生成方案[0m
+                    [36m</strong>[39m
+                    [36m<small>[39m
+                      [0m点击填入任务[0m
+                    [36m</small>[39m
+                  [36m</span>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"反推参考图"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"skill-chat-workbench__suggestion-icon"[39m
+                  [36m>[39m
+                    [0m◈[0m
+                  [36m</span>[39m
+                  [36m<span>[39m
+                    [36m<strong>[39m
+                      [0m知识库检索[0m
+                    [36m</strong>[39m
+                    [36m<small>[39m
+                      [0m点击填入任务[0m
+                    [36m</small>[39m
+                  [36m</span>[39m
+                [36m</button>[39m
+              [36m</div>[39m
+            [36m</section>[39m
+          [36m</section>[39m
+        [36m</div>[39m
+        [36m<form[39m
+          [33mclass[39m=[32m"skill-chat-workbench__composer"[39m
+        [36m>[39m
+          [36m<label>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sr-only"[39m
+            [36m>[39m
+              [0m向 Agent 发送消息[0m
+            [36m</span>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"media-mention-textarea"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33maria-label[39m=[32m"向 Agent 发送消息"[39m
+                [33maria-multiline[39m=[32m"true"[39m
+                [33mclass[39m=[32m"media-mention-textarea__editor"[39m
+                [33mcontenteditable[39m=[32m"true"[39m
+                [33mdata-placeholder[39m=[32m"告诉 Codex 要在当前画布上完成什么"[39m
+                [33mdata-testid[39m=[32m"agent-composer-input"[39m
+                [33mrole[39m=[32m"textbox"[39m
+                [33mstyle[39m=[32m"--media-mention-rows: 3;"[39m
+              [36m>[39m
+                [0m你好[0m
+              [36m</div>[39m
+            [36m</div>[39m
+          [36m</label>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"skill-chat-workbench__composer-footer"[39m
+            [33mdata-agent-mode[39m=[32m"codex"[39m
+          [36m>[39m
+            [36m<input[39m
+              [33maccept[39m=[32m"image/*,video/mp4,video/webm,video/quicktime"[39m
+              [33mclass[39m=[32m"sr-only"[39m
+              [33mdata-testid[39m=[32m"agent-reference-file-input"[39m
+              [33mtabindex[39m=[32m"-1"[39m
+              [33mtype[39m=[32m"file"[39m
+            [36m/>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"添加素材"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__tool"[39m
+              [33mdisabled[39m=[32m""[39m
+              [33mtitle[39m=[32m"导入项目图片或视频"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-plus"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.6"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"14"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 12h14"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 5v14"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</button>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"Agent 模式"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__mode-tabs"[39m
+              [33mrole[39m=[32m"tablist"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33maria-selected[39m=[32m"false"[39m
+                [33mrole[39m=[32m"tab"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0m对话[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-selected[39m=[32m"false"[39m
+                [33mrole[39m=[32m"tab"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0m原智能[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-selected[39m=[32m"true"[39m
+                [33mclass[39m=[32m"is-active"[39m
+                [33mrole[39m=[32m"tab"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mCodex[0m
+              [36m</button>[39m
+            [36m</div>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"打开聊天模型菜单"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__model-pill"[39m
+              [33mdata-selected-model[39m=[32m"未配置"[39m
+              [33mdata-testid[39m=[32m"agent-model-trigger"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0m未发现 Codex 模型[0m
+            [36m</button>[39m
+            [36m<select[39m
+              [33maria-label[39m=[32m"推理强度"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__effort"[39m
+            [36m>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"low"[39m
+              [36m>[39m
+                [0m快[0m
+              [36m</option>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"medium"[39m
+              [36m>[39m
+                [0m中[0m
+              [36m</option>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"high"[39m
+              [36m>[39m
+                [0m深[0m
+              [36m</option>[39m
+            [36m</select>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"skill-chat-workbench__composer-actions"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"打开知识库"[39m
+                [33mclass[39m=[32m"skill-chat-workbench__tool skill-chat-workbench__knowledge-compact"[39m
+                [33mdata-testid[39m=[32m"knowledge-base-trigger"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"lucide lucide-grid3x3 lucide-grid-3x3"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"14"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.6"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"14"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"18"[39m
+                    [33mrx[39m=[32m"2"[39m
+                    [33mwidth[39m=[32m"18"[39m
+                    [33mx[39m=[32m"3"[39m
+                    [33my[39m=[32m"3"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 9h18"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 15h18"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M9 3v18"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M15 3v18"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"新建对话"[39m
+                [33mclass[39m=[32m"skill-chat-workbench__tool"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"lucide lucide-rotate-ccw"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"14"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.6"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"14"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 3v5h5"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"发送"[39m
+                [33mclass[39m=[32m"skill-chat-workbench__submit-hidden"[39m
+                [33mdisabled[39m=[32m""[39m
+                [33mtype[39m=[32m"submit"[39m
+              [36m/>[39m
+            [36m</div>[39m
+          [36m</div>[39m
+        [36m</form>[39m
+      [36m</section>[39m
+    [36m</div>[39m
+  [36m</body>[39m
+[36m</html>[39m
+ ❯ apps/renderer/src/agent/SkillChatWorkbench.test.tsx:152:38
+    150|     fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    151| 
+    152|     await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+       |                                      ^
+    153|     expect(await screen.findByText('视觉模型也可以正常聊天')).toBeVisible();
+    154|   });
+ ❯ runWithExpensiveErrorDiagnosticsDisabled node_modules/@testing-library/dom/dist/config.js:47:12
+ ❯ checkCallback node_modules/@testing-library/dom/dist/wait-for.js:124:77
+ ❯ Timeout.checkRealTimersCallback node_modules/@testing-library/dom/dist/wait-for.js:118:16
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+

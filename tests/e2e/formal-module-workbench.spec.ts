@@ -21,7 +21,7 @@ for (const theme of ['light', 'dark'] as const) {
     await openApp(page);
 
     await expect(page.getByTestId('legacy-workbench-migration')).toBeHidden();
-    await expect(page.getByTestId('file-menu-toggle')).toBeVisible();
+    await expect(page.getByRole('button', { name: '保存项目' })).toBeVisible();
     await expect(page.locator('[data-module-type="image_generation"]')).toHaveCount(1);
     await expect(page.locator('[data-module-type="reverse_result"]')).toHaveCount(1);
     await expect(page.locator('[data-module-type="video_result"]')).toHaveCount(1);
@@ -165,7 +165,7 @@ for (const theme of ['light', 'dark'] as const) {
       // keeps the Agent panel as the only auxiliary surface, so do not require a
       // hidden legacy region merely to make this layout audit pass.
       await assertLocatorInside(page.locator('body'), page.getByTestId('agent-panel'), `agent panel ${viewport.name} ${theme}`);
-      await page.getByTestId('agent-panel').getByRole('button', { name: '关闭 Novus Agent' }).click();
+      await page.getByTestId('agent-panel').getByRole('button', { name: '关闭 Codex Agent' }).click();
       await expect(page.getByTestId('agent-panel')).toBeHidden();
       await openAgentPanel(page);
 

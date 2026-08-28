@@ -22,6 +22,7 @@ import {
   createMcpStdioHealthCheck,
   createMcpRendererBridge,
   createMcpRuntimeService,
+  presentMcpRuntimeStatus,
   createDesktopBridgeHandlers,
   createCacheDirectoryService,
   createNodeCacheDirectoryServiceAdapters,
@@ -372,13 +373,9 @@ async function startMcpRuntime(): Promise<void> {
         send: (channel, payload) => window.webContents.send(channel, payload),
       };
     },
-    getStatus: () => service?.getStatus() ?? {
-      state: 'stopped',
-      rendererConnected: false,
-      serverVersion: app.getVersion(),
-      toolCount: 14,
-      lastError: null,
-    },
+    getStatus: () => presentMcpRuntimeStatus(service?.getStatus() ?? {
+      state: 'stopped', rendererConnected: false, serverVersion: app.getVersion(), toolCount: 14, lastError: null,
+    }, isMcpRendererAvailable()),
   });
   service = createMcpRuntimeService({
     runtimeFilePath: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-v1.json'),
@@ -418,6 +415,16 @@ async function startMcpRuntime(): Promise<void> {
     mcpRuntimeService = null;
     throw error;
   }
+}
+
+function isMcpRendererAvailable(): boolean {
+  const window = mainWindow;
+  return window !== null
+    && rendererLoaded
+    && !safeModeLoaded
+    && !window.isDestroyed()
+    && !window.webContents.isCrashed()
+    && !window.webContents.isDestroyed();
 }
 
 async function stopMcpRuntime(): Promise<void> {

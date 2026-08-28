@@ -39,9 +39,9 @@
     writeResult({ kind: 'success', layerName: app.activeDocument.activeLayer.name });
   } catch (error) {
     var message = String(error && error.message ? error.message : error);
-    if (/permission|denied|access/iu.test(message)) {
+    if (/permission|denied|access/i.test(message)) {
       writeResult({ kind: 'automation_denied' });
-    } else if (/active.document/iu.test(message)) {
+    } else if (/active.document/i.test(message)) {
       writeResult({ kind: 'no_active_document' });
     } else {
       writeResult({ kind: 'placement_failed' });

@@ -74,4 +74,48 @@ describe('executeSkillChat', () => {
     expect(responses).toHaveBeenCalledTimes(1);
     expect(chat).not.toHaveBeenCalled();
   });
+
+  it('sends managed image references through a Codex responses route when discovery omits vision', async () => {
+    const responses = vi.fn(async () => ({
+      id: 'response-codex-image-1',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'Image understood.' }] }],
+    }));
+
+    await expect(executeSkillChat({
+      request: {
+        provider: 'comfly',
+        modelRoute: 'responses/codex',
+        sessionId: 'desktop-session-codex',
+        agentMode: 'codex',
+        referenceAssetIds: ['a'.repeat(16)],
+        messages: [{ role: 'user', content: 'Inspect @图片1.' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly',
+        modelRoute: 'responses/codex',
+        modelId: 'codex-responses',
+        displayName: 'Codex responses',
+        capabilities: ['responses'],
+      }] }),
+      createClient: () => ({ chat: vi.fn(), responses }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+      managedSkillChatImageResolver: { readManagedSkillChatImages: async () => [
+        { bytes: Uint8Array.of(1, 2, 3), mediaType: 'image/png' },
+      ] },
+    })).resolves.toMatchObject({ message: 'Image understood.' });
+
+    expect(responses).toHaveBeenCalledWith(expect.objectContaining({
+      input: expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'image_url',
+              image_url: { url: 'data:image/png;base64,AQID' },
+            }),
+          ]),
+        }),
+      ]),
+    }));
+  });
 });

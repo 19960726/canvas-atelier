@@ -17,7 +17,6 @@ const UI_GATE_MODULE_TYPES = new Set([
   'image_generation',
   'video_generation',
   'reverse_agent',
-  'result_output',
   'video_result',
   'reverse_result',
 ]);

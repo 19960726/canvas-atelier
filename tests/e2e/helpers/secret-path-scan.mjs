@@ -62,6 +62,7 @@ const allowlistedTexts = [
   'C:\\\\Program Files (x86)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe',
 ];
 const redactionImplementationFiles = new Set([
+  'apps/renderer/src/agent/skill-chat-session-store.ts',
   'apps/renderer/src/app/app-store.ts',
   'apps/renderer/src/agent/SkillChatWorkbench.tsx',
   'apps/renderer/src/canvas/ModuleNodeCard.tsx',
@@ -112,7 +113,7 @@ const allowedFindings = [
   {
     file: "tests/e2e/helpers/secret-path-scan.mjs",
     name: "scanner implementation hash",
-    hash: "b57127d7a2fd21986f563f5a6c45457e004162d9ee5968530095a2a5add9dc4b",
+    hash: "553f7d5e58720508e6b743ad505636967a0a98c901ca0e79cd1443d935a1a650",
   },
   {
     file: 'apps/renderer/src/agent/SkillChatWorkbench.test.tsx',
@@ -550,6 +551,71 @@ const allowedFindings = [
       "C:\\\\private\\\\agent\\\\memory\\\\main-memory.md QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
       "C:\\\\private\\\\agent\\\\memory\\\\writeback-history.log",
     ],
+  },
+  {
+    file: "apps/renderer/src/agent/skill-chat-session-store.ts",
+    name: "private absolute path",
+    evidence: ["\\\\[^\\\\\\s]+\\\\/u.test(value)"],
+  },
+  {
+    file: "apps/renderer/src/app/app-store.test.ts",
+    name: "Authorization header",
+    evidence: ["Authorization: Bearer secret'),"],
+  },
+  {
+    file: "apps/renderer/src/app/app-store.test.ts",
+    name: "private absolute path",
+    evidence: ["C:\\\\private\\\\request.json Authorization: Bearer secret", "C:\\\\private/iu);"],
+  },
+  {
+    file: "apps/renderer/src/app/App.tsx",
+    name: "private absolute path",
+    evidence: ["\\\\|\\\\\\\\)(?:[^\\\\/:*?", "\\\\)*[^\\\\/:*?", "\\\\)+(?:[^\\\\/:*?"],
+  },
+  {
+    file: "apps/renderer/src/app/AppErrorBoundary.test.tsx",
+    name: "API key",
+    evidence: ["sk-live-abcdefghijklmnopqrstuvwxyz123456"],
+  },
+  {
+    file: "apps/renderer/src/app/AppErrorBoundary.test.tsx",
+    name: "private absolute path",
+    evidence: ["C:\\\\Users\\\\Administrator\\\\AppData\\\\Roaming\\\\Canvas Atelier\\\\project.json"],
+  },
+  {
+    file: "apps/renderer/src/canvas/ModuleNodeCard.test.tsx",
+    name: "Authorization header",
+    evidence: ["Authorization: Bearer sk-review-secret-token\"}}';"],
+  },
+  {
+    file: "apps/renderer/src/canvas/ModuleNodeCard.test.tsx",
+    name: "API key",
+    evidence: ["sk-review-secret-token"],
+  },
+  {
+    file: "apps/renderer/src/canvas/ModuleNodeCard.test.tsx",
+    name: "raw base64 image payload",
+    evidence: ["data:image/png;base64,QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo="],
+  },
+  {
+    file: "apps/renderer/src/canvas/ModuleNodeCard.test.tsx",
+    name: "private absolute path",
+    evidence: ["C:\\\\Users\\\\Administrator\\\\Documents\\\\private\\\\source.png"],
+  },
+  {
+    file: "apps/renderer/src/settings/SettingsDrawer.test.tsx",
+    name: "API key",
+    evidence: ["sk-synthetic-visible-key", "sk-comfly-visible-key", "sk-synthetic-old-key", "sk-synthetic-replacement-key"],
+  },
+  {
+    file: "packages/desktop-core/src/provider-credential-reveal.test.ts",
+    name: "API key",
+    evidence: ["sk-synthetic-provider-key-for-reveal-test"],
+  },
+  {
+    file: "tests/e2e/diagnose-old-project.mjs",
+    name: "private absolute path",
+    evidence: ["E:\\\\画布项目\\\\canvasforge-qa-old-project-14"],
   },
   {
     file: "tests/integration/secret-path-scan.test.ts",

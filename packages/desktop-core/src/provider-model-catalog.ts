@@ -3,7 +3,15 @@ import type { RelayMeModel } from '@agent-canvas/provider-relayme';
 import { ProviderBridgeProfileSchema, type ProviderBridgeProfile } from './provider-contracts.js';
 
 export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog): ProviderBridgeProfile[] {
-  return ensureUniqueModelRoutes(catalog.models.map((model) => ProviderBridgeProfileSchema.parse({
+  const seenModelKeys = new Set<string>();
+  const validModels = catalog.models.filter((model) => {
+    const key = model.key.trim();
+    const name = model.name.trim();
+    if (key.length === 0 || name.length === 0 || seenModelKeys.has(key)) return false;
+    seenModelKeys.add(key);
+    return true;
+  });
+  return ensureUniqueModelRoutes(validModels.map((model) => ProviderBridgeProfileSchema.parse({
     provider: 'comfly',
     modelRoute: `comfly-${routeSlug(model.key)}`,
     displayName: model.name,

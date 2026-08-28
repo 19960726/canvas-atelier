@@ -10,7 +10,7 @@ import type {
 } from '@agent-canvas/desktop-core';
 import { ProviderModelCatalog, createProviderProfileKey, type CatalogCapability } from './ProviderModelCatalog';
 import { ProviderOperationTimeoutError, withProviderOperationTimeout } from './provider-operation-timeout';
-import { filterProviderCatalogProfiles } from '../app/provider-profiles';
+import { filterProviderCatalogProfiles, listActiveProviderProfiles, selectFirstProfileForCapability } from '../app/provider-profiles';
 
 type ProviderBridgeProvider = ProviderBridgeProfile['provider'];
 
@@ -117,6 +117,12 @@ export function SettingsDrawer({
   const [connectionState, setConnectionState] = useState<'idle' | 'checking' | ConnectionStatus>('idle');
   const [capacity, setCapacity] = useState<GenerationHistoryCapacityBridgeResult | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<ProviderBridgeProvider>('comfly');
+  const [activeProvider, setActiveProvider] = useState<ProviderBridgeProvider | null>(null);
+  const [loadingActiveProvider, setLoadingActiveProvider] = useState(false);
+  const [relayMeLoginOpen, setRelayMeLoginOpen] = useState(false);
+  const [relayMeUsername, setRelayMeUsername] = useState('');
+  const [relayMePassword, setRelayMePassword] = useState('');
+  const [relayMeLoginBusy, setRelayMeLoginBusy] = useState(false);
   const [providerStatuses, setProviderStatuses] = useState<Record<ProviderBridgeProvider, ProviderConfigurationStatus | null>>({
     comfly: providerStatus,
     relayme: null,
@@ -148,11 +154,15 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
     storage?: SettingsStorageBridge;
   }) | undefined;
   const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' });
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>('api');
   const codexWorkflowContract = createCodexWorkflowContract();
   const provider = bridge?.provider;
   const selectedProviderStatus = providerStatuses[selectedProvider] ?? (selectedProvider === 'comfly' ? providerStatus : null);
   const modelRefreshRequest = useRef(0);
+  const hasActiveProviderApi = Boolean(provider?.getActiveProvider && provider?.setActiveProvider);
+  const effectiveActiveProvider = hasActiveProviderApi ? activeProvider : selectedProvider;
+  const catalogProvider = effectiveActiveProvider;
 
   const refreshAvailableModels = async (providerId: ProviderBridgeProvider = selectedProvider): Promise<{ ok: true; count: number; reverseCount: number } | { ok: false }> => {
     if (!provider?.listProfiles) return { ok: false };
@@ -160,14 +170,14 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
     setLoadingModels(true);
     try {
       const profiles = await provider.listProfiles({ provider: providerId });
-      if (requestId !== modelRefreshRequest.current || providerId !== selectedProvider) return { ok: false };
-      const scoped = filterProviderCatalogProfiles(profiles.filter((profile) => profile.provider === providerId));
+      if (requestId !== modelRefreshRequest.current || providerId !== catalogProvider) return { ok: false };
+      const scoped = filterProviderCatalogProfiles(listActiveProviderProfiles(profiles, catalogProvider));
       setProviderProfiles(scoped);
       setEnabledProfileKeys(scoped.map(createProviderProfileKey));
       setDefaultProfileKeys(createDefaultProfileSelection(scoped));
       return { ok: true, count: scoped.length, reverseCount: scoped.filter(isRunnableReverseProfile).length };
     } catch {
-      if (requestId !== modelRefreshRequest.current || providerId !== selectedProvider) return { ok: false };
+      if (requestId !== modelRefreshRequest.current || providerId !== catalogProvider) return { ok: false };
       // A catalog refresh is allowed to fail transiently (network, provider
       // throttling, or a short-lived API outage). Do not erase the last usable
       // model inventory and turn every generation rail into "未配置模型".
@@ -180,12 +190,13 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
     if (!provider?.updateProfiles || savingDefaults) return;
     const enabled = providerProfiles.filter((profile) => enabledProfileKeys.includes(createProviderProfileKey(profile)));
     if (!enabled.length) return;
+    const providerId = catalogProvider ?? selectedProvider;
     setSavingDefaults(true);
     try {
-      const status = await provider.updateProfiles({ provider: selectedProvider, profiles: enabled });
-      setProviderStatuses((current) => ({ ...current, [selectedProvider]: status }));
+      const status = await provider.updateProfiles({ provider: providerId, profiles: enabled });
+      setProviderStatuses((current) => ({ ...current, [providerId]: status }));
       onProviderStatusChange(status);
-      setMessage(`已保存 ${enabled.length} 个 ${formatProviderName(selectedProvider)} 模型`);
+      setMessage(`已保存 ${enabled.length} 个 ${formatProviderName(providerId)} 模型`);
     } catch {
       setMessage('模型选择保存失败，请检查当前供应商连接状态');
     } finally {
@@ -227,12 +238,30 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
   }, [bridge?.storage]);
 
   useEffect(() => {
+    const updates = bridge?.updates;
+    if (!updates) return undefined;
     let cancelled = false;
-    bridge?.updates?.getState()
+    updates.getState()
       .then((state) => { if (!cancelled) setUpdateState(state); })
       .catch(() => { if (!cancelled) setUpdateState({ status: 'error', message: 'Update status is unavailable.' }); });
-    return () => { cancelled = true; };
+    const unsubscribe = updates.subscribeState?.((state) => {
+      if (!cancelled) setUpdateState(state);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, [bridge?.updates]);
+
+  useEffect(() => {
+    if (updateState.status === 'checking'
+      || updateState.status === 'available'
+      || updateState.status === 'downloading'
+      || updateState.status === 'ready_to_restart'
+      || updateState.status === 'error') {
+      setUpdateDialogOpen(true);
+    }
+  }, [updateState.status]);
   useEffect(() => {
     if (activeTab !== 'mcp') return;
     let cancelled = false;
@@ -271,6 +300,28 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
   }, [providerStatus]);
 
   useEffect(() => {
+    if (!provider?.getActiveProvider) {
+      setActiveProvider(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingActiveProvider(true);
+    void provider.getActiveProvider()
+      .then((state) => {
+        if (cancelled) return;
+        setActiveProvider(state.activeProvider);
+        if (state.activeProvider !== null) setSelectedProvider(state.activeProvider);
+      })
+      .catch(() => {
+        if (!cancelled) setActiveProvider(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingActiveProvider(false);
+      });
+    return () => { cancelled = true; };
+  }, [provider?.getActiveProvider]);
+
+  useEffect(() => {
     if (!provider?.getStatus) return;
     let cancelled = false;
     void Promise.all((['comfly', 'relayme'] as const).map(async (providerId) => {
@@ -293,29 +344,32 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
     setCredentialRevealed(false);
     setRevealingCredential(false);
     credentialRevealRequest.current += 1;
-    if (!provider?.listProfiles) {
+    if (!provider?.listProfiles || catalogProvider === null) {
       setProviderProfiles([]);
       setEnabledProfileKeys([]);
       setDefaultProfileKeys({});
       return;
     }
+    setProviderProfiles([]);
+    setEnabledProfileKeys([]);
+    setDefaultProfileKeys({});
     let cancelled = false;
     setLoadingModels(true);
-    void provider.listProfiles({ provider: selectedProvider })
+    void provider.listProfiles({ provider: catalogProvider })
       .then((profiles) => {
         if (cancelled) return;
-        const scoped = filterProviderCatalogProfiles(profiles.filter((profile) => profile.provider === selectedProvider));
+        const scoped = filterProviderCatalogProfiles(listActiveProviderProfiles(profiles, catalogProvider));
         setProviderProfiles(scoped);
         setEnabledProfileKeys(scoped.map(createProviderProfileKey));
         setDefaultProfileKeys(createDefaultProfileSelection(scoped));
       })
       .catch(() => {
-        // Keep the last successful inventory on a transient refresh failure.
-        // The retry action can replace it once the provider is reachable.
+        // Keep the newly selected provider empty instead of showing another
+        // provider's stale inventory. Retry can populate it when reachable.
       })
       .finally(() => { if (!cancelled) setLoadingModels(false); });
     return () => { cancelled = true; };
-  }, [provider?.listProfiles, selectedProvider]);
+  }, [provider?.listProfiles, catalogProvider]);
 
   useEffect(() => () => {
     credentialRevealRequest.current += 1;
@@ -430,7 +484,76 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
   };
   const closeSettings = () => {
     closeHiddenKeys();
+    closeRelayMeLogin();
     onClose();
+  };
+  const selectActiveProvider = async (providerId: ProviderBridgeProvider) => {
+    setSelectedProvider(providerId);
+    if (!hasActiveProviderApi || !provider?.setActiveProvider) return;
+    if (providerId === 'relayme' && !providerStatuses.relayme?.configured) {
+      setRelayMeLoginOpen(true);
+      return;
+    }
+    setLoadingActiveProvider(true);
+    try {
+      const state = await provider.setActiveProvider({ activeProvider: providerId });
+      setActiveProvider(state.activeProvider);
+      setSelectedProvider(state.activeProvider ?? providerId);
+      setMessage(`${formatProviderName(providerId)} 已切换为当前活动供应商`);
+    } catch {
+      setMessage(`${formatProviderName(providerId)} 切换失败，请检查供应商配置`);
+    } finally {
+      setLoadingActiveProvider(false);
+    }
+  };
+  const closeRelayMeLogin = () => {
+    setRelayMePassword('');
+    setRelayMeUsername('');
+    setRelayMeLoginBusy(false);
+    setRelayMeLoginOpen(false);
+  };
+  const submitRelayMeLogin = async () => {
+    if (!provider?.loginRelayMe || relayMeLoginBusy) return;
+    const username = relayMeUsername.trim();
+    if (username.length === 0 || relayMePassword.length === 0) return;
+    setRelayMeLoginBusy(true);
+    setMessage(null);
+    try {
+      const state = await provider.loginRelayMe({ username, password: relayMePassword });
+      setActiveProvider(state.activeProvider);
+      setSelectedProvider('relayme');
+      if (provider.getStatus) {
+        const status = await provider.getStatus({ provider: 'relayme' });
+        setProviderStatuses((current) => ({ ...current, relayme: status }));
+      }
+      setMessage('RelayMe 登录成功，已切换为当前活动供应商');
+      globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed', { detail: { provider: 'relayme' } }));
+      setRelayMeLoginOpen(false);
+      setRelayMeUsername('');
+    } catch {
+      setMessage('RelayMe 登录失败，请检查账号和密码');
+    } finally {
+      setRelayMePassword('');
+      setRelayMeLoginBusy(false);
+    }
+  };
+  const logoutRelayMe = async () => {
+    if (!provider?.logoutRelayMe || relayMeLoginBusy) return;
+    setRelayMeLoginBusy(true);
+    try {
+      const state = await provider.logoutRelayMe();
+      setActiveProvider(state.activeProvider);
+      if (state.activeProvider === null) setSelectedProvider('comfly');
+      if (provider.getStatus) {
+        const status = await provider.getStatus({ provider: 'relayme' });
+        setProviderStatuses((current) => ({ ...current, relayme: status }));
+      }
+      setMessage('RelayMe 已退出登录');
+    } catch {
+      setMessage('RelayMe 退出登录失败，请稍后重试');
+    } finally {
+      setRelayMeLoginBusy(false);
+    }
   };
   const toggleCredentialReveal = async () => {
     if (saving || revealingCredential) return;
@@ -547,6 +670,34 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
     }
   };
 
+  const downloadUpdate = async () => {
+    if (!bridge?.updates || updateState.status !== 'available') return;
+    try {
+      setUpdateState((await bridge.updates.download()).state);
+    } catch {
+      setUpdateState({ status: 'error', message: 'Update download failed.' });
+    }
+  };
+
+  const retryUpdate = async () => {
+    if (!bridge?.updates) return;
+    try {
+      setUpdateState((await bridge.updates.retry()).state);
+    } catch {
+      setUpdateState({ status: 'error', message: 'Update check failed.' });
+    }
+  };
+
+  const restartForUpdate = async () => {
+    if (!bridge?.updates || updateState.status !== 'ready_to_restart') return;
+    try {
+      const result = await bridge.updates.restart();
+      if (!result.accepted) setUpdateState({ status: 'error', message: 'Update is not ready to install.' });
+    } catch {
+      setUpdateState({ status: 'error', message: 'Update restart failed.' });
+    }
+  };
+
 const updateMcpClientStatus = (status: McpClientStatus) => {
     setMcpClientStatuses((current) => [
       ...current.filter((item) => item.client !== status.client),
@@ -629,10 +780,12 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
     if (!bridge?.storage || cacheAction !== null) return;
     setCacheAction(action);
     setCacheError(null);
+    setMessage(null);
     try {
       if (action === 'open') {
         const result = await bridge.storage.openCacheDirectory();
         if (!result.opened) setCacheError('无法打开缓存目录，请检查目录是否可用。');
+        else setMessage('已打开缓存目录');
         return;
       }
       const nextState = action === 'choose'
@@ -641,6 +794,9 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
       if (nextState !== null) {
         setCacheDirectory(nextState);
         setCacheError(nextState.error);
+        if (!nextState.error) {
+          setMessage(action === 'choose' ? '已切换自定义缓存目录' : '已恢复默认缓存目录');
+        }
       }
     } catch {
       setCacheError(action === 'choose'
@@ -702,7 +858,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
       </div>
       <div className="settings-drawer__body">
         {activeTab === 'api' && <>
-        <section className="settings-section settings-provider-overview" aria-labelledby="provider-settings-title">
+        <section className="settings-section settings-provider-overview settings-layer" aria-labelledby="provider-settings-title" data-testid="settings-api-status-layer">
           <header>
             <span><KeyRound size={16} /></span>
             <div><strong id="provider-settings-title">API 与模型</strong><small>Comfly + RelayMe provider routing</small></div>
@@ -711,13 +867,13 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           <p>两家供应商独立保存密钥、检测连接和读取模型目录；模型能力只采用接口明确返回的数据。</p>
         </section>
 
-        <section className="settings-section settings-provider-panel" aria-label="供应商设置">
+        <section className="settings-section settings-provider-panel settings-layer" aria-label="供应商设置" data-testid="settings-provider-layer">
           <header className="settings-subsection-heading">
             <div><strong>供应商设置</strong><small>选择供应商后，只编辑当前供应商的连接、密钥和模型。</small></div>
           </header>
           <div className="settings-provider-grid" role="list" aria-label="模型供应商">
             {(['comfly', 'relayme'] as const).map((providerId) => {
-              const active = selectedProvider === providerId;
+              const active = effectiveActiveProvider === providerId;
               const count = active ? providerProfiles.length : null;
               const status = providerStatuses[providerId];
               const summary = count === null ? (status?.configured ? '已配置' : '未配置') : `${count} 个模型`;
@@ -728,7 +884,8 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
                 aria-label={`${formatProviderName(providerId)} · ${summary}`}
                 aria-pressed={active}
                 className={active ? 'is-active' : undefined}
-                onClick={() => setSelectedProvider(providerId)}
+                disabled={loadingActiveProvider && activeProvider !== null}
+                onClick={() => { void selectActiveProvider(providerId); }}
               >
                 <i>{providerId === 'comfly' ? 'CO' : 'RM'}</i>
                 <span><strong>{formatProviderName(providerId)}</strong><small>{summary}</small></span>
@@ -739,7 +896,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
             <div><strong>{formatProviderName(selectedProvider)} 密钥管理</strong><small>密钥仅进入桌面安全凭据库，不写入渲染端或项目文件。</small></div>
             <div>
               <span data-connection-state={connectionState}>{connectionLabel(connectionState)}</span>
-              <button className="settings-section__secondary" type="button" disabled={!provider?.checkConnection || connectionState === 'checking'} onClick={() => { void checkProviderConnection(); }}>
+              <button className="settings-section__secondary settings-connection-check" type="button" disabled={!provider?.checkConnection || connectionState === 'checking'} onClick={() => { void checkProviderConnection(); }}>
                 <RefreshCw size={14} className={connectionState === 'checking' ? 'is-spinning' : undefined} />{connectionState === 'checking' ? '检测中…' : '检测连接'}
               </button>
             </div>
@@ -756,32 +913,43 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           </div>
           <div className="settings-key-actions">
             <div>
-              <strong>一把密钥，统一调用全部模型</strong>
-              <small>Agent 对话、语言反推、生图和视频共用当前供应商密钥。</small>
+              <strong>{selectedProvider === 'relayme' ? '账号登录，统一调用 RelayMe 模型' : '一把密钥，统一调用全部模型'}</strong>
+              <small>{selectedProvider === 'relayme' ? '画布只使用 RelayMe 账号登录令牌，不接受独立 API 密钥。' : 'Agent 对话、语言反推、生图和视频共用当前供应商密钥。'}</small>
+              <small className="settings-chat-adaptation">对话模型适配：画布会按“对话模型”默认项路由到当前供应商。</small>
             </div>
             <div>
               {selectedProvider === 'relayme' && <a className="settings-provider-key-link" href="https://www.ml.relayme.uk/workflow" target="_blank" rel="noreferrer">打开 RelayMe 工作台</a>}
-              <button className="settings-section__secondary" type="button" onClick={openHiddenKeys}>配置隐藏密钥</button>
+              {selectedProvider === 'relayme' && provider?.loginRelayMe && <button className="settings-section__primary" type="button" onClick={() => setRelayMeLoginOpen(true)} disabled={relayMeLoginBusy}>登录 RelayMe</button>}
+              {selectedProvider === 'relayme' && provider?.logoutRelayMe && selectedProviderStatus?.configured && effectiveActiveProvider === 'relayme' && <button className="settings-section__secondary" type="button" onClick={() => { void logoutRelayMe(); }} disabled={relayMeLoginBusy}>退出 RelayMe</button>}
+              {selectedProvider !== 'relayme' && <button className="settings-section__secondary" type="button" onClick={openHiddenKeys}>配置隐藏密钥</button>}
             </div>
           </div>
           <button className="settings-section__primary" type="button" disabled={!provider || !selectedProviderStatus?.configured || saving || baseUrl.trim().length === 0} onClick={() => { void saveEndpoint(); }}>{saving ? '正在保存…' : '保存接口设置'}</button>
           {message && <p role="status">{message}</p>}
         </section>
 
-        <ProviderModelCatalog
-          profiles={providerProfiles}
-          enabledProfileKeys={enabledProfileKeys}
-          defaultProfileKeys={defaultProfileKeys}
-          onConfigure={openHiddenKeys}
-          onRetry={() => { void refreshAvailableModels(selectedProvider); }}
-          onToggleProfile={(profile) => {
-            const key = createProviderProfileKey(profile);
-            setEnabledProfileKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
-          }}
-          onDefaultProfileChange={(capability, profileKey) => setDefaultProfileKeys((current) => ({ ...current, [capability]: profileKey }))}
-        />
-        <button className="settings-section__primary settings-model-save" type="button" disabled={!provider?.updateProfiles || savingDefaults || providerProfiles.length === 0} onClick={() => { void saveDefaultModels(); }}>{savingDefaults ? '保存中…' : `保存 ${formatProviderName(selectedProvider)} 模型选择`}</button>        </>}        {activeTab === 'storage' && <>
-        <section className="settings-section settings-download-directory" aria-label="下载输出目录">
+        <div className="settings-layer settings-model-layer" data-testid="settings-model-layer">
+          <ProviderModelCatalog
+            profiles={providerProfiles}
+            enabledProfileKeys={enabledProfileKeys}
+            defaultProfileKeys={defaultProfileKeys}
+            onConfigure={openHiddenKeys}
+            onRetry={() => { void refreshAvailableModels(catalogProvider ?? selectedProvider); }}
+            onToggleProfile={(profile) => {
+              const key = createProviderProfileKey(profile);
+              setEnabledProfileKeys((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+            }}
+            onDefaultProfileChange={(capability, profileKey) => setDefaultProfileKeys((current) => ({ ...current, [capability]: profileKey }))}
+          />
+        </div>
+        <button className="settings-section__primary settings-model-save" type="button" disabled={!provider?.updateProfiles || savingDefaults || providerProfiles.length === 0} onClick={() => { void saveDefaultModels(); }}>{savingDefaults ? '保存中…' : `保存 ${formatProviderName(catalogProvider ?? selectedProvider)} 模型选择`}</button>
+        <section className="settings-section settings-layer settings-diagnostics-layer" aria-label="诊断与更新" data-testid="settings-diagnostics-layer">
+          <header><span><RefreshCw size={16} /></span><div><strong>诊断与更新</strong><small>快速确认连接、模型目录和桌面版本状态</small></div></header>
+          <div className="settings-diagnostics-summary"><span data-connection-state={connectionState}>{connectionLabel(connectionState)}</span><span>{providerProfiles.length ? `${providerProfiles.length} 个模型已加载` : '模型目录待同步'}</span></div>
+          <button className="settings-section__secondary" type="button" onClick={() => setActiveTab('sync')}>打开同步与应用更新</button>
+        </section>
+        </>}        {activeTab === 'storage' && <>
+        <section className="settings-section settings-download-directory settings-layer" aria-label="下载输出目录" data-testid="settings-storage-directory-layer">
           <header><div><strong>下载输出目录</strong><small>固定目录开启后直接写入该目录；关闭后每次下载都会询问保存位置。</small></div><label className="settings-inline-switch"><input type="checkbox" aria-label="固定下载输出目录" /><i /></label></header>
           <input aria-label="当前下载输出目录" value="系统下载目录" readOnly />
           <div className="settings-directory-actions">
@@ -791,17 +959,17 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           </div>
         </section>
 
-        <section className="settings-section settings-local-storage" aria-label="本地保存">
-          <header><span><Database size={16} /></span><div><strong>本地保存</strong><small>查看本机占用空间、下载位置和可再生成缓存。</small></div><button className="settings-section__secondary" type="button" disabled={!bridge?.history} onClick={() => { void bridge?.history?.getCapacity().then(setCapacity); }}><RefreshCw size={14} />刷新</button></header>
+        <section className="settings-section settings-local-storage settings-layer" aria-label="本地保存" data-testid="settings-storage-local-layer">
+          <header><span><Database size={16} /></span><div><strong>本地保存</strong><small>查看本机占用空间、下载位置和可再生成缓存。</small></div><button className="settings-section__secondary settings-storage-refresh" type="button" disabled={!bridge?.history} onClick={() => { void bridge?.history?.getCapacity().then(setCapacity); }}><span className="settings-action-content"><RefreshCw size={14} />刷新</span></button></header>
           <label className="settings-cache-directory-field">
             <span>缓存存储路径</span>
             <input aria-label="当前缓存路径" value={cacheDirectory?.path ?? (bridge?.storage ? '正在读取…' : '仅桌面版可选择缓存路径')} readOnly />
             <small className="settings-cache-directory-hint">桌面版可自由选择缓存文件夹；取消选择或迁移失败时会保留原路径。</small>
           </label>
           <div className="settings-directory-actions settings-cache-directory-actions">
-            <button className="settings-section__secondary" type="button" disabled={cacheControlsDisabled} onClick={() => { void runCacheAction('open'); }}>{cacheAction === 'open' ? '打开中…' : '打开缓存目录'}</button>
-            <button className="settings-section__secondary" type="button" disabled={cacheControlsDisabled} onClick={() => { void runCacheAction('choose'); }}>{cacheAction === 'choose' ? '迁移中…' : '选择自定义缓存路径'}</button>
-            <button className="settings-section__secondary" type="button" disabled={cacheControlsDisabled || cacheDirectory?.isDefault === true} onClick={() => { void runCacheAction('reset'); }}>{cacheAction === 'reset' ? '恢复中…' : '恢复默认目录'}</button>
+            <button className="settings-section__secondary settings-cache-action" type="button" disabled={cacheControlsDisabled} onClick={() => { void runCacheAction('open'); }}>{cacheAction === 'open' ? '打开中…' : '打开缓存目录'}</button>
+            <button className="settings-section__secondary settings-cache-action" type="button" disabled={cacheControlsDisabled} onClick={() => { void runCacheAction('choose'); }}>{cacheAction === 'choose' ? '迁移中…' : '选择自定义缓存路径'}</button>
+            <button className="settings-section__secondary settings-cache-action" type="button" disabled={cacheControlsDisabled || cacheDirectory?.isDefault === true} onClick={() => { void runCacheAction('reset'); }}>{cacheAction === 'reset' ? '恢复中…' : '恢复默认目录'}</button>
           </div>
           {cacheError && <p className="settings-cache-directory-error" role="alert">{cacheError}</p>}
           <div className="settings-storage-stat-grid">
@@ -811,21 +979,21 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           </div>
         </section>
 
-        <section className="settings-section settings-clearable-cache" aria-label="可清理缓存" data-testid="settings-storage-card" data-figma-layout="storage">
-          <header><div><strong>可清理缓存</strong><small>只清理可再生成缓存，不删除作品或画布原图。</small></div><button className="settings-danger-button" type="button" disabled={!capacity || cleaningStorage} onClick={() => { void cleanUnusedMedia(); }}>清理全部缓存</button></header>
+        <section className="settings-section settings-clearable-cache settings-layer" aria-label="可清理缓存" data-testid="settings-storage-card" data-figma-layout="storage">
+          <header><div><strong>可清理缓存</strong><small>只清理可再生成缓存，不删除作品或画布原图。</small></div><button className="settings-danger-button settings-cache-primary-action" type="button" disabled={!capacity || cleaningStorage} onClick={() => { void cleanUnusedMedia(); }}>{cleaningStorage ? '清理中…' : '清理全部缓存'}</button></header>
           <div className="settings-cache-grid">
             {[
               ['输入缓存', '0 B', '0 个文件'],
               ['缩略图缓存', capacity ? formatBytes(capacity.trashBytes) : '—', capacity ? `${capacity.trashCount} 个文件` : '桌面服务连接后显示'],
               ['浏览器缓存', '0 B', '页面运行产生，可再生成'],
               ['会话缓存', capacity ? formatBytes(capacity.activeBytes) : '—', '当前运行产生，可再生成'],
-            ].map(([label, size, summary]) => <article key={label}><span>{label}</span><strong>{size}</strong><small>{summary}</small><button type="button" disabled={!capacity || cleaningStorage} onClick={() => { void cleanUnusedMedia(); }}>清理</button></article>)}
+            ].map(([label, size, summary]) => <article key={label}><span>{label}</span><strong>{size}</strong><small>{summary}</small><button className="settings-cache-item-action" type="button" disabled={!capacity || cleaningStorage} onClick={() => { void cleanUnusedMedia(); }}>{cleaningStorage ? '清理中…' : '清理'}</button></article>)}
           </div>
           {message && <p role="status">{message}</p>}
         </section>
         </>}
 {activeTab === 'mcp' && (
-          <section className="settings-section settings-section--mcp" aria-labelledby="mcp-settings-title" data-testid="settings-mcp-card">
+          <section className="settings-section settings-section--mcp settings-layer" aria-labelledby="mcp-settings-title" data-testid="settings-mcp-card">
             <header>
               <span><Cable size={16} /></span>
               <div>
@@ -919,7 +1087,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           </section>
         )}
         {activeTab === 'sync' && <>
-        <section className="settings-section settings-sync-panel" aria-labelledby="knowledge-sync-title" data-testid="settings-sync-card">
+        <section className="settings-section settings-sync-panel settings-layer" aria-labelledby="knowledge-sync-title" data-testid="settings-sync-card">
           <header><span><RefreshCw size={16} /></span><div><strong id="knowledge-sync-title">同步与成长记忆</strong><small>Knowledge sync across devices</small></div><b data-provider-state="configured">已开启</b></header>
           <p>离线时先存本机；恢复网络后同步知识库版本与成长记忆。</p>
           <article className="settings-sync-primary">
@@ -945,27 +1113,90 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           {message && <p role="status">{message}</p>}
         </section>
 
-        <details className="settings-advanced-diagnostics">
+        <details className="settings-advanced-diagnostics settings-layer" data-testid="settings-sync-diagnostics-layer">
           <summary>高级故障排查</summary>
           <section className="settings-diagnostics-grid" aria-label="高级诊断">
-            <article className="settings-status-card" role="region" aria-label="连接与恢复">
+            <article className="settings-status-card settings-tool-card" role="region" aria-label="连接与恢复" data-tool-tone="security">
               <header><span><ShieldCheck size={16} /></span><div><strong>连接与恢复</strong><small>仅在桌面安全存储或模型连接异常时使用</small></div></header>
               <p>{formatEncryption(selectedProviderStatus)}</p>
               <label><span>本机保护密码</span><input type="password" autoComplete="new-password" aria-label="本机保护密码" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
-              <div className="settings-connection-row"><button className="settings-section__secondary" type="button" disabled={!provider?.checkConnection || connectionState === 'checking'} onClick={() => { void checkProviderConnection(); }}><RefreshCw size={14} className={connectionState === 'checking' ? 'is-spinning' : undefined} />{connectionState === 'checking' ? '检查中' : '检查连接'}</button><span data-connection-state={connectionState}>{connectionLabel(connectionState)}</span></div>
+              <div className="settings-connection-row"><button className="settings-section__secondary settings-connection-check settings-tool-action" type="button" disabled={!provider?.checkConnection || connectionState === 'checking'} onClick={() => { void checkProviderConnection(); }}><span className="settings-action-content"><RefreshCw size={14} className={connectionState === 'checking' ? 'is-spinning' : undefined} />{connectionState === 'checking' ? '检查中…' : '检查连接'}</span></button><span data-connection-state={connectionState}>{connectionLabel(connectionState)}</span></div>
               {selectedProviderStatus?.configured && selectedProviderStatus.locked && <button className="settings-section__secondary" type="button" disabled={!provider || passphrase.length === 0 || saving} onClick={() => { void unlockProvider(); }}>{saving ? '正在解锁…' : '解锁模型服务'}</button>}
             </article>
-            <article className="settings-status-card" role="region" aria-label="应用更新">
+            <article className="settings-status-card settings-tool-card" role="region" aria-label="应用更新" data-tool-tone="update">
               <header><span><RefreshCw size={16} /></span><div><strong>应用更新</strong><small>桌面更新状态</small></div></header>
-              <button className="settings-section__secondary" type="button" aria-label="Check for updates" disabled={!bridge?.updates || updateState.status === 'checking' || updateState.status === 'downloading'} onClick={() => { void checkForUpdates(); }}>{updateState.status === 'checking' ? '检查中' : '检查更新'}</button>
-              {updateState.status === 'available' && <article className="settings-update-available"><strong>{updateState.version}</strong><p>{updateState.notes}</p></article>}
-              {updateState.status === 'error' && <p role="alert">{updateState.message ?? 'Update check failed.'}</p>}
+              <p>检查版本、安全修复和模型适配更新，不会影响当前画布内容。</p>
+              <div className="settings-tool-card__status"><span>当前状态</span><strong>{updateState.status === 'idle' ? '等待检查' : updateState.status === 'checking' ? '正在检查' : updateState.status === 'downloading' ? '正在下载' : updateState.status === 'ready_to_restart' ? '准备安装' : updateState.status === 'error' ? '检查失败' : '发现新版本'}</strong></div>
+              <button className="settings-section__secondary settings-update-action settings-tool-action" type="button" aria-label="Check for updates" disabled={!bridge?.updates || updateState.status === 'checking' || updateState.status === 'downloading'} onClick={() => { void checkForUpdates(); }}><span className="settings-action-content"><RefreshCw size={14} className={updateState.status === 'checking' ? 'is-spinning' : undefined} />{updateState.status === 'checking' ? '检查中…' : '检查更新'}</span></button>
+              {updateState.status === 'idle' && updateState.message === 'No updates are available.' && <p role="status">当前已是最新版本</p>}
             </article>
           </section>
         </details>
         </>}
       </div>
-    </aside>
+      </aside>
+      {updateDialogOpen && <div className="settings-hidden-key-backdrop" role="presentation" onMouseDown={() => setUpdateDialogOpen(false)}>
+        <section
+          className="settings-hidden-key-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="应用更新"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <header>
+            <div>
+              <strong>应用更新</strong>
+              {updateState.status === 'checking' && <p>正在检查更新…</p>}
+              {updateState.status === 'available' && <p>发现新版本 {updateState.version ?? ''}</p>}
+              {updateState.status === 'downloading' && <p>正在下载 {updateState.version ?? '新版本'}</p>}
+              {updateState.status === 'ready_to_restart' && <p>版本 {updateState.version ?? ''} 已准备好</p>}
+              {updateState.status === 'error' && <p>更新暂时不可用</p>}
+            </div>
+            <button type="button" className="icon-button" aria-label="关闭更新弹窗" onClick={() => setUpdateDialogOpen(false)}><X size={16} /></button>
+          </header>
+          {updateState.notes && <p className="settings-update-notes">{updateState.notes}</p>}
+          {updateState.status === 'downloading' && <div className="settings-update-progress">
+            <progress aria-label="更新下载进度" max={1} value={updateState.progress ?? 0} />
+            <span>下载进度 {Math.round((updateState.progress ?? 0) * 100)}%</span>
+          </div>}
+          {updateState.status === 'error' && <p role="alert">更新检查失败，请检查网络后重试。</p>}
+          <div className="settings-hidden-key-dialog__actions">
+            {updateState.status === 'available' && <button type="button" className="settings-section__primary" aria-label="下载更新" onClick={() => { void downloadUpdate(); }}>下载更新</button>}
+            {updateState.status === 'ready_to_restart' && <button type="button" className="settings-section__primary" aria-label="重启并安装" onClick={() => { void restartForUpdate(); }}>重启并安装</button>}
+            {updateState.status === 'error' && <button type="button" className="settings-section__primary" aria-label="重新检查更新" onClick={() => { void retryUpdate(); }}>重新检查</button>}
+            <button type="button" className="settings-section__secondary" onClick={() => setUpdateDialogOpen(false)}>
+              {updateState.status === 'ready_to_restart' ? '稍后安装' : '稍后'}
+            </button>
+          </div>
+        </section>
+      </div>}
+      {relayMeLoginOpen && <div className="settings-hidden-key-backdrop" role="presentation" onMouseDown={() => { if (!relayMeLoginBusy) closeRelayMeLogin(); }}>
+      <form
+        className="settings-hidden-key-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="登录 RelayMe"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={(event) => { event.preventDefault(); void submitRelayMeLogin(); }}
+      >
+        <header>
+          <div><strong>登录 RelayMe</strong><p>使用 RelayMe 账号登录后，自动启用 RelayMe 模型目录。</p></div>
+          <button type="button" className="icon-button" aria-label="关闭 RelayMe 登录" onClick={closeRelayMeLogin} disabled={relayMeLoginBusy}><X size={16} /></button>
+        </header>
+        <div className="settings-hidden-key-dialog__fields">
+          <label><span>RelayMe 账号</span><input type="text" autoComplete="username" aria-label="RelayMe 账号" value={relayMeUsername} onChange={(event) => setRelayMeUsername(event.target.value)} /></label>
+          <label><span>RelayMe 密码</span><input type="password" autoComplete="current-password" aria-label="RelayMe 密码" value={relayMePassword} onChange={(event) => setRelayMePassword(event.target.value)} /></label>
+          <div className="settings-provider-auth-links">
+            <a href="https://www.ml.relayme.uk/" target="_blank" rel="noreferrer">注册 RelayMe 账号</a>
+            <a href="https://www.ml.relayme.uk/" target="_blank" rel="noreferrer">找回密码</a>
+          </div>
+        </div>
+        <div className="settings-dialog-actions">
+          <button className="settings-section__secondary" type="button" onClick={closeRelayMeLogin} disabled={relayMeLoginBusy}>取消</button>
+          <button className="settings-section__primary" type="submit" disabled={relayMeLoginBusy || relayMeUsername.trim().length === 0 || relayMePassword.length === 0}>{relayMeLoginBusy ? '登录中…' : '登录 RelayMe'}</button>
+        </div>
+      </form>
+    </div>}
     {hiddenKeysOpen && <div className="settings-hidden-key-backdrop" role="presentation" onMouseDown={() => { if (!saving) closeHiddenKeys(); }}>
       <form
         className="settings-hidden-key-dialog"
@@ -1042,7 +1273,7 @@ function createDefaultProfileSelection(profiles: readonly ProviderBridgeProfile[
   for (const capability of ['image_generation', 'video_generation', 'chat', 'reverse_prompt', 'vision', 'video_understanding'] as const) {
     const explicitDefaultRoute = `${capability === 'image_generation' ? 'image' : capability === 'video_generation' ? 'video' : capability === 'reverse_prompt' ? 'reverse' : 'chat'}-default`;
     const selected = profiles.find((profile) => profile.capabilities.includes(capability) && profile.modelRoute === explicitDefaultRoute)
-      ?? profiles.find((profile) => profile.capabilities.includes(capability));
+      ?? selectFirstProfileForCapability(profiles, capability);
     if (selected) result[capability] = createProviderProfileKey(selected);
   }
   return result;

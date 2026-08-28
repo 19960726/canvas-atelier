@@ -753,6 +753,40 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('reports a retryable truncation when an OpenAI-compatible reverse chat finishes because of length', async () => {
+    const appDataRoot = await makeTempRoot();
+    const knowledgeStore = new ManagedKnowledgeStore({ appDataRoot });
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, knowledgeStore);
+    const imageOnlyRequest = {
+      ...request,
+      run: { ...request.run, agentConfig: { ...request.run.agentConfig!, modelRoute: 'comfly-vision-chat' }, orderedMedia: [request.run.orderedMedia[0]!], videoInput: undefined },
+      media: [request.media[0]!],
+    };
+    const fetch = vi.fn(async () => jsonResponse({
+      id: 'reverse-chat-length', model: 'vision-chat-model',
+      choices: [{ finish_reason: 'length', message: { role: 'assistant', content: '{"analysis":"truncated' } }],
+    }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [{
+        provider: 'comfly', modelRoute: 'comfly-vision-chat', modelId: 'vision-chat-model', displayName: 'Vision Chat',
+        capabilities: ['chat', 'vision', 'reverse_prompt'],
+      }],
+      readManagedReverseMedia: async () => [{ bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), mediaType: 'image/png' }],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(imageOnlyRequest)).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+      message: 'Reverse-analysis response was truncated at the model output limit',
+      retryable: true,
+    });
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('keeps reverse chat alive after the normal 30 second timeout', async () => {
     vi.useFakeTimers();
     const appDataRoot = await makeTempRoot();
@@ -809,7 +843,7 @@ describe('Comfly provider service', () => {
     }
   });
 
-  it('keeps Gemini-native reverse alive after 30 seconds and forwards its 120 second timeout', async () => {
+  it('keeps Gemini-native reverse alive after 30 seconds and forwards its five minute timeout', async () => {
     vi.useFakeTimers();
     const appDataRoot = await makeTempRoot();
     try {
@@ -840,7 +874,7 @@ describe('Comfly provider service', () => {
 
       const pending = service.analyzeReversePrompt!(request);
       await fetchStarted;
-      expect(capturedTimeoutMs).toBe(120_000);
+      expect(capturedTimeoutMs).toBe(300_000);
       await vi.advanceTimersByTimeAsync(30_001);
       expect(capturedSignal?.aborted).toBe(false);
       resolveFetch(jsonResponse({
@@ -881,8 +915,10 @@ describe('Comfly provider service', () => {
     );
     const fetchCall = fetch.mock.calls[0] as unknown as readonly [string, { readonly body?: unknown }];
     const payload = JSON.parse(String(fetchCall[1]?.body)) as {
+      generationConfig?: { responseMimeType?: string; maxOutputTokens?: number };
       contents: Array<{ parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> }>;
     };
+    expect(payload.generationConfig).toEqual({ responseMimeType: 'application/json', maxOutputTokens: 16_384 });
     const parts = payload.contents[0]?.parts ?? [];
     const requestText = JSON.parse(parts[0]?.text ?? '{}') as {
       builtinSkills?: Array<{ id?: string; version?: string }>;
@@ -1000,16 +1036,93 @@ describe('Comfly provider service', () => {
     });
     await service.configure({ token });
 
-    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+      message: 'Reverse-analysis response identity does not match the active run',
+      retryable: false,
+    });
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('accepts a complete Gemini reverse core result when an optional professional section is malformed', async () => {
+    const appDataRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
+    const fetch = vi.fn(async () => jsonResponse({
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({
+        ...reversePromptResultFor(request.run),
+        camera: 'wide-angle',
+      }) }] } }],
+    }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia: async () => [],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).resolves.toEqual(reversePromptResultFor(request.run));
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('rejects malformed media responsibilities instead of dropping the provider section', async () => {
+    const appDataRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
+    const fetch = vi.fn(async () => jsonResponse({
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({
+        ...reversePromptResultFor(request.run),
+        mediaResponsibilities: [{ sourceId: request.run.orderedMedia[0]!.assetId }],
+      }) }] } }],
+    }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia: async () => [],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+      message: 'Reverse-analysis response failed schema validation',
+    });
+
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('reports a retryable truncation when Gemini stops at its output token limit', async () => {
+    const appDataRoot = await makeTempRoot();
+    const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
+    const fetch = vi.fn(async () => jsonResponse({
+      candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"analysis":"truncated' }] } }],
+    }));
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() }),
+      fetch,
+      profiles: [geminiReverseProfile()],
+      readManagedReverseMedia: async () => [],
+    });
+    await service.configure({ token });
+
+    await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+      message: 'Reverse-analysis response was truncated at the model output limit',
+      retryable: true,
+    });
 
     await cleanupTempRoot(appDataRoot);
   });
 
   it.each([
-    ['has no text candidate', { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw==' } }] } }] }],
-    ['returns malformed JSON text', { candidates: [{ content: { parts: [{ text: '{not-json' }] } }] }],
-    ['returns JSON rejected by the reverse-analysis response schema', { candidates: [{ content: { parts: [{ text: JSON.stringify({ sessionId: 'session', nonce: 'nonce' }) }] } }] }],
-  ])('surfaces a sanitized PROVIDER_INVALID_RESPONSE when Gemini %s', async (_caseName, response) => {
+    ['has no text candidate', { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw==' } }] } }] }, 'Reverse-analysis response did not contain text'],
+    ['returns malformed JSON text', { candidates: [{ content: { parts: [{ text: '{not-json' }] } }] }, 'Reverse-analysis response was not valid JSON'],
+    ['returns JSON rejected by the reverse-analysis response schema', { candidates: [{ content: { parts: [{ text: JSON.stringify({ sessionId: 'session', nonce: 'nonce' }) }] } }] }, 'Reverse-analysis response failed schema validation'],
+  ])('surfaces a sanitized PROVIDER_INVALID_RESPONSE when Gemini %s', async (_caseName, response, expectedMessage) => {
     const appDataRoot = await makeTempRoot();
     const request = await createReversePromptRequestWithManagedKnowledge(appDataRoot, new ManagedKnowledgeStore({ appDataRoot }));
     const fetch = vi.fn(async () => jsonResponse(response));
@@ -1024,7 +1137,7 @@ describe('Comfly provider service', () => {
 
     await expect(service.analyzeReversePrompt?.(request)).rejects.toMatchObject({
       code: 'PROVIDER_INVALID_RESPONSE',
-      message: 'Provider returned an invalid reverse-analysis response',
+      message: expectedMessage,
     });
 
     await cleanupTempRoot(appDataRoot);

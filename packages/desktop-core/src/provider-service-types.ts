@@ -20,6 +20,8 @@ import type {
   PollVideoJobBridgeRequest,
   PollVideoJobBridgeResult,
   ProviderBridgeProfile,
+  ProviderActiveState,
+  LoginRelayMeBridgeRequest,
   ProviderConfigurationStatus,
   ProviderConnectionCheckResult,
   RevealProviderCredentialBridgeResult,
@@ -31,6 +33,8 @@ import type {
 } from './provider-contracts.js';
 
 export interface ProviderService {
+  loginRelayMe?(request: LoginRelayMeBridgeRequest): Promise<void>;
+  logoutRelayMe?(): Promise<void>;
   getStatus(): Promise<ProviderConfigurationStatus>;
   revealCredential(): Promise<RevealProviderCredentialBridgeResult>;
   checkConnection(): Promise<ProviderConnectionCheckResult>;
@@ -53,6 +57,10 @@ export interface ProviderService {
 }
 
 export interface ProviderBridgeHandlers {
+  getActiveProvider(event: unknown, request: unknown): Promise<ProviderActiveState>;
+  setActiveProvider(event: unknown, request: unknown): Promise<ProviderActiveState>;
+  loginRelayMe(event: unknown, request: unknown): Promise<ProviderActiveState>;
+  logoutRelayMe(event: unknown, request: unknown): Promise<ProviderActiveState>;
   getStatus(event: unknown, request: unknown): Promise<ProviderConfigurationStatus>;
   revealCredential(event: unknown, request: unknown): Promise<RevealProviderCredentialBridgeResult>;
   checkConnection(event: unknown, request: unknown): Promise<ProviderConnectionCheckResult>;
@@ -72,6 +80,11 @@ export interface ProviderBridgeHandlers {
   analyzeReversePrompt(event: unknown, request: unknown): Promise<AnalyzeReversePromptBridgeResult>;
   chat(event: unknown, request: unknown): Promise<ChatSkillBridgeResult>;
   generateStoryboard(event: unknown, request: unknown): Promise<GenerateStoryboardBridgeResult>;
+}
+
+export interface ProviderActiveStateStore {
+  getActiveProvider(): Promise<ProviderActiveState>;
+  setActiveProvider(activeProvider: ProviderActiveState['activeProvider']): Promise<ProviderActiveState>;
 }
 
 export interface ProviderIpcMainLike {

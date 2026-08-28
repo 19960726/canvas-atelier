@@ -91,11 +91,14 @@ import {
 import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
 import { withProviderOperationTimeout } from '../settings/provider-operation-timeout';
 
-const REVERSE_AGENT_OPERATION_TIMEOUT_MS = 135_000;
+const REVERSE_AGENT_OPERATION_TIMEOUT_MS = 315_000;
+const PROJECT_PERSISTENCE_OPERATION_TIMEOUT_MS = 15_000;
 import { createModelJobRunId } from '../jobs/model-job-identity';
 import { advanceOfflineVideoPreview, createOfflineVideoPreview } from '../jobs/video-preview-mock';
 import { runtimeProfile } from './runtime-profile';
-import { listAllProviderProfiles, selectProviderProfile } from './provider-profiles';
+import { listRunnableProviderProfiles, selectProviderProfile } from './provider-profiles';
+import { buildReverseAgentCanvasPlan } from '../agent/reverse-workflow-proposal';
+import type { ReverseAnalysisResult } from '../agent/reverse-workflow-contract';
 
 let planSequence = 0;
 let stableProjectCommitTail: Promise<void> | null = null;
@@ -330,6 +333,13 @@ interface AppState {
   applyReverseAgentConfig: (nodeId: string, config: ReverseAgentNodeConfig) => Promise<boolean>;
   updateReverseAgentResult: (nodeId: string, result: EditableReverseAgentResult) => Promise<boolean>;
   draftAgentPlan: (message: string, options?: { modelRoute?: string; modelRouteDisplayName?: string }) => void;
+  draftReverseWorkflowPlan: (input: {
+    analysis: ReverseAnalysisResult;
+    references: readonly { assetId: string; label: string; mention: string }[];
+    modelRoute: string;
+    modelRouteDisplayName?: string;
+    knowledgeBaseIds?: readonly string[];
+  }) => void;
   confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => Promise<void>;
   cancelAgentPlan: () => void;
   undo: () => Promise<void>;
@@ -394,7 +404,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const bridge = globalThis.window?.novusDesktop?.provider;
     if (bridge === undefined) throw createGenerationStartError('PROVIDER_BRIDGE_UNAVAILABLE', 'Provider bridge is unavailable');
-    const profiles = await listAllProviderProfiles(bridge);
+    const profiles = await listRunnableProviderProfiles(bridge);
     const imageProfiles = profiles.filter((profile) => profile.capabilities.includes('image_generation'));
     const profile = input.modelRoute === undefined
       ? imageProfiles[0]
@@ -539,7 +549,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const bridge = globalThis.window?.novusDesktop?.provider;
     if (bridge === undefined) return false;
-    const profiles = await listAllProviderProfiles(bridge);
+    const profiles = await listRunnableProviderProfiles(bridge);
     const profile = selectProviderProfile(profiles, input.modelRoute, 'video_generation');
     if (profile === undefined) return false;
 
@@ -684,7 +694,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const bridge = globalThis.window?.novusDesktop?.provider;
     if (bridge === undefined) return false;
     try {
-      const profiles = await listAllProviderProfiles(bridge);
+      const profiles = await listRunnableProviderProfiles(bridge);
       const profile = selectProviderProfile(profiles, input.modelRoute, 'chat');
       if (!profile) return false;
       const result = await bridge.generateStoryboard({
@@ -748,6 +758,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   }),
   runReverseAgentNode: async (nodeId, requestedConfig) => {
+    if (get().projectCommitConflictCode !== null && get().canReloadDurableProject) {
+      const refreshed = await get().reloadDurableProject();
+      if (!refreshed) throw createReverseConfigurationSaveError(get());
+    }
     if (get().canRetryProjectCommit && get().projectCommitConflictCode === null) {
       await get().retryFailedProjectCommit();
     }
@@ -839,7 +853,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const providerBridge = globalThis.window?.novusDesktop?.provider;
       const reverseProfile = providerBridge?.listProfiles
-        ? selectProviderProfile(await listAllProviderProfiles(providerBridge), parsedConfig.data.modelRoute, 'reverse_prompt')
+        ? selectProviderProfile(await listRunnableProviderProfiles(providerBridge), parsedConfig.data.modelRoute, 'reverse_prompt')
         : undefined;
       if (providerBridge?.listProfiles && !reverseProfile) throw new Error('所选模型没有明确声明反推能力');
       // The renderer may retain a historical route alias after the provider
@@ -1742,6 +1756,30 @@ export const useAppStore = create<AppState>((set, get) => ({
         jobCount: 1,
       } };
     });
+  },
+  draftReverseWorkflowPlan: (input) => {
+    if (isAgentPlanBusy(get().agentPlan)) {
+      rejectAgentPlanMutationDuringProcessing(set);
+      return;
+    }
+    clearPendingAgentConfirmation();
+    const state = get();
+    if (
+      !input.modelRoute.trim()
+      || input.references.length === 0
+      || !input.analysis.runnable
+      || containsProtectedRendererPayload(input.analysis.prompts.zh)
+    ) return;
+    const plan = buildReverseAgentCanvasPlan({
+      project: state.project,
+      persistenceGeneration: projectPersistenceGeneration,
+      modelRoute: input.modelRoute,
+      modelRouteDisplayName: input.modelRouteDisplayName,
+      knowledgeBaseIds: input.knowledgeBaseIds,
+      references: input.references.map((reference) => ({ ...reference })),
+      analysis: input.analysis,
+    });
+    set({ agentPlan: plan });
   },
   confirmAgentPlan: async (approvals) => {
     const state = get();
@@ -3035,7 +3073,10 @@ async function executeProjectCommit(
 ): Promise<boolean> {
   const token = beginProjectCommit(request);
   try {
-    const result = await projectPersistenceClient.commit(request);
+    // Every commit path (manual, idle autosave, and retry) must have the same
+    // upper bound. Otherwise a desktop bridge that never acknowledges leaves
+    // the top-bar state in `saving` forever.
+    const result = await withProjectPersistenceTimeout(projectPersistenceClient.commit(request));
     if (!isActiveProjectCommit(token, get)) {
       const state = get();
       const supersededByNewerDraft = result.ok
@@ -3067,6 +3108,17 @@ async function executeProjectCommit(
       return false;
     }
     return applyCommitResult(set, get, result, request);
+  } catch (error) {
+    if (activeProjectCommitToken === token) {
+      pendingFailedProjectCommit = request;
+      set({
+        canReloadDurableProject: false,
+        canRetryProjectCommit: true,
+        saveErrorCode: readErrorCode(error),
+        saveStatus: 'error',
+      });
+    }
+    return false;
   } finally {
     if (activeProjectCommitToken === token) activeProjectCommitToken = null;
   }
@@ -3556,7 +3608,7 @@ async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<ResolvedMo
   if (bridge === undefined) {
     throw new Error('Provider image model profile is unavailable');
   }
-  const profiles = await listAllProviderProfiles(bridge);
+  const profiles = await listRunnableProviderProfiles(bridge);
   const imageProfiles = filterImageModelProfiles(profiles);
   const requestedRoute = normalizeLegacyPlanModelRoute(plan.modelRoute);
   const selected = requestedRoute === undefined
@@ -4694,14 +4746,16 @@ async function flushPendingProjectSave(
 
   const hadDraft = projectAutosave.hasPending() || projectAutosave.hasInFlight();
   const flushBoundary = (async () => {
-    const saved = hadDraft ? await projectAutosave.flush(reason) : false;
+    const saved = hadDraft
+      ? await withProjectPersistenceTimeout(projectAutosave.flush(reason))
+      : false;
     if (get().saveStatus === 'read_only') return saved;
     if (hadDraft && !saved) return false;
 
-    return enqueueStableProjectOperation(set, get, async () => {
+    const persistStablePoint = async () => {
       const generation = projectPersistenceGeneration;
       const projectId = get().project.id;
-      const stablePoint = await projectPersistenceClient.stablePoint();
+      const stablePoint = await withProjectPersistenceTimeout(projectPersistenceClient.stablePoint());
       if (generation !== projectPersistenceGeneration || get().project.id !== projectId) return false;
       const state = get();
       const nextLifecycle = stablePoint.lifecycle ?? state.projectLifecycle;
@@ -4717,13 +4771,36 @@ async function flushPendingProjectSave(
       // workflow remains untitled.  The lifecycle controls the pending/saved
       // UI state above; the boolean reports whether this flush itself worked.
       return true;
-    });
+    };
+    return hadDraft || get().projectLifecycle !== 'untitled'
+      ? enqueueStableProjectOperation(set, get, persistStablePoint)
+      : persistStablePoint();
   })();
   const trackedFlushBoundary = flushBoundary.finally(() => {
     if (pendingProjectFlushBoundary === trackedFlushBoundary) pendingProjectFlushBoundary = null;
   });
   pendingProjectFlushBoundary = trackedFlushBoundary;
   return trackedFlushBoundary;
+}
+
+function withProjectPersistenceTimeout<T>(operation: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = globalThis.setTimeout(() => {
+      const error = new Error(`Project persistence timed out after ${PROJECT_PERSISTENCE_OPERATION_TIMEOUT_MS}ms`) as Error & { code: string };
+      error.code = 'SAVE_TIMEOUT';
+      reject(error);
+    }, PROJECT_PERSISTENCE_OPERATION_TIMEOUT_MS);
+    operation.then(
+      (value) => {
+        globalThis.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        globalThis.clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
 }
 
 async function ensureModelRunSaveBoundary(get: () => AppState): Promise<boolean> {

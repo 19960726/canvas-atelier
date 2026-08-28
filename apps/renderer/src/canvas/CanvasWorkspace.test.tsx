@@ -28,6 +28,8 @@ const figmaHybridStyles = readFileSync('apps/renderer/src/styles/figma-hybrid-ca
 
 beforeEach(() => {
   delete window.novusDesktop;
+  window.sessionStorage.clear();
+  window.localStorage.clear();
   replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
   resetAppStoreForTests();
   useAppStore.setState({ agentPanelCollapsed: true });
@@ -113,9 +115,9 @@ describe('CanvasWorkspace', () => {
   });
 
   it('targets the renderer root when styling the light reverse knowledge picker', () => {
-    expect(figmaHybridStyles).toContain(":root[data-theme='light'] .workspace--ui-gate .module-node--reverse-figma .module-node__knowledge-picker");
+    expect(figmaHybridStyles).toContain(":root[data-theme='light'] .workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__knowledge-picker");
     expect(figmaHybridStyles).toContain(":root[data-theme='light'] .workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__sheet--library");
-    expect(figmaHybridStyles).not.toContain(".workspace--ui-gate[data-theme='light'] .module-node--reverse-figma .module-node__knowledge-picker");
+    expect(figmaHybridStyles).not.toContain(".workspace--ui-gate[data-theme='light'] .module-node[data-module-type='reverse_agent'] .module-node__knowledge-picker");
     expect(figmaHybridStyles).not.toContain(".workspace--ui-gate[data-theme='light'] .agent-panel--skill-chat .skill-chat-workbench__sheet--library");
   });
 
@@ -914,13 +916,9 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
     const discard = screen.getByRole('button', { name: '不保存并新建' });
     fireEvent.click(discard);
-    expect(screen.getByRole('button', { name: '正在新建…' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '取消' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '正在新建…' }));
-
     await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('dialog', { name: '确认新建项目' })).toBeNull();
     resolveNewWorkflow?.();
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '确认新建项目' })).toBeNull());
   });
 
   it('toggles the overlay Agent drawer without changing project or undo state', () => {
@@ -1996,6 +1994,40 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(restore).toHaveBeenCalledWith('desktop-after'));
   });
 
+  it('shows only the active provider catalog in the canvas and Agent model menus', async () => {
+    const comflyProfile = {
+      provider: 'comfly' as const,
+      modelRoute: 'comfly-chat',
+      displayName: 'Comfly Chat Hidden',
+      modelId: 'comfly-chat',
+      capabilities: ['chat'] as const,
+    };
+    const relayProfile = {
+      provider: 'relayme' as const,
+      modelRoute: 'relayme-chat-active',
+      displayName: 'RelayMe Chat Active',
+      modelId: 'relayme-chat-active',
+      capabilities: ['chat'] as const,
+    };
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async (request?: { provider?: 'comfly' | 'relayme' }) => (
+          request?.provider === 'relayme' ? [relayProfile] : [comflyProfile]
+        )),
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+
+    render(<CanvasWorkspace />);
+    openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('RelayMe Chat Active'));
+    expect(screen.queryByText('Comfly Chat Hidden')).not.toBeInTheDocument();
+  });
+
   it('shows RelayMe models even when Comfly itself is unconfigured', async () => {
     const relayProfile = {
       provider: 'relayme' as const,
@@ -2016,6 +2048,7 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('RelayMe Vision Chat'));
   });
@@ -2045,6 +2078,7 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '打开设置' }));
     fireEvent.click(await screen.findByTestId('settings-drawer-close'));
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('RelayMe Chat After Save'));
   });
@@ -2053,6 +2087,7 @@ describe('CanvasWorkspace', () => {
     useAppStore.setState({ knowledgeBases: [knowledgeState()] });
     render(<CanvasWorkspace />);
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.click(screen.getByRole('button', { name: '展开上下文' }));
     expect(screen.getByText('scene-skill')).toBeVisible();
@@ -2604,6 +2639,7 @@ describe('CanvasWorkspace', () => {
     ]);
     render(<CanvasWorkspace />);
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
     expect(screen.queryByRole('button', { name: '使用 Image only' })).not.toBeInTheDocument();
@@ -2641,6 +2677,7 @@ describe('CanvasWorkspace', () => {
     ]);
     render(<CanvasWorkspace />);
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('GPT-5.4'));
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
@@ -2981,7 +3018,7 @@ function installSkillChatBridgeForTests(profiles = [{
   provider: 'comfly',
   modelRoute: 'chat/creative',
   displayName: 'Creative chat',
-  modelId: 'creative-chat',
+  modelId: 'codex-creative-chat',
   capabilities: ['chat'],
 }]): ReturnType<typeof vi.fn> {
   const chat = vi.fn(async () => ({

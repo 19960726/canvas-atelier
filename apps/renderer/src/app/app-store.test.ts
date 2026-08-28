@@ -5639,7 +5639,7 @@ describe('stable module graph commits', () => {
         () => { outcome = 'resolved'; },
         () => { outcome = 'rejected'; },
       );
-      await vi.advanceTimersByTimeAsync(120_000);
+      await vi.advanceTimersByTimeAsync(300_000);
       await Promise.resolve();
 
       expect(outcome).toBe('pending');
@@ -6000,6 +6000,50 @@ describe('stable module graph commits', () => {
     await expect(useAppStore.getState().runReverseAgentNode(reverse.id)).resolves.toMatchObject({ positivePrompt: 'Recovered reverse prompt.' });
     expect(analyzeReversePrompt).toHaveBeenCalledOnce();
     expect(useAppStore.getState().canRetryProjectCommit).toBe(false);
+  });
+
+  it('refreshes one durable revision conflict and starts reverse analysis on the first click', async () => {
+    const reverse = createCanvasModuleNode('reverse-run-after-conflict', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'gemini-reverse', role: 'Analyst', task: 'Analyze the cited image.', knowledgeBaseIds: [], referenceAssetIds: ['eeeeeeeeeeeeeeee'],
+    };
+    const asset = {
+      assetId: 'eeeeeeeeeeeeeeee', byteSize: 42, extension: 'png' as const, height: 100, label: 'Managed product',
+      mediaType: 'image/png' as const, origin: 'imported' as const, sha256: 'e'.repeat(64), width: 100,
+    };
+    const project = parseCanvasProject({ ...createStarterProject(), assets: [asset], nodes: [reverse], edges: [] });
+    const summary = { ...asset, displayUrl: 'novus-asset://project/session/eeeeeeeeeeeeeeee', usageCount: 0 };
+    const reloadDurableProject = vi.fn(async () => ({
+      availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const, project, revision: 9, saveStatus: 'saved' as const,
+    }));
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId, nonce: input.run.nonce, knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'Recovered conflict analysis.', keywords: ['recovered'], positivePrompt: 'Recovered conflict prompt.',
+      negativeConstraints: ['No distortion'], executionChecklist: ['Verify product identity'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      analyzeReversePrompt,
+      listProjectImages: async () => [summary],
+      reloadDurableProject,
+    }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    useAppStore.setState({
+      canReloadDurableProject: true,
+      canRetryProjectCommit: false,
+      desktopRevision: 8,
+      persistenceMode: 'desktop',
+      project,
+      projectCommitConflictCode: 'REVISION_CONFLICT',
+      projectImages: [summary],
+      projectLifecycle: 'durable',
+      saveErrorCode: 'REVISION_CONFLICT',
+      saveStatus: 'error',
+    });
+
+    await expect(useAppStore.getState().runReverseAgentNode(reverse.id)).resolves.toMatchObject({ positivePrompt: 'Recovered conflict prompt.' });
+    expect(reloadDurableProject).toHaveBeenCalledOnce();
+    expect(analyzeReversePrompt).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().projectCommitConflictCode).toBeNull();
   });
 
   it('persists a display-safe reverse Agent failure instead of returning to a blank idle node', async () => {
@@ -6568,6 +6612,46 @@ describe('explicit project save', () => {
       desktopRevision: 1,
       projectLifecycle: 'durable',
       saveStatus: 'saved',
+    });
+  });
+
+  it('does not leave an explicit save stuck in saving when the stable point never settles', async () => {
+    vi.useFakeTimers();
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const stablePoint = vi.fn(() => new Promise<never>(() => {}));
+    replaceProjectPersistenceClientForTests(createMockClient({ stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'untitled', saveStatus: 'pending' });
+
+    const saving = useAppStore.getState().saveProjectExplicitly();
+    expect(useAppStore.getState().saveStatus).toBe('saving');
+
+    await vi.advanceTimersByTimeAsync(15_001);
+
+    await expect(saving).resolves.toBe(false);
+    expect(useAppStore.getState()).toMatchObject({
+      saveErrorCode: 'SAVE_TIMEOUT',
+      saveStatus: 'error',
+    });
+  });
+
+  it('does not leave an idle autosave stuck in saving when commit never settles', async () => {
+    vi.useFakeTimers();
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const commit = vi.fn(() => new Promise<never>(() => {}));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'durable', saveStatus: 'saved' });
+
+    useAppStore.getState().setProject({ ...project, name: '自动保存超时测试' });
+    await vi.advanceTimersByTimeAsync(750);
+    expect(commit).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(15_001);
+
+    expect(useAppStore.getState()).toMatchObject({
+      saveErrorCode: 'SAVE_TIMEOUT',
+      saveStatus: 'error',
     });
   });
 });

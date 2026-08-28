@@ -111,7 +111,7 @@ describe('formal module node presentation', () => {
     renderCard(node);
 
     const card = screen.getByTestId('module-node-card');
-    expect(card).toHaveClass('module-node--reverse-figma');
+    expect(card).toHaveClass('module-node--reverse');
     expect(card).not.toHaveClass('module-node--workbench');
   });
 

@@ -1,11 +1,22 @@
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
+export type ActiveProvider = ProviderBridgeProfile['provider'] | null;
+
 type ProviderProfileBridge = {
   listProfiles(request?: { readonly provider?: ProviderBridgeProfile['provider'] }): Promise<ProviderBridgeProfile[]>;
   getStatus?(request?: { readonly provider?: ProviderBridgeProfile['provider'] }): Promise<{ readonly configured: boolean; readonly locked: boolean }>;
+  getActiveProvider?(): Promise<{ readonly activeProvider: ProviderBridgeProfile['provider'] | null }>;
 };
 
 const providerProfileRouteAliases = new Map<string, string>();
+
+export async function listRunnableProviderProfiles(bridge: ProviderProfileBridge): Promise<ProviderBridgeProfile[]> {
+  const active = await bridge.getActiveProvider?.();
+  if (active?.activeProvider === 'comfly' || active?.activeProvider === 'relayme') {
+    return (await bridge.listProfiles({ provider: active.activeProvider })).filter(shouldExposeProviderProfile).map(normalizeProviderProfilePresentation);
+  }
+  return listAllProviderProfiles(bridge);
+}
 
 export async function listAllProviderProfiles(bridge: ProviderProfileBridge): Promise<ProviderBridgeProfile[]> {
   providerProfileRouteAliases.clear();
@@ -42,6 +53,21 @@ export async function listAllProviderProfiles(bridge: ProviderProfileBridge): Pr
     }
   }
   return [...unique.values()].sort(compareProviderProfiles);
+}
+
+export function listActiveProviderProfiles(
+  profiles: readonly ProviderBridgeProfile[],
+  activeProvider: ActiveProvider,
+): ProviderBridgeProfile[] {
+  if (activeProvider === null) return [];
+  return profiles.filter((profile) => profile.provider === activeProvider);
+}
+
+export function selectFirstProfileForCapability(
+  profiles: readonly ProviderBridgeProfile[],
+  capability: ProviderBridgeProfile['capabilities'][number],
+): ProviderBridgeProfile | undefined {
+  return profiles.find((profile) => profile.capabilities.includes(capability));
 }
 
 export function listAgentChatProfiles(

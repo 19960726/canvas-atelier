@@ -14,6 +14,10 @@ export const PROVIDER_BRIDGE_CHANNELS = {
   unlock: 'novus-desktop:provider:unlock',
   listAvailableModelIds: 'novus-desktop:provider:list-available-model-ids',
   listProfiles: 'novus-desktop:provider:list-profiles',
+  getActiveProvider: 'novus-desktop:provider:get-active-provider',
+  setActiveProvider: 'novus-desktop:provider:set-active-provider',
+  loginRelayMe: 'novus-desktop:provider:login-relayme',
+  logoutRelayMe: 'novus-desktop:provider:logout-relayme',
   submitImageJob: 'novus-desktop:provider:submit-image-job',
   pollImageJob: 'novus-desktop:provider:poll-image-job',
   cancelImageJob: 'novus-desktop:provider:cancel-image-job',
@@ -50,16 +54,27 @@ const errorCodeSchema = z.enum([
   'CAPABILITY_UNSUPPORTED',
   'INVALID_REQUEST',
   'CREDENTIALS_LOCKED',
+  'PROVIDER_INACTIVE',
   'PROVIDER_UNAVAILABLE',
   'PROVIDER_INVALID_RESPONSE',
   'PROTECTED_PAYLOAD',
   'PROVIDER_ERROR',
 ]);
 export type ProviderBridgeErrorCode = z.infer<typeof errorCodeSchema>;
+export const ReverseProviderFailureReasonSchema = z.enum([
+  'TRUNCATED',
+  'NO_TEXT',
+  'INVALID_JSON',
+  'CORE_SCHEMA_INVALID',
+  'IDENTITY_MISMATCH',
+  'MEDIA_RESPONSIBILITIES_INVALID',
+]);
+export type ReverseProviderFailureReason = z.infer<typeof ReverseProviderFailureReasonSchema>;
 export interface ProviderBridgeError {
   code: ProviderBridgeErrorCode;
   message: string;
   retryable: boolean;
+  reason?: ReverseProviderFailureReason;
 }
 const terminalStatusSchema = z.enum(['completed', 'failed', 'cancelled']);
 const progressSchema = z.number().finite().min(0).max(1);
@@ -120,6 +135,17 @@ export const ProviderConfigurationStatusSchema = z.object({
   configured: z.boolean(),
   locked: z.boolean(),
   encryption: z.enum(['safeStorage', 'passphrase', 'unavailable']),
+}).strict();
+
+export const ProviderActiveStateSchema = z.object({
+  activeProvider: ProviderIdSchema.nullable(),
+}).strict();
+
+export const SetActiveProviderBridgeRequestSchema = ProviderActiveStateSchema;
+
+export const LoginRelayMeBridgeRequestSchema = z.object({
+  username: nonEmptyStringSchema.max(320),
+  password: nonEmptyStringSchema.max(1_024),
 }).strict();
 
 export const RevealProviderCredentialBridgeResultSchema = z.object({
@@ -241,6 +267,7 @@ export const ProviderBridgeErrorSchema: z.ZodType<ProviderBridgeError> = z.objec
   code: errorCodeSchema,
   message: nonEmptyStringSchema,
   retryable: z.boolean(),
+  reason: ReverseProviderFailureReasonSchema.optional(),
 }).strict().transform((value, context): ProviderBridgeError => {
   const normalized = normalizeProviderBridgeError(value);
   if (containsRawProviderTaskIdentifier(normalized.message)) {
@@ -548,6 +575,10 @@ export const ProviderBridgeRequestSchemas = {
   unlock: UnlockProviderBridgeRequestSchema,
   listAvailableModelIds: ProviderSelectionBridgeRequestSchema,
   listProfiles: ProviderSelectionBridgeRequestSchema,
+  getActiveProvider: noPayloadSchema,
+  setActiveProvider: SetActiveProviderBridgeRequestSchema,
+  loginRelayMe: LoginRelayMeBridgeRequestSchema,
+  logoutRelayMe: noPayloadSchema,
   submitImageJob: SubmitImageJobBridgeRequestSchema,
   pollImageJob: PollImageJobBridgeRequestSchema,
   cancelImageJob: CancelImageJobBridgeRequestSchema,
@@ -570,6 +601,10 @@ export const ProviderBridgeResponseSchemas = {
   unlock: ProviderConfigurationStatusSchema,
   listAvailableModelIds: z.array(safeModelIdSchema).max(1_000),
   listProfiles: z.array(ProviderBridgeProfileSchema),
+  getActiveProvider: ProviderActiveStateSchema,
+  setActiveProvider: ProviderActiveStateSchema,
+  loginRelayMe: ProviderActiveStateSchema,
+  logoutRelayMe: ProviderActiveStateSchema,
   submitImageJob: SubmitImageJobBridgeResultSchema,
   pollImageJob: PollImageJobBridgeResultSchema,
   cancelImageJob: CancelImageJobBridgeResultSchema,
@@ -597,6 +632,10 @@ const REQUEST_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
   [PROVIDER_BRIDGE_CHANNELS.unlock, ProviderBridgeRequestSchemas.unlock],
   [PROVIDER_BRIDGE_CHANNELS.listAvailableModelIds, ProviderBridgeRequestSchemas.listAvailableModelIds],
   [PROVIDER_BRIDGE_CHANNELS.listProfiles, ProviderBridgeRequestSchemas.listProfiles],
+  [PROVIDER_BRIDGE_CHANNELS.getActiveProvider, ProviderBridgeRequestSchemas.getActiveProvider],
+  [PROVIDER_BRIDGE_CHANNELS.setActiveProvider, ProviderBridgeRequestSchemas.setActiveProvider],
+  [PROVIDER_BRIDGE_CHANNELS.loginRelayMe, ProviderBridgeRequestSchemas.loginRelayMe],
+  [PROVIDER_BRIDGE_CHANNELS.logoutRelayMe, ProviderBridgeRequestSchemas.logoutRelayMe],
   [PROVIDER_BRIDGE_CHANNELS.submitImageJob, ProviderBridgeRequestSchemas.submitImageJob],
   [PROVIDER_BRIDGE_CHANNELS.pollImageJob, ProviderBridgeRequestSchemas.pollImageJob],
   [PROVIDER_BRIDGE_CHANNELS.cancelImageJob, ProviderBridgeRequestSchemas.cancelImageJob],
@@ -619,6 +658,10 @@ const RESPONSE_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
   [PROVIDER_BRIDGE_CHANNELS.unlock, ProviderBridgeResponseSchemas.unlock],
   [PROVIDER_BRIDGE_CHANNELS.listAvailableModelIds, ProviderBridgeResponseSchemas.listAvailableModelIds],
   [PROVIDER_BRIDGE_CHANNELS.listProfiles, ProviderBridgeResponseSchemas.listProfiles],
+  [PROVIDER_BRIDGE_CHANNELS.getActiveProvider, ProviderBridgeResponseSchemas.getActiveProvider],
+  [PROVIDER_BRIDGE_CHANNELS.setActiveProvider, ProviderBridgeResponseSchemas.setActiveProvider],
+  [PROVIDER_BRIDGE_CHANNELS.loginRelayMe, ProviderBridgeResponseSchemas.loginRelayMe],
+  [PROVIDER_BRIDGE_CHANNELS.logoutRelayMe, ProviderBridgeResponseSchemas.logoutRelayMe],
   [PROVIDER_BRIDGE_CHANNELS.submitImageJob, ProviderBridgeResponseSchemas.submitImageJob],
   [PROVIDER_BRIDGE_CHANNELS.pollImageJob, ProviderBridgeResponseSchemas.pollImageJob],
   [PROVIDER_BRIDGE_CHANNELS.cancelImageJob, ProviderBridgeResponseSchemas.cancelImageJob],
@@ -639,6 +682,9 @@ export type ProviderBridgeBlockedReason = 'credentials_locked';
 export type ProviderImageJobTerminalStatus = z.infer<typeof terminalStatusSchema>;
 export type ProviderBridgeProfile = z.infer<typeof ProviderBridgeProfileSchema>;
 export type ProviderConfigurationStatus = z.infer<typeof ProviderConfigurationStatusSchema>;
+export type ProviderActiveState = z.infer<typeof ProviderActiveStateSchema>;
+export type SetActiveProviderBridgeRequest = z.infer<typeof SetActiveProviderBridgeRequestSchema>;
+export type LoginRelayMeBridgeRequest = z.infer<typeof LoginRelayMeBridgeRequestSchema>;
 export type RevealProviderCredentialBridgeResult = z.infer<typeof RevealProviderCredentialBridgeResultSchema>;
 export type ProviderConnectionCheckResult = z.infer<typeof ProviderConnectionCheckResultSchema>;
 export type ConfigureProviderBridgeRequest = z.infer<typeof ConfigureProviderBridgeRequestSchema>;
@@ -677,6 +723,7 @@ export type ProviderBridgeIpcEnvelope<T> =
 export interface ProviderBridgeException extends Error {
   code: ProviderBridgeErrorCode;
   retryable: boolean;
+  reason?: ReverseProviderFailureReason;
 }
 
 export function parseProviderBridgeRequest(channel: string, request: unknown): unknown {
@@ -724,7 +771,7 @@ export function parseProviderBridgeEnvelope<T>(channel: string, envelope: unknow
     'response',
   ) as z.infer<typeof providerBridgeEnvelopeSchema>;
   if (!parsed.ok) {
-    throw createProviderBridgeError(parsed.error.code, parsed.error.message, parsed.error.retryable);
+    throw createProviderBridgeError(parsed.error.code, parsed.error.message, parsed.error.retryable, parsed.error.reason);
   }
   return parseProviderBridgeResponse(channel, parsed.value) as T;
 }
@@ -763,10 +810,12 @@ export function createProviderBridgeError(
   code: ProviderBridgeErrorCode,
   message: string,
   retryable = false,
+  reason?: ReverseProviderFailureReason,
 ): ProviderBridgeException {
   const error = new Error(sanitizeProviderMessage(message)) as ProviderBridgeException;
   error.code = code;
   error.retryable = retryable;
+  if (reason !== undefined) error.reason = reason;
   return error;
 }
 
@@ -776,6 +825,9 @@ export function normalizeProviderBridgeError(error: unknown): ProviderBridgeErro
       code: isProviderBridgeErrorCode(error.code) ? error.code : 'PROVIDER_ERROR',
       message: sanitizeProviderMessage(error.message),
       retryable: error.retryable,
+      ...(ReverseProviderFailureReasonSchema.safeParse(error.reason).success
+        ? { reason: error.reason as ReverseProviderFailureReason }
+        : {}),
     };
   }
   return {

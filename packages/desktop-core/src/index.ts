@@ -322,6 +322,8 @@ export type {
   UnlockProviderBridgeRequest,
 } from './provider-bridge.js';
 export { createRelayMeProviderService } from './relayme-provider-service.js';
+export { ProviderActiveStore, createProviderActiveStore } from './provider-active-store.js';
+export type { ActiveProvider, ProviderActiveState as PersistedProviderActiveState } from './provider-active-store.js';
 export {
   SEEDANCE_25_REVERSE_SKILL_ID,
   SEEDANCE_25_REVERSE_SKILL_VERSION,
@@ -357,7 +359,7 @@ export type {
   CacheDirectoryState,
   NodeCacheDirectoryAdaptersOptions,
 } from './cache-directory-service.js';
-export type { MockRelease, UpdateCheckResult, UpdateFeed, UpdateRestartResult, UpdateState, UpdateStatus } from './update-client.js';
+export type { MockRelease, UpdateCheckResult, UpdateDriver, UpdateDriverEvent, UpdateFeed, UpdateRestartResult, UpdateState, UpdateStatus } from './update-client.js';
 export { createDesktopBridgeHandlers, registerDesktopBridgeHandlers } from './bridge-handlers.js';
 export type {
   BridgeDialogAdapter,
@@ -393,7 +395,7 @@ export { registerMcpClientConfigIpc } from './mcp-client-ipc.js';
 export type { McpClientConfigIpcMainLike, McpClientConfigIpcRegistration } from './mcp-client-ipc.js';
 export { createMcpClientConfigManager } from './mcp-client-config.js';
 export type { McpClientConfigManager, McpClientConfigManagerOptions, McpClientHealthResult, McpClientId, McpClientStatus } from './mcp-client-config.js';
-export { createMcpRuntimeService } from './mcp-runtime-service.js';
+export { createMcpRuntimeService, presentMcpRuntimeStatus } from './mcp-runtime-service.js';
 export type { McpPipeRequestEnvelope, McpPipeResponseEnvelope, McpRuntimeService, McpRuntimeServiceOptions, McpRuntimeServiceStatus } from './mcp-runtime-service.js';
 
 export { createMcpStdioHealthCheck } from './mcp-stdio-health';

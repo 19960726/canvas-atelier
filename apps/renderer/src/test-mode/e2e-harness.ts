@@ -5,6 +5,7 @@ import type {
   ProjectVideoAssetSummary,
   ProviderBridgeProfile,
   SubmitImageJobBridgeRequest,
+  UpdateState,
 } from '@agent-canvas/desktop-core';
 import {
   createSkillPromotionCandidateFingerprint,
@@ -65,6 +66,7 @@ const fixedNow = '2026-07-16T09:00:00.000Z';
 const e2eNonce = import.meta.env.VITE_NOVUS_E2E_NONCE ?? 'novus-e2e-local';
 
 interface RuntimeState {
+  activeProvider: ProviderBridgeProfile['provider'] | null;
   assetSequence: number;
   cacheDirectoryPath: string;
   cacheDirectoryIsDefault: boolean;
@@ -100,6 +102,9 @@ interface RuntimeState {
     projectId: string;
   }>;
   storage: ModelJobStorage;
+  updateListeners: Set<(state: UpdateState) => void>;
+  updateRestartCount: number;
+  updateState: UpdateState;
 }
 
 export function installRendererE2EHarness(): void {
@@ -136,6 +141,8 @@ export function installRendererE2EHarness(): void {
       runtime.providerProfiles = createE2EProviderProfiles();
       runtime.skillSyncWrites = [];
       runtime.storage = createE2EModelJobStorage(runtime);
+      runtime.updateRestartCount = 0;
+      publishE2EUpdate(runtime, { status: 'idle' });
       replaceModelJobExecutorForTests(createModelExecutor(runtime));
       replaceModelJobStorageForTests(runtime.storage);
       resetAppStoreForTests();
@@ -161,6 +168,8 @@ export function installRendererE2EHarness(): void {
       runtime.providerProfiles = createE2EProviderProfiles();
       runtime.skillSyncWrites = [];
       runtime.storage = createE2EModelJobStorage(runtime);
+      runtime.updateRestartCount = 0;
+      publishE2EUpdate(runtime, { status: 'idle' });
       replaceModelJobExecutorForTests(createModelExecutor(runtime));
       replaceModelJobStorageForTests(runtime.storage);
       resetAppStoreForTests({ project: 'empty' });
@@ -185,6 +194,9 @@ export function installRendererE2EHarness(): void {
     },
     setModelCancellationMode(mode) {
       runtime.modelCancellationMode = mode;
+    },
+    publishUpdateState(state) {
+      publishE2EUpdate(runtime, state);
     },
     queueProjectImageImport(input) {
       runtime.pendingImageImports.push({
@@ -241,33 +253,37 @@ export function installRendererE2EHarness(): void {
       useAppStore.setState({ project: nextProject });
       return true;
     },
-    async seedGeneratedImageResult() {
+    async seedGeneratedImageResult(outputCount: 1 | 2 | 3 | 4 = 1) {
       const state = useAppStore.getState();
       const generationNode = findModuleNodeByType(state.project, 'image_generation');
       if (generationNode === null) return false;
-      const asset: ProjectImageAsset = {
-        assetId: '0123456789abcdef',
+      const assets: ProjectImageAsset[] = Array.from({ length: outputCount }, (_, index) => {
+        const assetId = `${index}123456789abcdef`;
+        return {
+        assetId,
         byteSize: 2048,
         extension: 'png',
         height: 1024,
-        label: 'Generated result 1',
+        label: `Generated result ${index + 1}`,
         mediaType: 'image/png',
         origin: 'generated',
-        sha256: '0123456789abcdef'.repeat(4),
+        sha256: assetId.repeat(4),
         width: 1024,
-      };
+        };
+      });
+      const generatedAssetIds = new Set(assets.map((asset) => asset.assetId));
       const project = {
         ...state.project,
-        assets: [...(state.project.assets ?? []).filter((candidate) => candidate.assetId !== asset.assetId), asset],
+        assets: [...(state.project.assets ?? []).filter((candidate) => !generatedAssetIds.has(candidate.assetId)), ...assets],
       };
-      const summary = createE2EProjectImageSummary(project, asset);
+      const summaries = assets.map((asset) => createE2EProjectImageSummary(project, asset));
       runtime.currentProject = project;
-      runtime.projectImages = [summary];
+      runtime.projectImages = summaries;
       useAppStore.setState({
         project,
-        projectImages: [summary],
-        modelJobs: [{
-          id: 'photoshop-e2e-job',
+        projectImages: summaries,
+        modelJobs: assets.map((asset, index) => ({
+          id: `photoshop-e2e-job-${index + 1}`,
           kind: 'image',
           modelId: 'e2e-image-model',
           status: 'completed',
@@ -275,7 +291,7 @@ export function installRendererE2EHarness(): void {
           retryCount: 0,
           referenceAssetIds: [],
           resultAssetId: asset.assetId,
-        }],
+        })),
       });
       return true;
     },
@@ -326,6 +342,7 @@ export function installRendererE2EHarness(): void {
         projectNodeTypes: state.project.nodes.map((node) => node.type),
         skillSyncWrites: runtime.skillSyncWrites.map((write) => ({ ...write })),
         undoDepth: state.undoStack.length,
+        updateRestartCount: runtime.updateRestartCount,
       };
     },
   };
@@ -333,6 +350,7 @@ export function installRendererE2EHarness(): void {
 
 function createRuntimeState(): RuntimeState {
   const runtime: RuntimeState = {
+    activeProvider: 'comfly',
     assetSequence: 0,
     cacheDirectoryPath: 'Browser acceptance cache',
     cacheDirectoryIsDefault: true,
@@ -352,6 +370,9 @@ function createRuntimeState(): RuntimeState {
     revision: 0,
     skillSyncWrites: [],
     storage: createInMemoryModelJobStorage(),
+    updateListeners: new Set(),
+    updateRestartCount: 0,
+    updateState: { status: 'idle' },
   };
   runtime.storage = createE2EModelJobStorage(runtime);
   return runtime;
@@ -737,6 +758,19 @@ function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesk
       importToPhotoshop: async () => ({ ok: true as const, layerName: 'Browser Photoshop mock' }),
     },
     provider: {
+      getActiveProvider: async () => ({ activeProvider: runtime.activeProvider }),
+      setActiveProvider: async ({ activeProvider }: { readonly activeProvider: ProviderBridgeProfile['provider'] | null }) => {
+        runtime.activeProvider = activeProvider;
+        return { activeProvider: runtime.activeProvider };
+      },
+      loginRelayMe: async () => {
+        runtime.activeProvider = 'relayme';
+        return { activeProvider: runtime.activeProvider };
+      },
+      logoutRelayMe: async () => {
+        if (runtime.activeProvider === 'relayme') runtime.activeProvider = null;
+        return { activeProvider: runtime.activeProvider };
+      },
       ackImageJobTerminal: async () => ({ acknowledged: true as const }),
       cancelImageJob: async () => ({ status: 'cancelled' as const }),
       configure: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
@@ -782,6 +816,36 @@ function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesk
         return { path: runtime.cacheDirectoryPath, isDefault: true, available: true, busy: false, error: null };
       },
       openCacheDirectory: async () => ({ opened: true }),
+    },
+    updates: {
+      getState: async () => ({ ...runtime.updateState }),
+      subscribeState: (listener: (state: UpdateState) => void) => {
+        runtime.updateListeners.add(listener);
+        return () => runtime.updateListeners.delete(listener);
+      },
+      check: async () => {
+        publishE2EUpdate(runtime, { status: 'available', version: '1.6.63', notes: '本地 E2E 更新说明' });
+        return { state: { ...runtime.updateState } };
+      },
+      download: async () => {
+        publishE2EUpdate(runtime, { status: 'downloading', version: runtime.updateState.version, progress: 0.42 });
+        return { state: { ...runtime.updateState } };
+      },
+      defer: () => {
+        publishE2EUpdate(runtime, { status: 'idle', message: 'Update deferred.' });
+        return { state: { ...runtime.updateState } };
+      },
+      retry: async () => {
+        publishE2EUpdate(runtime, { status: 'available', version: '1.6.63', notes: '本地 E2E 更新说明' });
+        return { state: { ...runtime.updateState } };
+      },
+      restart: async () => {
+        if (runtime.updateState.status !== 'ready_to_restart') {
+          return { accepted: false, reason: 'UPDATE_NOT_DOWNLOADED' as const };
+        }
+        runtime.updateRestartCount += 1;
+        return { accepted: true };
+      },
     },
     history: {
       addProjectReferences: async () => ({ records: [], revision: 0 }),
@@ -1292,6 +1356,11 @@ function publishKnowledge(runtime: RuntimeState): void {
   }
 }
 
+function publishE2EUpdate(runtime: RuntimeState, state: UpdateState): void {
+  runtime.updateState = { ...state };
+  for (const listener of runtime.updateListeners) listener({ ...runtime.updateState });
+}
+
 function cloneKnowledgeStates(states: KnowledgeBaseStateSummary[]): KnowledgeBaseStateSummary[] {
   return states.map((state) => ({
     ...state,
@@ -1322,7 +1391,7 @@ declare global {
         config?: Record<string, unknown>;
         execution?: { state: CanvasModuleExecutionState; latestExecutionId?: string };
       }): Promise<boolean>;
-      seedGeneratedImageResult(): Promise<boolean>;
+      seedGeneratedImageResult(outputCount?: 1 | 2 | 3 | 4): Promise<boolean>;
       getState(): {
         commitCount: number;
         durableProjectContainsTransientImageUrl: boolean;
@@ -1346,9 +1415,11 @@ declare global {
           projectId: string;
         }>;
         undoDepth: number;
+        updateRestartCount: number;
       };
       failNextModelJobEnqueue(): void;
       setModelCancellationMode(mode: 'complete' | 'hang'): void;
+      publishUpdateState(state: UpdateState): void;
       nonce: string;
       queueProjectImageImport(input: {
         byteSize: number;

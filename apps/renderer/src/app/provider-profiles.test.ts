@@ -1,8 +1,42 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { filterProviderCatalogProfiles, listAllProviderProfiles, listAgentChatProfiles, listCodexAgentProfiles, selectProviderProfile } from './provider-profiles';
+import { filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles, listRunnableProviderProfiles, listAgentChatProfiles, listCodexAgentProfiles, selectFirstProfileForCapability, selectProviderProfile } from './provider-profiles';
+
+describe('active provider model boundary', () => {
+  const profiles = [
+    { provider: 'comfly' as const, modelRoute: 'comfly/chat', displayName: 'Comfly Chat', capabilities: ['chat' as const] },
+    { provider: 'relayme' as const, modelRoute: 'relay/chat', displayName: 'Relay Chat', capabilities: ['chat' as const] },
+    { provider: 'relayme' as const, modelRoute: 'relay/image', displayName: 'Relay Image', capabilities: ['image_generation' as const] },
+  ];
+
+  it('returns only the active provider inventory and nothing when no provider is active', () => {
+    expect(listActiveProviderProfiles(profiles, 'relayme').map((profile) => profile.modelRoute)).toEqual([
+      'relay/chat',
+      'relay/image',
+    ]);
+    expect(listActiveProviderProfiles(profiles, null)).toEqual([]);
+  });
+
+  it('selects the first model by declared capability rather than model-name heuristics', () => {
+    expect(selectFirstProfileForCapability(profiles, 'image_generation')).toEqual(
+      expect.objectContaining({ provider: 'relayme', modelRoute: 'relay/image' }),
+    );
+    expect(selectFirstProfileForCapability(profiles, 'video_generation')).toBeUndefined();
+  });
+});
 
 describe('listAllProviderProfiles', () => {
+  it('uses only the active provider catalog for runnable canvas routes', async () => {
+    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => [{
+      provider: provider ?? 'comfly', modelRoute: `${provider}-image`, displayName: `${provider} image`, capabilities: ['image_generation' as const],
+    }]);
+    await expect(listRunnableProviderProfiles({
+      listProfiles,
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
+    })).resolves.toEqual([expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly-image' })]);
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledWith({ provider: 'comfly' });
+  });
   it('queries Comfly and RelayMe explicitly and keeps both provider catalogs', async () => {
     const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [
       { provider: 'relayme' as const, modelRoute: 'video/generate', displayName: 'Relay Video', modelId: 'relay-video', capabilities: ['video_generation' as const] },

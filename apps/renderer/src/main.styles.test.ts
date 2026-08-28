@@ -7,6 +7,19 @@ function readNormalizedFile(path: string): string {
 }
 
 describe('renderer stylesheet precedence', () => {
+  it('keeps visible Agent message content selectable in the final app stylesheet', () => {
+    const app = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/app.css'));
+    const terminal = app.slice(app.lastIndexOf('AGENT MESSAGE TEXT SELECTION'));
+
+    expect(terminal).toContain('.skill-chat-workbench__stream');
+    expect(terminal).toContain('.skill-chat-workbench__message');
+    expect(terminal).toContain('.skill-chat-workbench__reverse-entry');
+    expect(terminal).toContain('.skill-chat-workbench__request-card');
+    expect(terminal).toContain('.skill-chat-workbench__sources');
+    expect(terminal).toContain('-webkit-user-select: text;');
+    expect(terminal).toContain('user-select: text;');
+  });
+
   it('loads one release layout contract after every legacy and UI Gate stylesheet', () => {
     const source = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/main.tsx'));
     const releaseImport = source.indexOf("import './styles/release-layout-contract.css';");
@@ -56,6 +69,22 @@ describe('renderer stylesheet precedence', () => {
     expect(workspace).not.toContain('className="workspace-view-tabs"');
   });
 
+  it('keeps every interactive module-node control on the final 38px contract', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+
+    expect(release).toContain('MODULE NODE CONTROL SIZE CONTRACT');
+    expect(release).toMatch(/\.workspace--ui-gate \.module-node :is\(button, select, input\) \{[\s\S]*?height: 38px !important;[\s\S]*?min-height: 38px !important;/);
+    expect(release).toMatch(/\.workspace--ui-gate \.module-node :is\(\.module-node__icon-button, \.module-node__collapse-editor\) \{[\s\S]*?width: 36px !important;[\s\S]*?height: 36px !important;/);
+    expect(release).toMatch(/\.workspace--ui-gate \.module-node :is\(\.module-node__agent-media-slot, \.connected-agent-media-slots__item\) \{[\s\S]*?width: 36px !important;[\s\S]*?height: 36px !important;/);
+  });
+
+  it('keeps the save split button wide enough for its icon, label, and toggle zone', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    expect(release).toMatch(/\.workspace--ui-gate \.save-project-control \{[\s\S]*?grid-template-columns: 108px 30px !important;[\s\S]*?width: 138px !important;/);
+    expect(release).toMatch(/\.workspace--ui-gate \.save-project-control__main \{[\s\S]*?width: 108px !important;[\s\S]*?border-radius: 10px 0 0 10px !important;/);
+    expect(release).toMatch(/\.workspace--ui-gate \.save-project-control__toggle \{[\s\S]*?width: 30px !important;[\s\S]*?height: 36px !important;/);
+  });
+
   it('uses the compact reference control height and contain-fit results for image and video nodes', () => {
     const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
 
@@ -100,10 +129,10 @@ describe('renderer stylesheet precedence', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
     const legacy = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/app.css'));
 
-    expect(hybrid).toContain(".module-node--reverse-figma[data-module-type='reverse_agent']");
+    expect(hybrid).toContain(".module-node[data-module-type='reverse_agent']");
     expect(hybrid).toMatch(/top:\s*87px;\s*left:\s*17px;\s*width:\s*390px;\s*height:\s*44px/);
     expect(hybrid).toMatch(/top:\s*139px;\s*left:\s*17px;\s*width:\s*390px;\s*height:\s*58px/);
-    expect(hybrid).toContain('.module-node--reverse-figma .module-node__workbench-header > span {\n  font-weight: 400;');
+    expect(hybrid).toContain(".module-node[data-module-type='reverse_agent'] .module-node__workbench-header > span {\n  font-weight: 400;");
     expect(hybrid).toContain('grid-template-columns: 178px 200px');
     expect(legacy).not.toContain('Final fixed-coordinate Figma contract');
     expect(legacy).not.toContain('Restore the grid flow for responsive content');
@@ -117,7 +146,7 @@ describe('renderer stylesheet precedence', () => {
     expect(terminal).toContain('.module-node__agent-result-scroll');
     expect(terminal).toMatch(/\.module-node__agent-form-flow \{[\s\S]*?position:\s*static !important;[\s\S]*?display:\s*grid !important;[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) !important;/);
     expect(terminal).toMatch(/\.module-node__agent-result-scroll \{[\s\S]*?max-height:\s*260px;[\s\S]*?overflow:\s*auto;/);
-    expect(terminal).toMatch(/\.module-node--reverse-figma \.module-node__agent-knowledge \{[\s\S]*?position:\s*relative !important;/);
+    expect(terminal).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__agent-knowledge \{[\s\S]*?position:\s*relative !important;/);
     expect(terminal).toMatch(/\.module-node__agent-result-panel > :is\(\[role='alert'\], \[role='status'\]\) \{[\s\S]*?min-width:\s*0 !important;[\s\S]*?overflow-wrap:\s*anywhere !important;[\s\S]*?word-break:\s*break-word !important;/);
     expect(terminal).not.toMatch(/top:\s*(?:87|139)px/);
     expect(terminal).not.toMatch(/height:\s*(?:96|130)px/);
@@ -127,8 +156,8 @@ describe('renderer stylesheet precedence', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
     const terminal = hybrid.slice(hybrid.lastIndexOf('Final reverse agent form-flow contract'));
 
-    expect(terminal).toMatch(/\.module-node--reverse-figma\[data-module-type='reverse_agent'\] > \.module-node__ports \.module-node__ports-column--outputs \{[\s\S]*?margin-right:\s*8px !important;[\s\S]*?overflow:\s*clip !important;/);
-    expect(terminal).toMatch(/\.module-node--reverse-figma\[data-module-type='reverse_agent'\] > \.module-node__ports \.module-node__port-row--output \{[\s\S]*?overflow:\s*clip !important;/);
+    expect(terminal).toMatch(/\.module-node\[data-module-type='reverse_agent'\] > \.module-node__ports \.module-node__ports-column--outputs \{[\s\S]*?margin-right:\s*8px !important;[\s\S]*?overflow:\s*clip !important;/);
+    expect(terminal).toMatch(/\.module-node\[data-module-type='reverse_agent'\] > \.module-node__ports \.module-node__port-row--output \{[\s\S]*?overflow:\s*clip !important;/);
   });
 
   it('keeps the Figma result preview inside its 404 × 230 result card', () => {
@@ -164,7 +193,7 @@ describe('renderer stylesheet precedence', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
     const finalGate = hybrid.slice(hybrid.lastIndexOf('Final UI Gate lock'));
 
-    expect(finalGate).toMatch(/module-node--image-figma[\s\S]*?module-node--video-figma[\s\S]*?width: 654px !important;[\s\S]*?height: 486px !important;[\s\S]*?min-height: 486px !important;/);
+    expect(finalGate).toMatch(/module-node(?:\.module-node)?\[data-module-type='image_generation'\][\s\S]*?module-node(?:\.module-node)?\[data-module-type='video_generation'\][\s\S]*?width: 654px !important;[\s\S]*?height: 486px !important;[\s\S]*?min-height: 486px !important;/);
     expect(finalGate).toMatch(/data-editor-expanded='true'[\s\S]*?width: 900px !important;[\s\S]*?height: 830px !important;[\s\S]*?min-height: 830px !important;/);
     expect(finalGate).toMatch(/width: 864px !important;[\s\S]*?height: 420px !important;[\s\S]*?min-height: 420px !important;/);
     expect(finalGate).toMatch(/width: 864px !important;[\s\S]*?height: 170px !important;[\s\S]*?min-height: 170px !important;/);
@@ -173,7 +202,7 @@ describe('renderer stylesheet precedence', () => {
   it('centers the image resolution segmented labels inside the 24px Figma control cells', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.module-node--image-figma\[data-module-type='image_generation'\] \.module-node__resolution-segmented button \{[\s\S]*?display: grid !important;[\s\S]*?place-items: center !important;[\s\S]*?height: 24px !important;[\s\S]*?line-height: 1 !important;[\s\S]*?text-align: center !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='image_generation'\] \.module-node__resolution-segmented button \{[\s\S]*?display: grid !important;[\s\S]*?place-items: center !important;[\s\S]*?height: 24px !important;[\s\S]*?line-height: 1 !important;[\s\S]*?text-align: center !important;/);
   });
 
   it('uses the same 614 by 320 collapsed preview contract for image and video generation', () => {
@@ -186,9 +215,9 @@ describe('renderer stylesheet precedence', () => {
   it('does not make the formal video card or its React Flow wrapper click-through', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
     const videoInteractionStart = hybrid.indexOf('The released video node is a normal interactive React Flow surface');
-    const videoInteraction = hybrid.slice(videoInteractionStart, hybrid.indexOf('.workspace--ui-gate .module-node--video-figma[data-module-type=\'video_generation\'] .module-node__video-preview-play', videoInteractionStart));
+    const videoInteraction = hybrid.slice(videoInteractionStart, hybrid.indexOf(".workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-preview-play", videoInteractionStart));
 
-    expect(videoInteraction).toContain(".module-node--video-figma[data-module-type='video_generation'] {\n  pointer-events: auto;");
+    expect(videoInteraction).toContain(".module-node[data-module-type='video_generation'] {\n  pointer-events: auto;");
     expect(videoInteraction).not.toContain('.react-flow__node.canvas-flow-node--module-video_generation {\n  pointer-events: none;');
   });
 
@@ -226,23 +255,23 @@ describe('renderer stylesheet precedence', () => {
   it('hides a stale connected-media text rail even when an old node shape is hydrated', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.module-node--video-figma\[data-module-type='video_generation'\][\s\S]*?\.module-node__connected-video-media-source,[\s\S]*?display: none !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\][\s\S]*?\.module-node__connected-video-media-source,[\s\S]*?display: none !important;/);
     expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\] \.module-node__connected-video-media-source,[\s\S]*?\.module-node\[data-module-type='video_generation'\] \.module-node__reference-slots--inline \{\n  display: none !important;/);
   });
 
   it('matches Figma 332:2 for the formal video preview control', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.module-node--video-figma\[data-module-type='video_generation'\] \.module-node__video-result-stage > svg \{\n  display: none;\n\}/);
-    expect(hybrid).toMatch(/\.module-node--video-figma\[data-module-type='video_generation'\] \.module-node__video-preview-play \{[\s\S]*?width: 62px;[\s\S]*?height: 62px;[\s\S]*?background: var\(--gate-accent\);[\s\S]*?border-radius: 14px;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\] \.module-node__video-result-stage > svg \{\n  display: none;\n\}/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\] \.module-node__video-preview-play \{[\s\S]*?width: 62px;[\s\S]*?height: 62px;[\s\S]*?background: var\(--gate-accent\);[\s\S]*?border-radius: 14px;/);
   });
 
   it('uses the fixed Figma video parameter rail and its full-width shared primary action', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
-    const terminalVideoActionStart = hybrid.lastIndexOf(".workspace--ui-gate .module-node--video-figma[data-module-type='video_generation'] .module-node__video-figma-composer > .module-node__run-generation {");
+    const terminalVideoActionStart = hybrid.lastIndexOf(".workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-figma-composer > .module-node__run-generation {");
     const terminalVideoAction = hybrid.slice(terminalVideoActionStart, hybrid.indexOf('}', terminalVideoActionStart) + 1);
 
-    expect(hybrid).toMatch(/\.module-node--video-figma \.module-node__video-figma-composer \.module-node__video-control-bar \{[\s\S]*?grid-template-columns: 160px 100px 68px 88px 62px;[\s\S]*?height: 44px;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\] \.module-node__video-figma-composer \.module-node__video-control-bar \{[\s\S]*?grid-template-columns: 160px 100px 68px 88px 62px;[\s\S]*?height: 44px;/);
     expect(terminalVideoAction).toMatch(/top: 296px !important;[\s\S]*?left: 0 !important;[\s\S]*?width: 624px !important;[\s\S]*?height: 34px !important;/);
     expect(terminalVideoAction).toContain('justify-content: center !important;');
     expect(terminalVideoAction).toContain('text-align: center !important;');
@@ -258,7 +287,7 @@ describe('renderer stylesheet precedence', () => {
   it('centers image model and ratio control labels in the shared Figma button contract', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.module-node--image-figma\[data-module-type='image_generation'\] :is\(select\[aria-label='Image generation model route'\], select\[aria-label='Image generation aspect ratio'\]\) \{[\s\S]*?text-align: center !important;[\s\S]*?text-align-last: center !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='image_generation'\] :is\(select\[aria-label='Image generation model route'\], select\[aria-label='Image generation aspect ratio'\]\) \{[\s\S]*?text-align: center !important;[\s\S]*?text-align-last: center !important;/);
   });
 
   it('uses one readable terminal parameter-rail contract for image and video generation', () => {
@@ -267,8 +296,8 @@ describe('renderer stylesheet precedence', () => {
     const contract = start < 0 ? '' : hybrid.slice(start);
 
     expect(start).toBeGreaterThanOrEqual(0);
-    expect(contract).toMatch(/module-node--image-figma[^\{]*module-node__generation-control-bar \{[^}]*grid-template-columns: minmax\(0, 1\.55fr\) minmax\(0, \.72fr\) minmax\(0, \.72fr\) minmax\(0, \.72fr\) minmax\(0, 1fr\) !important;/);
-    expect(contract).toMatch(/module-node--video-figma[^\{]*module-node__video-control-bar \{[^}]*grid-template-columns: minmax\(0, 1\.55fr\) minmax\(0, \.82fr\) minmax\(0, \.82fr\) minmax\(0, \.72fr\) minmax\(0, 1fr\) !important;/);
+    expect(contract).toMatch(/module-node[data-module-type='image_generation'][^\{]*module-node__generation-control-bar \{[^}]*grid-template-columns: minmax\(0, 1\.55fr\) minmax\(0, \.72fr\) minmax\(0, \.72fr\) minmax\(0, \.72fr\) minmax\(0, 1fr\) !important;/);
+    expect(contract).toMatch(/module-node[data-module-type='video_generation'][^\{]*module-node__video-control-bar \{[^}]*grid-template-columns: minmax\(0, 1\.55fr\) minmax\(0, \.82fr\) minmax\(0, \.82fr\) minmax\(0, \.72fr\) minmax\(0, 1fr\) !important;/);
     expect(contract).toMatch(/:is\([\s\S]*?generation-parameter-popover[\s\S]*?\) \{[\s\S]*?height: 38px !important;[\s\S]*?border-radius: 10px !important;/);
     expect(contract).toMatch(/generation-parameter-popover__trigger > span \{[\s\S]*?overflow: visible !important;[\s\S]*?text-overflow: clip !important;[\s\S]*?text-align: center !important;/);
     expect(contract).toMatch(/generation-parameter-popover--ratio-grid \{[\s\S]*?width: 112px !important;[\s\S]*?min-width: 112px !important;/);
@@ -291,8 +320,8 @@ describe('renderer stylesheet precedence', () => {
     expect(finalGeometry).toMatch(/module-node__video-control-bar > select \{[\s\S]*?height: 38px !important;[\s\S]*?max-height: 38px !important;/);
     expect(hybrid).toMatch(/module-node__video-control-bar > \.generation-parameter-popover \{[\s\S]*?height: 38px !important;[\s\S]*?max-height: 38px !important;/);
     expect(finalGeometry).toMatch(/module-node__video-control-bar > \.module-node__run-generation \{[\s\S]*?height: 38px !important;[\s\S]*?max-height: 38px !important;/);
-    expect(finalGeometry).toMatch(/module-node--video-figma\[data-module-type='video_generation'\] \.module-node__video-figma-composer \.module-node__video-control-bar \{[\s\S]*?grid-template-rows: 38px !important;[\s\S]*?height: 60px !important;[\s\S]*?gap: 8px !important;/);
-    expect(finalGeometry).toMatch(/module-node--video-figma\[data-module-type='video_generation'\] \.module-node__video-figma-composer \.module-node__video-control-bar > select[\s\S]*?height: 38px !important;[\s\S]*?max-height: 38px !important;/);
+    expect(finalGeometry).toMatch(/module-node(?:\.module-node)?\[data-module-type='video_generation'\][\s\S]*?\.module-node__video-figma-composer \.module-node__video-control-bar \{[\s\S]*?grid-template-rows: 38px !important;[\s\S]*?height: 60px !important;[\s\S]*?gap: 8px !important;/);
+    expect(finalGeometry).toMatch(/module-node(?:\.module-node)?\[data-module-type='video_generation'\][\s\S]*?\.module-node__video-figma-composer \.module-node__video-control-bar > select[\s\S]*?height: 38px !important;[\s\S]*?max-height: 38px !important;/);
     expect(hybrid).toMatch(/select\[aria-label='Video preview mode'\],[\s\S]*?select\[aria-label='Video preview audio'\][\s\S]*?display: none !important;/);
     expect(contract).toMatch(/module-node__generation-control-bar > \.module-node__run-generation,[\s\S]*?module-node__video-control-bar > \.module-node__run-generation \{[^}]*max-width: 100% !important;/);
   });
@@ -334,23 +363,23 @@ describe('renderer stylesheet precedence', () => {
   it('locks reverse action buttons to the Figma 408:2 centered geometry', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__workbench-actions \{[\s\S]*?height: 36px !important;/);
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__agent-actions button \{[\s\S]*?display: flex !important;[\s\S]*?height: 36px !important;[\s\S]*?padding: 0 !important;[\s\S]*?line-height: 1 !important;/);
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__agent-actions \{[\s\S]*?margin-inline: auto !important;[\s\S]*?justify-self: center !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__workbench-actions \{[\s\S]*?height: 36px !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__agent-actions button \{[\s\S]*?display: flex !important;[\s\S]*?height: 36px !important;[\s\S]*?padding: 0 !important;[\s\S]*?line-height: 1 !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__agent-actions \{[\s\S]*?margin-inline: auto !important;[\s\S]*?justify-self: center !important;/);
   });
 
   it('anchors the reverse action rail to the card center even when legacy padding is hydrated', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__workbench-actions \{[\s\S]*?left: 0 !important;[\s\S]*?right: 0 !important;[\s\S]*?width: auto !important;[\s\S]*?transform: none !important;/);
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__agent-actions \{[\s\S]*?width: 390px !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__workbench-actions \{[\s\S]*?left: 0 !important;[\s\S]*?right: 0 !important;[\s\S]*?width: auto !important;[\s\S]*?transform: none !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__agent-actions \{[\s\S]*?width: 390px !important;/);
   });
 
   it('keeps both reverse action rails centered when an old node is hydrated', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__workbench-actions \{[\s\S]*?left: 0 !important;[\s\S]*?right: 0 !important;[\s\S]*?width: auto !important;[\s\S]*?transform: none !important;/);
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__agent-actions \{[\s\S]*?flex: 0 0 390px !important;[\s\S]*?margin-inline: auto !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__workbench-actions \{[\s\S]*?left: 0 !important;[\s\S]*?right: 0 !important;[\s\S]*?width: auto !important;[\s\S]*?transform: none !important;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__agent-actions \{[\s\S]*?flex: 0 0 390px !important;[\s\S]*?margin-inline: auto !important;/);
     expect(hybrid).toMatch(/\.module-node--workbench\[data-module-type='reverse_agent'\] \.module-node__workbench-actions \{[\s\S]*?left: 0 !important;[\s\S]*?right: 0 !important;[\s\S]*?width: auto !important;[\s\S]*?transform: none !important;/);
     expect(hybrid).toMatch(/\.module-node--workbench\[data-module-type='reverse_agent'\] \.module-node__agent-actions \{[\s\S]*?flex: 0 0 390px !important;[\s\S]*?margin-inline: auto !important;/);
   });
@@ -376,21 +405,21 @@ describe('renderer stylesheet precedence', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
     const terminalRule = hybrid.slice(hybrid.lastIndexOf('Reverse knowledge label single-render contract'));
 
-    expect(terminalRule).toMatch(/\.module-node--reverse-figma \.module-node__agent-knowledge::before,[\s\S]*?\.module-node--workbench\[data-module-type='reverse_agent'\] \.module-node__agent-knowledge::before \{[\s\S]*?content: none !important;[\s\S]*?display: none !important;/);
+    expect(terminalRule).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__agent-knowledge::before,[\s\S]*?\.module-node--workbench\[data-module-type='reverse_agent'\] \.module-node__agent-knowledge::before \{[\s\S]*?content: none !important;[\s\S]*?display: none !important;/);
   });
 
   it('keeps editable reverse result fields inside the scrollable result column', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__agent-result-scroll > label \{[\s\S]*?display: grid;[\s\S]*?min-width: 0;/);
-    expect(hybrid).toMatch(/\.module-node--reverse-figma \.module-node__agent-result-scroll :is\(input, textarea\) \{[\s\S]*?box-sizing: border-box;[\s\S]*?width: 100%;[\s\S]*?min-width: 0;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__agent-result-scroll > label \{[\s\S]*?display: grid;[\s\S]*?min-width: 0;/);
+    expect(hybrid).toMatch(/\.module-node\[data-module-type='reverse_agent'\] \.module-node__agent-result-scroll :is\(input, textarea\) \{[\s\S]*?box-sizing: border-box;[\s\S]*?width: 100%;[\s\S]*?min-width: 0;/);
   });
 
   it('uses one terminal centered footer contract for every reverse card shell', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
-    expect(hybrid).toMatch(/\.workspace--ui-gate :is\(\.module-node--reverse-figma, \.module-node--workbench\[data-module-type='reverse_agent'\]\) \.module-node__workbench-actions \{[\s\S]*?display: flex !important;[\s\S]*?justify-content: center !important;[\s\S]*?inset-inline: 0 !important;/);
-    expect(hybrid).toMatch(/\.workspace--ui-gate :is\(\.module-node--reverse-figma, \.module-node--workbench\[data-module-type='reverse_agent'\]\) \.module-node__agent-actions \{[\s\S]*?flex: 0 0 390px !important;[\s\S]*?width: 390px !important;[\s\S]*?margin-inline: auto !important;/);
+    expect(hybrid).toMatch(/\.workspace--ui-gate :is\(\.module-node\[data-module-type='reverse_agent'\], \.module-node--workbench\[data-module-type='reverse_agent'\]\) \.module-node__workbench-actions \{[\s\S]*?display: flex !important;[\s\S]*?justify-content: center !important;[\s\S]*?inset-inline: 0 !important;/);
+    expect(hybrid).toMatch(/\.workspace--ui-gate :is\(\.module-node\[data-module-type='reverse_agent'\], \.module-node--workbench\[data-module-type='reverse_agent'\]\) \.module-node__agent-actions \{[\s\S]*?flex: 0 0 390px !important;[\s\S]*?width: 390px !important;[\s\S]*?margin-inline: auto !important;/);
   });
 
   it('lets uploaded image inputs expand by intrinsic aspect ratio while empty slots stay compact', () => {
@@ -426,7 +455,7 @@ describe('renderer stylesheet precedence', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
     const terminalGate = hybrid.slice(hybrid.lastIndexOf('Expanded image generation port midpoint'));
 
-    expect(terminalGate).toMatch(/\.module-node--image-figma\[data-module-type='image_generation'\]:has\(\.module-node__summary--generation\[data-editor-expanded='true'\]\) > \.module-node__ports \.module-node__ports-column \{[\s\S]*?top: 50% !important;[\s\S]*?transform: translateY\(-50%\) !important;/);
+    expect(terminalGate).toMatch(/\.module-node\[data-module-type='image_generation'\]:has\(\.module-node__summary--generation\[data-editor-expanded='true'\]\) > \.module-node__ports \.module-node__ports-column \{[\s\S]*?top: 50% !important;[\s\S]*?transform: translateY\(-50%\) !important;/);
   });
 
   it('uses the reference five-part video rail with visible duration and no quantity overflow', () => {
@@ -444,8 +473,8 @@ describe('renderer stylesheet precedence', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
 
     expect(hybrid).toContain('One terminal card family for every remaining executable module');
-    expect(hybrid).toMatch(/\.module-node--workbench:not\(\.module-node--image-figma\):not\(\.module-node--video-figma\):not\(\.module-node--reverse-figma\) \{[\s\S]*?background: var\(--gate-card\) !important;[\s\S]*?border: 1px solid var\(--gate-border-strong\) !important;/);
-    expect(hybrid).toMatch(/\.module-node--workbench:not\(\.module-node--image-figma\):not\(\.module-node--video-figma\):not\(\.module-node--reverse-figma\) :is\(input, textarea, select, \.module-node__result-stage, \.module-node__agent-result-panel\) \{[\s\S]*?background: var\(--gate-card-muted\) !important;/);
+    expect(hybrid).toMatch(/\.module-node--workbench:not\(\.module-node\[data-module-type='image_generation'\]\):not\(\.module-node\[data-module-type='video_generation'\]\):not\(\.module-node\[data-module-type='reverse_agent'\]\) \{[\s\S]*?background: var\(--gate-card\) !important;[\s\S]*?border: 1px solid var\(--gate-border-strong\) !important;/);
+    expect(hybrid).toMatch(/\.module-node--workbench:not\(\.module-node\[data-module-type='image_generation'\]\):not\(\.module-node\[data-module-type='video_generation'\]\):not\(\.module-node\[data-module-type='reverse_agent'\]\) :is\(input, textarea, select, \.module-node__result-stage, \.module-node__agent-result-panel\) \{[\s\S]*?background: var\(--gate-card-muted\) !important;/);
   });
 
   it('keeps media previews fully visible and generation controls on one fixed-height rail', () => {
@@ -457,6 +486,92 @@ describe('renderer stylesheet precedence', () => {
     expect(terminal).toMatch(/\.module-node--foundation\.module-node--has-media:is\(\[data-module-type='image_input'\], \[data-module-type='upload_image'\]\) \.module-node__media-frame > img[\s\S]*?height: auto !important;[\s\S]*?object-fit: contain !important;/);
     expect(terminal).toMatch(/\.module-node__generation-control-bar > :is\(select, \.generation-parameter-popover, \.module-node__run-generation\),[\s\S]*?\.module-node__video-control-bar > :is\(select, \.generation-parameter-popover, \.module-node__run-generation\) \{[\s\S]*?height: 38px !important;[\s\S]*?min-height: 38px !important;[\s\S]*?align-items: center !important;/);
     expect(terminal).toMatch(/\.module-node__generation-control-bar \.generation-parameter-popover__trigger,[\s\S]*?\.module-node__video-control-bar \.generation-parameter-popover__trigger \{[\s\S]*?height: 38px !important;[\s\S]*?min-height: 38px !important;/);
+  });
+
+  it('locks generation popover wrappers and inner triggers to the same 38px rail', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL GENERATION RAIL CONTRACT'));
+
+    expect(terminal).toContain('.module-node__generation-control-bar > .generation-parameter-popover > .generation-parameter-popover__trigger');
+    expect(terminal).toContain('.module-node__video-control-bar > .generation-parameter-popover > .generation-parameter-popover__trigger');
+    expect(terminal).toContain('align-self: stretch !important;');
+    expect(terminal).toContain('display: flex !important;');
+    expect(terminal).toContain('height: 38px !important;');
+    expect(terminal).toContain('.workspace--ui-gate .module-node__generation-control-bar > .generation-parameter-popover,');
+    expect(terminal).toContain('width: 100% !important;');
+    expect(terminal).toContain('min-width: 0 !important;');
+  });
+
+  it('keeps node actions and slot affordances on the shared hit-target contract', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL NODE ACTION CONTRACT'));
+
+    expect(terminal).toContain('.module-node__run-generation');
+    expect(terminal).toContain('.module-node__reference-add');
+    expect(terminal).toContain('.connected-agent-media-slots__reorder > button');
+    expect(terminal).toContain('height: 38px !important;');
+    expect(terminal).toContain('width: 36px !important;');
+    expect(terminal).toContain('place-items: center !important;');
+  });
+
+  it('keeps the current image node rail compact without depending on retired design classes', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL CURRENT IMAGE NODE OVERRIDE'));
+
+    expect(terminal).toContain(".module-node[data-module-type='image_generation'] .module-node__generation-control-bar");
+    expect(terminal).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(terminal).toContain('grid-template-rows: 30px !important;');
+    expect(terminal).toContain('height: 30px !important;');
+    expect(terminal).toContain('max-width: 132px !important;');
+  });
+
+  it('keeps the current video node rail compact with the same control scale', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    expect(release).toContain(".module-node[data-module-type='video_generation'] .module-node__video-control-bar");
+    expect(release).toContain('grid-template-rows: 30px !important;');
+    expect(release).toContain('font-size: 10px !important;');
+  });
+
+  it('locks the live generation buttons above legacy node specificity', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL BUTTON SIZE LOCK'));
+
+    expect(terminal).toMatch(/\.workspace--ui-gate \.module-node\.module-node\[data-module-type='image_generation'\]/);
+    expect(terminal).toMatch(/\.workspace--ui-gate \.module-node\.module-node\[data-module-type='video_generation'\]/);
+    expect(terminal).toContain('grid-template-rows: 30px !important;');
+    expect(terminal).toContain('height: 30px !important;');
+    expect(terminal).toContain('max-height: 30px !important;');
+  });
+
+  it('wins the expanded generation rail cascade for both live node types', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL GENERATION RAIL SPECIFICITY LOCK'));
+
+    expect(terminal).toMatch(/module-node\.module-node\[data-module-type='image_generation'\]:has\(\.module-node__summary--generation\[data-editor-expanded='true'\]\)/);
+    expect(terminal).toMatch(/module-node\.module-node\[data-module-type='video_generation'\]:has\(\.module-node__summary--generation\[data-editor-expanded='true'\]\)/);
+    expect(terminal).toContain('grid-template-rows: 30px !important;');
+    expect(terminal).toContain('gap: 4px !important;');
+    expect(terminal).toContain('height: 30px !important;');
+  });
+
+  it('locks the live Agent composer controls to the same compact baseline', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL AGENT BUTTON SIZE LOCK'));
+
+    expect(terminal).toContain('.agent-panel--skill-chat.agent-panel--skill-chat');
+    expect(terminal).toContain('.skill-chat-workbench__composer-footer');
+    expect(terminal).toContain('height: 30px !important;');
+    expect(terminal).toContain('max-height: 30px !important;');
+  });
+
+  it('centers the compact Agent reasoning chevron inside its icon-only select', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL AGENT EFFORT CHEVRON CENTER'));
+
+    expect(terminal).toMatch(/skill-chat-workbench__effort[\s\S]*?appearance: none !important;/);
+    expect(terminal).toMatch(/skill-chat-workbench__effort[\s\S]*?width: 30px !important;[\s\S]*?height: 30px !important;/);
+    expect(terminal).toMatch(/background-position: center !important;/);
+    expect(terminal).toMatch(/background-repeat: no-repeat !important;/);
   });
 
   it('uses one shared 38px action contract across every node family', () => {

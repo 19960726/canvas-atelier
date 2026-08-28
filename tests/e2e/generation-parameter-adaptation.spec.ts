@@ -19,6 +19,9 @@ test('image and video generation expose the final ratio and clarity controls wit
 
   const imageNode = page.locator('[data-module-type="image_generation"]');
   await imageNode.getByRole('button', { name: 'Open image generation editor' }).click();
+  const imageAction = imageNode.locator('.module-node__generation-control-bar .module-node__run-generation');
+  const imageActionWidth = await imageAction.evaluate((button) => button.getBoundingClientRect().width);
+  expect(imageActionWidth).toBeGreaterThan(0);
 
   const imageRatio = imageNode.getByRole('button', { name: 'Image generation aspect ratio' });
   await expect(imageRatio.locator('svg')).toHaveCount(2);
@@ -83,6 +86,7 @@ test('image and video generation expose the final ratio and clarity controls wit
   await page.screenshot({ path: artifact('02-image-clarity-dark.png'), fullPage: true });
   await clarityOptions.filter({ hasText: '4K' }).click();
   await expect(imageClarity).toHaveAttribute('value', '4K');
+  await page.screenshot({ path: artifact('05-image-node-compact-dark.png'), fullPage: true });
 
   await page.evaluate(async () => {
     await window.__NOVUS_E2E__!.resetEmpty();
@@ -93,6 +97,8 @@ test('image and video generation expose the final ratio and clarity controls wit
   await videoNode.getByRole('button', { name: 'Open video generation editor' }).click();
   const videoAction = videoNode.locator('.module-node__video-control-bar .module-node__run-generation');
   await expect(videoAction).toBeVisible();
+  const videoActionWidth = await videoAction.evaluate((button) => button.getBoundingClientRect().width);
+  expect(videoActionWidth).toBeCloseTo(imageActionWidth, 0);
   const actionBox = await videoAction.evaluate((button) => {
     const rect = button.getBoundingClientRect();
     const bar = button.parentElement?.getBoundingClientRect();
@@ -130,14 +136,20 @@ test('image and video generation expose the final ratio and clarity controls wit
   expect(videoRatioLayout.menuGap).toBeLessThanOrEqual(12);
 
   const videoQuantity = videoNode.getByRole('combobox', { name: 'Video preview quantity' });
-  await expect(videoQuantity).toBeVisible();
-  await expect(videoQuantity).toHaveValue('1');
+  await expect(videoQuantity).toBeHidden();
+  await expect(videoNode.getByRole('combobox', { name: 'Video preview duration' })).toBeVisible();
 
   const videoResolution = videoNode.getByRole('button', { name: 'Video preview resolution' });
   await expect(videoResolution.locator('svg')).toHaveCount(1);
   await videoResolution.click();
-  await expect(videoNode.getByRole('menu', { name: 'Video preview resolution options' }).getByRole('menuitemradio')).toHaveText(['480P', '720P', '1080P']);
+  const videoResolutionOptions = videoNode
+    .getByRole('menu', { name: 'Video preview resolution options' })
+    .getByRole('menuitemradio');
+  await expect(videoResolutionOptions).toHaveText(['480P', '720P', '1080P']);
   await page.screenshot({ path: artifact('03-video-ratio-dark.png'), fullPage: true });
+  await videoResolutionOptions.filter({ hasText: '1080P' }).click();
+  await expect(videoResolution).toHaveAttribute('value', '1080p');
+  await page.screenshot({ path: artifact('06-video-node-compact-dark.png'), fullPage: true });
 
   expect((await e2eState(page)).modelSubmissions).toHaveLength(0);
 });

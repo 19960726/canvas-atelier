@@ -57,6 +57,7 @@ test('captures the redesigned settings surfaces in dark theme', async ({ page })
   await settings.getByText('高级故障排查').click();
   await expect(settings.getByRole('region', { name: '连接与恢复' })).toBeVisible();
   await expect(settings.getByRole('region', { name: '应用更新' })).toBeVisible();
+  await settings.locator('.settings-diagnostics-grid').screenshot({ path: artifact('ui-check-settings-diagnostics-dark.png') });
   await page.screenshot({ path: artifact('ui-check-settings-sync-dark.png'), fullPage: true });
 
   await settings.getByRole('tab', { name: 'MCP 联动' }).click();
@@ -88,5 +89,6 @@ test('captures API and sync settings in light theme', async ({ page }) => {
   await settings.getByText('高级故障排查').click();
   await expect(settings.getByRole('region', { name: '连接与恢复' })).toBeVisible();
   await expect(settings.getByRole('region', { name: '应用更新' })).toBeVisible();
+  await settings.locator('.settings-diagnostics-grid').screenshot({ path: artifact('ui-check-settings-diagnostics-light.png') });
   await page.screenshot({ path: artifact('ui-check-settings-sync-light.png'), fullPage: true });
 });

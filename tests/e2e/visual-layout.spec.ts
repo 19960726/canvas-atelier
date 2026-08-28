@@ -62,7 +62,7 @@ for (const viewport of viewports) {
     await openAgentPanel(page);
     const agentPanel = page.getByTestId('agent-panel');
     await expect(page.getByTestId('agent-composer-input')).toBeVisible();
-    await expect(agentPanel).toHaveCSS('width', `${Math.min(396, viewport.width - 72)}px`);
+    await expect(agentPanel).toHaveCSS('width', `${Math.min(460, viewport.width)}px`);
     if (viewport.width >= 760) {
       const [canvasStageBox, agentPanelBox] = await Promise.all([
         page.getByTestId('canvas-stage').boundingBox(),
@@ -172,7 +172,7 @@ for (const theme of ['dark', 'light'] as const) {
       const configured = await page.evaluate(async () => {
         return window.__NOVUS_E2E__!.configureModule('reverse_agent', {
           config: {
-            modelRoute: 'reverse-route',
+            modelRoute: 'comfly-gpt-5-6-sol',
             role: '视觉分析师',
             task: '分析构图、材质与镜头。',
             reverseAgentRunState: 'completed',

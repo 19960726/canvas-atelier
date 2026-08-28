@@ -35,8 +35,9 @@ test('manual acceptance keeps model, storage, and Agent controls interactive', a
   await page.getByTestId('agent-toggle').click();
   const composer = page.getByTestId('agent-composer-input');
   await expect(composer).toBeVisible();
+  await page.getByRole('tab', { name: '对话' }).click();
   await page.getByTestId('agent-model-trigger').click();
-  await page.locator('.skill-chat-workbench__sheet button').filter({ hasText: 'Gemini Vision' }).first().click();
+  await page.locator('.skill-chat-workbench__sheet button').filter({ hasText: 'gpt-5.6-sol' }).first().click();
   const fileChooserPromise = page.waitForEvent('filechooser');
   await page.locator('.skill-chat-workbench__composer-footer > button').first().click();
   const fileChooser = await fileChooserPromise;

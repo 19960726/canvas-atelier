@@ -31,14 +31,19 @@ test('managed canvas images can be mentioned in a vision Skill chat without chan
   await openAgentPanel(page);
   const panel = page.getByTestId('agent-panel');
   await panel.getByTestId('agent-model-trigger').click();
-  await panel.getByRole('button', { name: /Gemini Vision/u }).first().click();
+  const modelOption = panel.getByRole('listitem').first().getByRole('button');
+  await expect(modelOption).toBeVisible();
+  await modelOption.click();
+  const selectedModel = await panel.getByTestId('agent-model-trigger').getAttribute('data-selected-model');
+  expect(selectedModel).toBeTruthy();
   await panel.getByTestId('agent-composer-input').pressSequentially('@');
   await panel.getByRole('menuitem').first().click();
-  await expect(panel.getByTestId('agent-composer-input')).toHaveValue(/@/);
+  await expect(panel.getByTestId('agent-composer-input')).toHaveText(/图片1/);
   await panel.getByTestId('agent-composer-input').pressSequentially(' describe the composition');
-  await panel.getByRole('button', { name: /发送|Send/u }).click();
+  await panel.getByTestId('agent-composer-input').press('Enter');
 
-  await expect(page.getByLabel('知识库请求: Gemini Vision')).toBeVisible();
+  await expect(page.getByLabel(`知识库请求: ${selectedModel}`)).toHaveCount(0);
+  await expect(panel.getByText('知识库请求', { exact: true })).toHaveCount(0);
   await expect(page.getByText(/Mock Skill reply:/)).toBeVisible();
   expect((await e2eState(page)).commitCount).toBe(canvasCommitCount);
   expect((await e2eState(page)).modelJobs).toHaveLength(0);

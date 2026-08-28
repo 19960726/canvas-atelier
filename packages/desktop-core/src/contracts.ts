@@ -277,15 +277,17 @@ export type ProjectImageImportTarget =
   }
   | { readonly kind: 'agent_reference' };
 
-export interface ProjectClipboardImageTarget {
-  readonly kind: 'new_image_input';
-  readonly operationId: string;
-  readonly position: {
-    readonly x: number;
-    readonly y: number;
-  };
-  readonly reconcileOnly?: true;
-}
+export type ProjectClipboardImageTarget =
+  | {
+      readonly kind: 'new_image_input';
+      readonly operationId: string;
+      readonly position: { readonly x: number; readonly y: number };
+      readonly reconcileOnly?: true;
+    }
+  | {
+      readonly kind: 'agent_reference';
+      readonly operationId: string;
+    };
 
 export interface ImportProjectImageBridgeRequest {
   readonly sessionId: string;
@@ -324,6 +326,10 @@ export interface ImportDroppedProjectMediaBridgeRequest {
     | {
         readonly kind: 'module';
         readonly nodeId: string;
+        readonly operationId: string;
+      }
+    | {
+        readonly kind: 'agent_reference';
         readonly operationId: string;
       };
 }

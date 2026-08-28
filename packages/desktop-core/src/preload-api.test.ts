@@ -16,6 +16,24 @@ const summary = {
 };
 
 describe('recent project preload API', () => {
+  it('subscribes to only the narrow update-state channel and returns the unsubscribe handle', () => {
+    let eventListener: ((payload: unknown) => void) | undefined;
+    const unsubscribe = () => undefined;
+    const subscribe = (channel: string, listener: (payload: unknown) => void) => {
+      expect(channel).toBe(BRIDGE_CHANNELS.updates.stateChanged);
+      eventListener = listener;
+      return unsubscribe;
+    };
+    const api = createPreloadApi(async () => undefined as never, subscribe);
+    const states: unknown[] = [];
+
+    expect(api.updates.subscribeState((state) => states.push(state))).toBe(unsubscribe);
+    eventListener?.({ status: 'downloading', version: '1.6.63', progress: 0.42 });
+    eventListener?.({ status: 'arbitrary-electron-event' });
+
+    expect(states).toEqual([{ status: 'downloading', version: '1.6.63', progress: 0.42 }]);
+  });
+
   it('uses dedicated channels and never asks the renderer for a native path', async () => {
     const calls: Array<{ channel: string; payload: unknown }> = [];
     const api = createPreloadApi(async <TResponse>(channel: string, payload?: unknown): Promise<TResponse> => {
@@ -56,5 +74,31 @@ describe('recent project preload API', () => {
       payload: { sessionId: 'session-1', assetId: '0123456789abcdef' },
     }]);
     expect(JSON.stringify(calls)).not.toMatch(/path|script|[A-Za-z]:\\/u);
+  });
+
+  it('exposes only narrow RelayMe account and active-provider calls', async () => {
+    const calls: Array<{ channel: string; payload: unknown }> = [];
+    const api = createPreloadApi(async <TResponse>(channel: string, payload?: unknown): Promise<TResponse> => {
+      calls.push({ channel, payload });
+      return { ok: true, value: { activeProvider: channel.includes('logout') ? null : 'relayme' } } as TResponse;
+    });
+    const provider = api.provider as typeof api.provider & {
+      getActiveProvider(): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
+      setActiveProvider(request: { activeProvider: 'comfly' | 'relayme' | null }): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
+      loginRelayMe(request: { username: string; password: string }): Promise<{ activeProvider: 'relayme' }>;
+      logoutRelayMe(): Promise<{ activeProvider: null }>;
+    };
+
+    await expect(provider.getActiveProvider()).resolves.toEqual({ activeProvider: 'relayme' });
+    await expect(provider.setActiveProvider({ activeProvider: 'relayme' })).resolves.toEqual({ activeProvider: 'relayme' });
+    await expect(provider.loginRelayMe({ username: 'artist@example.test', password: 'not-a-real-password' })).resolves.toEqual({ activeProvider: 'relayme' });
+    await expect(provider.logoutRelayMe()).resolves.toEqual({ activeProvider: null });
+    expect(calls).toEqual([
+      { channel: BRIDGE_CHANNELS.provider.getActiveProvider, payload: undefined },
+      { channel: BRIDGE_CHANNELS.provider.setActiveProvider, payload: { activeProvider: 'relayme' } },
+      { channel: BRIDGE_CHANNELS.provider.loginRelayMe, payload: { username: 'artist@example.test', password: 'not-a-real-password' } },
+      { channel: BRIDGE_CHANNELS.provider.logoutRelayMe, payload: undefined },
+    ]);
+    expect(JSON.stringify(calls)).not.toMatch(/jwt|token|bearer/i);
   });
 });

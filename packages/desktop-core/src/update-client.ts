@@ -20,8 +20,23 @@ export interface UpdateCheckResult {
 }
 
 export interface UpdateRestartResult {
-  readonly accepted: false;
-  readonly reason: 'REAL_INSTALL_DISABLED';
+  readonly accepted: boolean;
+  readonly reason?: 'REAL_INSTALL_DISABLED' | 'UPDATE_NOT_DOWNLOADED';
+}
+
+export type UpdateDriverEvent =
+  | { readonly type: 'checking' }
+  | { readonly type: 'available'; readonly version: string; readonly notes?: string }
+  | { readonly type: 'not-available' }
+  | { readonly type: 'download-progress'; readonly percent: number }
+  | { readonly type: 'downloaded'; readonly version: string; readonly notes?: string }
+  | { readonly type: 'error'; readonly message: string };
+
+export interface UpdateDriver {
+  subscribe(listener: (event: UpdateDriverEvent) => void): () => void;
+  checkForUpdates(): Promise<void>;
+  downloadUpdate(): Promise<void>;
+  quitAndInstall(): void;
 }
 
 export interface UpdateFeed {
@@ -40,48 +55,82 @@ export class MockReleaseFeed implements UpdateFeed {
 export class UpdateClient {
   private state: UpdateState = { status: 'idle' };
   private availableRelease: MockRelease | null = null;
+  private readonly listeners = new Set<(state: UpdateState) => void>();
 
-  constructor(private readonly options: { readonly currentVersion: string; readonly feed: UpdateFeed }) {}
+  private readonly driver: UpdateDriver | null;
+
+  constructor(private readonly options: (
+    { readonly currentVersion: string; readonly feed: UpdateFeed }
+    | { readonly driver: UpdateDriver }
+  )) {
+    this.driver = 'driver' in options ? options.driver : null;
+    this.driver?.subscribe((event) => this.acceptDriverEvent(event));
+  }
 
   getState(): UpdateState {
     return { ...this.state };
   }
 
+  subscribe(listener: (state: UpdateState) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
   async check(): Promise<UpdateCheckResult> {
     this.availableRelease = null;
-    this.state = { status: 'checking' };
+    this.setState({ status: 'checking' });
+    if (this.driver !== null) {
+      try {
+        await this.driver.checkForUpdates();
+      } catch {
+        this.setState({ status: 'error', message: 'Unable to check for updates.' });
+      }
+      return { state: this.getState() };
+    }
     try {
+      if (!('feed' in this.options)) return { state: this.getState() };
       const release = await this.options.feed.read();
       const comparison = compareVersions(release.version, this.options.currentVersion);
       if (comparison === 0 && release.channel === 'stable' && release.signatureStatus === 'verified') {
-        this.state = { status: 'idle', message: 'No updates are available.' };
+        this.setState({ status: 'idle', message: 'No updates are available.' });
         return { state: this.getState() };
       }
       const invalidReason = validateRelease(this.options.currentVersion, release);
       if (invalidReason !== null) {
-        this.state = { status: 'error', message: invalidReason };
+        this.setState({ status: 'error', message: invalidReason });
         return { state: this.getState() };
       }
       this.availableRelease = release;
-      this.state = { status: 'available', version: release.version, notes: release.notes ?? '' };
+      this.setState({ status: 'available', version: release.version, notes: release.notes ?? '' });
       return { state: this.getState() };
     } catch {
-      this.state = { status: 'error', message: 'Unable to reach the configured update feed.' };
+      this.setState({ status: 'error', message: 'Unable to reach the configured update feed.' });
       return { state: this.getState() };
     }
   }
 
   async download(): Promise<UpdateCheckResult> {
+    if (this.driver !== null) {
+      if (this.state.status !== 'available') return { state: this.getState() };
+      const { version, notes } = this.state;
+      this.setState({ status: 'downloading', version, notes, progress: 0 });
+      try {
+        await this.driver.downloadUpdate();
+      } catch {
+        this.setState({ status: 'error', message: 'Unable to download the update.' });
+      }
+      return { state: this.getState() };
+    }
     if (this.availableRelease === null) return { state: this.getState() };
-    this.state = { status: 'downloading', version: this.availableRelease.version, notes: this.availableRelease.notes ?? '', progress: 0 };
+    this.setState({ status: 'downloading', version: this.availableRelease.version, notes: this.availableRelease.notes ?? '', progress: 0 });
     // Mock-only: transition deterministically without creating files or reaching the network.
-    this.state = { status: 'ready_to_restart', version: this.availableRelease.version, notes: this.availableRelease.notes ?? '', progress: 1 };
+    this.setState({ status: 'ready_to_restart', version: this.availableRelease.version, notes: this.availableRelease.notes ?? '', progress: 1 });
     return { state: this.getState() };
   }
 
   defer(): UpdateCheckResult {
     this.availableRelease = null;
-    this.state = { status: 'idle', message: 'Update deferred.' };
+    this.setState({ status: 'idle', message: 'Update deferred.' });
     return { state: this.getState() };
   }
 
@@ -90,7 +139,36 @@ export class UpdateClient {
   }
 
   async restart(): Promise<UpdateRestartResult> {
+    if (this.driver !== null) {
+      if (this.state.status !== 'ready_to_restart') return { accepted: false, reason: 'UPDATE_NOT_DOWNLOADED' };
+      this.driver.quitAndInstall();
+      return { accepted: true };
+    }
     return { accepted: false, reason: 'REAL_INSTALL_DISABLED' };
+  }
+
+  private acceptDriverEvent(event: UpdateDriverEvent): void {
+    if (event.type === 'checking') {
+      if (this.state.status !== 'checking') this.setState({ status: 'checking' });
+      return;
+    }
+    if (event.type === 'available') this.setState({ status: 'available', version: event.version, notes: event.notes ?? '' });
+    else if (event.type === 'not-available') this.setState({ status: 'idle', message: 'No updates are available.' });
+    else if (event.type === 'download-progress') this.setState({
+      ...this.state,
+      status: 'downloading',
+      progress: Math.max(0, Math.min(1, event.percent / 100)),
+    });
+    else if (event.type === 'downloaded') this.setState({
+      status: 'ready_to_restart', version: event.version, notes: event.notes ?? '', progress: 1,
+    });
+    else this.setState({ status: 'error', message: event.message.slice(0, 180) || 'Update failed.' });
+  }
+
+  private setState(state: UpdateState): void {
+    this.state = state;
+    const snapshot = this.getState();
+    this.listeners.forEach((listener) => listener(snapshot));
   }
 }
 

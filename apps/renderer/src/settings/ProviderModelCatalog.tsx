@@ -18,13 +18,14 @@ const MODEL_GROUPS: readonly {
   readonly capability: CatalogCapability;
   readonly label: string;
   readonly defaultLabel: string;
+  readonly shortLabel: string;
 }[] = [
-  { capability: 'image_generation', label: '生图模型', defaultLabel: '生图默认模型' },
-  { capability: 'video_generation', label: '视频模型', defaultLabel: '视频默认模型' },
-  { capability: 'chat', label: '对话模型', defaultLabel: '对话默认模型' },
-  { capability: 'reverse_prompt', label: '反推模型', defaultLabel: '反推默认模型' },
-  { capability: 'vision', label: '视觉模型', defaultLabel: '视觉默认模型' },
-  { capability: 'video_understanding', label: '视频理解模型', defaultLabel: '视频理解默认模型' },
+  { capability: 'image_generation', label: '生图模型', defaultLabel: '生图默认模型', shortLabel: 'IMG' },
+  { capability: 'video_generation', label: '视频模型', defaultLabel: '视频默认模型', shortLabel: 'VID' },
+  { capability: 'chat', label: '对话模型', defaultLabel: '对话默认模型', shortLabel: 'CHAT' },
+  { capability: 'reverse_prompt', label: '反推模型', defaultLabel: '反推默认模型', shortLabel: 'REV' },
+  { capability: 'vision', label: '视觉模型', defaultLabel: '视觉默认模型', shortLabel: 'VIS' },
+  { capability: 'video_understanding', label: '视频理解模型', defaultLabel: '视频理解默认模型', shortLabel: 'VLM' },
 ];
 
 export function createProviderProfileKey(profile: Pick<ProviderBridgeProfile, 'provider' | 'modelRoute'>): string {
@@ -78,14 +79,16 @@ export function ProviderModelCatalog({
     {populatedGroups.map((group) => {
       const groupProfiles = group.profiles;
       const enabledProfiles = groupProfiles.filter((profile) => enabled.has(createProviderProfileKey(profile)));
-      return <section key={group.capability} className="settings-model-group" aria-label={group.label}>
+      return <section key={group.capability} className="settings-model-group" aria-label={group.label} data-capability={group.capability}>
         <header>
-          <div><strong>{group.label}</strong><small>{groupProfiles.length} 个已配置，{enabledProfiles.length} 个已启用</small></div>
+          <i aria-hidden="true">{group.shortLabel}</i>
+          <div><strong>{group.label}</strong><small>{groupProfiles.length} 个可用 · {enabledProfiles.length} 个已启用</small></div>
         </header>
         <div className="settings-model-list" role="list" aria-label={`${group.label}列表`}>
           {groupProfiles.map((profile) => {
             const key = createProviderProfileKey(profile);
             const isEnabled = enabled.has(key);
+            const isDefault = defaultProfileKeys?.[group.capability] === key;
             return <article key={key} role="listitem" className={isEnabled ? 'is-enabled' : undefined}>
               <label className="settings-model-enabled">
                 <input
@@ -98,7 +101,9 @@ export function ProviderModelCatalog({
               </label>
               <span className="settings-model-identity">
                 <strong>{profile.displayName}</strong>
+                <small>{isDefault ? '当前默认模型' : '可用于此画布能力'}</small>
               </span>
+              {isDefault && <em>默认</em>}
             </article>;
           })}
         </div>

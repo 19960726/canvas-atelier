@@ -313,7 +313,7 @@ test('pastes a clipboard MP4 before falling back to clipboard image import', asy
   await expect(node.locator('video')).toHaveAttribute('src', /\/__novus_e2e_asset\/[a-f0-9]{16}\.mp4$/u);
   await expect.poll(async () => (await e2eState(page)).commitCount).toBe(before.commitCount + 1);
   const after = await e2eState(page);
-  expect(after.projectVideos.map((asset) => asset.label)).toEqual(['Clipboard motion']);
+  expect(after.projectVideos.map((asset) => asset.label)).toEqual(['clipboard']);
   expect(after.projectImages).toEqual([]);
   expect(after.durableProjectContainsTransientImageUrl).toBe(false);
 });
@@ -339,10 +339,10 @@ test('pastes a clipboard image as one managed media node transaction', async ({ 
 
   const node = page.locator('[data-module-type="image_input"]');
   await expect(node).toHaveCount(1);
-  await expect(node.getByRole('img', { name: 'Clipboard concept' })).toBeVisible();
+  await expect(node.getByRole('img', { name: 'clipboard' })).toBeVisible();
   await expect.poll(async () => (await e2eState(page)).commitCount).toBe(before.commitCount + 1);
   const after = await e2eState(page);
-  expect(after.projectImages.map((asset) => asset.label)).toEqual(['Clipboard concept']);
+  expect(after.projectImages.map((asset) => asset.label)).toEqual(['clipboard']);
   expect(after.durableProjectContainsTransientImageUrl).toBe(false);
 });
 

@@ -9,7 +9,7 @@ import type {
   ProviderBridgeProfile,
 } from '@agent-canvas/desktop-core';
 import type { CanvasProject, ProjectTransaction, ReversePromptResult, ReversePromptRun } from '@agent-canvas/domain';
-import { createCanvasModuleNode } from '@agent-canvas/domain';
+import { applyProjectTransaction, createCanvasModuleNode } from '@agent-canvas/domain';
 import type { ProjectImageAsset, ProjectVideoAsset } from '@agent-canvas/domain';
 import {
   clearPersistedProjectBundle,
@@ -476,20 +476,23 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         startupRestoreAttempted = true;
         try {
           const recentProjects = await bridge.recentProjects.list();
-          const meaningfulRecentProject = recentProjects.find((project) => (
-            project.availability === 'available'
-            && (project.nodeCount > 0 || project.imageCount > 0 || project.videoCount > 0)
-          ));
-          if (meaningfulRecentProject !== undefined) {
+          const latestAvailableProject = recentProjects.find((project) => project.availability === 'available');
+          const latestLooksLikeCurrentCanvas = latestAvailableProject !== undefined
+            && (
+              latestAvailableProject.nodeCount > 0
+              || latestAvailableProject.imageCount > 0
+              || latestAvailableProject.videoCount > 0
+              || typeof latestAvailableProject.lastOpenedAt === 'string'
+            );
+          if (latestAvailableProject !== undefined && latestLooksLikeCurrentCanvas) {
             const selected = await bridge.recentProjects.open({
-              recentProjectId: meaningfulRecentProject.recentProjectId,
+              recentProjectId: latestAvailableProject.recentProjectId,
               mode: 'write',
             });
             if (selected !== null) return adoptSelectedSession(selected);
           }
           const recoveryPreview = await bridge.openLatestRecoveryPreview?.() ?? null;
           if (recoveryPreview !== null) return adoptSelectedSession(recoveryPreview);
-          const latestAvailableProject = recentProjects.find((project) => project.availability === 'available');
           if (latestAvailableProject !== undefined) {
             const selected = await bridge.recentProjects.open({
               recentProjectId: latestAvailableProject.recentProjectId,
@@ -542,16 +545,21 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     async importProjectImage(target, file) {
       const writableSessionId = await ensureWritableSession();
       if (writableSessionId === null) return null;
-      const result = file !== undefined && target.kind === 'module'
+      const operationId = createDesktopDroppedMediaOperationId();
+      let result = file !== undefined && (target.kind === 'module' || target.kind === 'agent_reference')
         ? await bridge.projectImages.importDroppedMedia({
             sessionId: writableSessionId,
-            target: {
-              kind: 'module',
-              nodeId: target.nodeId,
-              operationId: createDesktopDroppedMediaOperationId(),
-            },
+            target: target.kind === 'module'
+              ? { kind: 'module', nodeId: target.nodeId, operationId }
+              : { kind: 'agent_reference', operationId },
           }, file)
         : await bridge.projectImages.importImage({ sessionId: writableSessionId, target });
+      if (result === null && file !== undefined && target.kind === 'agent_reference') {
+        result = await bridge.projectImages.pasteClipboardImage({
+          sessionId: writableSessionId,
+          target: { kind: 'agent_reference', operationId: createDesktopClipboardOperationId() },
+        });
+      }
       if (result === null) return null;
       currentProject = validateRecoveredProject(result.project, currentProject);
       revision = result.currentRevision;
@@ -788,14 +796,22 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     };
   }
 
-  async function desktopCommit(request: ProjectCommitRequest): Promise<ProjectCommitResult> {
+  async function desktopCommit(
+    request: ProjectCommitRequest,
+    allowRevisionRefresh = true,
+  ): Promise<ProjectCommitResult> {
     if (sessionId === null || projectId === null) {
+      // The first autosave establishes the current canvas on disk. Keeping
+      // this session open makes every later autosave overwrite the same
+      // project instead of creating another untitled canvas.
       currentProject = validateRecoveredProject(request.nextProject, request.previousProject);
-      return {
-        ok: true,
-        project: currentProject,
-        revision,
-      };
+      if (typeof bridge.createProject !== 'function') {
+        return { ok: true, project: currentProject, revision };
+      }
+      const writableSessionId = await ensureWritableSession();
+      if (writableSessionId === null || sessionId === null || projectId === null) {
+        return { code: 'DURABLE_WRITE_FAILED', ok: false, project: currentProject, revision };
+      }
     }
     if (mode === 'read_only') {
       return {
@@ -843,6 +859,32 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       };
     } catch (error) {
       const code = readErrorCode(error);
+      if (
+        code === 'REVISION_CONFLICT'
+        && allowRevisionRefresh
+        && sessionId === commitSessionId
+        && projectId === commitProjectId
+      ) {
+        try {
+          const refreshed = await bridge.refreshProject({ sessionId: commitSessionId });
+          if (
+            refreshed.sessionId === commitSessionId
+            && refreshed.projectId === commitProjectId
+            && refreshed.mode === 'write'
+          ) {
+            await adoptSelectedSession(refreshed);
+            const rebasedProject = applyProjectTransaction(currentProject, request.transaction);
+            return desktopCommit({
+              ...request,
+              baseRevision: revision,
+              nextProject: rebasedProject,
+              previousProject: currentProject,
+            }, false);
+          }
+        } catch {
+          // Fall through to the typed conflict when refresh or replay fails.
+        }
+      }
       // The desktop bridge uses INVALID_REQUEST when the transaction no
       // longer applies to the durable project (for example a second delete
       // arriving after the first one was acknowledged). Refresh the session
@@ -892,6 +934,12 @@ function createDesktopDroppedMediaOperationId(): string {
   const crypto = globalThis.crypto;
   if (typeof crypto?.randomUUID === 'function') return `dropped_media_${crypto.randomUUID().toLocaleLowerCase()}`;
   return `dropped_media_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function createDesktopClipboardOperationId(): string {
+  const crypto = globalThis.crypto;
+  if (typeof crypto?.randomUUID === 'function') return `clipboard_paste_${crypto.randomUUID().toLocaleLowerCase()}`;
+  return `clipboard_paste_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
 function shouldRetryClipboardPaste(error: unknown): boolean {

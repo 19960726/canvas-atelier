@@ -1,0 +1,28 @@
+[WebServer] (node:57008) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+(node:57952) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] 08:46:29 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+[WebServer]  > ../../../../@vite/client:531:50
+[WebServer] 
+[WebServer] 08:46:35 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+[WebServer]  > ../../../../@vite/client:531:50
+[WebServer] 
+[WebServer] 08:46:56 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+[WebServer]  > ../../../../@vite/client:531:50
+[WebServer] 
+[WebServer] 08:47:03 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+[WebServer]  > ../../../../@vite/client:531:50
+[WebServer] 
+[WebServer] 08:47:11 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+[WebServer]  > ../../../../@vite/client:531:50
+[WebServer] 
+[WebServer] 08:47:19 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+[WebServer]  > ../../../../@vite/client:531:50
+[WebServer] 
+[WebServer] 08:47:27 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+[WebServer]  > ../../../../@vite/client:531:50
+[WebServer] 
+[WebServer] 08:47:34 [vite] (client) [Unhandled error] Error: ResizeObserver loop completed with undelivered notifications.
+[WebServer]  > ../../../../@vite/client:531:50
+[WebServer] 

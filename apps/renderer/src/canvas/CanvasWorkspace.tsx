@@ -25,7 +25,7 @@ import { useAppStore } from '../app/app-store';
 import { resetMcpCanvasSelection, setMcpCanvasSelection } from '../app/mcp-canvas-selection';
 import { createWorkspaceApi } from '../app/workspace-api';
 import { runtimeProfile } from '../app/runtime-profile';
-import { filterProviderCatalogProfiles, listAllProviderProfiles } from '../app/provider-profiles';
+import { filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles } from '../app/provider-profiles';
 import { PlanPreview } from '../agent/PlanPreview';
 import { McpWorkflowPlanPreview } from '../agent/McpWorkflowPlanPreview';
 import { SkillChatWorkbench, type ReverseTimelineEntry, type SkillCanvasActionRequest } from '../agent/SkillChatWorkbench';
@@ -605,6 +605,7 @@ export function CanvasWorkspace() {
   const configureKnowledgeBase = useAppStore((state) => state.configureKnowledgeBase);
   const initializeKnowledge = useAppStore((state) => state.initializeKnowledge);
   const draftAgentPlan = useAppStore((state) => state.draftAgentPlan);
+  const draftReverseWorkflowPlan = useAppStore((state) => state.draftReverseWorkflowPlan);
   const confirmAgentPlan = useAppStore((state) => state.confirmAgentPlan);
   const retryAgentPlanJobs = useAppStore((state) => state.retryAgentPlanJobs);
   const cancelAgentPlan = useAppStore((state) => state.cancelAgentPlan);
@@ -663,14 +664,21 @@ export function CanvasWorkspace() {
   }), [addModuleNode, cancelModelJob, chatSkill, flushProjectSave, saveProjectExplicitly, generateStoryboardNode, importDroppedMedia, runImageGenerationNode, runReverseAgentNode]);
 
   useEffect(() => {
-    const completed = new Set(modelJobs.flatMap((job) => (
-      job.status === 'completed' && job.resultAssetId ? [job.id] : []
-    )));
+    const completedJobs = modelJobs.filter((job) => job.status === 'completed' && job.resultAssetId);
+    const completed = new Set(completedJobs.map((job) => job.id));
     const previous = seenCompletedHistoryJobsRef.current;
     seenCompletedHistoryJobsRef.current = completed;
-    if (previous === null || activeSurface === 'history') return;
-    if ([...completed].some((id) => !previous.has(id))) setHistoryUnread(true);
-  }, [activeSurface, modelJobs]);
+    if (previous === null) return;
+    const newlyCompletedJobs = completedJobs.filter((job) => !previous.has(job.id));
+    const completedExpandedGeneration = newlyCompletedJobs.find((job) => (
+      (job.kind === 'image' || job.kind === 'video')
+      && job.promptNodeId === generationEditorState.expandedNodeId
+    ));
+    if (completedExpandedGeneration !== undefined) {
+      dispatchGenerationEditor({ type: 'generation-completed', nodeId: completedExpandedGeneration.promptNodeId });
+    }
+    if (activeSurface !== 'history' && newlyCompletedJobs.length > 0) setHistoryUnread(true);
+  }, [activeSurface, generationEditorState.expandedNodeId, modelJobs]);
 
   const changeSurface = useCallback((surface: WorkspaceSurface | null) => {
     setQuickInsert(null);
@@ -743,8 +751,8 @@ export function CanvasWorkspace() {
       setModuleLibraryOpen(false);
       setQuickInsert(null);
       changeSurface(null);
-      await newWorkflow();
       setNewProjectConfirmationOpen(false);
+      await newWorkflow();
     } finally {
       newProjectConfirmationInFlightRef.current = false;
       setNewProjectConfirming(false);
@@ -1514,11 +1522,15 @@ export function CanvasWorkspace() {
       void Promise.all([
         provider.getStatus().catch(() => null),
         listAllProviderProfiles(provider).catch(() => []),
-      ]).then(([status, profiles]) => {
+        provider.getActiveProvider?.().catch(() => ({ activeProvider: null })),
+      ]).then(([status, profiles, activeState]) => {
         if (cancelled) return;
+        const activeProfiles = activeState === undefined
+          ? profiles
+          : listActiveProviderProfiles(profiles, activeState.activeProvider);
         setProviderStatus(status);
-        setAgentProviderProfiles(profiles);
-        setProviderProfiles(filterProviderCatalogProfiles(profiles));
+        setAgentProviderProfiles(activeProfiles);
+        setProviderProfiles(filterProviderCatalogProfiles(activeProfiles));
       });
     };
     refreshProviderCatalog();
@@ -2033,7 +2045,17 @@ export function CanvasWorkspace() {
               onImportReferenceVideo={importAgentReferenceVideo}
               canvasActionTargets={agentCanvasActionTargets}
               executeCanvasAction={executeAgentCanvasAction}
-              draftWorkflowFromAnalysis={({ analysis, references, modelRoute, modelRouteDisplayName }) => {
+              draftWorkflowFromAnalysis={({ analysis, reverseAnalysis, references, modelRoute, modelRouteDisplayName, knowledgeBaseIds }) => {
+                if (reverseAnalysis?.runnable && modelRoute !== undefined) {
+                  draftReverseWorkflowPlan({
+                    analysis: reverseAnalysis,
+                    references,
+                    modelRoute,
+                    modelRouteDisplayName,
+                    knowledgeBaseIds,
+                  });
+                  return;
+                }
                 const orderedReferences = references.map((reference) => `${reference.mention}=${reference.label}[${reference.assetId}]`).join('\n');
                 draftAgentPlan(`${analysis}\n\n工作流引用顺序：\n${orderedReferences}`, { modelRoute, modelRouteDisplayName });
               }}

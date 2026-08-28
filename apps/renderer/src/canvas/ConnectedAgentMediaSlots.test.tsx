@@ -70,6 +70,19 @@ describe('ConnectedAgentMediaSlots', () => {
     expect(onReorder).toHaveBeenCalledWith([media[3], media[0], media[1], media[2]]);
   });
 
+  it('keeps the latest local order when several swaps happen before persistence rerenders the parent', () => {
+    const onReorder = vi.fn();
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={onReorder} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move Video B left' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move Image B left' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move Video A right' }));
+
+    expect(onReorder).toHaveBeenNthCalledWith(1, [media[0], media[1], media[3], media[2]]);
+    expect(onReorder).toHaveBeenNthCalledWith(2, [media[0], media[1], media[2], media[3]]);
+    expect(onReorder).toHaveBeenNthCalledWith(3, [media[0], media[2], media[1], media[3]]);
+  });
+
   it('allows slots after the first four to be reordered and keeps their edge identity', () => {
     const onReorder = vi.fn();
     const nineMedia = Array.from({ length: 9 }, (_, index): ConnectedAgentMediaSlotItem => ({
@@ -169,6 +182,16 @@ describe('ConnectedAgentMediaSlots', () => {
     expect(css).toContain('overflow-x: auto !important;');
     expect(css).toContain('pointer-events: none !important;');
     expect(css).toMatch(/module-node__agent-media-slot-row::-webkit-scrollbar\s*\{[^}]*display:\s*none/isu);
+  });
+  it('keeps reorder controls inside their own slot hit area', () => {
+    const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('/* FINAL CONNECTED MEDIA REORDER HIT TARGET CONTRACT */'));
+
+    expect(contract).toContain('width: 16px !important');
+    expect(contract).toContain('height: 16px !important');
+    expect(contract).toContain('z-index: 9 !important');
+    expect(contract).toContain('pointer-events: none !important');
+    expect(contract).toContain(':focus-within');
   });
   it('supports keyboard reordering without triggering canvas drag', () => {
     const onReorder = vi.fn();

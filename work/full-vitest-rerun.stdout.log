@@ -1,0 +1,287 @@
+
+> test
+> vitest run --config vitest.config.ts
+
+
+ RUN  v3.2.7 E:/画布项目/staging-canvas-build
+
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-provider.integration.test.ts (31 tests) 9903ms
+   ✓ provider generation history production sink > records queued, running, succeeded, failed, and cancelled jobs through the real provider service  1407ms
+   ✓ provider generation history production sink > blocks local or literal result URLs before download and records an invalid result  442ms
+   ✓ provider generation history production sink > rejects a result hostname when any resolved address is private  397ms
+   ✓ provider generation history production sink > fails closed when result-host DNS resolution fails  402ms
+   ✓ provider generation history production sink > keeps a succeeded history terminal while retrying provider materialization after restart  464ms
+   ✓ provider generation history production sink > keeps a failed history terminal when a concurrent cancel arrives before the ledger terminal commit  394ms
+   ✓ provider generation history production sink > uses pinned DNS evidence for the actual result download transport  538ms
+   ✓ provider generation history production sink > does not submit another paid provider request when the same job id is already terminal  357ms
+   ✓ provider generation history production sink > keeps the paid-submission tombstone after terminal ACK and history deletion  839ms
+   ✓ provider generation history production sink > allows only one paid request when two services concurrently submit the same job id  453ms
+   ✓ provider generation history production sink > rejects deprecated site-local IPv6 result addresses before download  579ms
+   ✓ provider generation history production sink > rejects IPv4-compatible private IPv6 result addresses before download  570ms
+   ✓ provider generation history production sink > rejects local-use NAT64 IPv6 result addresses before download  469ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-store.test.ts (37 tests) 8534ms
+   ✓ generation history concurrent lifecycle > returns exact capacity totals when a missing original falls beyond the former 32-record audit window  3179ms
+   ✓ generation history concurrent lifecycle > restores within retention and purges expired files only after blocking references are removed  406ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-bridge.test.ts (108 tests) 26691ms
+   ✓ Comfly provider service > maps async image submit and polling to public job contracts  667ms
+   ✓ Comfly provider service > materializes a provider result when history already reports success but the project asset is missing  307ms
+   ✓ Comfly provider service > accepts Comfly snake-case task envelopes and nested output image results  376ms
+   ✓ Comfly provider service > submits and polls through the Electron net.request adapter without global fetch  377ms
+   ✓ Comfly provider service > preserves durable task mappings across token rotation and service restart  485ms
+   ✓ Comfly provider service > migrates v1 token-encrypted task mappings through protected fallback keys and survives rotation  434ms
+   ✓ Comfly provider service > blocks legacy job identities after a v1 ledger migration while allowing a new run identity  645ms
+   ✓ Comfly provider service > blocks legacy job identities after a v4 ledger migration while allowing a new run identity  592ms
+   ✓ Comfly provider service > keeps passphrase-backed running jobs paused while credentials are locked and resumes after unlock  467ms
+   ✓ Comfly provider service > recovers opaque task mappings after a main-process restart without writing plaintext ids to disk  371ms
+   ✓ Comfly provider service > serializes concurrent durable mapping writes so restart recovery does not lose submitted jobs  712ms
+   ✓ Comfly provider service > uses cross-process file locking so two service instances do not overwrite each other mappings  523ms
+   ✓ Comfly provider service > preserves running task mappings when atomic open fails before target replacement  457ms
+   ✓ Comfly provider service > preserves running task mappings when atomic write fails before target replacement  527ms
+   ✓ Comfly provider service > preserves running task mappings when atomic sync fails before target replacement  479ms
+   ✓ Comfly provider service > preserves running task mappings when atomic rename fails before target replacement  575ms
+   ✓ Comfly provider service > restores unACKed terminal task mappings when post-replace verification fails inside app data  610ms
+   ✓ Comfly provider service > keeps terminal tombstones replayable until renderer ACK and then cleans them up  1667ms
+   ✓ Comfly provider service > does not garbage collect unACKed terminal tombstones or active running mappings  722ms
+   ✓ Comfly provider service > does not expose provider result URLs or redirect/private-network text in public responses  4213ms
+   ✓ Comfly provider service > models cancel as a replayable terminal where first terminal wins  889ms
+   ✓ Comfly provider service > does not hold the configuration mutex while provider network requests are in flight  676ms
+   ✓ Comfly provider service > restores passphrase-backed custom base URL and profiles after unlock without writing secrets to disk  400ms
+   ✓ Comfly provider service > keeps the previous token, mapping state, and configuration when rotation fails before configuration persistence completes  717ms
+   ✓ Comfly provider service > restores the previous token, mapping state, and configuration when credential rotation fails after configuration persistence succeeds  718ms
+   ✓ Comfly provider service > rejects malformed provider responses and malformed inline image results with sanitized errors  563ms
+   ✓ Comfly provider service > replaces raw Comfly task ids in poll API, fetch, timeout, and invalid-response errors before IPC exposure  573ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/runtime-entry-contract.test.ts (10 tests) 9050ms
+   ✓ desktop runtime entry contract > modern cleans stale dist artifacts before building desktop outputs  1286ms
+   ✓ desktop runtime entry contract > modern builds a self-contained CommonJS desktop main that loads under the Electron contract  1784ms
+   ✓ desktop runtime entry contract > modern reports redacted startup failures instead of leaving an unhandled readiness rejection  1398ms
+   ✓ desktop runtime entry contract > legacy cleans stale dist artifacts before building desktop outputs  1255ms
+   ✓ desktop runtime entry contract > legacy builds a self-contained CommonJS desktop main that loads under the Electron contract  1764ms
+   ✓ desktop runtime entry contract > legacy reports redacted startup failures instead of leaving an unhandled readiness rejection  1462ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/project-video-bridge.test.ts (16 tests) 3467ms
+   ✓ project video bridge > reports MISSING_ASSET when a catalogued MP4 is replaced by same-size corrupt bytes  313ms
+   ✓ project video bridge > atomically pastes one clipboard MP4 into a new video input node  353ms
+   ✓ project video bridge > replays the same clipboard video operation after restart without reading the clipboard again  444ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/crash-recovery.integration.test.ts (9 tests) 5992ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after before_append  745ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after during_append  753ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after after_append_before_sync  804ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after after_snapshot_temp  744ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after before_manifest_replace  754ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after after_manifest_replace  752ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after during_compaction  717ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after during_export  721ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/project-image-bridge.test.ts (27 tests) 3103ms
+   ✓ project image bridge > does not replay a clipboard receipt when its managed file is missing  336ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/bridge-contract.test.ts (82 tests) 4077ms
+   ✓ desktop bridge contract > releases a dirty write session without snapshot flush when durable reload requests no flush  312ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/managed-knowledge-store.test.ts (40 tests) 2908ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/approved-snapshot-pull.test.ts (17 tests) 2181ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/project-repository.test.ts (39 tests) 1320ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/snapshot-scheduler.test.ts (15 tests) 1442ms
+   ✓ SnapshotScheduler > rotates before snapshotting while keeping live writers bound to the new active journal  1094ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/relayme-provider-service.test.ts (12 tests) 905ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/knowledge-refresh-service.test.ts (11 tests) 1298ms
+   ✓ KnowledgeRefreshService > keeps the previous active snapshot and emits fallback when refreshed content is protected  309ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/novus-pack.test.ts (33 tests) 884ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/approved-snapshot-outbox.test.ts (8 tests) 697ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/recovery-scanner.test.ts (13 tests) 531ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-service.test.ts (5 tests) 531ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/approved-snapshot-cross-device.integration.test.ts (1 test) 447ms
+   ✓ approved snapshot cross-device integration > moves approved growth between isolated devices and preserves a rejected stale upload for reconciliation  446ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/knowledge-security.integration.test.ts (1 test) 346ms
+   ✓ knowledge security integration > commits a successful durable review and scans every protected artifact class  345ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/asset-store.test.ts (26 tests) 342ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/journal-writer.test.ts (25 tests) 306ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/confined-file-lock.test.ts (18 tests) 200ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-bridge.test.ts (2 tests) 167ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-bridge.test.ts (2 tests) 171ms
+ ✓ |@agent-canvas/desktop-bridge| packages/desktop-bridge/src/runtime-profile.contract.test.ts (5 tests) 108ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/recent-project-bridge.test.ts (4 tests) 106ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/writeback-token.test.ts (17 tests) 113ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-runtime-service.test.ts (4 tests) 105ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/cache-directory-service.test.ts (10 tests) 100ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-windows-adapter.test.ts (9 tests) 68ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-file-confinement.test.ts (8 tests) 78ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/recent-project-store.test.ts (3 tests) 55ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-registry.test.ts (3 tests) 62ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-client-config.test.ts (6 tests) 36ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/user-data-migration.test.ts (4 tests) 47ms
+ ✓ |@agent-canvas/provider-comfly| packages/provider-comfly/src/client.test.ts (23 tests) 20ms
+ ✓ |@agent-canvas/domain| packages/domain/src/reverse-prompt-agent.test.ts (23 tests) 20ms
+ ✓ |@agent-canvas/domain| packages/domain/src/generation-history.test.ts (21 tests) 19ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/offline-outbox.test.ts (6 tests) 16ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-schema.test.ts (26 tests) 18ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/import-skill.test.ts (2 tests) 16ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-runtime-file.test.ts (3 tests) 16ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/candidate-builder.test.ts (9 tests) 18ms
+ ✓ |@agent-canvas/domain| packages/domain/src/formal-module-catalog.test.ts (20 tests) 15ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-transaction.test.ts (12 tests) 14ms
+ ✓ |@agent-canvas/mcp-bridge| packages/mcp-bridge/src/server.test.ts (4 tests) 15ms
+ ✓ |@agent-canvas/domain| packages/domain/src/module-graph.test.ts (31 tests) 13ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-memory.test.ts (21 tests) 13ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/knowledge-registry.test.ts (9 tests) 12ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/desktop-icon-contract.test.ts (4 tests) 12ms
+ ✓ |@agent-canvas/mcp-bridge| packages/mcp-bridge/src/runtime-client.test.ts (3 tests) 12ms
+ ✓ |@agent-canvas/provider-relayme| packages/provider-relayme/src/client.test.ts (10 tests) 11ms
+ ✓ |@agent-canvas/domain| packages/domain/src/knowledge-context.test.ts (6 tests) 12ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-contracts.test.ts (1 test) 10ms
+ ✓ |@agent-canvas/domain| packages/domain/src/canvas-transaction.test.ts (11 tests) 10ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-model-catalog.test.ts (17 tests) 9ms
+ ✓ |@agent-canvas/domain| packages/domain/src/model-job.test.ts (20 tests) 8ms
+ ✓ |@agent-canvas/desktop-bridge| packages/desktop-bridge/src/contracts.test.ts (6 tests) 9ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/memory-sync-client.test.ts (4 tests) 9ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/electron-net-fetch.test.ts (11 tests) 9ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-renderer-bridge.test.ts (3 tests) 7ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/local-video-source.test.ts (17 tests) 9ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-image-asset.test.ts (3 tests) 8ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/packaging-boundary.test.ts (6 tests) 7ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/knowledge-snapshot.test.ts (14 tests) 7ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/renderer-close-flush.test.ts (8 tests) 7ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-skill-chat.test.ts (3 tests) 9ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/memory-sync.test.ts (4 tests) 7ms
+ ✓ |@agent-canvas/domain| packages/domain/src/runtime-profile.test.ts (2 tests) 5ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-credential-reveal.test.ts (4 tests) 6ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/electron-clipboard-image.test.ts (7 tests) 6ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-video-asset.test.ts (2 tests) 7ms
+ ✓ |@agent-canvas/domain| packages/domain/src/mcp-workflow.test.ts (6 tests) 6ms
+ ✓ |@agent-canvas/domain| packages/domain/src/generation-request.test.ts (5 tests) 6ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/generation-memory.test.ts (5 tests) 5ms
+ ✓ |@agent-canvas/domain| packages/domain/src/agent-plan.test.ts (9 tests) 6ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-preload-api.test.ts (2 tests) 5ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/storyboard-service.test.ts (3 tests) 5ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-legacy/src/close-coordinator.test.ts (3 tests) 5ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/close-coordinator.test.ts (3 tests) 5ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/mcp-main-lifecycle-contract.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/desktop-sync-lifecycle-wiring.test.ts (4 tests) 5ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/storyboard-contract.test.ts (1 test) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-integration-preload.test.ts (2 tests) 5ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-runtime-registration.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-stdio-health.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/knowledge-startup.test.ts (3 tests) 4ms
+ ✓ |@agent-canvas/domain| packages/domain/src/canvas-module.test.ts (10 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-client-ipc.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/history-network-path.test.ts (5 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-smart-object-service.test.ts (4 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/desktop-shutdown.test.ts (5 tests) 5ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-script.test.ts (3 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/reverse-provider-result.test.ts (3 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/professional-reverse-analysis.test.ts (5 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/canonical-json.test.ts (13 tests) 4ms
+ ✓ |@agent-canvas/domain| packages/domain/src/codex-workflow-contract.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-contract.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/domain| packages/domain/src/model-parameter-adapter.test.ts (8 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-video-preview-contract.test.ts (1 test) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/electron-clipboard-video.test.ts (14 tests) 4ms
+ ✓ |@agent-canvas/provider-comfly| packages/provider-comfly/src/redact.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-json-document.test.ts (11 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/update-client.test.ts (2 tests) 3ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/broken-pipe-guard.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/domain| packages/domain/src/placement.test.ts (6 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/legacy-generation-repair.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/persistence-error.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-inline-image.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/file-system.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/seedance-25-reverse-skill.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/preload-api.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-asset-url.test.ts (6 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/skill-chat-visual-analysis.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/renderer-error-policy.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/memory-diff.test.ts (1 test) 1ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/qa-user-data-root.test.ts (3 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/public-api.test.ts (1 test) 1ms
+ ↓ |@agent-canvas/desktop-core| packages/desktop-core/src/knowledge-refresh-performance.test.ts (1 test | 1 skipped)
+ ↓ |@agent-canvas/desktop-core| packages/desktop-core/src/persistence-performance.test.ts (1 test | 1 skipped)
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/ModuleNodeCard.test.tsx (171 tests) 3049ms
+ ✓ |@agent-canvas/renderer| tests/integration/secret-path-scan.test.ts (17 tests) 1611ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/CanvasWorkspace.test.tsx (121 tests) 5819ms
+   ✓ CanvasWorkspace > keeps shell controls within approved geometry and zero letter spacing  388ms
+   ✓ CanvasWorkspace > replaces every secondary surface with Quick Insert after a blank-pane double click  370ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/settings/SettingsDrawer.test.tsx (48 tests) 1654ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/desktop-persistence.test.ts (56 tests) 1387ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/app-store.test.ts (164 tests) 1002ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/SkillChatWorkbench.test.tsx (60 tests) 1567ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/App.test.tsx (14 tests) 730ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/durable-project-serialization.integration.test.ts (3 tests) 744ms
+   ✓ durable project serialization integration > writes module and reference operations in queue order and replays both after restart  302ms
+   ✓ durable project serialization integration > serializes an active real journal commit before restore and keeps the restored writer replayable  325ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/history/GenerationHistoryDrawer.test.tsx (12 tests) 674ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/formal-module-workbench.test.tsx (26 tests) 395ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/feedback-approval.integration.test.ts (1 test) 372ms
+   ✓ feedback approval integration > saves reverse-prompt feedback as pending then approves and publishes it through the real bridge  372ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/theme.behavior.test.tsx (7 tests) 363ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/ModuleLibrary.test.tsx (12 tests) 315ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/ReversePromptAgent.test.tsx (13 tests) 251ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/ConnectedAgentMediaSlots.test.tsx (15 tests) 249ms
+ ✓ |@agent-canvas/renderer| tests/integration/large-canvas.test.ts (4 tests) 245ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/ProjectManagerPopover.test.tsx (5 tests) 207ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/history/SkillCandidateReview.test.tsx (9 tests) 196ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/QuickInsert.test.tsx (3 tests) 160ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/references/ReferenceOrderList.test.tsx (6 tests) 154ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/PlanPreview.test.tsx (8 tests) 132ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/history/ProjectMemoryTimeline.test.tsx (3 tests) 136ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/mentions/MediaMentionTextarea.test.tsx (11 tests) 130ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/GenerationParameterPopover.test.tsx (3 tests) 119ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/settings/ProviderModelCatalog.test.tsx (4 tests) 115ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/ImageMentionComposer.test.tsx (5 tests) 113ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/placement/PlacementBoard.test.tsx (8 tests) 94ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/placement/PlacementInspector.test.tsx (3 tests) 92ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/KnowledgeStatus.test.tsx (10 tests) 91ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/main.styles.test.ts (58 tests) 83ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/ImageResultNode.test.tsx (2 tests) 86ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/McpWorkflowPlanPreview.test.tsx (2 tests) 84ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/AppErrorBoundary.test.tsx (3 tests) 88ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/CanvasNodeCard.test.tsx (3 tests) 86ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/durable-canvas-semantics.test.ts (5 tests) 88ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/job-store.test.ts (35 tests) 71ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/model-result-commit.test.ts (3 tests) 65ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/JobStrip.test.tsx (3 tests) 24ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/test-mode/stress-project.test.ts (2 tests) 21ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/knowledge-client.test.ts (14 tests) 16ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/mcp-workspace-adapter.test.ts (7 tests) 19ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/use-canvas-draft.test.tsx (9 tests) 24ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/project-images.test.ts (15 tests) 25ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/provider-profiles.test.ts (18 tests) 15ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/use-viewport-culling.test.ts (6 tests) 15ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/use-interaction-quality.test.ts (3 tests) 12ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/module-icons.test.tsx (1 test) 9ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/autosave.test.ts (9 tests) 10ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/test-mode/manual-acceptance-bridge.test.ts (4 tests) 9ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/reverse-workflow-proposal.test.ts (2 tests) 8ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/recovery.test.ts (4 tests) 7ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/mcp-confirmation-store.test.ts (4 tests) 8ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/desktop-model-executor.test.ts (6 tests) 6ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/photoshop-import.test.ts (16 tests) 5ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/node-types.test.ts (15 tests) 6ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/reverse-draft-validation.test.ts (1 test) 6ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/workspace-api.test.ts (1 test) 9ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/managed-image-url.test.ts (3 tests) 4ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/reverse-workflow-contract.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/project-persistence.test.ts (1 test) 4ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/skill-chat-session-store.test.ts (4 tests) 4ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/reverse-agent-media.test.ts (9 tests) 4ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/batch-selection-routing.test.ts (4 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/mcp-ui-confirmation-store.test.ts (2 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/settings/provider-operation-timeout.test.ts (2 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/video-generation-results.test.ts (7 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/playwright-config.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/mentions/media-mention-model.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/reverse-result-sections.test.ts (2 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/video-preview-mock.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/execution-reference-snapshot.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/storyboard-reference-media.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/project-factory.test.ts (1 test) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/CanvasBezierEdge.test.ts (4 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/media-import-capability.test.ts (3 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/generation-editor-state.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/runtime-profile.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/connected-media-drag.test.ts (6 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/styles/theme-tokens.test.ts (1 test) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/transient-popover.test.ts (3 tests) 1ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/styles/release-layout-contract.test.ts (1 test) 1ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/agent-media-capability.test.ts (2 tests) 1ms
+
+ Test Files  202 passed | 2 skipped (204)
+      Tests  2391 passed | 2 skipped (2393)
+   Start at  08:40:57
+   Duration  117.10s (transform 4.50s, setup 353ms, collect 28.00s, tests 110.08s, environment 57.19s, prepare 12.33s)
+

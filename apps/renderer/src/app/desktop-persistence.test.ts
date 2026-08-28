@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCanvasModuleNode, type ReversePromptRun } from '@agent-canvas/domain';
+import { applyProjectTransaction, createCanvasModuleNode, type ReversePromptRun } from '@agent-canvas/domain';
 import { createStarterProject } from './app-store';
 import {
   createBrowserPersistenceClient,
@@ -1128,6 +1128,76 @@ describe('desktop persistence', () => {
     });
   });
 
+  it('refreshes and retries once when the active writable session revision advances', async () => {
+    const durableProject = createStarterProject();
+    const reverseNode = createCanvasModuleNode('reverse-draft-after-drift', 'reverse_agent', { x: 360, y: 0 });
+    const editedProject = { ...durableProject, nodes: [...durableProject.nodes, reverseNode] };
+    const refreshedProject = { ...durableProject, name: 'bridge metadata preserved during replay' };
+    const transaction = {
+      id: 'tx-rebased-draft',
+      label: 'Persist current project draft',
+      operations: [{ kind: 'replace_canvas_state' as const, nodes: editedProject.nodes, edges: editedProject.edges }],
+    };
+    const rebasedProject = applyProjectTransaction(refreshedProject, transaction);
+    const commit = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Base revision is stale'), { code: 'REVISION_CONFLICT' }))
+      .mockResolvedValueOnce({
+        committedAt: '2026-08-26T12:00:00.000Z',
+        projectId: durableProject.id,
+        revision: 5,
+        sequence: 5,
+        transactionId: 'tx-rebased-draft',
+      });
+    const refreshProject = vi.fn(async () => ({
+      currentRevision: 4,
+      mode: 'write' as const,
+      project: refreshedProject,
+      projectId: durableProject.id,
+      projectName: durableProject.name,
+      sessionId: 'desktop-session',
+      stableSnapshotId: null,
+      stableSnapshotRevision: 4,
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit,
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: durableProject.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject: vi.fn(async () => ({
+        currentRevision: 3,
+        mode: 'write' as const,
+        project: durableProject,
+        projectId: durableProject.id,
+        projectName: durableProject.name,
+        sessionId: 'desktop-session',
+        stableSnapshotId: null,
+        stableSnapshotRevision: 3,
+      })),
+      refreshProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const result = await client.commit({
+      baseRevision: 3,
+      kind: 'system',
+      nextProject: editedProject,
+      previousProject: durableProject,
+      projectId: durableProject.id,
+      transaction,
+    });
+
+    expect(result).toMatchObject({ ok: true, project: rebasedProject, revision: 5 });
+    expect(refreshProject).toHaveBeenCalledWith({ sessionId: 'desktop-session' });
+    expect(commit).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      baseRevision: 4,
+      projectId: durableProject.id,
+      sessionId: 'desktop-session',
+    }));
+  });
+
   it('uses the bridge current revision instead of the stable snapshot revision after hydrate', async () => {
     const durableProject = createStarterProject();
     const bridge = {
@@ -1439,6 +1509,78 @@ describe('desktop persistence', () => {
       target: expect.objectContaining({ kind: 'module', nodeId: 'image-input' }),
     }, file);
   });
+
+  it('imports a pasted desktop Agent image directly without opening the native picker', async () => {
+    const durableProject = createStarterProject();
+    const importedProject = { ...durableProject, assets: [] };
+    const asset = {
+      assetId: 'abcdef9876543210',
+      byteSize: 42,
+      displayUrl: 'novus-asset://project/desktop-session/abcdef9876543210',
+      extension: 'png' as const,
+      height: 3,
+      label: 'Pasted Agent image',
+      mediaType: 'image/png' as const,
+      origin: 'imported' as const,
+      sha256: 'abcdef9876543210abcdef9876543210abcdef9876543210abcdef9876543210',
+      usageCount: 0,
+      width: 2,
+    };
+    const importDroppedMedia = vi.fn(async () => ({ asset, currentRevision: 8, project: importedProject }));
+    const importImage = vi.fn();
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(durableProject.id, 'stable-7', 'candidate-7', 7)),
+      openProject: vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 7)),
+      projectImages: { importDroppedMedia, importImage, list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const file = new File(['pasted image'], 'clipboard.png', { type: 'image/png' });
+
+    await expect(client.importProjectImage({ kind: 'agent_reference' } as never, file)).resolves.toEqual({
+      asset,
+      project: importedProject,
+      revision: 8,
+    });
+    expect(importImage).not.toHaveBeenCalled();
+    expect(importDroppedMedia).toHaveBeenCalledWith({
+      sessionId: 'desktop-session',
+      target: expect.objectContaining({ kind: 'agent_reference' }),
+    }, file);
+  });
+
+  it('falls back to the native bitmap clipboard for an in-memory Agent image without opening the picker', async () => {
+    const durableProject = createStarterProject();
+    const importedProject = { ...durableProject, assets: [] };
+    const asset = {
+      assetId: '1234567890abcdef', byteSize: 42, displayUrl: 'novus-asset://project/desktop-session/1234567890abcdef',
+      extension: 'png' as const, height: 3, label: 'Clipboard image', mediaType: 'image/png' as const,
+      origin: 'clipboard' as const, sha256: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef', usageCount: 0, width: 2,
+    };
+    const importDroppedMedia = vi.fn(async () => null);
+    const importImage = vi.fn();
+    const pasteClipboardImage = vi.fn(async () => ({ asset, currentRevision: 8, project: importedProject }));
+    const bridge = {
+      closeProject: vi.fn(async () => {}), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(durableProject.id, 'stable-7', 'candidate-7', 7)),
+      openProject: vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 7)),
+      projectImages: { importDroppedMedia, importImage, list: vi.fn(async () => []), pasteClipboardImage },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const file = new File(['clipboard bitmap'], 'image.png', { type: 'image/png' });
+
+    await expect(client.importProjectImage({ kind: 'agent_reference' } as never, file)).resolves.toEqual({ asset, project: importedProject, revision: 8 });
+    expect(importImage).not.toHaveBeenCalled();
+    expect(pasteClipboardImage).toHaveBeenCalledWith({
+      sessionId: 'desktop-session', target: expect.objectContaining({ kind: 'agent_reference' }),
+    });
+  });
   it('creates a durable desktop project the first time an untitled canvas is saved', async () => {
     const project = { ...createStarterProject(), name: '首次保存画布' };
     const createProject = vi.fn(async (request: { project: typeof project }) => createDesktopSession(request.project, 'created-session', 0));
@@ -1488,7 +1630,7 @@ describe('desktop persistence', () => {
       restore: vi.fn(),
     };
     const client = createDesktopPersistenceClient(bridge as never);
-    await client.commit({
+    const firstCommit = client.commit({
       baseRevision: 0,
       kind: 'system',
       nextProject: project,
@@ -1504,6 +1646,7 @@ describe('desktop persistence', () => {
     ]);
     await vi.waitFor(() => expect(createProject).toHaveBeenCalled());
     releaseCreate?.();
+    await firstCommit;
     await boundaries;
 
     expect(createProject).toHaveBeenCalledTimes(1);

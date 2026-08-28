@@ -5,7 +5,6 @@ import {
   type ComflyFetch,
   type ComflyModelRegistration,
 } from '@agent-canvas/provider-comfly';
-import { parseReversePromptResult } from '@agent-canvas/domain';
 import type { FileSystem } from './file-system.js';
 import { createSecureProviderCredentialStore, type ProviderCredentialStore, type SafeStorageAdapter } from './provider-credential-vault.js';
 import {
@@ -35,7 +34,8 @@ import { isPublicProviderAddress, parseSafeProviderResultUrl } from './provider-
 import type { ProviderService } from './provider-service-types.js';
 import { decodeProviderInlineImage } from './provider-inline-image.js';
 import { detectGeneratedImageMediaType, findFirstProviderImageResult, parseDirectProviderImageResponse } from './provider-image-result.js';
-import { parseProviderJsonDocument } from './provider-json-document.js';
+import { extractGeminiReverseText } from './reverse-provider-result.js';
+import { parseReverseProviderResponse } from './reverse-provider-response.js';
 import {
   PROVIDER_BRIDGE_CHANNELS,
   createProviderBridgeError,
@@ -47,7 +47,6 @@ import {
   type AckVideoJobTerminalBridgeRequest,
   type AckVideoJobTerminalBridgeResult,
   type AnalyzeReversePromptBridgeRequest,
-  type AnalyzeReversePromptBridgeResult,
   type CancelImageJobBridgeRequest,
   type CancelImageJobBridgeResult,
   type CancelVideoJobBridgeRequest,
@@ -85,7 +84,7 @@ export type { AckImageJobTerminalBridgeRequest, AckImageJobTerminalBridgeResult,
 export type { ProviderCredentialStore, SafeStorageAdapter } from './provider-credential-vault.js';
 const DEFAULT_COMFLY_BASE_URL = 'https://ai.comfly.org'; const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CURRENT_GENERATION_JOB_ID_PREFIX = 'model-job-v2-';
-const REVERSE_PROVIDER_TIMEOUT_MS = 120_000;
+const REVERSE_PROVIDER_TIMEOUT_MS = 300_000;
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
 export type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
 export { registerProviderBridgeHandlers } from './provider-ipc-registration.js';
@@ -425,23 +424,33 @@ export function createComflyProviderService(options: {
       const usesGeminiNative = profile?.capabilities.includes('gemini_native') === true;
       const usesVisionChat = profile?.capabilities.includes('chat') === true && profile.capabilities.includes('vision');
       if (profile === undefined || !profile.capabilities.includes('reverse_prompt') || (!usesGeminiNative && !usesVisionChat) || (hasVideo && (!usesGeminiNative || !profile.capabilities.includes('video_understanding')))) {
-        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested reverse-analysis model profile is unavailable');
+        throw createProviderBridgeError(
+          'PROVIDER_UNAVAILABLE',
+          profile === undefined
+            ? 'Requested reverse-analysis model profile is unavailable'
+            : hasVideo && !profile.capabilities.includes('video_understanding')
+              ? 'Selected reverse model does not support video understanding'
+              : 'Selected model does not declare reverse_prompt and vision capabilities',
+        );
       }
       if (options.readManagedReverseMedia === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Managed reverse-analysis media is unavailable');
       const media = await options.readManagedReverseMedia(validated.sessionId, validated.media);
       const knowledge = await readPinnedReverseKnowledge(managedKnowledgeStore, validated.run.knowledgeLease.snapshots);
       const reverseRequest = buildProfessionalReverseRequest(validated.run, knowledge);
       let responseText: string | undefined;
+      let finishReason: string | undefined;
       if (usesGeminiNative) {
         const response = await createClient(snapshot, 'language').generateGeminiContent({
           model: profile.modelId ?? profile.modelRoute,
-          generationConfig: { responseMimeType: 'application/json' },
+          generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 16_384 },
           contents: [{ role: 'user', parts: [
             { text: JSON.stringify(reverseRequest) },
             ...media.map((item) => ({ inlineData: { mimeType: item.mediaType, data: Buffer.from(item.bytes).toString('base64') } })),
           ] }],
         }, REVERSE_PROVIDER_TIMEOUT_MS);
-        responseText = response.candidates[0]?.content?.parts?.find((part): part is { text: string } => typeof (part as { text?: unknown }).text === 'string')?.text;
+        const candidate = response.candidates[0];
+        finishReason = candidate?.finishReason;
+        responseText = extractGeminiReverseText(candidate?.content?.parts);
       } else {
         const response = await createClient(snapshot, 'language').chat({
           model: profile.modelId ?? profile.modelRoute,
@@ -450,19 +459,12 @@ export function createComflyProviderService(options: {
             ...media.map((item) => ({ type: 'image_url', image_url: { url: `data:${item.mediaType};base64,${Buffer.from(item.bytes).toString('base64')}` } })),
           ] }],
         }, REVERSE_PROVIDER_TIMEOUT_MS);
-        const content = response.choices[0]?.message?.content;
+        const choice = response.choices[0];
+        const content = choice?.message?.content;
+        finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
         responseText = typeof content === 'string' ? content : undefined;
       }
-      if (responseText === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid reverse-analysis response');
-      try {
-        const parsed = parseProviderBridgeResponse(
-          PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt,
-          parseProviderJsonDocument(responseText),
-        ) as AnalyzeReversePromptBridgeResult;
-        return parseReversePromptResult(parsed, validated.run);
-      } catch {
-        throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid reverse-analysis response');
-      }
+      return parseReverseProviderResponse({ text: responseText, finishReason }, validated.run);
     },
     async chat(request) {
       return executeSkillChat({

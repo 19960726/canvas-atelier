@@ -1,0 +1,787 @@
+
+> test
+> vitest run --config vitest.config.ts
+
+
+ RUN  v3.2.7 E:/画布项目/staging-canvas-build
+
+ ❯ |@agent-canvas/renderer| apps/renderer/src/agent/SkillChatWorkbench.test.tsx (60 tests | 1 failed) 2617ms
+   ✓ SkillChatWorkbench > does not rewrite conversation state when equivalent project memory arrays are recreated 30ms
+   ✓ SkillChatWorkbench > shows a safe actionable message for Agent error CREDENTIALS_LOCKED 109ms
+   ✓ SkillChatWorkbench > shows a safe actionable message for Agent error PROVIDER_UNAVAILABLE 37ms
+   ✓ SkillChatWorkbench > shows a safe actionable message for Agent error CAPABILITY_UNSUPPORTED 37ms
+   ✓ SkillChatWorkbench > shows a safe actionable message for Agent error PROVIDER_INVALID_RESPONSE 43ms
+   ✓ SkillChatWorkbench > times out a stalled Agent request and restores the composer for retry 30ms
+   ✓ SkillChatWorkbench > does not send an unsynchronized knowledge base that would break Agent chat 48ms
+   × SkillChatWorkbench > allows text chat on a vision-capable responses route 1025ms
+     → expected "spy" to be called once, but got 0 times
+
+Ignored nodes: comments, script, style
+[36m<html>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Agent 对话工作台"[39m
+        [33mclass[39m=[32m"skill-chat-workbench"[39m
+      [36m>[39m
+        [36m<header[39m
+          [33mclass[39m=[32m"skill-chat-workbench__header skill-chat-workbench__header--codex"[39m
+        [36m>[39m
+          [36m<div>[39m
+            [36m<h2>[39m
+              [0mCodex Agent [0m
+              [36m<small>[39m
+                [0m画布接入[0m
+              [36m</small>[39m
+            [36m</h2>[39m
+            [36m<p>[39m
+              [36m<i[39m
+                [33maria-hidden[39m=[32m"true"[39m
+              [36m/>[39m
+              [0m运行就绪[0m
+            [36m</p>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"skill-chat-workbench__header-actions"[39m
+          [36m>[39m
+            [36m<select[39m
+              [33maria-label[39m=[32m"Codex 任务"[39m
+            [36m>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"conversation-1787791014008"[39m
+              [36m>[39m
+                [0m新任务[0m
+              [36m</option>[39m
+            [36m</select>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"新建任务"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__new-chat"[39m
+              [33mdata-testid[39m=[32m"agent-new-chat"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+              [36m>[39m
+                [0m+[0m
+              [36m</span>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"sr-only"[39m
+              [36m>[39m
+                [0m新对话[0m
+              [36m</span>[39m
+            [36m</button>[39m
+          [36m</div>[39m
+        [36m</header>[39m
+        [36m<section[39m
+          [33maria-label[39m=[32m"对话上下文"[39m
+          [33mclass[39m=[32m"skill-chat-workbench__context"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33maria-expanded[39m=[32m"false"[39m
+            [33mtype[39m=[32m"button"[39m
+          [36m>[39m
+            [0m展开上下文[0m
+          [36m</button>[39m
+        [36m</section>[39m
+        [36m<div[39m
+          [33maria-label[39m=[32m"Agent 消息流"[39m
+          [33mclass[39m=[32m"skill-chat-workbench__stream"[39m
+          [33mtabindex[39m=[32m"0"[39m
+        [36m>[39m
+          [36m<section[39m
+            [33maria-label[39m=[32m"对话消息"[39m
+            [33mclass[39m=[32m"skill-chat-workbench__messages"[39m
+          [36m>[39m
+            [36m<section[39m
+              [33maria-label[39m=[32m"Agent conversation empty state"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__empty-state"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"skill-chat-workbench__figma-intro skill-chat-workbench__figma-intro--codex"[39m
+              [36m>[39m
+                [36m<i[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33maria-hidden[39m=[32m"true"[39m
+                    [33mclass[39m=[32m"lucide lucide-bot"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"22"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"1.6"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"22"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M12 8V4H8"[39m
+                    [36m/>[39m
+                    [36m<rect[39m
+                      [33mheight[39m=[32m"12"[39m
+                      [33mrx[39m=[32m"2"[39m
+                      [33mwidth[39m=[32m"16"[39m
+                      [33mx[39m=[32m"4"[39m
+                      [33my[39m=[32m"8"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M2 14h2"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M20 14h2"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M15 13v2"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M9 13v2"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</i>[39m
+                [36m<strong>[39m
+                  [0mCodex 已接入当前画布[0m
+                [36m</strong>[39m
+                [36m<p>[39m
+                  [0m它会读取画布上下文，通过 CanvasForge MCP 完成操作。命令和文件改写会按确认流程执行。[0m
+                [36m</p>[39m
+              [36m</div>[39m
+              [36m<div[39m
+                [33maria-label[39m=[32m"推荐 Skill"[39m
+                [33mclass[39m=[32m"skill-chat-workbench__suggestions"[39m
+              [36m>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"分析当前画布"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"skill-chat-workbench__suggestion-icon"[39m
+                  [36m>[39m
+                    [0m⌁[0m
+                  [36m</span>[39m
+                  [36m<span>[39m
+                    [36m<strong>[39m
+                      [0m产品分析[0m
+                    [36m</strong>[39m
+                    [36m<small>[39m
+                      [0m点击填入任务[0m
+                    [36m</small>[39m
+                  [36m</span>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"生成视觉方向"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"skill-chat-workbench__suggestion-icon"[39m
+                  [36m>[39m
+                    [0m✦[0m
+                  [36m</span>[39m
+                  [36m<span>[39m
+                    [36m<strong>[39m
+                      [0m提示词优化[0m
+                    [36m</strong>[39m
+                    [36m<small>[39m
+                      [0m点击填入任务[0m
+                    [36m</small>[39m
+                  [36m</span>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"调用知识库"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"skill-chat-workbench__suggestion-icon"[39m
+                  [36m>[39m
+                    [0m◌[0m
+                  [36m</span>[39m
+                  [36m<span>[39m
+                    [36m<strong>[39m
+                      [0m生成方案[0m
+                    [36m</strong>[39m
+                    [36m<small>[39m
+                      [0m点击填入任务[0m
+                    [36m</small>[39m
+                  [36m</span>[39m
+                [36m</button>[39m
+                [36m<button[39m
+                  [33maria-label[39m=[32m"反推参考图"[39m
+                  [33mtype[39m=[32m"button"[39m
+                [36m>[39m
+                  [36m<span[39m
+                    [33mclass[39m=[32m"skill-chat-workbench__suggestion-icon"[39m
+                  [36m>[39m
+                    [0m◈[0m
+                  [36m</span>[39m
+                  [36m<span>[39m
+                    [36m<strong>[39m
+                      [0m知识库检索[0m
+                    [36m</strong>[39m
+                    [36m<small>[39m
+                      [0m点击填入任务[0m
+                    [36m</small>[39m
+                  [36m</span>[39m
+                [36m</button>[39m
+              [36m</div>[39m
+            [36m</section>[39m
+          [36m</section>[39m
+        [36m</div>[39m
+        [36m<form[39m
+          [33mclass[39m=[32m"skill-chat-workbench__composer"[39m
+        [36m>[39m
+          [36m<label>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sr-only"[39m
+            [36m>[39m
+              [0m向 Agent 发送消息[0m
+            [36m</span>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"media-mention-textarea"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33maria-label[39m=[32m"向 Agent 发送消息"[39m
+                [33maria-multiline[39m=[32m"true"[39m
+                [33mclass[39m=[32m"media-mention-textarea__editor"[39m
+                [33mcontenteditable[39m=[32m"true"[39m
+                [33mdata-placeholder[39m=[32m"告诉 Codex 要在当前画布上完成什么"[39m
+                [33mdata-testid[39m=[32m"agent-composer-input"[39m
+                [33mrole[39m=[32m"textbox"[39m
+                [33mstyle[39m=[32m"--media-mention-rows: 3;"[39m
+              [36m>[39m
+                [0m你好[0m
+              [36m</div>[39m
+            [36m</div>[39m
+          [36m</label>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"skill-chat-workbench__composer-footer"[39m
+            [33mdata-agent-mode[39m=[32m"codex"[39m
+          [36m>[39m
+            [36m<input[39m
+              [33maccept[39m=[32m"image/*,video/mp4,video/webm,video/quicktime"[39m
+              [33mclass[39m=[32m"sr-only"[39m
+              [33mdata-testid[39m=[32m"agent-reference-file-input"[39m
+              [33mtabindex[39m=[32m"-1"[39m
+              [33mtype[39m=[32m"file"[39m
+            [36m/>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"添加素材"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__tool"[39m
+              [33mdisabled[39m=[32m""[39m
+              [33mtitle[39m=[32m"导入项目图片或视频"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-plus"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.6"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"14"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 12h14"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 5v14"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</button>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"Agent 模式"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__mode-tabs"[39m
+              [33mrole[39m=[32m"tablist"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33maria-selected[39m=[32m"false"[39m
+                [33mrole[39m=[32m"tab"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0m对话[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-selected[39m=[32m"false"[39m
+                [33mrole[39m=[32m"tab"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0m原智能[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-selected[39m=[32m"true"[39m
+                [33mclass[39m=[32m"is-active"[39m
+                [33mrole[39m=[32m"tab"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mCodex[0m
+              [36m</button>[39m
+            [36m</div>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"打开聊天模型菜单"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__model-pill"[39m
+              [33mdata-selected-model[39m=[32m"未配置"[39m
+              [33mdata-testid[39m=[32m"agent-model-trigger"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0m未发现 Codex 模型[0m
+            [36m</button>[39m
+            [36m<select[39m
+              [33maria-label[39m=[32m"推理强度"[39m
+              [33mclass[39m=[32m"skill-chat-workbench__effort"[39m
+            [36m>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"low"[39m
+              [36m>[39m
+                [0m快[0m
+              [36m</option>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"medium"[39m
+              [36m>[39m
+                [0m中[0m
+              [36m</option>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"high"[39m
+              [36m>[39m
+                [0m深[0m
+              [36m</option>[39m
+            [36m</select>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"skill-chat-workbench__composer-actions"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"打开知识库"[39m
+                [33mclass[39m=[32m"skill-chat-workbench__tool skill-chat-workbench__knowledge-compact"[39m
+                [33mdata-testid[39m=[32m"knowledge-base-trigger"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"lucide lucide-grid3x3 lucide-grid-3x3"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"14"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.6"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"14"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"18"[39m
+                    [33mrx[39m=[32m"2"[39m
+                    [33mwidth[39m=[32m"18"[39m
+                    [33mx[39m=[32m"3"[39m
+                    [33my[39m=[32m"3"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 9h18"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 15h18"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M9 3v18"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M15 3v18"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"新建对话"[39m
+                [33mclass[39m=[32m"skill-chat-workbench__tool"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"lucide lucide-rotate-ccw"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"14"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.6"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"14"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 3v5h5"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</button>[39m
+              [36m<button[39m
+                [33maria-label[39m=[32m"发送"[39m
+                [33mclass[39m=[32m"skill-chat-workbench__submit-hidden"[39m
+                [33mdisabled[39m=[32m""[39m
+                [33mtype[39m=[32m"submit"[39m
+              [36m/>[39m
+            [36m</div>[39m
+          [36m</div>[39m
+        [36m</form>[39m
+      [36m</section>[39m
+    [36m</div>[39m
+  [36m</body>[39m
+[36m</html>[39m
+   ✓ SkillChatWorkbench > centers the single send glyph without a translated tail or generated counter 2ms
+   ✓ SkillChatWorkbench > places the final scoped Codex Agent contract after every legacy Agent rule 1ms
+   ✓ SkillChatWorkbench > keeps the Agent composer discoverable for keyboard and visual automation 8ms
+   ✓ SkillChatWorkbench > uses icon-only Figma tools without showing the removed image-reference button by default 8ms
+   ✓ SkillChatWorkbench > keeps knowledge and model selection anchored to the composer footer 26ms
+   ✓ SkillChatWorkbench > keeps the Figma image-reference affordance hidden until the user types @ 14ms
+   ✓ SkillChatWorkbench > accepts a generated-image action as an Agent @ reference 28ms
+   ✓ SkillChatWorkbench > exposes the Figma new-chat action above an empty Skill conversation 14ms
+   ✓ SkillChatWorkbench > creates a separate task and restores the previous conversation from the task selector 74ms
+   ✓ SkillChatWorkbench > restores the active task and its mode after the workbench remounts 53ms
+   ✓ SkillChatWorkbench > shows reasoning effort only for Codex so the compact composer is not overcrowded 25ms
+   ✓ SkillChatWorkbench > keeps non-Codex routes out of Codex mode and selects an available Codex route 25ms
+   ✓ SkillChatWorkbench > does not fall back to ordinary chat models when Codex mode has no Codex route 33ms
+   ✓ SkillChatWorkbench > keeps internal request metadata out of the visible conversation in every mode 36ms
+   ✓ SkillChatWorkbench > sends the selected Codex reasoning effort instead of keeping it as presentation-only state 35ms
+   ✓ SkillChatWorkbench > gives an empty Skill timeline a Chinese, non-canvas action next step 6ms
+   ✓ SkillChatWorkbench > shows LibLib-style skill recommendations only in the empty state 22ms
+   ✓ SkillChatWorkbench > keeps knowledge cards out of the empty conversation above the composer 7ms
+   ✓ SkillChatWorkbench > does not show knowledge selectors above the composer in the empty conversation 9ms
+   ✓ SkillChatWorkbench > uses only the two required project knowledge bases in the footer picker 14ms
+   ✓ SkillChatWorkbench > keeps recommendations out of an active conversation 34ms
+   ✓ SkillChatWorkbench > lists only configured chat routes and sends controlled text context to chat 81ms
+   ✓ SkillChatWorkbench > uses the provider attached to the selected chat profile 30ms
+   ✓ SkillChatWorkbench > sends the Agent message with Enter and keeps Shift+Enter for a newline 21ms
+   ✓ SkillChatWorkbench > does not display Stop when the chat bridge has no cancellation capability 15ms
+   ✓ SkillChatWorkbench > recovers a safe text-only conversation only for the same project id 31ms
+   ✓ SkillChatWorkbench > ignores unsafe persisted session text instead of rendering it 6ms
+   ✓ SkillChatWorkbench > renders node reverse results as compact context events with details on demand 7ms
+   ✓ SkillChatWorkbench > uses a route sheet and project-safe skill library instead of exposing unrelated routes 33ms
+   ✓ SkillChatWorkbench > starts the knowledge-library picker with no selected context and toggles a chosen base 13ms
+   ✓ SkillChatWorkbench > renders a highlighted media reference mention chip while preserving the managed image request 31ms
+   ✓ SkillChatWorkbench > submits ordered visual-analysis metadata and asks before drafting a workflow 45ms
+   ✓ SkillChatWorkbench > shows structured reverse variants before creating the durable workflow plan 39ms
+   ✓ SkillChatWorkbench > sends an ordered referenced reverse request to visual chat instead of requiring a selected reverse node 22ms
+   ✓ SkillChatWorkbench > asks before drafting a requested Codex workflow and keeps the selected model route 31ms
+   ✓ SkillChatWorkbench > renders the twentieth Agent image reference as a highlighted 图片20 mention chip 13ms
+   ✓ SkillChatWorkbench > explains why @ images cannot be used on a text-only chat route without sending a request 9ms
+   ✓ keeps both approved knowledge bases visible before sync but does not send unavailable ids 32ms
+   ✓ imports a managed reference and immediately attaches it for a vision model 26ms
+   ✓ keeps the conversation unchanged when managed reference import is cancelled 14ms
+   ✓ keeps a text-only imported asset unselected and explains the capability error 14ms
+   ✓ imports a pasted video and renders a highlighted 视频1 mention chip for a vision model 14ms
+   ✓ imports a clipboard image exposed through DataTransfer items when files is empty 17ms
+   ✓ shows a controlled error when managed reference import fails 27ms
+   ✓ shows no media warning initially and clears it after switching to a vision model 32ms
+   ✓ keeps only one transient composer popover open and closes it on send 38ms
+   ✓ closes the transient composer popover on outside click and Escape 21ms
+   ✓ shows one selectable chat route for the same visible model name without exposing provider names 23ms
+   ✓ shows only model names for unique chat models 23ms
+   ✓ requires confirmation before an Agent image command executes a canvas node 27ms
+   ✓ routes 生成一个8秒产品视频 to the matching confirmed canvas action 25ms
+   ✓ routes 反推当前参考图的提示词 to the matching confirmed canvas action 24ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/CanvasWorkspace.test.tsx (121 tests) 4860ms
+   ✓ CanvasWorkspace > keeps shell controls within approved geometry and zero letter spacing  353ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/ModuleNodeCard.test.tsx (171 tests) 2975ms
+ ✓ |@agent-canvas/renderer| tests/integration/secret-path-scan.test.ts (17 tests) 2564ms
+   ✓ secret/path scan coverage > fails when a text Playwright report artifact contains an Authorization header  333ms
+   ✓ secret/path scan coverage > fails when a generated dist source map contains an Authorization header  365ms
+   ✓ secret/path scan coverage > fails when generated dist contains a real data image base64 payload  350ms
+   ✓ secret/path scan coverage > fails when an unlisted test file contains a private absolute path  328ms
+   ✓ secret/path scan coverage > fails when an unlisted test file contains a raw base64 data image  319ms
+   ✓ secret/path scan coverage > fails when an unlisted test file contains an API key token  327ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/settings/SettingsDrawer.test.tsx (48 tests) 1728ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/desktop-persistence.test.ts (56 tests) 1429ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/app-store.test.ts (164 tests) 981ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/App.test.tsx (14 tests) 808ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/durable-project-serialization.integration.test.ts (3 tests) 772ms
+   ✓ durable project serialization integration > serializes an active real journal commit before restore and keeps the restored writer replayable  366ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/history/GenerationHistoryDrawer.test.tsx (12 tests) 685ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/formal-module-workbench.test.tsx (26 tests) 522ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/feedback-approval.integration.test.ts (1 test) 410ms
+   ✓ feedback approval integration > saves reverse-prompt feedback as pending then approves and publishes it through the real bridge  409ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/theme.behavior.test.tsx (7 tests) 382ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/ModuleLibrary.test.tsx (12 tests) 346ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/ReversePromptAgent.test.tsx (13 tests) 299ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/ConnectedAgentMediaSlots.test.tsx (15 tests) 261ms
+ ✓ |@agent-canvas/renderer| tests/integration/large-canvas.test.ts (4 tests) 248ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/ProjectManagerPopover.test.tsx (5 tests) 228ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/history/SkillCandidateReview.test.tsx (9 tests) 206ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/QuickInsert.test.tsx (3 tests) 169ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/PlanPreview.test.tsx (8 tests) 135ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/references/ReferenceOrderList.test.tsx (6 tests) 149ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/mentions/MediaMentionTextarea.test.tsx (11 tests) 129ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/history/ProjectMemoryTimeline.test.tsx (3 tests) 135ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/settings/ProviderModelCatalog.test.tsx (4 tests) 119ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/GenerationParameterPopover.test.tsx (3 tests) 128ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/ImageMentionComposer.test.tsx (5 tests) 117ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/KnowledgeStatus.test.tsx (10 tests) 95ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/placement/PlacementInspector.test.tsx (3 tests) 100ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/placement/PlacementBoard.test.tsx (8 tests) 109ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/McpWorkflowPlanPreview.test.tsx (2 tests) 90ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/ImageResultNode.test.tsx (2 tests) 94ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/main.styles.test.ts (58 tests) 90ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/AppErrorBoundary.test.tsx (3 tests) 89ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/CanvasNodeCard.test.tsx (3 tests) 84ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/durable-canvas-semantics.test.ts (5 tests) 81ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/model-result-commit.test.ts (3 tests) 55ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/job-store.test.ts (35 tests) 76ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/JobStrip.test.tsx (3 tests) 25ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/test-mode/stress-project.test.ts (2 tests) 24ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/use-canvas-draft.test.tsx (9 tests) 20ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/project-images.test.ts (15 tests) 18ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/mcp-workspace-adapter.test.ts (7 tests) 22ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/knowledge-client.test.ts (14 tests) 23ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/provider-profiles.test.ts (18 tests) 15ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/use-interaction-quality.test.ts (3 tests) 12ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/use-viewport-culling.test.ts (6 tests) 14ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/test-mode/manual-acceptance-bridge.test.ts (4 tests) 9ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/module-icons.test.tsx (1 test) 9ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/autosave.test.ts (9 tests) 9ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/reverse-workflow-proposal.test.ts (2 tests) 8ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/mcp-confirmation-store.test.ts (4 tests) 8ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/recovery.test.ts (4 tests) 8ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/desktop-model-executor.test.ts (6 tests) 7ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/reverse-draft-validation.test.ts (1 test) 6ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/workspace-api.test.ts (1 test) 5ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/photoshop-import.test.ts (16 tests) 6ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/node-types.test.ts (15 tests) 6ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/managed-image-url.test.ts (3 tests) 4ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/project-persistence.test.ts (1 test) 4ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/skill-chat-session-store.test.ts (4 tests) 4ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/reverse-agent-media.test.ts (9 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/CanvasBezierEdge.test.ts (4 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/mcp-ui-confirmation-store.test.ts (2 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/settings/provider-operation-timeout.test.ts (2 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/playwright-config.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/reverse-result-sections.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/reverse-workflow-contract.test.ts (5 tests) 4ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/batch-selection-routing.test.ts (4 tests) 3ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/jobs/video-preview-mock.test.ts (3 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/video-generation-results.test.ts (7 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/mentions/media-mention-model.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/execution-reference-snapshot.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/storyboard-reference-media.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/generation-editor-state.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/canvas/connected-media-drag.test.ts (6 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/project-factory.test.ts (1 test) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/runtime-profile.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/styles/theme-tokens.test.ts (1 test) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/styles/release-layout-contract.test.ts (1 test) 1ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/transient-popover.test.ts (3 tests) 1ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/app/media-import-capability.test.ts (3 tests) 2ms
+ ✓ |@agent-canvas/renderer| apps/renderer/src/agent/agent-media-capability.test.ts (2 tests) 1ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-provider.integration.test.ts (31 tests) 13462ms
+   ✓ provider generation history production sink > records queued, running, succeeded, failed, and cancelled jobs through the real provider service  1470ms
+   ✓ provider generation history production sink > persists a Gemini native inline image as succeeded generation history  459ms
+   ✓ provider generation history production sink > blocks local or literal result URLs before download and records an invalid result  641ms
+   ✓ provider generation history production sink > rejects a result hostname when any resolved address is private  647ms
+   ✓ provider generation history production sink > fails closed when result-host DNS resolution fails  694ms
+   ✓ provider generation history production sink > keeps a succeeded history terminal while retrying provider materialization after restart  780ms
+   ✓ provider generation history production sink > keeps a failed history terminal when a concurrent cancel arrives before the ledger terminal commit  671ms
+   ✓ provider generation history production sink > returns the first durable terminal for concurrent different terminal updates  329ms
+   ✓ provider generation history production sink > uses pinned DNS evidence for the actual result download transport  696ms
+   ✓ provider generation history production sink > does not submit another paid provider request when the same job id is already terminal  571ms
+   ✓ provider generation history production sink > keeps the paid-submission tombstone after terminal ACK and history deletion  1047ms
+   ✓ provider generation history production sink > does not submit another paid provider request when the same job id is already running  373ms
+   ✓ provider generation history production sink > allows only one paid request when two services concurrently submit the same job id  593ms
+   ✓ provider generation history production sink > rejects deprecated site-local IPv6 result addresses before download  557ms
+   ✓ provider generation history production sink > rejects IPv4-compatible private IPv6 result addresses before download  570ms
+   ✓ provider generation history production sink > rejects local-use NAT64 IPv6 result addresses before download  534ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-store.test.ts (37 tests) 10902ms
+   ✓ durable generation history store > persists metadata-only lifecycle records and completes an existing running record with an original  315ms
+   ✓ generation history pagination > uses an opaque revision-bound cursor with stable sort and rejects tampering or query reuse  313ms
+   ✓ generation history concurrent lifecycle > returns exact capacity totals when a missing original falls beyond the former 32-record audit window  4096ms
+   ✓ generation history concurrent lifecycle > merges concurrent favorite, trash, and reference updates and keeps retries idempotent  334ms
+   ✓ generation history concurrent lifecycle > restores within retention and purges expired files only after blocking references are removed  589ms
+   ✓ generation history concurrent lifecycle > moves a confined corrupt original into trash and removes it on permanent deletion  327ms
+   ✓ generation history concurrent lifecycle > restores a corrupt staged original after an interrupted permanent-delete index commit  300ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/runtime-entry-contract.test.ts (10 tests) 10388ms
+   ✓ desktop runtime entry contract > modern cleans stale dist artifacts before building desktop outputs  1525ms
+   ✓ desktop runtime entry contract > modern builds a self-contained CommonJS desktop main that loads under the Electron contract  2072ms
+   ✓ desktop runtime entry contract > modern reports redacted startup failures instead of leaving an unhandled readiness rejection  1916ms
+   ✓ desktop runtime entry contract > legacy cleans stale dist artifacts before building desktop outputs  1398ms
+   ✓ desktop runtime entry contract > legacy builds a self-contained CommonJS desktop main that loads under the Electron contract  1956ms
+   ✓ desktop runtime entry contract > legacy reports redacted startup failures instead of leaving an unhandled readiness rejection  1392ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-bridge.test.ts (108 tests) 36397ms
+   ✓ Comfly provider service > executes a dynamically discovered Comfly image model immediately after the key is saved  326ms
+   ✓ Comfly provider service > stores a synchronous Comfly image result for models without async task support  334ms
+   ✓ Comfly provider service > maps async image submit and polling to public job contracts  979ms
+   ✓ Comfly provider service > consumes an async Comfly b64_json result inside the main process without exposing it over IPC  470ms
+   ✓ Comfly provider service > stores an async Comfly image in the active project and returns the real asset id  446ms
+   ✓ Comfly provider service > materializes a provider result when history already reports success but the project asset is missing  434ms
+   ✓ Comfly provider service > accepts Comfly snake-case task envelopes and nested output image results  486ms
+   ✓ Comfly provider service > runs a documented Comfly v2 text-to-video task and stores the returned MP4  402ms
+   ✓ Comfly provider service > stores Gemini native inline image output and returns the project asset id  348ms
+   ✓ Comfly provider service > sends managed generation images in @1 then @2 order and preserves existing task retries  307ms
+   ✓ Comfly provider service > submits and polls through the Electron net.request adapter without global fetch  484ms
+   ✓ Comfly provider service > preserves durable task mappings across token rotation and service restart  650ms
+   ✓ Comfly provider service > migrates v1 token-encrypted task mappings through protected fallback keys and survives rotation  566ms
+   ✓ Comfly provider service > blocks legacy job identities after a v1 ledger migration while allowing a new run identity  631ms
+   ✓ Comfly provider service > blocks legacy job identities after a v4 ledger migration while allowing a new run identity  611ms
+   ✓ Comfly provider service > keeps passphrase-backed running jobs paused while credentials are locked and resumes after unlock  556ms
+   ✓ Comfly provider service > recovers opaque task mappings after a main-process restart without writing plaintext ids to disk  452ms
+   ✓ Comfly provider service > serializes concurrent durable mapping writes so restart recovery does not lose submitted jobs  915ms
+   ✓ Comfly provider service > uses cross-process file locking so two service instances do not overwrite each other mappings  749ms
+   ✓ Comfly provider service > preserves running task mappings when atomic open fails before target replacement  770ms
+   ✓ Comfly provider service > preserves running task mappings when atomic write fails before target replacement  729ms
+   ✓ Comfly provider service > preserves running task mappings when atomic sync fails before target replacement  663ms
+   ✓ Comfly provider service > preserves running task mappings when atomic rename fails before target replacement  686ms
+   ✓ Comfly provider service > restores unACKed terminal task mappings when post-replace verification fails inside app data  829ms
+   ✓ Comfly provider service > keeps terminal tombstones replayable until renderer ACK and then cleans them up  2210ms
+   ✓ Comfly provider service > does not garbage collect unACKed terminal tombstones or active running mappings  964ms
+   ✓ Comfly provider service > does not expose provider result URLs or redirect/private-network text in public responses  5884ms
+   ✓ Comfly provider service > models cancel as a replayable terminal where first terminal wins  1469ms
+   ✓ Comfly provider service > does not hold the configuration mutex while provider network requests are in flight  1070ms
+   ✓ Comfly provider service > serializes configure so credentials, base URL, and profiles stay atomically consistent  378ms
+   ✓ Comfly provider service > restores safeStorage-backed custom base URL and profiles after service restart without constructor defaults  336ms
+   ✓ Comfly provider service > restores passphrase-backed custom base URL and profiles after unlock without writing secrets to disk  470ms
+   ✓ Comfly provider service > keeps the previous token, mapping state, and configuration when rotation fails before configuration persistence completes  939ms
+   ✓ Comfly provider service > restores the previous token, mapping state, and configuration when credential rotation fails after configuration persistence succeeds  970ms
+   ✓ Comfly provider service > rejects malformed provider responses and malformed inline image results with sanitized errors  774ms
+   ✓ Comfly provider service > replaces raw Comfly task ids in poll API, fetch, timeout, and invalid-response errors before IPC exposure  740ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/bridge-contract.test.ts (82 tests) 3584ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/crash-recovery.integration.test.ts (9 tests) 5838ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after before_append  721ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after during_append  709ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after after_append_before_sync  707ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after after_snapshot_temp  708ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after before_manifest_replace  756ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after after_manifest_replace  759ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after during_compaction  724ms
+   ✓ desktop persistence crash recovery > recovers only acknowledged transactions after during_export  754ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/project-video-bridge.test.ts (16 tests) 4157ms
+   ✓ project video bridge > atomically pastes one clipboard MP4 into a new video input node  478ms
+   ✓ project video bridge > replays the same clipboard video operation after restart without reading the clipboard again  362ms
+   ✓ project video bridge > returns MISSING_ASSET for a replay whose managed MP4 disappeared without rereading clipboard  449ms
+   ✓ project video bridge > closes the verified video handle and leaves the project unchanged when streaming fails  348ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/managed-knowledge-store.test.ts (40 tests) 2976ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/approved-snapshot-pull.test.ts (17 tests) 1928ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/project-image-bridge.test.ts (27 tests) 3559ms
+   ✓ project image bridge > stores a generated image in the active project asset catalog without exposing bytes  430ms
+   ✓ project image bridge > replays a clipboard operation after restart without consulting the changed clipboard  409ms
+   ✓ project image bridge > replaces protected source filenames before the asset label reaches the durable journal  309ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/snapshot-scheduler.test.ts (15 tests) 1293ms
+   ✓ SnapshotScheduler > rotates before snapshotting while keeping live writers bound to the new active journal  964ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/knowledge-refresh-service.test.ts (11 tests) 1243ms
+   ✓ KnowledgeRefreshService > keeps the previous active snapshot and emits fallback when refreshed content is protected  307ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/project-repository.test.ts (39 tests) 1245ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/relayme-provider-service.test.ts (12 tests) 982ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/novus-pack.test.ts (33 tests) 962ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/approved-snapshot-outbox.test.ts (8 tests) 757ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/recovery-scanner.test.ts (13 tests) 569ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-service.test.ts (5 tests) 602ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/approved-snapshot-cross-device.integration.test.ts (1 test) 457ms
+   ✓ approved snapshot cross-device integration > moves approved growth between isolated devices and preserves a rejected stale upload for reconciliation  456ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/knowledge-security.integration.test.ts (1 test) 388ms
+   ✓ knowledge security integration > commits a successful durable review and scans every protected artifact class  387ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/asset-store.test.ts (26 tests) 338ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/journal-writer.test.ts (25 tests) 303ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/confined-file-lock.test.ts (18 tests) 211ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-bridge.test.ts (2 tests) 176ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-bridge.test.ts (2 tests) 183ms
+ ✓ |@agent-canvas/desktop-bridge| packages/desktop-bridge/src/runtime-profile.contract.test.ts (5 tests) 110ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/recent-project-bridge.test.ts (4 tests) 103ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/cache-directory-service.test.ts (10 tests) 98ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/writeback-token.test.ts (17 tests) 106ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-runtime-service.test.ts (4 tests) 101ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-file-confinement.test.ts (8 tests) 81ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-registry.test.ts (3 tests) 66ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/recent-project-store.test.ts (3 tests) 55ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-windows-adapter.test.ts (9 tests) 70ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/user-data-migration.test.ts (4 tests) 45ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-client-config.test.ts (6 tests) 35ms
+ ✓ |@agent-canvas/domain| packages/domain/src/reverse-prompt-agent.test.ts (23 tests) 20ms
+ ✓ |@agent-canvas/provider-comfly| packages/provider-comfly/src/client.test.ts (23 tests) 20ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-schema.test.ts (26 tests) 18ms
+ ✓ |@agent-canvas/domain| packages/domain/src/generation-history.test.ts (21 tests) 19ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/candidate-builder.test.ts (9 tests) 18ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/offline-outbox.test.ts (6 tests) 18ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-runtime-file.test.ts (3 tests) 17ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/import-skill.test.ts (2 tests) 18ms
+ ✓ |@agent-canvas/domain| packages/domain/src/formal-module-catalog.test.ts (20 tests) 16ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-transaction.test.ts (12 tests) 14ms
+ ✓ |@agent-canvas/mcp-bridge| packages/mcp-bridge/src/server.test.ts (4 tests) 16ms
+ ✓ |@agent-canvas/domain| packages/domain/src/module-graph.test.ts (31 tests) 13ms
+ ✓ |@agent-canvas/mcp-bridge| packages/mcp-bridge/src/runtime-client.test.ts (3 tests) 12ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-memory.test.ts (21 tests) 12ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/knowledge-registry.test.ts (9 tests) 12ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/desktop-icon-contract.test.ts (4 tests) 12ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-contracts.test.ts (1 test) 11ms
+ ✓ |@agent-canvas/domain| packages/domain/src/canvas-transaction.test.ts (11 tests) 10ms
+ ✓ |@agent-canvas/provider-relayme| packages/provider-relayme/src/client.test.ts (10 tests) 11ms
+ ✓ |@agent-canvas/domain| packages/domain/src/knowledge-context.test.ts (6 tests) 10ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-model-catalog.test.ts (17 tests) 9ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/memory-sync-client.test.ts (4 tests) 8ms
+ ✓ |@agent-canvas/desktop-bridge| packages/desktop-bridge/src/contracts.test.ts (6 tests) 9ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-image-asset.test.ts (3 tests) 7ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/local-video-source.test.ts (17 tests) 7ms
+ ✓ |@agent-canvas/domain| packages/domain/src/model-job.test.ts (20 tests) 8ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/knowledge-snapshot.test.ts (14 tests) 7ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/renderer-close-flush.test.ts (8 tests) 7ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/electron-net-fetch.test.ts (11 tests) 8ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/packaging-boundary.test.ts (6 tests) 7ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-skill-chat.test.ts (3 tests) 7ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-renderer-bridge.test.ts (3 tests) 8ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-preload-api.test.ts (2 tests) 5ms
+ ✓ |@agent-canvas/domain| packages/domain/src/project-video-asset.test.ts (2 tests) 6ms
+ ✓ |@agent-canvas/domain| packages/domain/src/runtime-profile.test.ts (2 tests) 6ms
+ ✓ |@agent-canvas/domain| packages/domain/src/generation-request.test.ts (5 tests) 6ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-credential-reveal.test.ts (4 tests) 6ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/memory-sync.test.ts (4 tests) 6ms
+ ✓ |@agent-canvas/domain| packages/domain/src/mcp-workflow.test.ts (6 tests) 6ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-integration-preload.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/electron-clipboard-image.test.ts (7 tests) 6ms
+ ✓ |@agent-canvas/domain| packages/domain/src/agent-plan.test.ts (9 tests) 5ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/generation-memory.test.ts (5 tests) 5ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/history-network-path.test.ts (5 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/storyboard-service.test.ts (3 tests) 5ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/close-coordinator.test.ts (3 tests) 4ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-legacy/src/close-coordinator.test.ts (3 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/storyboard-contract.test.ts (1 test) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-client-ipc.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/knowledge-startup.test.ts (3 tests) 4ms
+ ✓ |@agent-canvas/domain| packages/domain/src/canvas-module.test.ts (10 tests) 4ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/mcp-main-lifecycle-contract.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/desktop-sync-lifecycle-wiring.test.ts (4 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/electron-clipboard-video.test.ts (14 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-smart-object-service.test.ts (4 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/mcp-stdio-health.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/professional-reverse-analysis.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/desktop-shutdown.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-runtime-registration.test.ts (2 tests) 4ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-script.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/domain| packages/domain/src/model-parameter-adapter.test.ts (8 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/photoshop-contract.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/canonical-json.test.ts (13 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-video-preview-contract.test.ts (1 test) 3ms
+ ✓ |@agent-canvas/domain| packages/domain/src/codex-workflow-contract.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-json-document.test.ts (11 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/preload-api.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/legacy-generation-repair.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/provider-comfly| packages/provider-comfly/src/redact.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/provider-inline-image.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/broken-pipe-guard.test.ts (5 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/persistence-error.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/domain| packages/domain/src/placement.test.ts (6 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/file-system.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/seedance-25-reverse-skill.test.ts (2 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/reverse-provider-result.test.ts (3 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/update-client.test.ts (2 tests) 3ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/generation-history-asset-url.test.ts (6 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/skill-chat-visual-analysis.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/skill-store| packages/skill-store/src/memory-diff.test.ts (1 test) 1ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/qa-user-data-root.test.ts (3 tests) 1ms
+ ✓ |@agent-canvas/desktop-shells| apps/desktop-modern/src/renderer-error-policy.test.ts (5 tests) 2ms
+ ✓ |@agent-canvas/desktop-core| packages/desktop-core/src/public-api.test.ts (1 test) 1ms
+ ↓ |@agent-canvas/desktop-core| packages/desktop-core/src/knowledge-refresh-performance.test.ts (1 test | 1 skipped)
+ ↓ |@agent-canvas/desktop-core| packages/desktop-core/src/persistence-performance.test.ts (1 test | 1 skipped)
+
+ Test Files  1 failed | 201 passed | 2 skipped (204)
+      Tests  1 failed | 2390 passed | 2 skipped (2393)
+   Start at  08:36:52
+   Duration  130.04s (transform 4.99s, setup 435ms, collect 30.29s, tests 129.03s, environment 60.88s, prepare 12.77s)
+

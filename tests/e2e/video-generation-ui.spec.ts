@@ -54,11 +54,12 @@ for (const theme of ['dark', 'light'] as const) {
     await expect(mediaTray).toHaveCSS('width', '614px');
     await expect(mediaTray).toHaveCSS('height', '54px');
     const pendingSlot = mediaTray.getByLabel('Video preview reference slot pending');
-    await expect(pendingSlot).toHaveCSS('width', '32px');
-    await expect(pendingSlot).toHaveCSS('height', '32px');
+    await expect(pendingSlot).toHaveCSS('width', '40px');
+    await expect(pendingSlot).toHaveCSS('height', '40px');
     await expect(mediaTray.locator('.module-node__connected-video-media-source')).toHaveCount(0);
     await expect(mediaTray.locator('.module-node__reference-slots--inline')).toHaveCount(0);
-    await expect(mediaTray.getByText('+')).toBeVisible();
+    await expect(pendingSlot.getByLabel('图槽编号 1')).toHaveText('1');
+    await expect(mediaTray.getByText('+')).toHaveCount(0);
     await expect(mediaTray.getByText('Connected media pending')).toHaveCount(0);
     await captureLayoutScreenshot(page, testInfo, `video-media-image-${theme}-${viewport.name}`);
   });
@@ -281,7 +282,7 @@ test(`captures completed video posters inside the generation card in ${theme} at
   await expect(page.locator('[data-module-type="video_result"]')).toHaveCount(0);
   await expect(videoNode.getByLabel('Video generation preview')).toBeVisible();
   await expect(videoNode.getByRole('img', { name: 'Generated video preview 1' })).toBeVisible();
-  await expect(videoNode.getByLabel('Connected video media').locator('img')).toBeVisible();
+  await expect(videoNode.getByLabel('Connected video media')).toHaveCount(0);
 
   await videoNode.getByRole('button', { name: 'Open video generation editor' }).click();
   await expect(videoNode.getByLabel('Video generation composer')).toBeVisible();

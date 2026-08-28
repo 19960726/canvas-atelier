@@ -10,7 +10,7 @@ for (const theme of ['light', 'dark'] as const) {
       await window.__NOVUS_E2E__!.createModule('reverse_agent', { x: 480, y: 80 });
       await window.__NOVUS_E2E__!.configureModule('reverse_agent', {
         config: {
-          modelRoute: 'reverse/e2e-gemini-native',
+          modelRoute: 'comfly-gpt-5-6-sol',
           role: 'Commercial visual analyst',
           task: 'Analyze @图片1.',
           knowledgeBaseIds: [],

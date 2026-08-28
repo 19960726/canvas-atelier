@@ -28,4 +28,12 @@ describe('Photoshop placement script contract', () => {
     expect(scriptSource).not.toMatch(/saveAs|documents\.add|clipboard|placedLayerRelinkToFile/iu);
     expect(scriptSource).not.toMatch(/(?:app\.activeDocument|documentRef)\.(?:save|close)\s*\(/u);
   });
+
+  it('keeps the Windows Script Host runner compatible with legacy JScript syntax', async () => {
+    const runnerPath = fileURLToPath(new URL('./photoshop-windows-runner.js', import.meta.url));
+    const runnerSource = await readFile(runnerPath, 'utf8');
+
+    expect(runnerSource).not.toContain('/iu');
+    expect(runnerSource).not.toContain('/gu');
+  });
 });

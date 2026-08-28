@@ -393,7 +393,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const displaySecondaryName = data.moduleType === 'reverse_agent' ? 'Reverse Agent' : definition.secondaryName;
   return (
     <article
-      className={`module-node nowheel${hasMediaControls ? ' module-node--media-controls' : ''}${hasImageControls ? ' module-node--image-controls' : ''}${hasSelectedImage || hasSelectedVideo ? ' module-node--has-media' : ''}${isFoundationNode ? ' module-node--foundation' : ''}${data.moduleType === 'reverse_agent' ? ' module-node--reverse-figma' : data.moduleType === 'image_generation' ? ' module-node--image-figma' : data.moduleType === 'video_generation' ? ' module-node--video-figma' : isProfessionalWorkbench ? ' module-node--workbench' : ''}${selected ? ' is-selected' : ''}`}
+      className={`module-node nowheel${hasMediaControls ? ' module-node--media-controls' : ''}${hasImageControls ? ' module-node--image-controls' : ''}${hasSelectedImage || hasSelectedVideo ? ' module-node--has-media' : ''}${isFoundationNode ? ' module-node--foundation' : ''}${data.moduleType === 'reverse_agent' ? ' module-node--reverse' : data.moduleType === 'image_generation' ? ' module-node--image-generation' : data.moduleType === 'video_generation' ? ' module-node--video-generation' : isProfessionalWorkbench ? ' module-node--workbench' : ''}${selected ? ' is-selected' : ''}`}
       data-testid="module-node-card"
       data-module-type={definition.type}
       data-port-label-mode={isProfessionalWorkbench ? 'interactive' : 'always'}
@@ -811,7 +811,7 @@ function VideoGenerationSummary({
   const videoTimingJob = selectGenerationTimingJob(modelJobs, id, 'video', durableVideoResults.length > 0);
   const result = hasCompletedResult ? '视频结果已就绪' : '等待生成';
   return (
-    <section className="module-node__summary module-node__summary--compact module-node__summary--generation" data-editor-expanded={expanded ? 'true' : 'false'} aria-label="视频模拟预览">
+    <section className="module-node__summary module-node__summary--compact module-node__summary--generation" data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedResult ? 'true' : 'false'} data-result-count={hasCompletedResult ? Math.min(completedVideoResults.length, 4) : undefined} data-result-orientation={hasCompletedResult ? 'landscape' : undefined} aria-label="视频模拟预览">
       <TaskTimingBadge ariaLabel="Video generation task timing" job={videoTimingJob} />
       {!expanded && <section className="module-node__generation-collapsed-shell nodrag nopan" aria-label="Video generation preview">
         <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nodrag nopan" aria-label="Open video generation editor" aria-expanded={expanded} title="点击展开" onPointerDown={stopCanvasPointer} onClick={() => onRequestExpand()}>
@@ -831,7 +831,7 @@ function VideoGenerationSummary({
           </div> : <Video aria-hidden="true" size={34} strokeWidth={1.4} />}
           <span className="module-node__generation-collapsed-play" aria-hidden="true"><Play size={18} fill="currentColor" /></span>
         </button>
-        {!expanded && hasConnectedMedia && <ConnectedMediaSlots
+        {!expanded && !hasCompletedResult && hasConnectedMedia && <ConnectedMediaSlots
           ariaLabel="Connected video media"
           slotRowAriaLabel="Video preview reference slots"
           media={connectedMedia}
@@ -900,6 +900,7 @@ function VideoGenerationSummary({
             }} />}
           </section>
 
+          {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
           <div className="module-node__generation-control-bar module-node__video-control-bar" aria-label="Video preview parameter controls" onPointerDownCapture={clearBrowserSelection}>
             <select className="nodrag nopan" aria-label="Video preview model" value={modelRoute} disabled={compatibleRoutes.length === 0} onPointerDown={stopCanvasPointer} onChange={(event) => setModelRoute(event.target.value)}>
               {compatibleRoutes.length === 0 && <option value="">未配置视频模型</option>}
@@ -1116,6 +1117,13 @@ function ImageGenerationSummary({
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [config.resultAssetIds, projectImages]);
   const previewItems = durablePreviewAssets.length > 0 ? durablePreviewAssets : generatedPreviewAssets;
   const hasCompletedImageResult = executionState === 'completed' || config.resultState === 'fresh' || generatedPreviewAssets.length > 0;
+  const completedImageOrientation = previewItems.length !== 1
+    ? 'grid'
+    : (previewItems[0]?.height ?? 1) > (previewItems[0]?.width ?? 1) * 1.08
+      ? 'portrait'
+      : (previewItems[0]?.width ?? 1) > (previewItems[0]?.height ?? 1) * 1.08
+        ? 'landscape'
+        : 'square';
   const imageTimingJob = selectGenerationTimingJob(modelJobs, id, 'image', durablePreviewAssets.length > 0);
   const activePreviewAsset = previewIndex === null ? undefined : previewItems[previewIndex];
   const actionPreviewAsset = previewActionMenu === null ? undefined : previewItems[previewActionMenu.index];
@@ -1139,8 +1147,23 @@ function ImageGenerationSummary({
     if (agentPanelCollapsed) toggleAgentPanel();
     globalThis.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: asset.assetId } }));
   };
+  const runImageGeneration = () => {
+    setRunError(null);
+    setLocalGenerationStartedAt(new Date().toISOString());
+    const referenceAssetIds = mergeAssetIds(connectedReferenceAssetIds, mentionedReferenceAssetIds);
+    const requestedAspectRatio = aspectRatio === '自由比例' ? resolveAutomaticImageAspectRatio(connectedMedia, projectImages) : aspectRatio;
+    void onRun(id, { prompt: prompt.trim(), ...(modelRoute ? { modelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), resolution: effectiveImageResolution, outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
+      if (!started) {
+        setLocalGenerationStartedAt(null);
+        setRunError('生成未启动，请检查当前项目保存状态和模型选择后重试。');
+      }
+    }).catch((error) => {
+      setLocalGenerationStartedAt(null);
+      setRunError(formatGenerationStartError(error, 'image'));
+    });
+  };
   return (
-    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}`} data-editor-expanded={expanded ? 'true' : 'false'} aria-label="生成摘要 / Generation summary">
+    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 4) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
       <TaskTimingBadge
         ariaLabel="Image generation task timing"
         job={imageTimingJob}
@@ -1170,7 +1193,7 @@ function ImageGenerationSummary({
               </div>
             ))}
           </div> : <ImageIcon aria-hidden="true" size={34} strokeWidth={1.4} />}        </button>
-        {!expanded && hasConnectedReference && <ConnectedMediaSlots
+        {!expanded && !(hasCompletedImageResult && previewItems.length > 0) && hasConnectedReference && <ConnectedMediaSlots
           ariaLabel="Image generation reference slots"
           media={connectedMedia}
           projectImages={projectImages}
@@ -1273,6 +1296,7 @@ function ImageGenerationSummary({
               {['产品角度固定', '多机位广告格', '剧情推进四宫格', '角色脸部三视图'].map((suggestion) => <button key={suggestion} type="button" onClick={() => appendPromptSuggestion(suggestion)}>{suggestion}</button>)}
             </div>
           </section>
+          {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
           <div className="module-node__generation-control-bar nodrag nopan" aria-label="Image generation control bar" onPointerDown={stopCanvasPointer} onPointerDownCapture={clearBrowserSelection}>
             <select aria-label="Image generation model route" value={modelRoute} disabled={compatibleRoutes.length === 0} onChange={(event) => setModelRoute(event.target.value)}>
               {compatibleRoutes.length === 0 && <option value="">未配置模型</option>}
@@ -1303,28 +1327,17 @@ function ImageGenerationSummary({
                   void onCancel(activeJobId);
                   return;
                 }
-                setRunError(null);
-                setLocalGenerationStartedAt(new Date().toISOString());
-                const referenceAssetIds = mergeAssetIds(connectedReferenceAssetIds, mentionedReferenceAssetIds);
-                const requestedAspectRatio = aspectRatio === '自由比例' ? resolveAutomaticImageAspectRatio(connectedMedia, projectImages) : aspectRatio;
-                void onRun(id, { prompt: prompt.trim(), ...(modelRoute ? { modelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), resolution: effectiveImageResolution, outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
-                  if (!started) {
-                    setLocalGenerationStartedAt(null);
-                    setRunError('生成未启动，请检查模型、API 密钥和输入后重试。');
-                  }
-                }).catch((error) => {
-                  setLocalGenerationStartedAt(null);
-                  setRunError(formatGenerationStartError(error, 'image'));
-                });
+                runImageGeneration();
               }}
             >
               {activeJobId === undefined ? '生成' : '停止生成'}
             </button>
           </div>
           {(runError ?? failedJobError) !== null && (
-            <p className="module-node__generation-error" role="alert">
-              {runError ?? failedJobError}
-            </p>
+            <div className="module-node__generation-error" role="alert">
+              <span>{runError ?? failedJobError}</span>
+              {activeJobId === undefined && prompt.trim().length > 0 && modelRoute.length > 0 && <button type="button" onClick={runImageGeneration}>重新尝试生成</button>}
+            </div>
           )}
           <details className="module-node__advanced nodrag nopan">
             <summary>高级参数</summary>
@@ -1843,19 +1856,21 @@ function ReverseAgentSummary({
     setSelectedIds((current) => stringArraysEqual(current, nextKnowledgeBaseIds) ? current : nextKnowledgeBaseIds);
     setMentionedReferenceAssetIds((current) => stringArraysEqual(current, nextReferenceAssetIds) ? current : nextReferenceAssetIds);
   }, [config.knowledgeBaseIds, config.referenceAssetIds]);
+  const externalRole = readNonEmptyString(config.role) ?? '';
+  const externalTask = readNonEmptyString(config.task) ?? '';
   useEffect(() => {
-    const nextRole = readNonEmptyString(config.role) ?? '';
-    const nextTask = readNonEmptyString(config.task) ?? '';
+    const nextRole = externalRole;
+    const nextTask = externalTask;
     const previousText = previousExternalText.current;
     if (!reverseTextEdited.current) {
       setRole((currentRole) => currentRole === previousText.role ? nextRole : currentRole);
       setTask((currentTask) => currentTask === previousText.task ? nextTask : currentTask);
     }
     previousExternalText.current = { role: nextRole, task: nextTask };
-  }, [config.role, config.task]);
+  }, [externalRole, externalTask]);
   useEffect(() => {
     if (compatibleRoutes.length === 0) return;
-    setModelRoute((current) => compatibleRoutes.some((route) => route.modelRoute === current)
+    setModelRoute((current) => current.length > 0
       ? current
       : preferredReverseAgentRoute(compatibleRoutes)?.modelRoute ?? '');
   }, [compatibleRoutes]);
@@ -1869,6 +1884,7 @@ function ReverseAgentSummary({
     knowledgeBaseIds: selected,
     referenceAssetIds: mentionedReferenceAssetIds,
   }), [mentionedReferenceAssetIds, modelRoute, role, selected, task]);
+  const draftConfigKey = useMemo(() => JSON.stringify(draftConfig), [draftConfig]);
   const latestReverseDraftRef = useRef(draftConfig);
   latestReverseDraftRef.current = draftConfig;
   const reverseDraftWriteTailRef = useRef<Promise<boolean>>(Promise.resolve(true));
@@ -1890,8 +1906,9 @@ function ReverseAgentSummary({
   };
   useEffect(() => {
     if (compatibleRoutes.length > 0 && !routeAvailable) return;
+    if (!reverseTextEdited.current && (role !== externalRole || task !== externalTask)) return;
     void persistReverseDraft(draftConfig);
-  }, [compatibleRoutes.length, draftConfig, draftReverseAgentConfig, id, routeAvailable]);
+  }, [compatibleRoutes.length, draftConfigKey, draftReverseAgentConfig, externalRole, externalTask, id, role, routeAvailable, task]);
   const [isApplying, setIsApplying] = useState(false);
   const [isRunningLocally, setIsRunningLocally] = useState(false);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
@@ -1985,8 +2002,8 @@ function ReverseAgentSummary({
               </div>
           </section>
           </section>
-          {!routeAvailable && modelRoute.length > 0 && <p className="module-node__agent-notice" role="status">当前模型路线不可用，请在设置中重新选择。</p>}
-          {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="status">未配置可用的反推模型，请先在设置中连接并保存模型。</p>}
+          {!routeAvailable && modelRoute.length > 0 && <p className="module-node__agent-notice" role="status">当前模型路线不可用，请先切换供应商或重新选择模型。</p>}
+          {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="status">该账号没有此类模型，请先在设置中切换供应商。</p>}
           {compatibleRoutes.length === 0 && onOpenSettings && (
             <button className="module-node__settings-agent nodrag nopan" type="button" aria-label="打开设置检查连接" onClick={onOpenSettings}>打开设置</button>
           )}
@@ -2172,12 +2189,23 @@ function formatReverseRunError(error: unknown): string {
     : '';
   if (code === 'CREDENTIALS_LOCKED') return 'API 密钥已锁定，请重新解锁后再反推。';
   if (code === 'PROVIDER_UNAVAILABLE') return '所选反推模型当前不可用，请重新选择模型。';
-  if (code === 'PROVIDER_INVALID_RESPONSE') return '模型已返回内容，但反推结果格式无效。';
+  if (code === 'PROVIDER_INVALID_RESPONSE') {
+    const reason = typeof error === 'object' && error !== null && 'reason' in error
+      ? (error as { reason?: unknown }).reason
+      : undefined;
+    if (reason === 'TRUNCATED') return '模型输出达到长度上限而被截断，请减少素材或缩短任务后重试。';
+    if (reason === 'NO_TEXT') return '模型没有返回可用文本，请重试或更换反推模型。';
+    if (reason === 'INVALID_JSON') return '模型返回的内容不是有效 JSON，请重试或更换反推模型。';
+    if (reason === 'CORE_SCHEMA_INVALID') return '模型返回内容缺少反推必填字段，请重试或更换反推模型。';
+    if (reason === 'IDENTITY_MISMATCH') return '模型返回结果不属于本次反推运行，已拒绝使用。';
+    if (reason === 'MEDIA_RESPONSIBILITIES_INVALID') return '模型没有完整说明每个素材的职责，请重试或减少素材。';
+    return '模型已返回内容，但反推结果格式无效。';
+  }
+  const message = sanitizeModelJobError(error);
   if (code === 'PROJECT_CONFIG_SAVE_FAILED' || code === 'PROJECT_SAVE_RETRY_REQUIRED') return '反推配置保存失败，请先确认画布可以保存后重试。';
   if (code === 'REVISION_CONFLICT' || code === 'CONCURRENT_WRITER') return '画布版本发生冲突，请重新载入项目后再反推。';
   if (code === 'RECOVERY_REQUIRED') return '画布需要先完成恢复，再运行反推。';
   if (code === 'PROJECT_READ_ONLY') return '当前画布是只读状态，无法保存反推配置。';
-  const message = sanitizeModelJobError(error);
   if (/timed out|timeout|超时/iu.test(message)) return '反推等待超时，请重试或更换响应更快的模型。';
   if (/managed.*media|MISSING_ASSET|素材/iu.test(message)) return '反推素材读取失败，请重新连接素材。';
   return message || '反推失败，请重试。';
@@ -2337,6 +2365,9 @@ function formatGenerationJobError(job: ModelJob | undefined, kind: 'image' | 'vi
   }
   if (error.includes('429') || error.includes('rate limit') || error.includes('quota')) {
     return '请求过于频繁或账户额度受限，请稍后重试。';
+  }
+  if (error.includes('provider task mapping is unavailable')) {
+    return '本地模型任务状态不可用，请重启应用后重试；若仍失败，请重新登录当前供应商。';
   }
   if (error.includes('timeout') || error.includes('network') || error.includes('连接')) {
     return '无法连接模型服务，请检查网络或 API 地址后重试。';

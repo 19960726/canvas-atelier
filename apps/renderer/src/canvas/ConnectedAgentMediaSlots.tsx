@@ -1,4 +1,4 @@
-import { useState, type DragEvent, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useState, type DragEvent, type PointerEvent, type WheelEvent } from 'react';
 import { ChevronLeft, ChevronRight, Image as ImageIcon, Video } from 'lucide-react';
 import { MAX_GENERATION_REFERENCES } from '@agent-canvas/domain';
 import { CONNECTED_MEDIA_DRAG_MIME, encodeConnectedMediaDragPayload } from './connected-media-drag';
@@ -38,7 +38,12 @@ export function ConnectedAgentMediaSlots({
   showAddPlaceholder = false,
   addAriaLabel = '添加素材',
 }: ConnectedAgentMediaSlotsProps) {
-  const visibleMedia = media.slice(0, MAX_GENERATION_REFERENCES);
+  const mediaSignature = media.map((item) => `${item.edgeId ?? ''}:${item.kind}:${item.assetId}`).join('|');
+  const [orderedMedia, setOrderedMedia] = useState(() => media.slice(0, MAX_GENERATION_REFERENCES));
+  useEffect(() => {
+    setOrderedMedia(media.slice(0, MAX_GENERATION_REFERENCES));
+  }, [mediaSignature]);
+  const visibleMedia = orderedMedia;
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [pointerDragIndex, setPointerDragIndex] = useState<number | null>(null);
@@ -49,6 +54,7 @@ export function ConnectedAgentMediaSlots({
     const [item] = next.splice(fromIndex, 1);
     if (!item) return;
     next.splice(toIndex, 0, item);
+    setOrderedMedia(next);
     onReorder(next);
   };
   const finishDrop = (event: DragEvent<HTMLElement>, toIndex: number) => {

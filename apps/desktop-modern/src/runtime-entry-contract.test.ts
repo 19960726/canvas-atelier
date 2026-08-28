@@ -327,12 +327,12 @@ function spawnArtifactLoad(entryPath: string) {
 }
 
 describe('desktop runtime entry contract', () => {
-  it('modern 1.6.55 resolves only the modern renderer entry', async () => {
+  it('modern 1.6.67 resolves only the modern renderer entry', async () => {
     const shell = desktopShells[0]!;
     const packageJson = await readPackageJson(shell);
     const rendererEntry = resolveRendererHtmlPath(join(workspaceRoot, shell.appDir, 'dist'));
 
-    expect(packageJson.version).toBe('1.6.55');
+    expect(packageJson.version).toBe('1.6.67');
     expect(rendererEntry).toBe(resolve(workspaceRoot, 'apps', 'renderer', 'dist', 'index.html'));
     expect(rendererEntry).not.toContain('desktop-legacy');
   });
@@ -362,6 +362,15 @@ describe('desktop runtime entry contract', () => {
     expect(mainSource).toContain("sandbox: process.platform !== 'win32'");
     expect(mainSource).toContain('contextIsolation: true');
     expect(mainSource).toContain('nodeIntegration: false');
+  });
+
+  it('uses the real electron updater in packaged production and gates the mock feed to an explicit environment flag', async () => {
+    const mainSource = await readFile(join(workspaceRoot, 'apps', 'desktop-modern', 'src', 'main.ts'), 'utf8');
+
+    expect(mainSource).toContain('createElectronUpdaterDriver');
+    expect(mainSource).toMatch(/app\.isPackaged[\s\S]+new UpdateClient\(\{\s*driver:/u);
+    expect(mainSource).toContain('NOVUS_MOCK_UPDATE_VERSION');
+    expect(mainSource.indexOf('app.isPackaged')).toBeLessThan(mainSource.indexOf('NOVUS_MOCK_UPDATE_VERSION'));
   });
 
   it('refuses redirected shell and dist directories without deleting external sentinels', async () => {

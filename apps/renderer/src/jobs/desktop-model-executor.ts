@@ -9,6 +9,7 @@ type ProviderVideoCancelResult = Awaited<ReturnType<NonNullable<Window['novusDes
 export function createDesktopModelJobExecutor(): ModelJobExecutor {
   return {
     async submit(job) {
+      await assertJobProviderIsActive(job);
       return job.kind === 'video'
         ? getProviderBridge().submitVideoJob(toVideoSubmitRequest(job))
         : getProviderBridge().submitImageJob(toImageSubmitRequest(job));
@@ -52,6 +53,18 @@ export function createDesktopModelJobExecutor(): ModelJobExecutor {
       else await getProviderBridge().ackImageJobTerminal(request);
     },
   };
+}
+
+async function assertJobProviderIsActive(job: ModelJob): Promise<void> {
+  const bridge = getProviderBridge();
+  if (bridge.getActiveProvider === undefined) return;
+  const requestedProvider = requireProviderField(job.provider);
+  const { activeProvider } = await bridge.getActiveProvider();
+  if (activeProvider === requestedProvider) return;
+  const error = new Error('Selected provider is not active') as Error & { code: string; retryable: boolean };
+  error.code = 'PROVIDER_INACTIVE';
+  error.retryable = false;
+  throw error;
 }
 
 function getProviderBridge() {

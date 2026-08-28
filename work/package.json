@@ -1,0 +1,12 @@
+{
+  "name": "@agent-canvas/desktop-modern",
+  "private": true,
+  "version": "1.6.60",
+  "type": "module",
+  "main": "./dist/main.cjs",
+  "dependencies": {
+    "@agent-canvas/desktop-bridge": "file:../../packages/desktop-bridge",
+    "@agent-canvas/desktop-core": "file:../../packages/desktop-core",
+    "@agent-canvas/domain": "file:../../packages/domain"
+  }
+}

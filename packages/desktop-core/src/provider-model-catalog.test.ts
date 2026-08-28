@@ -24,6 +24,16 @@ const relayModels: RelayMeModel[] = [
 ];
 
 describe('provider model catalog', () => {
+  it('filters blank, incomplete, and duplicate Comfly catalog entries', () => {
+    const profiles = buildComflyModelProfiles({ version: 'filtering', models: [
+      { key: 'same-model', name: 'Same Model', provider: 'OpenAI', tags: ['绘图'], apis: ['/v1/images/generations'], capabilityStatus: 'complete' },
+      { key: 'same-model', name: 'Duplicate', provider: 'OpenAI', tags: ['绘图'], apis: ['/v1/images/generations'], capabilityStatus: 'complete' },
+      { key: '   ', name: 'Blank key', provider: 'Other', tags: [], apis: [], capabilityStatus: 'incomplete' },
+      { key: 'missing-name', name: '   ', provider: 'Other', tags: [], apis: [], capabilityStatus: 'incomplete' },
+    ] });
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({ modelId: 'same-model', displayName: 'Same Model' });
+  });
   it('builds constrained profiles when structuredClone is unavailable in the packaged Node 16 runtime', () => {
     const previousStructuredClone = globalThis.structuredClone;
     Object.defineProperty(globalThis, 'structuredClone', { configurable: true, value: undefined });

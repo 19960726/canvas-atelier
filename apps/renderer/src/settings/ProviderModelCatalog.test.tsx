@@ -30,6 +30,16 @@ describe('ProviderModelCatalog', () => {
     expect(within(modelRow).queryByText('1/2/3/4 张')).not.toBeInTheDocument();
   });
 
+  it('renders canvas-style capability cards with a default model badge', () => {
+    const profile = { provider: 'relayme' as const, modelRoute: 'image/generate', displayName: 'GPT Image 2', modelId: 'gpt-image-2', capabilities: ['image_generation' as const] };
+    render(<ProviderModelCatalog profiles={[profile]} defaultProfileKeys={{ image_generation: 'relayme:image/generate' }} />);
+
+    const group = screen.getByRole('region', { name: '生图模型' });
+    expect(group).toHaveAttribute('data-capability', 'image_generation');
+    expect(within(group).getByText('IMG')).toBeVisible();
+    expect(within(group).getByText('默认')).toBeVisible();
+  });
+
   it('renders a repeated visible model name only once inside each capability group', () => {
     render(<ProviderModelCatalog profiles={[
       { provider: 'comfly', modelRoute: 'image/stable', displayName: 'Nano Banana 2', capabilities: ['image_generation'] },

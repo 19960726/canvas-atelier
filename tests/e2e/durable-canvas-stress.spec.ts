@@ -19,8 +19,8 @@ for (const theme of ['light', 'dark'] as const) {
   for (const viewport of viewports) {
     test(`durable 300/500 canvas stays responsive at ${viewport.name} ${theme}`, async ({ page }, testInfo) => {
       await page.setViewportSize(viewport);
+      await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
       await openApp(page);
-      await page.getByLabel('主题 Theme').selectOption(theme);
       await page.getByTestId('tool-modules').click();
 
       expect(await page.evaluate(() => window.__NOVUS_E2E__!.seedModuleStressGraph(300, 500))).toBe(true);

@@ -54,6 +54,14 @@ export interface McpRuntimeService {
   getStatus(): McpRuntimeServiceStatus;
 }
 
+export function presentMcpRuntimeStatus(
+  status: McpRuntimeServiceStatus,
+  rendererAvailable: boolean,
+): McpRuntimeServiceStatus {
+  if (!rendererAvailable || status.state === 'stopped' || status.state === 'error') return status;
+  return Object.freeze({ ...status, state: 'running', rendererConnected: true, lastError: null });
+}
+
 export function createMcpRuntimeService(options: McpRuntimeServiceOptions): McpRuntimeService {
   let server: Server | null = null;
   let descriptor: CanvasMcpRuntimeDescriptor | null = null;

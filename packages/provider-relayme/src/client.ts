@@ -71,6 +71,7 @@ const modelListSchema = z.union([
   id: nonEmptyStringSchema,
   model: nonEmptyStringSchema,
   choices: z.array(z.object({
+    finish_reason: z.string().optional(),
     message: z.object({ role: nonEmptyStringSchema, content: z.unknown() }).passthrough(),
   }).passthrough()).min(1),
 }).passthrough();
@@ -88,6 +89,22 @@ const taskStateItemSchema = z.object({
   result: z.unknown().optional(),
   data: z.unknown().optional(),
 }).passthrough();
+const taskStateAliasSchema = z.object({
+  id: nonEmptyStringSchema.optional(),
+  taskId: nonEmptyStringSchema.optional(),
+  state: nonEmptyStringSchema,
+  output: z.unknown().optional(),
+  result: z.unknown().optional(),
+  error: z.string().optional(),
+  errorMessage: z.string().optional(),
+  progress: z.number().finite().optional(),
+}).passthrough().transform((value) => ({
+  taskId: value.taskId ?? value.id,
+  status: value.state,
+  result: value.result ?? value.output,
+  error: value.error ?? value.errorMessage,
+  progress: value.progress,
+}));
 const taskSubmissionSchema = z.union([
   taskSubmissionItemSchema,
   z.object({ data: taskSubmissionItemSchema }).passthrough().transform((value) => value.data),
@@ -95,6 +112,9 @@ const taskSubmissionSchema = z.union([
 const taskStateSchema = z.union([
   taskStateItemSchema,
   z.object({ data: taskStateItemSchema }).passthrough().transform((value) => value.data),
+  taskStateAliasSchema,
+  z.object({ task: taskStateAliasSchema }).passthrough().transform((value) => value.task),
+  z.object({ data: z.object({ task: taskStateAliasSchema }).passthrough() }).passthrough().transform((value) => value.data.task),
 ]);const errorBodySchema = z.union([
   z.object({ error: z.object({ message: nonEmptyStringSchema }).passthrough() }).passthrough(),
   z.object({ error: nonEmptyStringSchema, success: z.boolean().optional() }).passthrough(),

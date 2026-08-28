@@ -4,7 +4,8 @@ import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatSkillBridgeResult, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
-import { SkillChatWorkbench } from './SkillChatWorkbench';
+import { resolveClipboardPasteAction, SkillChatWorkbench, type SkillChatRequest } from './SkillChatWorkbench';
+import { createAgentConversation, writeAgentConversationCollection } from './skill-chat-session-store';
 
 afterEach(() => {
   cleanup();
@@ -17,7 +18,7 @@ const profiles: ProviderBridgeProfile[] = [
   {
     provider: 'comfly',
     modelRoute: 'chat/creative',
-    modelId: 'creative-chat',
+    modelId: 'codex-creative-chat',
     displayName: 'Creative chat',
     capabilities: ['chat'],
   },
@@ -64,6 +65,27 @@ function renderWorkbench(overrides: Partial<React.ComponentProps<typeof SkillCha
 }
 
 describe('SkillChatWorkbench', () => {
+  it('keeps clipboard events inside the Agent workbench', () => {
+    const outerCopy = vi.fn();
+    const outerCut = vi.fn();
+    const outerPaste = vi.fn();
+    render(
+      <div onCopy={outerCopy} onCut={outerCut} onPaste={outerPaste}>
+        {workbench()}
+      </div>,
+    );
+
+    fireEvent.copy(screen.getByLabelText('Agent 消息流'));
+    fireEvent.cut(screen.getByLabelText('Agent 消息流'));
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [], items: [], getData: () => '内容', types: ['text/plain'] },
+    });
+
+    expect(outerCopy).not.toHaveBeenCalled();
+    expect(outerCut).not.toHaveBeenCalled();
+    expect(outerPaste).not.toHaveBeenCalled();
+  });
+
   it('does not rewrite conversation state when equivalent project memory arrays are recreated', async () => {
     const write = vi.spyOn(Storage.prototype, 'setItem');
     const view = renderWorkbench();
@@ -146,7 +168,7 @@ describe('SkillChatWorkbench', () => {
       }],
       chat,
     });
-
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '你好' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -278,6 +300,54 @@ describe('SkillChatWorkbench', () => {
     expect(screen.queryByRole('combobox', { name: '推理强度' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '原智能' }));
     expect(screen.queryByRole('combobox', { name: '推理强度' })).not.toBeInTheDocument();
+  });
+
+  it('keeps non-Codex routes out of Codex mode and selects an available Codex route', async () => {
+    renderWorkbench({
+      profiles: [
+        { provider: 'comfly', modelRoute: 'chat/general', modelId: 'general-chat', displayName: 'General Chat', capabilities: ['chat'] },
+        { provider: 'comfly', modelRoute: 'codex-auto-review', modelId: 'codex-auto-review', displayName: 'Codex Auto Review', capabilities: ['responses', 'vision'] },
+      ],
+    });
+
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Codex Auto Review'));
+    fireEvent.click(screen.getByTestId('agent-model-trigger'));
+    const dialog = screen.getByRole('dialog', { name: '选择聊天模型' });
+    expect(within(dialog).getByText('Codex Auto Review')).toBeVisible();
+    expect(within(dialog).queryByText('General Chat')).not.toBeInTheDocument();
+  });
+
+  it('does not fall back to ordinary chat models when Codex mode has no Codex route', async () => {
+    renderWorkbench({
+      profiles: [{ provider: 'comfly', modelRoute: 'chat/general', modelId: 'general-chat', displayName: 'General Chat', capabilities: ['chat'] }],
+    });
+
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveTextContent('未发现 Codex 模型'));
+    fireEvent.click(screen.getByTestId('agent-model-trigger'));
+    const dialog = screen.getByRole('dialog', { name: '选择聊天模型' });
+    expect(dialog).not.toHaveTextContent('General Chat');
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+  });
+
+  it('keeps internal request metadata out of the visible conversation in every mode', async () => {
+    const chat = vi.fn(async () => ({ message: '普通助手回复', modelRoute: 'codex-auto-review', sources: [] }));
+    renderWorkbench({
+      profiles: [{ provider: 'comfly', modelRoute: 'codex-auto-review', modelId: 'codex-auto-review', displayName: 'Codex Auto Review', capabilities: ['responses'] }],
+      reverseTimeline: [{ nodeId: 'reverse-1', title: '旧反推', positivePrompt: 'studio product' }],
+      chat,
+    });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '正常聊天消息' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(screen.getByText('普通助手回复')).toBeVisible());
+    expect(screen.queryByLabelText('知识库请求: Codex Auto Review')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('反推上下文事件')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+
+    expect(within(screen.getByLabelText('对话消息')).getByText('正常聊天消息')).toBeVisible();
+    expect(screen.getByText('普通助手回复')).toBeVisible();
+    expect(screen.queryByLabelText('知识库请求: Codex Auto Review')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('反推上下文事件')).not.toBeInTheDocument();
   });
 
   it('sends the selected Codex reasoning effort instead of keeping it as presentation-only state', async () => {
@@ -413,6 +483,7 @@ describe('SkillChatWorkbench', () => {
       }],
       chat,
     });
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: 'Use RelayMe.' } });
     fireEvent.submit(screen.getByTestId('agent-composer-input').closest('form')!);
@@ -515,6 +586,7 @@ describe('SkillChatWorkbench', () => {
         },
       ],
     });
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
     const routeSheet = screen.getByRole('dialog', { name: '选择聊天模型' });
@@ -554,7 +626,7 @@ describe('SkillChatWorkbench', () => {
       profiles: [{
         provider: 'comfly',
         modelRoute: 'chat/vision',
-        modelId: 'vision-chat',
+        modelId: 'codex-vision-chat',
         displayName: 'Vision chat',
         capabilities: ['chat', 'vision'],
       }],
@@ -565,6 +637,7 @@ describe('SkillChatWorkbench', () => {
       }],
       chat,
     });
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
     const mentionItem = screen.getByRole('menuitem', { name: 'Mention Bottle reference' });
@@ -584,7 +657,7 @@ describe('SkillChatWorkbench', () => {
     await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({
       referenceAssetIds: ['a'.repeat(16)],
     })));
-    expect(screen.getByLabelText('知识库请求: Vision chat')).toHaveTextContent('Bottle reference');
+    expect(screen.queryByLabelText('知识库请求: Vision chat')).not.toBeInTheDocument();
     expect(screen.getByText('The bottle has a soft studio highlight.')).toBeVisible();
   });
 
@@ -629,6 +702,60 @@ describe('SkillChatWorkbench', () => {
         { assetId: 'b'.repeat(16), label: '场景参考', mention: '@图片2' },
       ],
     });
+  });
+
+  it('shows structured reverse variants before creating the durable workflow plan', async () => {
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        visual: { subject: '白色瓶身', environment: '浅色棚拍', material: '磨砂玻璃', lighting: '柔光', camera: '平视', depth: '浅景深', composition: '居中留白', perspective: '正面', layers: '前中后景' },
+        prompts: { zh: '白色瓶身，浅色棚拍，柔光', en: 'White bottle, soft studio light', negative: ['水印'] },
+        variants: [
+          { id: 'faithful', name: 'faithful', change: '保留构图', prompt: 'A' },
+          { id: 'balanced', name: 'balanced', change: '提升清晰度', prompt: 'B' },
+          { id: 'exploratory', name: 'exploratory', change: '调整背景', prompt: 'C' },
+        ],
+      }),
+      modelRoute: 'chat/vision',
+      sources: [],
+    }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      referenceImages: [{ assetId: 'a'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/product' }],
+      chat,
+    });
+
+    window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'a'.repeat(16) } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 反推图片并输出提示词' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(await screen.findByTestId('reverse-structure-summary')).toHaveTextContent('白色瓶身');
+    expect(screen.getByTestId('reverse-variant-list')).toHaveTextContent('保留构图');
+    expect(screen.getByTestId('reverse-variant-list')).toHaveTextContent('提升清晰度');
+    expect(screen.getByTestId('reverse-variant-list')).toHaveTextContent('调整背景');
+  });
+
+  it('sends an ordered referenced reverse request to visual chat instead of requiring a selected reverse node', async () => {
+    const chat = vi.fn(async () => ({ message: '结构化反推结果', modelRoute: 'chat/vision', sources: [] }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      referenceImages: [{ assetId: 'a'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/product' }],
+      canvasActionTargets: [],
+      executeCanvasAction: vi.fn(async () => true),
+      chat,
+    });
+
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention 产品参考' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 反推这张图并输出中文和英文提示词' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      visualAnalysis: true,
+      referenceAssetIds: ['a'.repeat(16)],
+      referenceMentions: [{ assetId: 'a'.repeat(16), label: '产品参考', mention: '@图片1' }],
+    })));
+    expect(screen.queryByText('请先在画布中选择一个反推节点。')).not.toBeInTheDocument();
   });
 
   it('asks before drafting a requested Codex workflow and keeps the selected model route', async () => {
@@ -683,6 +810,7 @@ describe('SkillChatWorkbench', () => {
       }],
       chat,
     });
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
 
@@ -761,6 +889,7 @@ describe('SkillChatWorkbench', () => {
       assetId: 'image-2', label: 'text-only.png', displayUrl: 'novus-asset://image-2',
     });
     renderWorkbench({ onImportReferenceImage });
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     fireEvent.click(screen.getByRole('button', { name: '\u6dfb\u52a0\u7d20\u6750' }));
     fireEvent.change(screen.getByTestId('agent-reference-file-input'), {
@@ -784,6 +913,7 @@ describe('SkillChatWorkbench', () => {
     fireEvent.paste(screen.getByTestId('agent-composer-input'), {
       clipboardData: {
         files: [new File([new Uint8Array([0])], 'clip.mp4', { type: 'video/mp4' })],
+        getData: () => '',
       },
     });
 
@@ -799,6 +929,736 @@ describe('SkillChatWorkbench', () => {
     const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
     expect(css).toMatch(/skill-chat-workbench__image-tags[^{]*video[^{]*\{[^}]*object-fit:\s*contain/isu);
   });
+  it('imports a clipboard image exposed through DataTransfer items when files is empty', async () => {
+    const pastedImage = new File([new Uint8Array([1, 2, 3])], 'clipboard.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: 'clipboard-image-1', label: 'clipboard.png', displayUrl: 'novus-asset://clipboard-image-1',
+    });
+    renderWorkbench({
+      profiles: [{ provider: 'comfly', modelRoute: 'codex-vision', modelId: 'codex-vision', displayName: 'Codex Vision', capabilities: ['responses', 'vision'] }],
+      onImportReferenceImage,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: {
+        files: [],
+        items: [{ kind: 'file', type: 'image/png', getAsFile: () => pastedImage }],
+        getData: () => '',
+      },
+    });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(pastedImage));
+    expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1');
+    expect(within(screen.getByLabelText('Selected image references')).getByRole('img', { name: 'clipboard.png' })).toBeVisible();
+  });
+  it('keeps text-only paste behavior', () => {
+    renderWorkbench();
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.paste(composer, {
+      clipboardData: { files: [], items: [], getData: (type: string) => type === 'text/plain' ? '保留原生粘贴' : '' },
+    });
+
+    expect(composer).toHaveValue('保留原生粘贴');
+  });
+
+  it('keeps a media-only non-vision selection unchanged while reporting the capability error', async () => {
+    const image = new File(['one'], 'media-only.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({ assetId: 'blocked-image', label: 'media-only.png', displayUrl: 'novus-asset://blocked-image' });
+    const initialConversation = { ...createAgentConversation(2), mode: 'chat' as const, modelRoute: 'chat/creative' };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: initialConversation.id,
+      conversations: [initialConversation],
+    });
+    renderWorkbench({ onImportReferenceImage });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: 'before selected after' } });
+    const range = document.createRange();
+    range.setStart(composer.firstChild!, 7);
+    range.setEnd(composer.firstChild!, 15);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent.paste(composer, {
+      clipboardData: { files: [image], items: [], getData: () => '' },
+    });
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('当前模型不支持图片或视频'));
+    expect(onImportReferenceImage).not.toHaveBeenCalled();
+    expect(composer).toHaveValue('before selected after');
+    expect(window.getSelection()?.toString()).toBe('selected');
+  });
+
+  it('removes a pasted marker from a rejected send retry and from the next bridge request', async () => {
+    const image = new File(['one'], 'retry-pending.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>(() => undefined));
+    const chat = vi.fn()
+      .mockRejectedValueOnce(new Error('retry'))
+      .mockResolvedValueOnce({ message: 'ok', modelRoute: 'chat/vision', sources: [] });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+      chat,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.paste(composer, {
+      clipboardData: { files: [image], items: [], getData: (type: string) => type === 'text/plain' ? 'retry text' : '' },
+    });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(composer).toHaveValue('retry text');
+    expect((composer as HTMLDivElement & { value: string }).value).not.toMatch(/[\u2063\u2064\u200B\u200C]/u);
+
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledTimes(2));
+    const secondRequest = chat.mock.calls[1]![0];
+    expect(secondRequest.messages.at(-1)?.content).toBe('retry text');
+    expect(secondRequest.messages.at(-1)?.content).not.toMatch(/[\u2063\u2064\u200B\u200C]/u);
+  });
+
+  it('disables marker-only sends and clears the invalidated pending batch on submit', async () => {
+    const image = new File(['one'], 'marker-only.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>(() => undefined));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.paste(composer, {
+      clipboardData: { files: [image], items: [], getData: () => '' },
+    });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+    fireEvent.submit(composer.closest('form')!);
+    await waitFor(() => expect(composer).toHaveValue(''));
+    expect(screen.getByRole('button', { name: '添加素材' })).toBeEnabled();
+  });
+
+  it('does not let an old-generation manual import attach to a new conversation', async () => {
+    const image = new File(['one'], 'manual-pending.png', { type: 'image/png' });
+    let resolveImport: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveImport = resolve; }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '添加素材' }));
+    fireEvent.change(screen.getByTestId('agent-reference-file-input'), { target: { files: [image] } });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    fireEvent.click(screen.getByRole('button', { name: '新建对话' }));
+    expect(screen.getByRole('button', { name: '添加素材' })).toBeEnabled();
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: 'fresh draft' } });
+
+    await act(async () => resolveImport?.({ assetId: 'manual-old', label: 'manual-pending.png', displayUrl: 'novus-asset://manual-old' }));
+    expect(screen.getByTestId('agent-composer-input')).toHaveValue('fresh draft');
+    expect(screen.queryByLabelText('Selected image references')).not.toBeInTheDocument();
+  });
+
+  it('removes citations when controlled HTML paste replaces their mention chip', async () => {
+    const image = new File(['one'], 'chip.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({ assetId: 'chip-image', label: 'chip.png', displayUrl: 'novus-asset://chip-image' });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(screen.getByTestId('agent-reference-file-input'), { target: { files: [image] } });
+    await waitFor(() => expect(composer).toHaveValue('@图片1'));
+    const chip = composer.querySelector('[data-token]')!;
+    const range = document.createRange();
+    range.selectNode(chip);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent.paste(composer, {
+      clipboardData: { files: [], items: [], getData: (type: string) => type === 'text/html' ? '<p>replacement</p>' : '' },
+    });
+
+    await waitFor(() => expect(composer).toHaveValue('replacement'));
+    expect(screen.queryByLabelText('Selected image references')).not.toBeInTheDocument();
+  });
+
+  it('removes selected 图片1 while preserving 图片10 citation and send mapping', async () => {
+    const references = Array.from({ length: 10 }, (_, index) => ({
+      assetId: `asset-${index + 1}`,
+      label: `Reference ${index + 1}`,
+      displayUrl: `novus-asset://asset-${index + 1}`,
+    }));
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: 'ok', modelRoute: 'chat/vision', sources: [] }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      referenceImages: references,
+      chat,
+    });
+    for (const reference of references) {
+      window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: reference.assetId } }));
+    }
+    const composer = screen.getByTestId('agent-composer-input');
+    await waitFor(() => expect(composer).toHaveValue('@图片1 @图片2 @图片3 @图片4 @图片5 @图片6 @图片7 @图片8 @图片9 @图片10'));
+    const chip1 = composer.querySelector('[data-token="@图片1"]')!;
+    const range = document.createRange();
+    range.selectNode(chip1);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent.paste(composer, {
+      clipboardData: { files: [], items: [], getData: (type: string) => type === 'text/html' ? '<span></span>' : '' },
+    });
+
+    await waitFor(() => expect((composer as HTMLDivElement & { value: string }).value).toContain('@图片10'));
+    const controlledValue = (composer as HTMLDivElement & { value: string }).value;
+    expect(controlledValue).not.toMatch(/@图片1(?!\d)/u);
+    expect(controlledValue).toContain('@图片10');
+    const tags = screen.getByLabelText('Selected image references');
+    expect(within(tags).queryByRole('button', { name: 'Remove Reference 1 media reference' })).not.toBeInTheDocument();
+    expect(within(tags).getByRole('button', { name: 'Remove Reference 10 media reference' })).toHaveTextContent('@图片10');
+
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const request = chat.mock.calls[0]![0];
+    expect(request.referenceAssetIds).not.toContain('asset-1');
+    expect(request.referenceAssetIds).toContain('asset-10');
+    expect(request.referenceMentions).toContainEqual({ assetId: 'asset-10', label: 'Reference 10', mention: '@图片10' });
+  });
+
+  it('keeps a refreshed pasted A at slot one and sends its canonical asset identity', async () => {
+    const refreshedA = new File(['a2'], 'a-refreshed.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({ assetId: 'asset-a', label: 'A refreshed', displayUrl: 'novus-asset://a2' });
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: 'ok', modelRoute: 'chat/vision', sources: [] }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      referenceImages: [
+        { assetId: 'asset-a', label: 'A', displayUrl: 'novus-asset://a' },
+        { assetId: 'asset-b', label: 'B', displayUrl: 'novus-asset://b' },
+      ],
+      onImportReferenceImage,
+      chat,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.paste(composer, {
+      clipboardData: { files: [refreshedA], items: [], getData: (type: string) => type === 'text/plain' ? 'inspect' : '' },
+    });
+
+    await waitFor(() => expect(composer).toHaveValue('inspect @图片1'));
+    expect(within(screen.getByLabelText('Selected image references')).getByRole('button', { name: 'Remove A refreshed media reference' })).toHaveTextContent('@图片1');
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const request = chat.mock.calls[0]![0];
+    expect(request.referenceAssetIds).toEqual(['asset-a']);
+    expect(request.referenceMentions).toEqual([{ assetId: 'asset-a', label: 'A refreshed', mention: '@图片1' }]);
+  });
+
+  it('inserts parsed html-only text at a real contenteditable selection and restores the caret', async () => {
+    renderWorkbench();
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: 'left right' } });
+    const range = document.createRange();
+    range.setStart(composer.firstChild!, 5);
+    range.collapse(true);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent.paste(composer, {
+      clipboardData: {
+        files: [],
+        items: [],
+        getData: (type: string) => type === 'text/html' ? '<p>first</p><div>second<br>third</div>' : '',
+      },
+    });
+
+    await waitFor(() => expect(composer).toHaveValue('left first\nsecond\nthirdright'));
+    expect(composer).not.toHaveTextContent('<p>');
+    await waitFor(() => {
+      const caretRange = window.getSelection()!.getRangeAt(0);
+      const beforeCaret = document.createRange();
+      beforeCaret.selectNodeContents(composer);
+      beforeCaret.setEnd(caretRange.endContainer, caretRange.endOffset);
+      expect(beforeCaret.toString()).toBe('left first\nsecond\nthird');
+    });
+  });
+
+  it('keeps imported reference assets and citations in their original slots when a later import refreshes A', async () => {
+    const files = [
+      new File(['a'], 'a.png', { type: 'image/png' }),
+      new File(['b'], 'b.png', { type: 'image/png' }),
+      new File(['a2'], 'a-refreshed.png', { type: 'image/png' }),
+    ];
+    const onImportReferenceImage = vi.fn()
+      .mockResolvedValueOnce({ assetId: 'asset-a', label: 'A', displayUrl: 'novus-asset://a' })
+      .mockResolvedValueOnce({ assetId: 'asset-b', label: 'B', displayUrl: 'novus-asset://b' })
+      .mockResolvedValueOnce({ assetId: 'asset-a', label: 'A refreshed', displayUrl: 'novus-asset://a2' });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+    const input = screen.getByTestId('agent-reference-file-input');
+    for (const file of files) {
+      fireEvent.change(input, { target: { files: [file] } });
+      await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(file));
+    }
+
+    await waitFor(() => expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1 @图片2'));
+    const tags = screen.getByLabelText('Selected image references');
+    expect(within(tags).getByRole('button', { name: 'Remove A refreshed media reference' })).toHaveTextContent('@图片1');
+    expect(within(tags).getByRole('button', { name: 'Remove B media reference' })).toHaveTextContent('@图片2');
+  });
+
+  it('chooses native, controlled, rejected, and import paste paths from clipboard state', () => {
+    expect(resolveClipboardPasteAction({ hasPlainText: true, parsedText: 'plain', hasMedia: false, supportsMedia: true })).toBe('native-text');
+    expect(resolveClipboardPasteAction({ hasPlainText: false, parsedText: 'html', hasMedia: false, supportsMedia: true })).toBe('controlled-text');
+    expect(resolveClipboardPasteAction({ hasPlainText: false, parsedText: '', hasMedia: false, supportsMedia: true })).toBe('ignore');
+    expect(resolveClipboardPasteAction({ hasPlainText: false, parsedText: '', hasMedia: true, supportsMedia: false })).toBe('reject-media');
+    expect(resolveClipboardPasteAction({ hasPlainText: true, parsedText: 'mixed', hasMedia: true, supportsMedia: true })).toBe('import-media');
+  });
+
+  it('keeps readable text and reports the existing capability error for a mixed paste on an initial text-only model', async () => {
+    const image = new File(['one'], 'blocked.png', { type: 'image/png' });
+    const video = new File(['two'], 'blocked.mp4', { type: 'video/mp4' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({ assetId: 'blocked-image', label: 'blocked.png', displayUrl: 'novus-asset://blocked-image' });
+    const onImportReferenceVideo = vi.fn().mockResolvedValue({ assetId: 'blocked-video', label: 'blocked.mp4', displayUrl: 'novus-asset://blocked-video' });
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: 'sent', modelRoute: 'chat/creative', sources: [] }));
+    const initialConversation = { ...createAgentConversation(1), mode: 'chat' as const, modelRoute: 'chat/creative' };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: initialConversation.id,
+      conversations: [initialConversation],
+    });
+    renderWorkbench({ onImportReferenceImage, onImportReferenceVideo, chat });
+    const composer = screen.getByTestId('agent-composer-input');
+
+    fireEvent.paste(composer, {
+      clipboardData: {
+        files: [image, video],
+        items: [],
+        getData: (type: string) => type === 'text/plain' ? '可读正文' : '',
+      },
+    });
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('当前模型不支持图片或视频'));
+    expect(onImportReferenceImage).not.toHaveBeenCalled();
+    expect(onImportReferenceVideo).not.toHaveBeenCalled();
+    expect(composer).toHaveValue('可读正文');
+    expect((composer as HTMLDivElement & { value: string }).value).not.toMatch(/[\u2063\u2064\u200B\u200C]/u);
+
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const request = chat.mock.calls[0]![0];
+    const sentMessage = request.messages[request.messages.length - 1];
+    expect(sentMessage?.content).toBe('可读正文');
+    expect(sentMessage?.content).not.toMatch(/[\u2063\u2064\u200B\u200C]/u);
+  });
+
+  it('pastes mixed multiline text at the caret and imports clipboard media in order', async () => {
+    const image = new File(['one'], 'one.png', { type: 'image/png' });
+    const video = new File(['two'], 'two.mp4', { type: 'video/mp4' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: 'managed-image', label: 'one.png', displayUrl: 'novus-asset://managed-image',
+    });
+    const onImportReferenceVideo = vi.fn().mockResolvedValue({
+      assetId: 'managed-video', label: 'two.mp4', displayUrl: 'novus-asset://managed-video',
+    });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+      onImportReferenceVideo,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: '前缀 后缀' } });
+    const textNode = composer.firstChild!;
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.setStart(textNode, 3);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent.paste(composer, {
+      clipboardData: {
+        files: [image, video],
+        items: [],
+        getData: (type: string) => type === 'text/plain' ? '第一行\n第二行' : '',
+      },
+    });
+
+    await waitFor(() => expect(onImportReferenceVideo).toHaveBeenCalledWith(video));
+    expect(onImportReferenceImage).toHaveBeenCalledWith(image);
+    expect(onImportReferenceImage.mock.invocationCallOrder[0]).toBeLessThan(onImportReferenceVideo.mock.invocationCallOrder[0]!);
+    expect(composer).toHaveValue('前缀 第一行\n第二行 @图片1 @视频1 后缀');
+  });
+
+  it('imports every supported items-only clipboard file in item order', async () => {
+    const image = new File(['one'], 'items-one.png', { type: 'image/png' });
+    const video = new File(['two'], 'items-two.mp4', { type: 'video/mp4' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: 'items-image', label: 'items-one.png', displayUrl: 'novus-asset://items-image',
+    });
+    const onImportReferenceVideo = vi.fn().mockResolvedValue({
+      assetId: 'items-video', label: 'items-two.mp4', displayUrl: 'novus-asset://items-video',
+    });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+      onImportReferenceVideo,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: {
+        files: [],
+        items: [
+          { kind: 'file', type: image.type, getAsFile: () => image },
+          { kind: 'file', type: video.type, getAsFile: () => video },
+        ],
+        getData: () => '',
+      },
+    });
+
+    await waitFor(() => expect(onImportReferenceVideo).toHaveBeenCalledWith(video));
+    expect(onImportReferenceImage).toHaveBeenCalledWith(image);
+    expect(onImportReferenceImage.mock.invocationCallOrder[0]).toBeLessThan(onImportReferenceVideo.mock.invocationCallOrder[0]!);
+    expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1 @视频1');
+  });
+
+  it('keeps successful pasted references and reports a later failure without stopping the remaining imports', async () => {
+    const firstImage = new File(['one'], 'first.png', { type: 'image/png' });
+    const failingVideo = new File(['two'], 'failed.mp4', { type: 'video/mp4' });
+    const lastImage = new File(['three'], 'last.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn()
+      .mockResolvedValueOnce({ assetId: 'first-image', label: 'first.png', displayUrl: 'novus-asset://first-image' })
+      .mockResolvedValueOnce({ assetId: 'last-image', label: 'last.png', displayUrl: 'novus-asset://last-image' });
+    const onImportReferenceVideo = vi.fn().mockRejectedValue(new Error('manage failed'));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+      onImportReferenceVideo,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [firstImage, failingVideo, lastImage], items: [], getData: () => '' },
+    });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenLastCalledWith(lastImage));
+    expect(onImportReferenceVideo).toHaveBeenCalledWith(failingVideo);
+    expect(screen.getByRole('alert')).toHaveTextContent('素材导入失败');
+    expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1 @图片2');
+  });
+
+  it('does not overwrite text typed while pasted media is importing', async () => {
+    const image = new File(['one'], 'slow.png', { type: 'image/png' });
+    let resolveImport: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => {
+      resolveImport = resolve;
+    }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+
+    fireEvent.paste(composer, {
+      clipboardData: { files: [image], items: [], getData: (type: string) => type === 'text/plain' ? '粘贴文字' : '' },
+    });
+    fireEvent.change(composer, { target: { value: '粘贴文字后续输入' } });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    await act(async () => resolveImport?.({ assetId: 'slow-image', label: 'slow.png', displayUrl: 'novus-asset://slow-image' }));
+
+    await waitFor(() => expect(composer).toHaveValue('粘贴文字后续输入 @图片1'));
+  });
+
+  it('serializes overlapping paste batches without mixing their references', async () => {
+    const first = new File(['one'], 'first.png', { type: 'image/png' });
+    const second = new File(['two'], 'second.mp4', { type: 'video/mp4' });
+    let resolveFirst: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    let resolveSecond: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveFirst = resolve; }));
+    const onImportReferenceVideo = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveSecond = resolve; }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+      onImportReferenceVideo,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+
+    fireEvent.paste(composer, { clipboardData: { files: [first], items: [], getData: () => '' } });
+    fireEvent.paste(composer, { clipboardData: { files: [second], items: [], getData: () => '' } });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledOnce());
+    expect(onImportReferenceVideo).not.toHaveBeenCalled();
+
+    await act(async () => resolveFirst?.({ assetId: 'first-image', label: 'first.png', displayUrl: 'novus-asset://first-image' }));
+    await waitFor(() => expect(onImportReferenceVideo).toHaveBeenCalledWith(second));
+    await act(async () => resolveSecond?.({ assetId: 'second-video', label: 'second.mp4', displayUrl: 'novus-asset://second-video' }));
+
+    await waitFor(() => expect(composer).toHaveValue('@图片1 @视频1'));
+  });
+
+  it('keeps same-kind overlapping batches in import order while restoring each marker at its own reverse text position', async () => {
+    const first = new File(['one'], 'first.png', { type: 'image/png' });
+    const second = new File(['two'], 'second.png', { type: 'image/png' });
+    let resolveFirst: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn()
+      .mockImplementationOnce(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValueOnce({ assetId: 'second-image', label: 'second.png', displayUrl: 'novus-asset://second-image' });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: 'left right' } });
+    const firstRange = document.createRange();
+    firstRange.setStart(composer.firstChild!, 5);
+    firstRange.collapse(true);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(firstRange);
+    fireEvent.paste(composer, {
+      clipboardData: { files: [first], items: [], getData: (type: string) => type === 'text/plain' ? 'A' : '' },
+    });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(first));
+
+    const secondRange = document.createRange();
+    secondRange.setStart(composer.firstChild!, 0);
+    secondRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(secondRange);
+    fireEvent.paste(composer, {
+      clipboardData: { files: [second], items: [], getData: (type: string) => type === 'text/plain' ? 'B' : '' },
+    });
+    expect(onImportReferenceImage).toHaveBeenCalledOnce();
+
+    await act(async () => resolveFirst?.({ assetId: 'first-image', label: 'first.png', displayUrl: 'novus-asset://first-image' }));
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenLastCalledWith(second));
+    await waitFor(() => expect(composer).toHaveValue('B @图片2 left A @图片1 right'));
+  });
+
+  it('starts a new-generation paste without waiting for an invalidated pending batch', async () => {
+    const oldImage = new File(['one'], 'old-pending.png', { type: 'image/png' });
+    const freshImage = new File(['two'], 'fresh-generation.png', { type: 'image/png' });
+    let resolveOld: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn((file?: File) => file?.name === oldImage.name
+      ? new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveOld = resolve; })
+      : Promise.resolve({ assetId: 'fresh-generation', label: 'fresh-generation.png', displayUrl: 'novus-asset://fresh-generation' }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [oldImage], items: [], getData: () => '' },
+    });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(oldImage));
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [freshImage], items: [], getData: () => '' },
+    });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(freshImage));
+    await waitFor(() => expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1'));
+    expect(screen.getByRole('button', { name: '添加素材' })).toBeEnabled();
+    await act(async () => resolveOld?.({ assetId: 'old-pending', label: 'old-pending.png', displayUrl: 'novus-asset://old-pending' }));
+    expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1');
+  });
+
+  it('cancels a pending paste before a new conversation can receive its reference', async () => {
+    const image = new File(['one'], 'pending.png', { type: 'image/png' });
+    let resolveImport: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveImport = resolve; }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [image], items: [], getData: (type: string) => type === 'text/plain' ? 'pending' : '' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    await act(async () => resolveImport?.({ assetId: 'pending-image', label: 'pending.png', displayUrl: 'novus-asset://pending-image' }));
+
+    await waitFor(() => expect(screen.getByTestId('agent-composer-input')).toHaveValue(''));
+    expect(screen.queryByLabelText('Selected image references')).not.toBeInTheDocument();
+  });
+
+  it('uses canonical slots when a pasted import returns an existing asset id', async () => {
+    const duplicate = new File(['one'], 'existing.png', { type: 'image/png' });
+    const fresh = new File(['two'], 'fresh.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn()
+      .mockResolvedValueOnce({ assetId: 'existing-asset', label: 'existing.png', displayUrl: 'novus-asset://existing' })
+      .mockResolvedValueOnce({ assetId: 'fresh-asset', label: 'fresh.png', displayUrl: 'novus-asset://fresh' });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      referenceImages: [{ assetId: 'existing-asset', label: 'existing.png', displayUrl: 'novus-asset://existing' }],
+      onImportReferenceImage,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [duplicate, fresh], items: [], getData: () => '' },
+    });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenLastCalledWith(fresh));
+    expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1 @图片2');
+  });
+
+  it('preserves block boundaries when pasting at a contenteditable range', async () => {
+    const image = new File(['one'], 'block.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: 'block-image', label: 'block.png', displayUrl: 'novus-asset://block-image',
+    });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: 'one\ntwo' } });
+    composer.innerHTML = '<div>one</div><p>two</p>';
+    const secondLine = composer.querySelector('p')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(secondLine, 3);
+    range.collapse(true);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent.paste(composer, {
+      clipboardData: { files: [image], items: [], getData: (type: string) => type === 'text/plain' ? 'X' : '' },
+    });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    expect(composer).toHaveValue('one\ntwoX @图片1');
+  });
+
+  it('places the contenteditable caret after pasted text before pending media references', async () => {
+    const image = new File(['one'], 'caret.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: 'caret-image', label: 'caret.png', displayUrl: 'novus-asset://caret-image',
+    });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: 'abcd' } });
+    const range = document.createRange();
+    range.setStart(composer.firstChild!, 2);
+    range.collapse(true);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent.paste(composer, {
+      clipboardData: { files: [image], items: [], getData: (type: string) => type === 'text/plain' ? 'X' : '' },
+    });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    await waitFor(() => {
+      const caretRange = window.getSelection()!.getRangeAt(0);
+      const beforeCaret = document.createRange();
+      beforeCaret.selectNodeContents(composer);
+      beforeCaret.setEnd(caretRange.endContainer, caretRange.endOffset);
+      expect(beforeCaret.toString()).toBe('abX');
+    });
+  });
+
+  it('cancels a pending paste before sending and never sends its private marker', async () => {
+    const image = new File(['one'], 'send-pending.png', { type: 'image/png' });
+    let resolveImport: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveImport = resolve; }));
+    const chat = vi.fn(async () => ({ message: 'sent', modelRoute: 'chat/vision', sources: [] }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+      chat,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [image], items: [], getData: (type: string) => type === 'text/plain' ? 'send pending' : '' },
+    });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([expect.objectContaining({ content: 'send pending' })]),
+    })));
+    await act(async () => resolveImport?.({ assetId: 'send-pending', label: 'send-pending.png', displayUrl: 'novus-asset://send-pending' }));
+
+    expect(screen.queryByLabelText('Selected image references')).not.toBeInTheDocument();
+  });
+
+  it('cancels a pending paste when switching to a non-vision model', async () => {
+    const image = new File(['one'], 'switch-pending.png', { type: 'image/png' });
+    let resolveImport: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveImport = resolve; }));
+    renderWorkbench({
+      profiles: [
+        { ...profiles[0]!, modelRoute: 'chat/vision', displayName: 'Vision chat', capabilities: ['chat', 'vision'] },
+        profiles[0]!,
+      ],
+      onImportReferenceImage,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [image], items: [], getData: () => '' },
+    });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    fireEvent.click(screen.getByTestId('agent-model-trigger'));
+    fireEvent.click(screen.getByRole('button', { name: '使用 Creative chat' }));
+    await act(async () => resolveImport?.({ assetId: 'switch-pending', label: 'switch-pending.png', displayUrl: 'novus-asset://switch-pending' }));
+
+    expect(screen.getByTestId('agent-composer-input')).toHaveValue('');
+    expect(screen.queryByLabelText('Selected image references')).not.toBeInTheDocument();
+  });
+
+  it('does not update an unmounted composer after a pending paste resolves', async () => {
+    const image = new File(['one'], 'unmount-pending.png', { type: 'image/png' });
+    let resolveImport: ((value: { assetId: string; label: string; displayUrl: string }) => void) | undefined;
+    const onImportReferenceImage = vi.fn(() => new Promise<{ assetId: string; label: string; displayUrl: string }>((resolve) => { resolveImport = resolve; }));
+    const view = renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      onImportReferenceImage,
+    });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [image], items: [], getData: () => '' },
+    });
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    view.unmount();
+    await expect(act(async () => resolveImport?.({ assetId: 'unmounted', label: 'unmount-pending.png', displayUrl: 'novus-asset://unmounted' }))).resolves.toBeUndefined();
+  });
+
+  it('replaces a noncollapsed contenteditable range spanning media chips', async () => {
+    const image = new File(['one'], 'replace.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: 'replace-image', label: 'replace.png', displayUrl: 'novus-asset://replace-image',
+    });
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }],
+      referenceImages: [
+        { assetId: 'existing-one', label: 'existing-one.png', displayUrl: 'novus-asset://existing-one' },
+        { assetId: 'existing-two', label: 'existing-two.png', displayUrl: 'novus-asset://existing-two' },
+      ],
+      onImportReferenceImage,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: 'left @图片1 @图片2 right' } });
+    const chips = composer.querySelectorAll('[data-token]');
+    const range = document.createRange();
+    range.setStartBefore(chips[0]!);
+    range.setEndAfter(chips[1]!);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent.paste(composer, {
+      clipboardData: { files: [image], items: [], getData: (type: string) => type === 'text/plain' ? 'X' : '' },
+    });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    expect(composer).toHaveValue('left X @图片3 right');
+  });
+
   it('shows a controlled error when managed reference import fails', async () => {
     const onImportReferenceImage = vi.fn().mockRejectedValue(new Error('C:\\private\\reference.png'));
     renderWorkbench({ onImportReferenceImage });
@@ -826,6 +1686,7 @@ it('shows no media warning initially and clears it after switching to a vision m
     ],
     referenceImages: [{ assetId: 'asset-vision-1', label: 'Reference one', displayUrl: 'novus-asset://asset-vision-1' }],
   });
+  fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
@@ -878,6 +1739,7 @@ it('shows one selectable chat route for the same visible model name without expo
       { provider: 'relayme', modelRoute: 'relayme-shared-chat', modelId: 'shared-chat', displayName: 'Shared Chat', capabilities: ['chat'] },
     ],
   });
+  fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
   fireEvent.click(screen.getByTestId('agent-model-trigger'));
   const dialog = screen.getByRole('dialog', { name: '选择聊天模型' });
@@ -892,6 +1754,7 @@ it('shows only model names for unique chat models', () => {
       { provider: 'relayme', modelRoute: 'relay-chat', modelId: 'relay-chat', displayName: 'Relay Chat', capabilities: ['chat'] },
     ],
   });
+  fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
   fireEvent.click(screen.getByTestId('agent-model-trigger'));
   const dialog = screen.getByRole('dialog', { name: '选择聊天模型' });

@@ -21,4 +21,11 @@ describe('generation editor state', () => {
     expect(reduceGenerationEditorState(state, { type: 'node-removed', nodeIds: ['image-1'] }))
       .toEqual({ expandedNodeId: null });
   });
+
+  it('collapses only the generation editor whose job just completed', () => {
+    const state = { expandedNodeId: 'image-1' };
+    expect(reduceGenerationEditorState(state, { type: 'generation-completed', nodeId: 'other' })).toBe(state);
+    expect(reduceGenerationEditorState(state, { type: 'generation-completed', nodeId: 'image-1' }))
+      .toEqual({ expandedNodeId: null });
+  });
 });

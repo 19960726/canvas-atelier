@@ -3,6 +3,7 @@ import { expect, test } from './helpers/e2e-test';
 import { openAgentPanel, openEmptyApp } from './helpers/app';
 
 const artifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.55-agent-layout', 'agent-layout.png');
+const composerArtifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.55-agent-layout', 'agent-composer-compact.png');
 
 test('keeps every Codex Agent control inside the panel on one unified compact geometry', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -16,14 +17,22 @@ test('keeps every Codex Agent control inside the panel on one unified compact ge
 
   const metrics = await panel.evaluate((element) => {
     const footer = element.querySelector('.skill-chat-workbench__composer-footer');
+    const composer = element.querySelector('.skill-chat-workbench__composer');
+    const visible = (control: HTMLElement) => getComputedStyle(control).display !== 'none';
     const controls = footer === null ? [] : [...footer.querySelectorAll<HTMLElement>('button, select')]
-      .filter((control) => getComputedStyle(control).display !== 'none')
+      .filter(visible)
       .map((control) => {
         const rect = control.getBoundingClientRect();
-        return { height: rect.height, left: rect.left, right: rect.right };
+        return {
+          className: control.className,
+          height: rect.height,
+          left: rect.left,
+          right: rect.right,
+        };
       });
     const panelRect = element.getBoundingClientRect();
-    const composerRect = element.querySelector('.skill-chat-workbench__composer')?.getBoundingClientRect();
+    const composerRect = composer?.getBoundingClientRect();
+    const footerRect = footer?.getBoundingClientRect();
     return {
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
@@ -32,7 +41,11 @@ test('keeps every Codex Agent control inside the panel on one unified compact ge
       panelRight: panelRect.right,
       panelTop: panelRect.top,
       panelBottom: panelRect.bottom,
+      composerLeft: composerRect?.left ?? 0,
+      composerRight: composerRect?.right ?? 0,
       composerHeight: composerRect?.height ?? 0,
+      footerLeft: footerRect?.left ?? 0,
+      footerRight: footerRect?.right ?? 0,
       controls,
     };
   });
@@ -45,13 +58,17 @@ test('keeps every Codex Agent control inside the panel on one unified compact ge
   expect(metrics.panelBottom).toBeGreaterThanOrEqual(799);
   expect(metrics.composerHeight).toBeGreaterThanOrEqual(126);
   expect(metrics.composerHeight).toBeLessThanOrEqual(146);
+  expect(metrics.footerLeft).toBeGreaterThanOrEqual(metrics.composerLeft);
+  expect(metrics.footerRight, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.composerRight + 1);
   expect(metrics.controls.length).toBeGreaterThanOrEqual(8);
   for (const control of metrics.controls) {
-    expect(control.height).toBeGreaterThanOrEqual(33);
-    expect(control.height).toBeLessThanOrEqual(35);
+    expect(control.height).toBeGreaterThanOrEqual(29);
+    expect(control.height).toBeLessThanOrEqual(34);
     expect(control.left).toBeGreaterThanOrEqual(metrics.panelLeft);
     expect(control.right).toBeLessThanOrEqual(metrics.panelRight);
+    expect(control.right).toBeLessThanOrEqual(metrics.composerRight + 1);
   }
 
   await page.screenshot({ path: artifact, fullPage: true });
+  await panel.locator('.skill-chat-workbench__composer').screenshot({ path: composerArtifact });
 });

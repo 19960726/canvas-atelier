@@ -83,6 +83,24 @@ describe('desktop model job executor', () => {
     }));
   });
 
+  it('rejects a stale job route before submission when another provider is active', async () => {
+    const submitImageJob = vi.fn();
+    vi.stubGlobal('window', {
+      novusDesktop: {
+        provider: {
+          getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
+          submitImageJob,
+        },
+      },
+    });
+
+    await expect(createDesktopModelJobExecutor().submit(job({
+      provider: 'relayme',
+      modelRoute: 'relayme-gpt-image-2',
+    }))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
+    expect(submitImageJob).not.toHaveBeenCalled();
+  });
+
   it('routes video jobs through the video bridge and preserves video controls', async () => {
     const submitVideoJob = vi.fn(async () => ({ providerTaskId: 'provider-job-relay-video' }));
     const pollVideoJob = vi.fn(async () => ({

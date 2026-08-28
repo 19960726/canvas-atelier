@@ -1045,7 +1045,7 @@ export function createDesktopBridgeHandlers(
         }
         const existing = await readExistingClipboardImagePaste(assetStore, repository, currentSession, validated.target);
         if (existing !== null) return existing;
-        if (validated.target.reconcileOnly === true) return null;
+        if (validated.target.kind === 'new_image_input' && validated.target.reconcileOnly === true) return null;
         const image = await clipboard.readImage();
         if (image === null) return null;
         const commitState: {
@@ -1115,9 +1115,9 @@ export function createDesktopBridgeHandlers(
         }
         const videoSource = await openVideoSource(sourcePath);
         if (videoSource !== null) {
-          if (request.target.kind === 'module') {
+          if (request.target.kind !== 'new_media_input') {
             await videoSource.close().catch(() => undefined);
-            throw invalidRequest('An image module can only be replaced with an image');
+            throw invalidRequest('An image or Agent image reference target can only import an image');
           }
           const videoTarget = request.target;
           const commitState: {
@@ -2831,6 +2831,13 @@ function createClipboardImagePasteTransaction(
   asset: ProjectImageAsset,
 ): ProjectTransaction {
   const identity = clipboardImagePasteIdentity(target.operationId);
+  if (target.kind === 'agent_reference') {
+    return {
+      id: identity.transactionId,
+      label: 'Paste clipboard Agent reference image',
+      operations: [{ kind: 'set_project_assets', assets: upsertProjectImageAsset(project.assets ?? [], asset) }],
+    };
+  }
   const node = createCanvasModuleNode(identity.nodeId, 'image_input', target.position);
   const boundNode = {
     ...node,
@@ -2873,6 +2880,13 @@ function createDroppedImageImportTransaction(
   asset: ProjectImageAsset,
 ): ProjectTransaction {
   const identity = droppedMediaIdentity(target.operationId);
+  if (target.kind === 'agent_reference') {
+    return {
+      id: identity.transactionId,
+      label: 'Import pasted Agent reference image',
+      operations: [{ kind: 'set_project_assets', assets: upsertProjectImageAsset(project.assets ?? [], asset) }],
+    };
+  }
   if (target.kind === 'module') {
     return createProjectImageImportTransaction(
       project,
@@ -2928,6 +2942,7 @@ async function readExistingClipboardImagePaste(
   session: BridgeSessionContext,
   target: ProjectClipboardImageTarget,
 ): Promise<PasteProjectClipboardImageBridgeResult | null> {
+  if (target.kind === 'agent_reference') return null;
   const identity = clipboardImagePasteIdentity(target.operationId);
   const project = await repository.readCurrentProject(session.session);
   const node = project.nodes.find((candidate) => candidate.id === identity.nodeId);
@@ -3717,6 +3732,12 @@ function validateImportDroppedProjectMediaBridgeRequest(value: unknown): ImportD
   const target = expectPlainRecord(record.target);
   const sessionId = parseNonEmptyString(record.sessionId, 'sessionId');
   const operationId = parseDroppedMediaOperationId(target.operationId);
+  if (target.kind === 'agent_reference') {
+    assertExactKeys(target, ['kind', 'operationId'], 'Dropped Agent reference target');
+    const request = { sessionId, target: { kind: 'agent_reference' as const, operationId } };
+    assertPublicBridgePayload(request);
+    return request;
+  }
   if (target.kind === 'module') {
     assertExactKeys(target, ['kind', 'nodeId', 'operationId'], 'Dropped project media module target');
     const request = {
@@ -3753,6 +3774,15 @@ function validatePasteProjectClipboardImageBridgeRequest(value: unknown): PasteP
   const record = expectPlainRecord(value);
   assertExactKeys(record, ['sessionId', 'target'], 'Clipboard image paste request');
   const target = expectPlainRecord(record.target);
+  if (target.kind === 'agent_reference') {
+    assertExactKeys(target, ['kind', 'operationId'], 'Clipboard Agent reference target');
+    const request = {
+      sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+      target: { kind: 'agent_reference' as const, operationId: parseClipboardOperationId(target.operationId) },
+    };
+    assertPublicBridgePayload(request);
+    return request;
+  }
   assertExactKeys(target, ['kind', 'operationId', 'position', 'reconcileOnly'], 'Clipboard image paste target');
   if (target.kind !== 'new_image_input') throw invalidRequest('Clipboard image paste target kind is invalid');
   if ('reconcileOnly' in target && target.reconcileOnly !== true) {
