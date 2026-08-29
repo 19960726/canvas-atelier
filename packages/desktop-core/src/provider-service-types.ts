@@ -22,6 +22,8 @@ import type {
   ProviderBridgeProfile,
   ProviderActiveState,
   LoginRelayMeBridgeRequest,
+  ListProviderTasksBridgeRequest,
+  ListProviderTasksBridgeResult,
   ProviderConfigurationStatus,
   ProviderConnectionCheckResult,
   RevealProviderCredentialBridgeResult,
@@ -43,6 +45,7 @@ export interface ProviderService {
   unlock(request: UnlockProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
   listAvailableModelIds(): Promise<string[]>;
   listProfiles(): Promise<ProviderBridgeProfile[]>;
+  listTasks?(request: ListProviderTasksBridgeRequest): Promise<ListProviderTasksBridgeResult>;
   submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
   cancelImageJob(request: CancelImageJobBridgeRequest): Promise<CancelImageJobBridgeResult>;
@@ -69,6 +72,7 @@ export interface ProviderBridgeHandlers {
   unlock(event: unknown, request: unknown): Promise<ProviderConfigurationStatus>;
   listAvailableModelIds(event: unknown, request: unknown): Promise<string[]>;
   listProfiles(event: unknown, request: unknown): Promise<ProviderBridgeProfile[]>;
+  listTasks(event: unknown, request: unknown): Promise<ListProviderTasksBridgeResult>;
   submitImageJob(event: unknown, request: unknown): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(event: unknown, request: unknown): Promise<PollImageJobBridgeResult>;
   cancelImageJob(event: unknown, request: unknown): Promise<CancelImageJobBridgeResult>;

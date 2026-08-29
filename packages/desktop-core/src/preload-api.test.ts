@@ -101,4 +101,19 @@ describe('recent project preload API', () => {
     ]);
     expect(JSON.stringify(calls)).not.toMatch(/jwt|token|bearer/i);
   });
+
+  it('exposes a narrow RelayMe task-list call', async () => {
+    const calls: Array<{ channel: string; payload: unknown }> = [];
+    const result = { tasks: [{ taskId: 'task-1', type: 'image', status: 'COMPLETED' }], total: 1, page: 1, totalPages: 1 };
+    const api = createPreloadApi(async <TResponse>(channel: string, payload?: unknown): Promise<TResponse> => {
+      calls.push({ channel, payload });
+      return { ok: true, value: result } as TResponse;
+    });
+
+    await expect(api.provider.listTasks({ provider: 'relayme', page: 1, size: 20 })).resolves.toEqual(result);
+    expect(calls).toEqual([{
+      channel: BRIDGE_CHANNELS.provider.listTasks,
+      payload: { provider: 'relayme', page: 1, size: 20 },
+    }]);
+  });
 });

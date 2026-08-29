@@ -12,9 +12,9 @@ const PHOTOSHOP_IMPORT_MESSAGES: Readonly<Record<PhotoshopImportErrorCode, strin
   desktop_bridge_unavailable: '当前环境不支持 Photoshop 导入',
   import_busy: '这张图片正在导入 Photoshop',
   no_active_document: '请先在 Photoshop 中打开 PSD 或 PSB 文档',
-  photoshop_not_installed: '未找到 Photoshop 2019 或更高版本',
+  photoshop_not_installed: '未找到 Photoshop CS6 或更高版本',
   photoshop_not_running: '请先启动 Photoshop 并打开目标文档',
-  photoshop_version_unsupported: '当前 Photoshop 版本过低，仅支持 2019 及以上版本',
+  photoshop_version_unsupported: '当前 Photoshop 版本过低，仅支持 CS6 及以上版本',
   placement_failed: '图片未能导入 Photoshop，请重试',
   unsupported_media: '只有生成图片可以导入 Photoshop',
 };

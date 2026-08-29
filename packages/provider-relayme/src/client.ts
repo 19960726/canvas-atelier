@@ -6,7 +6,10 @@ import type {
   RelayMeImageGenerationRequest,
   RelayMeModel,
   RelayMeModelOffer,
+  RelayMeTaskList,
   RelayMeVideoGenerationRequest,
+  RelayMeWorkflow,
+  RelayMeWorkflowRun,
 } from './types';
 
 const DEFAULT_BASE_URL = 'https://www.ml.relayme.uk/api/ai-tools/v1';
@@ -120,6 +123,35 @@ const taskStateSchema = z.union([
   z.object({ error: nonEmptyStringSchema, success: z.boolean().optional() }).passthrough(),
   z.object({ message: nonEmptyStringSchema }).passthrough(),
 ]);
+const taskSummarySchema = z.object({
+  taskId: nonEmptyStringSchema,
+  type: z.enum(['image', 'video']).optional().default('image'),
+  status: nonEmptyStringSchema,
+  createdAt: z.string().optional(),
+  error: z.string().optional(),
+}).passthrough().transform((value) => ({
+  taskId: value.taskId,
+  type: value.type,
+  status: value.status,
+  ...(value.createdAt === undefined ? {} : { createdAt: value.createdAt }),
+  ...(value.error === undefined ? {} : { error: value.error }),
+}));
+const taskListSchema = z.object({
+  data: z.array(taskSummarySchema).optional(),
+  tasks: z.array(taskSummarySchema).optional(),
+  items: z.array(taskSummarySchema).optional(),
+  total: z.number().int().nonnegative().optional(),
+  page: z.number().int().positive().optional(),
+  totalPages: z.number().int().positive().optional(),
+}).passthrough().transform((value) => {
+  const tasks = value.tasks ?? value.data ?? value.items ?? [];
+  return {
+    tasks,
+    total: value.total ?? tasks.length,
+    page: value.page ?? 1,
+    totalPages: value.totalPages ?? 1,
+  } satisfies RelayMeTaskList;
+});
 
 export class RelayMeClient {
   private readonly baseUrl: string;
@@ -143,6 +175,41 @@ export class RelayMeClient {
     return mergeModelOffers(response);
   }
 
+  async listWorkflows(): Promise<RelayMeWorkflow[]> {
+    const response = await this.request<unknown>('/workflows', { method: 'GET', schema: z.unknown() });
+    return extractWorkflowList(response);
+  }
+
+  async getWorkflow(workflowId: string): Promise<RelayMeWorkflow> {
+    const response = await this.request<unknown>(`/workflows/${encodeURIComponent(workflowId)}`, { method: 'GET', schema: z.unknown() });
+    return extractWorkflow(response);
+  }
+
+  async getWorkflowSchema(workflowId: string): Promise<unknown> {
+    return this.request(`/workflows/${encodeURIComponent(workflowId)}/schema`, { method: 'GET', schema: z.unknown() });
+  }
+
+  async estimateWorkflow(workflowId: string, inputs: Readonly<Record<string, unknown>>): Promise<unknown> {
+    return this.request(`/workflows/${encodeURIComponent(workflowId)}/estimate`, { method: 'POST', body: { inputs }, schema: z.unknown() });
+  }
+
+  async validateWorkflow(workflowId: string, data: Readonly<Record<string, unknown>>): Promise<unknown> {
+    void workflowId;
+    return this.request('/workflows/validate', { method: 'POST', body: { data }, schema: z.unknown() });
+  }
+
+  async runWorkflow(workflowId: string, inputs: Readonly<Record<string, unknown>>, idempotencyKey: string): Promise<RelayMeWorkflowRun> {
+    return this.request(`/workflows/${encodeURIComponent(workflowId)}/runs`, { method: 'POST', body: { idempotencyKey, inputs }, headers: { 'Idempotency-Key': idempotencyKey }, schema: workflowRunSchema, allowEmptyAccepted: true });
+  }
+
+  async getWorkflowRun(runId: string): Promise<unknown> {
+    return this.request(`/workflow-runs/${encodeURIComponent(runId)}`, { method: 'GET', schema: z.unknown() });
+  }
+
+  async cancelWorkflowRun(runId: string, reason?: string): Promise<unknown> {
+    return this.request(`/workflow-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', body: reason === undefined ? {} : { reason }, schema: z.unknown() });
+  }
+
   async chat(input: RelayMeChatRequest) {
     return this.request('/chat/completions', { method: 'POST', body: input, schema: chatResponseSchema });
   }
@@ -159,6 +226,12 @@ export class RelayMeClient {
     return this.request(`/tasks/${encodeURIComponent(taskId)}`, { method: 'GET', schema: taskStateSchema });
   }
 
+  async listTasks(page = 1, size = 20): Promise<RelayMeTaskList> {
+    const safePage = Number.isInteger(page) && page > 0 ? page : 1;
+    const safeSize = Number.isInteger(size) && size > 0 && size <= 100 ? size : 20;
+    return this.request(`/tasks?page=${safePage}&size=${safeSize}`, { method: 'GET', schema: taskListSchema });
+  }
+
   async cancelTask(_taskId: string): Promise<never> {
     const error = new Error('RelayMe 当前没有公开可验证的任务取消接口') as Error & {
       code: 'CAPABILITY_UNSUPPORTED'; retryable: boolean;
@@ -173,6 +246,8 @@ export class RelayMeClient {
     options: {
       readonly method: 'GET' | 'POST';
       readonly body?: object;
+      readonly headers?: Record<string, string>;
+      readonly allowEmptyAccepted?: boolean;
       readonly schema: z.ZodType<T, z.ZodTypeDef, unknown>;
     },
   ): Promise<T> {
@@ -184,12 +259,13 @@ export class RelayMeClient {
         method: options.method,
         headers: {
           authorization: `Bearer ${token}`,
+          ...(options.headers ?? {}),
           ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
         },
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         signal: controller.signal,
       });
-      return await parseResponse(response, path, options.schema);
+      return await parseResponse(response, path, options.schema, options.allowEmptyAccepted === true);
     } catch (error) {
       if (controller.signal.aborted) {
         throw new Error(`RelayMe 请求在 ${this.timeoutMs}ms 后 timed out: ${path}`);
@@ -200,6 +276,41 @@ export class RelayMeClient {
       if (timer !== null) globalThis.clearTimeout(timer);
     }
   }
+}
+
+const workflowSchema = z.object({
+  id: z.union([nonEmptyStringSchema, z.number().int().nonnegative()]).transform(String),
+}).passthrough();
+const workflowRunSchema = z.union([
+  z.object({ runId: nonEmptyStringSchema }).passthrough(),
+  z.object({ data: z.object({ runId: nonEmptyStringSchema }).passthrough() }).passthrough().transform((value) => value.data),
+]);
+
+function extractWorkflowList(value: unknown): RelayMeWorkflow[] {
+  const candidate = isRecord(value) && Array.isArray(value.workflows) ? value.workflows
+    : isRecord(value) && isRecord(value.data) && Array.isArray(value.data.workflows) ? value.data.workflows
+      : isRecord(value) && Array.isArray(value.data) ? value.data
+        : isRecord(value) && Array.isArray(value.items) ? value.items
+          : Array.isArray(value) ? value : [];
+  return candidate.flatMap((item) => {
+    const parsed = workflowSchema.safeParse(item);
+    return parsed.success ? [parsed.data as RelayMeWorkflow] : [];
+  });
+}
+
+function extractWorkflow(value: unknown): RelayMeWorkflow {
+  const candidate = isRecord(value) && (typeof value.id === 'string' || typeof value.id === 'number') ? value
+    : isRecord(value) && isRecord(value.workflow) ? value.workflow
+    : isRecord(value) && isRecord(value.data) && isRecord(value.data.workflow) ? value.data.workflow
+      : isRecord(value) && isRecord(value.data) ? value.data
+        : value;
+  const parsed = workflowSchema.safeParse(candidate);
+  if (!parsed.success) throw new Error('RelayMe workflow response was invalid');
+  return parsed.data as RelayMeWorkflow;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function normalizeRelayMeBaseUrl(baseUrl: string): string {
@@ -266,8 +377,19 @@ function modelTypeToCapability(modelType: RelayMeModel['modelType'] | undefined)
   if (modelType === 'TEXT') return 'text';
   return undefined;
 }
-async function parseResponse<T>(response: RelayMeFetchResponse, path: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<T> {
-  const body = await response.json();
+async function parseResponse<T>(response: RelayMeFetchResponse, path: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>, allowEmptyAccepted = false): Promise<T> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    if (allowEmptyAccepted && response.status === 202) {
+      const location = response.headers?.get('location') ?? '';
+      const locationParts = location.split('/').filter(Boolean);
+      const runId = locationParts[locationParts.length - 1];
+      if (runId !== undefined && /^[0-9a-f-]{20,}$/iu.test(runId)) return { runId, status: 'QUEUED' } as T;
+    }
+    throw error;
+  }
   if (!response.ok) {
     const parsed = errorBodySchema.safeParse(body);
     const detail = parsed.success

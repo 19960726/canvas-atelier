@@ -108,6 +108,8 @@ import {
   type RevealProviderCredentialBridgeResult,
   type SetActiveProviderBridgeRequest,
   type LoginRelayMeBridgeRequest,
+  type ListProviderTasksBridgeRequest,
+  type ListProviderTasksBridgeResult,
   type ProviderSelectionBridgeRequest,
   type SubmitImageJobBridgeRequest,
   type SubmitImageJobBridgeResult,
@@ -329,6 +331,7 @@ export interface DesktopProviderBridgeApi {
   unlock(request: UnlockProviderBridgeRequest): Promise<ProviderConfigurationStatus>;
   listAvailableModelIds(request?: ProviderSelectionBridgeRequest): Promise<string[]>;
   listProfiles(request?: ProviderSelectionBridgeRequest): Promise<ProviderBridgeProfile[]>;
+  listTasks(request: ListProviderTasksBridgeRequest): Promise<ListProviderTasksBridgeResult>;
   submitImageJob(request: SubmitImageJobBridgeRequest): Promise<SubmitImageJobBridgeResult>;
   pollImageJob(request: PollImageJobBridgeRequest): Promise<PollImageJobBridgeResult>;
   cancelImageJob(request: CancelImageJobBridgeRequest): Promise<CancelImageJobBridgeResult>;
@@ -632,6 +635,9 @@ export function createPreloadApi(
       },
       listProfiles(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.listProfiles, request);
+      },
+      listTasks(request) {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.listTasks, request);
       },
       submitImageJob(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.submitImageJob, request);

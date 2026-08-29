@@ -27,6 +27,38 @@ describe('active provider model boundary', () => {
 });
 
 describe('canvas provider route sets', () => {
+  it('never exposes incomplete provider profiles as runnable canvas routes', () => {
+    const routes = buildCanvasProviderRouteSets([
+      {
+        provider: 'relayme',
+        modelRoute: 'relayme-gemini-3-pro-image-preview',
+        modelId: 'gemini-3-pro-image-preview',
+        displayName: 'Nano Banana Pro',
+        capabilities: ['image_generation'],
+        capabilityStatus: 'incomplete',
+      },
+      {
+        provider: 'relayme',
+        modelRoute: 'relayme-gpt-image-2',
+        modelId: 'gpt-image-2',
+        displayName: 'GPT Image 2',
+        capabilities: ['image_generation', 'async_tasks'],
+        capabilityStatus: 'complete',
+      },
+      {
+        provider: 'relayme',
+        modelRoute: 'relayme-text-only',
+        modelId: 'text-only',
+        displayName: 'Text only',
+        capabilities: ['reverse_prompt'],
+        capabilityStatus: 'incomplete',
+      },
+    ]);
+
+    expect(routes.imageGeneration.map((profile) => profile.modelRoute)).toEqual(['relayme-gpt-image-2']);
+    expect(routes.reversePrompt).toEqual([]);
+  });
+
   it('reduces the shared catalog before it is passed into every canvas node', () => {
     const profiles: ProviderBridgeProfile[] = [...Array.from({ length: 200 }, (_, index) => ({
       provider: 'comfly' as const,
@@ -58,6 +90,29 @@ describe('listAllProviderProfiles', () => {
     })).resolves.toEqual([expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly-image' })]);
     expect(listProfiles).toHaveBeenCalledTimes(1);
     expect(listProfiles).toHaveBeenCalledWith({ provider: 'comfly' });
+  });
+
+  it('excludes incomplete provider profiles from runnable canvas routes', async () => {
+    const listProfiles = vi.fn(async () => [{
+      provider: 'relayme' as const,
+      modelRoute: 'relayme-legacy-image',
+      displayName: 'Nano Banana 2',
+      capabilities: ['image_generation' as const],
+      capabilityStatus: 'incomplete' as const,
+    }, {
+      provider: 'relayme' as const,
+      modelRoute: 'relayme-workflow-image',
+      displayName: 'Nano Banana 2',
+      capabilities: ['image_generation' as const, 'async_tasks' as const],
+      capabilityStatus: 'complete' as const,
+    }]);
+
+    await expect(listRunnableProviderProfiles({
+      listProfiles,
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+    })).resolves.toEqual([
+      expect.objectContaining({ modelRoute: 'relayme-workflow-image', capabilityStatus: 'complete' }),
+    ]);
   });
   it('queries Comfly and RelayMe explicitly and keeps both provider catalogs', async () => {
     const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [

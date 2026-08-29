@@ -35,5 +35,7 @@ describe('Photoshop placement script contract', () => {
 
     expect(runnerSource).not.toContain('/iu');
     expect(runnerSource).not.toContain('/gu');
+    expect(runnerSource).toContain('majorVersion < 13');
+    expect(runnerSource).not.toContain('majorVersion < 20');
   });
 });

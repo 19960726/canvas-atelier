@@ -7,7 +7,7 @@ import { NodeFileSystem, type FileSystem } from './file-system.js';
 import type { GenerationHistoryProviderSinkContract } from './generation-history-provider-sink.js';
 import { createProviderConfigurationStore } from './provider-configuration-store.js';
 import type { ProviderCredentialStore } from './provider-credential-vault.js';
-import { buildRelayMeModelProfiles, cloneProviderProfile } from './provider-model-catalog.js';
+import { buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, cloneProviderProfile } from './provider-model-catalog.js';
 import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
 import { readPinnedReverseKnowledge } from './provider-reverse-knowledge.js';
@@ -34,6 +34,8 @@ import {
   type PollVideoJobBridgeRequest,
   type PollVideoJobBridgeResult,
   type LoginRelayMeBridgeRequest,
+  type ListProviderTasksBridgeRequest,
+  type ListProviderTasksBridgeResult,
   type ProviderBridgeException,
   type ProviderBridgeProfile,
   type ProviderImageJobResult,
@@ -76,6 +78,7 @@ export function createRelayMeProviderService(options: {
     profiles: sanitizeProfiles(options.profiles ?? []),
   };
   let discoveredProfiles: ProviderBridgeProfile[] | null = null;
+  let loginValidatedProfiles: ProviderBridgeProfile[] | null = null;
   let configureTail: Promise<void> = Promise.resolve();
   const tasks = new Map<string, RelayTask>();
   const now = options.now ?? Date.now;
@@ -111,14 +114,15 @@ export function createRelayMeProviderService(options: {
         }).listModels(),
         'RelayMe account validation failed',
       );
-      const profiles = buildRelayMeModelProfiles(models);
       await options.credentialStore.configure({ token });
-      discoveredProfiles = profiles;
+      loginValidatedProfiles = buildRelayMeModelProfiles(models);
+      discoveredProfiles = null;
     },
     async logoutRelayMe() {
       await options.credentialStore.clear();
       tasks.clear();
       discoveredProfiles = null;
+      loginValidatedProfiles = null;
       configurationCache = { baseUrl: options.baseUrl ?? DEFAULT_RELAYME_BASE_URL, profiles: [] };
       await configurationStore.replace(null);
       await fileSystem.rm(join(options.appDataRoot, 'providers', 'relayme'), { force: true, recursive: true });
@@ -158,6 +162,7 @@ export function createRelayMeProviderService(options: {
         await configurationStore.write(next);
         configurationCache = cloneConfiguration(next);
         discoveredProfiles = null;
+        loginValidatedProfiles = null;
         return options.credentialStore.getStatus();
       });
     },
@@ -171,6 +176,7 @@ export function createRelayMeProviderService(options: {
         await configurationStore.write(next);
         configurationCache = cloneConfiguration(next);
         discoveredProfiles = null;
+        loginValidatedProfiles = null;
         return options.credentialStore.getStatus();
       });
     },
@@ -184,6 +190,25 @@ export function createRelayMeProviderService(options: {
       return (await listProfiles()).flatMap((profile) => profile.modelId === undefined ? [] : [profile.modelId]);
     },
     listProfiles,
+    async listTasks(request: ListProviderTasksBridgeRequest): Promise<ListProviderTasksBridgeResult> {
+      await requireUnlockedCredentials();
+      const result = await translateRelayMeCall(
+        () => createClientFromCredentials().then((client) => client.listTasks(request.page, request.size)),
+        'RelayMe 任务清单读取失败',
+      );
+      return {
+        tasks: result.tasks.map((task) => ({
+          taskId: task.taskId,
+          type: task.type,
+          status: task.status,
+          ...(task.createdAt === undefined ? {} : { createdAt: task.createdAt }),
+          ...(task.error === undefined ? {} : { error: task.error }),
+        })),
+        total: result.total,
+        page: result.page,
+        totalPages: result.totalPages,
+      };
+    },
     async analyzeReversePrompt(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt, request) as AnalyzeReversePromptBridgeRequest;
       assertRelayMeProvider(validated.provider);
@@ -310,10 +335,10 @@ export function createRelayMeProviderService(options: {
           model: profile.modelId ?? profile.modelRoute,
           messages: [{ role: 'user', content: validated.prompt }],
           ...(validated.aspectRatio === undefined ? {} : { videoAspectRatio: validated.aspectRatio }),
-          ...(validated.resolution === undefined ? {} : { videoQuality: validated.resolution }),
+          ...(validated.resolution === undefined ? {} : { videoResolution: validated.resolution }),
           ...(validated.durationSeconds === undefined ? {} : { videoSeconds: validated.durationSeconds }),
           ...(validated.outputCount === undefined ? {} : { n: validated.outputCount }),
-          ...(validated.audioEnabled === undefined ? {} : { audioEnabled: validated.audioEnabled }),
+          ...(validated.audioEnabled === undefined ? {} : { videoGenerateAudio: validated.audioEnabled }),
         })),
         'RelayMe 视频任务提交失败',
       );
@@ -353,17 +378,36 @@ export function createRelayMeProviderService(options: {
   async function listProfiles(): Promise<ProviderBridgeProfile[]> {
     await requireUnlockedCredentials();
     if (discoveredProfiles !== null) return discoveredProfiles.map(cloneProfile);
-    const models = await translateRelayMeCall(
-      () => createClientFromCredentials().then((client) => client.listModels()),
+    const client = await createClientFromCredentials();
+    const modelProfiles = loginValidatedProfiles ?? buildRelayMeModelProfiles(await translateRelayMeCall(
+      () => client.listModels(),
       'RelayMe 模型目录读取失败',
-    );
+    ));
+    const workflowModelProfiles = buildRelayMeWorkflowModelProfiles(await loadWorkflows(client));
     const configured = (await captureConfiguration()).profiles;
-    discoveredProfiles = mergeProfiles(buildRelayMeModelProfiles(models), configured);
+    discoveredProfiles = mergeProfiles(mergeDiscoveredModelProfiles([
+      ...workflowModelProfiles,
+      ...modelProfiles,
+    ]), configured);
+    loginValidatedProfiles = null;
     return discoveredProfiles.map(cloneProfile);
   }
 
+  async function loadWorkflows(client: RelayMeClient) {
+    try {
+      const summaries = await client.listWorkflows();
+      return await Promise.all(summaries.map(async (workflow) => (
+        Array.isArray(workflow.data?.nodes) ? workflow : client.getWorkflow(workflow.id)
+      )));
+    } catch {
+      return [];
+    }
+  }
+
   async function selectProfile(modelRoute: string, capability: ProviderBridgeProfile['capabilities'][number]) {
-    const profile = (await listProfiles()).find((item) => item.modelRoute === modelRoute && item.capabilities.includes(capability));
+    const profile = (await listProfiles()).find((item) => item.modelRoute === modelRoute
+      && item.capabilityStatus === 'complete'
+      && item.capabilities.includes(capability));
     if (profile === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '所选 RelayMe 模型不可用或能力不匹配');
     return profile;
   }
@@ -801,6 +845,27 @@ function translateRelayMeError(error: unknown, fallback: string): ProviderBridge
 
 function sanitizeProfiles(profiles: readonly ProviderBridgeProfile[]) {
   return parseProviderBridgeProfiles(profiles.filter((profile) => profile.provider === 'relayme'));
+}
+
+function mergeDiscoveredModelProfiles(profiles: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
+  const merged = new Map<string, ProviderBridgeProfile>();
+  for (const profile of profiles) {
+    const key = `${profile.provider}:${profile.modelId ?? profile.modelRoute}`.toLocaleLowerCase();
+    const current = merged.get(key);
+    if (current === undefined) {
+      merged.set(key, cloneProfile(profile));
+      continue;
+    }
+    const preferred = current.capabilityStatus === 'complete' || profile.capabilityStatus !== 'complete' ? current : profile;
+    const secondary = preferred === current ? profile : current;
+    merged.set(key, cloneProfile({
+      ...secondary,
+      ...preferred,
+      capabilities: [...new Set([...preferred.capabilities, ...secondary.capabilities])],
+      constraints: preferred.constraints ?? secondary.constraints,
+    }));
+  }
+  return [...merged.values()];
 }
 
 function mergeProfiles(discovered: readonly ProviderBridgeProfile[], configured: readonly ProviderBridgeProfile[]) {

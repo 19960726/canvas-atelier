@@ -24,4 +24,8 @@ export type {
   RelayMeModel,
   RelayMeModelOffer,
   RelayMeVideoGenerationRequest,
+  RelayMeWorkflow,
+  RelayMeWorkflowRun,
+  RelayMeTaskList,
+  RelayMeTaskSummary,
 } from './types';

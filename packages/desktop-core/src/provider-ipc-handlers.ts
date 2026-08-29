@@ -27,6 +27,8 @@ import {
   type ProviderBridgeProfile,
   type ProviderActiveState,
   type LoginRelayMeBridgeRequest,
+  type ListProviderTasksBridgeRequest,
+  type ListProviderTasksBridgeResult,
   type ProviderConfigurationStatus,
   type ProviderConnectionCheckResult,
   type RevealProviderCredentialBridgeResult,
@@ -140,6 +142,14 @@ export function createProviderBridgeHandlers(
       return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => (
         parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.listProfiles, await selectService(source, parsed.provider).listProfiles()) as ProviderBridgeProfile[]
       ));
+    },
+    listTasks: async (_event, request) => {
+      const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.listTasks, request) as ListProviderTasksBridgeRequest;
+      return executeProviderCallWithExpiry(source, options?.activeStore, 'relayme', async () => {
+        const service = selectService(source, 'relayme');
+        if (service.listTasks === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'RelayMe 任务清单暂不可用');
+        return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.listTasks, await service.listTasks(parsed)) as ListProviderTasksBridgeResult;
+      });
     },
     submitImageJob: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;

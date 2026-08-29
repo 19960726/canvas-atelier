@@ -13,6 +13,31 @@ afterEach(() => {
 });
 
 describe('GenerationHistoryDrawer', () => {
+  it('shows the signed-in RelayMe task center beside local canvas history', async () => {
+    const listTasks = vi.fn(async () => ({
+      tasks: [
+        { taskId: 'task-image-1', type: 'image' as const, status: 'COMPLETED', createdAt: '2026-08-29T10:00:00.000Z' },
+        { taskId: 'task-video-1', type: 'video' as const, status: 'FAILED', error: '生成超时' },
+      ],
+      total: 2,
+      page: 1,
+      totalPages: 1,
+    }));
+    installHistoryBridge({
+      list: vi.fn(async () => ({ nextCursor: null, records: [], revision: 1, total: 0 })),
+    }, {
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' })),
+      listTasks,
+    });
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    expect(await screen.findByRole('heading', { name: 'RelayMe 任务' })).toBeVisible();
+    expect(screen.getByText('图片 · 已完成')).toBeVisible();
+    expect(screen.getByText('视频 · 失败')).toBeVisible();
+    expect(screen.getByText('生成超时')).toBeVisible();
+    expect(listTasks).toHaveBeenCalledWith({ provider: 'relayme', page: 1, size: 20 });
+  });
   it('exposes the Figma history surface heading and keyboard close control', () => {
     render(<GenerationHistoryDrawer onClose={vi.fn()} />);
 
@@ -294,7 +319,7 @@ describe('GenerationHistoryDrawer', () => {
   });
 });
 
-function installHistoryBridge(overrides: Record<string, unknown>) {
+function installHistoryBridge(overrides: Record<string, unknown>, provider?: Record<string, unknown>) {
   window.novusDesktop = {
     history: {
       addProjectReferences: vi.fn(),
@@ -311,6 +336,7 @@ function installHistoryBridge(overrides: Record<string, unknown>) {
       trash: vi.fn(),
       ...overrides,
     },
+    ...(provider === undefined ? {} : { provider }),
   } as unknown as typeof window.novusDesktop;
 }
 

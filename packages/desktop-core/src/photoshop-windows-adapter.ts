@@ -8,6 +8,7 @@ import type { PhotoshopSmartObjectAdapter } from './photoshop-smart-object-servi
 import { createPhotoshopPlacementPayload } from './photoshop-script.js';
 
 const execFileAsync = promisify(execFile);
+const MINIMUM_PHOTOSHOP_MAJOR_VERSION = 13;
 
 export interface PhotoshopInstallation {
   readonly majorVersion: number;
@@ -74,8 +75,8 @@ export function createWindowsPhotoshopSmartObjectAdapter(
         if (installations.length === 0) return { ok: false, code: 'photoshop_not_installed' };
 
         const running = await dependencies.inspectRunningInstance();
-        const supportedInstallations = installations.filter((item) => item.majorVersion >= 20);
-        if (running !== null && running.majorVersion < 20) {
+        const supportedInstallations = installations.filter((item) => item.majorVersion >= MINIMUM_PHOTOSHOP_MAJOR_VERSION);
+        if (running !== null && running.majorVersion < MINIMUM_PHOTOSHOP_MAJOR_VERSION) {
           return { ok: false, code: 'photoshop_version_unsupported' };
         }
         if (supportedInstallations.length === 0) {
@@ -179,9 +180,10 @@ async function discoverPhotoshopInstallations(platform: string): Promise<Photosh
         maxBuffer: 4 * 1024 * 1024,
       });
       for (const line of result.stdout.split(/\r?\n/u)) {
-        const match = /Adobe Photoshop(?: CC)?\s+(20\d{2})/iu.exec(line);
-        if (match === null) continue;
-        const majorVersion = Number(match[1]) - 1999;
+        const yearMatch = /Adobe Photoshop(?: CC)?\s+(20\d{2})/iu.exec(line);
+        const cs6Match = /Adobe Photoshop\s+CS6/iu.test(line);
+        if (yearMatch === null && !cs6Match) continue;
+        const majorVersion = cs6Match ? 13 : Number(yearMatch![1]) - 1999;
         if (majorVersion < 1 || installations.has(majorVersion)) continue;
         installations.set(majorVersion, { majorVersion, executablePath: 'Photoshop.exe' });
       }

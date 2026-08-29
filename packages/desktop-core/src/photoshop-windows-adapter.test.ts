@@ -51,10 +51,26 @@ describe('Windows Photoshop smart object adapter', () => {
     expect(files.remove).toHaveBeenCalledWith('C:/temp/novus-photoshop-1');
   });
 
+  it('supports the legacy ExtendScript placement path on Photoshop CS6', async () => {
+    const files = temporaryFiles();
+    const execute = vi.fn().mockResolvedValue({ kind: 'success', layerName: 'Legacy Layer' });
+    const adapter = createWindowsPhotoshopSmartObjectAdapter({
+      platform: 'win32',
+      discoverInstallations: vi.fn().mockResolvedValue([{ majorVersion: 13, executablePath: 'C:/Adobe/Photoshop CS6/Photoshop.exe' }]),
+      inspectRunningInstance: vi.fn().mockResolvedValue({ majorVersion: 13, activeDocument: true }),
+      execute,
+      temporaryFiles: files,
+    });
+
+    await expect(adapter.place({ absolutePath: 'E:/managed/legacy.png', layerName: 'Legacy Layer' }))
+      .resolves.toEqual({ ok: true, layerName: 'Legacy Layer' });
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ installedMajorVersions: [13] }));
+  });
+
   it.each([
     { platform: 'darwin', installations: [], running: null, expected: 'desktop_bridge_unavailable' },
     { platform: 'win32', installations: [], running: null, expected: 'photoshop_not_installed' },
-    { platform: 'win32', installations: [{ majorVersion: 19, executablePath: 'old.exe' }], running: { majorVersion: 19, activeDocument: true }, expected: 'photoshop_version_unsupported' },
+    { platform: 'win32', installations: [{ majorVersion: 12, executablePath: 'old.exe' }], running: { majorVersion: 12, activeDocument: true }, expected: 'photoshop_version_unsupported' },
     { platform: 'win32', installations: [{ majorVersion: 25, executablePath: 'new.exe' }], running: null, expected: 'photoshop_not_running' },
     { platform: 'win32', installations: [{ majorVersion: 25, executablePath: 'new.exe' }], running: { majorVersion: 25, activeDocument: false }, expected: 'no_active_document' },
   ])('returns $expected without writing temporary files', async ({ platform, installations, running, expected }) => {

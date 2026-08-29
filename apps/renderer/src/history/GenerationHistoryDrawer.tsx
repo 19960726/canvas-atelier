@@ -8,6 +8,7 @@ import {
   ImageOff,
   ListPlus,
   MoreHorizontal,
+  RefreshCw,
   RotateCcw,
   Search,
   Star,
@@ -32,9 +33,17 @@ type ReferenceFilter = 'all' | 'used' | 'unreferenced';
 type TrashFilter = 'active' | 'trashed' | 'all';
 type StatusFilter = 'all' | GenerationHistoryRecord['status'];
 type HistoryKindFilter = 'all' | GenerationHistoryRecord['kind'];
+type RelayMeTaskSummary = {
+  readonly taskId: string;
+  readonly type: 'image' | 'video';
+  readonly status: string;
+  readonly createdAt?: string;
+  readonly error?: string;
+};
 
 export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParameters }: GenerationHistoryDrawerProps) {
   const bridge = window.novusDesktop?.history;
+  const providerBridge = window.novusDesktop?.provider;
   const [records, setRecords] = useState<readonly GenerationHistoryRecord[]>([]);
   const [capacity, setCapacity] = useState<GenerationHistoryCapacityBridgeResult | null>(null);
   const [total, setTotal] = useState(0);
@@ -56,6 +65,11 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
   const [comparison, setComparison] = useState<GenerationHistoryComparisonBridgeResult | null>(null);
   const [reusable, setReusable] = useState<GenerationHistoryReusableBridgeResult | null>(null);
   const [canvasStatus, setCanvasStatus] = useState<'idle' | 'adding' | 'added'>('idle');
+  const [relayMeTasks, setRelayMeTasks] = useState<readonly RelayMeTaskSummary[]>([]);
+  const [relayMeTaskTotal, setRelayMeTaskTotal] = useState(0);
+  const [relayMeTasksLoading, setRelayMeTasksLoading] = useState(false);
+  const [relayMeTasksError, setRelayMeTasksError] = useState<string | null>(null);
+  const [relayMeTasksRevision, setRelayMeTasksRevision] = useState(0);
   const selected = records.find((record) => record.id === selectedId) ?? null;
   const groupedRecords = useMemo(() => groupHistoryRecordsByDate(records), [records]);
 
@@ -113,6 +127,36 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
       });
     return () => { cancelled = true; };
   }, [bridge, request]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const canListTasks = typeof providerBridge?.getActiveProvider === 'function'
+      && typeof providerBridge?.listTasks === 'function';
+    if (!canListTasks) {
+      setRelayMeTasks([]);
+      setRelayMeTaskTotal(0);
+      setRelayMeTasksError(null);
+      return () => { cancelled = true; };
+    }
+    setRelayMeTasksLoading(true);
+    setRelayMeTasksError(null);
+    void providerBridge.getActiveProvider()
+      .then(async ({ activeProvider }) => activeProvider === 'relayme'
+        ? providerBridge.listTasks({ provider: 'relayme', page: 1, size: 20 })
+        : null)
+      .then((result) => {
+        if (cancelled) return;
+        setRelayMeTasks(result?.tasks ?? []);
+        setRelayMeTaskTotal(result?.total ?? 0);
+      })
+      .catch(() => {
+        if (!cancelled) setRelayMeTasksError('RelayMe 任务清单暂时不可用');
+      })
+      .finally(() => {
+        if (!cancelled) setRelayMeTasksLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [providerBridge, relayMeTasksRevision]);
 
   const loadMore = async () => {
     if (!bridge || nextCursor === null || loading) return;
@@ -282,6 +326,31 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
           />
         ) : (
           <>
+            {(relayMeTasks.length > 0 || relayMeTasksLoading || relayMeTasksError !== null) && (
+              <section className="relayme-task-center" aria-label="RelayMe 任务清单">
+                <header>
+                  <div>
+                    <h2>RelayMe 任务</h2>
+                    <span>账号任务中心 · 共 {relayMeTaskTotal} 条</span>
+                  </div>
+                  <button type="button" aria-label="刷新 RelayMe 任务" disabled={relayMeTasksLoading} onClick={() => setRelayMeTasksRevision((value) => value + 1)}>
+                    <RefreshCw size={14} />{relayMeTasksLoading ? '同步中' : '刷新'}
+                  </button>
+                </header>
+                {relayMeTasksError !== null && <p role="status">{relayMeTasksError}</p>}
+                <div className="relayme-task-center__list">
+                  {relayMeTasks.map((task) => (
+                    <article key={task.taskId}>
+                      <div>
+                        <strong>{task.type === 'image' ? '图片' : '视频'} · {relayMeTaskStatusLabel(task.status)}</strong>
+                        <span>{task.createdAt === undefined ? task.taskId : formatRelayMeTaskTime(task.createdAt)}</span>
+                      </div>
+                      {task.error !== undefined && <p>{task.error}</p>}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
             {compareIds.length > 0 && (
               <div className="history-compare-bar">
                 <span>已选 {compareIds.length} 项</span>
@@ -360,6 +429,29 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
       </footer>
     </aside>
   );
+}
+
+function relayMeTaskStatusLabel(status: string): string {
+  switch (status.trim().toLowerCase()) {
+    case 'completed':
+    case 'succeeded': return '已完成';
+    case 'failed': return '失败';
+    case 'cancelled':
+    case 'canceled': return '已取消';
+    case 'queued':
+    case 'pending': return '排队中';
+    case 'running':
+    case 'processing': return '生成中';
+    default: return status;
+  }
+}
+
+function formatRelayMeTaskTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).format(timestamp);
 }
 
 function HistoryCard({ record, onFavorite, onOpen }: { record: GenerationHistoryRecord; onFavorite: () => void; onOpen: () => void }) {

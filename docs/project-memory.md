@@ -404,3 +404,10 @@ Before producing an installer, verify at minimum:
 - 真实拖动后节点短暂移动却随即消失的根因不在点击手势，而是持久化位置回写时用未测量的 durable node 覆盖了 React Flow 节点，丢失 `width`/`height`/`measured` 等运行时测量，导致 React Flow 重新设为 `visibility:hidden`。`useCanvasDraft` 现在在持久化对齐时保留测量、选中和拖动态；折叠预览只在未发生位移的 pointer-up 时展开，卡片空白区可直接拖动。
 - 最终相关联合回归为 10 个文件、511/511 通过；节点专项 181/181 通过；完整 TypeScript 检查和生产 build 通过。Playwright 真实浏览器回归 7/7 通过，覆盖 RelayMe/Comfly 独立目录、亮暗主题、生成启动失败后重试、折叠节点直接拖动、停止任务和结果重载。本轮仍未生成安装包、未安装、未提交、未推送、未发布。
 - 按用户确认进入打包阶段：`npx.cmd electron-builder --projectDir apps/desktop-modern --config electron-builder.yml --win nsis --x64` 成功生成 `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.67.exe`，文件大小 `103185794` 字节，SHA-256 `D1E0631CD8C3D28EFFED94E92BE8DFDB1A49E75B24CAAFC30C5014A3E6F18B54`，blockmap 大小 `109559` 字节，SHA-256 `F83D12BBDCAF5B84A73087AC6AF8935B9B7EFD011D1CFC0D2F9BCDCE3E1F4B68`，`latest.yml` 包内版本为 `1.6.67`。隔离 packaged 重启冒烟通过：`firstVersion=1.6.67`/`secondVersion=1.6.67`、`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、`restoredImageNodes=1`，五个生图控件均为 30px 且可见。包未签名（`NotSigned`），未安装、未覆盖旧版、未发布 GitHub。
+
+## 2026-08-29 RelayMe 任务清单公开桥接契约回归
+
+- 根因：RelayMe 账号任务清单新增窄 `provider.listTasks` preload 方法后，`bridge-contract.test.ts` 的公开 provider 方法白名单仍停留在旧集合，导致全量测试唯一失败。
+- 保护行为：Renderer 只通过 `listTasks({ provider: 'relayme', page, size })` 接收任务 id、类型、状态、创建时间和错误摘要；桥接不得暴露令牌、远端内容、URL、base64 或原始工作流。
+- 回归位置：`packages/desktop-core/src/bridge-contract.test.ts` 与 `packages/desktop-core/src/preload-api.test.ts`。Photoshop 脚本层另由 `packages/desktop-core/src/photoshop-script.test.ts` 固定 runner 的 CS6 major 13 门槛，防止 adapter 与 WSH runner 版本判断漂移。
+- 验证命令：`npm.cmd exec vitest -- --config vitest.config.ts packages/desktop-core/src/bridge-contract.test.ts packages/desktop-core/src/preload-api.test.ts --run`，随后执行 `npm.cmd test` 和 `npm.cmd run build`。

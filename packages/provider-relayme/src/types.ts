@@ -2,6 +2,7 @@ export interface RelayMeFetchResponse {
   readonly ok: boolean;
   readonly status: number;
   json(): Promise<unknown>;
+  readonly headers?: { get(name: string): string | null };
   arrayBuffer?(): Promise<ArrayBuffer>;
 }
 
@@ -85,9 +86,38 @@ export interface RelayMeVideoGenerationRequest {
   readonly model: string;
   readonly messages: readonly unknown[];
   readonly videoAspectRatio?: string;
-  readonly videoQuality?: '360p' | '480p' | '512p' | '540p' | '720p' | '768p' | '1080p' | '2K' | '4K';
+  readonly videoResolution?: '360p' | '480p' | '512p' | '540p' | '720p' | '768p' | '1080p' | '2K' | '4K';
   readonly videoSeconds?: number;
-  readonly audioEnabled?: boolean;
+  readonly videoGenerateAudio?: boolean;
   readonly n?: number;
   readonly [key: string]: unknown;
+}
+
+export interface RelayMeWorkflow {
+  readonly id: string;
+  readonly name?: string;
+  readonly canvasScale?: number;
+  readonly data?: Readonly<Record<string, unknown>>;
+  readonly [key: string]: unknown;
+}
+
+export interface RelayMeWorkflowRun {
+  readonly runId: string;
+  readonly status?: string;
+  readonly [key: string]: unknown;
+}
+
+export interface RelayMeTaskSummary {
+  readonly taskId: string;
+  readonly type: 'image' | 'video';
+  readonly status: string;
+  readonly createdAt?: string;
+  readonly error?: string;
+}
+
+export interface RelayMeTaskList {
+  readonly tasks: readonly RelayMeTaskSummary[];
+  readonly total: number;
+  readonly page: number;
+  readonly totalPages: number;
 }

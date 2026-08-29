@@ -26,7 +26,7 @@
     var payloadPath = WScript.Arguments.Item(1);
     var app = GetObject('', 'Photoshop.Application');
     var majorVersion = parseInt(String(app.version).split('.')[0], 10);
-    if (!isFinite(majorVersion) || majorVersion < 20) {
+    if (!isFinite(majorVersion) || majorVersion < 13) {
       writeResult({ kind: 'photoshop_version_unsupported', majorVersion: majorVersion });
       WScript.Quit(0);
     }

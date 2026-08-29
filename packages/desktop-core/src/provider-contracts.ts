@@ -14,6 +14,7 @@ export const PROVIDER_BRIDGE_CHANNELS = {
   unlock: 'novus-desktop:provider:unlock',
   listAvailableModelIds: 'novus-desktop:provider:list-available-model-ids',
   listProfiles: 'novus-desktop:provider:list-profiles',
+  listTasks: 'novus-desktop:provider:list-tasks',
   getActiveProvider: 'novus-desktop:provider:get-active-provider',
   setActiveProvider: 'novus-desktop:provider:set-active-provider',
   loginRelayMe: 'novus-desktop:provider:login-relayme',
@@ -139,6 +140,29 @@ export const ProviderConfigurationStatusSchema = z.object({
 
 export const ProviderActiveStateSchema = z.object({
   activeProvider: ProviderIdSchema.nullable(),
+}).strict();
+
+export const ListProviderTasksBridgeRequestSchema = z.object({
+  provider: z.literal('relayme'),
+  page: z.number().int().positive().max(10_000),
+  size: z.number().int().min(1).max(100),
+}).strict();
+
+const providerTaskSummarySchema = z.object({
+  taskId: nonEmptyStringSchema.max(200),
+  type: z.enum(['image', 'video']),
+  status: nonEmptyStringSchema.max(60),
+  createdAt: z.string().max(100).optional(),
+  error: z.string().max(500).optional(),
+}).strict().superRefine((value, context) => {
+  addProtectedPayloadIssues(value, context, 'Provider task payload contains protected payload');
+});
+
+export const ListProviderTasksBridgeResultSchema = z.object({
+  tasks: z.array(providerTaskSummarySchema).max(100),
+  total: z.number().int().nonnegative(),
+  page: z.number().int().positive(),
+  totalPages: z.number().int().positive(),
 }).strict();
 
 export const SetActiveProviderBridgeRequestSchema = ProviderActiveStateSchema;
@@ -575,6 +599,7 @@ export const ProviderBridgeRequestSchemas = {
   unlock: UnlockProviderBridgeRequestSchema,
   listAvailableModelIds: ProviderSelectionBridgeRequestSchema,
   listProfiles: ProviderSelectionBridgeRequestSchema,
+  listTasks: ListProviderTasksBridgeRequestSchema,
   getActiveProvider: noPayloadSchema,
   setActiveProvider: SetActiveProviderBridgeRequestSchema,
   loginRelayMe: LoginRelayMeBridgeRequestSchema,
@@ -601,6 +626,7 @@ export const ProviderBridgeResponseSchemas = {
   unlock: ProviderConfigurationStatusSchema,
   listAvailableModelIds: z.array(safeModelIdSchema).max(1_000),
   listProfiles: z.array(ProviderBridgeProfileSchema),
+  listTasks: ListProviderTasksBridgeResultSchema,
   getActiveProvider: ProviderActiveStateSchema,
   setActiveProvider: ProviderActiveStateSchema,
   loginRelayMe: ProviderActiveStateSchema,
@@ -632,6 +658,7 @@ const REQUEST_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
   [PROVIDER_BRIDGE_CHANNELS.unlock, ProviderBridgeRequestSchemas.unlock],
   [PROVIDER_BRIDGE_CHANNELS.listAvailableModelIds, ProviderBridgeRequestSchemas.listAvailableModelIds],
   [PROVIDER_BRIDGE_CHANNELS.listProfiles, ProviderBridgeRequestSchemas.listProfiles],
+  [PROVIDER_BRIDGE_CHANNELS.listTasks, ProviderBridgeRequestSchemas.listTasks],
   [PROVIDER_BRIDGE_CHANNELS.getActiveProvider, ProviderBridgeRequestSchemas.getActiveProvider],
   [PROVIDER_BRIDGE_CHANNELS.setActiveProvider, ProviderBridgeRequestSchemas.setActiveProvider],
   [PROVIDER_BRIDGE_CHANNELS.loginRelayMe, ProviderBridgeRequestSchemas.loginRelayMe],
@@ -658,6 +685,7 @@ const RESPONSE_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
   [PROVIDER_BRIDGE_CHANNELS.unlock, ProviderBridgeResponseSchemas.unlock],
   [PROVIDER_BRIDGE_CHANNELS.listAvailableModelIds, ProviderBridgeResponseSchemas.listAvailableModelIds],
   [PROVIDER_BRIDGE_CHANNELS.listProfiles, ProviderBridgeResponseSchemas.listProfiles],
+  [PROVIDER_BRIDGE_CHANNELS.listTasks, ProviderBridgeResponseSchemas.listTasks],
   [PROVIDER_BRIDGE_CHANNELS.getActiveProvider, ProviderBridgeResponseSchemas.getActiveProvider],
   [PROVIDER_BRIDGE_CHANNELS.setActiveProvider, ProviderBridgeResponseSchemas.setActiveProvider],
   [PROVIDER_BRIDGE_CHANNELS.loginRelayMe, ProviderBridgeResponseSchemas.loginRelayMe],
@@ -683,6 +711,8 @@ export type ProviderImageJobTerminalStatus = z.infer<typeof terminalStatusSchema
 export type ProviderBridgeProfile = z.infer<typeof ProviderBridgeProfileSchema>;
 export type ProviderConfigurationStatus = z.infer<typeof ProviderConfigurationStatusSchema>;
 export type ProviderActiveState = z.infer<typeof ProviderActiveStateSchema>;
+export type ListProviderTasksBridgeRequest = z.infer<typeof ListProviderTasksBridgeRequestSchema>;
+export type ListProviderTasksBridgeResult = z.infer<typeof ListProviderTasksBridgeResultSchema>;
 export type SetActiveProviderBridgeRequest = z.infer<typeof SetActiveProviderBridgeRequestSchema>;
 export type LoginRelayMeBridgeRequest = z.infer<typeof LoginRelayMeBridgeRequestSchema>;
 export type RevealProviderCredentialBridgeResult = z.infer<typeof RevealProviderCredentialBridgeResultSchema>;

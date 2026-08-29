@@ -1,5 +1,5 @@
 import type { ComflyAccessibleModelCatalog, ComflyCatalogModel } from '@agent-canvas/provider-comfly';
-import type { RelayMeModel } from '@agent-canvas/provider-relayme';
+import type { RelayMeModel, RelayMeWorkflow } from '@agent-canvas/provider-relayme';
 import { ProviderBridgeProfileSchema, type ProviderBridgeProfile } from './provider-contracts.js';
 
 export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog): ProviderBridgeProfile[] {
@@ -32,6 +32,47 @@ export function buildRelayMeModelProfiles(models: readonly RelayMeModel[]): Prov
     capabilityStatus: model.endpoints === undefined || model.endpoints.length === 0 ? 'incomplete' : 'complete',
     constraints: constraintsForRelayMeModel(model),
   })));
+}
+
+export function buildRelayMeWorkflowModelProfiles(workflows: readonly RelayMeWorkflow[]): ProviderBridgeProfile[] {
+  const discovered = new Map<string, ProviderBridgeProfile>();
+  for (const workflow of workflows) {
+    const nodes = Array.isArray(workflow.data?.nodes) ? workflow.data.nodes : [];
+    for (const node of nodes) {
+      if (!isPlainRecord(node) || node.kind !== 'model' || typeof node.model !== 'string' || node.model.trim().length === 0) continue;
+      const modelId = node.model.trim();
+      const capabilities: ProviderBridgeProfile['capabilities'] = node.modelType === 'IMAGE'
+        ? ['image_generation', 'async_tasks']
+        : node.modelType === 'VIDEO'
+          ? ['video_generation', 'async_tasks']
+          : node.modelType === 'TEXT'
+            ? ['chat']
+            : [];
+      if (capabilities.length === 0) continue;
+      const key = `${String(node.modelType)}:${modelId.toLocaleLowerCase()}`;
+      if (discovered.has(key)) continue;
+      discovered.set(key, ProviderBridgeProfileSchema.parse({
+        provider: 'relayme',
+        modelRoute: `relayme-${routeSlug(modelId)}`,
+        displayName: relayMeModelIdDisplayName(modelId),
+        modelId,
+        capabilities,
+        capabilityStatus: 'complete',
+      }));
+    }
+  }
+  return ensureUniqueModelRoutes([...discovered.values()]);
+}
+
+function relayMeModelIdDisplayName(modelId: string): string {
+  const normalized = modelId.toLocaleLowerCase();
+  if (normalized === 'gpt-image-2') return 'GPT Image 2';
+  if (normalized === 'kling3') return 'Kling 3';
+  return modelId;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function mergeProviderModelProfiles(profiles: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {

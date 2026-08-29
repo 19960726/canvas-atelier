@@ -13,9 +13,12 @@ const providerProfileRouteAliases = new Map<string, string>();
 export async function listRunnableProviderProfiles(bridge: ProviderProfileBridge): Promise<ProviderBridgeProfile[]> {
   const active = await bridge.getActiveProvider?.();
   if (active?.activeProvider === 'comfly' || active?.activeProvider === 'relayme') {
-    return (await bridge.listProfiles({ provider: active.activeProvider })).filter(shouldExposeProviderProfile).map(normalizeProviderProfilePresentation);
+    return (await bridge.listProfiles({ provider: active.activeProvider }))
+      .filter((profile) => profile.capabilityStatus !== 'incomplete')
+      .filter(shouldExposeProviderProfile)
+      .map(normalizeProviderProfilePresentation);
   }
-  return listAllProviderProfiles(bridge);
+  return (await listAllProviderProfiles(bridge)).filter((profile) => profile.capabilityStatus !== 'incomplete');
 }
 
 export async function listAllProviderProfiles(bridge: ProviderProfileBridge): Promise<ProviderBridgeProfile[]> {
@@ -149,7 +152,9 @@ export function buildCanvasProviderRouteSets(
   readonly reversePrompt: ProviderBridgeProfile[];
   readonly storyboard: ProviderBridgeProfile[];
 } {
-  const catalog = filterProviderCatalogProfiles(profiles);
+  const catalog = filterProviderCatalogProfiles(
+    profiles.filter((profile) => profile.capabilityStatus !== 'incomplete'),
+  );
   return {
     imageGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('image_generation'))),
     videoGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('video_generation'))),

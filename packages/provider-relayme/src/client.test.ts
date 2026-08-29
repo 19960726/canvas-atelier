@@ -100,7 +100,7 @@ describe('RelayMeClient', () => {
     })).resolves.toMatchObject({ taskId: 'image-task-1' });
     await expect(client.generateVideo({
       model: 'kling/kling-v3-video-generation', messages: [{ role: 'user', content: '镜头向前推进' }],
-      videoAspectRatio: '16:9', videoQuality: '2K', videoSeconds: 8, audioEnabled: true,
+      videoAspectRatio: '16:9', videoResolution: '2K', videoSeconds: 8, videoGenerateAudio: true,
     })).resolves.toMatchObject({ taskId: 'video-task-1' });
     expect(fetch).toHaveBeenCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/images/generations',
@@ -108,8 +108,50 @@ describe('RelayMeClient', () => {
     );
     expect(fetch).toHaveBeenCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/videos/generations',
-      expect.objectContaining({ body: expect.stringMatching(/"messages":\[\{"role":"user","content":"镜头向前推进"\}\].*"videoAspectRatio":"16:9".*"videoQuality":"2K".*"videoSeconds":8.*"audioEnabled":true/u) }),
+      expect.objectContaining({ body: expect.stringMatching(/"messages":\[\{"role":"user","content":"镜头向前推进"\}\].*"videoAspectRatio":"16:9".*"videoResolution":"2K".*"videoSeconds":8.*"videoGenerateAudio":true/u) }),
     );
+  });
+
+  it('uses the authenticated workflow API without changing legacy generation routes', async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/workflows')) return jsonResponse({ success: true, data: [{ id: 12, name: 'Image workflow' }] });
+      if (url.endsWith('/workflows/12')) return jsonResponse({ success: true, data: { id: 12, name: 'Image workflow', data: { nodes: [], connections: [] } } });
+      if (url.endsWith('/workflows/wf-image/schema')) return jsonResponse({ inputs: { 'text-1': { type: 'string' } } });
+      if (url.endsWith('/workflows/wf-image/runs')) return jsonResponse({ runId: 'run-image-1', status: 'QUEUED' });
+      if (url.endsWith('/workflow-runs/run-image-1')) return jsonResponse({ runId: 'run-image-1', status: 'COMPLETED', outputs: {} });
+      return jsonResponse({ success: true });
+    });
+    const client = new RelayMeClient({ tokenSupplier: async () => 'account-login-token', fetch });
+
+    await expect(client.listWorkflows()).resolves.toMatchObject([{ id: '12', name: 'Image workflow' }]);
+    await expect(client.getWorkflow('12')).resolves.toMatchObject({ id: '12', name: 'Image workflow' });
+    await expect(client.getWorkflowSchema('wf-image')).resolves.toMatchObject({ inputs: { 'text-1': { type: 'string' } } });
+    await expect(client.runWorkflow('wf-image', { 'text-1': '产品摄影' }, 'job-1')).resolves.toMatchObject({ runId: 'run-image-1' });
+    await expect(client.getWorkflowRun('run-image-1')).resolves.toMatchObject({ status: 'COMPLETED' });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/workflows/wf-image/runs',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ authorization: 'Bearer account-login-token', 'Idempotency-Key': 'job-1' }),
+      }),
+    );
+    expect(fetch.mock.calls.map(([url]) => url)).not.toContain('https://www.ml.relayme.uk/api/ai-tools/v1/images/generations');
+  });
+
+  it('recovers a workflow run id from the documented 202 Location header', async () => {
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      status: 202,
+      headers: { get: (name: string) => name.toLowerCase() === 'location' ? '/api/ai-tools/v1/workflow-runs/123e4567-e89b-12d3-a456-426614174000' : null },
+      json: async () => { throw new SyntaxError('empty response'); },
+    }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'account-login-token', fetch });
+
+    await expect(client.runWorkflow('12', { 'text-1': '产品摄影' }, 'job-202')).resolves.toEqual({
+      runId: '123e4567-e89b-12d3-a456-426614174000',
+      status: 'QUEUED',
+    });
   });
 
   it('gets task state and fails closed for undocumented cancellation', async () => {
@@ -119,6 +161,27 @@ describe('RelayMeClient', () => {
     await expect(client.getTask('task-1')).resolves.toMatchObject({ status: 'COMPLETED', videoContent: 'https://cdn.example/result.mp4' });
     await expect(client.cancelTask('task-1')).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists the authenticated RelayMe task center with pagination', async () => {
+    const fetch = vi.fn(async () => jsonResponse({
+      data: [{ taskId: 'task-image-1', type: 'image', status: 'COMPLETED', createdAt: '2026-08-29T10:00:00.000Z' }],
+      total: 1,
+      page: 1,
+      totalPages: 1,
+    }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'account-login-token', fetch });
+
+    await expect(client.listTasks(1, 20)).resolves.toEqual({
+      tasks: [{ taskId: 'task-image-1', type: 'image', status: 'COMPLETED', createdAt: '2026-08-29T10:00:00.000Z' }],
+      total: 1,
+      page: 1,
+      totalPages: 1,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/tasks?page=1&size=20',
+      expect.objectContaining({ method: 'GET', headers: { authorization: 'Bearer account-login-token' } }),
+    );
   });
 
   it('accepts RelayMe task polling responses nested under data.task', async () => {

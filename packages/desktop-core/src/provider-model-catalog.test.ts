@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildComflyModelProfiles, buildRelayMeModelProfiles, mergeProviderModelProfiles } from './provider-model-catalog';
+import { buildComflyModelProfiles, buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, mergeProviderModelProfiles } from './provider-model-catalog';
 import type { ComflyAccessibleModelCatalog } from '@agent-canvas/provider-comfly';
 import type { RelayMeModel } from '@agent-canvas/provider-relayme';
 
@@ -258,6 +258,23 @@ describe('provider model catalog', () => {
         outputCounts: [1],
       } },
     });
+  });
+
+  it('discovers direct RelayMe model profiles from workflow model nodes without exposing workflow names', () => {
+    const profiles = buildRelayMeWorkflowModelProfiles([
+      { id: 'wf-image', name: '未命名工作流 20260829', data: { nodes: [{ id: 'text-1', kind: 'input', type: 'input-text' }, { id: 'image-1', kind: 'model', modelType: 'IMAGE', model: 'gpt-image-2', name: 'GPT Image 2' }], connections: [{ fromNodeId: 'text-1', fromPortRole: 'text-output', toNodeId: 'image-1', toPortRole: 'text-input' }] } },
+      { id: 'wf-video', name: '商品视频工作流', data: { nodes: [{ id: 'text-1', kind: 'input', type: 'input-text' }, { id: 'video-1', kind: 'model', modelType: 'VIDEO', model: 'kling3', name: 'Kling 3' }], connections: [{ fromNodeId: 'text-1', fromPortRole: 'text-output', toNodeId: 'video-1', toPortRole: 'text-input' }] } },
+      { id: 'wf-duplicate', name: '另一个商品图工作流', data: { nodes: [{ id: 'image-2', kind: 'model', modelType: 'IMAGE', model: 'gpt-image-2', name: '不要显示这个工作流名称' }], connections: [] } },
+      { id: 'wf-generic-node-name', name: 'RENA 商品图工作流', data: { nodes: [{ id: 'image-3', kind: 'model', modelType: 'IMAGE', model: 'RENA2', name: 'img', displayName: '图片模型节点' }], connections: [] } },
+      { id: 'wf-empty', name: '未完成工作流', data: { nodes: [], connections: [] } },
+    ]);
+
+    expect(profiles).toEqual([
+      expect.objectContaining({ modelRoute: 'relayme-gpt-image-2', modelId: 'gpt-image-2', displayName: 'GPT Image 2', capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete' }),
+      expect.objectContaining({ modelRoute: 'relayme-kling3', modelId: 'kling3', displayName: 'Kling 3', capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete' }),
+      expect.objectContaining({ modelRoute: 'relayme-rena2', modelId: 'RENA2', displayName: 'RENA2', capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete' }),
+    ]);
+    expect(profiles.every((profile) => !profile.modelId?.startsWith('workflow:'))).toBe(true);
   });
 
   it('never grants reverse or video understanding from model names alone', () => {

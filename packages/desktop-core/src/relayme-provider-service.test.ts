@@ -14,6 +14,79 @@ afterEach(async () => {
 });
 
 describe('RelayMe provider service', () => {
+  it('uses workflow nodes only to discover direct model ids and never exposes workflow ids', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-workflow-catalog-'));
+    roots.push(appDataRoot);
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/models')) return modelsResponse();
+      if (url.endsWith('/workflows')) return jsonResponse({ data: { workflows: [{ id: '12', name: '商品图工作流' }] } });
+      if (url.endsWith('/workflows/12')) return jsonResponse({ id: '12', name: '商品图工作流', data: { nodes: [{ id: 'image-1', kind: 'model', modelType: 'IMAGE', model: 'gpt-image-2', name: 'GPT Image 2' }], connections: [] } });
+      return jsonResponse({ message: 'not found' }, { ok: false, status: 404 });
+    });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      fetch,
+    });
+
+    const profiles = await service.listProfiles();
+    expect(profiles.filter((profile) => profile.modelId === 'gpt-image-2')).toEqual([
+      expect.objectContaining({ modelRoute: 'relayme-gpt-image-2', displayName: 'GPT Image 2', capabilityStatus: 'complete' }),
+    ]);
+    expect(profiles.every((profile) => !profile.modelId?.startsWith('workflow:'))).toBe(true);
+  });
+
+  it('submits a workflow-discovered image model through the direct task API', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-workflow-run-'));
+    roots.push(appDataRoot);
+    const inlineContent = `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`;
+    const storedImage = vi.fn(async () => ({ assetId: 'workflowimage1234', width: 1024, height: 1024 }));
+    const fetch: RelayMeFetch = vi.fn(async (url: string, init) => {
+      if (url.endsWith('/models')) return modelsResponse();
+      if (url.endsWith('/workflows')) return jsonResponse({ data: { workflows: [{ id: 12, name: '商品图工作流' }] } });
+      if (url.endsWith('/workflows/12') && init?.method === 'GET') return jsonResponse({
+        id: 12,
+        name: '商品图工作流',
+        data: { nodes: [
+          { id: 'text-1', kind: 'input', type: 'input-text' },
+          { id: 'image-1', kind: 'model', modelType: 'IMAGE', model: 'gpt-image-2' },
+        ], connections: [] },
+      });
+      if (url.endsWith('/images/generations')) return jsonResponse({ taskId: 'direct-image-task-1', status: 'QUEUED' });
+      if (url.endsWith('/tasks/direct-image-task-1')) return jsonResponse({ taskId: 'direct-image-task-1', status: 'COMPLETED', imageContent: inlineContent, width: 1024, height: 1024 });
+      return jsonResponse({ message: 'not found' }, { ok: false, status: 404 });
+    });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      fetch,
+      storeGeneratedImage: storedImage,
+    });
+
+    const submitted = await service.submitImageJob({
+      jobId: 'direct-job-1', provider: 'relayme', modelRoute: 'relayme-gpt-image-2', prompt: '春节商品摄影',
+      conversationId: 'workflow-conversation-1', sessionId: 'workflow-session-1', referenceAssetIds: [],
+    });
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toEqual({
+      status: 'completed', progress: 1, result: { assetId: 'workflowimage1234', width: 1024, height: 1024 },
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/images/generations',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"model":"gpt-image-2"'),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/tasks/direct-image-task-1',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/workflows/12/runs'),
+      expect.anything(),
+    );
+  });
+
   it('maps RelayMe image authentication, quota, and capability failures to actionable bridge errors', async () => {
     const { service } = await createService([
       modelsResponse(),
@@ -41,6 +114,61 @@ describe('RelayMe provider service', () => {
     expect(credentials.configure).not.toHaveBeenCalled();
   });
 
+  it('finishes login before workflow discovery and discovers workflow model ids on catalog refresh', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-fast-login-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: false, locked: true });
+    vi.mocked(credentials.configure).mockImplementation(async () => {
+      vi.mocked(credentials.getStatus).mockResolvedValue({
+        configured: true,
+        locked: false,
+        encryption: 'safeStorage',
+      });
+      vi.mocked(credentials.getPrimaryToken).mockResolvedValue('header.payload.signature');
+      vi.mocked(credentials.getToken).mockResolvedValue('header.payload.signature');
+    });
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/models')) return modelsResponse();
+      if (url.endsWith('/workflows')) {
+        return jsonResponse({ data: { workflows: [{ id: '12', name: '商品图工作流' }] } });
+      }
+      if (url.endsWith('/workflows/12')) {
+        return jsonResponse({
+          id: '12',
+          name: '商品图工作流',
+          data: { nodes: [{ id: 'image-1', kind: 'model', modelType: 'IMAGE', model: 'gpt-image-2' }], connections: [] },
+        });
+      }
+      return jsonResponse({ message: 'not found' }, { ok: false, status: 404 });
+    });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch,
+      loginAccount: vi.fn(async () => 'header.payload.signature'),
+    });
+
+    await service.loginRelayMe?.({ username: 'artist@example.test', password: 'not-a-real-password' });
+
+    expect(credentials.configure).toHaveBeenCalledWith({ token: 'header.payload.signature' });
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/models',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/workflows',
+      expect.anything(),
+    );
+
+    await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'gpt-image-2', modelRoute: 'relayme-gpt-image-2', capabilityStatus: 'complete' }),
+    ]));
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/workflows',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   it('uses the live RelayMe model catalog and routes Agent chat to chat completions', async () => {
     const { service, fetch } = await createService([
       jsonResponse({ success: true, data: { models: [
@@ -62,6 +190,34 @@ describe('RelayMe provider service', () => {
     expect(fetch).toHaveBeenLastCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/chat/completions',
       expect.objectContaining({ method: 'POST', body: expect.stringContaining('帮我整理提示词') }),
+    );
+  });
+
+  it('lists the signed-in RelayMe account task center without exposing result payloads', async () => {
+    const { service, fetch } = await createService([
+      jsonResponse({
+        tasks: [
+          { taskId: 'task-image-1', type: 'image', status: 'COMPLETED', createdAt: '2026-08-29T10:00:00.000Z' },
+          { taskId: 'task-video-1', type: 'video', status: 'FAILED', error: '生成超时' },
+        ],
+        total: 2,
+        page: 1,
+        totalPages: 1,
+      }),
+    ]);
+
+    await expect(service.listTasks?.({ provider: 'relayme', page: 1, size: 20 })).resolves.toEqual({
+      tasks: [
+        { taskId: 'task-image-1', type: 'image', status: 'COMPLETED', createdAt: '2026-08-29T10:00:00.000Z' },
+        { taskId: 'task-video-1', type: 'video', status: 'FAILED', error: '生成超时' },
+      ],
+      total: 2,
+      page: 1,
+      totalPages: 1,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/tasks?page=1&size=20',
+      expect.objectContaining({ method: 'GET' }),
     );
   });
 
@@ -186,7 +342,8 @@ describe('RelayMe provider service', () => {
     });
 
     const fetchCalls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    const imageSubmission = JSON.parse(String((fetchCalls[1]?.[1] as { body?: unknown } | undefined)?.body)) as Record<string, unknown>;
+    const imageCall = fetchCalls.find(([url]) => String(url).endsWith('/images/generations'));
+    const imageSubmission = JSON.parse(String((imageCall?.[1] as { body?: unknown } | undefined)?.body)) as Record<string, unknown>;
     expect(imageSubmission).toMatchObject({
       imageAspectRatio: '3:4',
       imageQuality: 'medium',
@@ -209,7 +366,7 @@ describe('RelayMe provider service', () => {
       width: 1536, height: 1024,
     });
     expect(fetch).toHaveBeenNthCalledWith(
-      4,
+      5,
       'https://cdn.example/result.png',
       expect.objectContaining({ trustedResolvedAddress: '8.8.8.8' }),
     );
@@ -239,7 +396,7 @@ describe('RelayMe provider service', () => {
     const service = createRelayMeProviderService({
       appDataRoot,
       credentialStore: credentialStore({ configured: true, locked: false }),
-      fetch: vi.fn(async () => responses.shift() as ReturnType<typeof jsonResponse>),
+      fetch: vi.fn(async (url: string) => url.endsWith('/workflows') ? jsonResponse({ data: { workflows: [] } }) : responses.shift() as ReturnType<typeof jsonResponse>),
       now: () => Date.parse('2026-08-08T12:00:00.000Z'),
     });
 
@@ -266,7 +423,7 @@ describe('RelayMe provider service', () => {
       modelsResponse(),
       jsonResponse({ taskId: 'relay-raw-image-restart', status: 'queued' }),
     ];
-    const submitFetch: RelayMeFetch = vi.fn(async () => submitResponses.shift() as ReturnType<typeof jsonResponse>);
+    const submitFetch: RelayMeFetch = vi.fn(async (url: string) => url.endsWith('/workflows') ? jsonResponse({ data: { workflows: [] } }) : submitResponses.shift() as ReturnType<typeof jsonResponse>);
     const firstService = createRelayMeProviderService({
       appDataRoot,
       credentialStore: credentials,
@@ -325,21 +482,19 @@ describe('RelayMe provider service', () => {
       result: { assetId: 'fedcba9876543210', width: 1920, height: 1080, durationSeconds: 8 },
     });
     expect(storedVideo).toHaveBeenCalledWith('desktop-session-1', expect.any(Uint8Array), 'video/mp4');
-    expect(fetch).toHaveBeenNthCalledWith(
-      2,
+    expect(fetch).toHaveBeenCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/videos/generations',
       expect.objectContaining({
         method: 'POST',
-        body: expect.stringMatching(/"messages":\[\{"role":"user","content":"镜头向前推进"\}\].*"videoAspectRatio":"16:9".*"videoQuality":"1080p".*"videoSeconds":8.*"audioEnabled":true/u),
+        body: expect.stringMatching(/"messages":\[\{"role":"user","content":"镜头向前推进"\}\].*"videoAspectRatio":"16:9".*"videoResolution":"1080p".*"videoSeconds":8.*"videoGenerateAudio":true/u),
       }),
     );
-    expect(fetch).toHaveBeenNthCalledWith(
-      3,
+    expect(fetch).toHaveBeenCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/tasks/relay-raw-video-91',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(fetch).toHaveBeenNthCalledWith(
-      4,
+      5,
       'https://cdn.example/result.mp4',
       expect.objectContaining({ method: 'GET', trustedResolvedAddress: '8.8.8.8' }),
     );
@@ -396,7 +551,7 @@ describe('RelayMe provider service', () => {
     const result = await service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId });
     expect(result).toEqual({ status: 'completed', progress: 1, result: { assetId: '1111111111111111', width: 1, height: 1 } });
     expect(storedImage).toHaveBeenCalledWith('desktop-session-inline', expect.any(Uint8Array), 'image/png');
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
     expect(JSON.stringify(result)).not.toMatch(/data:image|base64|https?:/iu);
   });
 
@@ -418,7 +573,7 @@ describe('RelayMe provider service', () => {
     await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId }))
       .rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
     expect(storedImage).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
   });
   it('fails closed with a Chinese capability error when RelayMe cancellation is undocumented', async () => {
     const { service } = await createService([
@@ -500,7 +655,11 @@ async function createService(
 ) {
   const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-service-'));
   roots.push(appDataRoot);
-  const fetch: RelayMeFetch = vi.fn(async () => responses.shift() as ReturnType<typeof jsonResponse>);
+  const fetch: RelayMeFetch = vi.fn(async (url: string) => (
+    url.endsWith('/workflows')
+      ? jsonResponse({ data: { workflows: [] } })
+      : responses.shift() as ReturnType<typeof jsonResponse>
+  ));
   const service = createRelayMeProviderService({
     appDataRoot,
     credentialStore: credentialStore({ configured: true, locked: false }),

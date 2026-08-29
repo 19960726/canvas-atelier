@@ -3003,6 +3003,7 @@ describe('project optimization memory', () => {
 
   it('hydrates and resumes a persisted running image job when its source node still owns the result', async () => {
     const jobId = 'persisted-owned-image-job';
+    const persistedAt = new Date(Date.now() - 60_000).toISOString();
     const source: Extract<CanvasNode, { type: 'module' }> = createCanvasModuleNode('persisted-owned-image-node', 'image_generation', { x: 0, y: 0 });
     source.data.config = {
       ...source.data.config,
@@ -3030,7 +3031,7 @@ describe('project optimization memory', () => {
       status: 'running',
       promptNodeId: source.id,
       providerTaskId: 'provider-persisted-owned-image-job',
-      confirmedAt: '2026-08-20T07:16:44.000Z',
+      confirmedAt: persistedAt,
       retryCount: 0,
       provider: 'comfly',
       modelRoute: 'image-generation',
@@ -3038,8 +3039,8 @@ describe('project optimization memory', () => {
       conversationId: `image-node-${source.id}`,
       projectSessionId: 'old-session',
       referenceAssetIds: [],
-      createdAt: '2026-08-20T07:16:44.000Z',
-      updatedAt: '2026-08-20T07:17:25.000Z',
+      createdAt: persistedAt,
+      updatedAt: persistedAt,
     }]);
     const poll = vi.fn(async () => ({
       status: 'completed' as const,
@@ -3088,6 +3089,7 @@ describe('project optimization memory', () => {
 
   it('waits for durable recovery before resuming the exact owned running image job', async () => {
     const jobId = 'recovery-owned-image-job';
+    const persistedAt = new Date(Date.now() - 60_000).toISOString();
     const source: Extract<CanvasNode, { type: 'module' }> = createCanvasModuleNode('recovery-owned-image-node', 'image_generation', { x: 0, y: 0 });
     source.data.config = {
       ...source.data.config,
@@ -3115,7 +3117,7 @@ describe('project optimization memory', () => {
       status: 'running',
       promptNodeId: source.id,
       providerTaskId: 'provider-recovery-owned-image-job',
-      confirmedAt: '2026-08-20T07:16:44.000Z',
+      confirmedAt: persistedAt,
       retryCount: 0,
       provider: 'comfly',
       modelRoute: 'image-generation',
@@ -3123,8 +3125,8 @@ describe('project optimization memory', () => {
       conversationId: `image-node-${source.id}`,
       projectSessionId: 'old-session',
       referenceAssetIds: [],
-      createdAt: '2026-08-20T07:16:44.000Z',
-      updatedAt: '2026-08-20T07:17:25.000Z',
+      createdAt: persistedAt,
+      updatedAt: persistedAt,
     }]);
     const poll = vi.fn(async () => ({
       status: 'completed' as const,

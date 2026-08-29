@@ -30,6 +30,7 @@ function providerHandlerEntries(handlers: ProviderBridgeHandlers) {
     [PROVIDER_BRIDGE_CHANNELS.unlock, handlers.unlock],
     [PROVIDER_BRIDGE_CHANNELS.listAvailableModelIds, handlers.listAvailableModelIds],
     [PROVIDER_BRIDGE_CHANNELS.listProfiles, handlers.listProfiles],
+    [PROVIDER_BRIDGE_CHANNELS.listTasks, handlers.listTasks],
     [PROVIDER_BRIDGE_CHANNELS.getActiveProvider, handlers.getActiveProvider],
     [PROVIDER_BRIDGE_CHANNELS.setActiveProvider, handlers.setActiveProvider],
     [PROVIDER_BRIDGE_CHANNELS.loginRelayMe, handlers.loginRelayMe],
