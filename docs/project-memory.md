@@ -391,3 +391,16 @@ Before producing an installer, verify at minimum:
 - 隐藏 Electron 的截图 API 在文件已经写入后仍返回超时；当前证据图已人工核对为“版本 1.6.64 已准备好”。最终脚本把已生成的非空截图视为成功证据，但下载完成的权威证据仍是 UI 状态、electron-updater 日志和缓存文件哈希。
 - finally 清理后确认：无 `work/update-smoke-*` 临时目录、无 `%LOCALAPPDATA%/canvas-atelier-updater-smoke` 缓存、无隔离 Canvas Atelier 进程。没有点击“重启并安装”，没有覆盖用户现有安装。
 - 本次是使用真实 packaged updater 与真实发布资产的本机 HTTP 验收，不等同于 GitHub 远端 1.6.64 Release 验收；1.6.64 尚未发布到 GitHub，远端发现/下载和真实覆盖升级仍保持未验证。
+
+## 2026-08-29 RelayMe 生图、节点恢复、自动保存与设置目录修复
+
+- RelayMe “连接成功但生图 0 秒失败”的请求契约根因已定位：画布把 `1K/2K/4K` 错误发送到 `imageQuality`，而 RelayMe 公共生图接口要求分辨率使用 `imageSampleSize`，画质使用 `low/medium/high`。现发送 `imageSampleSize` 与 `imageQuality: medium`，保留账号登录令牌认证，不引入独立 RelayMe API 密钥。
+- 失败后无法重试有两条持久化根因：模型任务恢复无时间上限，旧 `running` 任务会继续占用节点；Reverse Agent 崩溃遗留的 `reverseAgentRunState: running` 会永久显示停止按钮。模型任务现在只允许恢复 30 分钟内的运行项，过期项转为本地取消；没有本地执行实例的持久化反推状态显示为“上次反推已中断”，可直接重新执行。
+- 折叠图片/视频结果卡同时带有 `nodrag` 和阻断指针传播，导致必须展开提示词才能拖动。折叠结果壳与打开按钮现保留 `nopan`，移除 `nodrag` 和指针阻断，点击仍展开，拖动可直接移动节点。
+- 打开节点缓慢的根因是完整供应商目录被传给每个节点并在节点内重复分类。`CanvasWorkspace` 现在只构建一次按能力去重的图片、视频、反推和分镜路线集合，再共享给节点。
+- 新建画布不再显示“保存/不保存”确认框。存在未保存内容时先静默调用显式保存，成功后才新建；重复点击在同一个保存事务内合并，保存失败则保留当前画布。
+- 模型目录改为单一能力工作区：顶部使用图标标签切换生图、视频、对话、反推、视觉和视频理解，正文一次只显示一个能力及其默认模型和启用列表。RelayMe 设置改称“账号连接”，空目录入口改为重新登录；连接检测与更新按钮使用同一 42px 画布主操作样式。
+- TDD 红灯分别覆盖 RelayMe 请求字段、折叠节点拖动、过期任务恢复、画布路线精简、反推中断恢复、静默新建保存和能力标签目录。新鲜相关验证通过 9 个文件、499 个测试；全工作区 TypeScript 通过；生产 build 通过。构建仅生成本地 dist，尚未打包、安装或发布。
+- 真实拖动后节点短暂移动却随即消失的根因不在点击手势，而是持久化位置回写时用未测量的 durable node 覆盖了 React Flow 节点，丢失 `width`/`height`/`measured` 等运行时测量，导致 React Flow 重新设为 `visibility:hidden`。`useCanvasDraft` 现在在持久化对齐时保留测量、选中和拖动态；折叠预览只在未发生位移的 pointer-up 时展开，卡片空白区可直接拖动。
+- 最终相关联合回归为 10 个文件、511/511 通过；节点专项 181/181 通过；完整 TypeScript 检查和生产 build 通过。Playwright 真实浏览器回归 7/7 通过，覆盖 RelayMe/Comfly 独立目录、亮暗主题、生成启动失败后重试、折叠节点直接拖动、停止任务和结果重载。本轮仍未生成安装包、未安装、未提交、未推送、未发布。
+- 按用户确认进入打包阶段：`npx.cmd electron-builder --projectDir apps/desktop-modern --config electron-builder.yml --win nsis --x64` 成功生成 `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.67.exe`，文件大小 `103185794` 字节，SHA-256 `D1E0631CD8C3D28EFFED94E92BE8DFDB1A49E75B24CAAFC30C5014A3E6F18B54`，blockmap 大小 `109559` 字节，SHA-256 `F83D12BBDCAF5B84A73087AC6AF8935B9B7EFD011D1CFC0D2F9BCDCE3E1F4B68`，`latest.yml` 包内版本为 `1.6.67`。隔离 packaged 重启冒烟通过：`firstVersion=1.6.67`/`secondVersion=1.6.67`、`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、`restoredImageNodes=1`，五个生图控件均为 30px 且可见。包未签名（`NotSigned`），未安装、未覆盖旧版、未发布 GitHub。

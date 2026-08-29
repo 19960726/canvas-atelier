@@ -75,6 +75,7 @@ export interface RelayMeImageGenerationRequest {
   readonly model: string;
   readonly messages: readonly unknown[];
   readonly imageAspectRatio?: string;
+  readonly imageSampleSize?: string;
   readonly imageQuality?: string;
   readonly n?: number;
   readonly [key: string]: unknown;

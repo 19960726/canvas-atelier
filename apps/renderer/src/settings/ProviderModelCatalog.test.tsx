@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -7,6 +7,21 @@ import { ProviderModelCatalog } from './ProviderModelCatalog';
 afterEach(cleanup);
 
 describe('ProviderModelCatalog', () => {
+  it('uses a compact capability tab bar and renders one model workspace at a time', () => {
+    render(<ProviderModelCatalog profiles={[
+      { provider: 'comfly', modelRoute: 'image/gpt-image-2', displayName: 'GPT Image 2', capabilities: ['image_generation'] },
+      { provider: 'comfly', modelRoute: 'video/veo-3.1', displayName: 'Veo 3.1', capabilities: ['video_generation'] },
+    ]} />);
+
+    const tabs = screen.getByRole('tablist', { name: '模型能力分类' });
+    expect(within(tabs).getByRole('tab', { name: /生图模型/u })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('region', { name: '生图模型' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: '视频模型' })).not.toBeInTheDocument();
+
+    fireEvent.click(within(tabs).getByRole('tab', { name: /视频模型/u }));
+    expect(screen.getByRole('region', { name: '视频模型' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: '生图模型' })).not.toBeInTheDocument();
+  });
   it('uses one compact empty state instead of six empty capability cards', () => {
     render(<ProviderModelCatalog profiles={[]} onConfigure={() => undefined} onRetry={() => undefined} />);
 
@@ -36,7 +51,7 @@ describe('ProviderModelCatalog', () => {
 
     const group = screen.getByRole('region', { name: '生图模型' });
     expect(group).toHaveAttribute('data-capability', 'image_generation');
-    expect(within(group).getByText('IMG')).toBeVisible();
+    expect(screen.getByRole('tab', { name: /生图模型/u })).toHaveAttribute('aria-selected', 'true');
     expect(within(group).getByText('默认')).toBeVisible();
   });
 
@@ -59,22 +74,23 @@ describe('ProviderModelCatalog', () => {
       { provider: 'relayme', modelRoute: 'misleading-name', displayName: 'Gemini Video Vision', modelId: 'text-only', capabilities: ['chat'], capabilityStatus: 'incomplete' },
     ]} />);
 
-    const image = screen.getByRole('region', { name: '生图模型' });
-    const video = screen.getByRole('region', { name: '视频模型' });
-    const chat = screen.getByRole('region', { name: '对话模型' });
-    const reverse = screen.getByRole('region', { name: '反推模型' });
-    const vision = screen.getByRole('region', { name: '视觉模型' });
-    const videoUnderstanding = screen.getByRole('region', { name: '视频理解模型' });
-
+    const selectGroup = (label: string) => {
+      fireEvent.click(screen.getByRole('tab', { name: new RegExp(label, 'u') }));
+      return screen.getByRole('region', { name: label });
+    };
+    const image = selectGroup('生图模型');
     expect(within(image).getByText('Comfly Image')).toBeVisible();
+    const video = selectGroup('视频模型');
     expect(within(video).getByText('Relay Video')).toBeVisible();
+    const chat = selectGroup('对话模型');
     expect(within(chat).getByText('Relay Chat')).toBeVisible();
     expect(within(chat).getByText('Gemini Video Vision')).toBeVisible();
+    const reverse = selectGroup('反推模型');
     expect(within(reverse).getByText('Comfly Reverse')).toBeVisible();
+    const vision = selectGroup('视觉模型');
     expect(within(vision).getByText('Comfly Reverse')).toBeVisible();
+    const videoUnderstanding = selectGroup('视频理解模型');
     expect(within(videoUnderstanding).getByText('Relay Video Understanding')).toBeVisible();
-    expect(within(video).queryByText('Gemini Video Vision')).toBeNull();
-    expect(within(reverse).queryByText('Gemini Video Vision')).toBeNull();
     expect(screen.queryByText('RelayMe')).not.toBeInTheDocument();
     expect(screen.queryByText('Comfly')).not.toBeInTheDocument();
     expect(screen.queryByText(/RelayMe ·|Comfly ·/u)).not.toBeInTheDocument();

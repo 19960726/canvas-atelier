@@ -52,6 +52,34 @@ describe('useCanvasDraft', () => {
     expect(onCommitPositions).toHaveBeenCalledWith([{ nodeId: 'module-1', position: { x: 60, y: 70 } }]);
   });
 
+  it('keeps React Flow measurements when a successful drag commit reconciles to an unmeasured durable node', async () => {
+    const commit = deferred<boolean>();
+    const initialNodes = [draftNode('module-1', 0, 0)];
+    const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({
+      nodes,
+      onCommitPositions: () => commit.promise,
+    }), { initialProps: { nodes: initialNodes } });
+
+    act(() => {
+      result.current.onNodesChange([
+        { id: 'module-1', type: 'dimensions', dimensions: { width: 654, height: 486 }, setAttributes: true },
+        { id: 'module-1', type: 'position', position: { x: 120, y: 70 }, dragging: true },
+      ]);
+    });
+    const stop = result.current.onNodeDragStop({} as never, result.current.nodes[0]!);
+    rerender({ nodes: [draftNode('module-1', 120, 70)] });
+
+    commit.resolve(true);
+    await act(async () => { await stop; });
+
+    expect(result.current.nodes[0]).toMatchObject({
+      position: { x: 120, y: 70 },
+      measured: { width: 654, height: 486 },
+      width: 654,
+      height: 486,
+    });
+  });
+
   it('commits every selected draggable node in one batch after a group drag', async () => {
     const initialNodes = [
       draftNode('a', 0, 0, { selected: true }),

@@ -1,5 +1,8 @@
+import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
 import { openEmptyApp } from './helpers/app';
+
+const artifact = (name: string) => path.join(process.cwd(), 'artifacts', '2026-08-29-settings-audit', name);
 
 test('shows the explicit local desktop update flow without automatic install', async ({ page }) => {
   await openEmptyApp(page);
@@ -13,6 +16,7 @@ test('shows the explicit local desktop update flow without automatic install', a
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('发现新版本 1.6.63')).toBeVisible();
   await expect(dialog.getByText('本地 E2E 更新说明')).toBeVisible();
+  await dialog.screenshot({ path: artifact('update-announcement-light.png') });
 
   await dialog.getByRole('button', { name: '下载更新' }).click();
   await expect(dialog.getByText('下载进度 42%')).toBeVisible();

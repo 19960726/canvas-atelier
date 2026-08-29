@@ -162,6 +162,33 @@ describe('persistent model job store', () => {
     ]);
   });
 
+  it('retires an expired running job even when the provider ledger still claims ownership', async () => {
+    const stale = {
+      ...request({ id: 'job-running-expired' }),
+      conversationId: 'expired-recovery',
+      confirmedAt: '2026-07-15T07:00:00.000Z',
+      createdAt: '2026-07-15T07:00:00.000Z',
+      updatedAt: '2026-07-15T07:00:00.000Z',
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'task-job-running-expired',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([stale]);
+    const canRecoverRunningJob = vi.fn(async () => true);
+    const restarted = createModelJobStore({
+      storage,
+      executor: createExecutor(),
+      canRecoverRunningJob,
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+    });
+
+    await restarted.recover();
+
+    expect(canRecoverRunningJob).not.toHaveBeenCalled();
+    expect(await storage.get(stale.id)).toMatchObject({ status: 'cancelled' });
+  });
+
   it('repairs a completed result into its original generation node without resuming the provider job', async () => {
     const source = createCanvasModuleNode('repair-inline-source', 'image_generation', { x: 0, y: 0 });
     let project: CanvasProject = {

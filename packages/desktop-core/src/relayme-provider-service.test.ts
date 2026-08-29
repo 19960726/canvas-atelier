@@ -185,6 +185,15 @@ describe('RelayMe provider service', () => {
       aspectRatio: '3:4', resolution: '2K', outputCount: 1,
     });
 
+    const fetchCalls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const imageSubmission = JSON.parse(String((fetchCalls[1]?.[1] as { body?: unknown } | undefined)?.body)) as Record<string, unknown>;
+    expect(imageSubmission).toMatchObject({
+      imageAspectRatio: '3:4',
+      imageQuality: 'medium',
+      imageSampleSize: '2K',
+    });
+    expect(imageSubmission.imageQuality).not.toBe('2K');
+
     expect(submitted.providerTaskId).toMatch(/^provider-job-[a-f0-9]{32}$/u);
     expect(submitted.providerTaskId).not.toContain('relay-raw-image-77');
     await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toEqual({

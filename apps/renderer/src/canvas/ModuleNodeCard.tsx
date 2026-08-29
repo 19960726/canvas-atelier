@@ -309,7 +309,6 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const activeVideoGenerationJob = data.moduleType === 'video_generation'
     ? modelJobs.find((job) => job.promptNodeId === id && ['queued', 'submitting', 'running'].includes(job.status))
     : undefined;
-  const isGenerationNode = data.moduleType === 'image_generation' || data.moduleType === 'video_generation';
   const [fallbackGenerationEditorOpen, setFallbackGenerationEditorOpen] = useState(false);
   const generationEditorExpanded = data.generationEditorExpanded ?? fallbackGenerationEditorOpen;
   const requestGenerationEditorOpen = () => {
@@ -319,12 +318,6 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const requestGenerationEditorClose = () => {
     if (data.onCloseGenerationEditor) data.onCloseGenerationEditor();
     else setFallbackGenerationEditorOpen(false);
-  };
-  const handleGenerationCardClick = (event: MouseEvent<HTMLElement>) => {
-    if (!isGenerationNode) return;
-    const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('.react-flow__handle, button, input, textarea, select, a, [role="button"], [role="menuitem"]')) return;
-    requestGenerationEditorOpen();
   };
   const mediaNodeStyle = selectedImage
     ? { '--media-node-width': `${getMediaNodeWidth(selectedImage)}px` } as CSSProperties
@@ -398,7 +391,6 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       data-module-type={definition.type}
       data-port-label-mode={isProfessionalWorkbench ? 'interactive' : 'always'}
       style={mediaNodeStyle}
-      onClick={handleGenerationCardClick}
     >
       <header className="module-node__header">
         <span
@@ -701,6 +693,7 @@ function VideoGenerationSummary({
   onRequestExpand: () => void;
   onRequestCollapse: () => void;
 }) {
+  const collapsedActivation = useDragSafeActivation(onRequestExpand);
   const connectedImages = useMemo(() => connectedMedia
     .filter((item) => item.kind === 'image')
     .map((item) => projectImages.find((asset) => asset.assetId === item.assetId))
@@ -813,8 +806,8 @@ function VideoGenerationSummary({
   return (
     <section className="module-node__summary module-node__summary--compact module-node__summary--generation" data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedResult ? 'true' : 'false'} data-result-count={hasCompletedResult ? Math.min(completedVideoResults.length, 4) : undefined} data-result-orientation={hasCompletedResult ? 'landscape' : undefined} aria-label="视频模拟预览">
       <TaskTimingBadge ariaLabel="Video generation task timing" job={videoTimingJob} />
-      {!expanded && <section className="module-node__generation-collapsed-shell nodrag nopan" aria-label="Video generation preview">
-        <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nodrag nopan" aria-label="Open video generation editor" aria-expanded={expanded} title="点击展开" onPointerDown={stopCanvasPointer} onClick={() => onRequestExpand()}>
+      {!expanded && <section className="module-node__generation-collapsed-shell nopan" aria-label="Video generation preview">
+        <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nopan" aria-label="Open video generation editor" aria-expanded={expanded} title="点击展开" {...collapsedActivation}>
           <span className="module-node__generation-collapsed-title">视频生成</span>
           {hasCompletedResult ? <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${completedVideoResults.length} module-node__generation-preview-gallery--collapsed`}>
             {completedVideoResults.map((item, index) => (
@@ -1022,6 +1015,7 @@ function ImageGenerationSummary({
   onRequestExpand: () => void;
   onRequestCollapse: () => void;
 }) {
+  const collapsedActivation = useDragSafeActivation(onRequestExpand);
   const connectedImages = useMemo(() => connectedMedia
     .filter((item) => item.kind === 'image')
     .map((item) => projectImages.find((asset) => asset.assetId === item.assetId))
@@ -1170,8 +1164,8 @@ function ImageGenerationSummary({
         status={localGenerationStartedAt === null ? undefined : 'queued'}
         startedAt={localGenerationStartedAt ?? undefined}
       />
-      {!expanded && <section className="module-node__generation-collapsed-shell nodrag nopan" aria-label="Image generation preview">
-        <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nodrag nopan" aria-label="Open image generation editor" aria-expanded={expanded} title="点击展开" onPointerDown={stopCanvasPointer} onClick={() => onRequestExpand()} onContextMenu={(event) => {
+      {!expanded && <section className="module-node__generation-collapsed-shell nopan" aria-label="Image generation preview">
+        <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nopan" aria-label="Open image generation editor" aria-expanded={expanded} title="点击展开" {...collapsedActivation} onContextMenu={(event) => {
           if (!hasCompletedImageResult || previewItems[0] === undefined) return;
           event.preventDefault();
           event.stopPropagation();
@@ -1932,7 +1926,8 @@ function ReverseAgentSummary({
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const [localStartedAt, setLocalStartedAt] = useState<string | null>(null);
   const [localCompletedAt, setLocalCompletedAt] = useState<string | null>(null);
-  const isRunning = isRunningLocally || config.reverseAgentRunState === 'running';
+  const interruptedPersistedRun = !isRunningLocally && config.reverseAgentRunState === 'running';
+  const isRunning = isRunningLocally;
   useEffect(() => {
     setResult(readReverseAgentResult(config.reverseAgentResult));
   }, [config.reverseAgentResult]);
@@ -1944,7 +1939,7 @@ function ReverseAgentSummary({
     : [...current, knowledgeBaseId]);
   const statusLabel = isRunning
     ? '分析中'
-    : runError !== null || executionState === 'failed'
+    : interruptedPersistedRun || runError !== null || executionState === 'failed'
       ? '需要处理'
       : result !== null || executionState === 'completed'
         ? '已完成'
@@ -2007,6 +2002,7 @@ function ReverseAgentSummary({
           {compatibleRoutes.length === 0 && onOpenSettings && (
             <button className="module-node__settings-agent nodrag nopan" type="button" aria-label="打开设置检查连接" onClick={onOpenSettings}>打开设置</button>
           )}
+          {interruptedPersistedRun && <p className="module-node__agent-notice" role="status">上次反推已中断，可以重新执行。</p>}
           <section className="module-node__agent-task nodrag nopan" aria-label="Reverse task editor" data-agent-region="task" onPointerDown={stopCanvasPointer}>
             <label><span>角色</span><input aria-label="Role positioning" value={role} placeholder="例如：产品视觉分析师" onChange={(event) => {
               const nextRole = event.target.value;
@@ -2467,6 +2463,48 @@ function preferredReverseAgentRoute(routes: readonly ReverseAgentRouteSummary[])
 
 function stopCanvasPointer(event: React.PointerEvent<HTMLElement>): void {
   event.stopPropagation();
+}
+
+function useDragSafeActivation(onActivate: () => void) {
+  const cleanupPointerListeners = useRef<(() => void) | null>(null);
+  useEffect(() => () => cleanupPointerListeners.current?.(), []);
+  return {
+    onPointerDownCapture: (event: React.PointerEvent<HTMLButtonElement>) => {
+      cleanupPointerListeners.current?.();
+      const dragContainer = event.currentTarget.closest<HTMLElement>('.react-flow__node')
+        ?? event.currentTarget.closest<HTMLElement>('[data-module-type]');
+      const nodeRect = dragContainer?.getBoundingClientRect();
+      const origin = { x: event.clientX, y: event.clientY, nodeX: nodeRect?.x ?? 0, nodeY: nodeRect?.y ?? 0 };
+      let moved = false;
+      const trackPointer = (moveEvent: PointerEvent) => {
+        if (Math.hypot(moveEvent.clientX - origin.x, moveEvent.clientY - origin.y) > 6) moved = true;
+      };
+      const finishPointer = (upEvent: PointerEvent) => {
+        const currentRect = dragContainer?.getBoundingClientRect();
+        const nodeMoved = currentRect !== undefined
+          && (Math.abs(currentRect.x - origin.nodeX) > 2 || Math.abs(currentRect.y - origin.nodeY) > 2);
+        const pointerMoved = moved || Math.hypot(upEvent.clientX - origin.x, upEvent.clientY - origin.y) > 6;
+        cleanupPointerListeners.current?.();
+        if (!pointerMoved && !nodeMoved) onActivate();
+      };
+      const cancelPointer = () => cleanupPointerListeners.current?.();
+      const cleanup = () => {
+        globalThis.removeEventListener('pointermove', trackPointer, true);
+        globalThis.removeEventListener('pointerup', finishPointer, true);
+        globalThis.removeEventListener('pointercancel', cancelPointer, true);
+        if (cleanupPointerListeners.current === cleanup) cleanupPointerListeners.current = null;
+      };
+      cleanupPointerListeners.current = cleanup;
+      globalThis.addEventListener('pointermove', trackPointer, true);
+      globalThis.addEventListener('pointerup', finishPointer, true);
+      globalThis.addEventListener('pointercancel', cancelPointer, true);
+    },
+    onClick: (event: MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.detail === 0) onActivate();
+    },
+  };
 }
 
 function clearBrowserSelection(): void {

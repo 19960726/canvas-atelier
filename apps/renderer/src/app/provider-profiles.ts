@@ -141,6 +141,23 @@ export function filterProviderCatalogProfiles(
   return [...unique.values()].sort(compareProviderProfiles);
 }
 
+export function buildCanvasProviderRouteSets(
+  profiles: readonly ProviderBridgeProfile[],
+): {
+  readonly imageGeneration: ProviderBridgeProfile[];
+  readonly videoGeneration: ProviderBridgeProfile[];
+  readonly reversePrompt: ProviderBridgeProfile[];
+  readonly storyboard: ProviderBridgeProfile[];
+} {
+  const catalog = filterProviderCatalogProfiles(profiles);
+  return {
+    imageGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('image_generation'))),
+    videoGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('video_generation'))),
+    reversePrompt: listAgentChatProfiles(catalog.filter((profile) => profile.capabilities.includes('reverse_prompt'))),
+    storyboard: listAgentChatProfiles(catalog),
+  };
+}
+
 function isProviderActionRoute(profile: ProviderBridgeProfile): boolean {
   const identity = `${profile.modelRoute} ${profile.modelId ?? ''} ${profile.displayName}`.toLocaleLowerCase();
   return /(?:^|[\s/_-])(?:upload|modal|pan|zoom|reroll|vary|variation|extend|element|elements|identify|presets?|custom-voices|voices-list|models-list|list-models|tts|speech|audio)(?:$|[\s/_-])/u.test(identity)

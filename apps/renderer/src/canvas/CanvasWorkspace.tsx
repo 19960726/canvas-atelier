@@ -25,7 +25,7 @@ import { useAppStore } from '../app/app-store';
 import { resetMcpCanvasSelection, setMcpCanvasSelection } from '../app/mcp-canvas-selection';
 import { createWorkspaceApi } from '../app/workspace-api';
 import { runtimeProfile } from '../app/runtime-profile';
-import { filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles } from '../app/provider-profiles';
+import { buildCanvasProviderRouteSets, filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles } from '../app/provider-profiles';
 import { PlanPreview } from '../agent/PlanPreview';
 import { McpWorkflowPlanPreview } from '../agent/McpWorkflowPlanPreview';
 import { SkillChatWorkbench, type ReverseTimelineEntry, type SkillCanvasActionRequest } from '../agent/SkillChatWorkbench';
@@ -630,9 +630,7 @@ export function CanvasWorkspace() {
   const canvasStageRef = useRef<HTMLElement | null>(null);
   const flowInstanceRef = useRef<CanvasFlowInstance | null>(null);
   const [moduleLibraryOpen, setModuleLibraryOpen] = useState(false);
-  const [newProjectConfirmationOpen, setNewProjectConfirmationOpen] = useState(false);
-  const [newProjectConfirming, setNewProjectConfirming] = useState(false);
-  const newProjectConfirmationInFlightRef = useRef(false);
+  const newProjectInFlightRef = useRef(false);
   const [quickInsert, setQuickInsert] = useState<QuickInsertState | null>(null);
   const pendingConnectionRef = useRef<PendingCanvasConnection | null>(null);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
@@ -729,35 +727,22 @@ export function CanvasWorkspace() {
   }, [activeSurface, changeSurface]);
 
   const startNewProject = useCallback(() => {
-    const hasCanvasContent = project.nodes.length > 0 || project.edges.length > 0 || project.projectMemory.length > 0;
-    if (hasCanvasContent && saveStatus !== 'saved') {
-      setNewProjectConfirmationOpen(true);
-      return;
-    }
-    setFileMenuOpen(false);
-    setModuleLibraryOpen(false);
-    setQuickInsert(null);
-    changeSurface(null);
-    void newWorkflow();
-  }, [changeSurface, newWorkflow, project.edges.length, project.nodes.length, project.projectMemory.length, saveStatus]);
-
-  const confirmNewProject = useCallback(async (saveFirst: boolean) => {
-    if (newProjectConfirmationInFlightRef.current) return;
-    newProjectConfirmationInFlightRef.current = true;
-    setNewProjectConfirming(true);
-    try {
-      if (saveFirst && !await workspaceApi.save()) return;
-      setFileMenuOpen(false);
-      setModuleLibraryOpen(false);
-      setQuickInsert(null);
-      changeSurface(null);
-      setNewProjectConfirmationOpen(false);
-      await newWorkflow();
-    } finally {
-      newProjectConfirmationInFlightRef.current = false;
-      setNewProjectConfirming(false);
-    }
-  }, [changeSurface, newWorkflow, workspaceApi]);
+    if (newProjectInFlightRef.current) return;
+    newProjectInFlightRef.current = true;
+    void (async () => {
+      try {
+        const hasCanvasContent = project.nodes.length > 0 || project.edges.length > 0 || project.projectMemory.length > 0;
+        if (hasCanvasContent && saveStatus !== 'saved' && !await workspaceApi.save()) return;
+        setFileMenuOpen(false);
+        setModuleLibraryOpen(false);
+        setQuickInsert(null);
+        changeSurface(null);
+        await newWorkflow();
+      } finally {
+        newProjectInFlightRef.current = false;
+      }
+    })();
+  }, [changeSurface, newWorkflow, project.edges.length, project.nodes.length, project.projectMemory.length, saveStatus, workspaceApi]);
 
   const openSavedProject = useCallback(() => {
     setFileMenuOpen(false);
@@ -775,11 +760,12 @@ export function CanvasWorkspace() {
     changeSurface(null);
     return openProject(recentProjectId);
   }, [changeSurface, openProject]);
+  const canvasProviderRoutes = useMemo(() => buildCanvasProviderRouteSets(providerProfiles), [providerProfiles]);
   const moduleNodeRuntimeContext = useMemo<ModuleNodeRuntimeContext>(() => ({
-    imageGenerationRoutes: providerProfiles,
-    videoGenerationRoutes: providerProfiles,
-    reverseAgentRoutes: providerProfiles,
-    storyboardRoutes: providerProfiles,
+    imageGenerationRoutes: canvasProviderRoutes.imageGeneration,
+    videoGenerationRoutes: canvasProviderRoutes.videoGeneration,
+    reverseAgentRoutes: canvasProviderRoutes.reversePrompt,
+    storyboardRoutes: canvasProviderRoutes.storyboard,
     onOpenReverseAgentSettings: () => changeSurface('settings'),
     onGenerateImage: workspaceApi.generateImage,
     onReversePrompt: workspaceApi.reversePrompt,
@@ -790,7 +776,7 @@ export function CanvasWorkspace() {
     onCloseGenerationEditor: closeGenerationEditor,
     resultOutputMenuNodeId,
     onResultOutputMenuChange: setResultOutputMenuOpen,
-  }), [changeSurface, closeGenerationEditor, generationEditorState.expandedNodeId, openGenerationEditor, providerProfiles, providerStatus, resultOutputMenuNodeId, setResultOutputMenuOpen, workspaceApi.cancelJob, workspaceApi.generateImage, workspaceApi.generateStoryboard, workspaceApi.reversePrompt]);
+  }), [canvasProviderRoutes, changeSurface, closeGenerationEditor, generationEditorState.expandedNodeId, openGenerationEditor, resultOutputMenuNodeId, setResultOutputMenuOpen, workspaceApi.cancelJob, workspaceApi.generateImage, workspaceApi.generateStoryboard, workspaceApi.reversePrompt]);
 
   const reconciledFlowNodesRef = useRef<Node<CanvasFlowNodeData>[]>([]);
   const reconciledFlowEdgesRef = useRef<Edge[]>([]);
@@ -2108,26 +2094,6 @@ export function CanvasWorkspace() {
       )}
 
       <McpWorkflowPlanPreview />
-
-      {newProjectConfirmationOpen && (
-        <div className="project-confirmation-backdrop" role="presentation">
-          <section
-            className="project-confirmation"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="new-project-confirmation-title"
-            aria-describedby="new-project-confirmation-description"
-          >
-            <h2 id="new-project-confirmation-title">确认新建项目</h2>
-            <p id="new-project-confirmation-description">当前画布还有未保存的更改。是否先保存，再开始新的项目？</p>
-            <div className="project-confirmation__actions">
-              <button type="button" disabled={newProjectConfirming} onClick={() => setNewProjectConfirmationOpen(false)}>取消</button>
-              <button type="button" disabled={newProjectConfirming} onClick={() => { void confirmNewProject(false); }}>{newProjectConfirming ? '正在新建…' : '不保存并新建'}</button>
-              <button type="button" className="project-confirmation__primary" disabled={newProjectConfirming} onClick={() => { void confirmNewProject(true); }}>{newProjectConfirming ? '正在保存并新建…' : '保存后新建'}</button>
-            </div>
-          </section>
-        </div>
-      )}
 
       <JobStrip
         canReloadSave={canReloadDurableProject}

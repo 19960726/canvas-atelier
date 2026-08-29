@@ -1615,3 +1615,131 @@
 }
 .workspace--ui-gate .module-node__generation-error { display: grid !important; gap: 10px !important; pointer-events: auto !important; }
 .workspace--ui-gate .module-node__generation-error > button { min-height: 34px !important; padding: 0 12px !important; color: #fff !important; background: #d9485f !important; border: 0 !important; border-radius: 8px !important; cursor: pointer !important; font-weight: 700 !important; }
+
+/* UPDATE ANNOUNCEMENT CARD */
+.workspace--ui-gate .settings-update-dialog__hero {
+  display: grid !important;
+  grid-template-columns: 42px minmax(0, 1fr) auto 28px !important;
+  align-items: center !important;
+  gap: 12px !important;
+  margin: -2px -2px 16px !important;
+  padding: 14px !important;
+  background: linear-gradient(135deg, var(--gate-accent-soft), var(--gate-card-muted)) !important;
+  border: 1px solid var(--gate-accent-border) !important;
+  border-radius: 12px !important;
+}
+.workspace--ui-gate .settings-update-dialog__icon { display: grid !important; place-items: center !important; width: 42px !important; height: 42px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 11px !important; }
+.workspace--ui-gate .settings-update-dialog__hero > div { display: grid !important; gap: 2px !important; min-width: 0 !important; }
+.workspace--ui-gate .settings-update-dialog__hero small { color: var(--gate-accent) !important; font-size: 10px !important; font-weight: 750 !important; letter-spacing: .03em !important; }
+.workspace--ui-gate .settings-update-dialog__hero strong { color: var(--gate-text) !important; font-size: 19px !important; line-height: 1.1 !important; }
+.workspace--ui-gate .settings-update-dialog__hero p { margin: 2px 0 0 !important; color: var(--gate-muted) !important; font-size: 11px !important; }
+.workspace--ui-gate .settings-update-dialog__version { padding: 6px 9px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 999px !important; font-size: 11px !important; white-space: nowrap !important; }
+.workspace--ui-gate .settings-update-dialog__notes { display: grid !important; gap: 10px !important; margin-bottom: 16px !important; padding: 13px 14px !important; background: var(--gate-card-muted) !important; border: 1px solid var(--gate-border) !important; border-radius: 10px !important; }
+.workspace--ui-gate .settings-update-dialog__notes > header { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 8px !important; }
+.workspace--ui-gate .settings-update-dialog__notes > header strong { color: var(--gate-text) !important; font-size: 12px !important; }
+.workspace--ui-gate .settings-update-dialog__notes > header span { color: var(--gate-muted) !important; font-size: 10px !important; }
+.workspace--ui-gate .settings-update-dialog__notes > p { margin: 0 !important; padding: 10px 11px !important; color: var(--gate-text) !important; background: var(--gate-card) !important; border-left: 3px solid var(--gate-accent) !important; border-radius: 7px !important; font-size: 12px !important; line-height: 1.55 !important; white-space: pre-wrap !important; }
+.workspace--ui-gate .settings-update-dialog { width: min(520px, calc(100vw - 40px)) !important; padding: 24px !important; }
+.workspace--ui-gate .settings-update-dialog__actions { display: flex !important; align-items: center !important; justify-content: flex-start !important; gap: 12px !important; margin-top: 20px !important; padding-top: 14px !important; border-top: 1px solid var(--gate-border) !important; }
+.workspace--ui-gate .settings-update-dialog__actions > button { flex: 0 0 auto !important; min-width: 112px !important; height: 40px !important; min-height: 40px !important; padding: 0 16px !important; border-radius: 10px !important; }
+.workspace--ui-gate .settings-update-dialog__actions > button.settings-section__secondary { min-width: 84px !important; }
+@media (max-width: 560px) {
+  .workspace--ui-gate .settings-update-dialog__hero { grid-template-columns: 38px minmax(0, 1fr) 28px !important; }
+  .workspace--ui-gate .settings-update-dialog__version { grid-column: 2 !important; justify-self: start !important; }
+}
+
+/* FINAL SETTINGS MODEL WORKSPACE V2 */
+.workspace--ui-gate .settings-model-catalog {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 12px !important;
+  padding: 16px !important;
+  background: var(--gate-card-muted) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 14px !important;
+}
+.workspace--ui-gate .settings-model-tabs {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)) !important;
+  gap: 8px !important;
+  padding: 6px !important;
+  background: var(--gate-card) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 11px !important;
+}
+.workspace--ui-gate .settings-model-tabs > button {
+  display: grid !important;
+  grid-template-columns: 18px minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 7px !important;
+  min-width: 0 !important;
+  height: 42px !important;
+  padding: 0 10px !important;
+  color: var(--gate-muted) !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  border-radius: 8px !important;
+  font-size: 11px !important;
+  font-weight: 650 !important;
+  text-align: left !important;
+}
+.workspace--ui-gate .settings-model-tabs > button > span { overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important; }
+.workspace--ui-gate .settings-model-tabs > button > b { display: grid !important; place-items: center !important; min-width: 22px !important; height: 22px !important; padding: 0 6px !important; border-radius: 999px !important; background: var(--gate-card-muted) !important; font-size: 9px !important; }
+.workspace--ui-gate .settings-model-tabs > button.is-active {
+  color: var(--gate-accent) !important;
+  background: var(--gate-accent-soft) !important;
+  border-color: var(--gate-accent-border) !important;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--gate-accent) 10%, transparent) !important;
+}
+.workspace--ui-gate .settings-model-group.settings-model-group--active {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(230px, .42fr) !important;
+  gap: 12px 16px !important;
+  padding: 16px !important;
+  background: var(--gate-card) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-left: 1px solid var(--gate-border) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 22px rgba(28, 44, 66, .06) !important;
+}
+.workspace--ui-gate .settings-model-group.settings-model-group--active > header {
+  grid-column: 1 !important;
+  display: grid !important;
+  grid-template-columns: 38px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+.workspace--ui-gate .settings-model-group.settings-model-group--active > header > i { width: 38px !important; height: 38px !important; }
+.workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-default { grid-column: 2 !important; grid-row: 1 !important; align-self: center !important; padding: 0 !important; background: transparent !important; border: 0 !important; }
+.workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-list {
+  grid-column: 1 / -1 !important;
+  grid-row: 2 !important;
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 9px !important;
+  max-height: 272px !important;
+  padding: 2px 4px 2px 2px !important;
+}
+.workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-list > article { min-height: 58px !important; padding: 8px 11px !important; background: var(--gate-card-muted) !important; border-radius: 10px !important; }
+.workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-list > article.is-enabled { box-shadow: inset 3px 0 0 var(--gate-accent) !important; }
+.workspace--ui-gate .settings-drawer .settings-tool-action,
+.workspace--ui-gate .settings-drawer .settings-update-action,
+.workspace--ui-gate .settings-drawer .settings-connection-check {
+  height: 42px !important;
+  min-height: 42px !important;
+  max-height: 42px !important;
+  padding: 0 16px !important;
+  color: var(--gate-on-accent) !important;
+  background: var(--gate-accent) !important;
+  border-color: var(--gate-accent) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 7px 16px color-mix(in srgb, var(--gate-accent) 18%, transparent) !important;
+}
+.workspace--ui-gate .settings-key-heading .settings-connection-check { min-width: 132px !important; }
+@media (max-width: 900px) {
+  .workspace--ui-gate .settings-model-group.settings-model-group--active { grid-template-columns: minmax(0, 1fr) !important; }
+  .workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-default { grid-column: 1 !important; grid-row: 2 !important; }
+  .workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-list { grid-column: 1 !important; grid-row: 3 !important; grid-template-columns: minmax(0, 1fr) !important; }
+}

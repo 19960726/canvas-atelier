@@ -233,7 +233,8 @@ describe('CanvasWorkspace', () => {
     const pane = screen.getByTestId('canvas-stage').querySelector<HTMLElement>('.react-flow__pane');
     expect(pane).not.toBeNull();
 
-    fireEvent.click(screen.getByTestId('module-node-card'));
+    const card = screen.getByTestId('module-node-card');
+    fireEvent.click(within(card).getByLabelText('Open image generation editor'));
     expect(screen.getByLabelText('Image generation prompt workspace')).toBeInTheDocument();
 
     fireEvent.click(pane!);
@@ -882,43 +883,47 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByLabelText('任务队列')).toBeVisible();
   });
 
-  it('starts a new project from the explicit File menu entry', async () => {
+  it('starts a new project from the explicit File menu entry after silently saving', async () => {
     const newWorkflow = vi.fn(async () => {});
-    useAppStore.setState({ newWorkflow });
+    const saveProjectExplicitly = vi.fn(async () => true);
+    useAppStore.setState({ newWorkflow, saveProjectExplicitly, saveStatus: 'pending' } as never);
     render(<CanvasWorkspace />);
 
     fireEvent.click(screen.getByTestId('file-menu-toggle'));
     fireEvent.click(screen.getByTestId('file-menu-new-project'));
-    fireEvent.click(screen.getByRole('button', { name: '不保存并新建' }));
 
+    expect(screen.queryByRole('dialog', { name: '确认新建项目' })).not.toBeInTheDocument();
+    await waitFor(() => expect(saveProjectExplicitly).toHaveBeenCalledOnce());
     await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
   });
 
-  it('asks once before discarding a pending canvas for a new project', async () => {
+  it('silently saves a pending canvas before starting a new project', async () => {
     const newWorkflow = vi.fn(async () => {});
-    useAppStore.setState({ newWorkflow, saveStatus: 'pending' } as never);
+    const saveProjectExplicitly = vi.fn(async () => true);
+    useAppStore.setState({ newWorkflow, saveProjectExplicitly, saveStatus: 'pending' } as never);
     render(<CanvasWorkspace />);
 
     fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
 
-    expect(screen.getByRole('dialog', { name: '确认新建项目' })).toBeVisible();
-    expect(newWorkflow).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '不保存并新建' }));
+    expect(screen.queryByRole('dialog', { name: '确认新建项目' })).not.toBeInTheDocument();
+    await waitFor(() => expect(saveProjectExplicitly).toHaveBeenCalledOnce());
     await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
   });
 
-  it('accepts a new-project confirmation only once while the workflow is in flight', async () => {
-    let resolveNewWorkflow: (() => void) | undefined;
-    const newWorkflow = vi.fn(() => new Promise<void>((resolve) => { resolveNewWorkflow = resolve; }));
-    useAppStore.setState({ newWorkflow, saveStatus: 'pending' } as never);
+  it('coalesces repeated new-project clicks while silent save is in flight', async () => {
+    let resolveSave: ((saved: boolean) => void) | undefined;
+    const saveProjectExplicitly = vi.fn(() => new Promise<boolean>((resolve) => { resolveSave = resolve; }));
+    const newWorkflow = vi.fn(async () => {});
+    useAppStore.setState({ newWorkflow, saveProjectExplicitly, saveStatus: 'pending' } as never);
     render(<CanvasWorkspace />);
 
-    fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
-    const discard = screen.getByRole('button', { name: '不保存并新建' });
-    fireEvent.click(discard);
+    const newProject = screen.getByRole('button', { name: '新建项目' });
+    fireEvent.click(newProject);
+    fireEvent.click(newProject);
+    await waitFor(() => expect(saveProjectExplicitly).toHaveBeenCalledOnce());
+    expect(newWorkflow).not.toHaveBeenCalled();
+    resolveSave?.(true);
     await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
-    expect(screen.queryByRole('dialog', { name: '确认新建项目' })).toBeNull();
-    resolveNewWorkflow?.();
   });
 
   it('toggles the overlay Agent drawer without changing project or undo state', () => {

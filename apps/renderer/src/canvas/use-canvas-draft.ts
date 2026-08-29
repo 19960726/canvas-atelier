@@ -87,7 +87,7 @@ export function useCanvasDraft<TNode extends Node = Node>({
           const next = current.flatMap((currentNode) => {
             if (!reconciledNodeIds.has(currentNode.id)) return [currentNode];
             const durableNode = durableNodesById.get(currentNode.id);
-            return durableNode === undefined ? [] : [durableNode];
+            return durableNode === undefined ? [] : [preserveReactFlowState(durableNode, currentNode)];
           });
           draftNodesRef.current = next;
           return next;
@@ -97,6 +97,18 @@ export function useCanvasDraft<TNode extends Node = Node>({
   }, [onCommitPositions]);
 
   return { nodes, onNodesChange, onNodeDragStop };
+}
+
+function preserveReactFlowState<TNode extends Node>(durableNode: TNode, currentNode: TNode): TNode {
+  return {
+    ...durableNode,
+    ...(durableNode.width === undefined && currentNode.width !== undefined ? { width: currentNode.width } : {}),
+    ...(durableNode.height === undefined && currentNode.height !== undefined ? { height: currentNode.height } : {}),
+    ...(durableNode.measured === undefined && currentNode.measured !== undefined ? { measured: currentNode.measured } : {}),
+    ...(currentNode.selected === undefined ? {} : { selected: currentNode.selected }),
+    ...(currentNode.dragging === undefined ? {} : { dragging: currentNode.dragging }),
+    ...(currentNode.resizing === undefined ? {} : { resizing: currentNode.resizing }),
+  } as TNode;
 }
 
 function sameDraftNodeList<TNode extends Node>(left: readonly TNode[], right: readonly TNode[]): boolean {

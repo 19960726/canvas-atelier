@@ -12,6 +12,17 @@ const DEFAULT_POLL_CONCURRENCY = 4;
 const DEFAULT_MATERIALIZE_CONCURRENCY = 2;
 const DEFAULT_CANCEL_TIMEOUT_MS = 3_000;
 const DEFAULT_TERMINAL_ACK_TIMEOUT_MS = 1_000;
+const MAX_RECOVERABLE_RUNNING_JOB_AGE_MS = 30 * 60 * 1_000;
+
+function isRecoverableRunningJobFresh(job: ModelJob, currentTime: string): boolean {
+  const timestamp = job.updatedAt ?? job.createdAt;
+  if (timestamp === undefined) return false;
+  const updatedAt = Date.parse(timestamp);
+  const recoveredAt = Date.parse(currentTime);
+  return Number.isFinite(updatedAt)
+    && Number.isFinite(recoveredAt)
+    && recoveredAt - updatedAt <= MAX_RECOVERABLE_RUNNING_JOB_AGE_MS;
+}
 
 export interface ModelJobRequest {
   id: string;
@@ -243,7 +254,9 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       const jobs = await storage.list();
       const recovered = await Promise.all(jobs.map(async (job) => {
         if (job.status !== 'queued' && job.status !== 'submitting' && job.status !== 'running') return job;
-        if (job.status === 'running' && options.canRecoverRunningJob !== undefined) {
+        if (job.status === 'running'
+          && options.canRecoverRunningJob !== undefined
+          && isRecoverableRunningJobFresh(job, now())) {
           if (await options.canRecoverRunningJob(job)) {
             const latest = await storage.get(job.id);
             if (isSameRunningJob(latest, job)) return latest;

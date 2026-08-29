@@ -1119,15 +1119,32 @@ describe('ModuleNodeCard', () => {
   });
 
   it.each([
+    ['image_generation', 'Open image generation editor', 'Image generation prompt workspace'],
+    ['video_generation', 'Open video generation editor', 'Video preview prompt workspace'],
+  ] as const)('moves collapsed %s previews without treating the drag release as a click', (moduleType, accessibleName, workspaceLabel) => {
+    const node = createCanvasModuleNode(`generation-drag-${moduleType}`, moduleType, { x: 0, y: 0 });
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    const opener = screen.getByRole('button', { name: accessibleName });
+
+    fireEvent.pointerDown(opener, { clientX: 20, clientY: 20 });
+    fireEvent.pointerMove(window, { clientX: 140, clientY: 90 });
+    fireEvent.pointerUp(window, { clientX: 140, clientY: 90 });
+    fireEvent.click(opener, { clientX: 140, clientY: 90, detail: 1 });
+
+    expect(opener).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByLabelText(workspaceLabel)).not.toBeInTheDocument();
+  });
+
+  it.each([
     ['image_generation', 'Image generation prompt workspace'],
     ['video_generation', 'Video preview prompt workspace'],
-  ] as const)('expands %s when the node card body is clicked', (moduleType, workspaceLabel) => {
+  ] as const)('keeps collapsed %s card bodies available for direct dragging', (moduleType, workspaceLabel) => {
     const node = createCanvasModuleNode(`generation-card-click-${moduleType}`, moduleType, { x: 0, y: 0 });
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
     fireEvent.click(screen.getByTestId('module-node-card'));
 
-    expect(screen.getByLabelText(workspaceLabel)).toBeVisible();
+    expect(screen.queryByLabelText(workspaceLabel)).not.toBeInTheDocument();
   });
 
   it('does not expand a generation editor when its connection port is clicked', () => {
@@ -1146,11 +1163,15 @@ describe('ModuleNodeCard', () => {
     const { rerender } = render(<ReactFlowProvider><ModuleNodeCard id={image.id} data={image.data} selected={false} /></ReactFlowProvider>);
 
     expect(screen.getByLabelText('Image generation preview')).toHaveClass('module-node__generation-collapsed-shell');
+    expect(screen.getByLabelText('Image generation preview')).not.toHaveClass('nodrag');
+    expect(screen.getByRole('button', { name: 'Open image generation editor' })).not.toHaveClass('nodrag');
     expect(screen.getByRole('button', { name: 'Open image generation editor' }).closest('.module-node__generation-collapsed-shell')).toBe(screen.getByLabelText('Image generation preview'));
 
     rerender(<ReactFlowProvider><ModuleNodeCard id={video.id} data={video.data} selected={false} /></ReactFlowProvider>);
 
     expect(screen.getByLabelText('Video generation preview')).toHaveClass('module-node__generation-collapsed-shell');
+    expect(screen.getByLabelText('Video generation preview')).not.toHaveClass('nodrag');
+    expect(screen.getByRole('button', { name: 'Open video generation editor' })).not.toHaveClass('nodrag');
     expect(screen.getByRole('button', { name: 'Open video generation editor' }).closest('.module-node__generation-collapsed-shell')).toBe(screen.getByLabelText('Video generation preview'));
   });
 
@@ -3827,7 +3848,7 @@ describe('ModuleNodeCard', () => {
     expect(alertText).not.toContain('C:\\Users\\Administrator\\Documents\\private\\source.png');
   });
 
-  it('shows a stop action for a running reverse task', async () => {
+  it('treats a persisted reverse running flag without a local run as interrupted and retryable', async () => {
     const node = createCanvasModuleNode('reverse-stop-action', 'reverse_agent', { x: 0, y: 0 });
     node.data.config = {
       modelRoute: 'reverse-gemini',
@@ -3836,8 +3857,6 @@ describe('ModuleNodeCard', () => {
       knowledgeBaseIds: [],
       reverseAgentRunState: 'running',
     };
-    const cancelReverseAgentNode = vi.fn(async () => true);
-    useAppStore.setState({ cancelReverseAgentNode } as never);
     const data = {
       ...node.data,
       reverseAgentRoutes: [{
@@ -3848,10 +3867,8 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
 
-    const stop = screen.getByRole('button', { name: 'Stop reverse analysis' });
-    expect(stop).toBeEnabled();
-    fireEvent.click(stop);
-    await waitFor(() => expect(cancelReverseAgentNode).toHaveBeenCalledWith(node.id));
+    expect(screen.getByRole('button', { name: 'Start reverse analysis' })).toBeEnabled();
+    expect(screen.getByText('上次反推已中断，可以重新执行。')).toBeVisible();
   });
 
   it('keeps Agent form pointer input from starting a canvas drag', () => {

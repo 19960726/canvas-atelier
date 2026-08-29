@@ -30,20 +30,29 @@ for (const theme of ['light', 'dark'] as const) {
       (await window.novusDesktop?.provider.getActiveProvider?.())?.activeProvider
     ))).toBe('relayme');
 
+    const capabilityTabs = settings.getByRole('tablist', { name: '模型能力分类' });
     await expect(settings.getByRole('region', { name: '生图模型' })).toContainText('GPT Image 2');
     await expect(settings.getByRole('region', { name: '生图模型' })).toContainText('Seedream 5 Pro');
+    await capabilityTabs.getByRole('tab', { name: /视频模型/u }).click();
     await expect(settings.getByRole('region', { name: '视频模型' })).toContainText('Veo 3.1 Fast');
     await expect(settings.getByRole('region', { name: '视频模型' })).toContainText('Kling 3');
+    await capabilityTabs.getByRole('tab', { name: /反推模型/u }).click();
     await expect(settings.getByRole('region', { name: '反推模型' })).toContainText('Gemini 3.1 Pro');
 
     await providers.getByRole('listitem', { name: /RelayMe/u }).click();
     await expect(settings.getByLabel('API 服务地址（Base URL）')).toHaveValue('https://www.ml.relayme.uk/api/ai-tools/v1');
+    await capabilityTabs.getByRole('tab', { name: /生图模型/u }).click();
     await expect(settings.getByRole('region', { name: '生图模型' })).toContainText('GPT Image 2');
     await expect(settings.getByRole('region', { name: '生图模型' })).not.toContainText('Gemini Image');
+    await capabilityTabs.getByRole('tab', { name: /视频模型/u }).click();
     await expect(settings.getByRole('region', { name: '视频模型' })).toContainText('Kling');
+    await capabilityTabs.getByRole('tab', { name: /对话模型/u }).click();
     await expect(settings.getByRole('region', { name: '对话模型' })).toContainText('Gemini Vision');
+    await capabilityTabs.getByRole('tab', { name: /反推模型/u }).click();
     await expect(settings.getByRole('region', { name: '反推模型' })).toContainText('GPT Vision');
+    await capabilityTabs.getByRole('tab', { name: /生图模型/u }).click();
     await expect(settings.getByRole('region', { name: '生图模型' })).not.toContainText('2K / 4K');
+    await capabilityTabs.getByRole('tab', { name: /视频模型/u }).click();
     await expect(settings.getByRole('region', { name: '视频模型' })).not.toContainText('4/6/8 秒');
 
     await settings.getByRole('button', { name: '检测连接' }).click();

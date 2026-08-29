@@ -11,7 +11,7 @@ async function openSettings(page: import('@playwright/test').Page) {
 }
 
 async function expectFourSettingsTabs(settings: import('@playwright/test').Locator) {
-  await expect(settings.getByRole('tab')).toHaveText([
+  await expect(settings.locator('.settings-tabs > [role="tab"]')).toHaveText([
     'API 与模型',
     '存储与备份',
     'MCP 联动',

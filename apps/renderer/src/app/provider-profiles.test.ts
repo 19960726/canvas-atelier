@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
-import { filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles, listRunnableProviderProfiles, listAgentChatProfiles, listCodexAgentProfiles, selectFirstProfileForCapability, selectProviderProfile } from './provider-profiles';
+import { buildCanvasProviderRouteSets, filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles, listRunnableProviderProfiles, listAgentChatProfiles, listCodexAgentProfiles, selectFirstProfileForCapability, selectProviderProfile } from './provider-profiles';
 
 describe('active provider model boundary', () => {
   const profiles = [
@@ -22,6 +23,27 @@ describe('active provider model boundary', () => {
       expect.objectContaining({ provider: 'relayme', modelRoute: 'relay/image' }),
     );
     expect(selectFirstProfileForCapability(profiles, 'video_generation')).toBeUndefined();
+  });
+});
+
+describe('canvas provider route sets', () => {
+  it('reduces the shared catalog before it is passed into every canvas node', () => {
+    const profiles: ProviderBridgeProfile[] = [...Array.from({ length: 200 }, (_, index) => ({
+      provider: 'comfly' as const,
+      modelRoute: `chat/gpt-5.4-thinking-${index}`,
+      displayName: 'GPT-5.4 thinking',
+      modelId: `gpt-5.4-thinking-${index}`,
+      capabilities: ['chat' as const, 'reverse_prompt' as const],
+    })),
+      { provider: 'comfly' as const, modelRoute: 'image/gpt-image-2', displayName: 'GPT Image 2', modelId: 'gpt-image-2', capabilities: ['image_generation' as const] },
+      { provider: 'comfly' as const, modelRoute: 'video/veo-3.1-fast', displayName: 'Veo 3.1 Fast', modelId: 'veo-3.1-fast', capabilities: ['video_generation' as const] },
+    ];
+
+    const routes = buildCanvasProviderRouteSets(profiles);
+
+    expect(routes.imageGeneration).toHaveLength(1);
+    expect(routes.videoGeneration).toHaveLength(1);
+    expect(routes.reversePrompt.length).toBeLessThan(20);
   });
 });
 

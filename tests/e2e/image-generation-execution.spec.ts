@@ -48,6 +48,42 @@ test('a generation start error exposes a clickable retry that starts the next at
   await expect(generation.getByRole('button', { name: '停止生成' })).toBeVisible();
 });
 
+test('a collapsed image generation node can be dragged directly from its preview', async ({ page }) => {
+  await openEmptyApp(page);
+  await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_generation', { x: 420, y: 140 }));
+
+  const generation = page.locator('[data-module-type="image_generation"]');
+  const preview = generation.getByRole('button', { name: 'Open image generation editor' });
+  const before = await generation.boundingBox();
+  const handle = await preview.boundingBox();
+  expect(before).not.toBeNull();
+  expect(handle).not.toBeNull();
+
+  await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle!.x + handle!.width / 2 + 120, handle!.y + handle!.height / 2 + 70, { steps: 8 });
+  await page.mouse.up();
+
+  const after = await generation.boundingBox();
+  expect(after).not.toBeNull();
+  expect(after!.x - before!.x).toBeGreaterThan(80);
+  expect(after!.x - before!.x).toBeLessThan(180);
+  expect(after!.y - before!.y).toBeGreaterThan(40);
+  expect(after!.y - before!.y).toBeLessThan(130);
+  const state = await e2eState(page);
+  const persisted = state.modulePositions.find((node) => node.moduleType === 'image_generation');
+  expect(persisted).toBeDefined();
+  expect(persisted!.position.x).toBeGreaterThan(500);
+  expect(persisted!.position.x).toBeLessThan(600);
+  expect(persisted!.position.y).toBeGreaterThan(180);
+  expect(persisted!.position.y).toBeLessThan(260);
+  expect(await page.getByLabel('Image generation prompt workspace').count()).toBe(0);
+  await page.waitForTimeout(500);
+  await expect(generation).toBeVisible();
+  await expect(generation.getByRole('button', { name: 'Open image generation editor' })).toHaveAttribute('aria-expanded', 'false');
+  await page.screenshot({ path: artifact('collapsed-node-direct-drag-light.png'), fullPage: true });
+});
+
 test('Stop image generation finishes even when provider cancellation never responds', async ({ page }) => {
   await openEmptyApp(page);
   await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_generation', { x: 420, y: 140 }));

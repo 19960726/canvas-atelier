@@ -135,14 +135,21 @@ describe('SettingsDrawer', () => {
     expect(await screen.findByText('模型目录')).toBeVisible();
     expect(screen.getByText('4 个模型 · 4 个启用')).toBeVisible();
     await waitFor(() => expect(screen.getByRole('region', { name: '生图模型' })).toBeVisible());
-    expect(screen.getByRole('region', { name: '对话模型' })).toBeVisible();
-    expect(screen.getByRole('region', { name: '反推模型' })).toBeVisible();
-    expect(screen.getByRole('region', { name: '视频模型' })).toBeVisible();
-    expect(screen.getByRole('region', { name: '视觉模型' })).toBeVisible();
+    expect(screen.getByRole('tablist', { name: '模型能力分类' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: '对话模型' })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: '视频理解模型' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('启用 Nano Banana Pro')).toBeChecked();
-    expect(screen.getAllByLabelText('启用 Gemini 3.1 Pro')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('tab', { name: /对话模型/u }));
+    expect(screen.getByRole('region', { name: '对话模型' })).toBeVisible();
+    expect(screen.getByLabelText('启用 GPT 4.1')).toBeChecked();
+    fireEvent.click(screen.getByRole('tab', { name: /反推模型/u }));
+    expect(screen.getByRole('region', { name: '反推模型' })).toBeVisible();
+    expect(screen.getByLabelText('启用 Gemini 3.1 Pro')).toBeChecked();
+    fireEvent.click(screen.getByRole('tab', { name: /视频模型/u }));
+    expect(screen.getByRole('region', { name: '视频模型' })).toBeVisible();
     expect(screen.getByLabelText('启用 Veo 3 Fast')).toBeChecked();
+    fireEvent.click(screen.getByRole('tab', { name: /视觉模型/u }));
+    expect(screen.getByRole('region', { name: '视觉模型' })).toBeVisible();
     expect(screen.queryByText('CF')).toBeNull();
     expect(screen.queryByText('模型')).not.toBeInTheDocument();
   });
@@ -612,6 +619,16 @@ describe('SettingsDrawer', () => {
     expect(contract).toContain(':hover:not(:disabled)');
   });
 
+  it('gives the update announcement actions a clear canvas-style layout', () => {
+    const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('/* UPDATE ANNOUNCEMENT CARD */'));
+
+    expect(contract).toContain('.settings-update-dialog__actions');
+    expect(contract).toContain('gap: 12px !important');
+    expect(contract).toContain('min-width: 112px !important');
+    expect(contract).toContain('justify-content: flex-start !important');
+  });
+
   it('keeps the settings drawer opaque so the canvas minimap cannot bleed through it', () => {
     const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('/* FINAL SETTINGS DRAWER OCCLUSION CONTRACT */'));
@@ -801,6 +818,11 @@ it('keeps safe permission defaults and the workflow capability summary below the
     expect(await screen.findByRole('dialog', { name: '应用更新' })).toBeVisible();
     expect(screen.getByText('发现新版本 1.6.63')).toBeVisible();
     expect(screen.getByText('Improved canvas stability.')).toBeVisible();
+    const updateDialog = screen.getByRole('dialog', { name: '应用更新' });
+    expect(within(updateDialog).getByText('桌面版本更新')).toBeVisible();
+    expect(within(updateDialog).getByText('v1.6.63')).toBeVisible();
+    expect(within(updateDialog).getByRole('region', { name: '更新说明' })).toHaveTextContent('本次更新');
+    expect(within(updateDialog).getByText('更新内容')).toBeVisible();
     expect(download).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '下载更新' }));
     await waitFor(() => expect(download).toHaveBeenCalledTimes(1));
