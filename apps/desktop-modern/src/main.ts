@@ -200,7 +200,7 @@ app.whenReady().then(async () => {
         })
       : new UpdateClient({ driver: createDevelopmentUpdateDriver() });
   updateClient.subscribe((state) => {
-    mainWindow?.webContents.send(BRIDGE_CHANNELS.updates.stateChanged, state);
+    mainWindow?.webContents.send(BRIDGE_CHANNELS.updates.stateChanged, { ...state, currentVersion: app.getVersion() });
   });
   const generationHistoryStore = new GenerationHistoryStore({
     historyRoot: join(appDataRoot, 'generation-history'),
@@ -281,7 +281,10 @@ app.whenReady().then(async () => {
   ipcMain.handle(BRIDGE_CHANNELS.storage.chooseCacheDirectory, () => cacheDirectoryService.chooseCacheDirectory());
   ipcMain.handle(BRIDGE_CHANNELS.storage.resetCacheDirectory, () => cacheDirectoryService.resetCacheDirectory());
   ipcMain.handle(BRIDGE_CHANNELS.storage.openCacheDirectory, () => cacheDirectoryService.openCacheDirectory());
-  ipcMain.handle(BRIDGE_CHANNELS.updates.getState, () => updateClient?.getState() ?? { status: 'idle' });
+  ipcMain.handle(BRIDGE_CHANNELS.updates.getState, () => ({
+    ...(updateClient?.getState() ?? { status: 'idle' }),
+    currentVersion: app.getVersion(),
+  }));
   ipcMain.handle(BRIDGE_CHANNELS.updates.check, () => updateClient!.check());
   ipcMain.handle(BRIDGE_CHANNELS.updates.download, () => updateClient!.download());
   ipcMain.handle(BRIDGE_CHANNELS.updates.defer, () => updateClient!.defer());
@@ -529,9 +532,9 @@ async function runCoordinatedShutdown(): Promise<void> {
   if (desktopHandlers === null || closeAllStarted) return;
   closeAllStarted = true;
   const handlers = desktopHandlers;
-  await stopMcpRuntime();
   await shutdownDesktopServices({
     closeAllProjects: () => handlers.closeAllProjects(),
+    stopMcpRuntime,
     stopApprovedSnapshotDrain: () => approvedSnapshotDrainHandle?.stop() ?? Promise.resolve(),
     stopApprovedSnapshotPull: () => approvedSnapshotPullCoordinator?.stop() ?? Promise.resolve(),
     stopKnowledgeRefresh: () => knowledgeRefreshServiceHandle?.stop() ?? Promise.resolve(),

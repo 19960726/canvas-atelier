@@ -9,6 +9,7 @@ export interface MockRelease {
 
 export interface UpdateState {
   readonly status: UpdateStatus;
+  readonly currentVersion?: string;
   readonly version?: string;
   readonly notes?: string;
   readonly progress?: number;

@@ -90,6 +90,29 @@ describe('RelayMeClient', () => {
     );
   });
 
+  it('normalizes the live RelayMe chat envelope into the shared chat response', async () => {
+    const fetch = vi.fn(async () => jsonResponse({
+      success: true,
+      data: {
+        content: 'OK',
+        model: 'gemini-3.1-flash-lite',
+        promptTokens: 12,
+        completionTokens: 1,
+        totalTokens: 13,
+      },
+      pointsCharged: '0.01',
+    }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
+
+    await expect(client.chat({
+      model: 'gemini-3.1-flash-lite', messages: [{ role: 'user', content: '只回复 OK' }],
+    })).resolves.toMatchObject({
+      model: 'gemini-3.1-flash-lite',
+      choices: [{ message: { role: 'assistant', content: 'OK' } }],
+      usage: { prompt_tokens: 12, completion_tokens: 1, total_tokens: 13 },
+    });
+  });
+
   it('submits image and video generations with provider-specific fields', async () => {
     const fetch = vi.fn(async (url: string) => jsonResponse({ taskId: url.includes('/videos/') ? 'video-task-1' : 'image-task-1', status: 'queued' }));
     const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
@@ -189,6 +212,52 @@ describe('RelayMeClient', () => {
     const client = new RelayMeClient({ tokenSupplier: async () => 'account-login-token', fetch });
 
     await expect(client.getTask('task-2')).resolves.toMatchObject({ status: 'SUCCEEDED', result: { images: [{ url: 'https://cdn.example/result.png' }] } });
+  });
+
+  it('accepts completed task payloads with nullable RelayMe fields', async () => {
+    const fetch: RelayMeFetch = vi.fn(async () => jsonResponse({
+      taskId: 'task-completed-nullables',
+      status: 'COMPLETED',
+      error: null,
+      imageContent: 'https://cdn.example/result.png',
+      videoContent: null,
+    }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
+
+    await expect(client.getTask('task-completed-nullables')).resolves.toMatchObject({
+      taskId: 'task-completed-nullables',
+      status: 'COMPLETED',
+      imageContent: 'https://cdn.example/result.png',
+    });
+  });
+
+  it('accepts the live RelayMe task list shape with millisecond timestamps and null errors', async () => {
+    const fetch: RelayMeFetch = vi.fn(async () => jsonResponse({
+      data: [{
+        taskId: 'task-list-live-shape',
+        type: 'image',
+        status: 'COMPLETED',
+        createdAt: 1_788_088_611_359,
+        error: null,
+      }],
+      page: 1,
+      pageSize: 20,
+      total: 1,
+      totalPages: 1,
+    }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
+
+    await expect(client.listTasks()).resolves.toEqual({
+      tasks: [{
+        taskId: 'task-list-live-shape',
+        type: 'image',
+        status: 'COMPLETED',
+        createdAt: new Date(1_788_088_611_359).toISOString(),
+      }],
+      page: 1,
+      total: 1,
+      totalPages: 1,
+    });
   });
 
   it('preserves explicit media input metadata needed for reverse-prompt routing', async () => {

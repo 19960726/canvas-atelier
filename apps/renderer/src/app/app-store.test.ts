@@ -1868,6 +1868,40 @@ describe('project optimization memory', () => {
     expect(stablePoint).not.toHaveBeenCalled();
   });
 
+  it('retries the exact failed commit before closing a writable session', async () => {
+    const project = moduleGraphProject();
+    const close = vi.fn(async () => undefined);
+    const commit = vi.fn()
+      .mockResolvedValueOnce({ code: 'DURABLE_WRITE_FAILED', ok: false, project, revision: 0 })
+      .mockImplementationOnce(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: request.nextProject,
+        revision: 1,
+      }));
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['close-retry'],
+      lifecycle: 'durable' as const,
+      project: useAppStore.getState().project,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ close, commit, stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'durable', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().commitNodePosition('prompt', { x: 20, y: 30 })).resolves.toBe(false);
+    expect(useAppStore.getState().saveStatus).toBe('error');
+
+    await expect(useAppStore.getState().closePersistence()).resolves.toBe(true);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(stablePoint).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: false,
+      saveErrorCode: null,
+      saveStatus: 'saved',
+    });
+  });
+
   it('marks an opened read-only project as eligible for durable reload', async () => {
     replaceProjectPersistenceClientForTests(createMockClient({
       openProject: async () => ({
@@ -6924,6 +6958,28 @@ describe('explicit project save', () => {
 
     expect(useAppStore.getState()).toMatchObject({
       saveErrorCode: 'SAVE_TIMEOUT',
+      saveStatus: 'error',
+    });
+  });
+
+  it('restores error state when a failed commit blocks a later flush', async () => {
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const commit = vi.fn(async () => {
+      throw Object.assign(new Error('disk unavailable'), { code: 'DURABLE_WRITE_FAILED' });
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'durable', saveStatus: 'saved' });
+
+    useAppStore.getState().setProject({ ...project, name: '失败提交后状态测试' });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(useAppStore.getState().saveStatus).toBe('error');
+
+    useAppStore.setState({ saveStatus: 'saving' });
+    await expect(useAppStore.getState().flushProjectSave('blur')).resolves.toBe(false);
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: true,
+      saveErrorCode: 'DURABLE_WRITE_FAILED',
       saveStatus: 'error',
     });
   });

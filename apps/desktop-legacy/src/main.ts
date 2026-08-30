@@ -245,7 +245,10 @@ app.whenReady().then(async () => {
   ipcMain.handle(BRIDGE_CHANNELS.storage.chooseCacheDirectory, () => cacheDirectoryService.chooseCacheDirectory());
   ipcMain.handle(BRIDGE_CHANNELS.storage.resetCacheDirectory, () => cacheDirectoryService.resetCacheDirectory());
   ipcMain.handle(BRIDGE_CHANNELS.storage.openCacheDirectory, () => cacheDirectoryService.openCacheDirectory());
-  ipcMain.handle(BRIDGE_CHANNELS.updates.getState, () => updateClient?.getState() ?? { status: 'idle' });
+  ipcMain.handle(BRIDGE_CHANNELS.updates.getState, () => ({
+    ...(updateClient?.getState() ?? { status: 'idle' }),
+    currentVersion: app.getVersion(),
+  }));
   ipcMain.handle(BRIDGE_CHANNELS.updates.check, () => updateClient!.check());
   ipcMain.handle(BRIDGE_CHANNELS.updates.download, () => updateClient!.download());
   ipcMain.handle(BRIDGE_CHANNELS.updates.defer, () => updateClient!.defer());

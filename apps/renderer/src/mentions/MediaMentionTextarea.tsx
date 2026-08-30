@@ -49,6 +49,7 @@ export function MediaMentionTextarea({
   const editorRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const lastEmittedValueRef = useRef(value);
+  const undoStackRef = useRef<string[]>([]);
   const onChangeRef = useRef(onChange);
   const disabledRef = useRef(disabled);
   const readOnlyRef = useRef(readOnly);
@@ -70,6 +71,7 @@ export function MediaMentionTextarea({
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
+    if (lastEmittedValueRef.current !== value) undoStackRef.current = [];
     lastEmittedValueRef.current = value;
     if (editor === null || composingRef.current || serializeEditor(editor) === value) return;
     const selection = captureCanonicalSelection(editor);
@@ -105,9 +107,14 @@ export function MediaMentionTextarea({
     };
   }, []);
 
-  const emitValue = (editor: HTMLDivElement) => {
+  const emitValue = (editor: HTMLDivElement, recordUndo = true) => {
     const nextValue = serializeEditor(editor);
     if (nextValue === lastEmittedValueRef.current) return;
+    if (recordUndo) {
+      const previousValue = lastEmittedValueRef.current;
+      if (undoStackRef.current[undoStackRef.current.length - 1] !== previousValue) undoStackRef.current.push(previousValue);
+      if (undoStackRef.current.length > 100) undoStackRef.current.splice(0, undoStackRef.current.length - 100);
+    }
     lastEmittedValueRef.current = nextValue;
     emitTextareaChange(onChange, nextValue);
   };
@@ -129,6 +136,15 @@ export function MediaMentionTextarea({
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     onKeyDown?.(event as unknown as KeyboardEvent<HTMLTextAreaElement>);
     if (event.defaultPrevented || disabled || readOnly || composingRef.current) return;
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLocaleLowerCase() === 'z') {
+      const previousValue = undoStackRef.current.pop();
+      if (previousValue === undefined) return;
+      event.preventDefault();
+      rebuildEditor(event.currentTarget, previousValue, previewsRef.current, setActiveToken);
+      restoreCanonicalSelection(event.currentTarget, { start: previousValue.length, end: previousValue.length });
+      emitValue(event.currentTarget, false);
+      return;
+    }
     if (event.key !== 'Backspace' && event.key !== 'Delete') return;
     const chip = adjacentChip(event.currentTarget, event.key === 'Backspace' ? 'before' : 'after');
     if (chip === null) return;

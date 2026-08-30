@@ -1362,9 +1362,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     return persistReverseAgentRunPatch(set, get, nodeId, { reverseAgentResult: merged }, 'Update reverse Agent result');
   },
   closePersistence: async () => {
-    const state = get();
+    let state = get();
     if (state.recoveryRequired) return false;
     if (state.saveStatus !== 'read_only') {
+      if (pendingFailedProjectCommit !== null) {
+        const retried = await get().retryFailedProjectCommit();
+        if (!retried) return false;
+        state = get();
+      }
       const hasPendingSave = projectAutosave.hasPending() || projectAutosave.hasInFlight();
       if (state.saveStatus !== 'saved' || hasPendingSave) {
         const flushed = await flushPendingProjectSave(get, set, 'close');
@@ -2915,8 +2920,14 @@ function enqueueStableProjectOperation(
   const generation = projectPersistenceGeneration;
   const run = async (): Promise<boolean> => {
     if (generation !== projectPersistenceGeneration) return false;
-    if (!options.allowPendingFailure && pendingFailedProjectCommit !== null) return false;
-    if (get().projectCommitConflictCode !== null) return false;
+    if (!options.allowPendingFailure && pendingFailedProjectCommit !== null) {
+      markProjectSaveRetryRequired(set, get);
+      return false;
+    }
+    if (get().projectCommitConflictCode !== null) {
+      markProjectSaveConflict(set, get);
+      return false;
+    }
     if (!options.allowRecovery && get().recoveryRequired) {
       if (options.throwOnRecovery) {
         throw createGenerationStartError('RECOVERY_REQUIRED', 'Recovery preview must be restored before generation starts');
@@ -4801,7 +4812,10 @@ async function flushPendingProjectSave(
   reason: Exclude<AutosaveFlushReason, 'idle'>,
 ): Promise<boolean> {
   if (get().recoveryRequired) return false;
-  if (pendingFailedProjectCommit !== null) return false;
+  if (pendingFailedProjectCommit !== null) {
+    markProjectSaveRetryRequired(set, get);
+    return false;
+  }
   if (pendingProjectFlushBoundary !== null) return pendingProjectFlushBoundary;
 
   const hadDraft = projectAutosave.hasPending() || projectAutosave.hasInFlight();
@@ -4841,6 +4855,29 @@ async function flushPendingProjectSave(
   });
   pendingProjectFlushBoundary = trackedFlushBoundary;
   return trackedFlushBoundary;
+}
+
+function markProjectSaveRetryRequired(
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+): void {
+  if (get().saveStatus !== 'saving') return;
+  set({
+    canRetryProjectCommit: true,
+    saveErrorCode: get().saveErrorCode ?? 'PROJECT_SAVE_RETRY_REQUIRED',
+    saveStatus: 'error',
+  });
+}
+
+function markProjectSaveConflict(
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+): void {
+  if (get().saveStatus !== 'saving') return;
+  set({
+    saveErrorCode: get().projectCommitConflictCode ?? 'PROJECT_SAVE_CONFLICT',
+    saveStatus: 'error',
+  });
 }
 
 function withProjectPersistenceTimeout<T>(operation: Promise<T>): Promise<T> {

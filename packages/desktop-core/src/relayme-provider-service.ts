@@ -857,8 +857,17 @@ function isPublicRelayMeIpv4Address(address: string): boolean {
 function extractChatText(content: unknown): string | null {
   if (typeof content === 'string' && content.trim().length > 0) return content.trim();
   if (Array.isArray(content)) {
-    const text = content.flatMap((item) => isPlainRecord(item) && typeof item.text === 'string' ? [item.text] : []).join('\n').trim();
+    const text = content.flatMap((item) => {
+      const extracted = extractChatText(item);
+      return extracted === null ? [] : [extracted];
+    }).join('\n').trim();
     return text.length > 0 ? text : null;
+  }
+  if (isPlainRecord(content)) {
+    for (const field of ['text', 'output_text', 'value', 'parts', 'content'] as const) {
+      const extracted = extractChatText(content[field]);
+      if (extracted !== null) return extracted;
+    }
   }
   return null;
 }

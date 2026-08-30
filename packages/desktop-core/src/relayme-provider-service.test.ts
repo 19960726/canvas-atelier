@@ -237,6 +237,27 @@ describe('RelayMe provider service', () => {
     );
   });
 
+  it('accepts RelayMe Gemini structured chat content instead of rejecting a valid reply', async () => {
+    const { service } = await createService([
+      jsonResponse({ success: true, data: { models: [{
+        id: '2', name: 'Relay Chat', model: 'gemini-3.1-flash-lite', capability: 'text', modelType: 'TEXT',
+        endpoints: ['/api/ai-tools/v1/chat/completions'],
+      }] } }),
+      jsonResponse({
+        id: 'chat-structured', model: 'gemini-3.1-flash-lite',
+        choices: [{ message: { role: 'assistant', content: { parts: [{ text: 'RelayMe Agent 正常' }] } } }],
+      }),
+    ]);
+
+    await expect(service.chat?.({
+      provider: 'relayme', modelRoute: 'relayme-gemini-3-1-flash-lite',
+      messages: [{ role: 'user', content: '检查 Agent' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    })).resolves.toEqual({
+      message: 'RelayMe Agent 正常', modelRoute: 'relayme-gemini-3-1-flash-lite', sources: [],
+    });
+  });
+
   it('lists the signed-in RelayMe account task center without exposing result payloads', async () => {
     const { service, fetch } = await createService([
       jsonResponse({

@@ -133,6 +133,22 @@ describe('MediaMentionTextarea', () => {
     expect(eventValue(onChange)).toBe('纯文本');
   });
 
+  it('keeps Ctrl+Z usable across controlled contenteditable refreshes', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<MediaMentionTextarea aria-label="Prompt" value="原文" onChange={onChange} />);
+    const editor = screen.getByRole('textbox', { name: 'Prompt' });
+    setCaret(editor.firstChild ?? editor, 2);
+
+    editor.textContent = '原文新';
+    fireEvent.input(editor, { inputType: 'insertText', data: '新' });
+    rerender(<MediaMentionTextarea aria-label="Prompt" value="原文新" onChange={onChange} />);
+
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
+
+    expect(eventValue(onChange)).toBe('原文');
+    expect(editor).toHaveTextContent('原文');
+  });
+
   it('does not emit during composition and emits once on composition end', () => {
     const onChange = vi.fn();
     render(<MediaMentionTextarea aria-label="Prompt" value="" onChange={onChange} />);

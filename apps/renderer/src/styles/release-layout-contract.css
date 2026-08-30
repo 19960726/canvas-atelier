@@ -1598,12 +1598,14 @@
 .workspace--ui-gate .settings-model-list > article > em { padding: 3px 7px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 999px !important; font-size: 9px !important; font-style: normal !important; font-weight: 750 !important; }
 .workspace--ui-gate .settings-model-default { grid-column: 1 !important; align-self: end !important; padding: 9px !important; background: var(--gate-card-muted) !important; border: 1px solid var(--gate-border) !important; border-radius: 8px !important; }
 .workspace--ui-gate .settings-model-default select { width: 100% !important; height: 38px !important; color: var(--gate-text) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-border-strong) !important; border-radius: 8px !important; }
-.workspace--ui-gate .settings-tool-card { min-height: 220px !important; padding: 16px !important; border-top: 3px solid var(--gate-accent) !important; background: linear-gradient(160deg, var(--gate-card), var(--gate-card-muted)) !important; }
+.workspace--ui-gate .settings-tool-card { min-height: 250px !important; display: flex !important; flex-direction: column !important; padding: 16px !important; border-top: 3px solid var(--gate-accent) !important; background: linear-gradient(160deg, var(--gate-card), var(--gate-card-muted)) !important; }
 .workspace--ui-gate .settings-tool-card > p { min-height: 32px !important; color: var(--gate-muted) !important; }
 .workspace--ui-gate .settings-tool-card__status { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 12px !important; padding: 10px 12px !important; background: var(--gate-card) !important; border: 1px solid var(--gate-border) !important; border-radius: 9px !important; }
 .workspace--ui-gate .settings-tool-card__status span { color: var(--gate-muted) !important; font-size: 10px !important; }
 .workspace--ui-gate .settings-tool-card__status strong { font-size: 11px !important; }
 .workspace--ui-gate .settings-tool-action { min-height: 40px !important; color: var(--gate-on-accent) !important; background: var(--gate-accent) !important; border-color: var(--gate-accent) !important; border-radius: 9px !important; box-shadow: 0 8px 18px color-mix(in srgb, var(--gate-accent) 20%, transparent) !important; }
+.workspace--ui-gate .settings-tool-card > .settings-tool-action,
+.workspace--ui-gate .settings-tool-card > .settings-connection-row { margin-top: auto !important; }
 .workspace--ui-gate .settings-tool-action:hover:not(:disabled) { filter: brightness(1.05) !important; transform: translateY(-1px) !important; }
 @media (max-width: 900px) {
   .workspace--ui-gate .settings-model-group { grid-template-columns: 1fr !important; }

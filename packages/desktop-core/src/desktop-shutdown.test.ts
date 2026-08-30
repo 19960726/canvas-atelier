@@ -3,6 +3,24 @@ import { describe, expect, it, vi } from 'vitest';
 import { shutdownDesktopServices } from './desktop-shutdown';
 
 describe('desktop shutdown', () => {
+  it('continues to the final quit boundary when a background service never stops', async () => {
+    const quit = vi.fn();
+    const stopMcpRuntime = vi.fn(() => new Promise<void>(() => undefined));
+
+    await expect(shutdownDesktopServices({
+      closeAllProjects: vi.fn(async () => undefined),
+      stopMcpRuntime,
+      stopApprovedSnapshotDrain: vi.fn(async () => undefined),
+      stopApprovedSnapshotPull: vi.fn(async () => undefined),
+      stopKnowledgeRefresh: vi.fn(async () => undefined),
+      unsubscribeKnowledgeState: vi.fn(),
+      quit,
+    }, { timeoutMs: 10 })).resolves.toBeUndefined();
+
+    expect(stopMcpRuntime).toHaveBeenCalledOnce();
+    expect(quit).toHaveBeenCalledOnce();
+  });
+
   it.each([
     'closeAllProjects',
     'stopApprovedSnapshotDrain',

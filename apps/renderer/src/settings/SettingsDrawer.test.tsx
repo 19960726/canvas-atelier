@@ -802,12 +802,13 @@ it('keeps safe permission defaults and the workflow capability summary below the
     const download = vi.fn(async () => ({ state: { status: 'downloading' as const, version: '1.6.63', progress: 0 } }));
     const restart = vi.fn(async () => ({ accepted: true as const }));
     window.novusDesktop = {
-      updates: { getState: vi.fn(async () => ({ status: 'idle' })), subscribeState, check, download, defer: vi.fn(), retry: vi.fn(), restart },
+      updates: { getState: vi.fn(async () => ({ status: 'idle', currentVersion: '1.6.72' })), subscribeState, check, download, defer: vi.fn(), retry: vi.fn(), restart },
     } as unknown as typeof window.novusDesktop;
 
     const rendered = render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: '同步' }));
     fireEvent.click(screen.getByText('高级故障排查'));
+    expect(await screen.findByText('v1.6.72')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
 
     expect(await screen.findByRole('dialog', { name: '应用更新' })).toBeVisible();

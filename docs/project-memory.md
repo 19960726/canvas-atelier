@@ -411,3 +411,14 @@ Before producing an installer, verify at minimum:
 - 保护行为：Renderer 只通过 `listTasks({ provider: 'relayme', page, size })` 接收任务 id、类型、状态、创建时间和错误摘要；桥接不得暴露令牌、远端内容、URL、base64 或原始工作流。
 - 回归位置：`packages/desktop-core/src/bridge-contract.test.ts` 与 `packages/desktop-core/src/preload-api.test.ts`。Photoshop 脚本层另由 `packages/desktop-core/src/photoshop-script.test.ts` 固定 runner 的 CS6 major 13 门槛，防止 adapter 与 WSH runner 版本判断漂移。
 - 验证命令：`npm.cmd exec vitest -- --config vitest.config.ts packages/desktop-core/src/bridge-contract.test.ts packages/desktop-core/src/preload-api.test.ts --run`，随后执行 `npm.cmd test` 和 `npm.cmd run build`。
+
+## 2026-08-30 RelayMe Agent 对话真实响应适配
+
+- 根因：RelayMe 当前 `/chat/completions` 成功响应是 `{ success, data: { content, model, promptTokens, completionTokens, totalTokens } }`，不是旧客户端唯一接受的 OpenAI 顶层 `{ id, model, choices }`。因此请求实际上已成功，但 `RelayMeClient` 在进入桌面 Agent 文本提取前就以响应格式无效拒绝。
+- 保护行为：客户端同时接受 OpenAI-compatible 响应和 RelayMe 真实 data envelope，并把后者规范化为共享的 `choices[0].message.content` 与 `usage`；Comfly 与 RelayMe 的活动供应商和模型目录仍保持隔离，不做跨供应商回退。
+- 回归位置：`packages/provider-relayme/src/client.test.ts` 固定真实 envelope 规范化；`packages/desktop-core/src/relayme-provider-service.test.ts` 固定字符串及结构化 content 的 Agent 文本提取。
+- TDD 证据：新增客户端用例在修复前以缺少 `id` 明确失败；最小 schema union 适配后，客户端与桌面服务联合回归 43/43 通过。
+- 在线证据：隔离 QA 桌面运行体使用已配置 RelayMe 账号调用 `gemini-3.1-flash-lite`，请求“只回复 OK”，桥接真实返回 `message: "OK"`。诊断只暴露响应键名和类型，临时脚本随后删除。
+- 1.6.74 packaged QA：`win-unpacked/Canvas Atelier.exe` 在隔离数据根中报告版本 `1.6.74`；新建项目无确认框；创建节点后状态为 `pending`，点击真实保存按钮正常进入 `saved`，没有停留在 `saving`；节点从 `(730, 301.67)` 移至 `(843, 376.67)` 后 Ctrl+Z 回原位；Delete 删除后 Ctrl+Z 恢复；生图提示词文本 Ctrl+Z 清除；Codex Agent 选择 `gemini-3.1-flash-lite`，真实对话返回 `OK`；静默退出在 25 秒门限内完成，页面错误为 0。
+- 正式构建证据：联合 RelayMe 回归 43/43、全工作区 typecheck、production build 和 Electron Builder Windows x64 NSIS 均通过；完整 Vitest 为 210 个文件、2566 个测试通过，2 个性能文件/测试按设计跳过。
+- 1.6.74 Windows x64 NSIS：`CanvasAtelier-Win10-11-x64-1.6.74.exe`，103192040 字节，SHA-256 `925EF2FCD236007AA40CBE8C37720BCA7D3E724B8E4D74CE6CFD3B51DCE4AC58`；blockmap 109534 字节，SHA-256 `F7E4395471210E50C0D817EC64F7D01EFACA430182AE391B8A4851EE36865AAE`；`latest.yml` 372 字节，SHA-256 `6EE29C1AEE45DF08A8C75712B42F093AE06F6D937D0BD8F68EE94CCD140A6A49`。安装包未签名（`NotSigned`），Windows 可能显示 SmartScreen 警告。

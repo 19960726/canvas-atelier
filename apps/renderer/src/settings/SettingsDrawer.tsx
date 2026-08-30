@@ -1128,7 +1128,8 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
             <article className="settings-status-card settings-tool-card" role="region" aria-label="应用更新" data-tool-tone="update">
               <header><span><RefreshCw size={16} /></span><div><strong>应用更新</strong><small>桌面更新状态</small></div></header>
               <p>检查版本、安全修复和模型适配更新，不会影响当前画布内容。</p>
-              <div className="settings-tool-card__status"><span>当前状态</span><strong>{updateState.status === 'idle' ? '等待检查' : updateState.status === 'checking' ? '正在检查' : updateState.status === 'downloading' ? '正在下载' : updateState.status === 'ready_to_restart' ? '准备安装' : updateState.status === 'error' ? '检查失败' : '发现新版本'}</strong></div>
+              <div className="settings-tool-card__status"><span>当前版本</span><strong>{updateState.currentVersion ? `v${updateState.currentVersion}` : '读取中'}</strong></div>
+              <div className="settings-tool-card__status"><span>更新状态</span><strong>{updateState.status === 'idle' ? '等待检查' : updateState.status === 'checking' ? '正在检查' : updateState.status === 'downloading' ? '正在下载' : updateState.status === 'ready_to_restart' ? '准备安装' : updateState.status === 'error' ? '检查失败' : '发现新版本'}</strong></div>
               <button className="settings-section__secondary settings-update-action settings-tool-action" type="button" aria-label="Check for updates" disabled={!bridge?.updates || updateState.status === 'checking' || updateState.status === 'downloading'} onClick={() => { void checkForUpdates(); }}><span className="settings-action-content"><RefreshCw size={14} className={updateState.status === 'checking' ? 'is-spinning' : undefined} />{updateState.status === 'checking' ? '检查中…' : '检查更新'}</span></button>
               {updateState.status === 'idle' && updateState.message === 'No updates are available.' && <p role="status">当前已是最新版本</p>}
             </article>

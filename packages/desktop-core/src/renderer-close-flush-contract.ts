@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-export const CLOSE_FLUSH_TIMEOUT_MS = 2_000;
+// Renderer persistence has a 15 second hard limit. The native close watchdog
+// must not declare a healthy large-project save unavailable before that limit.
+export const CLOSE_FLUSH_TIMEOUT_MS = 17_000;
 
 export interface CloseFlushRequest {
   readonly requestId: string;

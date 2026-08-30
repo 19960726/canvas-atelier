@@ -70,7 +70,8 @@ const modelListSchema = z.union([
   z.object({ models: modelEntriesSchema }).passthrough().transform((value) => value.models),
   z.object({ data: modelEntriesSchema }).passthrough().transform((value) => value.data),
   z.object({ data: z.object({ models: modelEntriesSchema }).passthrough() }).passthrough().transform((value) => value.data.models),
-]);const chatResponseSchema = z.object({
+]);
+const openAiChatResponseSchema = z.object({
   id: nonEmptyStringSchema,
   model: nonEmptyStringSchema,
   choices: z.array(z.object({
@@ -78,6 +79,26 @@ const modelListSchema = z.union([
     message: z.object({ role: nonEmptyStringSchema, content: z.unknown() }).passthrough(),
   }).passthrough()).min(1),
 }).passthrough();
+const liveChatResponseSchema = z.object({
+  success: z.literal(true),
+  data: z.object({
+    content: z.unknown(),
+    model: nonEmptyStringSchema,
+    promptTokens: z.number().int().nonnegative().optional(),
+    completionTokens: z.number().int().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative().optional(),
+  }).passthrough(),
+}).passthrough().transform((value) => ({
+  id: 'relayme-chat',
+  model: value.data.model,
+  choices: [{ finish_reason: undefined, message: { role: 'assistant', content: value.data.content } }],
+  usage: {
+    ...(value.data.promptTokens === undefined ? {} : { prompt_tokens: value.data.promptTokens }),
+    ...(value.data.completionTokens === undefined ? {} : { completion_tokens: value.data.completionTokens }),
+    ...(value.data.totalTokens === undefined ? {} : { total_tokens: value.data.totalTokens }),
+  },
+}));
+const chatResponseSchema = z.union([openAiChatResponseSchema, liveChatResponseSchema]);
 const taskSubmissionItemSchema = z.object({
   taskId: nonEmptyStringSchema,
   status: nonEmptyStringSchema.optional().default('PENDING'),
@@ -85,13 +106,18 @@ const taskSubmissionItemSchema = z.object({
 const taskStateItemSchema = z.object({
   taskId: nonEmptyStringSchema.optional(),
   status: nonEmptyStringSchema,
-  imageContent: z.string().optional(),
-  videoContent: z.string().optional(),
-  error: z.string().optional(),
+  imageContent: z.string().nullish(),
+  videoContent: z.string().nullish(),
+  error: z.string().nullish(),
   progress: z.number().finite().optional(),
   result: z.unknown().optional(),
   data: z.unknown().optional(),
-}).passthrough();
+}).passthrough().transform(({ imageContent, videoContent, error, ...value }) => ({
+  ...value,
+  ...(imageContent == null ? {} : { imageContent }),
+  ...(videoContent == null ? {} : { videoContent }),
+  ...(error == null ? {} : { error }),
+}));
 const taskStateAliasSchema = z.object({
   id: nonEmptyStringSchema.optional(),
   taskId: nonEmptyStringSchema.optional(),
@@ -127,14 +153,16 @@ const taskSummarySchema = z.object({
   taskId: nonEmptyStringSchema,
   type: z.enum(['image', 'video']).optional().default('image'),
   status: nonEmptyStringSchema,
-  createdAt: z.string().optional(),
-  error: z.string().optional(),
+  createdAt: z.union([z.string(), z.number().finite()]).nullish(),
+  error: z.string().nullish(),
 }).passthrough().transform((value) => ({
   taskId: value.taskId,
   type: value.type,
   status: value.status,
-  ...(value.createdAt === undefined ? {} : { createdAt: value.createdAt }),
-  ...(value.error === undefined ? {} : { error: value.error }),
+  ...(value.createdAt == null ? {} : {
+    createdAt: typeof value.createdAt === 'number' ? new Date(value.createdAt).toISOString() : value.createdAt,
+  }),
+  ...(value.error == null ? {} : { error: value.error }),
 }));
 const taskListSchema = z.object({
   data: z.array(taskSummarySchema).optional(),
