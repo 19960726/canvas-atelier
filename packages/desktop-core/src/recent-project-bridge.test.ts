@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -112,6 +112,62 @@ describe('recent project desktop bridge', () => {
       });
     } finally {
       await handlers.closeAllProjects();
+    }
+  });
+
+  it('does not let an unresponsive optional preview capture block the stable save queue', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-preview-timeout-'));
+    tempRoots.push(tempRoot);
+    const projectRoot = join(tempRoot, 'PreviewTimeout.novus-project');
+    const openedSession = createOpenedSession(projectRoot);
+    await mkdir(projectRoot, { recursive: true });
+    await writeFile(join(projectRoot, 'project.novus.json'), `${JSON.stringify(openedSession.manifest)}\n`, 'utf8');
+    vi.useFakeTimers();
+    let reportCaptureStarted!: () => void;
+    const captureStarted = new Promise<void>((resolve) => { reportCaptureStarted = resolve; });
+    const handlers = createDesktopBridgeHandlers({
+      captureProjectPreview: vi.fn(() => {
+        reportCaptureStarted();
+        return new Promise<never>(() => {});
+      }),
+      createId: () => 'session-preview-timeout',
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      recentProjectStore: createRecentProjectStoreStub(),
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => openedSession),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 0),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(async () => ({
+          path: 'snapshots/stable.json.gz',
+          reason: 'stable_point' as const,
+          revision: 0,
+          snapshotId: 'stable-preview-timeout',
+        })),
+      } as never,
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const stablePoint = handlers.createStablePoint({}, { sessionId: opened!.sessionId });
+      let settled = false;
+      void stablePoint.then(() => { settled = true; });
+      await captureStarted;
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(settled).toBe(true);
+      await expect(stablePoint).resolves.toMatchObject({
+        revision: 0,
+        snapshotId: 'stable-preview-timeout',
+      });
+      await expect(handlers.closeProject({}, { flush: false, sessionId: opened!.sessionId })).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
     }
   });
 

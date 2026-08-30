@@ -260,6 +260,21 @@ describe('provider model catalog', () => {
     });
   });
 
+  it('keeps RelayMe image and video models runnable when the model catalog omits redundant per-model endpoints', () => {
+    const profiles = buildRelayMeModelProfiles([{
+      name: 'Nano Banana Pro', deploymentName: 'gemini-3-pro-image-preview', capability: 'image', modelType: 'IMAGE',
+      isDefault: false, offers: [{ id: '31', specialOffer: false, pricing: { image1k: '260' } }],
+    }, {
+      name: 'Veo 3.1 Fast', deploymentName: 'veo-3-1-fast', capability: 'video', modelType: 'VIDEO',
+      isDefault: false, offers: [{ id: '32', specialOffer: false }],
+    }]);
+
+    expect(profiles).toEqual([
+      expect.objectContaining({ modelId: 'gemini-3-pro-image-preview', capabilityStatus: 'complete' }),
+      expect.objectContaining({ modelId: 'veo-3-1-fast', capabilityStatus: 'complete' }),
+    ]);
+  });
+
   it('discovers direct RelayMe model profiles from workflow model nodes without exposing workflow names', () => {
     const profiles = buildRelayMeWorkflowModelProfiles([
       { id: 'wf-image', name: '未命名工作流 20260829', data: { nodes: [{ id: 'text-1', kind: 'input', type: 'input-text' }, { id: 'image-1', kind: 'model', modelType: 'IMAGE', model: 'gpt-image-2', name: 'GPT Image 2' }], connections: [{ fromNodeId: 'text-1', fromPortRole: 'text-output', toNodeId: 'image-1', toPortRole: 'text-input' }] } },

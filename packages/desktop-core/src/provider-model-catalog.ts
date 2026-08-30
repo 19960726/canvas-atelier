@@ -29,9 +29,17 @@ export function buildRelayMeModelProfiles(models: readonly RelayMeModel[]): Prov
     displayName: model.name,
     modelId: model.deploymentName,
     capabilities: capabilitiesForRelayMeModel(model),
-    capabilityStatus: model.endpoints === undefined || model.endpoints.length === 0 ? 'incomplete' : 'complete',
+    capabilityStatus: relayMeCapabilityStatus(model),
     constraints: constraintsForRelayMeModel(model),
   })));
+}
+
+function relayMeCapabilityStatus(model: RelayMeModel): ProviderBridgeProfile['capabilityStatus'] {
+  // RelayMe image/video generation uses provider-wide direct endpoints. The
+  // catalog capability and real deployment id are sufficient; a redundant
+  // per-model endpoint list is not required for these routes to run.
+  if (model.capability === 'image' || model.capability === 'video') return 'complete';
+  return model.endpoints === undefined || model.endpoints.length === 0 ? 'incomplete' : 'complete';
 }
 
 export function buildRelayMeWorkflowModelProfiles(workflows: readonly RelayMeWorkflow[]): ProviderBridgeProfile[] {

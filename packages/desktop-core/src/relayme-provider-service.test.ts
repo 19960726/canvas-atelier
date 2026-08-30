@@ -87,6 +87,30 @@ describe('RelayMe provider service', () => {
     );
   });
 
+  it('submits a catalog image model through the direct API when redundant per-model endpoints are omitted', async () => {
+    const catalogWithoutEndpoints = jsonResponse({ success: true, data: { models: [{
+      id: '3', name: 'Nano Banana Pro', model: 'gemini-3-pro-image-preview',
+      capability: 'image', modelType: 'IMAGE', pricing: { image1k: '1', image2k: '2' },
+    }] } });
+    const { service, fetch } = await createService([
+      catalogWithoutEndpoints,
+      jsonResponse({ taskId: 'direct-nano-task-1', status: 'QUEUED' }),
+    ]);
+
+    await expect(service.submitImageJob({
+      jobId: 'direct-nano-job-1', provider: 'relayme', modelRoute: 'relayme-gemini-3-pro-image-preview',
+      prompt: '产品摄影', conversationId: 'nano-conversation-1', sessionId: 'nano-session-1', referenceAssetIds: [],
+    })).resolves.toMatchObject({ providerTaskId: expect.stringMatching(/^provider-job-[a-f0-9]{32}$/u) });
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/images/generations',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"model":"gemini-3-pro-image-preview"'),
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringMatching(/\/workflows\/.*\/runs/u), expect.anything());
+  });
+
   it('rejects a foreign Comfly route before calling the paid RelayMe image generation endpoint', async () => {
     const { service, fetch } = await createService([modelsResponse()]);
 
@@ -390,6 +414,74 @@ describe('RelayMe provider service', () => {
       'https://cdn.example/result.png',
       expect.objectContaining({ trustedResolvedAddress: '8.8.8.8' }),
     );
+  });
+
+  it('maps the documented image_url task result shape to the local asset store', async () => {
+    const storedImage = vi.fn(async () => ({ assetId: 'fedcba9876543210', width: 1024, height: 1024 }));
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-raw-image-url', status: 'queued' }),
+      jsonResponse({ status: 'COMPLETED', data: [{ image_url: 'https://cdn.example/result-image-url.png' }] }),
+      binaryResponse(pngHeaderBytes()),
+    ], { storeGeneratedImage: storedImage });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-image-url', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: '一只狗', conversationId: 'conversation-image-url', sessionId: 'desktop-session-image-url', referenceAssetIds: [],
+      aspectRatio: '1:1', resolution: '2K', outputCount: 1,
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
+      status: 'completed', progress: 1, result: { assetId: 'fedcba9876543210' },
+    });
+    expect(storedImage).toHaveBeenCalledWith('desktop-session-image-url', expect.any(Uint8Array), 'image/png');
+  });
+
+  it('marks RelayMe history failed when task polling cannot complete', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_poll_failure', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-poll-failure', status: 'queued' }),
+      new Error('socket closed'),
+    ], { historySink });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-poll-failure', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'poll failure', conversationId: 'conversation-poll-failure', sessionId: 'desktop-session-poll-failure', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toThrow();
+    expect(historySink.failed).toHaveBeenCalledWith('history_relayme_poll_failure', 'provider_failed');
+  });
+
+  it('closes RelayMe history when the provider returns a failed task state', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_provider_failed', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-provider-failed', status: 'queued' }),
+      jsonResponse({ status: 'FAILED', error: 'generation timeout' }),
+    ], { historySink });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-provider-failed', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'provider failure', conversationId: 'conversation-provider-failed', sessionId: 'desktop-session-provider-failed', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({ status: 'failed' });
+    expect(historySink.failed).toHaveBeenCalledWith('history_relayme_provider_failed', 'provider_failed');
   });
 
   it('submits RelayMe jobs when the legacy global task ledger belongs to Comfly', async () => {

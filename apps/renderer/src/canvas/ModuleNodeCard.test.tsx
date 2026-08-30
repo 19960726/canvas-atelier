@@ -2394,6 +2394,25 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('alert')).not.toHaveTextContent('API 密钥');
   });
 
+  it('identifies a RelayMe submission failure instead of showing a generic configuration error', async () => {
+    const node = createCanvasModuleNode('relayme-submit-failure', 'image_generation', { x: 0, y: 0 });
+    const runImageGenerationNode = vi.fn(async () => {
+      throw Object.assign(new Error('RelayMe 生图任务提交失败'), { code: 'PROVIDER_ERROR' });
+    });
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'relayme', modelRoute: 'relayme-gpt-image-2', displayName: 'GPT Image 2', modelId: 'gpt-image-2', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({ runImageGenerationNode } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'A product image' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('RelayMe 生图请求失败'));
+  });
+
   it('explains that a recovery preview must be restored before generation', async () => {
     const node = createCanvasModuleNode('generator-recovery-failure', 'image_generation', { x: 0, y: 0 });
     const runImageGenerationNode = vi.fn(async () => {
@@ -2435,6 +2454,31 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
 
     expect(screen.getByRole('alert')).toHaveTextContent('API 密钥认证失败');
+  });
+
+  it('shows the real RelayMe route failure instead of a generic API configuration message', () => {
+    const node = createCanvasModuleNode('generator-relayme-route-failure', 'image_generation', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'relayme', modelRoute: 'relayme-rena2', displayName: 'RENA2', modelId: 'RENA2', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({
+      modelJobs: [{
+        id: 'failed-relayme-route-job',
+        kind: 'image',
+        modelRoute: 'relayme-rena2',
+        promptNodeId: node.id,
+        status: 'failed',
+        error: '所选 RelayMe 模型不可用或能力不匹配',
+        updatedAt: '2026-08-30T06:00:00.000Z',
+      }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('当前 RelayMe 模型路线不可用');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('检查模型与 API 配置');
   });
 
   it('shows an actionable local-state reason when the provider task ledger is unavailable', () => {

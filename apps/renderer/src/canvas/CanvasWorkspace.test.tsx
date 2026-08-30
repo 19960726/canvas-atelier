@@ -1398,6 +1398,44 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
   });
 
+  it('deletes the selected canvas node with Delete while the settings drawer is open', async () => {
+    const selectedNode = createCanvasModuleNode('delete-behind-settings', 'image_generation', { x: 80, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [selectedNode] },
+    }));
+    render(<CanvasWorkspace />);
+    const node = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(node).not.toBeNull();
+
+    fireEvent.click(node!);
+    fireEvent.click(screen.getByLabelText('打开设置'));
+    expect(screen.getByRole('complementary', { name: /设置/u })).toBeVisible();
+    fireEvent.keyDown(window, { key: 'Delete' });
+
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+  });
+
+  it('restores a deleted canvas node with Ctrl+Z while the settings drawer is open', async () => {
+    const selectedNode = createCanvasModuleNode('undo-behind-settings', 'image_generation', { x: 80, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [selectedNode] },
+      undoStack: [],
+    }));
+    render(<CanvasWorkspace />);
+    const node = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(node).not.toBeNull();
+
+    fireEvent.click(node!);
+    fireEvent.click(screen.getByLabelText('打开设置'));
+    fireEvent.keyDown(window, { key: 'Delete' });
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+
+    await waitFor(() => expect(useAppStore.getState().project.nodes.map((item) => item.id)).toEqual([selectedNode.id]));
+  });
+
   it('restores a node deleted from canvas chrome when Ctrl+Z is pressed', async () => {
     const selectedNode = createCanvasModuleNode('undo-delete-from-canvas', 'text_prompt', { x: 80, y: 120 });
     resetAppStoreForTests({ project: 'empty' });

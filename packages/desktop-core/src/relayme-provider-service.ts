@@ -273,31 +273,42 @@ export function createRelayMeProviderService(options: {
           modelDisplayName: profile.displayName,
           provider: 'relayme',
         })).historyId;
-      const response = await translateRelayMeCall(
-        () => createClientFromCredentials().then((client) => client.generateImage({
-          model: profile.modelId ?? profile.modelRoute,
-          messages: [{ role: 'user', content: validated.prompt }],
-          ...(validated.aspectRatio === undefined ? {} : { imageAspectRatio: validated.aspectRatio }),
-          ...(validated.resolution === undefined ? {} : { imageSampleSize: validated.resolution }),
-          imageQuality: 'medium',
-          ...(validated.outputCount === undefined ? {} : { n: validated.outputCount }),
-        })),
-        'RelayMe 生图任务提交失败',
-      );
-      const registered = await registerTask('image', response.taskId, validated.sessionId ?? validated.conversationId, historyId);
-      if (historyId !== undefined) await options.historySink!.running(historyId);
-      return registered;
+      try {
+        const response = await translateRelayMeCall(
+          () => createClientFromCredentials().then((client) => client.generateImage({
+            model: profile.modelId ?? profile.modelRoute,
+            messages: [{ role: 'user', content: validated.prompt }],
+            ...(validated.aspectRatio === undefined ? {} : { imageAspectRatio: validated.aspectRatio }),
+            ...(validated.resolution === undefined ? {} : { imageSampleSize: validated.resolution }),
+            imageQuality: 'medium',
+            ...(validated.outputCount === undefined ? {} : { n: validated.outputCount }),
+          })),
+          'RelayMe 生图任务提交失败',
+        );
+        const registered = await registerTask('image', response.taskId, validated.sessionId ?? validated.conversationId, historyId);
+        if (historyId !== undefined) await options.historySink!.running(historyId);
+        return registered;
+      } catch (error) {
+        await markRelayMeHistoryFailed(historyId, options.historySink, error);
+        throw error;
+      }
     },
     async pollImageJob(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.pollImageJob, request) as PollImageJobBridgeRequest;
       assertRelayMeProvider(validated.provider);
       const task = await requireTask(validated.providerTaskId, 'image');
       if (task.state !== 'running') return imageTerminalResult(task);
-      const response = await pollTask(task.rawTaskId, '图片');
-      const result = await mapTaskState(validated.providerTaskId, response, 'image', (content, item) => persistGeneratedResult(task.sessionId, content, 'image', task.historyId, item));
-      updateTaskFromPoll(task, result);
-      await persistPolledTask(validated.providerTaskId, result);
-      return result;
+      try {
+        const response = await pollTask(task.rawTaskId, '图片');
+        const result = await mapTaskState(validated.providerTaskId, response, 'image', (content, item) => persistGeneratedResult(task.sessionId, content, 'image', task.historyId, item));
+        updateTaskFromPoll(task, result);
+        await persistRelayMeHistoryTerminal(task.historyId, options.historySink, result);
+        await persistPolledTask(validated.providerTaskId, result);
+        return result;
+      } catch (error) {
+        await markRelayMeHistoryFailed(task.historyId, options.historySink, error);
+        throw error;
+      }
     },
     async cancelImageJob(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request) as CancelImageJobBridgeRequest;
@@ -330,32 +341,43 @@ export function createRelayMeProviderService(options: {
           modelDisplayName: profile.displayName,
           provider: 'relayme',
         })).historyId;
-      const response = await translateRelayMeCall(
-        () => createClientFromCredentials().then((client) => client.generateVideo({
-          model: profile.modelId ?? profile.modelRoute,
-          messages: [{ role: 'user', content: validated.prompt }],
-          ...(validated.aspectRatio === undefined ? {} : { videoAspectRatio: validated.aspectRatio }),
-          ...(validated.resolution === undefined ? {} : { videoResolution: validated.resolution }),
-          ...(validated.durationSeconds === undefined ? {} : { videoSeconds: validated.durationSeconds }),
-          ...(validated.outputCount === undefined ? {} : { n: validated.outputCount }),
-          ...(validated.audioEnabled === undefined ? {} : { videoGenerateAudio: validated.audioEnabled }),
-        })),
-        'RelayMe 视频任务提交失败',
-      );
-      const registered = await registerTask('video', response.taskId, validated.sessionId ?? validated.conversationId, historyId);
-      if (historyId !== undefined) await options.historySink!.running(historyId);
-      return registered;
+      try {
+        const response = await translateRelayMeCall(
+          () => createClientFromCredentials().then((client) => client.generateVideo({
+            model: profile.modelId ?? profile.modelRoute,
+            messages: [{ role: 'user', content: validated.prompt }],
+            ...(validated.aspectRatio === undefined ? {} : { videoAspectRatio: validated.aspectRatio }),
+            ...(validated.resolution === undefined ? {} : { videoResolution: validated.resolution }),
+            ...(validated.durationSeconds === undefined ? {} : { videoSeconds: validated.durationSeconds }),
+            ...(validated.outputCount === undefined ? {} : { n: validated.outputCount }),
+            ...(validated.audioEnabled === undefined ? {} : { videoGenerateAudio: validated.audioEnabled }),
+          })),
+          'RelayMe 视频任务提交失败',
+        );
+        const registered = await registerTask('video', response.taskId, validated.sessionId ?? validated.conversationId, historyId);
+        if (historyId !== undefined) await options.historySink!.running(historyId);
+        return registered;
+      } catch (error) {
+        await markRelayMeHistoryFailed(historyId, options.historySink, error);
+        throw error;
+      }
     },
     async pollVideoJob(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.pollVideoJob, request) as PollVideoJobBridgeRequest;
       assertRelayMeProvider(validated.provider);
       const task = await requireTask(validated.providerTaskId, 'video');
       if (task.state !== 'running') return videoTerminalResult(task);
-      const response = await pollTask(task.rawTaskId, '视频');
-      const result = await mapTaskState(validated.providerTaskId, response, 'video', (content, item) => persistGeneratedResult(task.sessionId, content, 'video', task.historyId, item));
-      updateTaskFromPoll(task, result);
-      await persistPolledTask(validated.providerTaskId, result);
-      return result;
+      try {
+        const response = await pollTask(task.rawTaskId, '视频');
+        const result = await mapTaskState(validated.providerTaskId, response, 'video', (content, item) => persistGeneratedResult(task.sessionId, content, 'video', task.historyId, item));
+        updateTaskFromPoll(task, result);
+        await persistRelayMeHistoryTerminal(task.historyId, options.historySink, result);
+        await persistPolledTask(validated.providerTaskId, result);
+        return result;
+      } catch (error) {
+        await markRelayMeHistoryFailed(task.historyId, options.historySink, error);
+        throw error;
+      }
     },
     async cancelVideoJob(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelVideoJob, request) as CancelVideoJobBridgeRequest;
@@ -590,6 +612,24 @@ type RelayTaskStateResponse = {
   readonly durationSeconds?: number;
 };
 
+async function markRelayMeHistoryFailed(historyId: string | undefined, sink: GenerationHistoryProviderSinkContract | undefined, _error: unknown): Promise<void> {
+  // The provider task may already be terminal; the history sink is idempotent and
+  // must still be closed when a poll/download error prevents a normal terminal map.
+  if (historyId === undefined) return;
+  if (sink === undefined) return;
+  await sink.failed(historyId, 'provider_failed').catch(() => undefined);
+}
+
+async function persistRelayMeHistoryTerminal(
+  historyId: string | undefined,
+  sink: GenerationHistoryProviderSinkContract | undefined,
+  result: PollImageJobBridgeResult | PollVideoJobBridgeResult,
+): Promise<void> {
+  if (historyId === undefined || sink === undefined) return;
+  if (result.status === 'failed') await sink.failed(historyId, 'provider_failed');
+  if (result.status === 'cancelled') await sink.cancelled(historyId, 'cancelled_by_system');
+}
+
 async function mapTaskState(
   _publicTaskId: string,
   response: RelayTaskStateResponse,
@@ -655,10 +695,14 @@ function videoCancelTerminalResult(task: Extract<RelayTask, { kind: 'video' }>):
 }
 function firstResultItem(value: unknown, kind: RelayTask['kind']): Record<string, unknown> {
   const candidate = Array.isArray(value) ? value[0] : value;
+  if (typeof candidate === 'string' && candidate.trim().length > 0) return { url: candidate.trim() };
   if (isPlainRecord(candidate)) {
     if (Array.isArray(candidate.data)) return firstResultItem(candidate.data, kind);
     if (Array.isArray(candidate.images)) return firstResultItem(candidate.images, kind);
     if (Array.isArray(candidate.videos)) return firstResultItem(candidate.videos, kind);
+    const urlKey = kind === 'image' ? 'image_url' : 'video_url';
+    if (typeof candidate[urlKey] === 'string' && candidate[urlKey].trim().length > 0) return candidate;
+    if (Array.isArray(candidate.result_urls)) return firstResultItem(candidate.result_urls, kind);
     if (isPlainRecord(candidate.result)) return firstResultItem(candidate.result, kind);
     const contentKey = kind === 'image' ? 'imageContent' : 'videoContent';
     if (typeof candidate[contentKey] === 'string' && candidate[contentKey].trim().length > 0) return candidate;
@@ -669,7 +713,8 @@ function firstResultItem(value: unknown, kind: RelayTask['kind']): Record<string
 }
 function resultContent(value: Record<string, unknown>, kind: RelayTask['kind']): string {
   const contentKey = kind === 'image' ? 'imageContent' : 'videoContent';
-  const content = value[contentKey] ?? value.url;
+  const urlKey = kind === 'image' ? 'image_url' : 'video_url';
+  const content = value[contentKey] ?? value.url ?? value[urlKey];
   if (typeof content !== 'string' || content.trim().length === 0) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 没有返回可用的生成结果');
   }

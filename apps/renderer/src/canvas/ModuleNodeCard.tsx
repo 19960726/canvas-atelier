@@ -2348,6 +2348,15 @@ function generationJobTimestamp(job: ModelJob): string {
 function formatGenerationJobError(job: ModelJob | undefined, kind: 'image' | 'video' = 'image'): string | null {
   if (job === undefined) return null;
   const error = String(job.error ?? '').toLowerCase();
+  if (error.includes('模型不可用') || error.includes('能力不匹配')) {
+    return '当前 RelayMe 模型路线不可用，请刷新模型目录或重新选择模型。';
+  }
+  if (error.includes('登录已失效') || error.includes('凭据') || error.includes('密钥已锁定')) {
+    return 'RelayMe 登录已失效或凭据已锁定，请重新登录后重试。';
+  }
+  if (error.includes('生图任务提交失败') || error.includes('视频任务提交失败')) {
+    return `RelayMe ${kind === 'video' ? '视频' : '生图'}任务未能提交，请先检测连接；若连接正常，请稍后重试。`;
+  }
   if (error.includes('401') || error.includes('authentication') || error.includes('unauthorized')) {
     return 'API 密钥认证失败，请检查当前模型所属平台的密钥。';
   }
@@ -2420,12 +2429,16 @@ function formatGenerationStartError(error: unknown, kind: 'image' | 'video'): st
   const code = typeof error === 'object' && error !== null && 'code' in error
     ? String((error as { code?: unknown }).code ?? '')
     : '';
+  const message = error instanceof Error ? error.message : String(error ?? '');
   if (code === 'MODEL_ROUTE_UNAVAILABLE') return '当前选择的模型已失效，请重新选择模型后再试。';
   if (code === 'PROVIDER_BRIDGE_UNAVAILABLE') return '模型服务尚未连接，请重启应用后再试。';
   if (code === 'GENERATION_PARAMETERS_UNSUPPORTED') return '当前模型不支持所选参数，请调整比例或清晰度后再试。';
   if (code === 'RECOVERY_REQUIRED') return '当前是受保护的恢复预览，请先恢复并继续当前项目，再开始生成。';
   if (code === 'PROJECT_COMMIT_FAILED') return '画布尚未保存成功，保存项目后再开始生成。';
   if (code === 'MODEL_SESSION_FAILED') return '无法建立模型任务会话，请重新打开项目后再试。';
+  if (/RelayMe/iu.test(message) && /(?:提交失败|任务失败|请求失败)/u.test(message)) {
+    return `RelayMe ${kind === 'video' ? '视频' : '生图'}请求失败，请先检测连接并确认当前账号仍已登录。`;
+  }
   return kind === 'video'
     ? '视频生成未启动，请检查模型、API 密钥和输入后重试。'
     : '生成未启动，请检查模型、API 密钥和输入后重试。';

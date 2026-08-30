@@ -430,6 +430,7 @@ const PROJECT_MANIFEST_PATH = 'project.novus.json';
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const MAX_PROJECT_IMAGE_BYTES = 256 * 1024 * 1024;
 const MAX_PROJECT_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
+const PROJECT_PREVIEW_CAPTURE_TIMEOUT_MS = 2_000;
 type ImportableReferenceRole = Exclude<ReferenceRole, 'placement_preview'>;
 const PROJECT_IMAGE_REFERENCE_LAYOUT: Record<
   ImportableReferenceRole,
@@ -2091,7 +2092,7 @@ export function createDesktopBridgeHandlers(
   async function writeProjectPreview(projectRoot: string): Promise<void> {
     if (dependencies.captureProjectPreview === undefined) return;
     try {
-      const bytes = await dependencies.captureProjectPreview();
+      const bytes = await captureOptionalProjectPreview(dependencies.captureProjectPreview);
       if (bytes === null || bytes.byteLength < 8 || bytes.byteLength > 10 * 1024 * 1024) return;
       const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
       if (!pngSignature.every((value, index) => bytes[index] === value)) return;
@@ -2610,6 +2611,32 @@ export function createDesktopBridgeHandlers(
     }
   }
 
+}
+
+function captureOptionalProjectPreview(
+  capture: () => Promise<Uint8Array | null>,
+): Promise<Uint8Array | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      settled = true;
+      resolve(null);
+    }, PROJECT_PREVIEW_CAPTURE_TIMEOUT_MS);
+    void capture().then(
+      (bytes) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve(bytes);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve(null);
+      },
+    );
+  });
 }
 
 export function registerDesktopBridgeHandlers(

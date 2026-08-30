@@ -395,7 +395,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().canRetryProjectCommit && get().projectCommitConflictCode === null) {
       await get().retryFailedProjectCommit();
     }
-    if (!await ensureModelRunSaveBoundary(get)) return false;
+    if (!await ensureModelRunSaveBoundary(get)) {
+      throw createGenerationStartError('PROJECT_COMMIT_FAILED', 'Project must be saved before image generation starts');
+    }
     return enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     const node = getModuleNode(state.project.nodes, nodeId);
@@ -535,7 +537,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().canRetryProjectCommit && get().projectCommitConflictCode === null) {
       await get().retryFailedProjectCommit();
     }
-    if (!await ensureModelRunSaveBoundary(get)) return false;
+    if (!await ensureModelRunSaveBoundary(get)) {
+      throw createGenerationStartError('PROJECT_COMMIT_FAILED', 'Project must be saved before video generation starts');
+    }
     return enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     const node = getModuleNode(state.project.nodes, nodeId);

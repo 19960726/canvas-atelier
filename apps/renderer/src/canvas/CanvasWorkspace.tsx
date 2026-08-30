@@ -1445,14 +1445,14 @@ export function CanvasWorkspace() {
     const handleCanvasKeyboardShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.altKey) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
-        if (event.repeat || activeSurface !== null || isEditableKeyboardTarget(event.target)) return;
+        if (event.repeat || isEditableKeyboardTarget(event.target)) return;
         event.preventDefault();
         void undo();
         return;
       }
       if (event.ctrlKey || event.metaKey) return;
       if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (activeSurface !== null || selectedFlowNodeIds.length === 0 || isEditableKeyboardTarget(event.target)) return;
+        if (selectedFlowNodeIds.length === 0 || isEditableKeyboardTarget(event.target)) return;
         // Delete is a canvas command. Capture it before React Flow or a node
         // control can stop propagation, and ignore key auto-repeat so one
         // held key cannot enqueue competing durable transactions.
