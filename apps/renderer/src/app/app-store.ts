@@ -1373,7 +1373,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     modelJobUnsubscribe = null;
     knowledgeClient.stop();
     try {
-      await projectPersistenceClient.close();
+      await withProjectPersistenceTimeout(projectPersistenceClient.close());
       return true;
     } catch {
       return false;
@@ -1394,7 +1394,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     modelJobUnsubscribe = null;
     knowledgeClient.stop();
     try {
-      await projectPersistenceClient.close();
+      await withProjectPersistenceTimeout(projectPersistenceClient.close());
       set({
         recoveryRequired: false,
         saveErrorCode: null,
@@ -1597,7 +1597,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().recoveryRequired) return;
     invalidateProjectPersistenceBoundary();
     cancelPendingProjectSave();
-    await projectPersistenceClient.close().catch(() => undefined);
+    await withProjectPersistenceTimeout(projectPersistenceClient.close()).catch(() => undefined);
     clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds: [],
