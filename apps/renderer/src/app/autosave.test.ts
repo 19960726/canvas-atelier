@@ -134,7 +134,7 @@ describe('renderer autosave', () => {
     expect(useAppStore.getState().availableSnapshotIds).toEqual(['stable-concurrent']);
   });
 
-  it('flushes blur and close boundaries through the existing commit and stablePoint bridge', async () => {
+  it('flushes blur through the commit boundary and closes without a redundant stablePoint call', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
       project: nextProject,
@@ -155,7 +155,7 @@ describe('renderer autosave', () => {
     await useAppStore.getState().closePersistence();
 
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(stablePoint).toHaveBeenCalledTimes(2);
+    expect(stablePoint).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().availableSnapshotIds).toEqual(['stable-8']);
   });

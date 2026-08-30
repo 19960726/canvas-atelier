@@ -1852,6 +1852,22 @@ describe('project optimization memory', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it('closes an already-saved writable session without re-entering the stable-point save boundary', async () => {
+    const close = vi.fn(async () => undefined);
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      project: createStarterProject(),
+      revision: 3,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ close, stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ saveStatus: 'saved', projectLifecycle: 'durable' });
+
+    await expect(useAppStore.getState().closePersistence()).resolves.toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+    expect(stablePoint).not.toHaveBeenCalled();
+  });
+
   it('marks an opened read-only project as eligible for durable reload', async () => {
     replaceProjectPersistenceClientForTests(createMockClient({
       openProject: async () => ({

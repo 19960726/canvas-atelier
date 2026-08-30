@@ -1362,8 +1362,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     if (state.recoveryRequired) return false;
     if (state.saveStatus !== 'read_only') {
-      const flushed = await flushPendingProjectSave(get, set, 'close');
-      if (!flushed) return false;
+      const hasPendingSave = projectAutosave.hasPending() || projectAutosave.hasInFlight();
+      if (state.saveStatus !== 'saved' || hasPendingSave) {
+        const flushed = await flushPendingProjectSave(get, set, 'close');
+        if (!flushed) return false;
+      }
     }
     invalidateModelJobStoreGeneration();
     modelJobStore?.stop();
