@@ -781,7 +781,7 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().undoStack).toEqual([]);
   });
 
-  it('preserves locked nodes when deleting a mixed canvas selection', async () => {
+  it('deletes position-locked nodes because locking only prevents movement', async () => {
     const unlocked = createCanvasModuleNode('delete-unlocked', 'text_prompt', { x: 80, y: 120 });
     const locked = { ...createCanvasModuleNode('delete-locked', 'image_generation', { x: 360, y: 120 }), locked: true };
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
@@ -805,7 +805,7 @@ describe('project optimization memory', () => {
 
     await expect(useAppStore.getState().deleteCanvasNodes([unlocked.id, locked.id])).resolves.toBe(true);
 
-    expect(useAppStore.getState().project.nodes.map((node) => node.id)).toEqual([locked.id]);
+    expect(useAppStore.getState().project.nodes).toEqual([]);
     expect(useAppStore.getState().project.edges).toEqual([]);
     expect(commit).toHaveBeenCalledTimes(1);
   });

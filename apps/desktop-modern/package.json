@@ -1,7 +1,7 @@
 {
   "name": "@agent-canvas/desktop-modern",
   "private": true,
-  "version": "1.6.69",
+  "version": "1.6.70",
   "type": "module",
   "main": "./dist/main.cjs",
   "scripts": {

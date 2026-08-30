@@ -1379,6 +1379,25 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
   });
 
+  it('deletes a position-locked node with Delete after selecting it on the canvas', async () => {
+    const selectedNode = {
+      ...createCanvasModuleNode('delete-position-locked', 'image_generation', { x: 80, y: 120 }),
+      locked: true,
+    };
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [selectedNode] },
+    }));
+    render(<CanvasWorkspace />);
+    const node = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(node).not.toBeNull();
+
+    fireEvent.click(node!);
+    fireEvent.keyDown(window, { key: 'Delete' });
+
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+  });
+
   it('restores a node deleted from canvas chrome when Ctrl+Z is pressed', async () => {
     const selectedNode = createCanvasModuleNode('undo-delete-from-canvas', 'text_prompt', { x: 80, y: 120 });
     resetAppStoreForTests({ project: 'empty' });

@@ -1097,8 +1097,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (requestedNodeIds.length === 0) return false;
     const existingNodesById = new Map(state.project.nodes.map((node) => [node.id, node]));
     if (requestedNodeIds.some((nodeId) => !existingNodesById.has(nodeId))) return false;
-    const selectedNodeIds = requestedNodeIds.filter((nodeId) => existingNodesById.get(nodeId)?.locked !== true);
-    if (selectedNodeIds.length === 0) return false;
+    const selectedNodeIds = requestedNodeIds;
     const selectedIds = new Set(selectedNodeIds);
     const connectedEdges = state.project.edges.filter((edge) => selectedIds.has(edge.source) || selectedIds.has(edge.target));
     const suffix = `${Date.now()}-${planSequence++}`;
