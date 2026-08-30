@@ -213,6 +213,29 @@ describe('RelayMe provider service', () => {
     );
   });
 
+  it('keeps the validated RelayMe model catalog available after restart when the network is temporarily unavailable', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-cached-login-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: true, locked: false });
+    const onlineService = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch: vi.fn(async () => modelsResponse()),
+      loginAccount: vi.fn(async () => 'header.payload.signature'),
+    });
+
+    await onlineService.loginRelayMe?.({ username: 'artist@example.test', password: 'not-a-real-password' });
+
+    const offlineService = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch: vi.fn(async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9'); }),
+    });
+    await expect(offlineService.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'relayme', modelId: 'gpt-image-2', capabilityStatus: 'complete' }),
+    ]));
+  });
+
   it('uses the live RelayMe model catalog and routes Agent chat to chat completions', async () => {
     const { service, fetch } = await createService([
       jsonResponse({ success: true, data: { models: [

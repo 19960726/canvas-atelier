@@ -740,7 +740,7 @@ export function CanvasWorkspace() {
     void (async () => {
       try {
         const hasCanvasContent = project.nodes.length > 0 || project.edges.length > 0 || project.projectMemory.length > 0;
-        if (hasCanvasContent && saveStatus !== 'saved' && !await workspaceApi.save()) return;
+        if (hasCanvasContent && saveStatus !== 'saved' && saveStatus !== 'read_only' && !await workspaceApi.save()) return;
         setFileMenuOpen(false);
         setModuleLibraryOpen(false);
         setQuickInsert(null);
@@ -1065,6 +1065,13 @@ export function CanvasWorkspace() {
     if (!await reloadDurableProject()) return false;
     return await Promise.resolve(workspaceApi.addModule(moduleType, position)) === true;
   }, [canReloadDurableProject, reloadDurableProject, workspaceApi]);
+
+  const deleteCanvasNodesWithDurableReload = useCallback(async (nodeIds: readonly string[]) => {
+    const deleted = await deleteCanvasNodes(nodeIds);
+    if (deleted || saveStatus !== 'read_only') return deleted;
+    if (!await reloadDurableProject()) return false;
+    return deleteCanvasNodes(nodeIds);
+  }, [deleteCanvasNodes, reloadDurableProject, saveStatus]);
 
   const createModuleFromSelectedMedia = useCallback(async (
     moduleType: CanvasModuleType,
@@ -1459,7 +1466,7 @@ export function CanvasWorkspace() {
         if (event.repeat) return;
         event.preventDefault();
         dispatchGenerationEditor({ type: 'node-removed', nodeIds: selectedFlowNodeIds });
-        void deleteCanvasNodes(selectedFlowNodeIds).then((deleted) => {
+        void deleteCanvasNodesWithDurableReload(selectedFlowNodeIds).then((deleted) => {
           if (!deleted) return;
           setActiveFlowEdgeIds([]);
         });
@@ -1486,7 +1493,7 @@ export function CanvasWorkspace() {
     };
     window.addEventListener('keydown', handleCanvasKeyboardShortcut, true);
     return () => window.removeEventListener('keydown', handleCanvasKeyboardShortcut, true);
-  }, [activeSurface, changeSurface, closeAgentPanel, deleteCanvasNodes, generationEditorState.expandedNodeId, quickInsert, resultOutputMenuNodeId, selectedFlowNodeIds, undo]);
+  }, [activeSurface, changeSurface, closeAgentPanel, deleteCanvasNodesWithDurableReload, generationEditorState.expandedNodeId, quickInsert, resultOutputMenuNodeId, selectedFlowNodeIds, undo]);
 
   useEffect(() => {
     let cancelled = false;

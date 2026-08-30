@@ -910,6 +910,18 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
   });
 
+  it('starts a new project from a read-only canvas without waiting on an impossible save', async () => {
+    const newWorkflow = vi.fn(async () => {});
+    const saveProjectExplicitly = vi.fn(async () => false);
+    useAppStore.setState({ newWorkflow, saveProjectExplicitly, saveStatus: 'read_only' } as never);
+    render(<CanvasWorkspace />);
+
+    fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
+
+    await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
+    expect(saveProjectExplicitly).not.toHaveBeenCalled();
+  });
+
   it('coalesces repeated new-project clicks while silent save is in flight', async () => {
     let resolveSave: ((saved: boolean) => void) | undefined;
     const saveProjectExplicitly = vi.fn(() => new Promise<boolean>((resolve) => { resolveSave = resolve; }));
@@ -1509,6 +1521,39 @@ describe('CanvasWorkspace', () => {
     fireEvent.keyDown(window, { key: 'Delete' });
 
     await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+  });
+
+  it('promotes and retries when Delete is pressed before read-only auto-promotion runs', async () => {
+    const selectedNode = createCanvasModuleNode('delete-with-immediate-promotion', 'text_prompt', { x: 80, y: 120 });
+    const reloadDurableProject = vi.fn(async () => {
+      useAppStore.setState({ saveStatus: 'saved' });
+      return true;
+    });
+    const deleteCanvasNodes = vi.fn(async () => {
+      if (useAppStore.getState().saveStatus === 'read_only') return false;
+      useAppStore.setState((state) => ({
+        project: { ...state.project, nodes: [] },
+      }));
+      return true;
+    });
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState((state) => ({
+      canReloadDurableProject: true,
+      deleteCanvasNodes,
+      project: { ...state.project, nodes: [selectedNode] },
+      reloadDurableProject,
+      saveStatus: 'read_only',
+    }));
+    render(<CanvasWorkspace />);
+    const node = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(node).not.toBeNull();
+
+    fireEvent.click(node!);
+    fireEvent.keyDown(window, { key: 'Delete' });
+
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+    expect(reloadDurableProject).toHaveBeenCalledOnce();
+    expect(deleteCanvasNodes).toHaveBeenCalledTimes(2);
   });
 
   it('deletes the latest React Flow selection when Backspace is pressed from canvas chrome', async () => {

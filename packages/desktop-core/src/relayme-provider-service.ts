@@ -116,6 +116,12 @@ export function createRelayMeProviderService(options: {
       );
       await options.credentialStore.configure({ token });
       loginValidatedProfiles = buildRelayMeModelProfiles(models);
+      const nextConfiguration = {
+        ...configuration,
+        profiles: mergeProfiles(loginValidatedProfiles, configuration.profiles),
+      };
+      await configurationStore.write(nextConfiguration);
+      configurationCache = cloneConfiguration(nextConfiguration);
       discoveredProfiles = null;
     },
     async logoutRelayMe() {
@@ -400,13 +406,22 @@ export function createRelayMeProviderService(options: {
   async function listProfiles(): Promise<ProviderBridgeProfile[]> {
     await requireUnlockedCredentials();
     if (discoveredProfiles !== null) return discoveredProfiles.map(cloneProfile);
-    const client = await createClientFromCredentials();
-    const modelProfiles = loginValidatedProfiles ?? buildRelayMeModelProfiles(await translateRelayMeCall(
-      () => client.listModels(),
-      'RelayMe 模型目录读取失败',
-    ));
-    const workflowModelProfiles = buildRelayMeWorkflowModelProfiles(await loadWorkflows(client));
     const configured = (await captureConfiguration()).profiles;
+    const client = await createClientFromCredentials();
+    let modelProfiles = loginValidatedProfiles;
+    if (modelProfiles === null) {
+      try {
+        modelProfiles = buildRelayMeModelProfiles(await translateRelayMeCall(
+          () => client.listModels(),
+          'RelayMe 模型目录读取失败',
+        ));
+      } catch (error) {
+        if (configured.length === 0) throw error;
+        discoveredProfiles = configured.map(cloneProfile);
+        return discoveredProfiles.map(cloneProfile);
+      }
+    }
+    const workflowModelProfiles = buildRelayMeWorkflowModelProfiles(await loadWorkflows(client));
     discoveredProfiles = mergeProfiles(mergeDiscoveredModelProfiles([
       ...workflowModelProfiles,
       ...modelProfiles,
