@@ -422,3 +422,13 @@ Before producing an installer, verify at minimum:
 - 1.6.74 packaged QA：`win-unpacked/Canvas Atelier.exe` 在隔离数据根中报告版本 `1.6.74`；新建项目无确认框；创建节点后状态为 `pending`，点击真实保存按钮正常进入 `saved`，没有停留在 `saving`；节点从 `(730, 301.67)` 移至 `(843, 376.67)` 后 Ctrl+Z 回原位；Delete 删除后 Ctrl+Z 恢复；生图提示词文本 Ctrl+Z 清除；Codex Agent 选择 `gemini-3.1-flash-lite`，真实对话返回 `OK`；静默退出在 25 秒门限内完成，页面错误为 0。
 - 正式构建证据：联合 RelayMe 回归 43/43、全工作区 typecheck、production build 和 Electron Builder Windows x64 NSIS 均通过；完整 Vitest 为 210 个文件、2566 个测试通过，2 个性能文件/测试按设计跳过。
 - 1.6.74 Windows x64 NSIS：`CanvasAtelier-Win10-11-x64-1.6.74.exe`，103192040 字节，SHA-256 `925EF2FCD236007AA40CBE8C37720BCA7D3E724B8E4D74CE6CFD3B51DCE4AC58`；blockmap 109534 字节，SHA-256 `F7E4395471210E50C0D817EC64F7D01EFACA430182AE391B8A4851EE36865AAE`；`latest.yml` 372 字节，SHA-256 `6EE29C1AEE45DF08A8C75712B42F093AE06F6D937D0BD8F68EE94CCD140A6A49`。安装包未签名（`NotSigned`），Windows 可能显示 SmartScreen 警告。
+
+## 2026-08-31 正式数据冲突、新建/退出恢复与 RelayMe 连接状态修复
+
+- 正式版“新建项目无响应”的确认根因是当前项目处于 `REVISION_CONFLICT`：新建流程仍先调用不可能成功的保存，并在失败后直接返回。现在只在只读或持久化冲突阻止保存时明确询问是否放弃本次未保存更改；取消会保留原画布，确认后才新建。正常可保存状态仍先静默保存，不降低数据安全。
+- 正式版“退出卡住”的确认根因是关闭协调器收到 Renderer 的 `failed`/`timeout`/`unavailable` 结果后已有恢复回调能力，但主进程没有接入。主进程现在显示原生安全选择，默认取消；只有用户明确选择“放弃未保存更改并退出”才关闭，已保存项目不受影响。
+- RelayMe 当前正式凭据与 Electron 网络链路经只读模型目录调用验证为可连接；截图中“网络不可用”不能据此认定为真实断网。设置页此前 12 秒超时短于 provider 的 30 秒请求边界，会提前把慢响应误标为网络不可用。UI 检测边界现为 35 秒，并把超时单列为“连接检测超时”，认证、限流与真实网络错误仍保持独立状态。
+- 回归位置：`apps/renderer/src/canvas/CanvasWorkspace.test.tsx`、`apps/desktop-modern/src/close-coordinator.test.ts`、`apps/renderer/src/settings/SettingsDrawer.test.tsx`。TDD 红灯分别复现冲突新建不执行、主进程未接恢复回调、前端超时误标网络不可用。
+- 新鲜验证：相关联合回归 192/192，升版后的版本/关闭/新建/设置联合回归 201/201；全工作区 TypeScript 通过；完整 Vitest 210 个文件、2571 个测试通过，2 个性能文件/测试按设计跳过。生产 build 与 Electron Builder Windows x64 NSIS 均退出 0。
+- 1.6.76 隔离 packaged 验收实际执行了“新建项目 → 创建图片生成节点 → 保存 → 正常关闭 → 重新打开恢复”：两次运行版本均为 1.6.76，`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、`restoredImageNodes=1`，五个图片生成控件均可见。该验收未读取正式用户项目，也未触发付费生成。
+- 正式候选安装包：`apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.76.exe`，103192907 字节，SHA-256 `B84A48EF366F82338D2CBBC7A176B0C2F14F2A70701228F94F0600E3255C115B`；blockmap 109624 字节，SHA-256 `1D6EE8D386D741DCED9C8F9EB30D98710E1B6842B81F0865543B951048EF06D6`；`latest.yml` SHA-256 `69B1EB629B90A79F23AA87151B22B79E9C0CC6C61EA418AD64B9C87F1570B51B`。`app.asar` 包内版本独立读取为 1.6.76。安装包未签名（`NotSigned`），Windows 仍可能显示 SmartScreen 警告。

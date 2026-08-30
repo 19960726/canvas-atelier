@@ -910,14 +910,34 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
   });
 
-  it('starts a new project from a read-only canvas without waiting on an impossible save', async () => {
+  it('starts a new project from a read-only canvas after explicit confirmation without waiting on an impossible save', async () => {
     const newWorkflow = vi.fn(async () => {});
     const saveProjectExplicitly = vi.fn(async () => false);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     useAppStore.setState({ newWorkflow, saveProjectExplicitly, saveStatus: 'read_only' } as never);
     render(<CanvasWorkspace />);
 
     fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
 
+    await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
+    expect(saveProjectExplicitly).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit confirmation before abandoning a revision-conflicted canvas for a new project', async () => {
+    const newWorkflow = vi.fn(async () => {});
+    const saveProjectExplicitly = vi.fn(async () => false);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    useAppStore.setState({
+      newWorkflow,
+      saveProjectExplicitly,
+      saveStatus: 'error',
+      projectCommitConflictCode: 'REVISION_CONFLICT',
+    } as never);
+    render(<CanvasWorkspace />);
+
+    fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('未保存'));
     await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
     expect(saveProjectExplicitly).not.toHaveBeenCalled();
   });

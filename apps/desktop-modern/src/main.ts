@@ -274,6 +274,7 @@ app.whenReady().then(async () => {
     canRequestRendererFlush: canRequestRendererCloseFlush,
     closeAllProjects: runCoordinatedShutdown,
     finalizeClose: finalizeCoordinatedClose,
+    onCloseBlocked: showCloseRecoveryChoice,
     sendCloseFlushRequest: sendRendererCloseFlushRequest,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
@@ -561,6 +562,30 @@ function finalizeCoordinatedClose(): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     mainWindow.destroy();
   }
+}
+
+async function showCloseRecoveryChoice(
+  reason: 'failed' | 'timeout' | 'unavailable',
+): Promise<'cancel' | 'discard'> {
+  const reasonLabel = reason === 'timeout'
+    ? '保存超时'
+    : reason === 'unavailable'
+      ? '画布暂时无法响应'
+      : '保存失败';
+  const options = {
+    type: 'warning' as const,
+    buttons: ['取消', '放弃未保存更改并退出'],
+    cancelId: 0,
+    defaultId: 0,
+    detail: `${reasonLabel}。已成功保存的项目不会被删除；如果继续退出，只会放弃本次未保存的更改。`,
+    message: '当前画布无法完成保存',
+    noLink: true,
+    title: '退出 Canvas Atelier',
+  };
+  const result = mainWindow !== null && !mainWindow.isDestroyed()
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  return result.response === 1 ? 'discard' : 'cancel';
 }
 
 function createDesktopWindow(preload: string): BrowserWindow {

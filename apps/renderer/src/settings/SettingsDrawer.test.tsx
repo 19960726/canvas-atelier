@@ -356,6 +356,25 @@ describe('SettingsDrawer', () => {
     expect(await screen.findByText('连接成功，已同步 1 个模型，但没有模型声明反推能力')).toBeVisible();
     expect(screen.getByRole('button', { name: '检测连接' })).toBeEnabled();
   });
+
+  it('reports a stalled provider check as a timeout instead of falsely claiming the network is unavailable', async () => {
+    vi.useFakeTimers();
+    window.novusDesktop = {
+      provider: {
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async () => []),
+        checkConnection: vi.fn(() => new Promise<never>(() => undefined)),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '检测连接' }));
+    await vi.advanceTimersByTimeAsync(35_000);
+
+    expect(screen.getAllByText('连接检测超时').length).toBeGreaterThan(0);
+    expect(screen.queryByText('网络不可用')).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
   it('uses one Comfly API key for Agent, reverse prompt, image, and video capabilities', async () => {
     const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
     window.novusDesktop = { provider: { configure } } as unknown as typeof window.novusDesktop;

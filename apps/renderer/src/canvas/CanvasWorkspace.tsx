@@ -591,6 +591,7 @@ export function CanvasWorkspace() {
   const flushProjectSave = useAppStore((state) => state.flushProjectSave);
   const saveProjectExplicitly = useAppStore((state) => state.saveProjectExplicitly);
   const saveErrorCode = useAppStore((state) => state.saveErrorCode);
+  const projectCommitConflictCode = useAppStore((state) => state.projectCommitConflictCode);
   const canReloadDurableProject = useAppStore((state) => state.canReloadDurableProject);
   const canRetryProjectCommit = useAppStore((state) => state.canRetryProjectCommit);
   const recoveryRequired = useAppStore((state) => state.recoveryRequired);
@@ -740,7 +741,15 @@ export function CanvasWorkspace() {
     void (async () => {
       try {
         const hasCanvasContent = project.nodes.length > 0 || project.edges.length > 0 || project.projectMemory.length > 0;
-        if (hasCanvasContent && saveStatus !== 'saved' && saveStatus !== 'read_only' && !await workspaceApi.save()) return;
+        if (hasCanvasContent && saveStatus !== 'saved') {
+          const saveCannotProgress = saveStatus === 'read_only' || projectCommitConflictCode !== null;
+          if (saveCannotProgress) {
+            const abandonDraft = window.confirm('当前画布包含未保存的更改，且现在无法完成保存。\n\n是否放弃这些未保存更改并新建项目？');
+            if (!abandonDraft) return;
+          } else if (!await workspaceApi.save()) {
+            return;
+          }
+        }
         setFileMenuOpen(false);
         setModuleLibraryOpen(false);
         setQuickInsert(null);
@@ -750,7 +759,7 @@ export function CanvasWorkspace() {
         newProjectInFlightRef.current = false;
       }
     })();
-  }, [changeSurface, newWorkflow, project.edges.length, project.nodes.length, project.projectMemory.length, saveStatus, workspaceApi]);
+  }, [changeSurface, newWorkflow, project.edges.length, project.nodes.length, project.projectMemory.length, projectCommitConflictCode, saveStatus, workspaceApi]);
 
   const openSavedProject = useCallback(() => {
     setFileMenuOpen(false);

@@ -43,7 +43,8 @@ const REQUIRED_KNOWLEDGE_BASES = [
   { knowledgeBaseId: 'ecommerce-detail-knowledge', displayName: '电商详情页知识库', description: '详情页结构、卖点表达与视觉规范' },
 ] as const;
 
-type ConnectionStatus = 'unconfigured' | 'connected' | 'authentication_failed' | 'network_unavailable' | 'service_limited';
+type ConnectionStatus = 'unconfigured' | 'connected' | 'authentication_failed' | 'network_unavailable' | 'service_limited' | 'connection_timeout';
+const PROVIDER_CONNECTION_CHECK_TIMEOUT_MS = 35_000;
 type DesktopMcpIntegration = NonNullable<typeof window.novusDesktop>['mcpIntegration'];
 type DesktopMcpRuntime = NonNullable<typeof window.novusDesktop>['mcpRuntime'];
 type McpClientId = Parameters<DesktopMcpIntegration['connect']>[0];
@@ -423,9 +424,9 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
       setConnectionState('checking');
       let connectionStatus: ConnectionStatus;
       try {
-        connectionStatus = (await withProviderOperationTimeout(provider.checkConnection({ provider: providerId }), 12_000)).status;
-      } catch {
-        connectionStatus = 'network_unavailable';
+        connectionStatus = (await withProviderOperationTimeout(provider.checkConnection({ provider: providerId }), PROVIDER_CONNECTION_CHECK_TIMEOUT_MS)).status;
+      } catch (error) {
+        connectionStatus = error instanceof ProviderOperationTimeoutError ? 'connection_timeout' : 'network_unavailable';
       }
       setConnectionState(connectionStatus);
 
@@ -449,6 +450,10 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
 
       if (connectionStatus === 'service_limited') {
         setMessage(`${providerName} 密钥已保存，但服务暂时受限，请稍后重试`);
+        return;
+      }
+      if (connectionStatus === 'connection_timeout') {
+        setMessage(`${providerName} 密钥已保存，但连接检测超时，请稍后重试`);
         return;
       }
       setMessage(`${providerName} 密钥已保存，但暂时无法连接`);
@@ -628,7 +633,7 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
     setConnectionState('checking');
     setMessage(null);
     try {
-      const result = await withProviderOperationTimeout(provider.checkConnection({ provider: providerId }), 12_000);
+      const result = await withProviderOperationTimeout(provider.checkConnection({ provider: providerId }), PROVIDER_CONNECTION_CHECK_TIMEOUT_MS);
       setConnectionState(result.status);
       if (result.status === 'connected') {
         const refreshResult = await refreshAvailableModels(providerId);
@@ -653,7 +658,7 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
       }
       setMessage(`${providerName} 暂时无法连接，请检查网络和接口地址`);
     } catch (error) {
-      setConnectionState('network_unavailable');
+      setConnectionState(error instanceof ProviderOperationTimeoutError ? 'connection_timeout' : 'network_unavailable');
       setMessage(error instanceof ProviderOperationTimeoutError
         ? `${providerName} 连接检测超时，请稍后重试`
         : `${providerName} 暂时无法连接，请检查网络和接口地址`);
@@ -1310,6 +1315,7 @@ function connectionLabel(state: 'idle' | 'checking' | ConnectionStatus): string 
     authentication_failed: '认证失败',
     network_unavailable: '网络不可用',
     service_limited: '服务受限',
+    connection_timeout: '连接检测超时',
   })[state];
 }
 
