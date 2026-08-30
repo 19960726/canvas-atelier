@@ -45,6 +45,11 @@ describe('modern desktop close coordinator', () => {
     expect(source).toContain("window.on('close'");
     expect(source).toContain("app.on('before-quit'");
     expect(source).toContain('requestCoordinatedClose');
+    expect(source).not.toContain('showCloseRecoveryChoice');
+    expect(source).not.toContain('放弃更改并关闭');
+    expect(source).not.toContain('关闭未命名工作流');
+    expect(source).not.toContain("buttons: ['保存', '不保存', '取消']");
+    expect(source).toContain("return 'save';");
   });
 
   it('keeps project image selection and asset resolution in the main process', async () => {

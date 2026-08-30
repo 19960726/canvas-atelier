@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { Eye, Image, MessageSquare, ScanSearch, Video, WandSparkles } from 'lucide-react';
-import { dedupeProviderProfilesByVisibleName } from '../app/provider-profiles';
 
 
 type CatalogCapability = 'image_generation' | 'video_generation' | 'chat' | 'reverse_prompt' | 'vision' | 'video_understanding';
@@ -39,7 +38,13 @@ export function profilesForCapability(
   profiles: readonly ProviderBridgeProfile[],
   capability: CatalogCapability,
 ): ProviderBridgeProfile[] {
-  return dedupeProviderProfilesByVisibleName(profiles.filter((profile) => profile.capabilities.includes(capability)));
+  const visibleProfiles = new Map<string, ProviderBridgeProfile>();
+  for (const profile of profiles) {
+    if (!profile.capabilities.includes(capability)) continue;
+    const visibleName = profile.displayName.trim().toLocaleLowerCase();
+    if (!visibleProfiles.has(visibleName)) visibleProfiles.set(visibleName, profile);
+  }
+  return [...visibleProfiles.values()];
 }
 
 export function ProviderModelCatalog({

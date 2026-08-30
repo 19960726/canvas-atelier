@@ -74,6 +74,12 @@ export function App() {
       if (event.repeat) return;
       void useAppStore.getState().saveProjectExplicitly();
     };
+    const handleUndoShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || (!event.ctrlKey && !event.metaKey) || event.altKey || event.key.toLowerCase() !== 'z') return;
+      if (event.repeat || isEditableShortcutTarget(event.target)) return;
+      event.preventDefault();
+      void useAppStore.getState().undo();
+    };
     const handleBlur = () => {
       void flushProjectSave('blur');
     };
@@ -82,11 +88,13 @@ export function App() {
     };
     window.addEventListener('blur', handleBlur);
     window.addEventListener('keydown', handleSaveShortcut);
+    window.addEventListener('keydown', handleUndoShortcut);
     window.addEventListener('beforeunload', handleClose);
     window.addEventListener('pagehide', handleClose);
     return () => {
       window.removeEventListener('blur', handleBlur);
       window.removeEventListener('keydown', handleSaveShortcut);
+      window.removeEventListener('keydown', handleUndoShortcut);
       window.removeEventListener('beforeunload', handleClose);
       window.removeEventListener('pagehide', handleClose);
     };
@@ -97,6 +105,10 @@ export function App() {
       <CanvasWorkspace />
     </RendererErrorBoundary>
   );
+}
+
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]') !== null;
 }
 
 interface RendererErrorBoundaryState {

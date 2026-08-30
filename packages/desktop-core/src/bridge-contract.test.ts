@@ -646,6 +646,102 @@ describe('desktop bridge contract', () => {
     expect(chooseProjectRoot).toHaveBeenCalledOnce();
   });
 
+  it('promotes the same read-only session after the competing writer releases the project lock', async () => {
+    const writableSession = createOpenedSession();
+    const readOnlySession: OpenedProjectSession = {
+      ...writableSession,
+      lock: null,
+      mode: 'read_only',
+    };
+    const writerCommit = vi.fn(async (request: CommitRequest) => ({
+      committedAt: '2026-08-30T00:00:00.000Z',
+      projectId: starterProject.id,
+      revision: 3,
+      sequence: 3,
+      transactionId: request.transaction.id,
+    }));
+    const openJournalWriter = vi.fn(async () => ({ commit: writerCommit }));
+    const open = vi.fn()
+      .mockResolvedValueOnce(readOnlySession)
+      .mockResolvedValueOnce(readOnlySession)
+      .mockResolvedValueOnce(writableSession);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => writableSession.root),
+      },
+      repository: {
+        close: vi.fn(async () => undefined),
+        open,
+        openJournalWriter,
+        readCurrentProject: vi.fn(async () => starterProject),
+        readCurrentRevision: vi.fn(async () => 2),
+      },
+    });
+    const opened = await handlers.openProject({}, { mode: 'write' });
+    if (opened === null) throw new Error('Expected a read-only desktop session');
+
+    await expect(handlers.refreshProject({}, { sessionId: opened.sessionId })).resolves.toMatchObject({
+      mode: 'read_only',
+      projectId: starterProject.id,
+      sessionId: opened.sessionId,
+    });
+    const promoted = await handlers.refreshProject({}, { sessionId: opened.sessionId });
+    expect(promoted).toMatchObject({
+      mode: 'write',
+      projectId: starterProject.id,
+      sessionId: opened.sessionId,
+    });
+    expect(open).toHaveBeenNthCalledWith(2, writableSession.root, { mode: 'write' });
+    expect(open).toHaveBeenNthCalledWith(3, writableSession.root, { mode: 'write' });
+    expect(openJournalWriter).toHaveBeenCalledOnce();
+    expect(openJournalWriter).toHaveBeenCalledWith(writableSession);
+
+    await handlers.commit({}, {
+      ...makeCreatePromptRequest(starterProject.id, 'promoted-write', 2, 'promoted-node'),
+      sessionId: opened.sessionId,
+    });
+    expect(writerCommit).toHaveBeenCalledOnce();
+  });
+
+  it('releases a newly acquired write lock when promotion cannot open its journal writer', async () => {
+    const writableSession = createOpenedSession();
+    const readOnlySession: OpenedProjectSession = {
+      ...writableSession,
+      lock: null,
+      mode: 'read_only',
+    };
+    const close = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: {
+        chooseProjectRoot: vi.fn(async () => writableSession.root),
+      },
+      repository: {
+        close,
+        open: vi.fn()
+          .mockResolvedValueOnce(readOnlySession)
+          .mockResolvedValueOnce(writableSession),
+        openJournalWriter: vi.fn(async () => {
+          throw new Error('journal writer unavailable');
+        }),
+        readCurrentProject: vi.fn(async () => starterProject),
+        readCurrentRevision: vi.fn(async () => 2),
+      },
+    });
+    const opened = await handlers.openProject({}, { mode: 'write' });
+    if (opened === null) throw new Error('Expected a read-only desktop session');
+
+    await expect(handlers.refreshProject({}, { sessionId: opened.sessionId })).resolves.toMatchObject({
+      mode: 'read_only',
+      sessionId: opened.sessionId,
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledWith(writableSession);
+    await expect(handlers.commit({}, {
+      ...makeCreatePromptRequest(starterProject.id, 'still-read-only', 2, 'blocked-node'),
+      sessionId: opened.sessionId,
+    })).rejects.toMatchObject({ code: 'CONCURRENT_WRITER' });
+  });
+
   it('cancels knowledge configuration through the main-process picker without accepting renderer paths', async () => {
     const chooseKnowledgeRoot = vi.fn(async () => null);
     const configure = vi.fn();

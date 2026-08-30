@@ -11,6 +11,7 @@ import type {
 } from '@agent-canvas/desktop-core';
 import {
   adaptGenerationParameters,
+  applyTransaction,
   appendProjectMemoryEntry,
   applyProjectTransaction,
   buildProjectMemoryContext,
@@ -96,7 +97,7 @@ const PROJECT_PERSISTENCE_OPERATION_TIMEOUT_MS = 15_000;
 import { createModelJobRunId } from '../jobs/model-job-identity';
 import { advanceOfflineVideoPreview, createOfflineVideoPreview } from '../jobs/video-preview-mock';
 import { runtimeProfile } from './runtime-profile';
-import { listRunnableProviderProfiles, selectProviderProfile } from './provider-profiles';
+import { listRunnableProviderProfiles, selectGenerationProviderProfile, selectProviderProfile } from './provider-profiles';
 import { buildReverseAgentCanvasPlan } from '../agent/reverse-workflow-proposal';
 import type { ReverseAnalysisResult } from '../agent/reverse-workflow-contract';
 
@@ -143,7 +144,7 @@ let pendingProjectFlushBoundary: Promise<boolean> | null = null;
 
 interface UndoEntry {
   transaction: CanvasTransaction;
-  memoryId: string;
+  memoryId?: string;
 }
 
 interface PendingAgentConfirmation {
@@ -405,11 +406,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const bridge = globalThis.window?.novusDesktop?.provider;
     if (bridge === undefined) throw createGenerationStartError('PROVIDER_BRIDGE_UNAVAILABLE', 'Provider bridge is unavailable');
     const profiles = await listRunnableProviderProfiles(bridge);
-    const imageProfiles = profiles.filter((profile) => profile.capabilities.includes('image_generation'));
-    const profile = input.modelRoute === undefined
-      ? imageProfiles[0]
-      : imageProfiles.find((candidate) => candidate.modelRoute === input.modelRoute || candidate.modelId === input.modelRoute);
-    if (profile === undefined) throw createGenerationStartError('MODEL_ROUTE_UNAVAILABLE', 'Selected image model route is unavailable');
+    const profile = selectGenerationProviderProfile(profiles, {
+      provider: readGenerationProvider(node.data.config.providerDisplayName),
+      modelRoute: input.modelRoute,
+      modelDisplayName: readGenerationDisplayName(node.data.config),
+    }, 'image_generation');
+    if (profile === undefined) throw createGenerationStartError('MODEL_ROUTE_UNAVAILABLE', 'Selected image model route is unavailable; reselect the model');
     const requestedImageAspectRatio = normalizeImageAspectRatio(input.aspectRatio);
     const requestedImageResolution = normalizeImageResolution(input.resolution);
     const requestedImageOutputCount = normalizeImageOutputCount(input.outputCount);
@@ -550,8 +552,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const bridge = globalThis.window?.novusDesktop?.provider;
     if (bridge === undefined) return false;
     const profiles = await listRunnableProviderProfiles(bridge);
-    const profile = selectProviderProfile(profiles, input.modelRoute, 'video_generation');
-    if (profile === undefined) return false;
+    const profile = selectGenerationProviderProfile(profiles, {
+      provider: readGenerationProvider(node.data.config.providerDisplayName),
+      modelRoute: input.modelRoute,
+      modelDisplayName: readGenerationDisplayName(node.data.config),
+    }, 'video_generation');
+    if (profile === undefined) throw createGenerationStartError('MODEL_ROUTE_UNAVAILABLE', 'Selected video model route is unavailable; reselect the model');
 
     const videoConstraints = profile.constraints?.video;
     const usesVerifiedProviderDefaults = profile.capabilityStatus === 'complete';
@@ -1353,9 +1359,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     return persistReverseAgentRunPatch(set, get, nodeId, { reverseAgentResult: merged }, 'Update reverse Agent result');
   },
   closePersistence: async () => {
-    if (get().recoveryRequired) return false;
-    const flushed = await flushPendingProjectSave(get, set, 'close');
-    if (!flushed) return false;
+    const state = get();
+    if (state.recoveryRequired) return false;
+    if (state.saveStatus !== 'read_only') {
+      const flushed = await flushPendingProjectSave(get, set, 'close');
+      if (!flushed) return false;
+    }
     invalidateModelJobStoreGeneration();
     modelJobStore?.stop();
     modelJobUnsubscribe?.();
@@ -1480,7 +1489,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds: hydrated.availableSnapshotIds,
-      canReloadDurableProject: false,
+      canReloadDurableProject: hydrated.saveStatus === 'read_only' && hydrated.recoveryRequired !== true,
       canRetryProjectCommit: false,
       desktopRevision: hydrated.revision,
       persistenceMode: hydrated.mode,
@@ -1524,7 +1533,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     clearPendingFailedProjectCommit();
     set({
       availableSnapshotIds: opened.availableSnapshotIds,
-      canReloadDurableProject: false,
+      canReloadDurableProject: opened.saveStatus === 'read_only' && opened.recoveryRequired !== true,
       canRetryProjectCommit: false,
       desktopRevision: opened.revision,
       persistenceMode: opened.mode,
@@ -2108,24 +2117,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       const currentProject = sanitizeProjectSkillPromotionCandidates(state.project);
       const reverted = revertTransaction(currentProject, undoEntry.transaction);
       const now = new Date().toISOString();
-      const memoryEntry = createUndoMemory(reverted, undoEntry.memoryId, undoEntry.transaction.id, now);
-      const projectMemory = appendProjectMemoryEntry(reverted.projectMemory, memoryEntry);
-      const project = {
-        ...reverted,
-        projectMemory,
-        skillPromotionCandidates: filterValidSkillPromotionCandidates(
-          reverted.id,
+      const memoryEntry = undoEntry.memoryId === undefined
+        ? null
+        : createUndoMemory(reverted, undoEntry.memoryId, undoEntry.transaction.id, now);
+      const projectMemory = memoryEntry === null
+        ? reverted.projectMemory
+        : appendProjectMemoryEntry(reverted.projectMemory, memoryEntry);
+      const project = memoryEntry === null
+        ? reverted
+        : {
+          ...reverted,
           projectMemory,
-          reverted.skillPromotionCandidates,
-        ),
-      };
-      const transaction = buildProjectTransaction({
-        canvasTransaction: undoEntry.transaction,
-        candidates: project.skillPromotionCandidates,
-        label: undoEntry.transaction.label,
-        memoryEntry,
-        transactionId: undoEntry.transaction.id,
-      });
+          skillPromotionCandidates: filterValidSkillPromotionCandidates(
+            reverted.id,
+            projectMemory,
+            reverted.skillPromotionCandidates,
+          ),
+        };
+      const transaction = memoryEntry === null
+        ? {
+          id: `undo:${undoEntry.transaction.id}`,
+          label: undoEntry.transaction.label,
+          operations: undoEntry.transaction.operations.map((operation) => ({ kind: 'canvas' as const, operation })),
+        }
+        : buildProjectTransaction({
+          canvasTransaction: undoEntry.transaction,
+          candidates: project.skillPromotionCandidates,
+          label: undoEntry.transaction.label,
+          memoryEntry,
+          transactionId: undoEntry.transaction.id,
+        });
       const saved = await commitNow(transaction, { kind: 'system', nextProject: project });
       if (saved) {
         set((current) => ({
@@ -2935,6 +2956,7 @@ async function commitProjectTransactionNow(
   const before = get().project;
   const nextProject = options.nextProject ?? applyProjectTransaction(before, transaction);
   const kind = options.kind ?? 'canvas';
+  const undoTransaction = kind === 'canvas' ? createCanvasInverseTransaction(before, transaction) : null;
   if (get().saveStatus === 'read_only') {
     set({ project: before, saveErrorCode: 'CONCURRENT_WRITER', saveStatus: 'read_only' });
     return false;
@@ -2956,7 +2978,11 @@ async function commitProjectTransactionNow(
     saveErrorCode: null,
     saveStatus: 'saving',
   });
-  return executeProjectCommit(request, set, get);
+  const saved = await executeProjectCommit(request, set, get);
+  if (saved && undoTransaction !== null) {
+    set({ undoStack: appendUndoEntry(get().undoStack, { transaction: undoTransaction }) });
+  }
+  return saved;
 }
 
 export function resetAppStoreForTests(options: { project?: 'empty' | 'starter' } = { project: 'starter' }): void {
@@ -3001,6 +3027,20 @@ function createReverseConfigurationSaveError(state: AppState): Error & { code: s
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function readGenerationProvider(value: unknown): ModelJobProvider | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLocaleLowerCase();
+  return normalized === 'comfly' || normalized === 'relayme' ? normalized : undefined;
+}
+
+function readGenerationDisplayName(config: CanvasModuleNode['data']['config']): string | undefined {
+  return isNonEmptyString(config.modelDisplayName)
+    ? config.modelDisplayName
+    : isNonEmptyString(config.routeDisplayName)
+      ? config.routeDisplayName
+      : undefined;
 }
 
 function isFinitePosition(value: { x: number; y: number }): boolean {
@@ -4084,6 +4124,20 @@ function appendUndoEntry(undoStack: UndoEntry[], entry: UndoEntry): UndoEntry[] 
     return undoStack;
   }
   return [...undoStack, entry];
+}
+
+function createCanvasInverseTransaction(
+  project: CanvasProject,
+  transaction: ProjectTransaction,
+): CanvasTransaction | null {
+  const canvasOperations = transaction.operations.filter((operation): operation is Extract<ProjectOperation, { kind: 'canvas' }> => operation.kind === 'canvas');
+  if (canvasOperations.length !== transaction.operations.length) return null;
+  const applied = applyTransaction(project, {
+    id: transaction.id,
+    label: transaction.label,
+    operations: canvasOperations.map((operation) => operation.operation),
+  });
+  return applied.inverse;
 }
 
 function isIndexedDbAvailable(): boolean {

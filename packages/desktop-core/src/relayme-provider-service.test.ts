@@ -87,6 +87,26 @@ describe('RelayMe provider service', () => {
     );
   });
 
+  it('rejects a foreign Comfly route before calling the paid RelayMe image generation endpoint', async () => {
+    const { service, fetch } = await createService([modelsResponse()]);
+
+    await expect(service.submitImageJob({
+      jobId: 'foreign-route-job',
+      provider: 'relayme',
+      modelRoute: 'comfly-nano-banana-pro-2k',
+      prompt: 'This must not be submitted',
+      conversationId: 'foreign-route-conversation',
+      referenceAssetIds: [],
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: expect.stringMatching(/模型不可用|能力不匹配/u),
+    });
+    expect(fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/images/generations'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('maps RelayMe image authentication, quota, and capability failures to actionable bridge errors', async () => {
     const { service } = await createService([
       modelsResponse(),

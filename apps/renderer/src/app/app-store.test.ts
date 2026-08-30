@@ -697,6 +697,90 @@ describe('project optimization memory', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
+  it('restores deleted canvas nodes and their connected edges through the undo stack', async () => {
+    const first = createCanvasModuleNode('undo-delete-first', 'text_prompt', { x: 80, y: 120 });
+    const second = createCanvasModuleNode('undo-delete-second', 'image_generation', { x: 360, y: 120 });
+    let revision = 0;
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: ++revision,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({
+      project: {
+        version: 1,
+        id: 'undo-delete-selection-project',
+        name: 'Undo delete selection',
+        nodes: [first, second],
+        edges: [{ id: 'undo-delete-edge', source: first.id, target: second.id }],
+        projectMemory: [],
+        skillPromotionCandidates: [],
+      },
+      saveStatus: 'saved',
+      undoStack: [],
+    });
+
+    await expect(useAppStore.getState().deleteCanvasNodes([first.id])).resolves.toBe(true);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+
+    await useAppStore.getState().undo();
+
+    expect(useAppStore.getState().project.nodes.map((node) => node.id)).toEqual([second.id, first.id]);
+    expect(useAppStore.getState().project.edges).toEqual([
+      { id: 'undo-delete-edge', source: first.id, target: second.id },
+    ]);
+    expect(useAppStore.getState().undoStack).toEqual([]);
+    expect(commit).toHaveBeenCalledTimes(2);
+  });
+
+  it('undoes a newly created canvas node through the same stack', async () => {
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 1,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [], edges: [] }, saveStatus: 'saved', undoStack: [] });
+
+    await expect(useAppStore.getState().addModuleNode('text_prompt', { x: 120, y: 240 })).resolves.toBe(true);
+    const createdId = useAppStore.getState().project.nodes[0]?.id;
+    expect(createdId).toBeDefined();
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+
+    await useAppStore.getState().undo();
+
+    expect(useAppStore.getState().project.nodes).toEqual([]);
+    expect(useAppStore.getState().undoStack).toEqual([]);
+    expect(commit).toHaveBeenCalledTimes(2);
+  });
+
+  it('undoes a batch node move as one canvas change', async () => {
+    const first = createCanvasModuleNode('undo-move-first', 'text_prompt', { x: 10, y: 20 });
+    const second = createCanvasModuleNode('undo-move-second', 'image_generation', { x: 100, y: 120 });
+    let revision = 0;
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({ ok: true, project: nextProject, revision: ++revision }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({
+      project: { ...createStarterProject(), nodes: [first, second], edges: [] },
+      saveStatus: 'saved',
+      undoStack: [],
+    });
+    await expect(useAppStore.getState().commitNodePositions([
+      { nodeId: first.id, position: { x: 40, y: 60 } },
+      { nodeId: second.id, position: { x: 180, y: 220 } },
+    ])).resolves.toBe(true);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+
+    await useAppStore.getState().undo();
+
+    expect(useAppStore.getState().project.nodes.map((node) => [node.id, node.position])).toEqual([
+      [first.id, { x: 10, y: 20 }],
+      [second.id, { x: 100, y: 120 }],
+    ]);
+    expect(useAppStore.getState().undoStack).toEqual([]);
+  });
+
   it('preserves locked nodes when deleting a mixed canvas selection', async () => {
     const unlocked = createCanvasModuleNode('delete-unlocked', 'text_prompt', { x: 80, y: 120 });
     const locked = { ...createCanvasModuleNode('delete-locked', 'image_generation', { x: 360, y: 120 }), locked: true };
@@ -1729,6 +1813,65 @@ describe('project optimization memory', () => {
     });
   });
 
+  it('closes a read-only desktop session without attempting a writable save boundary', async () => {
+    const close = vi.fn(async () => undefined);
+    const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: 4,
+    }));
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      project: createStarterProject(),
+      revision: 3,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      close,
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: createStarterProject(),
+        revision: 3,
+        saveStatus: 'read_only',
+      }),
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+    expect(useAppStore.getState().canReloadDurableProject).toBe(true);
+    close.mockClear();
+    commit.mockClear();
+    stablePoint.mockClear();
+
+    await expect(useAppStore.getState().closePersistence()).resolves.toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+    expect(stablePoint).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('marks an opened read-only project as eligible for durable reload', async () => {
+    replaceProjectPersistenceClientForTests(createMockClient({
+      openProject: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: { ...createStarterProject(), name: 'Read-only project' },
+        revision: 5,
+        saveStatus: 'read_only',
+      }),
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await expect(useAppStore.getState().openProject()).resolves.toBe(true);
+    expect(useAppStore.getState()).toMatchObject({
+      canReloadDurableProject: true,
+      saveStatus: 'read_only',
+    });
+  });
+
   it('does not hydrate desktop initial state from browser localStorage', () => {
     const browserProject = { ...createStarterProject(), name: 'browser-only-draft' };
     localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify({
@@ -1933,6 +2076,83 @@ describe('project optimization memory', () => {
       modelRoute: 'stale-image-route', prompt: 'Generate with the selected route', aspectRatio: '1:1', resolution: '2K', outputCount: 1,
     })).rejects.toMatchObject({ code: 'MODEL_ROUTE_UNAVAILABLE' });
   });
+  it('repairs a mixed RelayMe image node to its canonical same-provider route before enqueue', async () => {
+    const generation = createCanvasModuleNode('mixed-relayme-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelDisplayName: 'Nano Banana Pro',
+      modelRoute: 'comfly-nano-banana-pro-2k',
+      providerDisplayName: 'relayme',
+    };
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme',
+      modelRoute: 'relayme-gemini-3-pro-image-preview',
+      displayName: 'Nano Banana Pro',
+      modelId: 'gemini-3-pro-image-preview',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    resetAppStoreForTests();
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'comfly-nano-banana-pro-2k',
+      prompt: 'Repair the RelayMe model identity',
+      aspectRatio: '1:1',
+      resolution: '2K',
+      outputCount: 1,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      provider: 'relayme',
+      modelRoute: 'relayme-gemini-3-pro-image-preview',
+      modelId: 'gemini-3-pro-image-preview',
+    });
+    expect(useAppStore.getState().project.nodes[0]).toMatchObject({
+      data: { config: {
+        providerDisplayName: 'relayme',
+        modelRoute: 'relayme-gemini-3-pro-image-preview',
+        modelDisplayName: 'Nano Banana Pro',
+      } },
+    });
+  });
+
+  it('rejects ambiguous same-provider RelayMe image repair before enqueue', async () => {
+    const generation = createCanvasModuleNode('ambiguous-relayme-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelDisplayName: 'Nano Banana Pro',
+      modelRoute: 'comfly-nano-banana-pro-2k',
+      providerDisplayName: 'relayme',
+    };
+    const submitImageJob = vi.fn();
+    window.novusDesktop = { provider: {
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+      listProfiles: vi.fn(async () => [{
+        provider: 'relayme' as const,
+        modelRoute: 'relayme-nano-banana-pro-a',
+        displayName: 'Nano Banana Pro',
+        modelId: 'nano-banana-pro-a',
+        capabilities: ['image_generation' as const],
+      }, {
+        provider: 'relayme' as const,
+        modelRoute: 'relayme-nano-banana-pro-b',
+        displayName: 'Nano Banana Pro',
+        modelId: 'nano-banana-pro-b',
+        capabilities: ['image_generation' as const],
+      }]),
+      submitImageJob,
+    } } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'comfly-nano-banana-pro-2k',
+      prompt: 'Do not guess an ambiguous RelayMe model',
+      aspectRatio: '1:1', resolution: '2K', outputCount: 1,
+    })).rejects.toMatchObject({ code: 'MODEL_ROUTE_UNAVAILABLE' });
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(submitImageJob).not.toHaveBeenCalled();
+  });
   it('adapts an image-node request to the selected model constraints before enqueueing', async () => {
     replaceModelJobExecutorForTests({
       submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: 'provider-' + job.id })),
@@ -2063,6 +2283,41 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().modelJobs.every((job) => job.outputCount === 1)).toBe(true);
     expect(useAppStore.getState().modelJobs[0]).toMatchObject({
       aspectRatio: '9:16', videoResolution: '720p', durationSeconds: 6, outputCount: 1,
+    });
+  });
+  it('repairs a mixed RelayMe video node to its canonical same-provider route before enqueue', async () => {
+    const generation = createCanvasModuleNode('mixed-relayme-video-node', 'video_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelDisplayName: 'Relay Video Pro',
+      modelRoute: 'comfly-relay-video-pro',
+      providerDisplayName: 'relayme',
+    };
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme',
+      modelRoute: 'relayme-video-pro',
+      displayName: 'Relay Video Pro',
+      modelId: 'video-pro',
+      capabilities: ['video_generation', 'async_tasks'],
+    }]);
+    resetAppStoreForTests();
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runVideoPreviewNode(generation.id, {
+      modelRoute: 'comfly-relay-video-pro',
+      prompt: 'Repair the RelayMe video identity',
+      referenceAssetIds: [],
+      keyframe: 'auto', aspectRatio: '16:9', resolution: '1080p', durationSeconds: 8,
+      outputCount: 1, audioEnabled: true,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      provider: 'relayme',
+      modelRoute: 'relayme-video-pro',
+      modelId: 'video-pro',
+    });
+    expect(useAppStore.getState().project.nodes[0]).toMatchObject({
+      data: { config: { providerDisplayName: 'relayme', modelRoute: 'relayme-video-pro' } },
     });
   });
   it('omits video parameters that a complete provider profile does not declare', async () => {

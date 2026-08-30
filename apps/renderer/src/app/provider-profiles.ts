@@ -110,7 +110,7 @@ export function dedupeProviderProfilesByVisibleName(
 ): ProviderBridgeProfile[] {
   const unique = new Map<string, ProviderBridgeProfile>();
   for (const profile of profiles) {
-    const key = normalizedProviderDisplayName(profile);
+    const key = `${profile.provider}::${normalizedProviderDisplayName(profile)}`;
     if (!unique.has(key)) unique.set(key, profile);
   }
   return [...unique.values()];
@@ -172,11 +172,11 @@ function isProviderActionRoute(profile: ProviderBridgeProfile): boolean {
 
 function catalogProfileFamilyKey(profile: ProviderBridgeProfile): string {
   const popularFamily = popularImageFamily(profile);
-  if (popularFamily !== null) return `popular-image:${popularFamily}`;
-  return providerProfileIdentity(profile)
+  if (popularFamily !== null) return `${profile.provider}:popular-image:${popularFamily}`;
+  return `${profile.provider}:${providerProfileIdentity(profile)
     .replace(/-20\d{2}-\d{2}-\d{2}$/u, '')
     .replace(/-(?:thinking(?:-(?:high|medium|low|minimal|all|\*))?|nothinking)$/u, '')
-    .replace(/-(?:high|medium|low|minimal)$/u, '');
+    .replace(/-(?:high|medium|low|minimal)$/u, '')}`;
 }
 
 function catalogProfileVariantScore(profile: ProviderBridgeProfile): number {
@@ -358,4 +358,42 @@ export function selectProviderProfile(
         || leftProvider.localeCompare(rightProvider);
     })
     .map(([, profile]) => profile)[0];
+}
+
+export interface GenerationProfileRequest {
+  readonly provider?: ProviderBridgeProfile['provider'];
+  readonly modelRoute?: string;
+  readonly modelDisplayName?: string;
+}
+
+export function selectGenerationProviderProfile(
+  profiles: readonly ProviderBridgeProfile[],
+  request: GenerationProfileRequest,
+  capability: 'image_generation' | 'video_generation',
+): ProviderBridgeProfile | undefined {
+  const capable = profiles.filter((profile) => (
+    profile.capabilities.includes(capability)
+    && (request.provider === undefined || profile.provider === request.provider)
+  ));
+  const requestedRoute = request.modelRoute?.trim();
+  if (requestedRoute) {
+    const exact = capable.find((profile) => (
+      profile.modelRoute === requestedRoute || profile.modelId === requestedRoute
+    ));
+    if (exact !== undefined) return exact;
+  }
+
+  const requestedDisplayName = request.modelDisplayName?.trim();
+  if (requestedDisplayName) {
+    const normalizedRequestName = requestedDisplayName
+      .toLocaleLowerCase()
+      .replace(/^(?:comfly|relayme)[\s:/_-]+/u, '')
+      .replace(/[\s_-]+/gu, ' ');
+    const visibleMatches = capable.filter((profile) => (
+      normalizedProviderDisplayName(profile) === normalizedRequestName
+    ));
+    return visibleMatches.length === 1 ? visibleMatches[0] : undefined;
+  }
+
+  return requestedRoute ? undefined : capable[0];
 }

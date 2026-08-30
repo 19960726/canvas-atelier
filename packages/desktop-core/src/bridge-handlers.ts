@@ -604,15 +604,41 @@ export function createDesktopBridgeHandlers(
   async function refreshProject(_event: unknown, request: unknown): Promise<OpenProjectBridgeResult> {
     const validated = validateSessionRequest(request) as RefreshProjectBridgeRequest;
     const session = requireSession(sessions, validated.sessionId);
-    await session.maintenanceTail;
-    if (session.recoveryRequired) {
-      throw createPersistenceError(
-        'RECOVERY_REQUIRED',
-        false,
-        'Recovery preview must be restored or discarded before refreshing',
-      );
-    }
-    return summarizeSession(repository, session.sessionId, session.session);
+    return enqueueSessionMaintenance(session, async () => {
+      if (session.recoveryRequired) {
+        throw createPersistenceError(
+          'RECOVERY_REQUIRED',
+          false,
+          'Recovery preview must be restored or discarded before refreshing',
+        );
+      }
+      if (session.session.mode === 'write') {
+        return summarizeSession(repository, session.sessionId, session.session);
+      }
+
+      let candidate: OpenedProjectSession | null = null;
+      try {
+        candidate = await requireMethod(repository, 'open')(session.session.root, { mode: 'write' });
+        if (candidate.mode !== 'write') {
+          return summarizeSession(repository, session.sessionId, session.session);
+        }
+        const writer = await requireMethod(repository, 'openJournalWriter')(candidate);
+        const summary = await summarizeSession(repository, session.sessionId, candidate);
+        session.session = candidate;
+        session.writer = writer;
+        session.assets = new Map((summary.project.assets ?? []).map((asset) => [asset.assetId, asset]));
+        return summary;
+      } catch {
+        if (candidate?.mode === 'write') {
+          try {
+            await requireMethod(repository, 'close')(candidate);
+          } catch {
+            // Keep the original read-only context so a later refresh can retry.
+          }
+        }
+        return summarizeSession(repository, session.sessionId, session.session);
+      }
+    });
   }
 
   async function openRecentProject(_event: unknown, request: unknown): Promise<OpenProjectBridgeResult | null> {

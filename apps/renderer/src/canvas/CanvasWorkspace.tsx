@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
+import { useReadOnlyWritePromotion } from '../app/use-read-only-write-promotion';
 import { resetMcpCanvasSelection, setMcpCanvasSelection } from '../app/mcp-canvas-selection';
 import { createWorkspaceApi } from '../app/workspace-api';
 import { runtimeProfile } from '../app/runtime-profile';
@@ -660,6 +661,13 @@ export function CanvasWorkspace() {
     cancelModelJob,
     generateStoryboardNode,
   }), [addModuleNode, cancelModelJob, chatSkill, flushProjectSave, saveProjectExplicitly, generateStoryboardNode, importDroppedMedia, runImageGenerationNode, runReverseAgentNode]);
+
+  useReadOnlyWritePromotion({
+    projectId: project.id,
+    readOnly: saveStatus === 'read_only' && canReloadDurableProject,
+    reload: reloadDurableProject,
+    retryMs: 1_000,
+  });
 
   useEffect(() => {
     const completedJobs = modelJobs.filter((job) => job.status === 'completed' && job.resultAssetId);
@@ -1435,7 +1443,14 @@ export function CanvasWorkspace() {
 
   useEffect(() => {
     const handleCanvasKeyboardShortcut = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.defaultPrevented || event.altKey) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        if (event.repeat || activeSurface !== null || isEditableKeyboardTarget(event.target)) return;
+        event.preventDefault();
+        void undo();
+        return;
+      }
+      if (event.ctrlKey || event.metaKey) return;
       if (event.key === 'Delete' || event.key === 'Backspace') {
         if (activeSurface !== null || selectedFlowNodeIds.length === 0 || isEditableKeyboardTarget(event.target)) return;
         // Delete is a canvas command. Capture it before React Flow or a node
@@ -1471,7 +1486,7 @@ export function CanvasWorkspace() {
     };
     window.addEventListener('keydown', handleCanvasKeyboardShortcut, true);
     return () => window.removeEventListener('keydown', handleCanvasKeyboardShortcut, true);
-  }, [activeSurface, changeSurface, closeAgentPanel, deleteCanvasNodes, generationEditorState.expandedNodeId, quickInsert, resultOutputMenuNodeId, selectedFlowNodeIds]);
+  }, [activeSurface, changeSurface, closeAgentPanel, deleteCanvasNodes, generationEditorState.expandedNodeId, quickInsert, resultOutputMenuNodeId, selectedFlowNodeIds, undo]);
 
   useEffect(() => {
     let cancelled = false;

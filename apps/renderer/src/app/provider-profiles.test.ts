@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
-import { buildCanvasProviderRouteSets, filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles, listRunnableProviderProfiles, listAgentChatProfiles, listCodexAgentProfiles, selectFirstProfileForCapability, selectProviderProfile } from './provider-profiles';
+import { buildCanvasProviderRouteSets, filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles, listRunnableProviderProfiles, listAgentChatProfiles, listCodexAgentProfiles, selectFirstProfileForCapability, selectGenerationProviderProfile, selectProviderProfile } from './provider-profiles';
 
 describe('active provider model boundary', () => {
   const profiles = [
@@ -27,6 +27,31 @@ describe('active provider model boundary', () => {
 });
 
 describe('canvas provider route sets', () => {
+  it('keeps the same visible generation model once per provider', () => {
+    const routes = buildCanvasProviderRouteSets([
+      {
+        provider: 'comfly',
+        modelRoute: 'comfly-nano-banana-pro-2k',
+        modelId: 'nano-banana-pro',
+        displayName: 'Nano Banana Pro',
+        capabilities: ['image_generation'],
+      },
+      {
+        provider: 'relayme',
+        modelRoute: 'relayme-gemini-3-pro-image-preview',
+        modelId: 'gemini-3-pro-image-preview',
+        displayName: 'Nano Banana Pro',
+        capabilities: ['image_generation', 'async_tasks'],
+      },
+    ]);
+
+    expect(routes.imageGeneration).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly-nano-banana-pro-2k' }),
+      expect.objectContaining({ provider: 'relayme', modelRoute: 'relayme-gemini-3-pro-image-preview' }),
+    ]));
+    expect(routes.imageGeneration).toHaveLength(2);
+  });
+
   it('never exposes incomplete provider profiles as runnable canvas routes', () => {
     const routes = buildCanvasProviderRouteSets([
       {
@@ -76,6 +101,53 @@ describe('canvas provider route sets', () => {
     expect(routes.imageGeneration).toHaveLength(1);
     expect(routes.videoGeneration).toHaveLength(1);
     expect(routes.reversePrompt.length).toBeLessThan(20);
+  });
+});
+
+describe('provider-local generation profile resolution', () => {
+  const profiles: ProviderBridgeProfile[] = [{
+    provider: 'comfly',
+    modelRoute: 'comfly-nano-banana-pro-2k',
+    modelId: 'nano-banana-pro',
+    displayName: 'Nano Banana Pro',
+    capabilities: ['image_generation'],
+  }, {
+    provider: 'relayme',
+    modelRoute: 'relayme-gemini-3-pro-image-preview',
+    modelId: 'gemini-3-pro-image-preview',
+    displayName: 'Nano Banana Pro',
+    capabilities: ['image_generation', 'async_tasks'],
+  }];
+
+  it('repairs a foreign route only through one same-provider visible model', () => {
+    expect(selectGenerationProviderProfile(profiles, {
+      provider: 'relayme',
+      modelRoute: 'comfly-nano-banana-pro-2k',
+      modelDisplayName: 'Nano Banana Pro',
+    }, 'image_generation')).toMatchObject({
+      provider: 'relayme',
+      modelRoute: 'relayme-gemini-3-pro-image-preview',
+    });
+  });
+
+  it('rejects ambiguous or unnamed cross-provider route repair', () => {
+    const ambiguous = [...profiles, {
+      provider: 'relayme' as const,
+      modelRoute: 'relayme-nano-banana-pro-alternate',
+      modelId: 'nano-banana-pro-alternate',
+      displayName: 'Nano Banana Pro',
+      capabilities: ['image_generation' as const],
+    }];
+
+    expect(selectGenerationProviderProfile(ambiguous, {
+      provider: 'relayme',
+      modelRoute: 'comfly-nano-banana-pro-2k',
+      modelDisplayName: 'Nano Banana Pro',
+    }, 'image_generation')).toBeUndefined();
+    expect(selectGenerationProviderProfile(profiles, {
+      provider: 'relayme',
+      modelRoute: 'comfly-unknown-image',
+    }, 'image_generation')).toBeUndefined();
   });
 });
 

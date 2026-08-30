@@ -91,6 +91,25 @@ describe('App persistence hydration', () => {
     await waitFor(() => expect(saveProjectExplicitly).toHaveBeenCalledOnce());
   });
 
+  it('routes Ctrl+Z to canvas undo without stealing text-field undo', async () => {
+    const undo = vi.fn(async () => {});
+    useAppStore.setState({ undo } as never);
+    render(<App />);
+
+    const canvasEvent = new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, cancelable: true });
+    window.dispatchEvent(canvasEvent);
+    expect(canvasEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(undo).toHaveBeenCalledOnce());
+
+    const editor = document.createElement('textarea');
+    document.body.append(editor);
+    const textEvent = new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, cancelable: true, bubbles: true });
+    editor.dispatchEvent(textEvent);
+    expect(textEvent.defaultPrevented).toBe(false);
+    expect(undo).toHaveBeenCalledOnce();
+    editor.remove();
+  });
+
   it('does not close persistence during StrictMode mount cleanup replay', async () => {
     const hydratedProject = { ...createStarterProject(), name: 'StrictMode Durable Project' };
     const close = vi.fn(async () => {});

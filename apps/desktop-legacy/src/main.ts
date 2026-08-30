@@ -238,7 +238,6 @@ app.whenReady().then(async () => {
     canRequestRendererFlush: canRequestRendererCloseFlush,
     closeAllProjects: runCoordinatedShutdown,
     finalizeClose: finalizeCoordinatedClose,
-    onCloseBlocked: showCloseRecoveryChoice,
     sendCloseFlushRequest: sendRendererCloseFlushRequest,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
@@ -255,21 +254,12 @@ app.whenReady().then(async () => {
   ipcMain.handle(BRIDGE_CHANNELS.closeRequest, async (event) => {
     if (mainWindow === null || event.sender !== mainWindow.webContents || closeCoordinator === null) return;
     await closeCoordinator.requestClose();
-  });  ipcMain.handle(BRIDGE_CHANNELS.closeChoice, async (event, payload) => {
+  });
+  ipcMain.handle(BRIDGE_CHANNELS.closeChoice, async (event, payload) => {
     if (mainWindow === null || event.sender !== mainWindow.webContents) return 'cancel';
     const request = parseCloseChoiceRequest(payload);
     if (request === null || !request.dirty || !request.untitled) return 'cancel';
-    const result = await dialog.showMessageBox(mainWindow, {
-      buttons: ['保存', '不保存', '取消'],
-      cancelId: 2,
-      defaultId: 0,
-      detail: '保存会通过现有受限项目边界完成；不保存将关闭当前未命名工作流。',
-      message: `是否保存“${request.projectName}”？`,
-      noLink: true,
-      title: '关闭未命名工作流',
-      type: 'question',
-    });
-    return result.response === 0 ? 'save' : result.response === 1 ? 'discard' : 'cancel';
+    return 'save';
   });
   const providerFetch = createElectronNetComflyFetch(net);
   const generationHistorySink = new GenerationHistoryProviderSink({
@@ -497,25 +487,6 @@ function sendRendererCloseFlushRequest(request: { readonly requestId: string }):
   if (!canRequestRendererCloseFlush()) return false;
   mainWindow?.webContents.send(BRIDGE_CHANNELS.closeFlushRequest, request);
   return true;
-}
-
-async function showCloseRecoveryChoice(reason: 'failed' | 'timeout' | 'unavailable'): Promise<'cancel' | 'discard'> {
-  const window = mainWindow;
-  if (window === null || window.isDestroyed()) return 'cancel';
-  const detail = reason === 'timeout'
-    ? '保存没有在预期时间内完成。你可以返回画布继续编辑，或明确放弃未保存的更改后关闭。'
-    : '项目未能安全保存。你可以返回画布继续编辑，或明确放弃未保存的更改后关闭。';
-  const result = await dialog.showMessageBox(window, {
-    buttons: ['继续编辑', '放弃更改并关闭'],
-    cancelId: 0,
-    defaultId: 0,
-    detail,
-    message: '无法完成关闭前保存',
-    noLink: true,
-    title: '关闭需要确认',
-    type: 'warning',
-  });
-  return result.response === 1 ? 'discard' : 'cancel';
 }
 
 async function runCoordinatedShutdown(): Promise<void> {
