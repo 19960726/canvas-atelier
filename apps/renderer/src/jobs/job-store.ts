@@ -57,6 +57,7 @@ export interface ModelJobSubmission {
 
 export interface ModelJobResult {
   assetId: string;
+  assetIds?: string[];
   width?: number;
   height?: number;
   durationSeconds?: number;
@@ -567,6 +568,7 @@ async function materializeResult(
         completedAt: now(),
         progress: 1,
         resultAssetId: result.assetId,
+        resultAssetIds: resultAssetIds(result),
         resultNodeId: commit.resultNodeId,
         updatedAt: now(),
       }, now);
@@ -582,7 +584,10 @@ async function repairCompletedCanvasResults(
 ): Promise<void> {
   for (const job of jobs) {
     if (job.status !== 'completed' || job.resultAssetId === undefined) continue;
-    const result = { assetId: job.resultAssetId };
+    const result = {
+      assetId: job.resultAssetId,
+      ...(job.resultAssetIds === undefined ? {} : { assetIds: job.resultAssetIds }),
+    };
     if (findExistingResult(options.getProject?.(), job, result)) continue;
     const build = createResultMaterializationBuild(job, result);
     const formalSource = findFormalGenerationSourceNode(options.getProject?.(), job.promptNodeId, job.kind);
@@ -627,8 +632,8 @@ function createResultMaterialization(
       : {
         ...previousConfig,
         resultAssetIds: [
-          ...readStoredImageResultAssetIds(previousConfig.resultAssetIds).filter((assetId) => assetId !== result.assetId),
-          result.assetId,
+          ...readStoredImageResultAssetIds(previousConfig.resultAssetIds).filter((assetId) => !resultAssetIds(result).includes(assetId)),
+          ...resultAssetIds(result),
         ].slice(-4),
         resultState: 'fresh',
         resultWidth: result.width,
@@ -698,6 +703,10 @@ function createResultMaterialization(
       ],
     },
   };
+}
+
+function resultAssetIds(result: ModelJobResult): string[] {
+  return [...new Set([result.assetId, ...(result.assetIds ?? [])])];
 }
 
 async function putTerminalJob(
@@ -884,6 +893,7 @@ async function completeFromExistingResult(
     completedAt: now(),
     progress: 1,
     resultAssetId: result.assetId,
+    resultAssetIds: resultAssetIds(result),
     resultNodeId: node.id,
     updatedAt: now(),
   }, now);

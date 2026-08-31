@@ -86,7 +86,7 @@ export class RelayMeAccountAuthClient {
       response = await this.fetch(this.loginUrl.toString(), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username: request.username, password: request.password }),
+        body: JSON.stringify({ email: request.username, password: request.password }),
         redirect: 'error',
       });
     } catch {
@@ -169,10 +169,10 @@ async function parseResponseBody(response: RelayMeAccountAuthFetchResponse): Pro
 function extractToken(value: unknown): string | null {
   if (!isRecord(value)) return null;
   const direct = firstString(value.token, value.jwt, value.accessToken, value.access_token);
-  if (direct !== null) return isJwtCompactForm(direct) ? direct : null;
+  if (direct !== null) return isValidOpaqueToken(direct) ? direct : null;
   if (!isRecord(value.data)) return null;
   const nested = firstString(value.data.token, value.data.jwt, value.data.accessToken, value.data.access_token);
-  return nested !== null && isJwtCompactForm(nested) ? nested : null;
+  return nested !== null && isValidOpaqueToken(nested) ? nested : null;
 }
 
 function hasRestrictedAccountMarker(value: unknown): boolean {
@@ -210,8 +210,8 @@ function firstString(...values: readonly unknown[]): string | null {
   return null;
 }
 
-function isJwtCompactForm(value: string): boolean {
-  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
+function isValidOpaqueToken(value: string): boolean {
+  return value.length > 0 && value.length <= 16_384 && value === value.trim();
 }
 
 function isNonEmptyString(value: unknown): value is string {

@@ -99,10 +99,9 @@ export function listCodexAgentProfiles(
   profiles: readonly ProviderBridgeProfile[],
 ): ProviderBridgeProfile[] {
   return listAgentChatProfiles(profiles).filter((profile) => {
-    // RelayMe exposes one authenticated chat route rather than Codex-branded
-    // route names. In RelayMe-only mode it is the Agent runtime; provider
-    // selection still remains isolated from Comfly by listRunnableProviderProfiles.
-    if (profile.provider === 'relayme') return true;
+    // Codex mode is reserved for the local/Comfly Codex routes. RelayMe's
+    // authenticated chat route belongs to the ordinary provider chat mode.
+    if (profile.provider === 'relayme') return false;
     const identity = `${profile.modelRoute} ${profile.modelId ?? ''} ${profile.displayName}`.toLocaleLowerCase();
     return /(?:^|[\s/_-])codex(?:$|[\s/_-])/u.test(identity)
       || /(?:^|[\s/_-])gpt-5\.6-(?:sol|terra|luna)(?:$|[\s/_-])/u.test(identity);

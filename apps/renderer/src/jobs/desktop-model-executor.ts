@@ -126,6 +126,7 @@ function sanitizePollResult(result: ProviderPollResult | ProviderCancelResult | 
     progress: result.progress,
     result: {
       assetId: result.result.assetId,
+      ...('assetIds' in result.result && result.result.assetIds !== undefined ? { assetIds: [...result.result.assetIds] } : {}),
       width: result.result.width,
       height: result.result.height,
       ...('durationSeconds' in result.result && result.result.durationSeconds !== undefined

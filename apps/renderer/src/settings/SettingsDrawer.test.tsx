@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -97,8 +97,8 @@ describe('SettingsDrawer', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    const link = screen.getByRole('link', { name: '打开 RelayMe 工作台' });
-    expect(link).toHaveAttribute('href', 'https://www.ml.relayme.uk/workflow');
+    const link = screen.getByRole('link', { name: '打开 RelayMe 网站' });
+    expect(link).toHaveAttribute('href', 'https://www.ml.relayme.uk/');
     expect(screen.queryByRole('link', { name: '创建 API Key' })).not.toBeInTheDocument();
     expect(screen.queryByText('高级兼容方式')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '配置隐藏密钥' })).not.toBeInTheDocument();
@@ -235,7 +235,7 @@ describe('SettingsDrawer', () => {
     const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: '登录 RelayMe' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用账号密码登录' }));
 
     await waitFor(() => expect(loginRelayMe).toHaveBeenCalledWith({
       username: 'artist@example.test',
@@ -251,6 +251,167 @@ describe('SettingsDrawer', () => {
     expect(within(reopenedDialog).getByLabelText('RelayMe 密码')).toHaveValue('');
     fireEvent.click(within(reopenedDialog).getByRole('button', { name: '取消' }));
     expect(screen.queryByRole('dialog', { name: '登录 RelayMe' })).not.toBeInTheDocument();
+  });
+
+  it('keeps RelayMe login failures visible inside the dialog and releases the controls', async () => {
+    const loginError = {
+      code: 'PROVIDER_ERROR',
+      message: 'RelayMe username or password is invalid',
+      retryable: false,
+    };
+    const loginRelayMe = vi.fn(async () => Promise.reject(loginError));
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: null })),
+        setActiveProvider: vi.fn(),
+        loginRelayMe,
+        getStatus: vi.fn(async () => ({ configured: false, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async () => []),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+    const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
+    fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用账号密码登录' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('RelayMe 账号或密码错误');
+    expect(within(dialog).getByLabelText('RelayMe 密码')).toHaveValue('');
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: '使用账号密码登录' })).toBeDisabled();
+  });
+
+  it('does not misreport a post-login model catalog failure as a password error', async () => {
+    const loginRelayMe = vi.fn(async () => Promise.reject({
+      code: 'PROVIDER_ERROR',
+      message: 'RelayMe 登录成功，但模型目录读取失败，请稍后重试',
+      retryable: true,
+    }));
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: null })),
+        setActiveProvider: vi.fn(),
+        loginRelayMe,
+        getStatus: vi.fn(async () => ({ configured: false, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async () => []),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+    const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
+    fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用账号密码登录' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('RelayMe 登录成功，但模型目录读取失败，请稍后重试');
+    expect(within(dialog).getByRole('alert')).not.toHaveTextContent('密码错误');
+  });
+
+  it('times out an unresponsive RelayMe login and lets the user retry or cancel', async () => {
+    vi.useFakeTimers();
+    const loginRelayMe = vi.fn(() => new Promise<never>(() => undefined));
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: null })),
+        setActiveProvider: vi.fn(),
+        loginRelayMe,
+        getStatus: vi.fn(async () => ({ configured: false, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async () => []),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    await vi.advanceTimersByTimeAsync(0);
+    fireEvent.click(screen.getByRole('listitem', { name: /RelayMe/u }));
+    const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
+    fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用账号密码登录' }));
+    expect(within(dialog).getByRole('button', { name: '账号密码登录中…' })).toBeDisabled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(35_000);
+    });
+
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('RelayMe 登录超时，请检查网络后重试');
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeEnabled();
+  });
+
+  it('uses RelayMe web login as the primary action and refreshes the verified model catalog', async () => {
+    const loginRelayMeWeb = vi.fn(async () => ({ activeProvider: 'relayme' as const }));
+    const relayProfiles = [
+      { provider: 'relayme' as const, modelRoute: 'image/gpt-image-2', displayName: 'Relay Image', modelId: 'gpt-image-2', capabilities: ['image_generation' as const] },
+      { provider: 'relayme' as const, modelRoute: 'video/kling-v3', displayName: 'Relay Video', modelId: 'kling-v3', capabilities: ['video_generation' as const] },
+    ];
+    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? relayProfiles : []);
+    const getStatus = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => ({
+      configured: provider === 'relayme', locked: false, encryption: 'safeStorage' as const,
+    }));
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: null })),
+        setActiveProvider: vi.fn(async ({ activeProvider }: { activeProvider: 'comfly' | 'relayme' }) => ({ activeProvider })), loginRelayMeWeb, getStatus, listProfiles,
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
+    const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用 RelayMe 网页登录' }));
+
+    await waitFor(() => expect(loginRelayMeWeb).toHaveBeenCalledWith());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '登录 RelayMe' })).not.toBeInTheDocument());
+    expect(screen.getByRole('status')).toHaveTextContent('RelayMe 网页登录成功，已加载 2 个模型');
+    expect((await screen.findAllByText('GPT Image 2')).length).toBeGreaterThanOrEqual(1);
+    expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' });
+  });
+
+  it.each([
+    ['WEB_LOGIN_CANCELLED', '已取消 RelayMe 网页登录'],
+    ['WEB_LOGIN_TIMEOUT', 'RelayMe 网页登录超时，请重新打开登录'],
+    ['CREDENTIALS_LOCKED', 'RelayMe 网页登录已失效，请重新登录'],
+  ])('shows a precise %s web-login result without reporting a password error', async (code, expectedMessage) => {
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: null })),
+        setActiveProvider: vi.fn(async ({ activeProvider }: { activeProvider: 'comfly' | 'relayme' }) => ({ activeProvider })),
+        loginRelayMeWeb: vi.fn(async () => Promise.reject({ code, message: 'sanitized', retryable: false })),
+        getStatus: vi.fn(async () => ({ configured: false, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async () => []),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
+    const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用 RelayMe 网页登录' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(expectedMessage);
+    expect(within(dialog).getByRole('alert')).not.toHaveTextContent('密码');
+    expect(within(dialog).getByRole('button', { name: '使用 RelayMe 网页登录' })).toBeEnabled();
+  });
+
+  it('marks a saved RelayMe credential with no usable models as waiting for verification', async () => {
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+        setActiveProvider: vi.fn(),
+        loginRelayMeWeb: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async () => []),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+
+    const relayMeCard = await screen.findByRole('listitem', { name: /RelayMe/u });
+    await waitFor(() => expect(relayMeCard).toHaveAccessibleName('RelayMe · 凭据待重新验证'));
+    expect(screen.getByLabelText('RelayMe 凭据摘要')).toHaveTextContent('凭据待重新验证');
   });
 
   it('does not show inactive provider models when the active-provider bridge is available', async () => {
@@ -514,8 +675,8 @@ describe('SettingsDrawer', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    const link = screen.getByRole('link', { name: '打开 RelayMe 工作台' });
-    expect(link).toHaveAttribute('href', 'https://www.ml.relayme.uk/workflow');
+    const link = screen.getByRole('link', { name: '打开 RelayMe 网站' });
+    expect(link).toHaveAttribute('href', 'https://www.ml.relayme.uk/');
     expect(link).toHaveAttribute('target', '_blank');
   });
   it('shows one settings category at a time instead of stacking every category', () => {

@@ -456,3 +456,11 @@ Before producing an installer, verify at minimum:
 - 已静默安装到 `D:\CanvasAtelier\Canvas Atelier`；安装后 `resources/app.asar` 与 packaged `app.asar` SHA-256 均为 `6D57F85E7FA7711D2529F6124780FD642B09BA8E6233B0F4C7123615D6795AB6`，包内版本均为 1.6.78；已安装 Photoshop runner/JSX 资源存在。
 - RelayMe 本机网络实测：DNS 解析到 `47.57.181.124`，443/TLS 成功；无凭据访问模型和 workflow 接口均快速返回 401，说明链路可达且接口要求登录认证。已安装正式数据的脱敏检测为 `configured=true`、`locked=false`、`encryption=safeStorage`、`activeProvider=relayme`，但服务端返回 `authentication_failed`、模型 0 个；这是已保存账号会话被拒绝，不是真实断网。用户无需手工 API Key，但必须重新输入 RelayMe 账号密码取得新会话令牌。未读取或输出令牌与密码。
 - RelayMe 图片数量控件为 1–4 张；一次点击会创建同一 confirmedAt 下的 1–4 个独立结果任务，provider queue 并发上限 4，现有回归固定 RelayMe 即使单任务约束为 1 也会一次排入 4 个任务。这样每个结果都有独立持久化资产和重试身份；不是要求用户逐张点击。未执行付费多图在线测试。
+
+## 2026-08-31 Codex/RelayMe 路由隔离与视频约束回归
+
+- 根因：Agent 的 Codex 模式曾保留一条旧测试契约，允许只配置 RelayMe 时把普通 RelayMe 聊天路由当成 Codex 运行时；同时画布只把活动供应商目录传给 Agent，导致选择 RelayMe 生成供应商时独立 Codex 路由不可见。现在普通对话按活动供应商优先，Codex 模式从完整目录中只选择明确的 Codex/受支持 GPT-5.6 路由，并明确排除 RelayMe，避免两套供应商互相回退。
+- 视频节点必须遵循当前模型目录约束：比例、分辨率、时长和输出数量只显示模型声明的选项；只有缺少对应元数据时才使用产品回退。旧测试不再强制每个视频模型显示全部比例、分辨率或 1–4 数量。
+- Photoshop 多图结果保护：右键选中的 RelayMe 多图结果必须按其真实 asset id 导入当前 Photoshop 文档，不得固定导入第一张；旧版 WSH/CS6 兼容和无活动文档错误提示继续由专项回归保护。
+- 新鲜验证：`npm.cmd exec vitest -- --config vitest.config.ts apps/renderer/src/canvas/CanvasWorkspace.test.tsx apps/renderer/src/canvas/ModuleNodeCard.test.tsx apps/renderer/src/agent/SkillChatWorkbench.test.tsx --run` 为 406/406 通过；完整 `npm.cmd test -- --run` 为 211 个文件、2625 个测试通过，2 个性能文件/测试按设计跳过；`npm.cmd run build` 通过，Vite 仅保留既有大 chunk 提示。Windows 安装包与隔离 packaged 验收仍需在此记录之后重新执行。
+- 1.6.83 packaged 真实 RelayMe 验收使用隔离 QA 数据根：账号登录成功、目录返回 11 个模型；`GPT Image 2` 图片任务完成并落盘为 1254×1254 PNG；`Veo 3.1 Fast` 视频任务完成并落盘为 MP4；页面错误为 0。Photoshop 导入桥接返回 `no_active_document`，证明调用已到达 Photoshop 适配层且当前没有活动 PSD/PSB，未误报成功。验收使用的账号密码未写入项目、日志或安装包。

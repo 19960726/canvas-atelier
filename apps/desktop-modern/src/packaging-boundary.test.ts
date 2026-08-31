@@ -26,7 +26,7 @@ function isPathInside(parentPath: string, candidatePath: string): boolean {
 }
 
 describe('desktop packaging boundary', () => {
-  it('keeps the 1.6.78 modern installer in its own builder output and excludes legacy output', async () => {
+  it('keeps the 1.6.83 modern installer in its own builder output and excludes legacy output', async () => {
     const modernRoot = join(process.cwd(), 'apps', 'desktop-modern');
     const packageJson = JSON.parse(await readFile(
       join(modernRoot, 'package.json'),
@@ -37,7 +37,7 @@ describe('desktop packaging boundary', () => {
       'utf8',
     )) as BuilderConfig;
 
-    expect(packageJson.version).toBe('1.6.78');
+    expect(packageJson.version).toBe('1.6.83');
     expect(builderConfig.directories?.output).toBe('dist-builder/desktop-modern');
     expect(builderConfig.artifactName).toBe('CanvasAtelier-Win10-11-x64-${version}.exe');
 
@@ -53,7 +53,7 @@ describe('desktop packaging boundary', () => {
       modernRoot,
       'dist-builder',
       'desktop-modern',
-      'CanvasAtelier-Win10-11-x64-1.6.78.exe',
+      'CanvasAtelier-Win10-11-x64-1.6.83.exe',
     ));
     expect(isPathInside(modernOutputRoot, installerPath)).toBe(true);
     expect(isPathInside(legacyOutputRoot, installerPath)).toBe(false);
@@ -124,5 +124,16 @@ describe('desktop packaging boundary', () => {
     );
 
     expect(desktopMain).toMatch(/new BrowserWindow\(\{[\s\S]*?autoHideMenuBar:\s*true,/u);
+  });
+
+  it('keeps RelayMe web authentication in a focused main-process module with no renderer token channel', async () => {
+    const modernSourceRoot = join(process.cwd(), 'apps', 'desktop-modern', 'src');
+    const authSource = await readFile(join(modernSourceRoot, 'relayme-web-login.ts'), 'utf8');
+    const mainSource = await readFile(join(modernSourceRoot, 'main.ts'), 'utf8');
+
+    expect(authSource).toContain("const RELAYME_LOGIN_URL = 'https://www.ml.relayme.uk/'");
+    expect(authSource).toContain("partition: 'persist:relayme-web-login'");
+    expect(authSource).not.toMatch(/webContents\.send|ipcMain|preloadPath|preload:/u);
+    expect(mainSource).toContain('loginWebAccount: () => acquireRelayMeWebToken');
   });
 });

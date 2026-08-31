@@ -767,6 +767,10 @@ function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesk
         runtime.activeProvider = 'relayme';
         return { activeProvider: runtime.activeProvider };
       },
+      loginRelayMeWeb: async () => {
+        runtime.activeProvider = 'relayme';
+        return { activeProvider: runtime.activeProvider };
+      },
       logoutRelayMe: async () => {
         if (runtime.activeProvider === 'relayme') runtime.activeProvider = null;
         return { activeProvider: runtime.activeProvider };

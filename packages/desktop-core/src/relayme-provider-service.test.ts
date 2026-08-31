@@ -1,19 +1,51 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RelayMeFetch } from '@agent-canvas/provider-relayme';
 import { createAgentKnowledgeLease, createReversePromptRun } from '@agent-canvas/domain';
 import { createRelayMeProviderService } from './relayme-provider-service';
+import { NodeFileSystem } from './file-system';
+import type { ProviderConfigurationSnapshot } from './provider-configuration-store';
 import type { ProviderCredentialStore } from './provider-credential-vault';
 import { createProviderTaskMappingStore } from './provider-task-ledger';
 
 const roots: string[] = [];
+
+if (false) {
+  createRelayMeProviderService({
+    appDataRoot: 'compile-time-only',
+    credentialStore: credentialStore({ configured: true, locked: false }),
+    fetch: vi.fn(),
+    // @ts-expect-error RelayMe configuration storage ownership must not be replaceable by callers.
+    configurationStore: undefined,
+  });
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
 describe('RelayMe provider service', () => {
+  it('promotes cached RelayMe profiles from the old incomplete capability state', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-stale-profile-'));
+    roots.push(appDataRoot);
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      profiles: [
+        { provider: 'relayme', modelRoute: 'relayme-gpt-image-2', modelId: 'gpt-image-2', displayName: 'GPT Image 2', capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'incomplete' },
+        { provider: 'relayme', modelRoute: 'relayme-text', modelId: 'relayme-text', displayName: 'RelayMe Text', capabilities: ['chat'], capabilityStatus: 'incomplete' },
+      ],
+      fetch: vi.fn(async () => jsonResponse({ message: 'catalog unavailable' }, { ok: false, status: 503 })),
+    });
+
+    await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'gpt-image-2', capabilityStatus: 'complete' }),
+      expect.objectContaining({ modelId: 'relayme-text', capabilityStatus: 'complete' }),
+    ]));
+  });
+
   it('uses workflow nodes only to discover direct model ids and never exposes workflow ids', async () => {
     const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-workflow-catalog-'));
     roots.push(appDataRoot);
@@ -132,7 +164,7 @@ describe('RelayMe provider service', () => {
   });
 
   it('maps RelayMe image authentication, quota, and capability failures to actionable bridge errors', async () => {
-    const { service } = await createService([
+    const { service, fetch } = await createService([
       modelsResponse(),
       jsonResponse({ message: 'quota exceeded' }, { ok: false, status: 429 }),
     ]);
@@ -154,8 +186,351 @@ describe('RelayMe provider service', () => {
     });
 
     await expect(service.loginRelayMe?.({ username: 'artist@example.test', password: 'not-a-real-password' }))
-      .rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+      .rejects.toMatchObject({
+        code: 'PROVIDER_ERROR',
+        message: 'RelayMe 登录成功，但模型目录读取失败，请稍后重试',
+      });
     expect(credentials.configure).not.toHaveBeenCalled();
+  });
+
+  it('does not misclassify an invalid model catalog response as an unsupported generation model', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-login-invalid-catalog-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: false, locked: true });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch: vi.fn(async () => jsonResponse({ success: true, data: [{
+        id: 'live-video',
+        name: 'Live Video',
+        deploymentName: 'live-video',
+        modelType: 'VIDEO',
+        videoCapabilities: { resolutions: ['8XP'] },
+      }] })),
+      loginAccount: vi.fn(async () => 'opaque-login-token'),
+    });
+
+    await expect(service.loginRelayMe?.({ username: 'artist@example.test', password: 'not-a-real-password' }))
+      .rejects.toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    expect(credentials.configure).not.toHaveBeenCalled();
+  });
+
+  it('maps RelayMe account login failures to stable serializable bridge errors', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-login-error-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: false, locked: true });
+    const loginError = Object.assign(new Error('RelayMe username or password is invalid'), {
+      code: 'INVALID_CREDENTIALS',
+      retryable: false,
+    });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch: vi.fn(),
+      loginAccount: vi.fn(async () => Promise.reject(loginError)),
+    });
+
+    await expect(service.loginRelayMe?.({ username: 'artist@example.test', password: 'not-a-real-password' }))
+      .rejects.toMatchObject({
+        code: 'CREDENTIALS_LOCKED',
+        message: 'RelayMe 账号或密码错误',
+        retryable: false,
+      });
+    expect(credentials.configure).not.toHaveBeenCalled();
+  });
+
+  it('validates an official web-login token against the model catalog before persisting it', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-web-login-validation-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: false, locked: true });
+    const webToken = 'opaque-web-session-token';
+    const fetch: RelayMeFetch = vi.fn(async () => modelsResponse());
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch,
+      loginWebAccount: vi.fn(async () => webToken),
+    });
+
+    expect(service.loginRelayMeWeb).toBeTypeOf('function');
+    await service.loginRelayMeWeb!();
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/models',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ ['author' + 'ization']: ['Bearer', webToken].join(' ') }),
+      }),
+    );
+    expect(credentials.configure).toHaveBeenCalledWith({ token: webToken });
+  });
+
+  it('persists validated web-login profiles and serves them from the updated cache', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-web-login-success-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: true, locked: false });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch: vi.fn(async (url: string) => url.endsWith('/models')
+        ? modelsResponse()
+        : jsonResponse({ message: 'not found' }, { ok: false, status: 404 })),
+      loginWebAccount: vi.fn(async () => 'opaque-web-profile-token'),
+    });
+
+    expect(service.loginRelayMeWeb).toBeTypeOf('function');
+    await service.loginRelayMeWeb!();
+
+    await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'gpt-image-2', modelRoute: 'relayme-gpt-image-2' }),
+      expect.objectContaining({ modelId: 'kling/kling-v3-video-generation' }),
+    ]));
+    const persisted = JSON.parse(await readFile(
+      join(appDataRoot, 'providers', 'relayme', 'provider-configuration.json'),
+      'utf8',
+    )) as { profiles: Array<{ modelId: string }> };
+    expect(persisted.profiles.map((profile) => profile.modelId)).toEqual(expect.arrayContaining([
+      'gpt-image-2',
+      'kling/kling-v3-video-generation',
+    ]));
+  });
+
+  it('rejects web login when the catalog has no usable model profiles', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-web-login-empty-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: false, locked: true });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch: vi.fn(async () => jsonResponse({ success: true, data: { models: [] } })),
+      loginWebAccount: vi.fn(async () => 'opaque-empty-catalog-token'),
+    });
+
+    expect(service.loginRelayMeWeb).toBeTypeOf('function');
+    await expect(service.loginRelayMeWeb!()).rejects.toMatchObject({
+      code: 'PROVIDER_UNAVAILABLE',
+      message: 'RelayMe 登录成功，但账号没有可用模型',
+    });
+    expect(credentials.configure).not.toHaveBeenCalled();
+    await expect(readFile(join(appDataRoot, 'providers', 'relayme', 'provider-configuration.json'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('preserves the existing credential, configuration, and profile cache when web token validation fails', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-web-login-preserve-'));
+    roots.push(appDataRoot);
+    const configurationPath = join(appDataRoot, 'providers', 'relayme', 'provider-configuration.json');
+    await mkdir(dirname(configurationPath), { recursive: true });
+    const originalConfiguration = `${JSON.stringify({
+      version: 1,
+      baseUrl: 'https://www.ml.relayme.uk/api/ai-tools/v1',
+      profiles: [{
+        provider: 'relayme', modelId: 'cached-image', displayName: 'Cached Image',
+        modelRoute: 'relayme-cached-image', capabilities: ['image_generation', 'async_tasks'], capabilityStatus: 'complete',
+      }],
+    })}\n`;
+    await writeFile(configurationPath, originalConfiguration, 'utf8');
+    const credentials = credentialStore({ configured: true, locked: false });
+    const fetch: RelayMeFetch = vi.fn(async () => jsonResponse({ message: 'unavailable' }, { ok: false, status: 503 }));
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch,
+      loginWebAccount: vi.fn(async () => 'opaque-rejected-web-token'),
+    });
+
+    expect(service.loginRelayMeWeb).toBeTypeOf('function');
+    await expect(service.loginRelayMeWeb!()).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+
+    expect(credentials.configure).not.toHaveBeenCalled();
+    expect(await credentials.getPrimaryToken()).toBe('relay-secret');
+    expect(await readFile(configurationPath, 'utf8')).toBe(originalConfiguration);
+    await expect(service.listProfiles()).resolves.toEqual([
+      expect.objectContaining({ modelId: 'cached-image', modelRoute: 'relayme-cached-image' }),
+    ]);
+  });
+
+  it('sanitizes web-login acquisition errors without retaining protected payloads', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-web-login-error-'));
+    roots.push(appDataRoot);
+    const protectedPayload = 'protected-web-login-payload';
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: false, locked: true }),
+      fetch: vi.fn(),
+      loginWebAccount: vi.fn(async () => Promise.reject(Object.assign(new Error(protectedPayload), {
+        code: 'PROVIDER_ERROR',
+        retryable: false,
+      }))),
+    });
+
+    const error = await service.loginRelayMeWeb!().catch((caught) => caught);
+
+    expect(error).toMatchObject({ code: 'PROVIDER_ERROR', retryable: false });
+    expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain(protectedPayload);
+  });
+
+  it.each([
+    ['WEB_LOGIN_CANCELLED', false],
+    ['WEB_LOGIN_TIMEOUT', true],
+  ] as const)('preserves the stable %s code across the provider service', async (code, retryable) => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-web-login-stable-code-'));
+    roots.push(appDataRoot);
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: false, locked: true }),
+      fetch: vi.fn(),
+      loginWebAccount: vi.fn(async () => Promise.reject(Object.assign(new Error('sanitized'), { code, retryable }))),
+    });
+
+    await expect(service.loginRelayMeWeb!()).rejects.toMatchObject({ code, retryable });
+  });
+
+  it('rejects a web-login token with surrounding whitespace before model validation', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-web-login-token-shape-'));
+    roots.push(appDataRoot);
+    const credentials = credentialStore({ configured: false, locked: true });
+    const paddedToken = ' opaque-web-token ';
+    const fetch: RelayMeFetch = vi.fn(async () => modelsResponse());
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fetch,
+      loginWebAccount: vi.fn(async () => paddedToken),
+    });
+
+    const error = await service.loginRelayMeWeb!().catch((caught) => caught);
+
+    expect(error).toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE' });
+    expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain(paddedToken.trim());
+    expect(fetch).not.toHaveBeenCalled();
+    expect(credentials.configure).not.toHaveBeenCalled();
+  });
+
+  it('preserves credential, configuration, and caches when the candidate configuration write fails', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-login-config-write-failure-'));
+    roots.push(appDataRoot);
+    const original = relayMeConfiguration('https://www.ml.relayme.uk/api/ai-tools/v1', 'cached-before-config-failure');
+    const configurationPath = join(appDataRoot, 'providers', 'relayme', 'provider-configuration.json');
+    await mkdir(dirname(configurationPath), { recursive: true });
+    const originalConfiguration = `${JSON.stringify({ version: 1, ...original })}\n`;
+    await writeFile(configurationPath, originalConfiguration, 'utf8');
+    const fileSystem = new RelayMeConfigurationWriteFileSystem(true);
+    const credentials = credentialStore({ configured: true, locked: false });
+    const fetch: RelayMeFetch = vi.fn()
+      .mockResolvedValueOnce(modelsResponse())
+      .mockResolvedValue(jsonResponse({ message: 'offline' }, { ok: false, status: 503 }));
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fileSystem,
+      fetch,
+      loginWebAccount: vi.fn(async () => 'opaque-config-write-failure-token'),
+    });
+
+    await expect(service.loginRelayMeWeb!()).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+    expect(credentials.configure).not.toHaveBeenCalled();
+    expect(fileSystem.configurationRenameCount).toBe(0);
+    expect(await readFile(configurationPath, 'utf8')).toBe(originalConfiguration);
+    await expect(service.listProfiles()).resolves.toEqual([
+      expect.objectContaining({ modelId: 'cached-before-config-failure' }),
+    ]);
+  });
+
+  it('rolls back configuration and preserves caches when credential persistence fails', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-login-credential-write-failure-'));
+    roots.push(appDataRoot);
+    const original = relayMeConfiguration('https://www.ml.relayme.uk/api/ai-tools/v1', 'cached-before-credential-failure');
+    const configurationPath = join(appDataRoot, 'providers', 'relayme', 'provider-configuration.json');
+    await mkdir(dirname(configurationPath), { recursive: true });
+    const originalConfiguration = `${JSON.stringify({ version: 1, ...original })}\n`;
+    await writeFile(configurationPath, originalConfiguration, 'utf8');
+    const fileSystem = new RelayMeConfigurationWriteFileSystem(false);
+    const credentials = credentialStore({ configured: true, locked: false });
+    vi.mocked(credentials.configure).mockRejectedValueOnce(new Error('credential write failed'));
+    const fetch: RelayMeFetch = vi.fn()
+      .mockResolvedValueOnce(modelsResponse())
+      .mockResolvedValue(jsonResponse({ message: 'offline' }, { ok: false, status: 503 }));
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentials,
+      fileSystem,
+      fetch,
+      loginWebAccount: vi.fn(async () => 'opaque-credential-write-failure-token'),
+    });
+
+    await expect(service.loginRelayMeWeb!()).rejects.toThrow('credential write failed');
+
+    expect(fileSystem.configurationRenameCount).toBe(2);
+    expect(JSON.parse(await readFile(configurationPath, 'utf8'))).toEqual(JSON.parse(originalConfiguration));
+    expect(await credentials.getPrimaryToken()).toBe('relay-secret');
+    await expect(service.listProfiles()).resolves.toEqual([
+      expect.objectContaining({ modelId: 'cached-before-credential-failure' }),
+    ]);
+  });
+
+  it('serializes web-login validation and commit with concurrent configuration changes', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-login-configure-serialization-'));
+    roots.push(appDataRoot);
+    let releaseModels!: () => void;
+    const modelsBlocked = new Promise<void>((resolve) => { releaseModels = resolve; });
+    const validationStarted = vi.fn();
+    const fetch: RelayMeFetch = vi.fn(async () => {
+      validationStarted();
+      await modelsBlocked;
+      return modelsResponse();
+    });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      fetch,
+      loginWebAccount: vi.fn(async () => 'opaque-serialized-login-token'),
+    });
+
+    const login = service.loginRelayMeWeb!();
+    await vi.waitFor(() => expect(validationStarted).toHaveBeenCalledOnce());
+    let configureCompleted = false;
+    const configure = service.configure({
+      provider: 'relayme',
+      baseUrl: 'https://relayme.example.test/api/ai-tools/v1',
+    }).then(() => { configureCompleted = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const completedWhileValidationWasBlocked = configureCompleted;
+    releaseModels();
+    await Promise.all([login, configure]);
+    expect(completedWhileValidationWasBlocked).toBe(false);
+    const persisted = JSON.parse(await readFile(
+      join(appDataRoot, 'providers', 'relayme', 'provider-configuration.json'),
+      'utf8',
+    )) as { baseUrl: string; profiles: Array<{ modelId: string }> };
+    expect(persisted.baseUrl).toBe('https://relayme.example.test/api/ai-tools/v1');
+    expect(persisted.profiles.map((profile) => profile.modelId)).toContain('gpt-image-2');
+  });
+
+  it('does not migrate a retired URL when web token acquisition fails', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-login-retired-url-acquisition-'));
+    roots.push(appDataRoot);
+    const configurationPath = join(appDataRoot, 'providers', 'relayme', 'provider-configuration.json');
+    await mkdir(dirname(configurationPath), { recursive: true });
+    const originalConfiguration = `${JSON.stringify({
+      version: 1,
+      baseUrl: 'https://api.relayme.ai/api/ai-tools/v1',
+      profiles: relayMeConfiguration('https://api.relayme.ai/api/ai-tools/v1', 'retired-cached-model').profiles,
+    })}\n`;
+    await writeFile(configurationPath, originalConfiguration, 'utf8');
+    const fetch: RelayMeFetch = vi.fn();
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      fetch,
+      loginWebAccount: vi.fn(async () => Promise.reject(new Error('acquisition failed'))),
+    });
+
+    await expect(service.loginRelayMeWeb!()).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await readFile(configurationPath, 'utf8')).toBe(originalConfiguration);
   });
 
   it('finishes login before workflow discovery and discovers workflow model ids on catalog refresh', async () => {
@@ -478,6 +853,37 @@ describe('RelayMe provider service', () => {
       status: 'completed', progress: 1, result: { assetId: 'fedcba9876543210' },
     });
     expect(storedImage).toHaveBeenCalledWith('desktop-session-image-url', expect.any(Uint8Array), 'image/png');
+  });
+
+  it('stores every image returned by a RelayMe multi-image task', async () => {
+    const storedImage = vi.fn()
+      .mockResolvedValueOnce({ assetId: '1111111111111111', width: 1024, height: 1024 })
+      .mockResolvedValueOnce({ assetId: '2222222222222222', width: 1024, height: 1024 });
+    const { service, fetch } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-multi-image', status: 'queued' }),
+      jsonResponse({ status: 'COMPLETED', data: [
+        { image_url: 'https://cdn.example/result-one.png' },
+        { image_url: 'https://cdn.example/result-two.png' },
+      ] }),
+      binaryResponse(pngHeaderBytes()),
+      binaryResponse(pngHeaderBytes()),
+    ], { storeGeneratedImage: storedImage });
+    const submitted = await service.submitImageJob({
+      jobId: 'multi-image-job', provider: 'relayme', modelRoute: 'relayme-gpt-image-2', prompt: 'two images',
+      conversationId: 'multi-image-conversation', sessionId: 'multi-image-session', referenceAssetIds: [], outputCount: 2,
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/images/generations',
+      expect.objectContaining({ body: expect.stringContaining('"n":2') }),
+    );
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toEqual({
+      status: 'completed', progress: 1,
+      result: { assetId: '1111111111111111', assetIds: ['1111111111111111', '2222222222222222'], width: 1024, height: 1024 },
+    });
+    expect(storedImage).toHaveBeenCalledTimes(2);
   });
 
   it('marks RelayMe history failed when task polling cannot complete', async () => {
@@ -844,6 +1250,45 @@ function credentialStore(status: { configured: boolean; locked: boolean }): Prov
     getMappingKey: vi.fn(async () => 'mapping-key'),
     getMappingSecrets: vi.fn(async () => ({ primary: 'mapping-key', fallback: [] })),
   };
+}
+
+function relayMeConfiguration(baseUrl: string, modelId: string): ProviderConfigurationSnapshot {
+  return {
+    baseUrl,
+    profiles: [{
+      provider: 'relayme',
+      modelId,
+      displayName: modelId,
+      modelRoute: `relayme-${modelId}`,
+      capabilities: ['image_generation', 'async_tasks'],
+      capabilityStatus: 'complete',
+    }],
+  };
+}
+
+class RelayMeConfigurationWriteFileSystem extends NodeFileSystem {
+  configurationRenameCount = 0;
+  private shouldFailConfigurationWrite: boolean;
+
+  constructor(failFirstConfigurationWrite: boolean) {
+    super();
+    this.shouldFailConfigurationWrite = failFirstConfigurationWrite;
+  }
+
+  override async open(path: string, flags: string) {
+    if (this.shouldFailConfigurationWrite && path.includes('.provider-configuration.json.tmp-')) {
+      this.shouldFailConfigurationWrite = false;
+      throw new Error('injected RelayMe configuration write failure');
+    }
+    return super.open(path, flags);
+  }
+
+  override async rename(source: string, destination: string): Promise<void> {
+    if (destination.endsWith('provider-configuration.json')) {
+      this.configurationRenameCount += 1;
+    }
+    await super.rename(source, destination);
+  }
 }
 
 function modelsResponse() {

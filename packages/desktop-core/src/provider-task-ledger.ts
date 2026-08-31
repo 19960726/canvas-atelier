@@ -463,13 +463,21 @@ function validateProviderError(value: unknown): ProviderBridgeError {
 }
 
 function validateProviderJobResult(value: unknown, kind: 'image' | 'video'): ProviderImageJobResult | ProviderVideoJobResult {
-  const record = expectStrictRecord(value, ['assetId', 'width', 'height', 'durationSeconds']);
+  const record = expectStrictRecord(value, ['assetId', 'assetIds', 'width', 'height', 'durationSeconds']);
   return {
     assetId: parseNonEmptyString(record.assetId, 'assetId'),
+    ...(record.assetIds === undefined ? {} : { assetIds: parseAssetIds(record.assetIds) }),
     ...(record.width === undefined ? {} : { width: parseFiniteNumber(record.width, 'width') }),
     ...(record.height === undefined ? {} : { height: parseFiniteNumber(record.height, 'height') }),
     ...(kind === 'video' && record.durationSeconds !== undefined ? { durationSeconds: parseFiniteNumber(record.durationSeconds, 'durationSeconds') } : {}),
   };
+}
+
+function parseAssetIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 4) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
+  }
+  return value.map((item) => parseNonEmptyString(item, 'assetIds'));
 }
 
 function parseProvider(value: unknown): 'comfly' | 'relayme' {

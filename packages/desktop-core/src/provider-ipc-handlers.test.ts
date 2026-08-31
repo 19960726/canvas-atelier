@@ -5,6 +5,26 @@ import type { ProviderRegistry } from './provider-registry';
 import type { ProviderService } from './provider-service-types';
 
 describe('active provider IPC handlers', () => {
+  it('activates RelayMe only after official web login completes', async () => {
+    const relayme = fakeService();
+    const activeStore = {
+      getActiveProvider: vi.fn(async () => ({ activeProvider: null })),
+      setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+    };
+    relayme.loginRelayMeWeb = vi.fn(async () => {
+      expect(activeStore.setActiveProvider).not.toHaveBeenCalled();
+    });
+    const comfly = fakeService();
+    const registry: ProviderRegistry = { get: (provider) => provider === 'comfly' ? comfly : relayme };
+    const handlers = createHandlers(registry, { activeStore });
+
+    await expect(handlers.loginRelayMeWeb({}, undefined)).resolves.toEqual({ activeProvider: 'relayme' });
+    expect(relayme.loginRelayMeWeb).toHaveBeenCalledOnce();
+    expect(activeStore.setActiveProvider).toHaveBeenCalledOnce();
+    expect(activeStore.setActiveProvider).toHaveBeenCalledWith('relayme');
+    expect(comfly.loginRelayMeWeb).toBeUndefined();
+  });
+
   it('uses the persisted active provider as the main-process execution authority', async () => {
     const comfly = fakeService();
     const relayme = fakeService();
@@ -100,6 +120,7 @@ const createHandlers = createProviderBridgeHandlers as unknown as (
 ) => ReturnType<typeof createProviderBridgeHandlers> & {
   getActiveProvider(event: unknown, request: unknown): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
   setActiveProvider(event: unknown, request: unknown): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
+  loginRelayMeWeb(event: unknown, request: unknown): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
 };
 
 function fakeService(status: { configured: boolean } = { configured: true }): ProviderService & { submitImageJob: ReturnType<typeof vi.fn> } {

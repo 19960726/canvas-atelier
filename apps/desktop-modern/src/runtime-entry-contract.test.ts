@@ -327,12 +327,12 @@ function spawnArtifactLoad(entryPath: string) {
 }
 
 describe('desktop runtime entry contract', () => {
-  it('modern 1.6.78 resolves only the modern renderer entry', async () => {
+  it('modern 1.6.83 resolves only the modern renderer entry', async () => {
     const shell = desktopShells[0]!;
     const packageJson = await readPackageJson(shell);
     const rendererEntry = resolveRendererHtmlPath(join(workspaceRoot, shell.appDir, 'dist'));
 
-    expect(packageJson.version).toBe('1.6.78');
+    expect(packageJson.version).toBe('1.6.83');
     expect(rendererEntry).toBe(resolve(workspaceRoot, 'apps', 'renderer', 'dist', 'index.html'));
     expect(rendererEntry).not.toContain('desktop-legacy');
   });
@@ -471,6 +471,14 @@ describe('desktop runtime entry contract', () => {
       expect(builtMainSource).toMatch(/setPath\(["']userData["']/u);
       expect(builtMainSource).toContain('createWindowsPhotoshopSmartObjectAdapter');
       expect(builtMainSource).toContain('photoshopSmartObjectAdapter');
+      if (shell.label === 'modern') {
+        expect(builtMainSource).toContain('relayme-direct-network');
+        expect(builtMainSource).toContain('persist:relayme-web-login');
+        expect(builtMainSource).toContain('mode: "direct"');
+        expect(builtMainSource).toContain('requestSession: relayMeNetworkSession');
+        expect(builtMainSource).toContain('loginWebAccount');
+        expect(builtMainSource).toContain('acquireRelayMeWebToken');
+      }
 
       for (const preloadArtifact of preloadArtifacts) {
         const preloadSource = await readFile(join(workspaceRoot, shell.appDir, 'dist', preloadArtifact), 'utf8');

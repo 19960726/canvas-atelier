@@ -4,7 +4,9 @@ import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, net, protocol, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, net, protocol, safeStorage, session, shell } from 'electron';
+
+import { acquireRelayMeWebToken } from './relayme-web-login.js';
 
 import {
   BRIDGE_CHANNELS,
@@ -302,6 +304,12 @@ app.whenReady().then(async () => {
     return 'save';
   });
   const providerFetch = createElectronNetComflyFetch(net);
+  const relayMeNetworkSession = session.fromPartition('relayme-direct-network');
+  await relayMeNetworkSession.setProxy({ mode: 'direct' });
+  const relayMeWebLoginSession = session.fromPartition('persist:relayme-web-login');
+  const relayMeProviderFetch = createElectronNetComflyFetch(net, {
+    requestSession: relayMeNetworkSession,
+  });
   const generationHistorySink = new GenerationHistoryProviderSink({
     store: generationHistoryStore,
     trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
@@ -333,7 +341,12 @@ app.whenReady().then(async () => {
         provider: 'relayme',
         safeStorage,
       }),
-      fetch: providerFetch,
+      fetch: relayMeProviderFetch,
+      loginWebAccount: () => acquireRelayMeWebToken({
+        BrowserWindow,
+        parent: mainWindow,
+        session: relayMeWebLoginSession,
+      }),
       historySink: generationHistorySink,
       resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
         .map((entry) => entry.address),

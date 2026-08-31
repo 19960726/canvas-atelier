@@ -86,17 +86,20 @@ describe('recent project preload API', () => {
       getActiveProvider(): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
       setActiveProvider(request: { activeProvider: 'comfly' | 'relayme' | null }): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
       loginRelayMe(request: { username: string; password: string }): Promise<{ activeProvider: 'relayme' }>;
+      loginRelayMeWeb(): Promise<{ activeProvider: 'relayme' }>;
       logoutRelayMe(): Promise<{ activeProvider: null }>;
     };
 
     await expect(provider.getActiveProvider()).resolves.toEqual({ activeProvider: 'relayme' });
     await expect(provider.setActiveProvider({ activeProvider: 'relayme' })).resolves.toEqual({ activeProvider: 'relayme' });
     await expect(provider.loginRelayMe({ username: 'artist@example.test', password: 'not-a-real-password' })).resolves.toEqual({ activeProvider: 'relayme' });
+    await expect(provider.loginRelayMeWeb()).resolves.toEqual({ activeProvider: 'relayme' });
     await expect(provider.logoutRelayMe()).resolves.toEqual({ activeProvider: null });
     expect(calls).toEqual([
       { channel: BRIDGE_CHANNELS.provider.getActiveProvider, payload: undefined },
       { channel: BRIDGE_CHANNELS.provider.setActiveProvider, payload: { activeProvider: 'relayme' } },
       { channel: BRIDGE_CHANNELS.provider.loginRelayMe, payload: { username: 'artist@example.test', password: 'not-a-real-password' } },
+      { channel: BRIDGE_CHANNELS.provider.loginRelayMeWeb, payload: undefined },
       { channel: BRIDGE_CHANNELS.provider.logoutRelayMe, payload: undefined },
     ]);
     expect(JSON.stringify(calls)).not.toMatch(/jwt|token|bearer/i);

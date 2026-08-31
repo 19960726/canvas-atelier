@@ -33,7 +33,16 @@ const durationSchema = z.union([
   }).passthrough(),
 ]);
 const aspectRatioSchema = z.enum(['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16']);
-const videoResolutionSchema = z.enum(['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K']);
+const videoAspectRatioListSchema = z.array(z.string()).transform((values) => values.flatMap((value) => {
+  const parsed = aspectRatioSchema.safeParse(value.trim());
+  return parsed.success ? [parsed.data] : [];
+}));
+const videoResolutionSchema = z.string().transform((value) => {
+  const normalized = value.trim().toLowerCase();
+  return normalized === '2k' || normalized === '4k'
+    ? normalized.toUpperCase()
+    : normalized;
+}).pipe(z.enum(['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K']));
 const modelTypeSchema = z.enum(['IMAGE', 'TEXT', 'VIDEO']);
 const modelEntrySchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String).optional(),
@@ -54,7 +63,7 @@ const modelEntrySchema = z.object({
   pricing: pricingSchema.optional(),
   videoCapabilities: z.object({
     resolutions: z.array(videoResolutionSchema).min(1).optional(),
-    aspectRatios: z.array(aspectRatioSchema).min(1).optional(),
+    aspectRatios: videoAspectRatioListSchema.optional(),
     duration: durationSchema.optional(),
   }).passthrough().optional(),
 }).passthrough().superRefine((value, context) => {

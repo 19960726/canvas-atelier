@@ -21,7 +21,7 @@ describe('RelayMe account authentication public API', () => {
     expect(exports.loginRelayMeAccount).toBeTypeOf('function');
   });
 
-  it('derives the same-origin login endpoint and returns only the JWT', async () => {
+  it('uses the official email field at the same-origin login endpoint and returns only the token', async () => {
     const fetch = vi.fn(async () => jsonResponse({ token: fixtureJwt }));
 
     const result = await loginRelayMeAccount(
@@ -34,7 +34,7 @@ describe('RelayMe account authentication public API', () => {
     expect(fetch).toHaveBeenCalledWith('https://relay.example/api/auth/user/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: fixtureUsername, password: fixturePassword }),
+      body: JSON.stringify({ email: fixtureUsername, password: fixturePassword }),
       redirect: 'error',
     });
   });
@@ -115,14 +115,11 @@ describe('RelayMe account authentication public API', () => {
     expectSerializedErrorToBeSafe(error);
   });
 
-  it('rejects a non-JWT token with the stable missing-token error', async () => {
-    const invalidToken = 'not-a-jwt-token';
-    const client = createClient(async () => jsonResponse({ token: invalidToken }));
+  it('accepts the official nested data token as an opaque value', async () => {
+    const opaqueToken = 'relayme-opaque-session-token';
+    const client = createClient(async () => jsonResponse({ data: { token: opaqueToken } }));
 
-    const error = await client.login({ username: fixtureUsername, password: fixturePassword }).catch(identity);
-
-    expect(error).toMatchObject({ code: 'TOKEN_MISSING', retryable: false });
-    expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain(invalidToken);
+    await expect(client.login({ username: fixtureUsername, password: fixturePassword })).resolves.toBe(opaqueToken);
   });
 
   it('rejects a JWT with surrounding whitespace without exposing it', async () => {
@@ -142,6 +139,16 @@ describe('RelayMe account authentication public API', () => {
 
     expect(error).toMatchObject({ code: 'TOKEN_MISSING', retryable: false });
     expectSerializedErrorToBeSafe(error);
+  });
+
+  it('rejects an overlong token without exposing it', async () => {
+    const overlongToken = 'x'.repeat(16_385);
+    const client = createClient(async () => jsonResponse({ data: { token: overlongToken } }));
+
+    const error = await client.login({ username: fixtureUsername, password: fixturePassword }).catch(identity);
+
+    expect(error).toMatchObject({ code: 'TOKEN_MISSING', retryable: false });
+    expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain(overlongToken);
   });
 
   it('rejects non-AI-Tools base URLs instead of accepting an injected login URL', async () => {

@@ -45,6 +45,7 @@ const REQUIRED_KNOWLEDGE_BASES = [
 
 type ConnectionStatus = 'unconfigured' | 'connected' | 'authentication_failed' | 'network_unavailable' | 'service_limited' | 'connection_timeout';
 const PROVIDER_CONNECTION_CHECK_TIMEOUT_MS = 35_000;
+const RELAYME_LOGIN_TIMEOUT_MS = 35_000;
 type DesktopMcpIntegration = NonNullable<typeof window.novusDesktop>['mcpIntegration'];
 type DesktopMcpRuntime = NonNullable<typeof window.novusDesktop>['mcpRuntime'];
 type McpClientId = Parameters<DesktopMcpIntegration['connect']>[0];
@@ -78,6 +79,52 @@ function credentialSaveErrorMessage(error: unknown): string | null {
   if (error === null || typeof error !== 'object' || !('code' in error)) return null;
   const code = (error as { readonly code?: unknown }).code;
   return typeof code === 'string' ? CREDENTIAL_SAVE_ERROR_MESSAGES[code] ?? null : null;
+}
+
+function relayMeLoginErrorMessage(error: unknown): string {
+  if (error instanceof ProviderOperationTimeoutError) {
+    return 'RelayMe 登录超时，请检查网络后重试';
+  }
+  const code = error !== null && typeof error === 'object' && 'code' in error
+    ? (error as { readonly code?: unknown }).code
+    : null;
+  if (code === 'INVALID_CREDENTIALS') return 'RelayMe 账号或密码错误';
+  if (code === 'ACCOUNT_RESTRICTED') return 'RelayMe 账号已受限，请前往工作台确认账号状态';
+  if (code === 'NETWORK_ERROR') return 'RelayMe 登录网络请求失败，请检查网络后重试';
+  if (code === 'SERVICE_UNAVAILABLE') return 'RelayMe 登录服务暂时不可用，请稍后重试';
+  const detail = error instanceof Error
+    ? error.message
+    : error !== null && typeof error === 'object' && 'message' in error && typeof (error as { readonly message?: unknown }).message === 'string'
+      ? (error as { readonly message: string }).message
+      : '';
+  if (/username or password is invalid|账号或密码错误/iu.test(detail)) return 'RelayMe 账号或密码错误';
+  if (/登录成功.*模型目录.*失败/iu.test(detail)) return 'RelayMe 登录成功，但模型目录读取失败，请稍后重试';
+  if (/login response did not include a token|登录响应.*令牌/iu.test(detail)) return 'RelayMe 登录响应缺少有效令牌，请联系 RelayMe 检查接口';
+  if (/login response is invalid|登录响应.*无效/iu.test(detail)) return 'RelayMe 登录响应格式无效，请稍后重试';
+  if (code === 'CREDENTIALS_LOCKED') return 'RelayMe 登录已失效，请重新登录';
+  if (code === 'PROVIDER_ERROR') return 'RelayMe 登录网络或服务请求失败，请稍后重试';
+  if (code === 'PROVIDER_UNAVAILABLE') return 'RelayMe 登录服务暂时不可用，请稍后重试';
+  return 'RelayMe 登录失败，请检查网络连接或服务状态';
+}
+
+function relayMeWebLoginErrorMessage(error: unknown): string {
+  if (error instanceof ProviderOperationTimeoutError) {
+    return 'RelayMe 网页登录超时，请重新打开登录';
+  }
+  const code = error !== null && typeof error === 'object' && 'code' in error
+    ? (error as { readonly code?: unknown }).code
+    : null;
+  if (code === 'WEB_LOGIN_CANCELLED') return '已取消 RelayMe 网页登录';
+  if (code === 'WEB_LOGIN_TIMEOUT') return 'RelayMe 网页登录超时，请重新打开登录';
+  if (code === 'CREDENTIALS_LOCKED' || code === 'PROVIDER_INVALID_RESPONSE') return 'RelayMe 网页登录已失效，请重新登录';
+  const detail = error instanceof Error
+    ? error.message
+    : error !== null && typeof error === 'object' && 'message' in error && typeof (error as { readonly message?: unknown }).message === 'string'
+      ? (error as { readonly message: string }).message
+      : '';
+  if (/没有可用模型|模型目录读取失败/iu.test(detail)) return detail;
+  if (code === 'PROVIDER_UNAVAILABLE') return 'RelayMe 网页登录服务暂时不可用，请稍后重试';
+  return 'RelayMe 网页登录失败，请稍后重试';
 }
 
 const MCP_PERMISSION_ITEMS: readonly {
@@ -124,6 +171,7 @@ export function SettingsDrawer({
   const [relayMeUsername, setRelayMeUsername] = useState('');
   const [relayMePassword, setRelayMePassword] = useState('');
   const [relayMeLoginBusy, setRelayMeLoginBusy] = useState(false);
+  const [relayMeLoginError, setRelayMeLoginError] = useState<string | null>(null);
   const [providerStatuses, setProviderStatuses] = useState<Record<ProviderBridgeProvider, ProviderConfigurationStatus | null>>({
     comfly: providerStatus,
     relayme: null,
@@ -132,6 +180,7 @@ export function SettingsDrawer({
   const [loadingModels, setLoadingModels] = useState(false);
   const [enabledProfileKeys, setEnabledProfileKeys] = useState<string[]>([]);
   const [defaultProfileKeys, setDefaultProfileKeys] = useState<Partial<Record<CatalogCapability, string>>>({});
+  const providerSelectionRequest = useRef(0);
 
   const [savingDefaults, setSavingDefaults] = useState(false);
   const [cleaningStorage, setCleaningStorage] = useState(false);
@@ -164,6 +213,11 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
   const hasActiveProviderApi = Boolean(provider?.getActiveProvider && provider?.setActiveProvider);
   const effectiveActiveProvider = hasActiveProviderApi ? activeProvider : selectedProvider;
   const catalogProvider = effectiveActiveProvider;
+  const relayMeNeedsVerification = selectedProvider === 'relayme'
+    && selectedProviderStatus?.configured === true
+    && effectiveActiveProvider === 'relayme'
+    && !loadingModels
+    && providerProfiles.length === 0;
 
   const refreshAvailableModels = async (providerId: ProviderBridgeProvider = selectedProvider): Promise<{ ok: true; count: number; reverseCount: number } | { ok: false }> => {
     if (!provider?.listProfiles) return { ok: false };
@@ -307,9 +361,11 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
     }
     let cancelled = false;
     setLoadingActiveProvider(true);
+    const selectionRequestAtStart = providerSelectionRequest.current;
     void provider.getActiveProvider()
       .then((state) => {
         if (cancelled) return;
+        if (providerSelectionRequest.current !== selectionRequestAtStart) return;
         setActiveProvider(state.activeProvider);
         if (state.activeProvider !== null) setSelectedProvider(state.activeProvider);
       })
@@ -338,7 +394,6 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
 
   useEffect(() => {
     setConnectionState('idle');
-    setMessage(null);
     setBaseUrl(providerBaseUrlPlaceholder(selectedProvider));
     setHiddenKeysOpen(false);
     setProviderToken('');
@@ -492,11 +547,18 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
     closeRelayMeLogin();
     onClose();
   };
+  const openRelayMeLogin = () => {
+    setRelayMeLoginError(null);
+    setRelayMeLoginOpen(true);
+  };
   const selectActiveProvider = async (providerId: ProviderBridgeProvider) => {
+    providerSelectionRequest.current += 1;
+    setMessage(null);
     setSelectedProvider(providerId);
+    setBaseUrl(providerBaseUrlPlaceholder(providerId));
     if (!hasActiveProviderApi || !provider?.setActiveProvider) return;
     if (providerId === 'relayme' && !providerStatuses.relayme?.configured) {
-      setRelayMeLoginOpen(true);
+      openRelayMeLogin();
       return;
     }
     setLoadingActiveProvider(true);
@@ -514,29 +576,73 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
   const closeRelayMeLogin = () => {
     setRelayMePassword('');
     setRelayMeUsername('');
+    setRelayMeLoginError(null);
     setRelayMeLoginBusy(false);
     setRelayMeLoginOpen(false);
+  };
+  const completeRelayMeLogin = async (
+    state: { readonly activeProvider: ProviderBridgeProvider | null },
+    successLabel: '账号密码' | '网页',
+  ) => {
+    setActiveProvider(state.activeProvider);
+    setSelectedProvider('relayme');
+    if (provider?.getStatus) {
+      const status = await provider.getStatus({ provider: 'relayme' });
+      setProviderStatuses((current) => ({ ...current, relayme: status }));
+    }
+    let modelCount = 0;
+    if (provider?.listProfiles) {
+      const profiles = await provider.listProfiles({ provider: 'relayme' });
+      const scoped = filterProviderCatalogProfiles(listActiveProviderProfiles(profiles, 'relayme'));
+      setProviderProfiles(scoped);
+      setEnabledProfileKeys(scoped.map(createProviderProfileKey));
+      setDefaultProfileKeys(createDefaultProfileSelection(scoped));
+      modelCount = scoped.length;
+    }
+    setMessage(successLabel === '网页'
+      ? `RelayMe 网页登录成功，已加载 ${modelCount} 个模型`
+      : 'RelayMe 登录成功，已切换为当前活动供应商');
+    globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed', { detail: { provider: 'relayme' } }));
+    setRelayMeLoginOpen(false);
+    setRelayMeUsername('');
   };
   const submitRelayMeLogin = async () => {
     if (!provider?.loginRelayMe || relayMeLoginBusy) return;
     const username = relayMeUsername.trim();
     if (username.length === 0 || relayMePassword.length === 0) return;
     setRelayMeLoginBusy(true);
+    setRelayMeLoginError(null);
     setMessage(null);
     try {
-      const state = await provider.loginRelayMe({ username, password: relayMePassword });
-      setActiveProvider(state.activeProvider);
-      setSelectedProvider('relayme');
-      if (provider.getStatus) {
-        const status = await provider.getStatus({ provider: 'relayme' });
-        setProviderStatuses((current) => ({ ...current, relayme: status }));
-      }
-      setMessage('RelayMe 登录成功，已切换为当前活动供应商');
-      globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed', { detail: { provider: 'relayme' } }));
-      setRelayMeLoginOpen(false);
-      setRelayMeUsername('');
-    } catch {
-      setMessage('RelayMe 登录失败，请检查账号和密码');
+      const state = await withProviderOperationTimeout(
+        provider.loginRelayMe({ username, password: relayMePassword }),
+        RELAYME_LOGIN_TIMEOUT_MS,
+      );
+      await completeRelayMeLogin(state, '账号密码');
+    } catch (error) {
+      const errorMessage = relayMeLoginErrorMessage(error);
+      setRelayMeLoginError(errorMessage);
+      setMessage(errorMessage);
+    } finally {
+      setRelayMePassword('');
+      setRelayMeLoginBusy(false);
+    }
+  };
+  const submitRelayMeWebLogin = async () => {
+    if (!provider?.loginRelayMeWeb || relayMeLoginBusy) return;
+    setRelayMeLoginBusy(true);
+    setRelayMeLoginError(null);
+    setMessage(null);
+    try {
+      const state = await withProviderOperationTimeout(
+        provider.loginRelayMeWeb(),
+        RELAYME_LOGIN_TIMEOUT_MS,
+      );
+      await completeRelayMeLogin(state, '网页');
+    } catch (error) {
+      const errorMessage = relayMeWebLoginErrorMessage(error);
+      setRelayMeLoginError(errorMessage);
+      setMessage(errorMessage);
     } finally {
       setRelayMePassword('');
       setRelayMeLoginBusy(false);
@@ -881,7 +987,9 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
               const active = effectiveActiveProvider === providerId;
               const count = active ? providerProfiles.length : null;
               const status = providerStatuses[providerId];
-              const summary = count === null ? (status?.configured ? '已配置' : '未配置') : `${count} 个模型`;
+              const summary = active && providerId === 'relayme' && status?.configured && !loadingModels && count === 0
+                ? '凭据待重新验证'
+                : count === null ? (status?.configured ? '已配置' : '未配置') : `${count} 个模型`;
               return <button
                 key={providerId}
                 type="button"
@@ -913,7 +1021,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
             <button type="button" className="settings-endpoint-reset" onClick={() => setBaseUrl(providerBaseUrlPlaceholder(selectedProvider))}>恢复默认地址</button>
           </label>
           <div className="settings-credential-summary" aria-label={`${formatProviderName(selectedProvider)} 凭据摘要`}>
-            <div><span>凭据状态</span><strong>{selectedProviderStatus?.configured ? '已配置' : '未配置'}</strong></div>
+            <div><span>凭据状态</span><strong>{relayMeNeedsVerification ? '凭据待重新验证' : selectedProviderStatus?.configured ? '已配置' : '未配置'}</strong></div>
             <div><span>安全存储</span><strong>系统凭据库</strong></div>
           </div>
           <div className="settings-key-actions">
@@ -924,8 +1032,8 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
               {selectedProvider === 'relayme' && <small className="settings-capability-note">连接检测只验证账号与模型目录；请在模型目录确认“生图”能力后再生成。</small>}
             </div>
             <div>
-              {selectedProvider === 'relayme' && <a className="settings-provider-key-link" href="https://www.ml.relayme.uk/workflow" target="_blank" rel="noreferrer">打开 RelayMe 工作台</a>}
-              {selectedProvider === 'relayme' && provider?.loginRelayMe && <button className="settings-section__primary" type="button" onClick={() => setRelayMeLoginOpen(true)} disabled={relayMeLoginBusy}>登录 RelayMe</button>}
+              {selectedProvider === 'relayme' && <a className="settings-provider-key-link" href="https://www.ml.relayme.uk/" target="_blank" rel="noreferrer">打开 RelayMe 网站</a>}
+              {selectedProvider === 'relayme' && (provider?.loginRelayMeWeb || provider?.loginRelayMe) && <button className="settings-section__primary" type="button" onClick={openRelayMeLogin} disabled={relayMeLoginBusy}>登录 RelayMe</button>}
               {selectedProvider === 'relayme' && provider?.logoutRelayMe && selectedProviderStatus?.configured && effectiveActiveProvider === 'relayme' && <button className="settings-section__secondary" type="button" onClick={() => { void logoutRelayMe(); }} disabled={relayMeLoginBusy}>退出 RelayMe</button>}
               {selectedProvider !== 'relayme' && <button className="settings-section__secondary" type="button" onClick={openHiddenKeys}>配置隐藏密钥</button>}
             </div>
@@ -939,7 +1047,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
             profiles={providerProfiles}
             enabledProfileKeys={enabledProfileKeys}
             defaultProfileKeys={defaultProfileKeys}
-            onConfigure={selectedProvider === 'relayme' ? () => setRelayMeLoginOpen(true) : openHiddenKeys}
+            onConfigure={selectedProvider === 'relayme' ? openRelayMeLogin : openHiddenKeys}
             configureLabel={selectedProvider === 'relayme' ? '重新登录 RelayMe' : '配置模型密钥'}
             onRetry={() => { void refreshAvailableModels(catalogProvider ?? selectedProvider); }}
             onToggleProfile={(profile) => {
@@ -1194,12 +1302,15 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
         onSubmit={(event) => { event.preventDefault(); void submitRelayMeLogin(); }}
       >
         <header>
-          <div><strong>登录 RelayMe</strong><p>使用 RelayMe 账号登录后，自动启用 RelayMe 模型目录。</p></div>
+          <div><strong>登录 RelayMe</strong><p>推荐使用官网网页登录，登录成功后自动读取你的模型目录。</p></div>
           <button type="button" className="icon-button" aria-label="关闭 RelayMe 登录" onClick={closeRelayMeLogin} disabled={relayMeLoginBusy}><X size={16} /></button>
         </header>
         <div className="settings-hidden-key-dialog__fields">
-          <label><span>RelayMe 账号</span><input type="text" autoComplete="username" aria-label="RelayMe 账号" value={relayMeUsername} onChange={(event) => setRelayMeUsername(event.target.value)} /></label>
-          <label><span>RelayMe 密码</span><input type="password" autoComplete="current-password" aria-label="RelayMe 密码" value={relayMePassword} onChange={(event) => setRelayMePassword(event.target.value)} /></label>
+          {provider?.loginRelayMeWeb && <button className="settings-section__primary" type="button" onClick={() => { void submitRelayMeWebLogin(); }} disabled={relayMeLoginBusy}>{relayMeLoginBusy ? '等待网页登录…' : '使用 RelayMe 网页登录'}</button>}
+          {provider?.loginRelayMe && <p>或使用账号密码登录</p>}
+          {provider?.loginRelayMe && <label><span>RelayMe 账号</span><input type="text" autoComplete="username" aria-label="RelayMe 账号" value={relayMeUsername} disabled={relayMeLoginBusy} onChange={(event) => { setRelayMeUsername(event.target.value); setRelayMeLoginError(null); }} /></label>}
+          {provider?.loginRelayMe && <label><span>RelayMe 密码</span><input type="password" autoComplete="current-password" aria-label="RelayMe 密码" value={relayMePassword} disabled={relayMeLoginBusy} onChange={(event) => { setRelayMePassword(event.target.value); setRelayMeLoginError(null); }} /></label>}
+          {relayMeLoginError && <p className="settings-hidden-key-dialog__error" role="alert">{relayMeLoginError}</p>}
           <div className="settings-provider-auth-links">
             <a href="https://www.ml.relayme.uk/" target="_blank" rel="noreferrer">注册 RelayMe 账号</a>
             <a href="https://www.ml.relayme.uk/" target="_blank" rel="noreferrer">找回密码</a>
@@ -1207,7 +1318,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
         </div>
         <div className="settings-dialog-actions">
           <button className="settings-section__secondary" type="button" onClick={closeRelayMeLogin} disabled={relayMeLoginBusy}>取消</button>
-          <button className="settings-section__primary" type="submit" disabled={relayMeLoginBusy || relayMeUsername.trim().length === 0 || relayMePassword.length === 0}>{relayMeLoginBusy ? '登录中…' : '登录 RelayMe'}</button>
+          {provider?.loginRelayMe && <button className="settings-section__secondary" type="submit" disabled={relayMeLoginBusy || relayMeUsername.trim().length === 0 || relayMePassword.length === 0}>{relayMeLoginBusy ? '账号密码登录中…' : '使用账号密码登录'}</button>}
         </div>
       </form>
     </div>}

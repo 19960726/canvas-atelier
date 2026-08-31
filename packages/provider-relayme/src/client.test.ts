@@ -74,6 +74,28 @@ describe('RelayMeClient', () => {
     }]);
   });
 
+  it('normalizes uppercase live video resolution suffixes without rejecting the whole catalog', async () => {
+    const fetch = vi.fn(async () => jsonResponse({ success: true, data: [
+      {
+        id: '28',
+        name: 'MiniMax-H3',
+        deploymentName: 'MiniMax-H3',
+        modelType: 'VIDEO',
+        videoCapabilities: {
+          resolutions: ['768P', '2K'],
+          aspectRatios: ['16:9', '21:9', 'adaptive'],
+          duration: { mode: 'range', min: 5, max: 15, step: 1, defaultValue: 5 },
+        },
+      },
+    ] }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
+
+    await expect(client.listModels()).resolves.toMatchObject([{
+      deploymentName: 'MiniMax-H3',
+      videoCapabilities: { resolutions: ['768p', '2K'], aspectRatios: ['16:9'] },
+    }]);
+  });
+
   it('posts OpenAI-compatible chat requests', async () => {
     const fetch = vi.fn(async () => jsonResponse({
       id: 'chat-1', model: 'gemini-3.1-flash-lite',

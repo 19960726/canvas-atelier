@@ -1151,7 +1151,10 @@ export function SkillChatWorkbench({
             {([['chat', '对话'], ['original', '原智能'], ['codex', 'Codex']] as const).map(([mode, label]) => <button key={mode} type="button" role="tab" aria-selected={agentMode === mode} className={agentMode === mode ? 'is-active' : undefined} onClick={() => {
               invalidatePastedReferences();
               setAgentMode(mode);
-              if (mode === 'codex' && codexProfiles.length > 0 && !codexProfiles.some((profile) => profile.modelRoute === modelRoute)) setModelRoute(codexProfiles[0]?.modelRoute);
+              const profilesForMode = mode === 'codex' ? codexProfiles : chatProfiles;
+              if (profilesForMode.length > 0 && !profilesForMode.some((profile) => profile.modelRoute === modelRoute)) {
+                setModelRoute(profilesForMode.find((profile) => profile.modelRoute === 'chat-default')?.modelRoute ?? profilesForMode[0]?.modelRoute);
+              }
             }}>{label}</button>)}
           </div>
           <button type="button" className="skill-chat-workbench__model-pill" data-testid="agent-model-trigger" aria-label="打开聊天模型菜单" data-selected-model={selectedProfile?.displayName ?? '未配置'} onClick={() => dispatchPopover({ type: 'open', id: 'model' })}>{selectedProfile ? providerModelLabel(selectedProfile, chatProfiles) : agentMode === 'codex' ? '未发现 Codex 模型' : '选择模型'}</button>

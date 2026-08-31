@@ -315,6 +315,25 @@ describe('provider generation history production sink', () => {
       `${record.output!.historyAssetId}.mp4`,
     ))).toEqual(mp4);
   });
+
+  it('derives RelayMe video history metadata from the MP4 when the task response omits it', async () => {
+    const { sink, store } = await createHistorySink();
+    const mp4 = createMetadataMp4(1280, 720, 4);
+    const reservation = await sink.reserveSubmission({
+      jobId: 'job-relayme-video-history-derived',
+      kind: 'video',
+      modelDisplayName: 'Veo 3.1 Fast',
+      provider: 'relayme',
+    });
+
+    await sink.succeeded(reservation.historyId, mp4);
+
+    const record = (await store.list({ filters: { kind: 'video', trashState: 'all' } })).records[0]!;
+    expect(record).toMatchObject({
+      status: 'succeeded',
+      output: { durationSeconds: 4, height: 720, mediaType: 'video/mp4', width: 1280 },
+    });
+  });
   it('persists submission failures without durable prompt or conversation content', async () => {
     const { appDataRoot, sink, store } = await createHistorySink();
     const fetch: ComflyFetch = vi.fn(async () => {
@@ -838,6 +857,23 @@ function createMinimalMp4(): Buffer {
   return Buffer.concat([
     mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')),
     mp4Box('moov', mp4Box('trak', Buffer.from([0, 0, 0, 0]))),
+    mp4Box('mdat', Buffer.from([1, 2, 3, 4])),
+  ]);
+}
+
+function createMetadataMp4(width: number, height: number, durationSeconds: number): Buffer {
+  const movieHeader = Buffer.alloc(20);
+  movieHeader.writeUInt32BE(1_000, 12);
+  movieHeader.writeUInt32BE(durationSeconds * 1_000, 16);
+  const trackHeader = Buffer.alloc(84);
+  trackHeader.writeUInt32BE(width * 65_536, 76);
+  trackHeader.writeUInt32BE(height * 65_536, 80);
+  return Buffer.concat([
+    mp4Box('ftyp', Buffer.from('isom\0\0\0\0isom')),
+    mp4Box('moov', Buffer.concat([
+      mp4Box('mvhd', movieHeader),
+      mp4Box('trak', mp4Box('tkhd', trackHeader)),
+    ])),
     mp4Box('mdat', Buffer.from([1, 2, 3, 4])),
   ]);
 }

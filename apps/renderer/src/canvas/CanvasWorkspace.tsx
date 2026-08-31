@@ -1554,7 +1554,19 @@ export function CanvasWorkspace() {
           ? profiles
           : listActiveProviderProfiles(profiles, activeState.activeProvider);
         setProviderStatus(status);
-        setAgentProviderProfiles(activeProfiles);
+        // Generation nodes stay scoped to the active provider, while Agent
+        // chat must retain the independent Codex catalog when RelayMe is
+        // selected for image/video generation.
+        // Keep ordinary Agent chat aligned with the active provider while
+        // retaining the full catalog so Codex mode can independently select
+        // a Codex route from the other provider.  SkillChatWorkbench picks
+        // the first compatible route for a fresh conversation.
+        const orderedAgentProfiles = activeState?.activeProvider
+          ? [...profiles].sort((left, right) => (
+            Number(right.provider === activeState.activeProvider) - Number(left.provider === activeState.activeProvider)
+          ))
+          : profiles;
+        setAgentProviderProfiles(orderedAgentProfiles);
         setProviderProfiles(filterProviderCatalogProfiles(activeProfiles));
       });
     };

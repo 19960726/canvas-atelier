@@ -34,6 +34,7 @@ function providerHandlerEntries(handlers: ProviderBridgeHandlers) {
     [PROVIDER_BRIDGE_CHANNELS.getActiveProvider, handlers.getActiveProvider],
     [PROVIDER_BRIDGE_CHANNELS.setActiveProvider, handlers.setActiveProvider],
     [PROVIDER_BRIDGE_CHANNELS.loginRelayMe, handlers.loginRelayMe],
+    [PROVIDER_BRIDGE_CHANNELS.loginRelayMeWeb, handlers.loginRelayMeWeb],
     [PROVIDER_BRIDGE_CHANNELS.logoutRelayMe, handlers.logoutRelayMe],
     [PROVIDER_BRIDGE_CHANNELS.submitImageJob, handlers.submitImageJob],
     [PROVIDER_BRIDGE_CHANNELS.pollImageJob, handlers.pollImageJob],

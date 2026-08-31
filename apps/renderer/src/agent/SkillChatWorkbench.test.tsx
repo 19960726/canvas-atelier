@@ -329,7 +329,7 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
   });
 
-  it('uses the active RelayMe chat route as the Codex Agent runtime when RelayMe is configured alone', async () => {
+  it('keeps RelayMe chat routes out of Codex mode instead of cross-provider fallback', async () => {
     renderWorkbench({
       profiles: [{
         provider: 'relayme',
@@ -340,10 +340,10 @@ describe('SkillChatWorkbench', () => {
       }],
     });
 
-    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Gemini 3.1 Flash Lite'));
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveTextContent('未发现 Codex 模型'));
     expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
-    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '分析当前画布' } });
-    expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Gemini 3.1 Flash Lite'));
   });
 
   it('keeps internal request metadata out of the visible conversation in every mode', async () => {

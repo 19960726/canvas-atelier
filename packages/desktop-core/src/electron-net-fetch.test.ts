@@ -9,6 +9,18 @@ afterEach(() => {
 });
 
 describe('Electron provider transport response bounds', () => {
+  it('binds provider requests to an explicit Electron network session', async () => {
+    const net = responseNet({ chunks: [Buffer.from('{}')] });
+    const requestSession = { id: 'relayme-direct-session' };
+    const fetch = createElectronNetComflyFetch(net.adapter, { requestSession });
+
+    await expect(fetch('https://www.ml.relayme.uk/api/auth/user/login', {
+      method: 'POST',
+      body: '{}',
+    })).resolves.toMatchObject({ ok: true, status: 200 });
+    expect(net.requestSession).toBe(requestSession);
+  });
+
   it('aborts a stalled provider request using the default bounded timeout', async () => {
     vi.useFakeTimers();
     const net = stalledNet();
@@ -163,6 +175,7 @@ function responseNet(options: {
   dataEmitted: boolean;
   readonly headers: Record<string, string>;
   requestUrl: string | null;
+  requestSession: unknown;
 } {
   const state = {
     adapter: undefined as unknown as ElectronNetLike,
@@ -170,10 +183,12 @@ function responseNet(options: {
     dataEmitted: false,
     headers: {} as Record<string, string>,
     requestUrl: null as string | null,
+    requestSession: undefined as unknown,
   };
   state.adapter = {
     request(requestOptions) {
       state.requestUrl = requestOptions.url;
+      state.requestSession = requestOptions.session;
       const request = new EventEmitter() as EventEmitter & {
         abort(): void;
         end(): void;

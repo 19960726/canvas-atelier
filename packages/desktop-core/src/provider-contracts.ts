@@ -18,6 +18,7 @@ export const PROVIDER_BRIDGE_CHANNELS = {
   getActiveProvider: 'novus-desktop:provider:get-active-provider',
   setActiveProvider: 'novus-desktop:provider:set-active-provider',
   loginRelayMe: 'novus-desktop:provider:login-relayme',
+  loginRelayMeWeb: 'novus-desktop:provider:login-relayme-web',
   logoutRelayMe: 'novus-desktop:provider:logout-relayme',
   submitImageJob: 'novus-desktop:provider:submit-image-job',
   pollImageJob: 'novus-desktop:provider:poll-image-job',
@@ -60,6 +61,8 @@ const errorCodeSchema = z.enum([
   'PROVIDER_INVALID_RESPONSE',
   'PROTECTED_PAYLOAD',
   'PROVIDER_ERROR',
+  'WEB_LOGIN_CANCELLED',
+  'WEB_LOGIN_TIMEOUT',
 ]);
 export type ProviderBridgeErrorCode = z.infer<typeof errorCodeSchema>;
 export const ReverseProviderFailureReasonSchema = z.enum([
@@ -308,6 +311,11 @@ export const ProviderImageJobResultSchema = z.object({
     nonEmptyStringSchema.regex(/^provider-result-provider-job-[a-f0-9]{32}$/u),
     nonEmptyStringSchema.regex(/^[a-f0-9]{16}$/u),
   ]),
+  assetIds: z.array(z.union([
+    nonEmptyStringSchema.regex(/^provider:[a-z0-9_-]+:[a-zA-Z0-9_-]+:\d+$/u),
+    nonEmptyStringSchema.regex(/^provider-result-provider-job-[a-f0-9]{32}$/u),
+    nonEmptyStringSchema.regex(/^[a-f0-9]{16}$/u),
+  ])).min(1).max(4).optional(),
   width: finiteNumberSchema.optional(),
   height: finiteNumberSchema.optional(),
 }).strict().superRefine((value, context) => {
@@ -603,6 +611,7 @@ export const ProviderBridgeRequestSchemas = {
   getActiveProvider: noPayloadSchema,
   setActiveProvider: SetActiveProviderBridgeRequestSchema,
   loginRelayMe: LoginRelayMeBridgeRequestSchema,
+  loginRelayMeWeb: noPayloadSchema,
   logoutRelayMe: noPayloadSchema,
   submitImageJob: SubmitImageJobBridgeRequestSchema,
   pollImageJob: PollImageJobBridgeRequestSchema,
@@ -630,6 +639,7 @@ export const ProviderBridgeResponseSchemas = {
   getActiveProvider: ProviderActiveStateSchema,
   setActiveProvider: ProviderActiveStateSchema,
   loginRelayMe: ProviderActiveStateSchema,
+  loginRelayMeWeb: ProviderActiveStateSchema,
   logoutRelayMe: ProviderActiveStateSchema,
   submitImageJob: SubmitImageJobBridgeResultSchema,
   pollImageJob: PollImageJobBridgeResultSchema,
@@ -662,6 +672,7 @@ const REQUEST_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
   [PROVIDER_BRIDGE_CHANNELS.getActiveProvider, ProviderBridgeRequestSchemas.getActiveProvider],
   [PROVIDER_BRIDGE_CHANNELS.setActiveProvider, ProviderBridgeRequestSchemas.setActiveProvider],
   [PROVIDER_BRIDGE_CHANNELS.loginRelayMe, ProviderBridgeRequestSchemas.loginRelayMe],
+  [PROVIDER_BRIDGE_CHANNELS.loginRelayMeWeb, ProviderBridgeRequestSchemas.loginRelayMeWeb],
   [PROVIDER_BRIDGE_CHANNELS.logoutRelayMe, ProviderBridgeRequestSchemas.logoutRelayMe],
   [PROVIDER_BRIDGE_CHANNELS.submitImageJob, ProviderBridgeRequestSchemas.submitImageJob],
   [PROVIDER_BRIDGE_CHANNELS.pollImageJob, ProviderBridgeRequestSchemas.pollImageJob],
@@ -689,6 +700,7 @@ const RESPONSE_SCHEMA_BY_CHANNEL = new Map<ProviderBridgeChannel, ZodTypeAny>([
   [PROVIDER_BRIDGE_CHANNELS.getActiveProvider, ProviderBridgeResponseSchemas.getActiveProvider],
   [PROVIDER_BRIDGE_CHANNELS.setActiveProvider, ProviderBridgeResponseSchemas.setActiveProvider],
   [PROVIDER_BRIDGE_CHANNELS.loginRelayMe, ProviderBridgeResponseSchemas.loginRelayMe],
+  [PROVIDER_BRIDGE_CHANNELS.loginRelayMeWeb, ProviderBridgeResponseSchemas.loginRelayMeWeb],
   [PROVIDER_BRIDGE_CHANNELS.logoutRelayMe, ProviderBridgeResponseSchemas.logoutRelayMe],
   [PROVIDER_BRIDGE_CHANNELS.submitImageJob, ProviderBridgeResponseSchemas.submitImageJob],
   [PROVIDER_BRIDGE_CHANNELS.pollImageJob, ProviderBridgeResponseSchemas.pollImageJob],

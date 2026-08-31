@@ -206,12 +206,13 @@ function aspectRatioGlyphStyle(value: string): CSSProperties {
 }
 const IMAGE_OUTPUT_COUNT_OPTIONS = [1, 2, 3, 4] as const;
 const VIDEO_ASPECT_RATIO_OPTIONS = ['Auto', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'] as const;
-const VIDEO_RESOLUTION_OPTIONS = ['480p', '720p', '1080p'] as const;
+const VIDEO_RESOLUTION_OPTIONS = ['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K'] as const;
 const VIDEO_DURATION_OPTIONS = [4, 8, 12] as const;
 
 function normalizeVideoResolutionSelection(value: unknown): typeof VIDEO_RESOLUTION_OPTIONS[number] {
-  if (value === '480p' || value === '480P') return '480p';
-  if (value === '1080p' || value === '1080P' || value === '2K' || value === '4K') return '1080p';
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (normalized === '2k' || normalized === '4k') return normalized.toUpperCase() as '2K' | '4K';
+  if (VIDEO_RESOLUTION_OPTIONS.includes(normalized as never)) return normalized as typeof VIDEO_RESOLUTION_OPTIONS[number];
   return '720p';
 }
 
@@ -719,11 +720,18 @@ function VideoGenerationSummary({
   const draftGenerationNodeConfig = useAppStore((state) => state.draftGenerationNodeConfig);
   const selectedVideoRoute = compatibleRoutes.find((route) => route.modelRoute === modelRoute);
   const videoConstraints = selectedVideoRoute?.constraints?.video;
-  const videoAspectRatioOptions: (typeof VIDEO_ASPECT_RATIO_OPTIONS[number])[] = [...VIDEO_ASPECT_RATIO_OPTIONS];
-
-  const videoResolutionOptions = [...VIDEO_RESOLUTION_OPTIONS];
+  const constrainedVideoAspectRatios = videoConstraints?.aspectRatios?.filter((value): value is Exclude<typeof VIDEO_ASPECT_RATIO_OPTIONS[number], 'Auto'> => VIDEO_ASPECT_RATIO_OPTIONS.includes(value as never));
+  const videoAspectRatioOptions: (typeof VIDEO_ASPECT_RATIO_OPTIONS[number])[] = constrainedVideoAspectRatios?.length
+    ? ['Auto', ...constrainedVideoAspectRatios]
+    : [...VIDEO_ASPECT_RATIO_OPTIONS];
+  const constrainedVideoResolutions = videoConstraints?.resolutions?.filter((value): value is typeof VIDEO_RESOLUTION_OPTIONS[number] => VIDEO_RESOLUTION_OPTIONS.includes(value as never));
+  const videoResolutionOptions: (typeof VIDEO_RESOLUTION_OPTIONS[number])[] = constrainedVideoResolutions?.length
+    ? constrainedVideoResolutions
+    : [...VIDEO_RESOLUTION_OPTIONS];
   const videoDurationOptions = durationOptions(videoConstraints?.duration);
-  const videoOutputCountOptions: (1 | 2 | 3 | 4)[] = [...IMAGE_OUTPUT_COUNT_OPTIONS];
+  const videoOutputCountOptions: (1 | 2 | 3 | 4)[] = videoConstraints?.outputCounts?.length
+    ? [...videoConstraints.outputCounts]
+    : [...IMAGE_OUTPUT_COUNT_OPTIONS];
   const videoOptionsKey = [videoAspectRatioOptions.join('|'), videoResolutionOptions.join('|'), videoDurationOptions.join('|'), videoOutputCountOptions.join('|')].join('::');
   useEffect(() => {
     const nextReferenceAssetIds = readStringArray(config.referenceAssetIds);

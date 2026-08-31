@@ -390,6 +390,15 @@ describe('listAgentChatProfiles', () => {
       'gpt-5.6-luna',
     ]);
   });
+
+  it('never presents a RelayMe chat route as a Codex model', () => {
+    const profiles = [
+      { provider: 'relayme' as const, modelRoute: 'relayme-renaf', displayName: 'RENAF', modelId: 'renaf', capabilities: ['chat' as const] },
+      { provider: 'comfly' as const, modelRoute: 'openai/gpt-5.6-terra', displayName: 'GPT-5.6 Terra', modelId: 'gpt-5.6-terra', capabilities: ['responses' as const] },
+    ];
+
+    expect(listCodexAgentProfiles(profiles).map((profile) => profile.modelId)).toEqual(['gpt-5.6-terra']);
+  });
 });
 
 describe('filterProviderCatalogProfiles', () => {

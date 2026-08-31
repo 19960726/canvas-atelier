@@ -83,6 +83,36 @@ describe('desktop model job executor', () => {
     }));
   });
 
+  it('preserves every asset id returned by a RelayMe multi-image task', async () => {
+    const pollImageJob = vi.fn(async () => ({
+      status: 'completed' as const,
+      progress: 1,
+      result: {
+        assetId: '1111111111111111',
+        assetIds: ['1111111111111111', '2222222222222222'],
+        width: 1024,
+        height: 1024,
+      },
+    }));
+    vi.stubGlobal('window', { novusDesktop: { provider: {
+      submitImageJob: vi.fn(), pollImageJob, cancelImageJob: vi.fn(), ackImageJobTerminal: vi.fn(),
+    } } });
+
+    await expect(createDesktopModelJobExecutor().poll({
+      ...job({ provider: 'relayme', modelRoute: 'relayme-gpt-image-2', status: 'running' }),
+      providerTaskId: 'provider-job-relayme-multi',
+    })).resolves.toEqual({
+      status: 'completed',
+      progress: 1,
+      result: {
+        assetId: '1111111111111111',
+        assetIds: ['1111111111111111', '2222222222222222'],
+        width: 1024,
+        height: 1024,
+      },
+    });
+  });
+
   it('rejects a stale job route before submission when another provider is active', async () => {
     const submitImageJob = vi.fn();
     vi.stubGlobal('window', {

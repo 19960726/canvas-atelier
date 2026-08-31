@@ -86,6 +86,18 @@ export function createProviderBridgeHandlers(
         await requireActiveStore(options).setActiveProvider('relayme'),
       ) as ProviderActiveState;
     },
+    loginRelayMeWeb: async (_event, request) => {
+      parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.loginRelayMeWeb, request);
+      const service = selectService(source, 'relayme');
+      if (service.loginRelayMeWeb === undefined) {
+        throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'RelayMe official web login is unavailable');
+      }
+      await service.loginRelayMeWeb();
+      return parseProviderBridgeResponse(
+        PROVIDER_BRIDGE_CHANNELS.loginRelayMeWeb,
+        await requireActiveStore(options).setActiveProvider('relayme'),
+      ) as ProviderActiveState;
+    },
     logoutRelayMe: async (_event, request) => {
       parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.logoutRelayMe, request);
       const service = selectService(source, 'relayme');

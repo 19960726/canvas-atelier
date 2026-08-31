@@ -36,6 +36,7 @@ import type {
 
 export interface ProviderService {
   loginRelayMe?(request: LoginRelayMeBridgeRequest): Promise<void>;
+  loginRelayMeWeb?(): Promise<void>;
   logoutRelayMe?(): Promise<void>;
   getStatus(): Promise<ProviderConfigurationStatus>;
   revealCredential(): Promise<RevealProviderCredentialBridgeResult>;
@@ -63,6 +64,7 @@ export interface ProviderBridgeHandlers {
   getActiveProvider(event: unknown, request: unknown): Promise<ProviderActiveState>;
   setActiveProvider(event: unknown, request: unknown): Promise<ProviderActiveState>;
   loginRelayMe(event: unknown, request: unknown): Promise<ProviderActiveState>;
+  loginRelayMeWeb(event: unknown, request: unknown): Promise<ProviderActiveState>;
   logoutRelayMe(event: unknown, request: unknown): Promise<ProviderActiveState>;
   getStatus(event: unknown, request: unknown): Promise<ProviderConfigurationStatus>;
   revealCredential(event: unknown, request: unknown): Promise<RevealProviderCredentialBridgeResult>;

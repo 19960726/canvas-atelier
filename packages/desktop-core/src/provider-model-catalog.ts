@@ -345,7 +345,7 @@ function constraintsForRelayMeModel(model: RelayMeModel): ProviderBridgeProfile[
       const key = resolution === '1K' ? 'image1k' : resolution === '2K' ? 'image2k' : 'image4k';
       return offer.pricing?.[key] !== undefined;
     }));
-    return resolutions.length === 0 ? undefined : { image: { resolutions: [...resolutions] } };
+    return { image: { ...(resolutions.length === 0 ? {} : { resolutions: [...resolutions] }), outputCounts: [1, 2, 3, 4] } };
   }
   if (model.capability === 'video') {
     const capabilities = model.videoCapabilities;

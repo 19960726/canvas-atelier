@@ -72,14 +72,19 @@ export function createWindowsPhotoshopSmartObjectAdapter(
 
         const installations = [...await dependencies.discoverInstallations()]
           .sort((left, right) => right.majorVersion - left.majorVersion);
-        if (installations.length === 0) return { ok: false, code: 'photoshop_not_installed' };
-
         const running = await dependencies.inspectRunningInstance();
+        if (installations.length === 0 && running === null) {
+          return { ok: false, code: 'photoshop_not_installed' };
+        }
         const supportedInstallations = installations.filter((item) => item.majorVersion >= MINIMUM_PHOTOSHOP_MAJOR_VERSION);
         if (running !== null && running.majorVersion < MINIMUM_PHOTOSHOP_MAJOR_VERSION) {
           return { ok: false, code: 'photoshop_version_unsupported' };
         }
-        if (supportedInstallations.length === 0) {
+        const supportedMajorVersions = [...new Set([
+          ...supportedInstallations.map((item) => item.majorVersion),
+          ...(running !== null && running.majorVersion >= MINIMUM_PHOTOSHOP_MAJOR_VERSION ? [running.majorVersion] : []),
+        ])].sort((left, right) => right - left);
+        if (supportedMajorVersions.length === 0) {
           return { ok: false, code: 'photoshop_version_unsupported' };
         }
         if (running === null) return { ok: false, code: 'photoshop_not_running' };
@@ -89,7 +94,7 @@ export function createWindowsPhotoshopSmartObjectAdapter(
         try {
           const result = await dependencies.execute({
             ...files,
-            installedMajorVersions: supportedInstallations.map((item) => item.majorVersion),
+            installedMajorVersions: supportedMajorVersions,
           });
           if (result.kind === 'success') return { ok: true, layerName: result.layerName };
           return { ok: false, code: result.kind };

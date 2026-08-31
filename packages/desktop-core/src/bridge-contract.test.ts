@@ -94,6 +94,7 @@ describe('desktop bridge contract', () => {
       'listProfiles',
       'listTasks',
       'loginRelayMe',
+      'loginRelayMeWeb',
       'logoutRelayMe',
       'pollImageJob',
       'pollVideoJob',

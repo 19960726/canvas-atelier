@@ -322,6 +322,7 @@ export interface DesktopProviderBridgeApi {
   getActiveProvider(): Promise<ProviderActiveState>;
   setActiveProvider(request: SetActiveProviderBridgeRequest): Promise<ProviderActiveState>;
   loginRelayMe(request: LoginRelayMeBridgeRequest): Promise<ProviderActiveState>;
+  loginRelayMeWeb(): Promise<ProviderActiveState>;
   logoutRelayMe(): Promise<ProviderActiveState>;
   getStatus(request?: ProviderSelectionBridgeRequest): Promise<ProviderConfigurationStatus>;
   revealCredential(request?: ProviderSelectionBridgeRequest): Promise<RevealProviderCredentialBridgeResult>;
@@ -608,6 +609,9 @@ export function createPreloadApi(
       },
       loginRelayMe(request) {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.loginRelayMe, request);
+      },
+      loginRelayMeWeb() {
+        return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.loginRelayMeWeb);
       },
       logoutRelayMe() {
         return invokeProvider(invoke, PROVIDER_BRIDGE_CHANNELS.logoutRelayMe);

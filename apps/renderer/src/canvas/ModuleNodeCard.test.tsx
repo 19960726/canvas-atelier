@@ -1652,13 +1652,13 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openVideoGenerationEditor();
 
-    expect(readGenerationParameterOptions('Video preview aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9']);
+    expect(readGenerationParameterOptions('Video preview aspect ratio')).toEqual(['AUTO', '16:9', '9:16']);
     const videoRatioTrigger = screen.getByRole('button', { name: 'Video preview aspect ratio' });
     expect(videoRatioTrigger.closest('.generation-parameter-popover')).toHaveClass('generation-parameter-popover--ratio-grid');
     expect(videoRatioTrigger.querySelector('svg')).not.toBeNull();
     expect(readGenerationParameterOptions('Video preview resolution')).toEqual(['480P', '720P', '1080P']);
     expect(within(screen.getByLabelText('Video preview duration')).getAllByRole('option').map((item) => item.textContent)).toEqual(['4秒', '6秒', '8秒']);
-    expect(within(screen.getByLabelText('Video preview quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1', '2', '3', '4']);
+    expect(within(screen.getByLabelText('Video preview quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1', '2']);
   });
   it('uses the product duration fallback when a complete provider profile omits duration metadata', () => {
     const node = createCanvasModuleNode('video-provider-defaults', 'video_generation', { x: 0, y: 0 });
@@ -1677,8 +1677,8 @@ describe('ModuleNodeCard', () => {
     openVideoGenerationEditor();
 
     expect(readGenerationParameterOptions('Video preview aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9']);
-    expect(readGenerationParameterOptions('Video preview resolution')).toEqual(['480P', '720P', '1080P']);
-    expect(within(screen.getByLabelText('Video preview quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1', '2', '3', '4']);
+    expect(readGenerationParameterOptions('Video preview resolution')).toEqual(['360P', '480P', '512P', '540P', '720P', '768P', '1080P', '2K', '4K']);
+    expect(within(screen.getByLabelText('Video preview quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1']);
     chooseGenerationParameterOption('Video preview aspect ratio', 'AUTO');
     fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: 'Use provider defaults' } });
     fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
@@ -2304,6 +2304,41 @@ describe('ModuleNodeCard', () => {
     expect(action).toHaveTextContent('正在导入…');
 
     resolveImport({ ok: true, layerName: generatedAsset.label });
+    expect(await screen.findByRole('status')).toHaveTextContent('已导入当前 Photoshop 文档');
+  });
+
+  it('imports the selected image from a RelayMe multi-image result to Photoshop', async () => {
+    const importToPhotoshop = vi.fn().mockResolvedValue({ ok: true, layerName: 'Generated image 2' });
+    const bridge = createPhotoshopDesktopBridge(importToPhotoshop);
+    window.novusDesktop = bridge as never;
+    const persistence = createProjectPersistenceClient();
+    await persistence.openProject?.();
+
+    const node = createCanvasModuleNode('generator-multi-image-photoshop', 'image_generation', { x: 0, y: 0 });
+    const firstAsset = { ...projectImage, origin: 'generated' as const };
+    const secondAsset = {
+      ...projectImage,
+      assetId: '2222222222222222',
+      label: 'Generated image 2',
+      displayUrl: 'novus-asset://project/photoshop-session/2222222222222222',
+      origin: 'generated' as const,
+    };
+    node.data.config = {
+      ...node.data.config,
+      resultAssetIds: [firstAsset.assetId, secondAsset.assetId],
+      resultState: 'fresh',
+    };
+    useAppStore.setState({ projectImages: [firstAsset, secondAsset] } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+
+    openImageGenerationEditor();
+    expect(screen.getAllByRole('button', { name: /Generated image \d; double click to preview/u })).toHaveLength(2);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Generated image 2; double click to preview' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '导入 Photoshop（智能对象）' }));
+
+    expect(importToPhotoshop).toHaveBeenCalledOnce();
+    expect(importToPhotoshop).toHaveBeenCalledWith({ assetId: secondAsset.assetId, sessionId: 'photoshop-session' });
     expect(await screen.findByRole('status')).toHaveTextContent('已导入当前 Photoshop 文档');
   });
 

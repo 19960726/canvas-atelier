@@ -378,6 +378,58 @@ describe('persistent model job store', () => {
     expect(project.edges).toEqual([]);
   });
 
+  it('stores all RelayMe multi-image results inside one formal image module', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const imageModule = createCanvasModuleNode('relayme-multi-image-module', 'image_generation', { x: 120, y: 80 });
+    let project: CanvasProject = { ...createStarterProject(), nodes: [imageModule], edges: [] };
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({
+          status: 'completed' as const,
+          progress: 1,
+          result: {
+            assetId: '1111111111111111',
+            assetIds: ['1111111111111111', '2222222222222222'],
+            width: 1024,
+            height: 1024,
+          },
+        })),
+      }),
+      commitProjectTransaction: async (build) => {
+        const materialization = build(project);
+        project = applyProjectTransaction(project, materialization.transaction);
+        return { committed: true, resultNodeId: materialization.resultNodeId };
+      },
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'relayme-multi-image-conversation',
+      confirmedAt,
+      requests: [request({
+        id: 'relayme-multi-image-job',
+        provider: 'relayme',
+        modelRoute: 'relayme-gpt-image-2',
+        promptNodeId: imageModule.id,
+        referenceAssetIds: [],
+        outputCount: 2,
+      })],
+    });
+    await store.run();
+
+    expect(await storage.get('relayme-multi-image-job')).toMatchObject({
+      status: 'completed',
+      resultAssetId: '1111111111111111',
+      resultAssetIds: ['1111111111111111', '2222222222222222'],
+    });
+    expect(project.nodes.find((node) => node.id === imageModule.id)).toMatchObject({
+      data: { config: { resultAssetIds: ['1111111111111111', '2222222222222222'] } },
+    });
+  });
+
   it('does not mark a provider result completed when source-node persistence fails', async () => {
     const imageNode = createCanvasModuleNode('image-node', 'image_generation', { x: 0, y: 0 });
     const project = { ...createStarterProject(), nodes: [imageNode], edges: [] };

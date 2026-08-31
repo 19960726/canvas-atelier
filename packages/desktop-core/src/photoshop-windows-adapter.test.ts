@@ -67,6 +67,22 @@ describe('Windows Photoshop smart object adapter', () => {
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ installedMajorVersions: [13] }));
   });
 
+  it('uses a supported running Photoshop when a custom installation is absent from the registry', async () => {
+    const files = temporaryFiles();
+    const execute = vi.fn().mockResolvedValue({ kind: 'success', layerName: 'Portable Layer' });
+    const adapter = createWindowsPhotoshopSmartObjectAdapter({
+      platform: 'win32',
+      discoverInstallations: vi.fn().mockResolvedValue([]),
+      inspectRunningInstance: vi.fn().mockResolvedValue({ majorVersion: 27, activeDocument: true }),
+      execute,
+      temporaryFiles: files,
+    });
+
+    await expect(adapter.place({ absolutePath: 'E:/managed/portable.png', layerName: 'Portable Layer' }))
+      .resolves.toEqual({ ok: true, layerName: 'Portable Layer' });
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ installedMajorVersions: [27] }));
+  });
+
   it.each([
     { platform: 'darwin', installations: [], running: null, expected: 'desktop_bridge_unavailable' },
     { platform: 'win32', installations: [], running: null, expected: 'photoshop_not_installed' },

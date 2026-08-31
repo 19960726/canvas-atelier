@@ -4,8 +4,13 @@ import type { ComflyFetch, ComflyFetchResponse } from '@agent-canvas/provider-co
 
 const DEFAULT_PROVIDER_NETWORK_TIMEOUT_MS = 30_000;
 
-export interface ElectronNetLike {
-  request(options: { readonly url: string; readonly method: string; readonly redirect: 'manual' }): ElectronClientRequestLike;
+export interface ElectronNetLike<TSession = unknown> {
+  request(options: {
+    readonly url: string;
+    readonly method: string;
+    readonly redirect: 'manual';
+    readonly session?: TSession;
+  }): ElectronClientRequestLike;
 }
 
 export interface ElectronClientRequestLike {
@@ -55,11 +60,12 @@ export interface ElectronIncomingMessageLike {
   on(event: string, listener: (...args: unknown[]) => void): this;
 }
 
-export function createElectronNetComflyFetch(
-  net: ElectronNetLike,
+export function createElectronNetComflyFetch<TSession = unknown>(
+  net: ElectronNetLike<TSession>,
   options: {
     readonly maxResponseBytes?: number;
     readonly pinnedHttpsRequest?: PinnedHttpsRequestLike;
+    readonly requestSession?: TSession;
     readonly timeoutMs?: number;
   } = {},
 ): ComflyFetch {
@@ -81,6 +87,7 @@ export function createElectronNetComflyFetch(
         url: parsedUrl.toString(),
         method: init.method ?? 'GET',
         redirect: 'manual',
+        ...(options.requestSession === undefined ? {} : { session: options.requestSession }),
       });
       let settled = false;
       let timeout: ReturnType<typeof setTimeout> | null = null;

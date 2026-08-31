@@ -99,6 +99,7 @@ export const modelJobSchema = z.object({
   error: z.string().max(160).optional(),
   resultNodeId: idSchema.optional(),
   resultAssetId: idSchema.optional(),
+  resultAssetIds: z.array(idSchema).min(1).max(4).optional(),
   providerAckPending: z.boolean().optional(),
   terminalStatus: modelJobTerminalStatusSchema.optional(),
 }).strict();

@@ -356,10 +356,10 @@ function inspectVideoOutput(bytes: Buffer, metadata: GenerationHistoryVideoMetad
   readonly mediaType: 'video/mp4';
   readonly width: number;
 } {
-  inspectMp4(bytes);
-  const width = parsePositiveVideoNumber(metadata.width, 32_768);
-  const height = parsePositiveVideoNumber(metadata.height, 32_768);
-  const durationSeconds = parsePositiveVideoNumber(metadata.durationSeconds, 86_400);
+  const inspected = inspectMp4(bytes);
+  const width = parsePositiveVideoNumber(metadata.width ?? inspected.width, 32_768);
+  const height = parsePositiveVideoNumber(metadata.height ?? inspected.height, 32_768);
+  const durationSeconds = parsePositiveVideoNumber(metadata.durationSeconds ?? inspected.durationSeconds, 86_400);
   return { durationSeconds, format: 'mp4', height, mediaType: 'video/mp4', width };
 }
 
@@ -370,24 +370,89 @@ function parsePositiveVideoNumber(value: number | undefined, maximum: number): n
   return value;
 }
 
-function inspectMp4(bytes: Buffer): void {
+function inspectMp4(bytes: Buffer): { readonly durationSeconds?: number; readonly height?: number; readonly width?: number } {
   let offset = 0;
   let firstType: string | null = null;
   let hasMoov = false;
   let hasMdat = false;
+  let moovPayload: { readonly start: number; readonly end: number } | null = null;
   while (offset < bytes.byteLength) {
     if (offset + 8 > bytes.byteLength) throw new Error('Generated result was invalid');
     const size = bytes.readUInt32BE(offset);
     const type = bytes.toString('ascii', offset + 4, offset + 8);
     if (size < 8 || offset + size > bytes.byteLength) throw new Error('Generated result was invalid');
     if (firstType === null) firstType = type;
-    if (type === 'moov' && size > 8) hasMoov = true;
+    if (type === 'moov' && size > 8) {
+      hasMoov = true;
+      moovPayload = { start: offset + 8, end: offset + size };
+    }
     if (type === 'mdat' && size > 8) hasMdat = true;
     offset += size;
   }
   if (offset !== bytes.byteLength || firstType !== 'ftyp' || !hasMoov || !hasMdat) {
     throw new Error('Generated result was invalid');
   }
+  return moovPayload === null ? {} : inspectMp4MovieMetadata(bytes, moovPayload.start, moovPayload.end);
+}
+
+function inspectMp4MovieMetadata(
+  bytes: Buffer,
+  start: number,
+  end: number,
+): { readonly durationSeconds?: number; readonly height?: number; readonly width?: number } {
+  let durationSeconds: number | undefined;
+  let width: number | undefined;
+  let height: number | undefined;
+  for (const box of boundedMp4Boxes(bytes, start, end)) {
+    if (box.type === 'mvhd') durationSeconds = readMp4MovieDuration(bytes, box.payloadStart, box.end);
+    if (box.type !== 'trak') continue;
+    for (const child of boundedMp4Boxes(bytes, box.payloadStart, box.end)) {
+      if (child.type !== 'tkhd' || child.end - child.payloadStart < 8) continue;
+      const candidateWidth = bytes.readUInt32BE(child.end - 8) / 65_536;
+      const candidateHeight = bytes.readUInt32BE(child.end - 4) / 65_536;
+      if (candidateWidth > 0 && candidateHeight > 0
+        && (width === undefined || candidateWidth * candidateHeight > width * height!)) {
+        width = candidateWidth;
+        height = candidateHeight;
+      }
+    }
+  }
+  return {
+    ...(durationSeconds === undefined ? {} : { durationSeconds }),
+    ...(width === undefined ? {} : { width }),
+    ...(height === undefined ? {} : { height }),
+  };
+}
+
+function readMp4MovieDuration(bytes: Buffer, start: number, end: number): number | undefined {
+  if (end - start < 20) return undefined;
+  const version = bytes[start];
+  const timescaleOffset = version === 1 ? start + 20 : start + 12;
+  const durationOffset = version === 1 ? start + 24 : start + 16;
+  const requiredEnd = durationOffset + (version === 1 ? 8 : 4);
+  if (requiredEnd > end) return undefined;
+  const timescale = bytes.readUInt32BE(timescaleOffset);
+  const duration = version === 1 ? Number(bytes.readBigUInt64BE(durationOffset)) : bytes.readUInt32BE(durationOffset);
+  if (timescale <= 0 || !Number.isSafeInteger(duration) || duration <= 0) return undefined;
+  return duration / timescale;
+}
+
+function boundedMp4Boxes(
+  bytes: Buffer,
+  start: number,
+  end: number,
+): Array<{ readonly end: number; readonly payloadStart: number; readonly type: string }> {
+  const boxes: Array<{ readonly end: number; readonly payloadStart: number; readonly type: string }> = [];
+  let offset = start;
+  while (offset < end) {
+    if (offset + 8 > end) return boxes;
+    const size = bytes.readUInt32BE(offset);
+    const boxEnd = offset + size;
+    if (size < 8 || boxEnd > end) return boxes;
+    boxes.push({ end: boxEnd, payloadStart: offset + 8, type: bytes.toString('ascii', offset + 4, offset + 8) });
+    offset = boxEnd;
+  }
+  return boxes;
 }
 function inspectImage(bytes: Buffer): InspectedImage {
   const image = inspectPng(bytes) ?? inspectGif(bytes) ?? inspectJpeg(bytes) ?? inspectWebp(bytes);
