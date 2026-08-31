@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 const executablePath = resolve(process.argv[2] ?? 'apps/desktop-modern/dist-builder/desktop-modern/win-unpacked/Canvas Atelier.exe');
 const qaRoot = process.argv[3]
   ? resolve(process.argv[3])
-  : resolve(tmpdir(), 'canvasforge-qa-relayme-login-1.6.83');
+  : resolve(tmpdir(), 'canvasforge-qa-relayme-login-1.6.84');
 const messages = [];
 let page;
 const electronApp = await electron.launch({

@@ -9,7 +9,7 @@ if (!username || !password) throw new Error('RelayMe live acceptance credentials
 const executablePath = resolve(process.argv[2] ?? 'apps/desktop-modern/dist-builder/desktop-modern/win-unpacked/Canvas Atelier.exe');
 const qaRoot = process.argv[3]
   ? resolve(process.argv[3])
-  : resolve(tmpdir(), 'canvasforge-qa-relayme-live-1.6.83');
+  : resolve(tmpdir(), 'canvasforge-qa-relayme-live-1.6.84');
 const pageErrors = [];
 const electronApp = await electron.launch({
   executablePath,
@@ -162,7 +162,7 @@ try {
   const version = await electronApp.evaluate(({ app }) => app.getVersion());
   process.stdout.write(`${JSON.stringify({ version, ...result, pageErrors })}\n`);
   if (!result.ok) throw new Error(`Live acceptance failed at ${result.stage}: ${result.error.code} ${result.error.message}`);
-  if (version !== '1.6.83'
+  if (version !== '1.6.84'
     || result.activeProvider !== 'relayme'
     || result.modelCount < 1
     || result.taskStatus !== 'completed'

@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 const executablePath = resolve(process.argv[2] ?? 'apps/desktop-modern/dist-builder/desktop-modern/win-unpacked/Canvas Atelier.exe');
 const qaRoot = process.argv[3]
   ? resolve(process.argv[3])
-  : resolve(tmpdir(), 'canvasforge-qa-relayme-web-login-1.6.83');
+  : resolve(tmpdir(), 'canvasforge-qa-relayme-web-login-1.6.84');
 const pageErrors = [];
 const electronApp = await electron.launch({
   executablePath,
@@ -43,7 +43,7 @@ try {
     pageErrors,
   };
   process.stdout.write(`${JSON.stringify(result)}\n`);
-  if (result.version !== '1.6.83'
+  if (result.version !== '1.6.84'
     || !result.loginUrl.startsWith('https://www.ml.relayme.uk/')
     || result.alert !== '已取消 RelayMe 网页登录'
     || !result.webLoginEnabled

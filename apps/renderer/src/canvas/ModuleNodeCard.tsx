@@ -342,13 +342,18 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
     const posterAsset = generatedResult.posterAssetId === undefined
       ? undefined
       : projectImages.find((candidate) => candidate.assetId === generatedResult.posterAssetId);
+    const videoAsset = projectVideos.find((candidate) => candidate.assetId === generatedResult.assetId);
     const posterUrl = isRenderableManagedImageUrl(generatedResult.posterUrl)
       ? generatedResult.posterUrl
       : isRenderableManagedImageUrl(posterAsset?.displayUrl, posterAsset?.assetId)
         ? posterAsset.displayUrl
         : null;
-    return { posterUrl };
-  }, [data.moduleType, id, project.edges, project.nodes, projectImages]);
+    return {
+      posterUrl,
+      videoUrl: videoAsset?.displayUrl,
+      durationMs: videoAsset?.durationMs ?? generatedResult.durationMs,
+    };
+  }, [data.moduleType, id, project.edges, project.nodes, projectImages, projectVideos]);
   const connectedVideoMedia = data.moduleType === 'video_generation'
     ? resolveConnectedGenerationMedia(project, id, 'media')
     : [];
@@ -975,10 +980,10 @@ function VideoGenerationSummary({
           <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${completedVideoResults.length}`} aria-label="Completed video results">
             {completedVideoResults.map((item, index) => (
               <div key={item.assetId} className="module-node__generation-preview-item module-node__video-result-stage" aria-label={`Completed video result ${index + 1}`} data-aspect-ratio="16:9">
-                  {resolveVideoResultPoster(item)
+                  {resolveVideoResultUrl(item)
+                    ? <video src={resolveVideoResultUrl(item)} poster={resolveVideoResultPoster(item)} aria-label={`Completed video result ${index + 1} video`} controls playsInline preload="metadata" />
+                  : resolveVideoResultPoster(item)
                     ? <img src={resolveVideoResultPoster(item)} alt={`Completed video result ${index + 1}`} draggable={false} loading="lazy" decoding="async" />
-                  : resolveVideoResultUrl(item)
-                    ? <video src={resolveVideoResultUrl(item)} aria-label={`Completed video result ${index + 1} video`} muted playsInline preload="metadata" />
                     : <Video aria-hidden="true" size={24} strokeWidth={1.5} />}
                 <span className="module-node__video-preview-play" role="img" aria-label={`Play completed video ${index + 1}`}><Play size={14} fill="currentColor" /></span>
               </div>
@@ -2592,7 +2597,7 @@ function ResultOutputPreview({
   );
 }
 
-function VideoResultPreview({ result }: { result: { posterUrl: string | null } | null }) {
+function VideoResultPreview({ result }: { result: { posterUrl: string | null; videoUrl?: string; durationMs?: number } | null }) {
   if (result !== null) {
     return (
       <section className="module-node__output-preview module-node__video-output-preview module-node__video-output-preview--connected nodrag nopan" aria-label="Generated video playback" onPointerDown={stopCanvasPointer}>
@@ -2601,7 +2606,9 @@ function VideoResultPreview({ result }: { result: { posterUrl: string | null } |
           <span>已完成</span>
         </header>
         <div className="module-node__video-output-stage">
-          {result.posterUrl !== null
+          {result.videoUrl
+             ? <video src={result.videoUrl} poster={result.posterUrl ?? undefined} aria-label="Generated video playback video" controls playsInline preload="metadata" />
+            : result.posterUrl !== null
              ? <img src={result.posterUrl} alt="Video result poster" draggable={false} loading="lazy" decoding="async" />
             : <Video aria-hidden="true" size={28} strokeWidth={1.5} />}
           <span className="module-node__video-output-play" role="img" aria-label="Play generated video"><Play size={16} fill="currentColor" /></span>

@@ -464,3 +464,12 @@ Before producing an installer, verify at minimum:
 - Photoshop 多图结果保护：右键选中的 RelayMe 多图结果必须按其真实 asset id 导入当前 Photoshop 文档，不得固定导入第一张；旧版 WSH/CS6 兼容和无活动文档错误提示继续由专项回归保护。
 - 新鲜验证：`npm.cmd exec vitest -- --config vitest.config.ts apps/renderer/src/canvas/CanvasWorkspace.test.tsx apps/renderer/src/canvas/ModuleNodeCard.test.tsx apps/renderer/src/agent/SkillChatWorkbench.test.tsx --run` 为 406/406 通过；完整 `npm.cmd test -- --run` 为 211 个文件、2625 个测试通过，2 个性能文件/测试按设计跳过；`npm.cmd run build` 通过，Vite 仅保留既有大 chunk 提示。Windows 安装包与隔离 packaged 验收仍需在此记录之后重新执行。
 - 1.6.83 packaged 真实 RelayMe 验收使用隔离 QA 数据根：账号登录成功、目录返回 11 个模型；`GPT Image 2` 图片任务完成并落盘为 1254×1254 PNG；`Veo 3.1 Fast` 视频任务完成并落盘为 MP4；页面错误为 0。Photoshop 导入桥接返回 `no_active_document`，证明调用已到达 Photoshop 适配层且当前没有活动 PSD/PSB，未误报成功。验收使用的账号密码未写入项目、日志或安装包。
+
+## 2026-08-31 视频结果 MP4 播放与 RelayMe 引用能力边界
+
+- 视频结果节点的显示根因已确认：`video_result` 只从上游配置读取 `posterUrl`/`posterAssetId`，没有解析同一 `assetId` 对应的 `projectVideos`，所以即使任务已落盘为 MP4，画布仍只渲染静态封面图。
+- 保护行为：结果节点现在按资产 id 绑定真实 `video/mp4` 的 `displayUrl`，使用带 `controls` 的 `<video>` 播放器并保留封面 `poster`；生成节点展开后的结果网格也优先渲染真实视频，只有缺少视频资产时才回退到图片封面。折叠卡仍保留轻量封面预览。
+- RelayMe 的图片/视频生成接口当前契约仅公开文本 `messages`，服务层对非空 `referenceAssetIds` 明确返回 `CAPABILITY_UNSUPPORTED`，因此画布的 `@` 选择、提示词持久化和 Comfly 引用链路正常，但 RelayMe 不能安全地伪造素材引用；UI 会显示可重试的能力错误而不是误生成。
+- 新鲜验证：视频结果与 RelayMe 服务/客户端联合回归 245/245 通过；全工作区 TypeScript 检查通过；`git diff --check` 通过。未触发新的付费 RelayMe 生成。
+- 1.6.84 发布门禁：完整 Vitest 为 211 个文件、2625 个测试通过，2 个性能文件/测试按设计跳过；全工作区 typecheck 和 production build 通过；真实浏览器 `a completed video remains inside its source node after reload without an external result node` 通过，确认 MP4 元素及重载恢复。隔离 packaged 重启冒烟两次版本均为 1.6.84，`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、`restoredImageNodes=1`。
+- 1.6.84 Windows x64 NSIS：`CanvasAtelier-Win10-11-x64-1.6.84.exe` 为 103200260 字节，SHA-256 `537AA2E399F64FC16548BAF3CF5E15B610213AFC98FCBA529E7634E558ADB0A0`；blockmap 为 109581 字节，SHA-256 `E1FA463834F4DD5BD22C8A05D02B9F5A183363727725CDD003BACD8610B5AA58`；`latest.yml` SHA-256 `938D4162F691A8CAB0E1D0B5B1E88FB8D3FBE35E7343B83EC0BCBA0F173C5C9A`。安装包未签名（`NotSigned`），Windows 可能显示 SmartScreen 提示。

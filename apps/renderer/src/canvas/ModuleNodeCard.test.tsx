@@ -2790,7 +2790,7 @@ describe('ModuleNodeCard', () => {
     expect(finalRule).toContain('height: 100% !important');
   });
 
-  it('renders the connected video result as a playback stage with its managed poster', () => {
+  it('renders the connected video result as an actual MP4 playback stage with its managed poster', () => {
     const input = createCanvasModuleNode('video-result-input', 'image_input', { x: -360, y: 0 });
     input.data.config = { assetId: projectImage.assetId };
     const source = createCanvasModuleNode('video-result-source', 'video_generation', { x: 0, y: 0 });
@@ -2825,12 +2825,21 @@ describe('ModuleNodeCard', () => {
         }],
       },
       projectImages: [projectImage],
+      projectVideos: [{
+        ...projectVideo,
+        assetId: 'generated-video-result-1',
+        displayUrl: 'novus-asset://project/session/generated-video-result-1',
+        durationMs: 5000,
+      }],
     });
 
     render(<ReactFlowProvider><ModuleNodeCard id={result.id} data={result.data} selected={false} /></ReactFlowProvider>);
 
     expect(screen.getByLabelText('Generated video playback')).toBeVisible();
-    expect(screen.getByRole('img', { name: 'Video result poster' })).toHaveAttribute('src', projectImage.displayUrl);
+    const playback = screen.getByLabelText('Generated video playback video');
+    expect(playback).toHaveAttribute('src', 'novus-asset://project/session/generated-video-result-1');
+    expect(playback).toHaveAttribute('poster', projectImage.displayUrl);
+    expect(playback).toHaveAttribute('controls');
     expect(screen.getByText('生成结果')).toBeVisible();
     expect(screen.getByText('已完成')).toBeVisible();
     expect(screen.getByLabelText('Generated video playback')).toHaveTextContent('00:00 / 00:05 · 1080p');
