@@ -735,21 +735,22 @@ export function CanvasWorkspace() {
     setResultOutputMenuNodeId(nodeId);
   }, [activeSurface, changeSurface]);
 
+  const prepareForProjectSwitch = useCallback(async (destinationLabel: string): Promise<boolean> => {
+    const hasCanvasContent = project.nodes.length > 0 || project.edges.length > 0 || project.projectMemory.length > 0;
+    if (!hasCanvasContent || saveStatus === 'saved') return true;
+    const saveCannotProgress = saveStatus === 'read_only' || projectCommitConflictCode !== null;
+    if (saveCannotProgress) {
+      return window.confirm(`当前画布包含未保存的更改，且现在无法完成保存。\n\n是否放弃这些未保存更改并${destinationLabel}？`);
+    }
+    return workspaceApi.save();
+  }, [project.edges.length, project.nodes.length, project.projectMemory.length, projectCommitConflictCode, saveStatus, workspaceApi]);
+
   const startNewProject = useCallback(() => {
     if (newProjectInFlightRef.current) return;
     newProjectInFlightRef.current = true;
     void (async () => {
       try {
-        const hasCanvasContent = project.nodes.length > 0 || project.edges.length > 0 || project.projectMemory.length > 0;
-        if (hasCanvasContent && saveStatus !== 'saved') {
-          const saveCannotProgress = saveStatus === 'read_only' || projectCommitConflictCode !== null;
-          if (saveCannotProgress) {
-            const abandonDraft = window.confirm('当前画布包含未保存的更改，且现在无法完成保存。\n\n是否放弃这些未保存更改并新建项目？');
-            if (!abandonDraft) return;
-          } else if (!await workspaceApi.save()) {
-            return;
-          }
-        }
+        if (!await prepareForProjectSwitch('新建项目')) return;
         setFileMenuOpen(false);
         setModuleLibraryOpen(false);
         setQuickInsert(null);
@@ -759,24 +760,28 @@ export function CanvasWorkspace() {
         newProjectInFlightRef.current = false;
       }
     })();
-  }, [changeSurface, newWorkflow, project.edges.length, project.nodes.length, project.projectMemory.length, projectCommitConflictCode, saveStatus, workspaceApi]);
+  }, [changeSurface, newWorkflow, prepareForProjectSwitch]);
 
   const openSavedProject = useCallback(() => {
-    setFileMenuOpen(false);
-    setModuleLibraryOpen(false);
-    setQuickInsert(null);
-    changeSurface(null);
-    void openProject();
-  }, [changeSurface, openProject]);
+    void (async () => {
+      if (!await prepareForProjectSwitch('打开其他项目')) return;
+      setFileMenuOpen(false);
+      setModuleLibraryOpen(false);
+      setQuickInsert(null);
+      changeSurface(null);
+      await openProject();
+    })();
+  }, [changeSurface, openProject, prepareForProjectSwitch]);
 
   const openRecentSavedProject = useCallback(async (recentProjectId: string) => {
+    if (!await prepareForProjectSwitch('打开其他项目')) return false;
     setFileMenuOpen(false);
     setModuleLibraryOpen(false);
     setQuickInsert(null);
     setResultOutputMenuNodeId(null);
     changeSurface(null);
     return openProject(recentProjectId);
-  }, [changeSurface, openProject]);
+  }, [changeSurface, openProject, prepareForProjectSwitch]);
   const canvasProviderRoutes = useMemo(() => buildCanvasProviderRouteSets(providerProfiles), [providerProfiles]);
   const moduleNodeRuntimeContext = useMemo<ModuleNodeRuntimeContext>(() => ({
     imageGenerationRoutes: canvasProviderRoutes.imageGeneration,
@@ -1077,10 +1082,13 @@ export function CanvasWorkspace() {
 
   const deleteCanvasNodesWithDurableReload = useCallback(async (nodeIds: readonly string[]) => {
     const deleted = await deleteCanvasNodes(nodeIds);
-    if (deleted || saveStatus !== 'read_only') return deleted;
+    if (deleted) return true;
+    const canRecoverDurableState = canReloadDurableProject
+      && (saveStatus === 'read_only' || projectCommitConflictCode !== null);
+    if (!canRecoverDurableState) return false;
     if (!await reloadDurableProject()) return false;
     return deleteCanvasNodes(nodeIds);
-  }, [deleteCanvasNodes, reloadDurableProject, saveStatus]);
+  }, [canReloadDurableProject, deleteCanvasNodes, projectCommitConflictCode, reloadDurableProject, saveStatus]);
 
   const createModuleFromSelectedMedia = useCallback(async (
     moduleType: CanvasModuleType,
@@ -1692,6 +1700,7 @@ export function CanvasWorkspace() {
             {saveManagerOpen && (
               <ProjectManagerPopover
                 currentProject={{
+                  id: project.id,
                   name: project.name,
                   nodeCount: project.nodes.length,
                   edgeCount: project.edges.length,

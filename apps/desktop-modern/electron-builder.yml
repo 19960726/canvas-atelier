@@ -18,6 +18,8 @@ extraResources:
     to: icon.ico
   - from: dist/mcp
     to: mcp
+  - from: dist/photoshop
+    to: photoshop
 win:
   icon: icon.ico
   signAndEditExecutable: false

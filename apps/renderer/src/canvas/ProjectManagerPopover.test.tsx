@@ -47,7 +47,7 @@ describe('ProjectManagerPopover', () => {
     } as never;
 
     render(<ProjectManagerPopover
-      currentProject={{ name: '当前画布', nodeCount: 1, edgeCount: 0 }}
+      currentProject={{ id: 'project-current', name: '当前画布', nodeCount: 1, edgeCount: 0 }}
       recoveryRequired={false}
       recoverySnapshotIds={[]}
       onClose={vi.fn()}
@@ -67,7 +67,7 @@ describe('ProjectManagerPopover', () => {
     const onOpenRecentProject = vi.fn(async () => true);
 
     render(<ProjectManagerPopover
-      currentProject={{ name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
+      currentProject={{ id: 'project-current', name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
       recoveryRequired={false}
       recoverySnapshotIds={[]}
       onClose={vi.fn()}
@@ -83,6 +83,25 @@ describe('ProjectManagerPopover', () => {
     expect(list).toHaveBeenCalledOnce();
   });
 
+  it('marks the already-open project instead of presenting a misleading Open action', async () => {
+    window.novusDesktop = { recentProjects: { list: vi.fn(async () => [availableProject]) } } as never;
+    const onOpenRecentProject = vi.fn(async () => true);
+
+    render(<ProjectManagerPopover
+      currentProject={{ id: availableProject.projectId, name: '当前工作流', nodeCount: 8, edgeCount: 2 }}
+      recoveryRequired={false}
+      recoverySnapshotIds={[]}
+      onClose={vi.fn()}
+      onOpenOther={vi.fn()}
+      onOpenRecentProject={onOpenRecentProject}
+      onRestoreSnapshot={vi.fn()}
+    />);
+
+    expect(await screen.findByRole('button', { name: `当前项目${availableProject.displayName}` })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: `打开${availableProject.displayName}` })).not.toBeInTheDocument();
+    expect(onOpenRecentProject).not.toHaveBeenCalled();
+  });
+
   it('relocates a missing project and removes only its recent-list entry', async () => {
     const list = vi.fn(async () => [missingProject]);
     const relocatedProject = { ...missingProject, availability: 'available' as const, previewUrl: availableProject.previewUrl };
@@ -91,7 +110,7 @@ describe('ProjectManagerPopover', () => {
     window.novusDesktop = { recentProjects: { list, relocate, remove } } as never;
 
     render(<ProjectManagerPopover
-      currentProject={{ name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
+      currentProject={{ id: 'project-current', name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
       recoveryRequired={false}
       recoverySnapshotIds={[]}
       onClose={vi.fn()}
@@ -113,7 +132,7 @@ describe('ProjectManagerPopover', () => {
     window.novusDesktop = { recentProjects: { list: vi.fn(async () => []) } } as never;
 
     render(<ProjectManagerPopover
-      currentProject={{ name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
+      currentProject={{ id: 'project-current', name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
       recoveryRequired={false}
       recoverySnapshotIds={['snapshot-one', 'snapshot-two']}
       onClose={vi.fn()}
@@ -138,7 +157,7 @@ describe('ProjectManagerPopover', () => {
       .mockResolvedValueOnce(undefined);
 
     render(<ProjectManagerPopover
-      currentProject={{ name: '受保护恢复画布', nodeCount: 3, edgeCount: 0 }}
+      currentProject={{ id: 'project-current', name: '受保护恢复画布', nodeCount: 3, edgeCount: 0 }}
       recoveryRequired
       recoverySnapshotIds={['snapshot-recovery']}
       onClose={onClose}

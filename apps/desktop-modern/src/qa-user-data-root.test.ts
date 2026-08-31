@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { resolveQaUserDataRoot, shouldShowQaWindow } from './qa-user-data-root';
 
 describe('resolveQaUserDataRoot', () => {
@@ -21,5 +22,12 @@ describe('shouldShowQaWindow', () => {
     expect(shouldShowQaWindow({ CANVASFORGE_QA_MODE: '1', CANVASFORGE_QA_HIDDEN: '1' })).toBe(false);
     expect(shouldShowQaWindow({ CANVASFORGE_QA_HIDDEN: '1' })).toBe(true);
     expect(shouldShowQaWindow({ CANVASFORGE_QA_MODE: '1' })).toBe(true);
+  });
+});
+
+describe('QA single-instance isolation', () => {
+  it('does not redirect an explicit isolated QA launch into the real user window', async () => {
+    const mainSource = await readFile(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(mainSource).toContain('qaUserDataRoot !== null || app.requestSingleInstanceLock()');
   });
 });

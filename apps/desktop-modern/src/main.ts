@@ -151,7 +151,7 @@ function createDevelopmentUpdateDriver(): UpdateDriver {
   };
 }
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const hasSingleInstanceLock = qaUserDataRoot !== null || app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 }

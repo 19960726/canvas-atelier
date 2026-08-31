@@ -432,3 +432,27 @@ Before producing an installer, verify at minimum:
 - 新鲜验证：相关联合回归 192/192，升版后的版本/关闭/新建/设置联合回归 201/201；全工作区 TypeScript 通过；完整 Vitest 210 个文件、2571 个测试通过，2 个性能文件/测试按设计跳过。生产 build 与 Electron Builder Windows x64 NSIS 均退出 0。
 - 1.6.76 隔离 packaged 验收实际执行了“新建项目 → 创建图片生成节点 → 保存 → 正常关闭 → 重新打开恢复”：两次运行版本均为 1.6.76，`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、`restoredImageNodes=1`，五个图片生成控件均可见。该验收未读取正式用户项目，也未触发付费生成。
 - 正式候选安装包：`apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.76.exe`，103192907 字节，SHA-256 `B84A48EF366F82338D2CBBC7A176B0C2F14F2A70701228F94F0600E3255C115B`；blockmap 109624 字节，SHA-256 `1D6EE8D386D741DCED9C8F9EB30D98710E1B6842B81F0865543B951048EF06D6`；`latest.yml` SHA-256 `69B1EB629B90A79F23AA87151B22B79E9C0CC6C61EA418AD64B9C87F1570B51B`。`app.asar` 包内版本独立读取为 1.6.76。安装包未签名（`NotSigned`），Windows 仍可能显示 SmartScreen 警告。
+
+## 2026-08-31 正式旧项目 Del 冲突恢复修复
+
+- 确认根因：已安装 1.6.76 对新建普通节点的 Delete 黑盒测试能够成功，问题不是按键监听全局失效。正式旧项目处于 `REVISION_CONFLICT` 时，Store 会在删除事务执行前返回 `false`，但 `deleteCanvasNodesWithDurableReload` 只在 `saveStatus === 'read_only'` 时重载重试；冲突状态是 `saveStatus: 'error'`，因此 Del 静默结束且节点仍存在。
+- 保护行为：删除首次失败时，仅当桌面允许安全重载且当前状态为只读或明确的持久化冲突，才重载最新持久化项目并对相同节点 id 重试一次。普通保存错误不会被误当作冲突，也不会无限重试。
+- 回归位置：`apps/renderer/src/canvas/CanvasWorkspace.test.tsx` 的 `reloads and retries when Delete is blocked by a durable revision conflict`。该用例修复前明确失败为节点数仍为 1、重载 0 次；最小实现后通过，并确认重载 1 次、删除调用 2 次。
+- 当前新鲜验证：聚焦红转绿通过；`CanvasWorkspace` 与 `app-store` 联合回归 307/307 通过。验证命令：`npm.cmd exec vitest -- --config vitest.config.ts apps/renderer/src/canvas/CanvasWorkspace.test.tsx apps/renderer/src/app/app-store.test.ts --run`。全量测试、构建、打包及安装版验收仍待执行，不得据此提前声称正式安装包已完成。
+
+## 2026-08-31 正式 Photoshop 与最近项目切换边界修复
+
+- 正式 Photoshop 按钮无反馈存在两个确认根因：Electron Builder 未把 `dist/photoshop` 带入安装包的 `resources/photoshop`；Windows runner 又使用旧 JScript 不支持的对象尾逗号和不可用的 `JSON.stringify`，错误处理本身也会再次失败并返回空输出。
+- 修复后打包清单明确复制 Photoshop 资源，脚本使用旧 WSH 兼容的平面对象 JSON 编码，并以测试禁止尾逗号和原生 `JSON.stringify`。目标机只读 `cscript` 实测返回 Photoshop major 27、`activeDocument: false`，证明连接与诊断输出已恢复；当没有活动 PSD/PSB 时 UI 应明确提示，而不是静默无反应。
+- 画布管理把当前已经打开的同一项目再次显示为“打开”，点击只能形成表面无响应。现在同项目显示禁用的“当前项目”；真正打开其他最近项目或文件夹前，未保存内容必须先保存，只读或 `REVISION_CONFLICT` 则明确确认是否放弃本次更改。
+- 新鲜验证：全量 Vitest 210 个文件、2575 个测试通过，2 个性能文件/测试按设计跳过；全工作区 TypeScript 通过。生产打包、安装版验收仍待执行，不得提前声称正式版完成。
+
+## 2026-08-31 1.6.78 项目会话竞态、安装版验收与 RelayMe 真实状态
+
+- “新建后 Del 又出现旧节点”的最终根因是旧项目关闭与同会话刷新重叠：刷新推进 `clientGeneration` 后，`close()` 因 generation 不同而放弃清理已经关闭的旧 session。新画布第一次保存因此仍写向旧项目并形成 revision conflict，删除冲突恢复又把旧节点载回。`close()` 现在以 session/project 身份判断是否仍是同一关闭目标；只有已经切换为其他 session/project 才放弃清理。新增竞态测试修复前明确得到 `lifecycle: durable, revision: 4`，修复后为 `untitled, revision: 0`。
+- 完整 Vitest 为 210 个文件、2577 个测试通过，2 个性能文件/测试按设计跳过；项目持久化、Store 与 CanvasWorkspace 联合回归 365/365；全工作区 TypeScript 与 production build 通过。Electron Builder Windows x64 NSIS 成功。
+- 打包版和安装版分别在独立 QA 数据根执行真实 Electron 验收，均得到：`createdCount=1`、Delete 后 `deletedCount=0`、Ctrl+Z 恢复 `restoredCount=1`、文本撤回为空、节点移动撤回成功、当前项目标记 1 个、关闭重开节点 1 个、`fatalAlertCount=0`、`pageErrors=[]`，两次运行版本均为 1.6.78。验收未读取正式项目、未触发付费生成。
+- 安装包：`apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.78.exe`，103195247 字节，SHA-256 `C0E02AF7B636E77802A3CC09B499E8771F6E1DD4D1B5DA1DFD155E1D2CF1254F`；blockmap 109689 字节，SHA-256 `4F4C7897465D154322B2CF022E2F52737235D62601EDDA7482AD503A01214B7D`；`latest.yml` 372 字节，SHA-256 `40A3810DC652E83493F9BEEC70A2D7F48429792B5A9F4872FCB4C055A4CD73D8`。安装包未签名（`NotSigned`）。
+- 已静默安装到 `D:\CanvasAtelier\Canvas Atelier`；安装后 `resources/app.asar` 与 packaged `app.asar` SHA-256 均为 `6D57F85E7FA7711D2529F6124780FD642B09BA8E6233B0F4C7123615D6795AB6`，包内版本均为 1.6.78；已安装 Photoshop runner/JSX 资源存在。
+- RelayMe 本机网络实测：DNS 解析到 `47.57.181.124`，443/TLS 成功；无凭据访问模型和 workflow 接口均快速返回 401，说明链路可达且接口要求登录认证。已安装正式数据的脱敏检测为 `configured=true`、`locked=false`、`encryption=safeStorage`、`activeProvider=relayme`，但服务端返回 `authentication_failed`、模型 0 个；这是已保存账号会话被拒绝，不是真实断网。用户无需手工 API Key，但必须重新输入 RelayMe 账号密码取得新会话令牌。未读取或输出令牌与密码。
+- RelayMe 图片数量控件为 1–4 张；一次点击会创建同一 confirmedAt 下的 1–4 个独立结果任务，provider queue 并发上限 4，现有回归固定 RelayMe 即使单任务约束为 1 也会一次排入 4 个任务。这样每个结果都有独立持久化资产和重试身份；不是要求用户逐张点击。未执行付费多图在线测试。

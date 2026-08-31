@@ -452,12 +452,10 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (sessionId === null) return;
       const closingSessionId = sessionId;
       const closingProjectId = projectId;
-      const closingGeneration = clientGeneration;
       await bridge.closeProject({ sessionId: closingSessionId });
       if (
         sessionId !== closingSessionId
         || projectId !== closingProjectId
-        || clientGeneration !== closingGeneration
       ) return;
       clientGeneration += 1;
       sessionId = null;

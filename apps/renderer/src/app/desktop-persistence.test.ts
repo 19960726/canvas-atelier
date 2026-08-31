@@ -809,6 +809,41 @@ describe('desktop persistence', () => {
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'first-session' }));
   });
 
+  it('detaches a closed session even when an overlapping refresh advances the same session generation', async () => {
+    const project = { ...createStarterProject(), name: 'Project being closed' };
+    let resolveClose!: () => void;
+    const closePending = new Promise<void>((resolve) => {
+      resolveClose = resolve;
+    });
+    const closeProject = vi.fn(() => closePending);
+    const refreshProject = vi.fn(async () => createDesktopSession(project, 'first-session', 4));
+    const bridge = {
+      closeProject,
+      commit: vi.fn(),
+      createProject: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: project.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject: vi.fn(async () => createDesktopSession(project, 'first-session', 3)),
+      refreshProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never) as ReturnType<typeof createDesktopPersistenceClient> & ReloadableDesktopClient;
+    await client.openProject?.();
+
+    const closing = client.close();
+    await vi.waitFor(() => expect(closeProject).toHaveBeenCalledWith({ sessionId: 'first-session' }));
+    await expect(client.reloadDurableProject?.()).resolves.toMatchObject({ revision: 4 });
+    resolveClose();
+    await closing;
+
+    await expect(client.hydrate()).resolves.toMatchObject({
+      lifecycle: 'untitled',
+      revision: 0,
+    });
+    expect(client.getSessionId?.()).toBeNull();
+  });
+
   it('can retry a silent refresh after one refresh rejection without closing the active session', async () => {
     const project = { ...createStarterProject(), name: 'Reload retry project' };
     const openProject = vi.fn(async () => createDesktopSession(project, 'first-session', 3));

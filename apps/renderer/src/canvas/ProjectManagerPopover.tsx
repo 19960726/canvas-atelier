@@ -4,6 +4,7 @@ import { AlertTriangle, FolderOpen, Link2, Trash2, X } from 'lucide-react';
 
 interface ProjectManagerPopoverProps {
   currentProject: {
+    readonly id: string;
     readonly name: string;
     readonly nodeCount: number;
     readonly edgeCount: number;
@@ -163,6 +164,7 @@ export function ProjectManagerPopover({
           {recentProjects.map((project) => {
             const busy = pendingAction?.recentProjectId === project.recentProjectId;
             const missing = project.availability === 'missing';
+            const current = project.projectId === currentProject.id;
             return (
               <article className={`canvas-manager__recent${missing ? ' canvas-manager__recent--missing' : ''}`} key={project.recentProjectId}>
                 <div className="canvas-manager__recent-copy">
@@ -172,7 +174,11 @@ export function ProjectManagerPopover({
                   {missing ? <em><AlertTriangle size={13} aria-hidden="true" /> 项目文件不存在</em> : null}
                 </div>
                 <div className="canvas-manager__recent-actions">
-                  {missing ? (
+                  {current ? (
+                    <button type="button" disabled aria-label={`当前项目${project.displayName}`}>
+                      当前项目
+                    </button>
+                  ) : missing ? (
                     <button type="button" disabled={busy} aria-label={`重新定位${project.displayName}`} onClick={() => { void relocateRecent(project); }}>
                       重新定位
                     </button>

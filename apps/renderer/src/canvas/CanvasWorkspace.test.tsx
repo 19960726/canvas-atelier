@@ -471,7 +471,36 @@ describe('CanvasWorkspace', () => {
     expect(recoveryVersions).toBeVisible();
     fireEvent.click(recoveryVersions);
     expect(within(manager).getAllByRole('button', { name: /恢复已保存版本/u })).toHaveLength(2);
-  });  it('hides the empty-canvas hint while canvas management is open', () => {
+  });
+
+  it('saves pending work before switching to another recent project', async () => {
+    const recentProject = {
+      recentProjectId: 'recent_0123456789abcdef01234567',
+      projectId: 'project-recent-a',
+      displayName: '商品主视觉项目',
+      lastOpenedAt: '2026-08-10T08:00:00.000Z',
+      lastSavedAt: '2026-08-10T07:55:00.000Z',
+      availability: 'available' as const,
+      nodeCount: 8,
+      imageCount: 4,
+      videoCount: 2,
+      previewUrl: null,
+    };
+    window.novusDesktop = { recentProjects: { list: vi.fn(async () => [recentProject]) } } as never;
+    const saveProjectExplicitly = vi.fn(async () => true);
+    const openProject = vi.fn(async () => true);
+    useAppStore.setState({ saveProjectExplicitly, openProject, saveStatus: 'pending' } as never);
+
+    render(<CanvasWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: '展开画布管理' }));
+    fireEvent.click(await screen.findByRole('button', { name: `打开${recentProject.displayName}` }));
+
+    await waitFor(() => expect(saveProjectExplicitly).toHaveBeenCalledOnce());
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith(recentProject.recentProjectId));
+    expect(saveProjectExplicitly.mock.invocationCallOrder[0]).toBeLessThan(openProject.mock.invocationCallOrder[0]!);
+  });
+
+  it('hides the empty-canvas hint while canvas management is open', () => {
     resetAppStoreForTests({ project: 'empty' });
     render(<CanvasWorkspace />);
     expect(screen.getByText('双击空白处添加模块')).toHaveAttribute('role', 'status');
@@ -1563,6 +1592,46 @@ describe('CanvasWorkspace', () => {
       project: { ...state.project, nodes: [selectedNode] },
       reloadDurableProject,
       saveStatus: 'read_only',
+    }));
+    render(<CanvasWorkspace />);
+    const node = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(node).not.toBeNull();
+
+    fireEvent.click(node!);
+    fireEvent.keyDown(window, { key: 'Delete' });
+
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+    expect(reloadDurableProject).toHaveBeenCalledOnce();
+    expect(deleteCanvasNodes).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads and retries when Delete is blocked by a durable revision conflict', async () => {
+    const selectedNode = createCanvasModuleNode('delete-with-revision-conflict', 'image_generation', { x: 80, y: 120 });
+    const reloadDurableProject = vi.fn(async () => {
+      useAppStore.setState({
+        canReloadDurableProject: false,
+        projectCommitConflictCode: null,
+        saveErrorCode: null,
+        saveStatus: 'saved',
+      });
+      return true;
+    });
+    const deleteCanvasNodes = vi.fn(async () => {
+      if (useAppStore.getState().projectCommitConflictCode !== null) return false;
+      useAppStore.setState((state) => ({
+        project: { ...state.project, nodes: [] },
+      }));
+      return true;
+    });
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState((state) => ({
+      canReloadDurableProject: true,
+      deleteCanvasNodes,
+      project: { ...state.project, nodes: [selectedNode] },
+      projectCommitConflictCode: 'REVISION_CONFLICT',
+      reloadDurableProject,
+      saveErrorCode: 'REVISION_CONFLICT',
+      saveStatus: 'error',
     }));
     render(<CanvasWorkspace />);
     const node = document.querySelector<HTMLElement>('.react-flow__node');

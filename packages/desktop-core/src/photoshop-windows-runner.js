@@ -1,6 +1,29 @@
 (function () {
+  function quoteJsonString(value) {
+    return '"' + String(value)
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\t/g, '\\t') + '"';
+  }
+
+  function stringifyFlatObject(value) {
+    var parts = [];
+    var key;
+    for (key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      var item = value[key];
+      var encoded = typeof item === 'string'
+        ? quoteJsonString(item)
+        : item === null ? 'null' : String(item);
+      parts.push(quoteJsonString(key) + ':' + encoded);
+    }
+    return '{' + parts.join(',') + '}';
+  }
+
   function writeResult(value) {
-    WScript.StdOut.Write(JSON.stringify(value));
+    WScript.StdOut.Write(stringifyFlatObject(value));
   }
 
   function readText(path) {
@@ -17,7 +40,7 @@
       writeResult({
         kind: 'running',
         majorVersion: parseInt(String(inspectedApp.version).split('.')[0], 10),
-        activeDocument: inspectedApp.documents.length > 0,
+        activeDocument: inspectedApp.documents.length > 0
       });
       WScript.Quit(0);
     }
