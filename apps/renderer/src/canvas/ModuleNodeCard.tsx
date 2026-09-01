@@ -1434,6 +1434,7 @@ function GeneratedImageActionMenu({
 }) {
   const [photoshopBusy, setPhotoshopBusy] = useState(false);
   const [photoshopResult, setPhotoshopResult] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [copyError, setCopyError] = useState(false);
   const photoshopAvailability = getPhotoshopImportAvailability(asset, getActiveProjectSessionId());
   const copyImage = async () => {
     try {
@@ -1445,10 +1446,9 @@ function GeneratedImageActionMenu({
           return;
         }
       } catch {
-        // Fall through to a URL copy so copying still works when image
-        // clipboard permissions or managed-asset fetches are unavailable.
+        setCopyError(true);
       }
-      await copyTextWithFallback(asset.displayUrl);
+      window.dispatchEvent(new CustomEvent('novus:clipboard-image-error'));
     } finally {
       onClose();
     }
@@ -1475,7 +1475,10 @@ function GeneratedImageActionMenu({
     <div className="generated-image-action-menu" role="menu" aria-label="Generated image actions" style={{ left, top }} onPointerDown={(event) => event.stopPropagation()}>
       <strong>图片操作</strong>
       <button type="button" role="menuitem" className="is-featured" onClick={() => { onSendToAgent(asset); onClose(); }}><Send aria-hidden="true" size={17} />发送到 AI 对话</button>
-      <button type="button" role="menuitem" disabled title="画布图片输入桥接尚未配置">发送到画布</button>
+      <button type="button" role="menuitem" onClick={() => {
+        window.dispatchEvent(new CustomEvent('novus:generated-image-to-canvas', { detail: { assetId: asset.assetId } }));
+        onClose();
+      }}>发送到画布</button>
       <button
         type="button"
         role="menuitem"
@@ -1493,6 +1496,7 @@ function GeneratedImageActionMenu({
           {photoshopResult.message}
         </p>
       )}
+      {copyError && <p className="generated-image-action-menu__notice is-error" role="alert">无法复制图片，请检查系统剪贴板权限</p>}
     </div>
   );
   return typeof document === 'undefined' ? menu : createPortal(menu, document.body);

@@ -473,3 +473,13 @@ Before producing an installer, verify at minimum:
 - 新鲜验证：视频结果与 RelayMe 服务/客户端联合回归 245/245 通过；全工作区 TypeScript 检查通过；`git diff --check` 通过。未触发新的付费 RelayMe 生成。
 - 1.6.84 发布门禁：完整 Vitest 为 211 个文件、2625 个测试通过，2 个性能文件/测试按设计跳过；全工作区 typecheck 和 production build 通过；真实浏览器 `a completed video remains inside its source node after reload without an external result node` 通过，确认 MP4 元素及重载恢复。隔离 packaged 重启冒烟两次版本均为 1.6.84，`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、`restoredImageNodes=1`。
 - 1.6.84 Windows x64 NSIS：`CanvasAtelier-Win10-11-x64-1.6.84.exe` 为 103200260 字节，SHA-256 `537AA2E399F64FC16548BAF3CF5E15B610213AFC98FCBA529E7634E558ADB0A0`；blockmap 为 109581 字节，SHA-256 `E1FA463834F4DD5BD22C8A05D02B9F5A183363727725CDD003BACD8610B5AA58`；`latest.yml` SHA-256 `938D4162F691A8CAB0E1D0B5B1E88FB8D3FBE35E7343B83EC0BCBA0F173C5C9A`。安装包未签名（`NotSigned`），Windows 可能显示 SmartScreen 提示。
+
+## 2026-09-01 保存画布图片操作与 MP4 流式播放修复
+
+- “发送到画布”此前被 UI 硬编码为禁用；现在生成图片会通过单一持久化事务创建已绑定真实 `assetId` 的 `image_input` 节点，因此保存项目与重开项目共享同一受管资产，不复制临时 URL。
+- “复制图片”此前在剪贴板图片写入失败时静默退化为复制资源链接；现在不再复制链接，而是明确提示系统剪贴板权限失败。
+- 保存项目中的 MP4 实际存在且包含 `ftyp`、`mdat`、`moov`，但 `novus-asset` 使用一次性 `registerFileProtocol`，不适合作为视频分段读取边界。1.6.85 改用 `protocol.handle` 与 `net.fetch(file:)`，保留请求头并启用流式 Fetch 支持，使 Chromium 能按 Range 读取受管 MP4。
+- 真实保存画布隔离验收使用资产 `74baafbd7d1eb55a`：1.6.85 通过最近项目桥接打开 2 节点项目，视频从 `currentTime=0` 前进到 `1.174935`，`duration=4.01`、`readyState=4`、`paused=false`、媒体错误和页面错误均为空；未触发任何付费生成。
+- 内容不匹配的事实边界：保存节点提示词是“生成一条狗散步”，桌面服务按原文提交 RelayMe，但服务端结果画面为女子在菜地。当前代码没有视频语义复核，因此不能把“文件可播放”表述为“内容符合提示词”；若要自动保证内容相关，需要增加结果理解/复核及拒收重试流程。
+- 新鲜验证：完整 Vitest 为 211 个文件、2627 个测试通过，2 个性能文件/测试按设计跳过；全工作区 typecheck、production build、Electron Builder Windows x64 NSIS 均通过。已安装版再次对同一真实 MP4 验收，时间从 0 前进到 1.175837 秒，版本为 1.6.85，媒体错误和页面错误均为空。
+- 1.6.85 Windows x64 NSIS：`CanvasAtelier-Win10-11-x64-1.6.85.exe` 为 103200374 字节，SHA-256 `2EE32764AF79C1E345230B88BC8E44DEEB3BE55B84ACD86799768AF395A5E0C2`；blockmap 为 109627 字节，SHA-256 `86FA54DF10DDD05A56A0F92C7EA8513AAD71424FA0173F212F062A44009CF598`；`latest.yml` SHA-256 `B615AF9EEB366C49007C35B555A8A6951797CAB14EC51F0C816B7AA68EBABFBA`。安装包未签名（`NotSigned`）。安装后 `app.asar` 版本为 1.6.85，且与 packaged `app.asar` SHA-256 同为 `24837A1886C84CC6F9EEE364ED149AA72510B41FA1989939DA7AC3C0232C8327`。

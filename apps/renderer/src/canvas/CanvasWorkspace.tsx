@@ -567,6 +567,7 @@ export function CanvasWorkspace() {
   const agentPanelCollapsed = useAppStore((state) => state.agentPanelCollapsed);
   const setActiveTool = useAppStore((state) => state.setActiveTool);
   const addModuleNode = useAppStore((state) => state.addModuleNode);
+  const addProjectImageInput = useAppStore((state) => state.addProjectImageInput);
   const chatSkill = useAppStore((state) => state.chatSkill);
   const runImageGenerationNode = useAppStore((state) => state.runImageGenerationNode);
   const runVideoPreviewNode = useAppStore((state) => state.runVideoPreviewNode);
@@ -627,6 +628,18 @@ export function CanvasWorkspace() {
   const openProject = useAppStore((state) => state.openProject);
   const [providerProfiles, setProviderProfiles] = useState<ProviderBridgeProfile[]>([]);
   const [agentProviderProfiles, setAgentProviderProfiles] = useState<ProviderBridgeProfile[]>([]);
+  useEffect(() => {
+    const onCanvasImage = (event: Event) => {
+      const assetId = (event as CustomEvent<{ assetId?: unknown }>).detail?.assetId;
+      if (typeof assetId !== 'string' || assetId.length === 0) return;
+      const rightmost = project.nodes.reduce((max, node) => Math.max(max, node.position.x), 0);
+      void addProjectImageInput(assetId, { x: rightmost + 360, y: 120 });
+    };
+    window.addEventListener('novus:generated-image-to-canvas', onCanvasImage);
+    return () => {
+      window.removeEventListener('novus:generated-image-to-canvas', onCanvasImage);
+    };
+  }, [addProjectImageInput, project.nodes]);
   const [selectedPlacementObjectId, setSelectedPlacementObjectId] = useState('product-main');
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const canvasStageRef = useRef<HTMLElement | null>(null);

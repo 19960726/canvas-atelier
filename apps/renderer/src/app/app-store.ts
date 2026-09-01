@@ -278,6 +278,7 @@ interface AppState {
     position: { readonly x: number; readonly y: number },
   ) => Promise<boolean>;
   addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
+  addProjectImageInput: (assetId: string, position: { x: number; y: number }) => Promise<boolean>;
   connectModulePorts: (connection: Connection) => Promise<boolean>;
   commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
   commitNodePositions: (updates: readonly { readonly nodeId: string; readonly position: { readonly x: number; readonly y: number } }[]) => Promise<boolean>;
@@ -1000,6 +1001,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       label: `Add ${getCanvasModuleDefinition(moduleType).displayName}`,
       operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
     });
+  }),
+  addProjectImageInput: (assetId, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    const asset = (state.project.assets ?? []).find((candidate) => candidate.assetId === assetId);
+    if (!asset || !asset.mediaType.startsWith('image/')) return false;
+    const suffix = `${Date.now()}-${planSequence++}`;
+    const baseNode = createCanvasModuleNode(`module-image_input-${suffix}`, 'image_input', position);
+    const node = { ...baseNode, data: { ...baseNode.data, config: { ...baseNode.data.config, assetId } } };
+    return commitNow({ id: `add-project-image-input-${suffix}`, label: 'Add generated image to canvas', operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }] });
   }),
   connectModulePorts: (connection) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();

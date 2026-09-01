@@ -650,6 +650,20 @@ describe('project optimization memory', () => {
     });
   });
 
+  it('creates a durable image input already bound to a generated project asset', async () => {
+    const asset = { assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100, label: 'Generated result', mediaType: 'image/png' as const, origin: 'generated' as const, sha256: 'a'.repeat(64), width: 100 };
+    useAppStore.setState({ project: parseCanvasProject({ ...createStarterProject(), assets: [asset], nodes: [], edges: [] }) });
+
+    await expect(useAppStore.getState().addProjectImageInput(asset.assetId, { x: 720, y: 120 })).resolves.toBe(true);
+
+    expect(useAppStore.getState().project.nodes).toEqual([
+      expect.objectContaining({
+        position: { x: 720, y: 120 },
+        data: expect.objectContaining({ moduleType: 'image_input', config: expect.objectContaining({ assetId: asset.assetId }) }),
+      }),
+    ]);
+  });
+
   it('forwards an opaque recent project id through the store open boundary', async () => {
     const durableProject = { ...createStarterProject(), name: 'Recent project opened by id' };
     const openProject = vi.fn(async () => ({

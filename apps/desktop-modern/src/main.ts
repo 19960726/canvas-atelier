@@ -114,14 +114,14 @@ if (protocol !== undefined) {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: 'novus-asset',
-      privileges: { secure: true, standard: true },
+      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
     },
     {
       scheme: 'novus-history',
-      privileges: { secure: true, standard: true },
+      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
     },    {
       scheme: 'novus-recent-project',
-      privileges: { secure: true, standard: true },
+      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
     },
   ]);
 }
@@ -794,20 +794,22 @@ function createDialogAdapter(): BridgeDialogAdapter {
 }
 
 function registerProjectImageProtocol(handlers: DesktopBridgeHandlers): void {
-  protocol.registerFileProtocol('novus-asset', (request, callback) => {
-    void handlers.resolveProjectImagePath(request.url)
-      .then((path) => callback(path === null ? { error: -6 } : { path }))
-      .catch(() => callback({ error: -6 }));
-  });
-  protocol.registerFileProtocol('novus-history', (request, callback) => {
-    void handlers.resolveGenerationHistoryImagePath(request.url)
-      .then((path) => callback(path === null ? { error: -6 } : { path }))
-      .catch(() => callback({ error: -6 }));
-  });  protocol.registerFileProtocol('novus-recent-project', (request, callback) => {
-    void handlers.resolveRecentProjectPreviewPath(request.url)
-      .then((path) => callback(path === null ? { error: -6 } : { path }))
-      .catch(() => callback({ error: -6 }));
-  });
+  protocol.handle('novus-asset', (request) => resolveProtocolFile(request, handlers.resolveProjectImagePath));
+  protocol.handle('novus-history', (request) => resolveProtocolFile(request, handlers.resolveGenerationHistoryImagePath));
+  protocol.handle('novus-recent-project', (request) => resolveProtocolFile(request, handlers.resolveRecentProjectPreviewPath));
+}
+
+async function resolveProtocolFile(
+  request: Request,
+  resolvePath: (url: string) => Promise<string | null>,
+): Promise<Response> {
+  try {
+    const path = await resolvePath(request.url);
+    if (path === null) return new Response(null, { status: 404 });
+    return net.fetch(pathToFileURL(path).toString(), { headers: request.headers });
+  } catch {
+    return new Response(null, { status: 404 });
+  }
 }
 
 function createBundledSnapshotWorkerRunner(

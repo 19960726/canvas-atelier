@@ -2254,8 +2254,23 @@ describe('ModuleNodeCard', () => {
     fireEvent.contextMenu(generatedImage, { clientX: 120, clientY: 80 });
     expect(screen.getByRole('menu', { name: 'Generated image actions' })).toBeVisible();
     expect(screen.getByRole('menuitem', { name: '发送到 AI 对话' })).toBeEnabled();
+    expect(screen.getByRole('menuitem', { name: '发送到画布' })).toBeEnabled();
     expect(screen.getByRole('menuitem', { name: '复制图片' })).toBeEnabled();
     expect(screen.getByRole('menuitem', { name: '下载图片' })).toBeEnabled();
+  });
+
+  it('dispatches the managed asset when sending a generated image to canvas', () => {
+    const node = createCanvasModuleNode('generator-send-canvas', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({ projectImages: [projectImage], modelJobs: [{ id: 'send-canvas-job', promptNodeId: node.id, status: 'completed', resultAssetId: projectImage.assetId }] } as never);
+    const listener = vi.fn();
+    window.addEventListener('novus:generated-image-to-canvas', listener);
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Generated image 1; double click to preview' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '发送到画布' }));
+    expect(listener).toHaveBeenCalledOnce();
+    expect((listener.mock.calls[0]![0] as CustomEvent).detail).toEqual({ assetId: projectImage.assetId });
+    window.removeEventListener('novus:generated-image-to-canvas', listener);
   });
 
   it('keeps the generated-image action menu available from the collapsed preview', () => {
