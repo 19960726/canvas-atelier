@@ -9,6 +9,7 @@ const PHOTOSHOP_IMPORT_MESSAGES: Readonly<Record<PhotoshopImportErrorCode, strin
   asset_not_found: '原始生成图片不存在，请重新生成或重新导入',
   asset_not_owned: '当前项目无权使用这张图片',
   automation_denied: 'Photoshop 拒绝了自动化操作，请检查权限设置',
+  automation_unavailable: '无法连接 Photoshop 自动化，请以相同权限启动 Photoshop 和画布后重试',
   desktop_bridge_unavailable: '当前环境不支持 Photoshop 导入',
   import_busy: '这张图片正在导入 Photoshop',
   no_active_document: '请先在 Photoshop 中打开 PSD 或 PSB 文档',

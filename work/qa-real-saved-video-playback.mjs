@@ -7,6 +7,7 @@ import { join, normalize, resolve } from 'node:path';
 const sourceUserData = 'C:\\Users\\Administrator\\AppData\\Roaming\\Canvas Atelier';
 const sourceProject = join(sourceUserData, 'projects', '74025695-1a11-47e5-91b3-ef0b4456baee.novus-project');
 const executablePath = resolve(process.argv[2] ?? 'apps/desktop-modern/dist-builder/desktop-modern/win-unpacked/Canvas Atelier.exe');
+const requestedAssetId = process.argv[3];
 const qaRoot = await mkdtemp(join(tmpdir(), 'canvasforge-qa-video-playback-'));
 const qaProject = join(qaRoot, 'projects', '74025695-1a11-47e5-91b3-ef0b4456baee.novus-project');
 let app;
@@ -25,7 +26,7 @@ try {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.waitForSelector('[data-testid="workspace"]', { timeout: 20_000 });
-  const opened = await page.evaluate(async () => {
+  const opened = await page.evaluate(async (requestedAssetId) => {
     const api = window.novusDesktop;
     if (api === undefined) throw new Error('Desktop bridge unavailable');
     const recent = await api.recentProjects.list();
@@ -33,15 +34,18 @@ try {
     const project = await api.recentProjects.open({ recentProjectId: recent[0].recentProjectId, mode: 'write' });
     if (project === null) throw new Error('Saved project failed to open');
     const videos = await api.projectVideos.list({ sessionId: project.sessionId });
-    if (videos[0] === undefined) throw new Error('Saved project has no video');
+    const selectedVideo = requestedAssetId === undefined
+      ? videos[0]
+      : videos.find((video) => video.assetId === requestedAssetId);
+    if (selectedVideo === undefined) throw new Error('Saved project has no matching video');
     const element = document.createElement('video');
     element.id = 'qa-saved-video';
-    element.src = videos[0].displayUrl;
+    element.src = selectedVideo.displayUrl;
     element.controls = true;
     element.muted = true;
     document.body.append(element);
-    return { assetId: videos[0].assetId, displayUrl: videos[0].displayUrl, nodeCount: project.project.nodes.length };
-  });
+    return { assetId: selectedVideo.assetId, displayUrl: selectedVideo.displayUrl, nodeCount: project.project.nodes.length };
+  }, requestedAssetId);
   const video = page.locator('#qa-saved-video');
   await video.waitFor({ state: 'attached', timeout: 20_000 });
   const before = await video.evaluate((element) => ({ duration: element.duration, readyState: element.readyState, currentTime: element.currentTime, error: element.error?.message ?? null }));

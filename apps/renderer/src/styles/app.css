@@ -5662,6 +5662,7 @@ textarea:focus-visible {
   border: 1px solid var(--accent-soft-border);
   border-radius: 50%;
   transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 .workspace--ui-gate .module-node--workbench[data-module-type='reverse_agent'] .module-node__reverse-output {
   display: grid;

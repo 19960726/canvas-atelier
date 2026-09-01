@@ -118,6 +118,17 @@ describe('Windows Photoshop smart object adapter', () => {
     expect(files.remove).toHaveBeenCalledWith('C:/temp/novus-photoshop-1');
   });
 
+  it('reports an unavailable Photoshop automation instance without disguising it as placement failure', async () => {
+    const files = temporaryFiles();
+    const adapter = createWindowsPhotoshopSmartObjectAdapter({
+      platform: 'win32', discoverInstallations: vi.fn().mockResolvedValue([{ majorVersion: 27, executablePath: 'new.exe' }]),
+      inspectRunningInstance: vi.fn().mockResolvedValue({ majorVersion: 27, activeDocument: true }),
+      execute: vi.fn().mockResolvedValue({ kind: 'automation_unavailable' }), temporaryFiles: files,
+    });
+    await expect(adapter.place({ absolutePath: 'E:/managed/a.png', layerName: 'Layer' }))
+      .resolves.toEqual({ ok: false, code: 'automation_unavailable' });
+  });
+
   it('serializes automation calls for different images', async () => {
     const order: string[] = [];
     let releaseFirst: (() => void) | undefined;

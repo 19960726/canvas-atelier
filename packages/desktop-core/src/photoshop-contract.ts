@@ -10,6 +10,7 @@ export const PHOTOSHOP_IMPORT_ERROR_CODES = [
   'photoshop_version_unsupported',
   'no_active_document',
   'automation_denied',
+  'automation_unavailable',
   'placement_failed',
   'import_busy',
 ] as const;

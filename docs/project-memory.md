@@ -483,3 +483,13 @@ Before producing an installer, verify at minimum:
 - 内容不匹配的事实边界：保存节点提示词是“生成一条狗散步”，桌面服务按原文提交 RelayMe，但服务端结果画面为女子在菜地。当前代码没有视频语义复核，因此不能把“文件可播放”表述为“内容符合提示词”；若要自动保证内容相关，需要增加结果理解/复核及拒收重试流程。
 - 新鲜验证：完整 Vitest 为 211 个文件、2627 个测试通过，2 个性能文件/测试按设计跳过；全工作区 typecheck、production build、Electron Builder Windows x64 NSIS 均通过。已安装版再次对同一真实 MP4 验收，时间从 0 前进到 1.175837 秒，版本为 1.6.85，媒体错误和页面错误均为空。
 - 1.6.85 Windows x64 NSIS：`CanvasAtelier-Win10-11-x64-1.6.85.exe` 为 103200374 字节，SHA-256 `2EE32764AF79C1E345230B88BC8E44DEEB3BE55B84ACD86799768AF395A5E0C2`；blockmap 为 109627 字节，SHA-256 `86FA54DF10DDD05A56A0F92C7EA8513AAD71424FA0173F212F062A44009CF598`；`latest.yml` SHA-256 `B615AF9EEB366C49007C35B555A8A6951797CAB14EC51F0C816B7AA68EBABFBA`。安装包未签名（`NotSigned`）。安装后 `app.asar` 版本为 1.6.85，且与 packaged `app.asar` SHA-256 同为 `24837A1886C84CC6F9EEE364ED149AA72510B41FA1989939DA7AC3C0232C8327`。
+
+## 2026-09-01 视频点击边界与 Photoshop COM 诊断
+
+- 视频文件可解码并不保证画布节点能接收点击。已确认 `.module-node__video-preview-play` 覆盖在原生 `<video controls>` 上方且此前允许接收指针事件；该装饰层现在显式 `pointer-events: none`，使所有播放点击到达原生播放器。
+- 当前机器对 `Photoshop.Application` 及常见版本化 ProgID 均返回 COM `0x800401E3`（Operation unavailable）。这意味着 Canvas Atelier 无法取得当前 Photoshop 自动化实例；不是图片 asset、PSD 是否已选择或普通 placement 错误。Windows runner 现将该错误归类为 `automation_unavailable` 并由界面提示以相同权限运行 Photoshop 和画布后重试，不再伪装成 generic placement failure。
+- 回归：`packages/desktop-core/src/photoshop-windows-adapter.test.ts`、`apps/renderer/src/app/photoshop-import.test.ts`、`apps/renderer/src/main.styles.test.ts`。聚焦验证：`npm.cmd exec vitest -- --config vitest.config.ts packages/desktop-core/src/photoshop-windows-adapter.test.ts apps/renderer/src/app/photoshop-import.test.ts apps/renderer/src/main.styles.test.ts --run`，89/89 通过。
+- 边界：该修复提供真实诊断与视频点击边界，不能自行让 Windows 已拒绝的 Photoshop COM 实例可用；也未增加 RelayMe 视频的语义验收，提示词原文与任务身份可追溯但模型结果是否相关仍不能自动保证。
+- 1.6.86 发布候选验证：完整 Vitest 为 211 个文件、2630 个测试通过，2 个性能文件/测试按设计跳过；全工作区 typecheck 与 production build 通过。隔离 packaged 重启冒烟两次版本均为 1.6.86，`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、保存节点恢复为 1。
+- 真实保存视频资产 `66f946e139999032` 在 1.6.86 packaged 运行体中从 `currentTime=0` 前进到 `1.167211`，`duration=4.01`、`readyState=4`、`paused=false`、媒体错误和页面错误均为空。打包内 Photoshop runner 在当前机器返回 `automation_unavailable`，确认新诊断已进入产物。
+- 1.6.86 Windows x64 NSIS 候选：`CanvasAtelier-Win10-11-x64-1.6.86.exe` 为 103200647 字节，SHA-256 `B453D114499D915ECE1903292E2ED228E52D990CB2695DEEE8136609742AA434`；blockmap 为 109674 字节，SHA-256 `224EF8D1812641297DA7713FEA7A0D58D932DDB027807590FA9357F26744D0F7`；`latest.yml` SHA-256 `662E1658AADA26D850519A642C40CE5129DD64F11656E8BF880F0D2DF99C1A86`。`app.asar` 版本为 1.6.86，SHA-256 `2AA8873C5125F5C907048128ED049EFA649D7D076B9260CEB25C9BED3AC218ED`。安装包未签名（`NotSigned`）；尚未安装、提交、推送或发布 GitHub Release。

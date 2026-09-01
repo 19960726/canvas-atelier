@@ -90,6 +90,7 @@ describe('Photoshop renderer import client', () => {
     ['photoshop_version_unsupported', '当前 Photoshop 版本过低，仅支持 CS6 及以上版本'],
     ['no_active_document', '请先在 Photoshop 中打开 PSD 或 PSB 文档'],
     ['automation_denied', 'Photoshop 拒绝了自动化操作，请检查权限设置'],
+    ['automation_unavailable', '无法连接 Photoshop 自动化，请以相同权限启动 Photoshop 和画布后重试'],
     ['placement_failed', '图片未能导入 Photoshop，请重试'],
     ['import_busy', '这张图片正在导入 Photoshop'],
   ])('maps %s to fixed actionable Chinese copy', (code, message) => {

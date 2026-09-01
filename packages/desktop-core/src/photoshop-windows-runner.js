@@ -62,7 +62,10 @@
     writeResult({ kind: 'success', layerName: app.activeDocument.activeLayer.name });
   } catch (error) {
     var message = String(error && error.message ? error.message : error);
-    if (/permission|denied|access/i.test(message)) {
+    var number = Number(error && error.number);
+    if (number === -2147221021 || /operation unavailable/i.test(message)) {
+      writeResult({ kind: 'automation_unavailable' });
+    } else if (/permission|denied|access/i.test(message)) {
       writeResult({ kind: 'automation_denied' });
     } else if (/active.document/i.test(message)) {
       writeResult({ kind: 'no_active_document' });

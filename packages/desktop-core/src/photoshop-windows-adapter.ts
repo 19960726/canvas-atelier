@@ -19,6 +19,7 @@ export interface PhotoshopRunningInstance {
   readonly majorVersion: number;
   readonly activeDocument: boolean;
 }
+export type PhotoshopInspection = PhotoshopRunningInstance | null | 'automation_unavailable';
 
 export interface PhotoshopTemporaryFiles {
   readonly directory: string;
@@ -30,13 +31,14 @@ export interface PhotoshopTemporaryFiles {
 export type PhotoshopWindowsExecutionResult =
   | { readonly kind: 'success'; readonly layerName: string }
   | { readonly kind: 'automation_denied' }
+  | { readonly kind: 'automation_unavailable' }
   | { readonly kind: 'no_active_document' }
   | { readonly kind: 'placement_failed' };
 
 export interface WindowsPhotoshopAdapterDependencies {
   readonly platform: string;
   readonly discoverInstallations: () => Promise<readonly PhotoshopInstallation[]>;
-  readonly inspectRunningInstance: () => Promise<PhotoshopRunningInstance | null>;
+  readonly inspectRunningInstance: () => Promise<PhotoshopInspection>;
   readonly execute: (input: PhotoshopTemporaryFiles & {
     readonly installedMajorVersions: readonly number[];
   }) => Promise<PhotoshopWindowsExecutionResult>;
@@ -73,6 +75,7 @@ export function createWindowsPhotoshopSmartObjectAdapter(
         const installations = [...await dependencies.discoverInstallations()]
           .sort((left, right) => right.majorVersion - left.majorVersion);
         const running = await dependencies.inspectRunningInstance();
+        if (running === 'automation_unavailable') return { ok: false, code: 'automation_unavailable' };
         if (installations.length === 0 && running === null) {
           return { ok: false, code: 'photoshop_not_installed' };
         }
@@ -130,7 +133,9 @@ export function createNodeWindowsPhotoshopSmartObjectAdapter(
       if (platform !== 'win32') return null;
       try {
         const value = await runCscript(['--inspect']);
-        if (!isRecord(value) || value.kind !== 'running') return null;
+        if (!isRecord(value)) return null;
+        if (value.kind === 'automation_unavailable') return 'automation_unavailable';
+        if (value.kind !== 'running') return null;
         const majorVersion = Number(value.majorVersion);
         return Number.isInteger(majorVersion)
           ? { majorVersion, activeDocument: value.activeDocument === true }
@@ -146,7 +151,7 @@ export function createNodeWindowsPhotoshopSmartObjectAdapter(
         if (value.kind === 'success' && typeof value.layerName === 'string') {
           return { kind: 'success', layerName: value.layerName };
         }
-        if (value.kind === 'automation_denied' || value.kind === 'no_active_document') {
+        if (value.kind === 'automation_denied' || value.kind === 'automation_unavailable' || value.kind === 'no_active_document') {
           return { kind: value.kind };
         }
         return { kind: 'placement_failed' };

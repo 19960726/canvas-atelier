@@ -266,6 +266,11 @@ describe('renderer stylesheet precedence', () => {
     expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\] \.module-node__video-preview-play \{[\s\S]*?width: 62px;[\s\S]*?height: 62px;[\s\S]*?background: var\(--gate-accent\);[\s\S]*?border-radius: 14px;/);
   });
 
+  it('does not let the decorative video play glyph intercept native video controls', () => {
+    const stylesheet = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/app.css'));
+    expect(stylesheet).toMatch(/\.module-node--workbench\[data-module-type='video_generation'\] \.module-node__video-preview-play \{[\s\S]*?transform: translate\(-50%, -50%\);[\s\S]*?pointer-events: none;/);
+  });
+
   it('uses the fixed Figma video parameter rail and its full-width shared primary action', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/figma-hybrid-canvas.css'));
     const terminalVideoActionStart = hybrid.lastIndexOf(".workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-figma-composer > .module-node__run-generation {");
