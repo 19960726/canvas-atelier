@@ -88,7 +88,6 @@ describe('Windows Photoshop smart object adapter', () => {
     { platform: 'win32', installations: [], running: null, expected: 'photoshop_not_installed' },
     { platform: 'win32', installations: [{ majorVersion: 12, executablePath: 'old.exe' }], running: { majorVersion: 12, activeDocument: true }, expected: 'photoshop_version_unsupported' },
     { platform: 'win32', installations: [{ majorVersion: 25, executablePath: 'new.exe' }], running: null, expected: 'photoshop_not_running' },
-    { platform: 'win32', installations: [{ majorVersion: 25, executablePath: 'new.exe' }], running: { majorVersion: 25, activeDocument: false }, expected: 'no_active_document' },
   ])('returns $expected without writing temporary files', async ({ platform, installations, running, expected }) => {
     const files = temporaryFiles();
     const adapter = createWindowsPhotoshopSmartObjectAdapter({

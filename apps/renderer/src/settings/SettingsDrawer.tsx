@@ -599,9 +599,24 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
       setDefaultProfileKeys(createDefaultProfileSelection(scoped));
       modelCount = scoped.length;
     }
-    setMessage(successLabel === '网页'
-      ? `RelayMe 网页登录成功，已加载 ${modelCount} 个模型`
-      : 'RelayMe 登录成功，已切换为当前活动供应商');
+    let connectionStatus: ConnectionStatus = 'connected';
+    if (provider?.checkConnection) {
+      setConnectionState('checking');
+      try {
+        connectionStatus = (await withProviderOperationTimeout(
+          provider.checkConnection({ provider: 'relayme' }),
+          PROVIDER_CONNECTION_CHECK_TIMEOUT_MS,
+        )).status;
+      } catch (error) {
+        connectionStatus = error instanceof ProviderOperationTimeoutError ? 'connection_timeout' : 'network_unavailable';
+      }
+      setConnectionState(connectionStatus);
+    }
+    setMessage(connectionStatus === 'connected'
+      ? successLabel === '网页'
+        ? `RelayMe 网页登录成功，API 已自动连接，已加载 ${modelCount} 个模型`
+        : `RelayMe 登录成功，API 已自动连接，已加载 ${modelCount} 个模型`
+      : `RelayMe 登录成功，但 API 自动连接未完成（${connectionLabel(connectionStatus)}），可稍后重试`);
     globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed', { detail: { provider: 'relayme' } }));
     setRelayMeLoginOpen(false);
     setRelayMeUsername('');
@@ -938,7 +953,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
 
   const cacheControlsDisabled = !bridge?.storage || cacheAction !== null || cacheDirectory?.busy === true;
   return <>
-    <aside className="settings-drawer" aria-label="设置 / Settings" data-figma-surface="settings" data-testid="settings-drawer">
+    <aside className="settings-drawer" aria-label="设置 / Settings" data-canvas-surface="settings" data-figma-surface="settings" data-testid="settings-drawer">
       <header className="settings-drawer__header">
         <div data-testid="settings-drawer-heading">
           <strong>设置</strong>
@@ -1033,7 +1048,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
             </div>
             <div>
               {selectedProvider === 'relayme' && <a className="settings-provider-key-link" href="https://www.ml.relayme.uk/" target="_blank" rel="noreferrer">打开 RelayMe 网站</a>}
-              {selectedProvider === 'relayme' && (provider?.loginRelayMeWeb || provider?.loginRelayMe) && <button className="settings-section__primary" type="button" onClick={openRelayMeLogin} disabled={relayMeLoginBusy}>登录 RelayMe</button>}
+              {selectedProvider === 'relayme' && (provider?.loginRelayMeWeb || provider?.loginRelayMe) && <button className="settings-section__primary" type="button" onClick={openRelayMeLogin} disabled={relayMeLoginBusy}>{selectedProviderStatus?.configured ? '重新登录 RelayMe' : '登录 RelayMe'}</button>}
               {selectedProvider === 'relayme' && provider?.logoutRelayMe && selectedProviderStatus?.configured && effectiveActiveProvider === 'relayme' && <button className="settings-section__secondary" type="button" onClick={() => { void logoutRelayMe(); }} disabled={relayMeLoginBusy}>退出 RelayMe</button>}
               {selectedProvider !== 'relayme' && <button className="settings-section__secondary" type="button" onClick={openHiddenKeys}>配置隐藏密钥</button>}
             </div>

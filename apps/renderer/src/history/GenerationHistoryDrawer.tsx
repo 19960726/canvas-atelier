@@ -290,7 +290,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
   };
 
   return (
-    <aside className="history-drawer" aria-label="生成历史 / Generation History" data-figma-surface="history" data-testid="history-drawer">
+    <aside className="history-drawer" aria-label="生成历史 / Generation History" data-canvas-surface="history" data-figma-surface="history" data-testid="history-drawer">
       <header className="surface-drawer__header">
         <div className="surface-drawer__title" data-testid="history-drawer-heading">
           <span aria-hidden="true"><History size={17} /></span>

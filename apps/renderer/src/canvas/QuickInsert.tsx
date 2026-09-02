@@ -84,6 +84,8 @@ export function QuickInsert({ anchor, compatibleModuleTypes, onClose, onCreate, 
     <section
       className="quick-insert"
       data-testid="quick-insert"
+      data-canvas-density="compact"
+      data-canvas-surface="quick-insert"
       data-figma-density="compact"
       data-figma-surface="quick-insert"
       aria-label="快速插入模块"

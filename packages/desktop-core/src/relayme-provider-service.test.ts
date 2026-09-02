@@ -143,6 +143,23 @@ describe('RelayMe provider service', () => {
     expect(fetch).not.toHaveBeenCalledWith(expect.stringMatching(/\/workflows\/.*\/runs/u), expect.anything());
   });
 
+  it('blocks unsupported RelayMe reference images before paid submission with an actionable model message', async () => {
+    const { service, fetch } = await createService([modelsResponse()]);
+
+    await expect(service.submitImageJob({
+      jobId: 'reference-image-job', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: '保持产品外观', conversationId: 'reference-conversation', sessionId: 'reference-session',
+      referenceAssetIds: ['1234567890abcdef'],
+    })).rejects.toMatchObject({
+      code: 'CAPABILITY_UNSUPPORTED',
+      message: expect.stringMatching(/Relay Image.*只支持文本生图.*不会消耗生成额度/u),
+    });
+    expect(fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/images/generations'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('rejects a foreign Comfly route before calling the paid RelayMe image generation endpoint', async () => {
     const { service, fetch } = await createService([modelsResponse()]);
 
@@ -609,6 +626,31 @@ describe('RelayMe provider service', () => {
     await expect(offlineService.listProfiles()).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({ provider: 'relayme', modelId: 'gpt-image-2', capabilityStatus: 'complete' }),
     ]));
+  });
+
+  it('reports connected when the model probe is invalid but the authenticated task list is reachable', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-connection-fallback-'));
+    roots.push(appDataRoot);
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/models')) return jsonResponse({ unexpected: true });
+      if (url.includes('/tasks?')) return jsonResponse({ data: [], total: 0, page: 1, totalPages: 1 });
+      return jsonResponse({ message: 'not found' }, { ok: false, status: 404 });
+    });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      fetch,
+      now: () => Date.parse('2026-09-01T11:15:14.006Z'),
+    });
+
+    await expect(service.checkConnection()).resolves.toEqual({
+      checkedAt: '2026-09-01T11:15:14.006Z',
+      status: 'connected',
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/tasks?'),
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   it('uses the live RelayMe model catalog and routes Agent chat to chat completions', async () => {

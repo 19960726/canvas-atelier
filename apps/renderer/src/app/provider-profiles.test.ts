@@ -186,6 +186,18 @@ describe('listAllProviderProfiles', () => {
       expect.objectContaining({ modelRoute: 'relayme-workflow-image', capabilityStatus: 'complete' }),
     ]);
   });
+  it('keeps an incomplete chat-only route available for Agent conversations', async () => {
+    await expect(listRunnableProviderProfiles({
+      listProfiles: vi.fn(async () => [{
+        provider: 'relayme' as const,
+        modelRoute: 'relayme-gemini-chat',
+        displayName: 'RENA F',
+        capabilities: ['chat' as const],
+        capabilityStatus: 'incomplete' as const,
+      }]),
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+    })).resolves.toEqual([expect.objectContaining({ modelRoute: 'relayme-gemini-chat' })]);
+  });
   it('queries Comfly and RelayMe explicitly and keeps both provider catalogs', async () => {
     const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [
       { provider: 'relayme' as const, modelRoute: 'video/generate', displayName: 'Relay Video', modelId: 'relay-video', capabilities: ['video_generation' as const] },

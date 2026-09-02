@@ -35,6 +35,7 @@ import {
   createNodeWindowsPhotoshopSmartObjectAdapter,
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
+  parseCloseFlushAck,
   createProviderBridgeHandlers,
   createProviderActiveStore,
   isHistoryNetworkPath,
@@ -137,6 +138,7 @@ let closeAllStarted = false;
 let closeCoordinator: RendererCloseFlushCoordinator | null = null;
 let allowCoordinatedClose = false;
 let closeFinalizeTarget: 'window' | 'app' = 'window';
+let closeFlushErrorCode: string | null = null;
 let rendererLoaded = false;
 let updateClient: UpdateClient | null = null;
 let mcpRendererBridge: McpRendererBridge | null = null;
@@ -257,7 +259,10 @@ app.whenReady().then(async () => {
       return captured.resize({ width: 640, quality: 'good' }).toPNG();
     },
     channel: runtimeChannel,
-      clipboard: createElectronClipboardImageAdapter(clipboard, { createFromPath: (path) => nativeImage.createFromPath(path) }),
+      clipboard: createElectronClipboardImageAdapter(clipboard, {
+        createFromBuffer: (bytes) => nativeImage.createFromBuffer(Buffer.from(bytes)),
+        createFromPath: (path) => nativeImage.createFromPath(path),
+      }),
       clipboardVideo: createElectronClipboardVideoAdapter(clipboard),
     dialogs: createDialogAdapter(),
     approvedSnapshotOutbox,
@@ -304,8 +309,8 @@ app.whenReady().then(async () => {
     return 'save';
   });
   const providerFetch = createElectronNetComflyFetch(net);
-  const relayMeNetworkSession = session.fromPartition('relayme-direct-network');
-  await relayMeNetworkSession.setProxy({ mode: 'direct' });
+  const relayMeNetworkSession = session.fromPartition('relayme-system-network');
+  await relayMeNetworkSession.setProxy({ mode: 'system' });
   const relayMeWebLoginSession = session.fromPartition('persist:relayme-web-login');
   const relayMeProviderFetch = createElectronNetComflyFetch(net, {
     requestSession: relayMeNetworkSession,
@@ -360,6 +365,8 @@ app.whenReady().then(async () => {
   });
   ipcMain.on(BRIDGE_CHANNELS.closeFlushAck, (event, payload) => {
     if (mainWindow === null || event.sender !== mainWindow.webContents) return;
+    const ack = parseCloseFlushAck(payload);
+    if (ack?.phase === 'completed') closeFlushErrorCode = ack.errorCode ?? null;
     void closeCoordinator?.handleCloseFlushAck(payload);
   });
   const knowledgeBaseIds = await startConfiguredKnowledgeRefresh(knowledgeStore, knowledgeRefreshService);
@@ -421,7 +428,7 @@ async function startMcpRuntime(): Promise<void> {
     }, isMcpRendererAvailable()),
   });
   service = createMcpRuntimeService({
-    runtimeFilePath: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-v1.json'),
+    runtimeFilePath: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-modern-v1.json'),
     serverVersion: app.getVersion(),
     forwardRequest: rendererBridge.forwardRequest,
   });
@@ -432,7 +439,10 @@ async function startMcpRuntime(): Promise<void> {
     const mcpLaunchSpec = {
       command: process.execPath,
       args: [mcpBridgeEntryPath],
-      env: { ELECTRON_RUN_AS_NODE: '1' },
+      env: {
+        ELECTRON_RUN_AS_NODE: '1',
+        CANVASFORGE_MCP_RUNTIME_FILE: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-modern-v1.json'),
+      },
     } as const;
     const manager = createMcpClientConfigManager({
       clientPaths: {
@@ -521,6 +531,7 @@ function requestCoordinatedClose(event: { preventDefault(): void }, target: 'win
   if (allowCoordinatedClose || desktopHandlers === null || closeCoordinator === null) {
     return;
   }
+  closeFlushErrorCode = null;
   if (target === 'app') {
     closeFinalizeTarget = 'app';
   }
@@ -590,7 +601,7 @@ async function showCloseRecoveryChoice(
     buttons: ['取消', '放弃未保存更改并退出'],
     cancelId: 0,
     defaultId: 0,
-    detail: `${reasonLabel}。已成功保存的项目不会被删除；如果继续退出，只会放弃本次未保存的更改。`,
+    detail: `${reasonLabel}${closeFlushErrorCode ? `（错误码：${closeFlushErrorCode}）` : ''}。已成功保存的项目不会被删除；如果继续退出，只会放弃本次未保存的更改。`,
     message: '当前画布无法完成保存',
     noLink: true,
     title: '退出 Canvas Atelier',

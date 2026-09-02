@@ -18,6 +18,7 @@ export type CloseFlushAck = {
   readonly outcome: 'saved' | 'discarded' | 'cancelled' | 'failed';
   readonly phase: 'completed';
   readonly requestId: string;
+  readonly errorCode?: string;
 };
 
 export type CloseFlushCompletionReason = 'saved' | 'discarded' | 'cancel' | 'failed' | 'timeout' | 'unavailable';
@@ -35,6 +36,7 @@ const closeFlushAckSchema = z.discriminatedUnion('phase', [
   z.object({
     phase: z.literal('decision_requested'),
     requestId: requestIdSchema,
+    errorCode: z.string().min(1).max(120).optional(),
   }).strict(),
   z.object({
     phase: z.literal('save_started'),

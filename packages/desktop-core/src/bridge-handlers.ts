@@ -340,6 +340,7 @@ export interface DesktopBridgeHandlers {
   importProjectImageToPhotoshop(event: unknown, request: unknown): Promise<PhotoshopImportResult>;
   importProjectVideo(event: unknown, request: unknown): Promise<ImportProjectVideoBridgeResult | null>;
   pasteProjectClipboardImage(event: unknown, request: unknown): Promise<PasteProjectClipboardImageBridgeResult | null>;
+  writeClipboardImage(event: unknown, request: unknown): Promise<boolean>;
   pasteProjectClipboardVideo(event: unknown, request: unknown): Promise<PasteProjectClipboardVideoBridgeResult | null>;
   listProjectImages(event: unknown, request: unknown): Promise<ProjectImageAssetSummary[]>;
   listProjectVideos(event: unknown, request: unknown): Promise<ProjectVideoAssetSummary[]>;
@@ -454,7 +455,7 @@ export function createDesktopBridgeHandlers(
   });
   const assetStore = dependencies.assetStore ?? new AssetStore();
   const createId = dependencies.createId ?? defaultId;
-  const clipboard = dependencies.clipboard ?? { readImage: async () => null };
+  const clipboard = dependencies.clipboard ?? { readImage: async () => null, writeImage: async () => false };
   const clipboardVideo = dependencies.clipboardVideo ?? { readVideoPath: async () => null };
   const openVideoSource = dependencies.openVideoSource ?? openSafeLocalMp4Source;
   const dialogs = withDialogDefaults(dependencies.dialogs);
@@ -1120,6 +1121,11 @@ export function createDesktopBridgeHandlers(
     } finally {
       session.imageImportInFlight = false;
     }
+  }
+
+  async function writeClipboardImage(_event: unknown, request: unknown): Promise<boolean> {
+    if (!(request instanceof Uint8Array) && !Buffer.isBuffer(request)) return false;
+    return clipboard.writeImage?.(new Uint8Array(request)) ?? false;
   }
 
   async function importDroppedProjectMedia(
@@ -2055,6 +2061,7 @@ export function createDesktopBridgeHandlers(
     importProjectImageToPhotoshop,
     importProjectVideo,
     pasteProjectClipboardImage,
+    writeClipboardImage,
     pasteProjectClipboardVideo,
     addGenerationHistoryProjectReferences,
     compareGenerationHistory,
@@ -2660,6 +2667,7 @@ export function registerDesktopBridgeHandlers(
   ipcMain.handle(BRIDGE_CHANNELS.importProjectImageToPhotoshop, handlers.importProjectImageToPhotoshop);
   ipcMain.handle(BRIDGE_CHANNELS.importProjectVideo, handlers.importProjectVideo);
   ipcMain.handle(BRIDGE_CHANNELS.pasteProjectClipboardImage, handlers.pasteProjectClipboardImage);
+  ipcMain.handle(BRIDGE_CHANNELS.writeClipboardImage, handlers.writeClipboardImage);
   ipcMain.handle(BRIDGE_CHANNELS.pasteProjectClipboardVideo, handlers.pasteProjectClipboardVideo);
   ipcMain.handle(BRIDGE_CHANNELS.listProjectImages, handlers.listProjectImages);
   ipcMain.handle(BRIDGE_CHANNELS.listProjectVideos, handlers.listProjectVideos);

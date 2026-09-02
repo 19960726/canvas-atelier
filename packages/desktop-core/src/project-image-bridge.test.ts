@@ -35,7 +35,7 @@ describe('project image bridge', () => {
     const invoke = vi.fn(async () => null) as DesktopBridgeInvoke;
     const api = createPreloadApi(invoke);
 
-    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'pasteClipboardImage']);
+    expect(Object.keys(api.projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'pasteClipboardImage', 'writeClipboardImage']);
     expect(api.projectImages).not.toHaveProperty('readFile');
     expect(api.projectImages).not.toHaveProperty('resolvePath');
     await api.projectImages.importImage({

@@ -5,6 +5,25 @@ import { createElectronClipboardImageAdapter } from './electron-clipboard-image'
 import { createSolidPng } from './test/png-fixture';
 
 describe('Electron clipboard image adapter', () => {
+  it('writes validated PNG bytes through the native Electron clipboard', async () => {
+    const png = createSolidPng();
+    const nativeImage = {
+      getSize: () => ({ width: 1, height: 1 }),
+      isEmpty: () => false,
+      toPNG: () => png,
+    };
+    const writeImage = vi.fn();
+    const createFromBuffer = vi.fn(() => nativeImage);
+    const adapter = createElectronClipboardImageAdapter({
+      readImage: () => nativeImage,
+      writeImage,
+    }, { createFromBuffer });
+
+    await expect(adapter.writeImage!(png)).resolves.toBe(true);
+    expect(createFromBuffer).toHaveBeenCalledWith(png);
+    expect(writeImage).toHaveBeenCalledWith(nativeImage);
+  });
+
   it('returns only trusted PNG bytes, dimensions, and a safe label', async () => {
     const png = createSolidPng();
     const adapter = createElectronClipboardImageAdapter({

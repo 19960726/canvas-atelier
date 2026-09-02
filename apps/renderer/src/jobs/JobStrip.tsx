@@ -83,6 +83,7 @@ export function JobStrip({
           onClick={onReloadSave}
         >
           <RotateCcw size={13} />
+          <span>重新载入项目</span>
         </button>
       )}
       {(canRetrySave === true || (canRetrySave === undefined && !canReloadSave && saveState === 'error')) && (

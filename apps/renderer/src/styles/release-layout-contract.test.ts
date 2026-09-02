@@ -17,4 +17,15 @@ describe('release layout contract', () => {
     expect(hybridCss).toMatch(/--gate-panel-surface:\s*#141b22/iu);
     expect(hybridCss).toMatch(/\.workspace--ui-gate \.canvas-manager[\s\S]*?background:\s*var\(--gate-panel-surface\)/iu);
   });
+
+  it('keeps the transparent video composer from covering native playback controls', () => {
+    expect(css).toMatch(/\.module-node\[data-module-type='video_generation'\][\s\S]*?pointer-events:\s*auto\s*!important/iu);
+    expect(css).toMatch(/\.react-flow__node-module\.canvas-flow-node--module-video_generation[\s\S]*?pointer-events:\s*auto\s*!important/iu);
+    expect(css).toMatch(/\.module-node\[data-module-type='video_generation'\]\s+\.module-node__workbench\s*\{[\s\S]*?pointer-events:\s*none\s*!important/iu);
+    expect(css).toMatch(/\.module-node\[data-module-type='video_generation'\]\s+\.module-node__summary--generation\s*\{[\s\S]*?pointer-events:\s*none\s*!important/iu);
+    expect(css).toMatch(/\.module-node\[data-module-type='video_generation'\]\s+\.module-node__configuration[\s\S]*?pointer-events:\s*none\s*!important/iu);
+    expect(css).toMatch(/\.module-node__video-figma-composer\s*\{[\s\S]*?pointer-events:\s*none\s*!important/iu);
+    expect(css).toMatch(/\.module-node__video-figma-composer\s*>\s*:is\([\s\S]*?\.module-node__video-control-bar[\s\S]*?pointer-events:\s*auto\s*!important/iu);
+    expect(css).toMatch(/\.module-node__result\s+video\s*\{[\s\S]*?pointer-events:\s*auto\s*!important/iu);
+  });
 });

@@ -148,14 +148,26 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       const status = await options.credentialStore.getStatus();
       if (!status.configured) return { checkedAt, status: 'unconfigured' };
       if (status.locked) return { checkedAt, status: 'service_limited' };
+      const client = await createClient(await captureConfiguration());
       try {
-        await createClient(await captureConfiguration()).checkConnection();
+        await client.checkConnection();
         return { checkedAt, status: 'connected' };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (/\b(?:401|403)\b/u.test(message)) return { checkedAt, status: 'authentication_failed' };
         if (/\b(?:429|5\d\d)\b/u.test(message)) return { checkedAt, status: 'service_limited' };
-        return { checkedAt, status: 'network_unavailable' };
+        try {
+          // The model catalog has changed response envelopes in production.
+          // A successful authenticated task-list read still proves that the
+          // saved session and RelayMe network path are usable.
+          await client.listTasks(1, 1);
+          return { checkedAt, status: 'connected' };
+        } catch (fallbackError) {
+          const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+          if (/\b(?:401|403)\b/u.test(fallbackMessage)) return { checkedAt, status: 'authentication_failed' };
+          if (/\b(?:429|5\d\d)\b/u.test(fallbackMessage)) return { checkedAt, status: 'service_limited' };
+          return { checkedAt, status: 'network_unavailable' };
+        }
       }
     },
     configure(request) {
@@ -273,10 +285,13 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
     async submitImageJob(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;
       assertRelayMeProvider(validated.provider);
-      if (validated.referenceAssetIds.length > 0) {
-        throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'RelayMe 当前生图接口尚未公开可验证的素材引用字段');
-      }
       const profile = await selectProfile(validated.modelRoute, 'image_generation');
+      if (validated.referenceAssetIds.length > 0 && !profile.capabilities.includes('image_edit')) {
+        throw createProviderBridgeError(
+          'CAPABILITY_UNSUPPORTED',
+          `RelayMe 模型“${profile.displayName}”当前只支持文本生图，不支持参考图；任务未提交、不会消耗生成额度`,
+        );
+      }
       const historyId = options.historySink === undefined
         ? undefined
         : (await options.historySink.reserveSubmission({
@@ -486,7 +501,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
 
   async function selectProfile(modelRoute: string, capability: ProviderBridgeProfile['capabilities'][number]) {
     const profile = (await listProfiles()).find((item) => item.modelRoute === modelRoute
-      && item.capabilityStatus === 'complete'
+      && (item.capabilityStatus === 'complete' || (capability === 'chat' && item.capabilityStatus === 'incomplete'))
       && item.capabilities.includes(capability));
     if (profile === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '所选 RelayMe 模型不可用或能力不匹配');
     return profile;
@@ -1102,7 +1117,6 @@ function assertRelayMeProvider(provider: string): asserts provider is 'relayme' 
 function isCapabilityUnsupported(value: unknown): value is { readonly code: 'CAPABILITY_UNSUPPORTED' } {
   return isRecord(value) && value.code === 'CAPABILITY_UNSUPPORTED';
 }
-
 function isProviderBridgeException(value: unknown): value is ProviderBridgeException {
   return value instanceof Error && isRecord(value) && typeof value.code === 'string' && typeof value.retryable === 'boolean';
 }

@@ -14,11 +14,21 @@ export async function listRunnableProviderProfiles(bridge: ProviderProfileBridge
   const active = await bridge.getActiveProvider?.();
   if (active?.activeProvider === 'comfly' || active?.activeProvider === 'relayme') {
     return (await bridge.listProfiles({ provider: active.activeProvider }))
-      .filter((profile) => profile.capabilityStatus !== 'incomplete')
+      .filter(isRunnableProfile)
       .filter(shouldExposeProviderProfile)
       .map(normalizeProviderProfilePresentation);
   }
-  return (await listAllProviderProfiles(bridge)).filter((profile) => profile.capabilityStatus !== 'incomplete');
+  return (await listAllProviderProfiles(bridge)).filter(isRunnableProfile);
+}
+
+/** Chat-only routes can be usable before the provider reports complete
+ * generation capability metadata. Keep those routes available for Agent
+ * conversations, while continuing to hide incomplete generation routes. */
+function isRunnableProfile(profile: ProviderBridgeProfile): boolean {
+  if (profile.capabilityStatus !== 'incomplete') return true;
+  return profile.capabilities.includes('chat')
+    && !profile.capabilities.includes('image_generation')
+    && !profile.capabilities.includes('video_generation');
 }
 
 export async function listAllProviderProfiles(bridge: ProviderProfileBridge): Promise<ProviderBridgeProfile[]> {

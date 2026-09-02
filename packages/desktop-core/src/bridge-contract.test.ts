@@ -108,7 +108,7 @@ describe('desktop bridge contract', () => {
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('readFile');
     expect(createPreloadApi(mockInvoke)).not.toHaveProperty('watchPath');
     expect(createPreloadApi(mockInvoke).provider).not.toHaveProperty('fetch');
-    expect(Object.keys(createPreloadApi(mockInvoke).projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'pasteClipboardImage']);
+    expect(Object.keys(createPreloadApi(mockInvoke).projectImages).sort()).toEqual(['importDroppedMedia', 'importImage', 'importToPhotoshop', 'list', 'pasteClipboardImage', 'writeClipboardImage']);
     expect(createPreloadApi(mockInvoke).projectImages).not.toHaveProperty('readFile');
     expect(Object.keys(createPreloadApi(mockInvoke).history).sort()).toEqual([
       'addProjectReferences',

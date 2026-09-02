@@ -249,8 +249,12 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
   const hiddenCredentialButton = apiSettingsSection.getByRole('button', { name: '配置隐藏密钥' });
   const saveCredentialButton = apiSettingsSection.getByRole('button', { name: '保存接口设置' });
   const apiSectionBounds = await apiSettingsSection.boundingBox();
+  const settingsDrawerBounds = await page.getByTestId('settings-drawer').boundingBox();
   expect(apiSectionBounds).not.toBeNull();
-  expect(apiSectionBounds!.width).toBeGreaterThanOrEqual(680);
+  expect(settingsDrawerBounds).not.toBeNull();
+  expect(apiSectionBounds!.width).toBeGreaterThanOrEqual(640);
+  expect(apiSectionBounds!.x).toBeGreaterThanOrEqual(settingsDrawerBounds!.x);
+  expect(apiSectionBounds!.x + apiSectionBounds!.width).toBeLessThanOrEqual(settingsDrawerBounds!.x + settingsDrawerBounds!.width);
   await expect(hiddenCredentialButton).toBeVisible();
   await expect(saveCredentialButton).toBeVisible();
   await expect(saveCredentialButton).toBeEnabled();

@@ -33,7 +33,7 @@ interface LoginBrowserWindowConstructor {
 
 interface LoginSession {
   clearStorageData(options: { origin: string; storages: string[] }): Promise<void>;
-  setProxy(config: { mode: 'direct' }): Promise<void>;
+  setProxy(config: { mode: 'system' }): Promise<void>;
 }
 
 export interface AcquireRelayMeWebTokenOptions {
@@ -47,7 +47,7 @@ export interface AcquireRelayMeWebTokenOptions {
 export async function acquireRelayMeWebToken(
   options: AcquireRelayMeWebTokenOptions,
 ): Promise<string> {
-  await options.session.setProxy({ mode: 'direct' });
+  await options.session.setProxy({ mode: 'system' });
   await options.session.clearStorageData({
     origin: RELAYME_ORIGIN,
     storages: ['localstorage'],

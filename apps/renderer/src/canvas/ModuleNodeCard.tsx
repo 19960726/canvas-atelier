@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
-import { ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, Send, Video, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Expand, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, Send, Video, X } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -931,7 +931,12 @@ function VideoGenerationSummary({
               options={[...videoResolutionOptions]}
               onChange={(value) => setResolution(normalizeVideoResolutionSelection(value))}
             />
-            <select className="nodrag nopan" aria-label="Video preview duration" value={durationSeconds} onPointerDown={stopCanvasPointer} onChange={(event) => setDurationSeconds(Number(event.target.value))}>
+            <div className="module-node__video-duration-slider nodrag nopan" aria-label="Video preview duration slider" onPointerDown={stopCanvasPointer}>
+              <label htmlFor={`video-duration-${id}`}>视频时长</label>
+              <input id={`video-duration-${id}`} type="range" min={1} max={15} step={1} value={Math.min(15, Math.max(1, durationSeconds))} onChange={(event) => setDurationSeconds(Number(event.target.value))} />
+              <output htmlFor={`video-duration-${id}`}>{Math.min(15, Math.max(1, durationSeconds))}s</output>
+            </div>
+            <select className="nodrag nopan module-node__video-duration-fallback" aria-label="Video preview duration" value={durationSeconds} onPointerDown={stopCanvasPointer} onChange={(event) => setDurationSeconds(Number(event.target.value))}>
               {videoDurationOptions.map((value) => <option key={value} value={value}>{value === 0 ? '模型默认' : `${value}秒`}</option>)}
             </select>
             <select className="nodrag nopan" aria-label="Video preview audio" value={audioEnabled ? 'on' : 'off'} onPointerDown={stopCanvasPointer} onChange={(event) => setAudioEnabled(event.target.value === 'on')}>
@@ -979,13 +984,14 @@ function VideoGenerationSummary({
         result={hasCompletedResult ? <div className="module-node__result-workspace module-node__video-result-workspace" aria-label="Video preview result workspace">
           <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${completedVideoResults.length}`} aria-label="Completed video results">
             {completedVideoResults.map((item, index) => (
-              <div key={item.assetId} className="module-node__generation-preview-item module-node__video-result-stage" aria-label={`Completed video result ${index + 1}`} data-aspect-ratio="16:9">
+              <div key={item.assetId} className="module-node__generation-preview-item module-node__video-result-stage" aria-label={`Completed video result ${index + 1}`} data-aspect-ratio="16:9" onClick={(event) => { const media = event.currentTarget.querySelector('video'); if (media instanceof HTMLVideoElement) { if (media.paused) void media.play(); else media.pause(); } }}>
                   {resolveVideoResultUrl(item)
-                    ? <video src={resolveVideoResultUrl(item)} poster={resolveVideoResultPoster(item)} aria-label={`Completed video result ${index + 1} video`} controls playsInline preload="metadata" />
+                    ? <video src={resolveVideoResultUrl(item)} poster={resolveVideoResultPoster(item)} aria-label={`Completed video result ${index + 1} video`} controls playsInline preload="metadata" onClick={(event) => { event.stopPropagation(); const media = event.currentTarget; if (media.paused) void media.play(); else media.pause(); }} />
                   : resolveVideoResultPoster(item)
                     ? <img src={resolveVideoResultPoster(item)} alt={`Completed video result ${index + 1}`} draggable={false} loading="lazy" decoding="async" />
                     : <Video aria-hidden="true" size={24} strokeWidth={1.5} />}
-                <span className="module-node__video-preview-play" role="img" aria-label={`Play completed video ${index + 1}`}><Play size={14} fill="currentColor" /></span>
+                <button type="button" role="img" className="module-node__video-preview-play" aria-label={`Play completed video ${index + 1}`} onClick={(event) => { event.stopPropagation(); const media = event.currentTarget.parentElement?.querySelector('video'); if (media instanceof HTMLVideoElement) { if (media.paused) void media.play(); else media.pause(); } }}><Play size={14} fill="currentColor" /></button>
+                <button type="button" className="module-node__video-preview-expand" aria-label={`Expand completed video ${index + 1}`} title="放大播放" onClick={(event) => { event.stopPropagation(); const media = event.currentTarget.parentElement?.querySelector('video'); if (media instanceof HTMLVideoElement) void media.requestFullscreen?.(); }}><Expand size={14} /></button>
               </div>
             ))}
           </div>
@@ -1054,11 +1060,15 @@ function ImageGenerationSummary({
   const [modelRoute, setModelRoute] = useExternallyHydratedDraftState(
     readNonEmptyString(config.modelRoute) ?? preferredImageGenerationRoute(compatibleRoutes)?.modelRoute ?? '',
   );
+  const modelRouteRef = useRef(modelRoute);
+  modelRouteRef.current = modelRoute;
   const [aspectRatio, setAspectRatio] = useExternallyHydratedDraftState(readSupportedImageString(config.aspectRatio, IMAGE_ASPECT_RATIO_OPTIONS, '1:1'));
   const [resolution, setResolution] = useExternallyHydratedDraftState(normalizeImageResolutionSelection(config.resolution));
   const [outputCount, setOutputCount] = useExternallyHydratedDraftState(readSupportedImageCount(config.outputCount));
   const draftGenerationNodeConfig = useAppStore((state) => state.draftGenerationNodeConfig);
   const selectedImageRoute = compatibleRoutes.find((route) => route.modelRoute === modelRoute);
+  const generateWithoutUnsupportedRelayMeReferences = selectedImageRoute?.provider === 'relayme'
+    && mergeAssetIds(connectedReferenceAssetIds, mentionedReferenceAssetIds).length > 0;
   const imageConstraints = selectedImageRoute?.constraints?.image;
   const imageAspectRatioOptions: (typeof IMAGE_ASPECT_RATIO_OPTIONS[number])[] = imageConstraints?.aspectRatios?.length
     ? ['自由比例', ...imageConstraints.aspectRatios.filter((value): value is Exclude<typeof IMAGE_ASPECT_RATIO_OPTIONS[number], '自由比例'> => IMAGE_ASPECT_RATIO_OPTIONS.includes(value as never))]
@@ -1152,14 +1162,23 @@ function ImageGenerationSummary({
   ));
   const sendPreviewToAgent = (asset: ProjectImageAssetSummary) => {
     if (agentPanelCollapsed) toggleAgentPanel();
-    globalThis.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: asset.assetId } }));
+    // Let the newly opened Agent panel mount its event listener before sending
+    // the asset reference; dispatching synchronously loses the event.
+    globalThis.setTimeout(() => globalThis.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: asset.assetId } })), 0);
   };
-  const runImageGeneration = () => {
+  const runImageGeneration = (includeReferences = true) => {
     setRunError(null);
     setLocalGenerationStartedAt(new Date().toISOString());
-    const referenceAssetIds = mergeAssetIds(connectedReferenceAssetIds, mentionedReferenceAssetIds);
+    const referenceAssetIds = includeReferences
+      ? mergeAssetIds(connectedReferenceAssetIds, mentionedReferenceAssetIds)
+      : [];
+    const selectedModelRoute = modelRouteRef.current;
+    const runnableModelRoute = compatibleRoutes.some((route) => route.modelRoute === selectedModelRoute)
+      ? selectedModelRoute
+      : preferredImageGenerationRoute(compatibleRoutes)?.modelRoute ?? '';
+    if (runnableModelRoute !== modelRoute) setModelRoute(runnableModelRoute);
     const requestedAspectRatio = aspectRatio === '自由比例' ? resolveAutomaticImageAspectRatio(connectedMedia, projectImages) : aspectRatio;
-    void onRun(id, { prompt: prompt.trim(), ...(modelRoute ? { modelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), resolution: effectiveImageResolution, outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
+    void onRun(id, { prompt: prompt.trim(), ...(runnableModelRoute ? { modelRoute: runnableModelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), resolution: effectiveImageResolution, outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
       if (!started) {
         setLocalGenerationStartedAt(null);
         setRunError('生成未启动，请检查当前项目保存状态和模型选择后重试。');
@@ -1169,6 +1188,10 @@ function ImageGenerationSummary({
       setRunError(formatGenerationStartError(error, 'image'));
     });
   };
+  const shouldExcludeRelayMeReferences = () => compatibleRoutes.some((route) => route.modelRoute === modelRouteRef.current && route.provider === 'relayme')
+    && mergeAssetIds(connectedReferenceAssetIds, mentionedReferenceAssetIds).length > 0;
+  const retryWithoutReferences = (runError ?? failedJobError) !== null
+    && generateWithoutUnsupportedRelayMeReferences;
   return (
     <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 4) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
       <TaskTimingBadge
@@ -1305,7 +1328,10 @@ function ImageGenerationSummary({
           </section>
           {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
           <div className="module-node__generation-control-bar nodrag nopan" aria-label="Image generation control bar" onPointerDown={stopCanvasPointer} onPointerDownCapture={clearBrowserSelection}>
-            <select aria-label="Image generation model route" value={modelRoute} disabled={compatibleRoutes.length === 0} onChange={(event) => setModelRoute(event.target.value)}>
+            <select aria-label="Image generation model route" value={modelRoute} disabled={compatibleRoutes.length === 0} onChange={(event) => {
+              modelRouteRef.current = event.target.value;
+              setModelRoute(event.target.value);
+            }}>
               {compatibleRoutes.length === 0 && <option value="">未配置模型</option>}
               {compatibleRoutes.map((route) => <option key={route.modelRoute} value={route.modelRoute}>{modelRouteOptionLabel(route, compatibleRoutes)}</option>)}
             </select>
@@ -1334,16 +1360,22 @@ function ImageGenerationSummary({
                   void onCancel(activeJobId);
                   return;
                 }
-                runImageGeneration();
+                runImageGeneration(!shouldExcludeRelayMeReferences());
               }}
             >
-              {activeJobId === undefined ? '生成' : '停止生成'}
+              {activeJobId === undefined
+                ? generateWithoutUnsupportedRelayMeReferences ? '仅按提示词生成' : '生成'
+                : '停止生成'}
             </button>
           </div>
           {(runError ?? failedJobError) !== null && (
             <div className="module-node__generation-error" role="alert">
               <span>{runError ?? failedJobError}</span>
-              {activeJobId === undefined && prompt.trim().length > 0 && modelRoute.length > 0 && <button type="button" onClick={runImageGeneration}>重新尝试生成</button>}
+              {activeJobId === undefined && prompt.trim().length > 0 && modelRoute.length > 0 && (
+                <button type="button" onClick={() => runImageGeneration(!retryWithoutReferences)}>
+                  {retryWithoutReferences ? '仅按提示词重新生成（不使用素材）' : '重新尝试生成'}
+                </button>
+              )}
             </div>
           )}
           <details className="module-node__advanced nodrag nopan">
@@ -1441,6 +1473,11 @@ function GeneratedImageActionMenu({
       try {
         const response = await fetch(asset.displayUrl);
         const blob = await response.blob();
+        const nativeWrite = window.novusDesktop?.projectImages.writeClipboardImage;
+        if (nativeWrite) {
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          if (await nativeWrite(bytes)) return;
+        }
         if (typeof ClipboardItem !== 'undefined' && globalThis.navigator?.clipboard?.write && blob.type.length > 0) {
           await globalThis.navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
           return;
@@ -2284,10 +2321,9 @@ function ConnectedMediaSlots({
   />;
 }
 function isReverseAgentRoute(route: ReverseAgentRouteSummary): boolean {
-  return route.capabilities.includes('reverse_prompt') && (
-    route.capabilities.includes('gemini_native')
-    || (route.capabilities.includes('chat') && route.capabilities.includes('vision'))
-  );
+  return (route.capabilities.includes('reverse_prompt') && route.capabilities.includes('gemini_native'))
+    || route.capabilities.includes('chat')
+    || route.capabilities.includes('vision');
 }
 
 function dedupeVisibleModelRoutes<T extends { readonly displayName: string }>(routes: readonly T[]): T[] {
@@ -2611,11 +2647,11 @@ function VideoResultPreview({ result }: { result: { posterUrl: string | null; vi
         </header>
         <div className="module-node__video-output-stage">
           {result.videoUrl
-             ? <video src={result.videoUrl} poster={result.posterUrl ?? undefined} aria-label="Generated video playback video" controls playsInline preload="metadata" />
+             ? <><video src={result.videoUrl} poster={result.posterUrl ?? undefined} aria-label="Generated video playback video" controls playsInline preload="metadata" /><button type="button" className="module-node__video-output-expand" aria-label="Expand generated video" title="放大播放" onClick={() => { const media = document.querySelector<HTMLVideoElement>('[aria-label=\"Generated video playback video\"]'); if (media) void media.requestFullscreen?.(); }}><Expand size={14} /></button></>
             : result.posterUrl !== null
              ? <img src={result.posterUrl} alt="Video result poster" draggable={false} loading="lazy" decoding="async" />
             : <Video aria-hidden="true" size={28} strokeWidth={1.5} />}
-          <span className="module-node__video-output-play" role="img" aria-label="Play generated video"><Play size={16} fill="currentColor" /></span>
+          {!result.videoUrl && <span className="module-node__video-output-play" role="img" aria-label="Play generated video"><Play size={16} fill="currentColor" /></span>}
         </div>
         <div className="module-node__video-output-status"><span>00:00 / 00:05 · 1080p</span><i aria-hidden="true" /></div>
       </section>
@@ -3116,7 +3152,16 @@ function VideoInputControl({
     <div className="module-node__video-control nodrag nopan">
       {asset ? (
         <div className="module-node__media-frame is-video" style={{ aspectRatio: formatMediaDisplayAspectRatio(asset.width, asset.height) }}>
-          <video aria-label={asset.label} controls preload="metadata" src={asset.displayUrl} />
+          <video
+            aria-label={asset.label}
+            controls
+            preload="metadata"
+            src={asset.displayUrl}
+            onPointerDownCapture={(event) => {
+              const media = event.currentTarget;
+              if (media.paused) void media.play();
+            }}
+          />
         </div>
       ) : (
         <button

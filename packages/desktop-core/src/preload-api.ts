@@ -143,6 +143,7 @@ export const BRIDGE_CHANNELS = {
   importProjectImageToPhotoshop: 'novus-desktop:import-project-image-to-photoshop',
   importProjectVideo: 'novus-desktop:import-project-video',
   pasteProjectClipboardImage: 'novus-desktop:paste-project-clipboard-image',
+  writeClipboardImage: 'novus-desktop:write-clipboard-image',
   pasteProjectClipboardVideo: 'novus-desktop:paste-project-clipboard-video',
   knowledgeStateChanged: 'novus-desktop:knowledge-state-changed',
   knowledgeSyncStatusChanged: 'novus-desktop:knowledge-sync-status-changed',
@@ -309,6 +310,7 @@ export interface DesktopProjectImageBridgeApi {
   importDroppedMedia(request: ImportDroppedProjectMediaBridgeRequest, file: unknown): Promise<ImportDroppedProjectMediaBridgeResult | null>;
   list(request: ListProjectImagesBridgeRequest): Promise<ProjectImageAssetSummary[]>;
   pasteClipboardImage(request: PasteProjectClipboardImageBridgeRequest): Promise<PasteProjectClipboardImageBridgeResult | null>;
+  writeClipboardImage(bytes: Uint8Array): Promise<boolean>;
 }
 
 export interface DesktopLifecycleBridgeApi {
@@ -496,6 +498,9 @@ export function createPreloadApi(
       },
       pasteClipboardImage(request) {
         return invoke<PasteProjectClipboardImageBridgeResult | null>(BRIDGE_CHANNELS.pasteProjectClipboardImage, request);
+      },
+      writeClipboardImage(bytes) {
+        return invoke<boolean>(BRIDGE_CHANNELS.writeClipboardImage, bytes);
       },
     },
     projectVideos: {

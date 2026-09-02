@@ -25,7 +25,7 @@ describe('Photoshop placement script contract', () => {
     expect(scriptSource).toContain("executeAction(charIDToTypeID('Plc ')");
     expect(scriptSource).toContain('Math.min(1, canvasWidth / layerWidth, canvasHeight / layerHeight)');
     expect(scriptSource).toContain('AnchorPosition.MIDDLECENTER');
-    expect(scriptSource).not.toMatch(/saveAs|documents\.add|clipboard|placedLayerRelinkToFile/iu);
+    expect(scriptSource).not.toMatch(/saveAs|clipboard|placedLayerRelinkToFile/iu);
     expect(scriptSource).not.toMatch(/(?:app\.activeDocument|documentRef)\.(?:save|close)\s*\(/u);
   });
 

@@ -1,4 +1,5 @@
 import { StrictMode } from 'react';
+import { createCanvasModuleNode } from '@agent-canvas/domain';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -346,7 +347,7 @@ describe('App persistence hydration', () => {
         mode: 'desktop' as const,
         project: { ...createStarterProject(), nodes: [], edges: [] },
         revision: 0,
-        saveStatus: 'saved' as const,
+        saveStatus: 'pending' as const,
       })),
     }));
 
@@ -367,7 +368,12 @@ describe('App persistence hydration', () => {
     const ackCloseFlush = vi.fn();
     const chooseCloseDecision = vi.fn(async () => 'cancel' as const);
     const close = vi.fn(async () => {});
-    const untitledProject = { ...createStarterProject(), name: '未命名画布', nodes: [], edges: [] };
+    const untitledProject = {
+      ...createStarterProject(),
+      name: '未命名画布',
+      nodes: [createCanvasModuleNode('dirty-close-node', 'text_prompt', { x: 120, y: 160 })],
+      edges: [],
+    };
     const stablePoint = vi.fn(async () => ({
       availableSnapshotIds: ['close-stable-untitled'],
       lifecycle: 'durable' as const,
@@ -429,7 +435,7 @@ describe('App persistence hydration', () => {
         mode: 'desktop' as const,
         project: initialProject,
         revision: 4,
-        saveStatus: 'saved' as const,
+        saveStatus: 'pending' as const,
       })),
     }));
 

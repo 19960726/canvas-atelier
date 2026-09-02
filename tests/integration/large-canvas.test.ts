@@ -36,12 +36,14 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     applyNodeChanges: actual.applyNodeChanges,
     Background: () => null,
     BackgroundVariant: { Dots: 'dots' },
+    ConnectionLineType: { Straight: 'straight' },
     ConnectionMode: { Loose: 'loose' },
     Controls: () => null,
     Handle: () => null,
     MiniMap: () => null,
     Position: { Left: 'left', Right: 'right' },
-    SelectionMode: { Partial: 'partial' },
+  SelectionMode: { Partial: 'partial' },
+    useUpdateNodeInternals: () => () => undefined,
     ReactFlow: (props: {
       children?: ReactNode;
       edges: Array<{ id: string; selected?: boolean }>;

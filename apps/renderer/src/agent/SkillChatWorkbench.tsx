@@ -119,6 +119,7 @@ export interface SkillCanvasActionRequest {
   readonly kind: SkillCanvasActionKind;
   readonly nodeId: string;
   readonly prompt: string;
+  readonly modelRoute?: string;
 }
 
 export interface SkillChatWorkbenchProps {
@@ -191,6 +192,7 @@ export function SkillChatWorkbench({
   const [reasoningEffort, setReasoningEffort] = useState<'low' | 'medium' | 'high'>(initialConversation.reasoningEffort);
   const [error, setError] = useState<string | null>(null);
   const [pendingCanvasAction, setPendingCanvasAction] = useState<SkillCanvasActionRequest | null>(null);
+  const [pendingCanvasModelRoute, setPendingCanvasModelRoute] = useState<string | undefined>(undefined);
   const [canvasActionRunning, setCanvasActionRunning] = useState(false);
   const [expandedReverseIds, setExpandedReverseIds] = useState<string[]>([]);
   const [dismissedWorkflowOfferIds, setDismissedWorkflowOfferIds] = useState<string[]>([]);
@@ -540,6 +542,11 @@ export function SkillChatWorkbench({
 
   useEffect(() => {
     const profilesForMode = agentMode === 'codex' ? codexProfiles : chatProfiles;
+    // A persisted conversation can outlive a provider refresh (or contain the
+    // old numeric route used by the first Agent prototype). Repair the route
+    // only when this mode has real profiles; Codex must still explicitly show
+    // that no Codex route is configured instead of silently switching modes.
+    if (profilesForMode.length === 0) return;
     setModelRoute((current) => (
       current && profilesForMode.some((profile) => profile.modelRoute === current)
         ? current
@@ -701,7 +708,12 @@ export function SkillChatWorkbench({
         return;
       }
       setError(null);
-      setPendingCanvasAction({ kind: actionKind, nodeId: target.nodeId, prompt: content });
+      const capability = actionKind === 'image_generation' ? 'image_generation' : actionKind === 'video_generation' ? 'video_generation' : 'reverse_prompt';
+      // Generation/reverse routes come from the full provider catalog, not
+      // the chat-only list used by the selected conversation mode.
+      const actionProfiles = profiles.filter((profile) => profile.capabilities.includes(capability));
+      setPendingCanvasModelRoute(actionProfiles[0]?.modelRoute);
+      setPendingCanvasAction({ kind: actionKind, nodeId: target.nodeId, prompt: content, ...(actionProfiles[0]?.modelRoute ? { modelRoute: actionProfiles[0].modelRoute } : {}) });
       return;
     }
     const userMessage: SkillMessage = {
@@ -771,7 +783,7 @@ export function SkillChatWorkbench({
     setCanvasActionRunning(true);
     setError(null);
     try {
-      const started = await executeCanvasAction(action);
+      const started = await executeCanvasAction({ ...action, ...(pendingCanvasModelRoute ? { modelRoute: pendingCanvasModelRoute } : {}) });
       if (!started) {
         setError(`${canvasActionLabel(action.kind)}节点未能启动，请检查模型配置后重试。`);
         return;
@@ -782,6 +794,7 @@ export function SkillChatWorkbench({
         content: `${canvasActionLabel(action.kind)}节点已开始运行。`,
       }]);
       setPendingCanvasAction(null);
+      setPendingCanvasModelRoute(undefined);
     } catch {
       setError(`${canvasActionLabel(action.kind)}节点执行失败，请检查模型配置后重试。`);
     } finally {
@@ -1079,6 +1092,13 @@ export function SkillChatWorkbench({
             <article className="skill-chat-workbench__message skill-chat-workbench__message--assistant" aria-label="待确认画布操作">
               <span>等待确认</span>
               <p>将在节点 {pendingCanvasAction.nodeId} 执行{canvasActionLabel(pendingCanvasAction.kind)}。</p>
+              {profiles.filter((profile) => profile.capabilities.includes(pendingCanvasAction.kind === 'image_generation' ? 'image_generation' : pendingCanvasAction.kind === 'video_generation' ? 'video_generation' : 'reverse_prompt')).length > 0 && (
+                <label className="skill-chat-workbench__action-model">使用模型
+                  <select aria-label={`选择${canvasActionLabel(pendingCanvasAction.kind)}模型`} value={pendingCanvasModelRoute ?? ''} onChange={(event) => setPendingCanvasModelRoute(event.target.value)}>
+                    {profiles.filter((profile) => profile.capabilities.includes(pendingCanvasAction.kind === 'image_generation' ? 'image_generation' : pendingCanvasAction.kind === 'video_generation' ? 'video_generation' : 'reverse_prompt')).map((profile) => <option key={profile.modelRoute} value={profile.modelRoute}>{profile.displayName}</option>)}
+                  </select>
+                </label>
+              )}
               <section className="skill-chat-workbench__request-card is-sending">
                 <header><strong>画布操作</strong><span>待确认</span></header>
                 <div>
@@ -1088,8 +1108,13 @@ export function SkillChatWorkbench({
               </section>
             </article>
           )}
+          {status === 'sending' && (
+            <article className="skill-chat-workbench__message skill-chat-workbench__message--assistant skill-chat-workbench__message--thinking" aria-label="Agent 正在思考">
+              <span>Agent</span>
+              <p className="skill-chat-workbench__status" role="status"><i aria-hidden="true" />思考中…</p>
+            </article>
+          )}
         </section>
-        {status === 'sending' && <p className="skill-chat-workbench__status" role="status">正在生成建议…</p>}
         {error && <p className="skill-chat-workbench__error" role="alert">{error}</p>}
       </div>
 

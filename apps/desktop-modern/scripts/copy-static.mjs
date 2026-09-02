@@ -22,6 +22,10 @@ const staticFiles = [
     source: resolve(workspaceRoot, 'packages', 'desktop-core', 'src', 'photoshop-windows-runner.js'),
     destination: resolve(appRoot, 'dist', 'photoshop', 'photoshop-windows-runner.js'),
   },
+  {
+    source: resolve(workspaceRoot, 'packages', 'desktop-core', 'src', 'photoshop-windows-runner.vbs'),
+    destination: resolve(appRoot, 'dist', 'photoshop', 'photoshop-windows-runner.vbs'),
+  },
 ];
 
 for (const file of staticFiles) {

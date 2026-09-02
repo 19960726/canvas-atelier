@@ -6,6 +6,7 @@ import { createMcpWorkspaceAdapter, type McpWorkspaceAdapter } from './mcp-works
 import { mcpUiConfirmationStore } from './mcp-ui-confirmation-store';
 
 let hydrationStarted = false;
+let hydrationReady: Promise<void> | null = null;
 let closeFlushUnsubscribe: (() => void) | null = null;
 let mcpRuntimeUnsubscribe: (() => void) | null = null;
 let mcpWorkspaceAdapter: McpWorkspaceAdapter | null = null;
@@ -20,7 +21,7 @@ export function App() {
   useEffect(() => {
     if (hydrationStarted) return;
     hydrationStarted = true;
-    void hydratePersistence();
+    hydrationReady = hydratePersistence().then(() => undefined).catch(() => undefined);
     void initializeKnowledge();
   }, [hydratePersistence, initializeKnowledge]);
 
@@ -38,8 +39,13 @@ export function App() {
 
     closeFlushUnsubscribe = lifecycle.subscribeCloseFlushRequest(async (request) => {
       try {
+        // A close request can arrive while the initial durable-project
+        // hydration is still replacing the temporary untitled/read-only
+        // state. Waiting here prevents that transient state from being
+        // mistaken for a failed save and avoids a spurious recovery dialog.
+        await hydrationReady;
         const state = useAppStore.getState();
-        if (state.projectLifecycle === 'untitled' && state.saveStatus === 'saved') {
+        if (isPristineUntitledProject(state)) {
           lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'save_started' });
           lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'completed', outcome: 'saved' });
           return;
@@ -50,9 +56,10 @@ export function App() {
           requestId: request.requestId,
           phase: 'completed',
           outcome: saved ? 'saved' : 'failed',
+          ...(saved || state.saveErrorCode === null ? {} : { errorCode: state.saveErrorCode }),
         });
       } catch {
-        lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'completed', outcome: 'failed' });
+        lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'completed', outcome: 'failed', errorCode: 'CLOSE_SAVE_EXCEPTION' });
       }
     });
   }, []);
@@ -63,6 +70,10 @@ export function App() {
     if (runtime === undefined) return;
     const adapter = getMcpWorkspaceAdapter();
     mcpRuntimeUnsubscribe = runtime.onRequest(async ({ requestId, request }) => {
+      // Do not accept MCP mutations while the desktop session is still being
+      // hydrated. During that window the renderer has an untitled/read-only
+      // project and durable writes are rejected as DURABLE_WRITE_FAILED.
+      await hydrationReady;
       const response = await adapter.handle(request);
       runtime.respond({ requestId, response });
     });
@@ -105,6 +116,19 @@ export function App() {
       <CanvasWorkspace />
     </RendererErrorBoundary>
   );
+}
+
+function isPristineUntitledProject(state: ReturnType<typeof useAppStore.getState>): boolean {
+  return state.projectLifecycle === 'untitled'
+    && state.project.name === '未命名画布'
+    && state.project.nodes.length === 0
+    && state.project.edges.length === 0
+    && state.project.projectMemory.length === 0
+    && state.project.skillPromotionCandidates.length === 0
+    && state.projectImages.length === 0
+    && state.projectVideos.length === 0
+    && state.undoStack.length === 0
+    && !state.recoveryRequired;
 }
 
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
@@ -164,6 +188,7 @@ function sanitizeRendererError(error: unknown): string {
 
 export function resetAppHydrationForTests(): void {
   hydrationStarted = false;
+  hydrationReady = null;
   closeFlushUnsubscribe?.();
   closeFlushUnsubscribe = null;
   mcpRuntimeUnsubscribe?.();

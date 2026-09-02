@@ -371,7 +371,7 @@ async function startMcpRuntime(): Promise<void> {
     }, isMcpRendererAvailable()),
   });
   service = createMcpRuntimeService({
-    runtimeFilePath: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-v1.json'),
+    runtimeFilePath: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-legacy-v1.json'),
     serverVersion: app.getVersion(),
     forwardRequest: rendererBridge.forwardRequest,
   });
@@ -382,7 +382,10 @@ async function startMcpRuntime(): Promise<void> {
     const mcpLaunchSpec = {
       command: process.execPath,
       args: [mcpBridgeEntryPath],
-      env: { ELECTRON_RUN_AS_NODE: '1' },
+      env: {
+        ELECTRON_RUN_AS_NODE: '1',
+        CANVASFORGE_MCP_RUNTIME_FILE: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-legacy-v1.json'),
+      },
     } as const;
     const manager = createMcpClientConfigManager({
       clientPaths: {

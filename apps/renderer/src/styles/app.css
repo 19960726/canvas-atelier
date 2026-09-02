@@ -1010,6 +1010,8 @@ textarea:focus-visible {
 .job-strip__save[data-save-state='saved'] { color: var(--success); }
 .job-strip__save[data-save-state='error'] { color: var(--danger); }
 .job-strip__save[data-save-state='read_only'] { color: var(--text-secondary); }
+.job-strip__save-retry { min-height: 24px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.job-strip__save-retry:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .job-chip { max-width: 260px; height: 24px; display: flex; align-items: center; gap: 5px; min-width: 0; padding: 0 6px 0 8px; color: var(--text-secondary); border: 1px solid var(--border-subtle); border-left: 2px solid var(--muted); border-radius: 6px; background: var(--surface); font-size: 9px; }
 .job-chip.is-running, .job-chip.is-submitting { border-left-color: var(--accent); }
 .job-chip.is-failed { border-left-color: var(--danger); color: var(--danger); }
@@ -5664,6 +5666,22 @@ textarea:focus-visible {
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
+.workspace--ui-gate .module-node--workbench[data-module-type='video_generation'] .module-node__video-preview-expand,
+.workspace--ui-gate .module-node__video-output-expand {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--on-accent);
+  background: color-mix(in srgb, var(--surface-elevated) 86%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  cursor: pointer;
+}
 .workspace--ui-gate .module-node--workbench[data-module-type='reverse_agent'] .module-node__reverse-output {
   display: grid;
   gap: 8px;
@@ -6085,6 +6103,7 @@ textarea:focus-visible {
   border-radius: 50%;
   transform: translate(-50%, -50%);
 }
+.workspace--ui-gate .module-node__video-output-stage:has(video) .module-node__video-output-play { display: none; }
 .workspace--ui-gate .module-node__video-output-status {
   display: flex;
   align-items: center;
@@ -7701,10 +7720,31 @@ textarea:focus-visible {
 .workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__stream {
   min-height: 0 !important;
   padding: 16px !important;
-  overflow: auto !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scrollbar-width: none !important;
   background: var(--gate-canvas, var(--surface-muted)) !important;
   border: 0 !important;
 }
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__stream::-webkit-scrollbar { width: 0 !important; height: 0 !important; }
+.skill-chat-workbench__stream {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scrollbar-width: none !important;
+}
+.skill-chat-workbench__stream::-webkit-scrollbar { width: 0 !important; height: 0 !important; }
+.skill-chat-workbench__messages { scrollbar-width: none !important; }
+.skill-chat-workbench__messages::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+.skill-chat-workbench__stream > *,
+.skill-chat-workbench__stream .skill-chat-workbench__messages,
+.skill-chat-workbench__stream .skill-chat-workbench__message {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow-wrap: anywhere !important;
+}
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__stream > *,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__messages,
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message { min-width: 0 !important; max-width: 100% !important; overflow-wrap: anywhere !important; }
 .workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__empty-state {
   display: grid !important;
   min-height: 100% !important;

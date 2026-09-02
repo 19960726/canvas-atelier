@@ -13,6 +13,7 @@ const LEGACY_USER_DATA_DIRECTORIES = [
 ] as const;
 
 const PROVIDER_DATA_FILES = [
+  'provider-active.json',
   'provider-credentials.json',
   'provider-configuration.json',
   'providers/relayme/provider-credentials.json',

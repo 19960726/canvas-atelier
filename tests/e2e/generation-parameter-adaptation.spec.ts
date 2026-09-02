@@ -115,7 +115,7 @@ test('image and video generation expose the final ratio and clarity controls wit
   await videoRatio.click();
   const videoRatioMenu = videoNode.getByRole('menu', { name: 'Video preview aspect ratio options' });
   await expect(videoRatioMenu.getByRole('menuitemradio')).toHaveText([
-    'AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9',
+    'AUTO', '1:1', '16:9', '9:16',
   ]);
   await expect(videoRatioMenu.locator('svg').first()).toBeVisible();
   const videoRatioLayout = await videoRatio.evaluate((trigger) => {
@@ -145,7 +145,7 @@ test('image and video generation expose the final ratio and clarity controls wit
   const videoResolutionOptions = videoNode
     .getByRole('menu', { name: 'Video preview resolution options' })
     .getByRole('menuitemradio');
-  await expect(videoResolutionOptions).toHaveText(['480P', '720P', '1080P']);
+  await expect(videoResolutionOptions).toHaveText(['720P', '1080P', '2K', '4K']);
   await page.screenshot({ path: artifact('03-video-ratio-dark.png'), fullPage: true });
   await videoResolutionOptions.filter({ hasText: '1080P' }).click();
   await expect(videoResolution).toHaveAttribute('value', '1080p');

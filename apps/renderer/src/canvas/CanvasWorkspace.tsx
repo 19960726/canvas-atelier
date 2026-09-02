@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Background, BackgroundVariant, ConnectionMode, Controls, MiniMap, ReactFlow, SelectionMode } from '@xyflow/react';
+import { Background, BackgroundVariant, ConnectionLineType, ConnectionMode, Controls, MiniMap, ReactFlow, SelectionMode, useUpdateNodeInternals } from '@xyflow/react';
 import type { Connection, Edge, Node, OnConnectEnd, OnConnectStart, Viewport } from '@xyflow/react';
 import type { ProviderBridgeProfile, ProviderConfigurationStatus } from '@agent-canvas/desktop-core';
 import type {
@@ -58,6 +58,54 @@ interface CanvasFlowInstance {
   getViewport: () => Viewport;
   screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
   setCenter: (x: number, y: number, options?: { zoom?: number; duration?: number }) => void;
+}
+
+function EdgeEndpointInternalsUpdater({ edges }: { readonly edges: readonly Edge[] }) {
+  const updateNodeInternals = useUpdateNodeInternals();
+  const endpointIds = useMemo(() => [...new Set(edges.flatMap((edge) => [edge.source, edge.target]))], [edges]);
+  const endpointKey = endpointIds.join('\u0000');
+  const previousEndpointIdsRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && typeof window.DOMMatrixReadOnly !== 'function') {
+      return;
+    }
+    const previousEndpointIds = previousEndpointIdsRef.current;
+    const currentEndpointIds = new Set(endpointIds);
+    previousEndpointIdsRef.current = currentEndpointIds;
+    if (endpointIds.length === 0) return undefined;
+    // React Flow measures large graphs incrementally during its own render.
+    // Avoid scheduling an additional endpoint measurement on the interaction
+    // path once a canvas has more than a small number of connected nodes.
+    if (endpointIds.length > 40) return undefined;
+    // Large canvases are initially measured by React Flow itself. Refresh
+    // only the endpoints introduced/removed by a later edge change, avoiding
+    // an O(V) internal measurement pass during stress-canvas startup.
+    if (previousEndpointIds === null) {
+      if (endpointIds.length > 40) return undefined;
+      const refresh = () => updateNodeInternals(endpointIds);
+      if (typeof globalThis.requestAnimationFrame !== 'function') {
+        refresh();
+        return undefined;
+      }
+      const frame = globalThis.requestAnimationFrame(refresh);
+      return () => globalThis.cancelAnimationFrame?.(frame);
+    }
+    const changedEndpointIds = endpointIds.filter((id) => !previousEndpointIds.has(id));
+    for (const id of previousEndpointIds) {
+      if (!currentEndpointIds.has(id)) changedEndpointIds.push(id);
+    }
+    if (changedEndpointIds.length === 0) return undefined;
+    const refresh = () => updateNodeInternals(changedEndpointIds);
+    if (typeof globalThis.requestAnimationFrame !== 'function') {
+      refresh();
+      return undefined;
+    }
+    const frame = globalThis.requestAnimationFrame(refresh);
+    return () => globalThis.cancelAnimationFrame?.(frame);
+  }, [endpointKey, updateNodeInternals]);
+
+  return null;
 }
 
 export interface PendingCanvasConnection {
@@ -925,6 +973,7 @@ export function CanvasWorkspace() {
   const viewportCulling = useViewportCulling({
     activeNodeIds: alwaysRenderedFigmaOutputNodeIds,
     activeEdgeIds: activeFlowEdgeIds,
+    enabled: enableReactFlowVisibilityCulling,
     edges: flowEdges,
     ghostEdgeIds: flowEdgeState.ghostEdgeIds,
     ghostNodeIds: flowNodeState.ghostNodeIds,
@@ -974,13 +1023,14 @@ export function CanvasWorkspace() {
     const node = project.nodes.find((candidate) => candidate.id === request.nodeId && candidate.type === 'module');
     if (node?.type !== 'module' || node.data.moduleType !== request.kind) return false;
     const config = node.data.config as Record<string, unknown>;
+    const requestedModelRoute = request.modelRoute ?? (typeof config.modelRoute === 'string' ? config.modelRoute : undefined);
     const referenceAssetIds = Array.isArray(config.referenceAssetIds)
       ? config.referenceAssetIds.filter((value): value is string => typeof value === 'string')
       : [];
     if (request.kind === 'image_generation') {
       return runImageGenerationNode(request.nodeId, {
         prompt: request.prompt,
-        ...(typeof config.modelRoute === 'string' ? { modelRoute: config.modelRoute } : {}),
+        ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
         ...(typeof config.aspectRatio === 'string' ? { aspectRatio: config.aspectRatio } : {}),
         ...(typeof config.resolution === 'string' ? { resolution: config.resolution } : {}),
         ...(typeof config.outputCount === 'number' ? { outputCount: config.outputCount } : {}),
@@ -997,7 +1047,7 @@ export function CanvasWorkspace() {
       const outputCount = ([1, 2, 3, 4] as const).find((value) => value === configuredOutputCount) ?? 1;
       return runVideoPreviewNode(request.nodeId, {
         prompt: request.prompt,
-        ...(typeof config.modelRoute === 'string' ? { modelRoute: config.modelRoute } : {}),
+        ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
         referenceAssetIds,
         aspectRatio: typeof config.aspectRatio === 'string' ? config.aspectRatio : '16:9',
         keyframe: typeof config.keyframe === 'string' ? config.keyframe : 'auto',
@@ -1008,7 +1058,12 @@ export function CanvasWorkspace() {
       });
     }
     try {
-      await runReverseAgentNode(request.nodeId);
+      await runReverseAgentNode(request.nodeId, requestedModelRoute ? {
+        modelRoute: requestedModelRoute,
+        role: typeof config.role === 'string' ? config.role : '专业视觉分析师',
+        task: typeof config.task === 'string' ? config.task : request.prompt,
+        knowledgeBaseIds: Array.isArray(config.knowledgeBaseIds) ? config.knowledgeBaseIds.filter((value): value is string => typeof value === 'string') : [],
+      } : undefined);
       return true;
     } catch {
       return false;
@@ -1297,7 +1352,15 @@ export function CanvasWorkspace() {
         });
         return;
       }
+      const clipboardTypes = event.clipboardData?.types;
+      if (clipboardTypes !== undefined && Array.from(clipboardTypes).some((type) => type.toLocaleLowerCase() === 'text/plain')
+        && !clipboardEventMayContainMedia(event)) return;
       if (selectedImageTarget !== undefined) {
+        // Do not let an ordinary text paste consume the last native bitmap
+        // and unexpectedly overwrite the selected image node. Some desktop
+        // image producers expose no media File, so HTML-only events still
+        // continue to the native reader below; explicit text/plain is the
+        // unambiguous text-editing case.
         event.preventDefault();
         void readClipboardImageFile().then((file) => {
           if (importToSelectedImage(file)) return;
@@ -1904,6 +1967,7 @@ export function CanvasWorkspace() {
           nodeTypes={nodeTypes}
           edgeTypes={canvasEdgeTypes}
           connectionMode={ConnectionMode.Loose}
+          connectionLineType={formalCanvasNodeCount >= 200 ? ConnectionLineType.Straight : ConnectionLineType.Bezier}
           minZoom={0.08}
           maxZoom={2.5}
           zoomOnDoubleClick={false}
@@ -1929,7 +1993,12 @@ export function CanvasWorkspace() {
           onConnect={(connection) => { void connectModulePorts(connection); }}
           onConnectStart={handleConnectStart}
           onConnectEnd={handleConnectEnd}
-          isValidConnection={validateCanvasConnection}
+          // On very large graphs React Flow probes many candidate handles on
+          // every pointer move. The durable connect handler performs the same
+          // strict validation before committing, so skip this duplicate probe
+          // during stress-sized previews while keeping full validation on
+          // normal and saved small canvases.
+          isValidConnection={formalCanvasNodeCount >= 200 ? undefined : validateCanvasConnection}
 
           onSelectionChange={({ nodes, edges }) => {
             const nextNodeIds = nodes.map((node) => node.id);
@@ -1943,6 +2012,7 @@ export function CanvasWorkspace() {
           }}
           proOptions={{ hideAttribution: true }}
         >
+          <EdgeEndpointInternalsUpdater edges={viewportCulling.edges} />
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--canvas-grid)" />
           <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
           <Controls showInteractive={false} />
@@ -2071,7 +2141,7 @@ export function CanvasWorkspace() {
         )}
       </main>
 
-      <aside className="agent-panel agent-panel--skill-chat" aria-label="Novus Agent 工作台" data-figma-surface="agent" data-testid="agent-panel" hidden={activeSurface !== 'agent'}>
+      <aside className="agent-panel agent-panel--skill-chat" aria-label="Novus Agent 工作台" data-canvas-surface="agent" data-figma-surface="agent" data-testid="agent-panel" hidden={activeSurface !== 'agent'}>
         <div className="agent-panel__header">
           <div>
             <strong>Agent 对话</strong>
@@ -2225,9 +2295,18 @@ async function copyManagedImageToClipboard(displayUrl: string): Promise<boolean>
   try {
     const response = await fetch(displayUrl);
     const blob = await response.blob();
-    if (blob.type.length === 0 || typeof ClipboardItem === 'undefined' || typeof globalThis.navigator?.clipboard?.write !== 'function') return false;
-    await globalThis.navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
-    return true;
+    if (blob.type.length > 0 && typeof ClipboardItem !== 'undefined' && typeof globalThis.navigator?.clipboard?.write === 'function') {
+      try {
+        await globalThis.navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+        return true;
+      } catch {
+        // Electron can deny the web clipboard even for a user copy gesture.
+        // Fall through to the narrow native bridge instead of copying a URL.
+      }
+    }
+    const nativeWrite = window.novusDesktop?.projectImages.writeClipboardImage;
+    if (nativeWrite === undefined) return false;
+    return nativeWrite(new Uint8Array(await blob.arrayBuffer()));
   } catch {
     return false;
   }
@@ -2250,7 +2329,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'read_only', errorCode: string | null): string {
   if (status === 'saved') return '本地稳定点已保存';
   if (errorCode === 'RECOVERY_REQUIRED') return '需要先恢复或放弃恢复预览';
-  if (errorCode === 'REVISION_CONFLICT') return '桌面项目已更新，已重新载入最新版本';
+  if (errorCode === 'REVISION_CONFLICT') return '桌面项目已被其他版本更新，请点击重新载入';
   if (errorCode === 'INVALID_REQUEST') return '保存失败：当前画布与已保存版本不一致，请重新载入后再编辑';
   if (status === 'read_only') return '只读模式，等待当前写入者释放';
   if (status === 'error') return errorCode ? `本地保存失败（${errorCode}）` : '本地保存失败';

@@ -91,8 +91,6 @@ export function createWindowsPhotoshopSmartObjectAdapter(
           return { ok: false, code: 'photoshop_version_unsupported' };
         }
         if (running === null) return { ok: false, code: 'photoshop_not_running' };
-        if (!running.activeDocument) return { ok: false, code: 'no_active_document' };
-
         const files = await dependencies.temporaryFiles.create(input);
         try {
           const result = await dependencies.execute({
@@ -182,6 +180,25 @@ async function discoverPhotoshopInstallations(platform: string): Promise<Photosh
     'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
   ];
   const installations = new Map<number, PhotoshopInstallation>();
+  // Adobe installs may be redirected outside Program Files (for example
+  // D:\\PS2026). The App Paths registry entry contains the real executable;
+  // relying on the uninstall display name alone leaves us with a bogus
+  // relative `Photoshop.exe` path and makes a valid install look missing.
+  try {
+    const appPathResult = await execFileAsync('reg.exe', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Photoshop.exe', '/ve'], {
+      windowsHide: true,
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const executablePath = appPathResult.stdout.match(/REG_SZ\s+(.+Photoshop\.exe)\s*$/imu)?.[1]?.trim();
+    if (executablePath) {
+      const versionMatch = /Photoshop\s+(20\d{2})/iu.exec(executablePath);
+      const majorVersion = versionMatch ? Number(versionMatch[1]) - 1999 : 13;
+      installations.set(majorVersion, { majorVersion, executablePath });
+    }
+  } catch {
+    // Continue with uninstall entries; older installs may not register App Paths.
+  }
   for (const registryPath of registryPaths) {
     try {
       const result = await execFileAsync('reg.exe', ['query', registryPath, '/s', '/f', 'Adobe Photoshop'], {
@@ -195,7 +212,7 @@ async function discoverPhotoshopInstallations(platform: string): Promise<Photosh
         if (yearMatch === null && !cs6Match) continue;
         const majorVersion = cs6Match ? 13 : Number(yearMatch![1]) - 1999;
         if (majorVersion < 1 || installations.has(majorVersion)) continue;
-        installations.set(majorVersion, { majorVersion, executablePath: 'Photoshop.exe' });
+        if (!installations.has(majorVersion)) installations.set(majorVersion, { majorVersion, executablePath: 'Photoshop.exe' });
       }
     } catch {
       // Missing registry roots and unmatched searches both produce non-zero exits.

@@ -36,6 +36,7 @@ describe('MCP client configuration manager', () => {
     await writeFile(workbuddyPath, JSON.stringify({
       connectorProxy: { enabled: true },
       mcpServers: {
+        canvasforge: { command: 'D:\\CanvasForge\\CanvasForge.exe', args: ['legacy-bridge.cjs'] },
         figma: { url: 'https://figma.example.test/mcp' },
         existing: { command: 'existing.exe', args: ['--safe'] },
       },
@@ -49,7 +50,8 @@ describe('MCP client configuration manager', () => {
     expect(merged.connectorProxy).toEqual({ enabled: true });
     expect(merged.mcpServers.figma).toEqual({ url: 'https://figma.example.test/mcp' });
     expect(merged.mcpServers.existing).toEqual({ command: 'existing.exe', args: ['--safe'] });
-    expect(merged.mcpServers.canvasforge).toEqual({
+    expect(merged.mcpServers.canvasforge).toEqual({ command: 'D:\\CanvasForge\\CanvasForge.exe', args: ['legacy-bridge.cjs'] });
+    expect(merged.mcpServers.canvas_atelier).toEqual({
       command: 'C:\\Program Files\\CanvasForge\\CanvasForge.exe',
       args: ['resources\\mcp\\canvasforge-mcp.cjs'],
       env: { ELECTRON_RUN_AS_NODE: '1' },
@@ -58,7 +60,8 @@ describe('MCP client configuration manager', () => {
 
     await manager.disconnect('workbuddy');
     const disconnected = JSON.parse(await readFile(workbuddyPath, 'utf8'));
-    expect(disconnected.mcpServers.canvasforge).toBeUndefined();
+    expect(disconnected.mcpServers.canvas_atelier).toBeUndefined();
+    expect(disconnected.mcpServers.canvasforge).toEqual({ command: 'D:\\CanvasForge\\CanvasForge.exe', args: ['legacy-bridge.cjs'] });
     expect(disconnected.mcpServers.figma).toBeDefined();
     expect(disconnected.connectorProxy).toEqual({ enabled: true });
   });
@@ -88,14 +91,14 @@ describe('MCP client configuration manager', () => {
     await manager.connect('codex');
     const first = await readFile(codexPath, 'utf8');
     expect(first.startsWith(original)).toBe(true);
-    expect(first).toContain('[mcp_servers.canvasforge]');
+    expect(first).toContain('[mcp_servers.canvas_atelier]');
     expect(first).toContain('command = "C:\\\\Program Files\\\\CanvasForge\\\\CanvasForge.exe"');
     expect(first).toContain('args = ["resources\\\\mcp\\\\canvasforge-mcp.cjs"]');
     expect(first).toContain('env = { ELECTRON_RUN_AS_NODE = "1" }');
 
     await manager.connect('codex');
     const second = await readFile(codexPath, 'utf8');
-    expect(second.match(/\[mcp_servers\.canvasforge\]/gu)).toHaveLength(1);
+    expect(second.match(/\[mcp_servers\.canvas_atelier\]/gu)).toHaveLength(1);
     expect(second).toContain('# keep this comment');
     expect(second).toContain('[mcp_servers.figma]');
 
@@ -104,7 +107,7 @@ describe('MCP client configuration manager', () => {
   });
 
   it('rejects duplicate Codex canvasforge sections without changing the config', async () => {
-    const original = '[mcp_servers.canvasforge]\ncommand = "one"\n\n[mcp_servers.canvasforge]\ncommand = "two"\n';
+    const original = '[mcp_servers.canvas_atelier]\ncommand = "one"\n\n[mcp_servers.canvas_atelier]\ncommand = "two"\n';
     await writeFile(codexPath, original, 'utf8');
     const manager = createManager();
 
@@ -123,8 +126,8 @@ describe('MCP client configuration manager', () => {
 
   it('returns executable client-specific config text without runtime credentials', () => {
     const manager = createManager();
-    expect(manager.copyConfig('codex')).toContain('[mcp_servers.canvasforge]');
-    expect(manager.copyConfig('workbuddy')).toContain('"canvasforge"');
+    expect(manager.copyConfig('codex')).toContain('[mcp_servers.canvas_atelier]');
+    expect(manager.copyConfig('workbuddy')).toContain('"canvas_atelier"');
     expect(`${manager.copyConfig('codex')}\n${manager.copyConfig('workbuddy')}`).not.toMatch(/authToken|pipeName|apiKey|authorization/iu);
   });
 });

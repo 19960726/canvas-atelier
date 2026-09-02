@@ -1,5 +1,40 @@
 # Canvas Atelier project memory
 
+## 2026-09-01 MCP、RelayMe 持久化与 Photoshop 实机边界
+
+- 脱敏读取正式 WorkBuddy 配置：当前已有键 `canvasforge`，命令文件为 `CanvasForge.exe`；Canvas Atelier 尚未在正式配置中连接，因此没有修改正式配置。
+- 隔离合并脚本 `work/qa-mcp-config-coexistence.mjs` 使用当前编译后的管理器验证：连接后键为 `canvas_atelier, canvasforge`，断开后仅保留 `canvasforge`；原命令 `D:\CanvasForge\CanvasForge.exe` 前后不变，Canvas Atelier 使用 `runtime-modern-v1.json`。脚本退出 0。
+- RelayMe 正式数据脱敏检查：`provider-active.json` 指向 `relayme`；`provider-credentials.json` 存在且字段仅为 `version,kind,ciphertextHex`，484 字节，证明凭据以密文持久化而非明文。当前会话是否仍获服务端接受仍需 Electron 连接检测，不能据文件存在判定登录有效。
+- Photoshop runner `--inspect` 实机返回 `{"kind":"automation_unavailable"}`；当前机器无法取得 Photoshop COM 自动化实例，因此 PS 导入仍不能判定可用。
+- `npm.cmd run typecheck` 与 `git diff --check` 新鲜通过。Playwright、生产构建、安装版 RelayMe/旧画布/MP4 仍受子进程 `spawn EPERM` 和审批 503 阻塞。
+
+## 2026-09-01 旧画布连线重测边界修正
+
+- 复查发现增量端点重测初版会对所有“启动时已有边”跳过首次刷新；这可能让旧保存画布继续出现状态有边但 React Flow 不显示线的问题。
+- 现在仅当首次端点数大于 40 时跳过全量刷新；旧画布常见的小规模已有边首次仍调用 `useUpdateNodeInternals`，后续只刷新新增/移除端点。
+- `npx.cmd tsc -p apps/renderer/tsconfig.json --noEmit` 新鲜通过。完整 E2E、压力、生产构建和安装版验收仍因 `spawn EPERM`/审批 503 未完成，不能发布。
+
+## 2026-09-01 继续验收（环境仍阻塞）
+
+- `npm.cmd run typecheck` 新鲜通过，`git diff --check` 无错误。
+- Playwright/Edge 与 Vite/esbuild 仍无法启动：沙箱外审批服务持续返回 503，沙箱内返回 `spawn EPERM`。因此本轮无法重新证明端点增量重测后的压力、完整 E2E 或安装版行为。
+- 未发布、未提交、未创建新安装包；现有 `1.6.87-verified` 仍是修复前旧产物，不得使用。
+
+## 2026-09-01 继续验收状态
+
+- 再次尝试完整 `npm.cmd run build`、Vitest 和 Edge 压力验收时，执行环境均无法启动 Vite/esbuild/Edge 子进程：沙箱内为 `spawn EPERM`，沙箱外审批服务为 503。不能把上一次通过结果延用为当前修改后的新鲜证据。
+- 当前源码 `npx.cmd tsc -p apps/renderer/tsconfig.json --noEmit` 通过，`git diff --check` 无错误。已确认没有可安全归属于本项目的残留 Electron/Node 测试进程；系统中存在其他应用的 Edge/WebView 进程，未终止。
+- `apps/desktop-modern/dist-builder/desktop-modern-1.6.87-verified/CanvasAtelier-Win10-11-x64-1.6.87.exe` 是端点增量重测修复前生成的旧产物，不能作为当前源码的安装版验收证据，不能发布。
+- 未完成：端点增量重测后的完整 146 项 E2E、大画布压力、重新打包及旧保存画布安装版重启/RelayMe/MP4 验收。
+
+## 2026-09-01 全功能验收继续（未完成）
+
+- 新鲜完整 Vitest：211 个文件通过、2 个跳过；2633 个测试通过、2 个跳过。`npm.cmd run typecheck` 通过。
+- 新鲜完整 Playwright 首轮为 142/146 通过。4 项失败中，视频比例和分辨率、模型分组、设置区宽度均为过期验收断言；更新契约后这些项目通过。端口连线首次在全套顺序下出现状态 edgeCount=1 但 `.react-flow__edges` 为空，单独诊断确认 React Flow 动态句柄内部测量刷新竞态。
+- 保护修复：`CanvasWorkspace` 增加 React Flow `useUpdateNodeInternals` 的边端点增量重测；只刷新边变化引入/移除的节点，避免大画布 O(V) 刷新。固定顺序的端口连线用例已通过，`CanvasWorkspace`/视口回归 139/139 通过。
+- 未完成项：增量重测后的完整 146 项 Playwright 和 300 节点/500 连线压力验收尚未取得新鲜通过证据。沙箱外执行通道随后连续返回审批服务 503，沙箱内 Edge 启动失败 `spawn EPERM`。因此不能声称全部功能通过、不能生成正式安装包或发布。
+- 变更位置：`apps/renderer/src/canvas/CanvasWorkspace.tsx`、`tests/e2e/generation-parameter-adaptation.spec.ts`、`tests/e2e/manual-acceptance-interactions.spec.ts`、`tests/e2e/module-library-workflow.spec.ts`、`tests/e2e/release-ui-audit.spec.ts`；验收计划：`docs/superpowers/plans/2026-09-01-full-function-verification.md`。
+
 This is the durable regression memory for `staging-canvas-build`. Read it before every modification and update it after every verified fix.
 
 ## Current continuation checkpoint
@@ -493,3 +528,20 @@ Before producing an installer, verify at minimum:
 - 1.6.86 发布候选验证：完整 Vitest 为 211 个文件、2630 个测试通过，2 个性能文件/测试按设计跳过；全工作区 typecheck 与 production build 通过。隔离 packaged 重启冒烟两次版本均为 1.6.86，`canvasVisible=true`、`fatalAlertCount=0`、`pageErrors=[]`、保存节点恢复为 1。
 - 真实保存视频资产 `66f946e139999032` 在 1.6.86 packaged 运行体中从 `currentTime=0` 前进到 `1.167211`，`duration=4.01`、`readyState=4`、`paused=false`、媒体错误和页面错误均为空。打包内 Photoshop runner 在当前机器返回 `automation_unavailable`，确认新诊断已进入产物。
 - 1.6.86 Windows x64 NSIS 候选：`CanvasAtelier-Win10-11-x64-1.6.86.exe` 为 103200647 字节，SHA-256 `B453D114499D915ECE1903292E2ED228E52D990CB2695DEEE8136609742AA434`；blockmap 为 109674 字节，SHA-256 `224EF8D1812641297DA7713FEA7A0D58D932DDB027807590FA9357F26744D0F7`；`latest.yml` SHA-256 `662E1658AADA26D850519A642C40CE5129DD64F11656E8BF880F0D2DF99C1A86`。`app.asar` 版本为 1.6.86，SHA-256 `2AA8873C5125F5C907048128ED049EFA649D7D076B9260CEB25C9BED3AC218ED`。安装包未签名（`NotSigned`）；尚未安装、提交、推送或发布 GitHub Release。
+
+## 2026-09-01 1.6.87 全功能验收续跑
+
+- 当前源码 1.6.87 的聚焦回归 387/387、完整 Vitest 2633 通过（2 个性能测试按设计跳过）、Playwright 146/146、typecheck/build 均通过。
+- 最终修复后重新打包的 NSIS：`CanvasAtelier-Win10-11-x64-1.6.87.exe`，103201072 字节，SHA-256 `2CD7B43DA03BC584921BE40B4836B369F8F6768DF3D0DA62619BE184034476A7`；未发布。
+- 新打包隔离冒烟恢复 1 个保存图片节点；真实 MP4 资产 `66f946e139999032` 播放从 0 前进到 1.171792 秒，duration 4.01、readyState 4、无媒体/页面错误。
+- MCP 共存检查通过：连接后 `canvas_atelier, canvasforge`，断开后仅 `canvasforge`，原 CanvasForge 命令不变，Atelier 使用 `runtime-modern-v1.json`。
+- Photoshop COM 诊断返回 `running`、major 27、`activeDocument=false`；连接可用，但当前无活动文档，不能据此声称智能对象导入完成。
+- 旧画布 RelayMe 端点仍未完成：隔离诊断显示 `activeProvider=relayme`、`configured=true`、`locked=false`、10 个模型配置，但连接状态为 `network_unavailable`；旧画布生成脚本在外部请求阶段挂起后中止，未取得“提交前阻断”最终 JSON，因此不能把该门禁标记为通过。
+
+## 2026-09-01 RelayMe 登录慢与重登根因
+
+- 正式数据的隔离 Electron 实测证明凭据没有丢失：`configured=true`、`locked=false`、`safeStorage` 可自动解密，10 个模型配置和任务历史均可读取。真正的误判发生在 `checkConnection()`：它只探测 `/models`，当线上模型目录返回了客户端不认识的 envelope 时，服务把这一种解析异常统一显示成 `network_unavailable`，从而让用户误以为必须重新登录。
+- 修复：模型目录探测发生非认证、非限流异常时，再用带同一已保存凭据的只读 `/tasks` 请求确认会话；任务读取成功即报告 `connected`，401/403 仍报告认证失败，429/5xx 仍报告服务受限。TDD 回归位于 `packages/desktop-core/src/relayme-provider-service.test.ts`。
+- 系统确实启用了 `127.0.0.1:7890` 用户代理，旧代码却对 RelayMe API 和网页登录强制 `mode: 'direct'`。Electron 实测显示当前机器的 system/direct 两条路径都能快速到达 RelayMe 并返回未认证 401，因此“直连就是本次唯一根因”的早期判断不成立；改为 `relayme-system-network` 和 `mode: 'system'` 作为兼容系统网络策略的修正保留。
+- 设置页在凭据已配置时显示“重新登录 RelayMe”，未配置时才显示“登录 RelayMe”，避免把可选的重新认证按钮误读成登录丢失。相关回归覆盖 SettingsDrawer、网页登录网络策略、runtime entry 和连接降级探测。
+- 最终 1.6.87 新包验证：聚焦 115/115、完整 Vitest 2635 通过且 2 个性能测试按设计跳过、Playwright 146/146、typecheck/build/NSIS 均通过。隔离 packaged 启动返回 RelayMe `connected`、10 个模型、可读任务历史；启动烟测恢复 1 个保存图片节点，`fatalAlertCount=0`、`pageErrors=[]`。未提交新的付费生成，未安装、提交、推送或发布。

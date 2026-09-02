@@ -359,13 +359,18 @@
   padding: 4px 6px !important;
   overflow-x: auto !important;
   overflow-y: hidden !important;
-  scrollbar-width: none !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--gate-border-strong, var(--border-strong)) transparent !important;
 }
 
 .workspace--ui-gate .connected-agent-media-slots__row::-webkit-scrollbar {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
+  display: block !important;
+  width: 6px !important;
+  height: 6px !important;
+}
+.workspace--ui-gate .connected-agent-media-slots__row::-webkit-scrollbar-thumb {
+  background: var(--gate-border-strong, var(--border-strong)) !important;
+  border-radius: 999px !important;
 }
 
 .workspace--ui-gate .connected-agent-media-slots__item {
@@ -609,6 +614,22 @@
   border-radius: 8px !important;
   line-height: 1 !important;
 }
+.workspace--ui-gate .module-node__video-duration-slider {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  min-width: 170px !important;
+  padding: 5px 9px !important;
+  color: var(--text-muted, #82939a) !important;
+  background: var(--surface-subtle, #f4f7f8) !important;
+  border: 1px solid var(--border, #d8e1e4) !important;
+  border-radius: 10px !important;
+  font-size: 11px !important;
+}
+.workspace--ui-gate .module-node__video-duration-slider label { white-space: nowrap !important; }
+.workspace--ui-gate .module-node__video-duration-slider input[type='range'] { width: 92px !important; accent-color: var(--accent, #16a99b) !important; }
+.workspace--ui-gate .module-node__video-duration-slider output { min-width: 27px !important; color: var(--text, #20313b) !important; font-variant-numeric: tabular-nums !important; font-weight: 700 !important; }
+.workspace--ui-gate .module-node__video-duration-fallback { display: none !important; }
 
 .workspace--ui-gate .module-node__generation-preview-item > :is(img, video),
 .workspace--ui-gate .module-node__generation-collapsed-open > :is(img, video),
@@ -1611,6 +1632,119 @@
   .workspace--ui-gate .settings-model-group { grid-template-columns: 1fr !important; }
   .workspace--ui-gate .settings-model-list, .workspace--ui-gate .settings-model-default { grid-column: 1 !important; }
   .workspace--ui-gate .settings-model-list { grid-template-columns: 1fr !important; }
+}
+
+/* 微信式 Agent 对话：消息按角色对齐，正文保持可读且永不撑破面板。 */
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__messages {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  padding: 4px 2px 18px !important;
+}
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message {
+  position: relative !important;
+  width: fit-content !important;
+  max-width: min(78%, 560px) !important;
+  margin: 0 !important;
+  padding: 10px 13px !important;
+  border: 0 !important;
+  border-radius: 14px !important;
+  box-shadow: 0 2px 8px rgb(31 55 67 / 7%) !important;
+  line-height: 1.55 !important;
+}
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message::before {
+  content: '' !important;
+  position: absolute !important;
+  top: 12px !important;
+  width: 8px !important;
+  height: 8px !important;
+  background: inherit !important;
+  transform: rotate(45deg) !important;
+}
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--assistant {
+  align-self: flex-start !important;
+  color: var(--text, #20313b) !important;
+  background: #fff !important;
+  border-top-left-radius: 4px !important;
+}
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--assistant::before { left: -3px !important; }
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--user {
+  align-self: flex-end !important;
+  color: #123c38 !important;
+  background: #b8eee4 !important;
+  border-top-right-radius: 4px !important;
+}
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--user::before { right: -3px !important; }
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message > span {
+  display: block !important;
+  margin-bottom: 3px !important;
+  color: #6e858c !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+}
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--user > span { color: #388e83 !important; text-align: right !important; }
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message > p { margin: 0 !important; white-space: pre-wrap !important; overflow-wrap: anywhere !important; }
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--thinking { padding: 9px 12px !important; color: #687d83 !important; background: #f4f8f8 !important; }
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status { display: inline-flex !important; align-items: center !important; gap: 7px !important; color: #687d83 !important; font-size: 12px !important; }
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status i { width: 12px !important; height: 12px !important; border: 2px solid #9aacb0 !important; border-right-color: transparent !important; border-radius: 50% !important; animation: agent-thinking-spin .8s linear infinite !important; }
+@keyframes agent-thinking-spin { to { transform: rotate(360deg); } }
+.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__error {
+  align-self: flex-start !important;
+  max-width: min(82%, 560px) !important;
+  margin: 0 4px 8px !important;
+  padding: 9px 12px !important;
+  color: #a63838 !important;
+  background: #fff1f1 !important;
+  border: 1px solid #f1c5c5 !important;
+  border-radius: 12px !important;
+  font-size: 12px !important;
+}
+
+/* The decorative play glyph must never sit above the native video controls. */
+.workspace--ui-gate .module-node__video-output-play,
+.workspace--ui-gate .module-node__video-preview-play,
+.workspace--ui-gate .module-node__generation-preview-play {
+  pointer-events: none !important;
+}
+.workspace--ui-gate .module-node__video-preview-play {
+  pointer-events: auto !important;
+  z-index: 30 !important;
+  cursor: pointer !important;
+}
+
+/* The expanded composer spans the full video node only for positioning its
+   controls. Its transparent box must not sit above the native <video>
+   controls; opt only the real editor regions back into pointer handling. */
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__workbench {
+  pointer-events: none !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'],
+.workspace--ui-gate .react-flow__node-module.canvas-flow-node--module-video_generation {
+  pointer-events: auto !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__workbench-header,
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__result {
+  pointer-events: auto !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__summary--generation {
+  pointer-events: none !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__configuration,
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-figma-composer {
+  pointer-events: none !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-figma-composer > :is(
+  .module-node__unified-media-slots,
+  .module-node__prompt-workspace,
+  .module-node__video-control-bar,
+  .module-node__agent-notice
+) {
+  pointer-events: auto !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__result video {
+  position: relative !important;
+  z-index: 20 !important;
+  pointer-events: auto !important;
 }
 @media (max-width: 560px) {
   .workspace--ui-gate .settings-model-list { grid-template-columns: 1fr !important; }

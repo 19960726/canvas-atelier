@@ -863,8 +863,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     try {
       const providerBridge = globalThis.window?.novusDesktop?.provider;
+      const reverseProfiles = providerBridge?.listProfiles ? await listRunnableProviderProfiles(providerBridge) : [];
       const reverseProfile = providerBridge?.listProfiles
-        ? selectProviderProfile(await listRunnableProviderProfiles(providerBridge), parsedConfig.data.modelRoute, 'reverse_prompt')
+        ? selectProviderProfile(reverseProfiles, parsedConfig.data.modelRoute, 'reverse_prompt')
+          ?? reverseProfiles.find((profile) => profile.modelRoute === parsedConfig.data.modelRoute
+            && profile.capabilities.includes('chat'))
+          ?? reverseProfiles.find((profile) => profile.capabilities.includes('chat'))
         : undefined;
       if (providerBridge?.listProfiles && !reverseProfile) throw new Error('所选模型没有明确声明反推能力');
       // The renderer may retain a historical route alias after the provider
@@ -1395,7 +1399,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       await withProjectPersistenceTimeout(projectPersistenceClient.close());
       return true;
     } catch {
-      return false;
+      // The durable save boundary above has already completed. A timeout while
+      // releasing the desktop session must not be reported as a save failure:
+      // the native close coordinator would otherwise show a recovery dialog
+      // even though there are no pending writes left to protect.
+      return !state.recoveryRequired
+        && (state.saveStatus === 'saved' || state.saveStatus === 'read_only');
     }
   },
   discardPersistence: async () => {

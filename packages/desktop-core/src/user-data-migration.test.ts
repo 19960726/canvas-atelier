@@ -41,6 +41,7 @@ describe('stable desktop user data', () => {
 
     await mkdir(join(legacyRoot, 'providers', 'relayme'), { recursive: true });
     await mkdir(stableRoot, { recursive: true });
+    await writeFile(join(legacyRoot, 'provider-active.json'), '{"activeProvider":"relayme"}', 'utf8');
     await writeFile(join(legacyRoot, 'provider-credentials.json'), 'legacy-comfly', 'utf8');
     await writeFile(join(legacyRoot, 'provider-configuration.json'), 'legacy-comfly-config', 'utf8');
     await writeFile(join(legacyRoot, 'providers', 'relayme', 'provider-credentials.json'), 'legacy-relayme', 'utf8');
@@ -49,9 +50,11 @@ describe('stable desktop user data', () => {
     const result = await migrateLegacyProviderData({ stableRoot, legacyRoots: [legacyRoot] });
 
     expect(result.copied).toEqual([
+      'provider-active.json',
       'provider-configuration.json',
       'providers/relayme/provider-credentials.json',
     ]);
+    expect(await readFile(join(stableRoot, 'provider-active.json'), 'utf8')).toBe('{"activeProvider":"relayme"}');
     expect(await readFile(join(stableRoot, 'provider-credentials.json'), 'utf8')).toBe('current-comfly');
     expect(await readFile(join(stableRoot, 'provider-configuration.json'), 'utf8')).toBe('legacy-comfly-config');
     expect(await readFile(join(stableRoot, 'providers', 'relayme', 'provider-credentials.json'), 'utf8')).toBe('legacy-relayme');

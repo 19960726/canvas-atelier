@@ -72,11 +72,11 @@ async function getCreatedWindow(): Promise<FakeBrowserWindow> {
 }
 
 describe('RelayMe official web login', () => {
-  it('uses an isolated secure modal window and prepares only the official localStorage on direct network', async () => {
+  it('uses an isolated secure modal window and follows the Windows system proxy', async () => {
     const { loginSession, parent, promise } = createHarness();
     const window = await getCreatedWindow();
 
-    expect(loginSession.setProxy).toHaveBeenCalledWith({ mode: 'direct' });
+    expect(loginSession.setProxy).toHaveBeenCalledWith({ mode: 'system' });
     expect(loginSession.clearStorageData).toHaveBeenCalledWith({
       origin: OFFICIAL_ORIGIN,
       storages: ['localstorage'],

@@ -76,6 +76,18 @@ describe('recent project preload API', () => {
     expect(JSON.stringify(calls)).not.toMatch(/path|script|[A-Za-z]:\\/u);
   });
 
+  it('sends PNG bytes through the narrow native clipboard channel', async () => {
+    const calls: Array<{ channel: string; payload: unknown }> = [];
+    const api = createPreloadApi(async <TResponse>(channel: string, payload?: unknown): Promise<TResponse> => {
+      calls.push({ channel, payload });
+      return true as TResponse;
+    });
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+
+    await expect(api.projectImages.writeClipboardImage(bytes)).resolves.toBe(true);
+    expect(calls).toEqual([{ channel: BRIDGE_CHANNELS.writeClipboardImage, payload: bytes }]);
+  });
+
   it('exposes only narrow RelayMe account and active-provider calls', async () => {
     const calls: Array<{ channel: string; payload: unknown }> = [];
     const api = createPreloadApi(async <TResponse>(channel: string, payload?: unknown): Promise<TResponse> => {

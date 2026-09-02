@@ -1,4 +1,4 @@
-import { useEffect, useState, type DragEvent, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type PointerEvent, type WheelEvent } from 'react';
 import { ChevronLeft, ChevronRight, Image as ImageIcon, Video } from 'lucide-react';
 import { MAX_GENERATION_REFERENCES } from '@agent-canvas/domain';
 import { CONNECTED_MEDIA_DRAG_MIME, encodeConnectedMediaDragPayload } from './connected-media-drag';
@@ -47,6 +47,7 @@ export function ConnectedAgentMediaSlots({
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [pointerDragIndex, setPointerDragIndex] = useState<number | null>(null);
+  const nativeDragActiveRef = useRef(false);
 
   const reorder = (fromIndex: number, toIndex: number) => {
     if (!onReorder || fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= visibleMedia.length || toIndex >= visibleMedia.length) return;
@@ -88,18 +89,21 @@ export function ConnectedAgentMediaSlots({
             draggable={onReorder !== undefined}
             onPointerDown={(event) => {
               stopPointer(event);
+              nativeDragActiveRef.current = false;
               if (!onReorder || event.button !== 0) return;
               setPointerDragIndex(index);
             }}
             onPointerEnter={() => { if (pointerDragIndex !== null) setDropIndex(index); }}
             onPointerUp={(event) => {
               stopPointer(event);
+              if (nativeDragActiveRef.current) return;
               if (pointerDragIndex !== null) reorder(pointerDragIndex, index);
               setPointerDragIndex(null);
               setDropIndex(null);
             }}
             onPointerCancel={() => { setPointerDragIndex(null); setDropIndex(null); }}
             onDragStart={(event) => {
+              nativeDragActiveRef.current = true;
               setPointerDragIndex(null);
               const itemId = mediaItemId(item, index);
               if (event.dataTransfer) {
@@ -109,7 +113,7 @@ export function ConnectedAgentMediaSlots({
               }
               setDraggedItemId(itemId);
             }}
-            onDragEnd={() => { setDraggedItemId(null); setDropIndex(null); }}
+            onDragEnd={() => { nativeDragActiveRef.current = false; setDraggedItemId(null); setDropIndex(null); }}
             onDragOver={(event) => { event.preventDefault(); setDropIndex(index); }}
             onDrop={(event) => finishDrop(event, index)}
           >

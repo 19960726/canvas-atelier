@@ -68,6 +68,7 @@ describe('JobStrip', () => {
     );
 
     expect(screen.queryByTestId('save-retry')).not.toBeInTheDocument();
+    expect(screen.getByTestId('save-reload')).toHaveTextContent('重新载入项目');
     fireEvent.click(screen.getByTestId('save-reload'));
     expect(onReloadSave).toHaveBeenCalledOnce();
   });

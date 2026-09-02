@@ -709,7 +709,7 @@ describe('ModuleNodeCard', () => {
         modelRoute: 'image-gen',
         displayName: 'Image Gen',
         modelId: 'image-gen',
-        capabilities: ['image_generation'],
+        capabilities: ['image_generation', 'image_edit'],
       }],
     } as typeof node.data;
 
@@ -1257,6 +1257,54 @@ describe('ModuleNodeCard', () => {
     }));
   });
 
+  it('retries a failed text-only RelayMe route in the same node without silently submitting its unsupported reference', () => {
+    const image = createCanvasModuleNode('relayme-retry-source', 'image_input', { x: 0, y: 0 });
+    image.data.config = { assetId: projectImage.assetId };
+    const generation = createCanvasModuleNode('relayme-retry-target', 'image_generation', { x: 420, y: 0 });
+    const runImageGenerationNode = vi.fn(async () => true);
+    const data = {
+      ...generation.data,
+      config: {
+        ...generation.data.config,
+        prompt: 'Keep the cocktail product centered',
+        modelRoute: 'relayme-gemini-3-pro-image-preview',
+      },
+      onGenerateImage: runImageGenerationNode,
+      imageGenerationRoutes: [{
+        provider: 'relayme',
+        modelRoute: 'relayme-gemini-3-pro-image-preview',
+        displayName: 'Nano Banana Pro',
+        modelId: 'gemini-3-pro-image-preview',
+        capabilities: ['image_generation', 'image_edit'],
+      }],
+    } as typeof generation.data;
+    useAppStore.setState({
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [image, { ...generation, data }],
+        edges: [{ id: 'relayme-retry-edge', source: image.id, sourcePortId: 'image', target: generation.id, targetPortId: 'references', order: 0 }],
+      },
+      projectImages: [projectImage],
+      modelJobs: [{
+        id: 'relayme-reference-failed',
+        kind: 'image',
+        promptNodeId: generation.id,
+        modelRoute: 'relayme-gemini-3-pro-image-preview',
+        status: 'failed',
+        error: 'RelayMe 模型“Nano Banana Pro”当前只支持文本生图，不支持参考图；任务未提交、不会消耗生成额度',
+      }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={generation.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    expect(screen.getByRole('button', { name: 'Generate image' })).toHaveTextContent('仅按提示词生成');
+    fireEvent.click(screen.getByRole('button', { name: '仅按提示词重新生成（不使用素材）' }));
+
+    expect(runImageGenerationNode).toHaveBeenCalledWith(generation.id, expect.not.objectContaining({
+      referenceAssetIds: expect.anything(),
+    }));
+  });
+
   it('keeps the connected video-media slot visible while an upstream upload is still unresolved', () => {
     const image = createCanvasModuleNode('video-slot-pending-image', 'image_input', { x: 0, y: 0 });
     const video = createCanvasModuleNode('video-slot-pending-target', 'video_generation', { x: 420, y: 0 });
@@ -1350,6 +1398,37 @@ describe('ModuleNodeCard', () => {
       resolution: '2K',
       outputCount: 1,
     });
+  });
+
+  it('repairs a saved legacy image route before an old canvas submits generation', async () => {
+    const node = createCanvasModuleNode('legacy-route-image-run', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'retired-nano-banana-route' };
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{
+        provider: 'relayme',
+        modelRoute: 'relayme-nano-banana-pro-current',
+        displayName: 'Nano Banana Pro',
+        modelId: 'nano-banana-pro',
+        capabilities: ['image_generation'],
+      }],
+    } as typeof node.data;
+    const runImageGenerationNode = vi.fn(async () => true);
+    const draftGenerationNodeConfig = vi.fn(async () => true);
+    useAppStore.setState({ runImageGenerationNode, draftGenerationNodeConfig } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'Generate from a saved canvas' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
+
+    await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({
+      modelRoute: 'relayme-nano-banana-pro-current',
+      prompt: 'Generate from a saved canvas',
+    })));
+    await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenCalledWith(node.id, expect.objectContaining({
+      modelRoute: 'relayme-nano-banana-pro-current',
+    })));
   });
 
   it('renders a highlighted media reference mention chip and sends the managed asset to image generation', () => {
@@ -1696,6 +1775,18 @@ describe('ModuleNodeCard', () => {
     openVideoGenerationEditor();
     expect(within(screen.getByLabelText('Video preview duration')).getAllByRole('option').map((item) => item.textContent)).toEqual(['4秒', '8秒', '12秒']);
   });
+  it('exposes a 1-15 second video duration slider and persists its value', () => {
+    const node = createCanvasModuleNode('video-duration-slider', 'video_generation', { x: 0, y: 0 });
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+    const slider = screen.getByLabelText('Video preview duration slider');
+    expect(slider).toBeVisible();
+    const input = within(slider).getByRole('slider');
+    expect(input).toHaveAttribute('min', '1');
+    expect(input).toHaveAttribute('max', '15');
+    fireEvent.change(input, { target: { value: '15' } });
+    expect(within(slider).getByText('15s')).toBeVisible();
+  });
   it('runs an offline video preview from the prompt and leaves media resolution to the connected port', () => {
     const node = createCanvasModuleNode('video-preview', 'video_generation' as never, { x: 0, y: 0 });
     const runVideoPreviewNode = vi.fn(async () => true);
@@ -1794,6 +1885,7 @@ describe('ModuleNodeCard', () => {
       'Video preview mode',
       'Video preview aspect ratio',
       'Video preview resolution',
+      'Video preview duration slider',
       'Video preview duration',
       'Video preview audio',
       'Video preview quantity',
@@ -2983,6 +3075,19 @@ describe('ModuleNodeCard', () => {
     expect(video).toHaveAttribute('controls');
     expect(screen.getByText('Product turntable')).toBeVisible();
     expect(screen.getByText('2 KB')).toBeVisible();
+  });
+
+  it('starts a restored managed video when its preview is clicked', async () => {
+    const videoNode = createCanvasModuleNode('clickable-video-input', 'video_input', { x: 0, y: 0 });
+    videoNode.data.config = { assetId: projectVideo.assetId };
+    useAppStore.setState({ projectVideos: [projectVideo] });
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={videoNode.id} data={videoNode.data} selected={false} /></ReactFlowProvider>);
+
+    fireEvent.pointerDown(screen.getByLabelText('Product turntable'));
+    expect(play).toHaveBeenCalledOnce();
+    play.mockRestore();
   });
 
   it('renders an ordered canvas-library selection with stable move controls', () => {

@@ -231,7 +231,7 @@ describe('SettingsDrawer', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
+    fireEvent.click(within(screen.getByTestId('settings-provider-layer')).getByRole('button', { name: '重新登录 RelayMe' }));
     const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
@@ -246,7 +246,7 @@ describe('SettingsDrawer', () => {
     expect((await screen.findAllByText('Relay Chat')).length).toBeGreaterThanOrEqual(1);
     expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' });
 
-    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
+    fireEvent.click(within(screen.getByTestId('settings-provider-layer')).getByRole('button', { name: '重新登录 RelayMe' }));
     const reopenedDialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
     expect(within(reopenedDialog).getByLabelText('RelayMe 密码')).toHaveValue('');
     fireEvent.click(within(reopenedDialog).getByRole('button', { name: '取消' }));
@@ -359,15 +359,34 @@ describe('SettingsDrawer', () => {
 
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
-    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
+    fireEvent.click(within(screen.getByTestId('settings-provider-layer')).getByRole('button', { name: '重新登录 RelayMe' }));
     const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
     fireEvent.click(within(dialog).getByRole('button', { name: '使用 RelayMe 网页登录' }));
 
     await waitFor(() => expect(loginRelayMeWeb).toHaveBeenCalledWith());
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '登录 RelayMe' })).not.toBeInTheDocument());
-    expect(screen.getByRole('status')).toHaveTextContent('RelayMe 网页登录成功，已加载 2 个模型');
+    expect(screen.getByRole('status')).toHaveTextContent('RelayMe 网页登录成功，API 已自动连接，已加载 2 个模型');
     expect((await screen.findAllByText('GPT Image 2')).length).toBeGreaterThanOrEqual(1);
     expect(listProfiles).toHaveBeenCalledWith({ provider: 'relayme' });
+  });
+
+  it('labels an already configured RelayMe account as re-login', async () => {
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+        setActiveProvider: vi.fn(async ({ activeProvider }: { activeProvider: 'comfly' | 'relayme' }) => ({ activeProvider })),
+        getStatus: vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => ({
+          configured: provider === 'relayme', locked: false, encryption: 'safeStorage' as const,
+        })),
+        listProfiles: vi.fn(async () => []),
+        loginRelayMeWeb: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    await screen.findByRole('listitem', { name: /RelayMe/u });
+    expect(within(screen.getByTestId('settings-provider-layer')).getByRole('button', { name: '重新登录 RelayMe' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '登录 RelayMe' })).not.toBeInTheDocument();
   });
 
   it.each([

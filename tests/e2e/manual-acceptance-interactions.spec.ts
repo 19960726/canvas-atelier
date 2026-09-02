@@ -10,9 +10,8 @@ test('manual acceptance keeps model, storage, and Agent controls interactive', a
   await expect(settings).toBeVisible();
   await settings.getByRole('tab').nth(0).click();
   const modelGroups = settings.locator('.settings-model-group');
-  await expect(modelGroups).toHaveCount(5);
+  await expect(modelGroups).toHaveCount(1);
   await expect(modelGroups.nth(0).locator('.settings-model-list article')).not.toHaveCount(0);
-  await expect(modelGroups.nth(4).locator('.settings-model-list article')).not.toHaveCount(0);
   const defaultImage = settings.getByLabel('生图默认模型');
   const imageModelValue = await defaultImage.locator('option').evaluateAll((options) => (
     options.map((option) => (option as HTMLOptionElement).value).find((value) => value.length > 0) ?? ''

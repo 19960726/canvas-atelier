@@ -65,6 +65,24 @@ function renderWorkbench(overrides: Partial<React.ComponentProps<typeof SkillCha
 }
 
 describe('SkillChatWorkbench', () => {
+  it('repairs a stale persisted Agent route instead of leaving chat unavailable', async () => {
+    const initialConversation = { ...createAgentConversation(7), mode: 'chat' as const, modelRoute: '1' };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: initialConversation.id,
+      conversations: [initialConversation],
+    });
+    const chat = vi.fn(async () => ({ message: '已恢复对话', modelRoute: 'chat/creative', sources: [] }));
+    renderWorkbench({ chat });
+
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Creative chat'));
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: '测试恢复' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    expect(await screen.findByText('已恢复对话')).toBeVisible();
+  });
+
   it('keeps clipboard events inside the Agent workbench', () => {
     const outerCopy = vi.fn();
     const outerCut = vi.fn();
@@ -1799,7 +1817,7 @@ it('requires confirmation before an Agent image command executes a canvas node',
 
   fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
   await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith({
-    kind: 'image_generation', nodeId: 'image-node-1', prompt: '生成一张产品主图',
+    kind: 'image_generation', nodeId: 'image-node-1', prompt: '生成一张产品主图', modelRoute: 'image/only',
   }));
 });
 
@@ -1818,5 +1836,5 @@ it.each([
   expect(executeCanvasAction).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: confirmLabel }));
 
-  await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith({ kind, nodeId, prompt: command }));
+  await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith(expect.objectContaining({ kind, nodeId, prompt: command })));
 });

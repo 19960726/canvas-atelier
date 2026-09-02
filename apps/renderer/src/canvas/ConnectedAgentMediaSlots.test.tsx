@@ -70,6 +70,21 @@ describe('ConnectedAgentMediaSlots', () => {
     expect(onReorder).toHaveBeenCalledWith([media[3], media[0], media[1], media[2]]);
   });
 
+  it('commits only one reorder when pointer and native drag events overlap', () => {
+    const onReorder = vi.fn();
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={onReorder} />);
+    const source = screen.getByLabelText('Agent media slot 4');
+    const target = screen.getByLabelText('Agent media slot 1');
+    fireEvent.pointerDown(source, { button: 0, pointerId: 9 });
+    fireEvent.pointerEnter(target, { pointerId: 9 });
+    fireEvent.dragStart(source, { dataTransfer: { setData: vi.fn(), effectAllowed: 'none' } });
+    fireEvent.pointerUp(target, { button: 0, pointerId: 9 });
+    fireEvent.dragOver(target);
+    fireEvent.drop(target);
+    expect(onReorder).toHaveBeenCalledTimes(1);
+    expect(onReorder).toHaveBeenLastCalledWith([media[3], media[0], media[1], media[2]]);
+  });
+
   it('keeps the latest local order when several swaps happen before persistence rerenders the parent', () => {
     const onReorder = vi.fn();
     render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={onReorder} />);
@@ -181,7 +196,7 @@ describe('ConnectedAgentMediaSlots', () => {
     expect(css).toContain('opacity: 1 !important;');
     expect(css).toContain('overflow-x: auto !important;');
     expect(css).toContain('pointer-events: none !important;');
-    expect(css).toMatch(/module-node__agent-media-slot-row::-webkit-scrollbar\s*\{[^}]*display:\s*none/isu);
+    expect(css).toMatch(/module-node__agent-media-slot-row::-webkit-scrollbar\s*\{[^}]*height:\s*6px/isu);
   });
   it('keeps reorder controls inside their own slot hit area', () => {
     const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');

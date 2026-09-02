@@ -1882,6 +1882,22 @@ describe('project optimization memory', () => {
     expect(stablePoint).not.toHaveBeenCalled();
   });
 
+  it('does not report a close-handle timeout as a save failure after a saved session', async () => {
+    const close = vi.fn(async () => { throw new Error('desktop close timed out'); });
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      project: createStarterProject(),
+      revision: 3,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ close, stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ saveStatus: 'saved', projectLifecycle: 'durable' });
+
+    await expect(useAppStore.getState().closePersistence()).resolves.toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+    expect(stablePoint).not.toHaveBeenCalled();
+  });
+
   it('retries the exact failed commit before closing a writable session', async () => {
     const project = moduleGraphProject();
     const close = vi.fn(async () => undefined);

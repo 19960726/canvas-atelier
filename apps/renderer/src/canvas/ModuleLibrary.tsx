@@ -78,7 +78,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
   };
 
   return (
-    <aside className="module-library" aria-label="模块库 / Module library" data-figma-surface="module-library" data-testid="module-library">
+    <aside className="module-library" aria-label="模块库 / Module library" data-canvas-surface="module-library" data-figma-surface="module-library" data-testid="module-library">
       <header className="module-library__header">
         <div data-testid="module-library-heading">
           <strong>模块库</strong>

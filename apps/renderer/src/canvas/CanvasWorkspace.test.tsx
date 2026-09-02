@@ -636,6 +636,41 @@ describe('CanvasWorkspace', () => {
     expect(importDroppedMedia).not.toHaveBeenCalled();
   });
 
+  it('does not replace a selected image node when Ctrl+V supplies text only', async () => {
+    const target = createCanvasModuleNode('paste-selected-image-text', 'image_input', { x: 120, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    const importImageForModule = vi.fn(async () => true);
+    const pasteClipboardMedia = vi.fn(async () => true);
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [target] },
+      importImageForModule,
+      pasteClipboardMedia,
+    } as never));
+    window.novusDesktop = {} as unknown as typeof window.novusDesktop;
+    vi.stubGlobal('navigator', {
+      clipboard: {
+        read: vi.fn(async () => [{
+          types: ['image/png'],
+          getType: async () => new Blob(['stale image'], { type: 'image/png' }),
+        }]),
+      },
+    });
+    render(<CanvasWorkspace />);
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(flowNode).not.toBeNull();
+    fireEvent.click(flowNode!);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+
+    const textPaste = createEvent.paste(window, {
+      clipboardData: { types: ['text/plain'], getData: () => 'not an image' },
+    });
+    fireEvent(window, textPaste);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(importImageForModule).not.toHaveBeenCalled();
+    expect(pasteClipboardMedia).not.toHaveBeenCalled();
+  });
+
   it('copies the selected image node media with Ctrl+C for direct node-to-node replacement', async () => {
     const source = createCanvasModuleNode('copy-selected-image', 'image_input', { x: 120, y: 120 });
     source.data.config = { assetId: 'aaaaaaaaaaaaaaaa' };
@@ -659,6 +694,33 @@ describe('CanvasWorkspace', () => {
     fireEvent.copy(window);
 
     await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  });
+
+  it('falls back to the native desktop clipboard when browser image writing is rejected', async () => {
+    const source = createCanvasModuleNode('copy-selected-image-native', 'image_input', { x: 120, y: 120 });
+    source.data.config = { assetId: 'abababababababab' };
+    resetAppStoreForTests({ project: 'empty' });
+    const writeClipboardImage = vi.fn(async (_bytes: Uint8Array) => true);
+    vi.stubGlobal('navigator', { clipboard: { write: vi.fn(async () => { throw new Error('NotAllowedError'); }) } });
+    vi.stubGlobal('ClipboardItem', class ClipboardItemMock { constructor(readonly data: Record<string, Blob>) {} });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(['image'], { type: 'image/png' }))));
+    window.novusDesktop = { projectImages: { writeClipboardImage } } as unknown as typeof window.novusDesktop;
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [source] },
+      projectImages: [{
+        assetId: 'abababababababab', byteSize: 5, displayUrl: 'novus-asset://project/session/abababababababab', extension: 'png', height: 100,
+        label: 'Source image', mediaType: 'image/png', origin: 'imported', sha256: 'b'.repeat(64), usageCount: 1, width: 100,
+      }],
+    }));
+    render(<CanvasWorkspace />);
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node');
+    fireEvent.click(flowNode!);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+
+    fireEvent.copy(window);
+
+    await waitFor(() => expect(writeClipboardImage).toHaveBeenCalledTimes(1));
+    expect(writeClipboardImage.mock.calls[0]?.[0]).toBeInstanceOf(Uint8Array);
   });
 
   it('imports a Windows Explorer clipboard File directly when Electron exposes no readable native file path', async () => {
@@ -2075,6 +2137,45 @@ describe('CanvasWorkspace', () => {
     expect(screen.getAllByTestId('module-node-card').length).toBeGreaterThan(0);
   });
 
+  it('keeps a small far-from-origin project renderable when it is opened after viewport initialization', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 600,
+      height: 600,
+      left: 0,
+      right: 800,
+      toJSON: () => ({}),
+      top: 0,
+      width: 800,
+      x: 0,
+      y: 0,
+    } as DOMRect);
+    useAppStore.getState().setProject({
+      version: 1,
+      id: 'project-empty-before-open',
+      name: 'Empty Before Open',
+      nodes: [],
+      edges: [],
+      projectMemory: [],
+      skillPromotionCandidates: [],
+    });
+    render(<CanvasWorkspace />);
+    await waitFor(() => expect(document.querySelector('.react-flow__viewport')).not.toBeNull());
+
+    act(() => {
+      useAppStore.getState().setProject({
+        version: 1,
+        id: 'project-small-far-after-open',
+        name: 'Small Far Project After Open',
+        nodes: [createCanvasModuleNode('far-opened-module', 'image_generation', { x: 5200, y: 4800 })],
+        edges: [],
+        projectMemory: [],
+        skillPromotionCandidates: [],
+      });
+    });
+
+    expect(screen.getAllByTestId('module-node-card')).toHaveLength(1);
+  });
+
   it('opens the placement workbench with separate reference uploads', () => {
     render(<CanvasWorkspace />);
     fireEvent.click(screen.getByLabelText('摆放预览'));
@@ -2834,7 +2935,7 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByTestId('save-reload'));
     expect(reloadDurableProject).toHaveBeenCalledOnce();
 
-    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('桌面项目已更新，已重新载入最新版本');
+    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('桌面项目已被其他版本更新，请点击重新载入');
   });
 
   it('shows only recovery and discard actions for a recovery-required preview', () => {

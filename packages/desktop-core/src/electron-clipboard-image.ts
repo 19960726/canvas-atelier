@@ -13,12 +13,14 @@ export interface TrustedClipboardImage {
 
 export interface ClipboardImageAdapter {
   readImage(): Promise<TrustedClipboardImage | null>;
+  writeImage?(bytes: Uint8Array): Promise<boolean>;
 }
 
 interface ElectronClipboardLike {
   availableFormats?(): string[];
   readBuffer?(format: string): Uint8Array;
   readImage(): ElectronNativeImageLike;
+  writeImage?(image: ElectronNativeImageLike): void;
 }
 
 interface ElectronNativeImageLike {
@@ -29,9 +31,26 @@ interface ElectronNativeImageLike {
 
 export function createElectronClipboardImageAdapter(
   clipboard: ElectronClipboardLike,
-  fileImages: { readonly createFromPath?: (path: string) => ElectronNativeImageLike } = {},
+  fileImages: {
+    readonly createFromBuffer?: (bytes: Uint8Array) => ElectronNativeImageLike;
+    readonly createFromPath?: (path: string) => ElectronNativeImageLike;
+  } = {},
 ): ClipboardImageAdapter {
   return {
+    async writeImage(bytes) {
+      if (clipboard.writeImage === undefined || fileImages.createFromBuffer === undefined) return false;
+      if (bytes.byteLength === 0 || bytes.byteLength > MAX_CLIPBOARD_PNG_BYTES) return false;
+      try {
+        const image = fileImages.createFromBuffer(bytes);
+        if (image.isEmpty()) return false;
+        const size = image.getSize();
+        if (trustedClipboardPng(image.toPNG(), size.width, size.height) === null) return false;
+        clipboard.writeImage(image);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     async readImage() {
       const image = clipboard.readImage();
       if (!image.isEmpty()) {

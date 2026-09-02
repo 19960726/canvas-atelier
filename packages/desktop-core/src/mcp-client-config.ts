@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 export type McpClientId = 'codex' | 'workbuddy';
+const MCP_SERVER_KEY = 'canvas_atelier' as const;
 export type McpClientConnectionState = 'unconfigured' | 'configured' | 'connected' | 'connection_failed';
 
 export interface McpClientHealthResult {
@@ -104,7 +105,7 @@ export function createMcpClientConfigManager(options: McpClientConfigManagerOpti
     copyConfig(client) {
       return client === 'codex'
         ? `${renderCodexSection(spec)}\n`
-        : `${JSON.stringify({ mcpServers: { canvasforge: spec } }, null, 2)}\n`;
+        : `${JSON.stringify({ mcpServers: { [MCP_SERVER_KEY]: spec } }, null, 2)}\n`;
     },
   };
 }
@@ -165,7 +166,7 @@ async function restoreOriginal(path: string, snapshot: FileSnapshot): Promise<vo
 function mergeWorkBuddyConfig(text: string, spec: McpLaunchSpec): string {
   const root = parseWorkBuddyRoot(text);
   const servers = isPlainRecord(root.mcpServers) ? { ...root.mcpServers } : {};
-  servers.canvasforge = cloneSpec(spec);
+  servers[MCP_SERVER_KEY] = cloneSpec(spec);
   return `${JSON.stringify({ ...root, mcpServers: servers }, null, 2)}\n`;
 }
 
@@ -173,13 +174,13 @@ function removeWorkBuddyConfig(text: string): string {
   const root = parseWorkBuddyRoot(text);
   if (!isPlainRecord(root.mcpServers)) return `${JSON.stringify(root, null, 2)}\n`;
   const servers = { ...root.mcpServers };
-  delete servers.canvasforge;
+  delete servers[MCP_SERVER_KEY];
   return `${JSON.stringify({ ...root, mcpServers: servers }, null, 2)}\n`;
 }
 
 function hasWorkBuddyConfig(text: string): boolean {
   const root = parseWorkBuddyRoot(text);
-  return isPlainRecord(root.mcpServers) && isPlainRecord(root.mcpServers.canvasforge);
+  return isPlainRecord(root.mcpServers) && isPlainRecord(root.mcpServers[MCP_SERVER_KEY]);
 }
 
 function parseWorkBuddyRoot(text: string): Record<string, unknown> {
@@ -216,7 +217,7 @@ function hasCodexConfig(text: string): boolean {
 }
 
 function findCodexSections(text: string): Array<{ start: number; end: number }> {
-  const header = /^\[mcp_servers\.canvasforge\][ \t]*(?:\r?\n|$)/gmu;
+  const header = /^\[mcp_servers\.canvas_atelier\][ \t]*(?:\r?\n|$)/gmu;
   const matches = [...text.matchAll(header)];
   return matches.map((match) => {
     const start = match.index ?? 0;
@@ -235,7 +236,7 @@ function renderCodexSection(spec: McpLaunchSpec): string {
     .map(([key, value]) => `${key} = ${tomlString(value)}`)
     .join(', ');
   return [
-    '[mcp_servers.canvasforge]',
+    '[mcp_servers.canvas_atelier]',
     `command = ${tomlString(spec.command)}`,
     `args = [${args}]`,
     `env = { ${env} }`,
