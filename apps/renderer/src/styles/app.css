@@ -8060,3 +8060,222 @@ textarea:focus-visible {
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* Video node controls follow the compact model/mode rail used by the
+   reference composer.  The native selects remain in the DOM for keyboard and
+   automation compatibility; the visible buttons provide the richer picker. */
+.workspace--ui-gate .module-node[data-module-type='video_generation'] :is(.module-node__video-model-picker, .module-node__video-mode-picker) {
+  position: relative !important;
+  min-width: 0 !important;
+  z-index: 4 !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-native-select {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  opacity: 0 !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] :is(.module-node__video-model-trigger, .module-node__video-mode-trigger) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 7px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 30px !important;
+  padding: 0 10px !important;
+  color: var(--text) !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  font: inherit !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+  text-align: left !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-trigger:disabled {
+  opacity: .52 !important;
+  cursor: not-allowed !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-name,
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-copy {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-icon {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 22px !important;
+  height: 22px !important;
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  border-radius: 6px !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-menu {
+  position: absolute !important;
+  right: auto !important;
+  bottom: calc(100% + 8px) !important;
+  left: 0 !important;
+  display: grid !important;
+  width: min(320px, 72vw) !important;
+  max-height: 300px !important;
+  overflow-y: auto !important;
+  padding: 6px !important;
+  gap: 3px !important;
+  color: #f3f6f7 !important;
+  background: #242626 !important;
+  border: 1px solid #4c504f !important;
+  border-radius: 12px !important;
+  box-shadow: 0 16px 34px rgb(0 0 0 / 32%) !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-menu > button {
+  display: grid !important;
+  grid-template-columns: 24px minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 9px !important;
+  min-height: 42px !important;
+  padding: 6px 8px !important;
+  color: inherit !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  font: inherit !important;
+  text-align: left !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-menu > button:hover,
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-menu > button.is-selected {
+  background: #3b3d3d !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-copy {
+  display: grid !important;
+  gap: 2px !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-model-copy small {
+  color: #9da5a5 !important;
+  font-size: 9px !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-mode-menu {
+  position: absolute !important;
+  right: 0 !important;
+  bottom: calc(100% + 8px) !important;
+  left: auto !important;
+  display: grid !important;
+  width: 190px !important;
+  padding: 8px !important;
+  gap: 3px !important;
+  color: #f3f6f7 !important;
+  background: #242626 !important;
+  border: 1px solid #4c504f !important;
+  border-radius: 12px !important;
+  box-shadow: 0 16px 34px rgb(0 0 0 / 32%) !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-mode-heading {
+  padding: 3px 8px 6px !important;
+  color: #9da5a5 !important;
+  font-size: 9px !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-mode-menu > button {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  min-height: 30px !important;
+  padding: 0 8px !important;
+  color: inherit !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  font: inherit !important;
+  font-size: 10px !important;
+  text-align: left !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-mode-menu > button:hover:not(:disabled),
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-mode-menu > button.is-selected {
+  background: #3b3d3d !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-mode-menu > button:disabled {
+  color: #737979 !important;
+  cursor: not-allowed !important;
+}
+.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-mode-menu > button small {
+  padding: 2px 5px !important;
+  color: #122d2b !important;
+  background: #4ec4bd !important;
+  border-radius: 4px !important;
+  font-size: 8px !important;
+}
+/* The image generator uses the same model-picker interaction contract. */
+.workspace--ui-gate .module-node[data-module-type='image_generation'] :is(.module-node__video-model-picker, .module-node__video-mode-picker) {
+  position: relative !important;
+  min-width: 0 !important;
+  z-index: 4 !important;
+}
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__video-native-select {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  opacity: 0 !important;
+}
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__video-model-trigger {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 7px !important;
+  width: 100% !important;
+  height: 30px !important;
+  padding: 0 10px !important;
+  color: var(--text) !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  font: inherit !important;
+  font-size: 10px !important;
+  text-align: left !important;
+}
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__video-model-picker { grid-column: 1 / span 2 !important; }
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__video-model-menu {
+  position: absolute !important;
+  right: auto !important;
+  bottom: calc(100% + 8px) !important;
+  left: 0 !important;
+  display: grid !important;
+  width: min(320px, 72vw) !important;
+  max-height: 300px !important;
+  overflow-y: auto !important;
+  padding: 6px !important;
+  gap: 3px !important;
+  color: #f3f6f7 !important;
+  background: #242626 !important;
+  border: 1px solid #4c504f !important;
+  border-radius: 12px !important;
+  box-shadow: 0 16px 34px rgb(0 0 0 / 32%) !important;
+}
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__video-model-menu > button {
+  display: grid !important;
+  grid-template-columns: 24px minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 9px !important;
+  min-height: 42px !important;
+  padding: 6px 8px !important;
+  color: inherit !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  font: inherit !important;
+  text-align: left !important;
+}
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__video-model-menu > button:hover,
+.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__video-model-menu > button.is-selected { background: #3b3d3d !important; }

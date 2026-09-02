@@ -155,6 +155,27 @@ describe('ModuleNodeCard', () => {
     })));
   });
 
+  it('opens a reference-style video model picker while retaining the accessible native value control', () => {
+    const node = createCanvasModuleNode('video-model-picker', 'video_generation', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [
+        { provider: 'comfly', modelRoute: 'video-route-a', displayName: 'Seedance 2.5', capabilities: ['video_generation'] },
+        { provider: 'relayme', modelRoute: 'video-route-b', displayName: 'MiniMax H3 Max', capabilities: ['video_generation'] },
+      ],
+    } as typeof node.data;
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+
+    fireEvent.click(screen.getByRole('button', { name: '打开视频模型列表' }));
+    expect(screen.getByRole('listbox', { name: '视频模型' })).toBeVisible();
+    expect(screen.getByRole('menuitemradio', { name: /Seedance 2\.5/ })).toBeVisible();
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /MiniMax H3 Max/ }));
+
+    expect(screen.getByLabelText('Video preview model')).toHaveValue('video-route-b');
+    expect(screen.queryByRole('listbox', { name: '视频模型' })).not.toBeInTheDocument();
+  });
+
   it('does not roll back newer video controls when an older draft snapshot arrives', async () => {
     const node = createCanvasModuleNode('video-stale-control-draft', 'video_generation', { x: 0, y: 0 });
     const routes = [

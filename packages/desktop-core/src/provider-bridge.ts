@@ -423,14 +423,15 @@ export function createComflyProviderService(options: {
       const hasVideo = validated.run.orderedMedia.some((item) => item.kind === 'video');
       const usesGeminiNative = profile?.capabilities.includes('gemini_native') === true;
       const usesVisionChat = profile?.capabilities.includes('chat') === true && profile.capabilities.includes('vision');
-      if (profile === undefined || !profile.capabilities.includes('reverse_prompt') || (!usesGeminiNative && !usesVisionChat) || (hasVideo && (!usesGeminiNative || !profile.capabilities.includes('video_understanding')))) {
+      const supportsReversePrompt = profile?.capabilities.includes('reverse_prompt') === true || usesVisionChat || usesGeminiNative;
+      if (profile === undefined || !supportsReversePrompt || (!usesGeminiNative && !usesVisionChat) || (hasVideo && (!usesGeminiNative || !profile.capabilities.includes('video_understanding')))) {
         throw createProviderBridgeError(
           'PROVIDER_UNAVAILABLE',
           profile === undefined
             ? 'Requested reverse-analysis model profile is unavailable'
             : hasVideo && !profile.capabilities.includes('video_understanding')
               ? 'Selected reverse model does not support video understanding'
-              : 'Selected model does not declare reverse_prompt and vision capabilities',
+              : 'Selected model must support vision dialogue or Gemini-native reverse analysis',
         );
       }
       if (options.readManagedReverseMedia === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Managed reverse-analysis media is unavailable');

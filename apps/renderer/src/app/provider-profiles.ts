@@ -171,7 +171,17 @@ export function buildCanvasProviderRouteSets(
   return {
     imageGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('image_generation'))),
     videoGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('video_generation'))),
-    reversePrompt: listAgentChatProfiles(catalog.filter((profile) => profile.capabilities.includes('reverse_prompt'))),
+    // Reverse analysis is a vision workflow, not ordinary text chat.  A
+    // provider may advertise the same multimodal route with image/video
+    // generation capabilities as well; do not discard it through the
+    // chat-only filter or the reverse node will incorrectly show no model.
+    reversePrompt: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => {
+      const hasVisionDialogue = profile.capabilities.includes('vision')
+        && (profile.capabilities.includes('chat') || profile.capabilities.includes('responses'));
+      const hasGeminiNativeReverse = profile.capabilities.includes('gemini_native')
+        && profile.capabilities.includes('reverse_prompt');
+      return hasVisionDialogue || hasGeminiNativeReverse;
+    })),
     storyboard: listAgentChatProfiles(catalog),
   };
 }

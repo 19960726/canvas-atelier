@@ -787,7 +787,7 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
-  it('keeps reverse chat alive after the normal 30 second timeout', async () => {
+  it('uses a vision dialogue model for reverse analysis even without a derived reverse tag', async () => {
     vi.useFakeTimers();
     const appDataRoot = await makeTempRoot();
     try {
@@ -818,7 +818,7 @@ describe('Comfly provider service', () => {
         fetch,
         profiles: [{
           provider: 'comfly', modelRoute: 'comfly-vision-chat', modelId: 'vision-chat-model', displayName: 'Vision Chat',
-          capabilities: ['chat', 'vision', 'reverse_prompt'],
+          capabilities: ['chat', 'vision'],
         }],
         readManagedReverseMedia: async () => [{
           bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),

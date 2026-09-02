@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
-import { ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Expand, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, Send, Video, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Expand, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, Send, Video, X } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -908,17 +908,17 @@ function VideoGenerationSummary({
 
           {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
           <div className="module-node__generation-control-bar module-node__video-control-bar" aria-label="Video preview parameter controls" onPointerDownCapture={clearBrowserSelection}>
-            <select className="nodrag nopan" aria-label="Video preview model" value={modelRoute} disabled={compatibleRoutes.length === 0} onPointerDown={stopCanvasPointer} onChange={(event) => setModelRoute(event.target.value)}>
-              {compatibleRoutes.length === 0 && <option value="">未配置视频模型</option>}
-              {compatibleRoutes.map((route) => <option key={route.modelRoute} value={route.modelRoute}>{modelRouteOptionLabel(route, compatibleRoutes)}</option>)}
-            </select>
-            <select className="nodrag nopan" aria-label="Video preview mode" value={keyframe} onPointerDown={stopCanvasPointer} onChange={(event) => setKeyframe(event.target.value)}>
-              {[
-                { value: 'auto', label: '图生视频' },
-                { value: 'first', label: '首帧视频' },
-                { value: 'first_last', label: '首尾帧视频' },
-              ].map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
-            </select>
+            <GenerationModelPicker
+              routes={compatibleRoutes}
+              value={modelRoute}
+              onChange={setModelRoute}
+              nativeAriaLabel="Video preview model"
+              triggerAriaLabel="打开视频模型列表"
+              listAriaLabel="视频模型"
+              emptyLabel="未配置视频模型"
+              onPointerDown={stopCanvasPointer}
+            />
+            <VideoModePicker value={keyframe} onChange={setKeyframe} onPointerDown={stopCanvasPointer} />
             <AspectRatioPopover
               ariaLabel="Video preview aspect ratio"
               value={aspectRatio === 'Auto' ? 'AUTO' : aspectRatio}
@@ -1328,13 +1328,19 @@ function ImageGenerationSummary({
           </section>
           {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
           <div className="module-node__generation-control-bar nodrag nopan" aria-label="Image generation control bar" onPointerDown={stopCanvasPointer} onPointerDownCapture={clearBrowserSelection}>
-            <select aria-label="Image generation model route" value={modelRoute} disabled={compatibleRoutes.length === 0} onChange={(event) => {
-              modelRouteRef.current = event.target.value;
-              setModelRoute(event.target.value);
-            }}>
-              {compatibleRoutes.length === 0 && <option value="">未配置模型</option>}
-              {compatibleRoutes.map((route) => <option key={route.modelRoute} value={route.modelRoute}>{modelRouteOptionLabel(route, compatibleRoutes)}</option>)}
-            </select>
+            <GenerationModelPicker
+              routes={compatibleRoutes}
+              value={modelRoute}
+              onChange={(value) => {
+                modelRouteRef.current = value;
+                setModelRoute(value);
+              }}
+              nativeAriaLabel="Image generation model route"
+              triggerAriaLabel="打开生图模型列表"
+              listAriaLabel="生图模型"
+              emptyLabel="未配置模型"
+              onPointerDown={stopCanvasPointer}
+            />
             <AspectRatioPopover
               ariaLabel="Image generation aspect ratio"
               value={aspectRatio === '自由比例' ? 'AUTO' : aspectRatio}
@@ -2324,6 +2330,134 @@ function isReverseAgentRoute(route: ReverseAgentRouteSummary): boolean {
   return (route.capabilities.includes('reverse_prompt') && route.capabilities.includes('gemini_native'))
     || route.capabilities.includes('chat')
     || route.capabilities.includes('vision');
+}
+
+function GenerationModelPicker({
+  routes,
+  value,
+  onChange,
+  nativeAriaLabel,
+  triggerAriaLabel,
+  listAriaLabel,
+  emptyLabel,
+  onPointerDown,
+}: {
+  readonly routes: readonly ImageGenerationRouteSummary[];
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+  readonly nativeAriaLabel: string;
+  readonly triggerAriaLabel: string;
+  readonly listAriaLabel: string;
+  readonly emptyLabel: string;
+  readonly onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selected = routes.find((route) => route.modelRoute === value);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: globalThis.MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  return <div className="module-node__video-model-picker nodrag nopan" ref={rootRef} onPointerDown={onPointerDown}>
+    <select
+      className="module-node__video-native-select"
+      aria-label={nativeAriaLabel}
+      value={value}
+      disabled={routes.length === 0}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      {routes.length === 0 && <option value="">{emptyLabel}</option>}
+      {routes.map((route) => <option key={route.modelRoute} value={route.modelRoute}>{modelRouteOptionLabel(route, routes)}</option>)}
+    </select>
+    <button
+      className="module-node__video-model-trigger"
+      type="button"
+      aria-label={triggerAriaLabel}
+      aria-expanded={open}
+      aria-haspopup="listbox"
+      disabled={routes.length === 0}
+      onClick={() => setOpen((current) => !current)}
+    >
+      <span className="module-node__video-model-icon" aria-hidden="true"><Video size={14} /></span>
+      <span className="module-node__video-model-name">{selected ? modelRouteOptionLabel(selected, routes) : '选择视频模型'}</span>
+      <ChevronDown size={14} aria-hidden="true" />
+    </button>
+    {open && <div className="module-node__video-model-menu" role="listbox" aria-label={listAriaLabel}>
+      {routes.map((route) => {
+        const isSelected = route.modelRoute === value;
+        return <button
+          key={route.modelRoute}
+          type="button"
+          role="menuitemradio"
+          aria-checked={isSelected}
+          className={isSelected ? 'is-selected' : undefined}
+          onClick={() => {
+            onChange(route.modelRoute);
+            setOpen(false);
+          }}
+        >
+          <span className="module-node__video-model-icon" aria-hidden="true"><Video size={14} /></span>
+          <span className="module-node__video-model-copy">
+            <strong>{modelRouteOptionLabel(route, routes)}</strong>
+            <small>{route.provider === 'relayme' ? 'RelayMe' : route.provider === 'comfly' ? 'Comfly' : route.provider}</small>
+          </span>
+          {isSelected && <span aria-hidden="true">✓</span>}
+        </button>;
+      })}
+    </div>}
+  </div>;
+}
+
+function VideoModePicker({
+  value,
+  onChange,
+  onPointerDown,
+}: {
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+  readonly onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const options = [
+    { value: 'text', label: '文生视频', enabled: false },
+    { value: 'auto', label: '图生视频', enabled: true },
+    { value: 'first', label: '首帧视频', enabled: true },
+    { value: 'first_last', label: '首尾帧视频', enabled: true },
+    { value: 'all_reference', label: '全能参考', enabled: false },
+    { value: 'image_reference', label: '图片参考', enabled: false },
+    { value: 'video_edit', label: '视频编辑', enabled: false },
+    { value: 'long_video', label: '超长视频', enabled: false },
+  ] as const;
+  const selected = options.find((option) => option.value === value) ?? options[1];
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: globalThis.MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  return <div className="module-node__video-mode-picker nodrag nopan" ref={rootRef} onPointerDown={onPointerDown}>
+    <select className="module-node__video-native-select" aria-label="Video preview mode" value={value} onChange={(event) => onChange(event.target.value)}>
+      {options.filter((option) => option.enabled).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </select>
+    <button className="module-node__video-mode-trigger" type="button" aria-label="打开视频生成模式" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((current) => !current)}>
+      <span>{selected.label}</span><ChevronDown size={14} aria-hidden="true" />
+    </button>
+    {open && <div className="module-node__video-mode-menu" role="menu" aria-label="视频生成模式">
+      <span className="module-node__video-mode-heading">视频生成模式</span>
+      {options.map((option) => <button key={option.value} type="button" role="menuitemradio" aria-checked={option.value === value} disabled={!option.enabled} className={option.value === value ? 'is-selected' : undefined} onClick={() => {
+        if (!option.enabled) return;
+        onChange(option.value);
+        setOpen(false);
+      }}>{option.label}{option.value === 'long_video' && <small>Beta</small>}</button>)}
+    </div>}
+  </div>;
 }
 
 function dedupeVisibleModelRoutes<T extends { readonly displayName: string }>(routes: readonly T[]): T[] {

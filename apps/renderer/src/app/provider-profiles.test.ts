@@ -27,6 +27,42 @@ describe('active provider model boundary', () => {
 });
 
 describe('canvas provider route sets', () => {
+  it('keeps visual reverse routes even when a provider also advertises generation capabilities', () => {
+    const routes = buildCanvasProviderRouteSets([
+      {
+        provider: 'relayme',
+        modelRoute: 'relay/vision-plus',
+        modelId: 'vision-plus',
+        displayName: 'Vision Plus',
+        capabilities: ['chat', 'vision', 'reverse_prompt', 'image_generation'],
+      },
+    ]);
+
+    expect(routes.reversePrompt).toEqual([
+      expect.objectContaining({ modelRoute: 'relay/vision-plus' }),
+    ]);
+  });
+
+  it('uses vision-capable dialogue models for reverse analysis even without a derived reverse tag', () => {
+    const routes = buildCanvasProviderRouteSets([{
+      provider: 'comfly', modelRoute: 'comfly/vision-chat', modelId: 'vision-chat', displayName: 'Vision Chat',
+      capabilities: ['chat', 'vision'],
+    }]);
+
+    expect(routes.reversePrompt).toEqual([
+      expect.objectContaining({ modelRoute: 'comfly/vision-chat' }),
+    ]);
+  });
+
+  it('does not expose vision-only routes that cannot receive a dialogue request', () => {
+    const routes = buildCanvasProviderRouteSets([{
+      provider: 'comfly', modelRoute: 'comfly/vision-only', modelId: 'vision-only', displayName: 'Vision Only',
+      capabilities: ['vision'],
+    }]);
+
+    expect(routes.reversePrompt).toEqual([]);
+  });
+
   it('keeps the same visible generation model once per provider', () => {
     const routes = buildCanvasProviderRouteSets([
       {
