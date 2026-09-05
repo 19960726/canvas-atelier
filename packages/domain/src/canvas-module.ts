@@ -134,7 +134,7 @@ const PORT_PRIMARY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 const MODULE_COPY: Readonly<Record<CanvasModuleType, ModuleCopy>> = Object.freeze({
-  video_generation: copy('视频生成', 'Video Generation', '在离线模拟模式中预览受管首尾帧与视频参数。', '为真实视频生成 Provider 预留安全的节点内工作台。', '填写提示词，连接或选择项目受管首尾帧后运行模拟预览。', '当前只提供离线模拟预览，不会联网、调用付费 Provider 或生成真实视频。', ['视频生成', '视频预览', 'video generation', 'mock video']),
+  video_generation: copy('视频生成', 'Video Generation', '通过已配置的 Provider 生成并管理视频结果。', '提供受管的视频生成入口与任务状态回写。', '填写提示词，连接或选择项目受管素材，选择兼容模型后运行生成。', '运行前必须配置兼容模型并确认；生成参数会按所选模型能力校验和适配。', ['视频生成', '生成视频', 'video generation', 'managed video']),
   video_result: copy('视频结果', 'Video Result', '显示已连线视频生成模块的受管视频结果。', '作为视频工作流的稳定输出节点。', '把视频生成的结果端口连接到此节点，然后预览或导出受管视频。', '只接收受管视频结果，不会暴露 Provider 原始地址。', ['视频输出', '生成视频结果', 'video result']),
   reverse_result: copy('反推结果', 'Reverse Result', '显示已连线反推 Agent 的结构化分析结果。', '作为反推工作流的稳定输出节点。', '把反推 Agent 的分析端口连接到此节点，然后查看、复制或继续使用受管分析结果。', '只接收受管分析文档，不会暴露模型原始响应或密钥。', ['反推输出', '分析结果', 'reverse result']),
   image_input: copy('图片输入', 'Image Input', '从项目素材中选择一张受管图片。', '为工作流提供稳定的图片资产输入。', '选择项目图片后连接到编辑、分析或生成模块。', '仅接受项目受管资产，不读取任意本地路径。', ['图像输入', '参考图']),
@@ -231,7 +231,7 @@ export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Obje
     input('pose', 'Pose', 'pose_data', false),
     out('result', 'Result', 'generation_result'),
   ], ['result_output', 'image_compare', 'image_editor'], Object.freeze({ enabledInputCapabilities: ['references'], resolution: '1K', resultState: 'empty' })),
-  definition('video_generation', 'generation', 'video_generation', 'local', ['video_generation'], [
+  definition('video_generation', 'generation', 'video_generation', 'provider', ['video_generation'], [
     // A video prompt can combine ordered image references with one managed
     // source video.  The card and executor cap this ordered collection at the
     // project-wide 20-reference limit.
@@ -242,7 +242,7 @@ export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Obje
     input('lastFrame', 'Last frame', 'image_asset', false),
     out('result', 'Result', 'video_asset'),
   ], ['video_result', 'reverse_agent'], Object.freeze({
-    mode: 'mock',
+    mode: 'provider',
     modelRoute: 'seedance-1.5-pro',
     prompt: '',
     referenceAssetIds: [],

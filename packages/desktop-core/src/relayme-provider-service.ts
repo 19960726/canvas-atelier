@@ -14,6 +14,8 @@ import { buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, cloneProv
 import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
 import { readPinnedReverseKnowledge } from './provider-reverse-knowledge.js';
+import { type ProjectMemoryContextResolver } from './provider-skill-chat.js';
+import { buildSkillChatSystemInstructions } from './skill-chat-visual-analysis.js';
 import type { ProviderService } from './provider-service-types.js';
 import { createProviderTaskMappingStore, type ProviderTaskMappingRecord } from './provider-task-ledger.js';
 import {
@@ -23,6 +25,7 @@ import {
   parseProviderBridgeProfiles,
   parseProviderBridgeRequest,
   parseProviderBridgeResponse,
+  ProjectMemoryContextSnapshotSchema,
   type AckImageJobTerminalBridgeRequest,
   type AckVideoJobTerminalBridgeRequest,
   type AnalyzeReversePromptBridgeRequest,
@@ -77,6 +80,7 @@ export interface RelayMeProviderServiceOptions {
   readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
   readonly loginAccount?: (request: LoginRelayMeBridgeRequest & { readonly baseUrl: string }) => Promise<string>;
   readonly loginWebAccount?: () => Promise<string>;
+  readonly projectMemoryContextResolver?: ProjectMemoryContextResolver;
 }
 
 export function createRelayMeProviderService(options: RelayMeProviderServiceOptions): ProviderService {
@@ -273,14 +277,56 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'RelayMe 当前聊天接口尚未公开可验证的图片或视频引用字段');
       }
       const profile = await selectProfile(validated.modelRoute, 'chat');
+      const knowledge = await Promise.all(validated.context.knowledgeBaseIds.map(async (knowledgeBaseId) => {
+        const active = await managedKnowledgeStore.readActive(knowledgeBaseId);
+        if (active === null) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Selected Skill chat knowledge is unavailable');
+        return {
+          knowledgeBaseId: active.knowledgeBaseId,
+          version: active.version,
+          displayName: active.displayName,
+          documents: active.documents.map(({ relativePath, content }) => ({ relativePath, content })),
+        };
+      }));
+      const projectMemory = await resolveRelayMeProjectMemoryContext(
+        validated.context.projectMemoryIds,
+        options.projectMemoryContextResolver,
+        validated.sessionId,
+      );
+      const messages = [
+        {
+          role: 'system' as const,
+          content: JSON.stringify({
+            instructions: buildSkillChatSystemInstructions({
+              agentMode: validated.agentMode ?? 'chat',
+              reasoningEffort: validated.reasoningEffort,
+              visualAnalysis: validated.visualAnalysis === true,
+              referenceMentions: validated.referenceMentions ?? [],
+            }),
+            agentMode: validated.agentMode ?? 'chat',
+            knowledge,
+            projectMemory,
+          }),
+        },
+        ...validated.messages,
+      ];
       const response = await translateRelayMeCall(
-        () => createClientFromCredentials().then((client) => client.chat({ model: profile.modelId ?? profile.modelRoute, messages: validated.messages })),
+        () => createClientFromCredentials().then((client) => client.chat({
+          model: profile.modelId ?? profile.modelRoute,
+          messages,
+          ...(validated.agentMode === 'codex' && validated.reasoningEffort !== undefined
+            ? { reasoning_effort: validated.reasoningEffort }
+            : {}),
+        })),
         'RelayMe 对话请求失败',
       );
       const content = response.choices[0]?.message?.content;
       const message = extractChatText(content);
       if (message === null) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回了无效的对话结果');
-      return { message, modelRoute: validated.modelRoute, sources: [] };
+      return {
+        message,
+        modelRoute: validated.modelRoute,
+        sources: knowledge.map(({ knowledgeBaseId, version, displayName }) => ({ knowledgeBaseId, version, displayName })),
+      };
     },
     async submitImageJob(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;
@@ -316,7 +362,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         if (historyId !== undefined) await options.historySink!.running(historyId);
         return registered;
       } catch (error) {
-        await markRelayMeHistoryFailed(historyId, options.historySink, error);
+        await markRelayMeHistoryFailed(historyId, options.historySink);
         throw error;
       }
     },
@@ -333,8 +379,9 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         await persistPolledTask(validated.providerTaskId, result);
         return result;
       } catch (error) {
-        await markRelayMeHistoryFailed(task.historyId, options.historySink, error);
-        throw error;
+        const translated = translateRelayMeError(error, 'RelayMe 图片任务轮询失败');
+        if (!translated.retryable) await markRelayMeHistoryFailed(task.historyId, options.historySink);
+        throw translated;
       }
     },
     async cancelImageJob(request) {
@@ -385,7 +432,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         if (historyId !== undefined) await options.historySink!.running(historyId);
         return registered;
       } catch (error) {
-        await markRelayMeHistoryFailed(historyId, options.historySink, error);
+        await markRelayMeHistoryFailed(historyId, options.historySink);
         throw error;
       }
     },
@@ -402,8 +449,9 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         await persistPolledTask(validated.providerTaskId, result);
         return result;
       } catch (error) {
-        await markRelayMeHistoryFailed(task.historyId, options.historySink, error);
-        throw error;
+        const translated = translateRelayMeError(error, 'RelayMe 视频任务轮询失败');
+        if (!translated.retryable) await markRelayMeHistoryFailed(task.historyId, options.historySink);
+        throw translated;
       }
     },
     async cancelVideoJob(request) {
@@ -705,7 +753,7 @@ type RelayTaskStateResponse = {
   readonly durationSeconds?: number;
 };
 
-async function markRelayMeHistoryFailed(historyId: string | undefined, sink: GenerationHistoryProviderSinkContract | undefined, _error: unknown): Promise<void> {
+async function markRelayMeHistoryFailed(historyId: string | undefined, sink: GenerationHistoryProviderSinkContract | undefined): Promise<void> {
   // The provider task may already be terminal; the history sink is idempotent and
   // must still be closed when a poll/download error prevents a normal terminal map.
   if (historyId === undefined) return;
@@ -866,17 +914,47 @@ async function readRelayMeResultBytes(
   let addresses: readonly string[];
   try {
     addresses = await resolveResultHost(url.hostname);
-  } catch {
+  } catch (error) {
+    const translated = translateRelayMeResultDownloadError(error);
+    if (translated.retryable) throw translated;
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成结果地址无法安全验证');
   }
   if (addresses.length === 0 || addresses.some((address) => !isPublicRelayMeResultAddress(address))) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成结果地址无法安全验证');
   }
-  const response = await fetch(url.toString(), { method: 'GET', trustedResolvedAddress: addresses[0] });
-  if (!response.ok || response.arrayBuffer === undefined) {
+  let response: Awaited<ReturnType<RelayMeFetch>>;
+  try {
+    response = await fetch(url.toString(), { method: 'GET', trustedResolvedAddress: addresses[0] });
+  } catch (error) {
+    throw translateRelayMeResultDownloadError(error);
+  }
+  if (!response.ok) {
+    if (response.status === 408 || response.status === 429 || response.status >= 500) {
+      throw createProviderBridgeError('PROVIDER_ERROR', 'RelayMe 生成结果下载服务暂时不可用，请稍后重试', true);
+    }
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成结果下载失败');
   }
-  return validateRelayMeResultBytes(new Uint8Array(await response.arrayBuffer()));
+  if (response.arrayBuffer === undefined) {
+    throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成结果下载失败');
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await response.arrayBuffer());
+  } catch (error) {
+    throw translateRelayMeResultDownloadError(error);
+  }
+  return validateRelayMeResultBytes(bytes);
+}
+
+function translateRelayMeResultDownloadError(error: unknown): ProviderBridgeException {
+  if (isProviderBridgeException(error)) return error;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const explicitlyRetryable = isRecord(error) && error.retryable === true;
+  if (explicitlyRetryable
+    || /timed out|timeout|request aborted|response failed|network request failed|socket|connection|econn|enet|eai_again|terminated|fetch failed/iu.test(message)) {
+    return createProviderBridgeError('PROVIDER_ERROR', 'RelayMe 生成结果下载网络请求失败，请稍后重试', true);
+  }
+  return createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成结果下载失败');
 }
 
 function decodeRelayMeDataUrl(content: string): Uint8Array {
@@ -1051,11 +1129,17 @@ function isBoundedRelayMeLoginToken(value: unknown): value is string {
 function translateRelayMeError(error: unknown, fallback: string): ProviderBridgeException {
   if (isProviderBridgeException(error)) return error;
   const message = error instanceof Error ? error.message : String(error ?? '');
-  if (/\b(?:401|403)\b/u.test(message)) {
+  const status = isRecord(error) && typeof error.status === 'number' ? error.status : undefined;
+  const retryable = isRecord(error) && error.retryable === true;
+  if (status === 401 || status === 403 || /\b(?:401|403)\b/u.test(message)) {
     return createProviderBridgeError('CREDENTIALS_LOCKED', 'RelayMe 登录已失效，请重新登录', true);
   }
-  if (/quota|额度|余额|rate[ -]?limit|too many requests|\b429\b/iu.test(message)) {
+  if (status === 429 || /quota|额度|余额|rate[ -]?limit|too many requests|\b429\b/iu.test(message)) {
     return createProviderBridgeError('PROVIDER_ERROR', 'RelayMe 当前额度或请求频率受限，请稍后重试', true);
+  }
+  if (retryable || (status !== undefined && status >= 500)) {
+    const retryableMessage = /请稍后重试/u.test(fallback) ? fallback : `${fallback}，请稍后重试`;
+    return createProviderBridgeError('PROVIDER_ERROR', retryableMessage, true);
   }
   if (/响应格式|invalid.*response/iu.test(message)) {
     return createProviderBridgeError('PROVIDER_INVALID_RESPONSE', fallback);
@@ -1108,6 +1192,28 @@ function cloneConfiguration(value: ConfigurationSnapshot): ConfigurationSnapshot
 
 function cloneProfile(profile: ProviderBridgeProfile): ProviderBridgeProfile {
   return cloneProviderProfile(profile);
+}
+
+async function resolveRelayMeProjectMemoryContext(
+  memoryIds: readonly string[],
+  resolver: ProjectMemoryContextResolver | undefined,
+  sessionId: string | undefined,
+): Promise<readonly { readonly memoryId: string; readonly projectRevision: number; readonly summary: string }[]> {
+  if (memoryIds.length === 0) return [];
+  if (resolver === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Selected project memory is unavailable');
+  try {
+    const resolved = sessionId === undefined
+      ? await resolver.resolveSelectedProjectMemory([...memoryIds])
+      : await resolver.resolveSelectedProjectMemory([...memoryIds], sessionId);
+    if (!Array.isArray(resolved) || resolved.length !== memoryIds.length) throw new Error('Selected project memory is unavailable');
+    const parsed = resolved.map((entry) => ProjectMemoryContextSnapshotSchema.safeParse(entry));
+    if (parsed.some((entry) => !entry.success) || parsed.some((entry, index) => entry.success && entry.data.memoryId !== memoryIds[index])) {
+      throw new Error('Selected project memory is unavailable');
+    }
+    return parsed.map((entry) => (entry as { success: true; data: { memoryId: string; projectRevision: number; summary: string } }).data);
+  } catch {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Selected project memory is unavailable');
+  }
 }
 
 function assertRelayMeProvider(provider: string): asserts provider is 'relayme' {

@@ -10,7 +10,7 @@ import {
 import { makeReferenceImage } from './helpers/fixtures';
 
 test('manual acceptance imports image and video files through real browser pickers', async ({ page }) => {
-  await openEmptyApp(page, '/?novusHarness=novus-e2e-codex-ui-gate');
+  await openEmptyApp(page, '/?novusHarness=novus-e2e-codex-canvas-layout');
   await page.evaluate(async () => {
     await window.__NOVUS_E2E__!.createModule('image_input', { x: 180, y: 140 });
     await window.__NOVUS_E2E__!.createModule('video_input', { x: 560, y: 140 });
@@ -67,6 +67,36 @@ test('creates executable modules from the library', async ({ page }) => {
   await expect(page.locator('[data-module-type="text_prompt"]')).toHaveCount(initialTextPromptCount + 1);
   await expect(page.locator('[data-module-type="image_generation"]')).toHaveCount(initialImageGenerationCount + 1);
   await expect(page.getByTestId('save-state')).toHaveAttribute('data-save-state', 'saved');
+});
+
+test('explains when high zoom leaves no safe room for a large library module', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openEmptyApp(page);
+  const readZoom = () => page.locator('.react-flow__viewport').evaluate((element) => {
+    const transform = getComputedStyle(element).transform;
+    return transform === 'none' ? 1 : new DOMMatrixReadOnly(transform).a;
+  });
+  const zoomIn = page.locator('.react-flow__controls-zoomin');
+  for (let attempt = 0; attempt < 7 && await readZoom() < 2.49; attempt += 1) {
+    const before = await readZoom();
+    await zoomIn.evaluate((element) => {
+      if (!(element instanceof HTMLButtonElement)) throw new Error('React Flow zoom-in control is unavailable');
+      element.click();
+    });
+    await expect.poll(readZoom).toBeGreaterThan(before);
+  }
+  expect(await readZoom()).toBeGreaterThanOrEqual(2.49);
+
+  await page.getByTestId('tool-modules').click();
+  await page.getByRole('searchbox', { name: '搜索模块' }).fill('image generation');
+  await page.getByRole('button', { name: '查看 图片生成 / Image Generation' }).press('Enter');
+
+  await expect(page.locator('[data-module-type="image_generation"]')).toHaveCount(0);
+  const placementAlert = page.getByRole('alert', { name: '模块创建提示' });
+  await expect(placementAlert).toBeVisible();
+  await expect(placementAlert).toContainText('当前缩放下没有足够空间放置此节点');
+  await expect(placementAlert).toContainText('请缩小画布或关闭模块库后重试');
+  await expect(page.getByTestId('module-library')).toBeVisible();
 });
 
 test('connects an image input to the reverse agent by dragging visible ports', async ({ page }) => {
@@ -223,7 +253,7 @@ test('preserves landscape portrait and square images inside the large media sour
     const mediaBox = await nodes.nth(index).locator('.module-node__media-frame').boundingBox();
     expect(nodeBox).not.toBeNull();
     expect(mediaBox).not.toBeNull();
-    // The Figma media source uses a stable 272px preview width while the
+    // The Canvas media source uses a stable 272px preview width while the
     // rendered frame follows each asset's intrinsic aspect ratio.
     const expectedMediaSizes = [
       { width: 272, height: 153 },
@@ -353,7 +383,7 @@ test('pastes a clipboard image as one managed media node transaction', async ({ 
   expect(after.durableProjectContainsTransientImageUrl).toBe(false);
 });
 
-test('does not expose the retired hand tool in the seven-action Figma rail', async ({ page }) => {
+test('does not expose the retired hand tool in the seven-action Canvas rail', async ({ page }) => {
   await openEmptyApp(page);
   await expect(page.getByTestId('toolrail').locator('button:visible')).toHaveCount(7);
   await expect(page.getByTestId('tool-hand')).toHaveCount(0);

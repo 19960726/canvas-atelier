@@ -238,11 +238,14 @@ export function createProviderBridgeHandlers(
     },
     chat: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, request) as ChatSkillBridgeRequest;
-      return executeActiveProviderCall(source, options?.activeStore, parsed.provider, async () => {
+      const executeChat = async () => {
         const service = selectService(source, parsed.provider);
         if (service.chat === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Agent 对话暂不可用');
         return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.chat, await service.chat(parsed)) as ChatSkillBridgeResult;
-      });
+      };
+      return parsed.agentMode === 'codex' && parsed.provider === 'comfly'
+        ? executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, executeChat)
+        : executeActiveProviderCall(source, options?.activeStore, parsed.provider, executeChat);
     },
     generateStoryboard: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.generateStoryboard, request) as GenerateStoryboardBridgeRequest;

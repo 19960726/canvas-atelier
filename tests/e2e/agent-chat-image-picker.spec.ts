@@ -36,6 +36,9 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(composer.locator('[data-media-mention="image"]', { hasText: '图片1' })).toBeVisible();
     await expect(composer).not.toContainText('@');
     await expect(panel.getByLabel('Selected image references')).toContainText('Agent citation');
+    await panel.getByLabel('Selected image references').getByRole('button', { name: 'Remove Agent citation media reference' }).click();
+    await expect(panel.getByLabel('Selected image references')).toHaveCount(0);
+    await expect(composer).not.toContainText('图片1');
   });
 }
 
@@ -64,7 +67,18 @@ test('pasting an image into Agent chat attaches it directly without opening a pi
 
   await expect(panel.getByTestId('agent-composer-input')).toContainText('图片1');
   await expect(panel.getByTestId('agent-composer-input')).not.toContainText('@');
-  await expect(panel.getByLabel('Selected image references').getByRole('img', { name: 'agent-clipboard' })).toBeVisible();
+  const selectedReferences = panel.getByLabel('Selected image references');
+  const pastedThumbnail = selectedReferences.getByRole('img', { name: 'agent-clipboard' });
+  await expect(pastedThumbnail).toBeVisible();
+  const referenceGeometry = await selectedReferences.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const image = element.querySelector('img, video')?.getBoundingClientRect();
+    return { width: box.width, height: box.height, imageWidth: image?.width ?? 0, imageHeight: image?.height ?? 0 };
+  });
+  expect(referenceGeometry.height).toBeLessThanOrEqual(44);
+  expect(referenceGeometry.imageWidth).toBeGreaterThan(0);
+  expect(referenceGeometry.imageWidth).toBeLessThanOrEqual(24);
+  expect(referenceGeometry.imageHeight).toBeLessThanOrEqual(24);
   await expect(panel.getByRole('dialog')).toHaveCount(0);
   expect(fileChooserCount).toBe(0);
   expect(nativeDialogCount).toBe(0);

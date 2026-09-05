@@ -167,8 +167,8 @@ describe('ConnectedAgentMediaSlots', () => {
   });
 
   it('shows complete small thumbnails without cropping connected media', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
-    const rule = css.match(/\.workspace--ui-gate \.module-node__agent-media-slot > :is\(img, video\) \{[^}]+\}/u)?.[0] ?? '';
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const rule = css.match(/\.workspace--canvas-layout \.module-node__agent-media-slot > :is\(img, video\) \{[^}]+\}/u)?.[0] ?? '';
 
     expect(rule).toContain('object-fit: contain');
     expect(rule).not.toContain('object-fit: cover');
@@ -179,8 +179,8 @@ describe('ConnectedAgentMediaSlots', () => {
     expect(screen.getByLabelText('图槽编号 1')).toHaveClass('connected-agent-media-slots__index');
     expect(screen.getByLabelText('图槽编号 4')).toHaveTextContent('4');
 
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
-    const rules = [...css.matchAll(/\.workspace--ui-gate \.connected-agent-media-slots__index \{[^}]+\}/gu)];
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const rules = [...css.matchAll(/\.workspace--canvas-layout \.connected-agent-media-slots__index \{[^}]+\}/gu)];
     const rule = rules[rules.length - 1]?.[0] ?? '';
 
     expect(rule).toContain('z-index: 7');
@@ -190,13 +190,46 @@ describe('ConnectedAgentMediaSlots', () => {
   });
 
   it('keeps every slot in the scrollable interaction row instead of clipping after slot four', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     expect(css).toContain('module-node__agent-media-slot-row');
     expect(css).toContain('width: 100% !important;');
     expect(css).toContain('opacity: 1 !important;');
     expect(css).toContain('overflow-x: auto !important;');
     expect(css).toContain('pointer-events: none !important;');
     expect(css).toMatch(/module-node__agent-media-slot-row::-webkit-scrollbar\s*\{[^}]*height:\s*6px/isu);
+  });
+  it('marks the tray as overflowing after ten slots so the scrollbar rail is explicit', () => {
+    const elevenMedia = Array.from({ length: 11 }, (_, index): ConnectedAgentMediaSlotItem => ({
+      edgeId: `edge-${index + 1}`,
+      kind: 'image',
+      assetId: `image-${index + 1}`,
+      label: `Image ${index + 1}`,
+    }));
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" slotRowAriaLabel="Scrollable media slots" media={elevenMedia} />);
+
+    const row = screen.getByLabelText('Scrollable media slots');
+    expect(row).toHaveAttribute('data-overflow', 'true');
+    const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('/* Ordered reference media'));
+    expect(contract).toContain(".connected-agent-media-slots__row[data-overflow='true']");
+    expect(contract).toContain('overflow-x: scroll !important');
+    expect(contract).toContain('scrollbar-gutter: stable !important');
+  });
+  it('maps vertical wheel input to horizontal scrolling only when the tray overflows', () => {
+    const elevenMedia = Array.from({ length: 11 }, (_, index): ConnectedAgentMediaSlotItem => ({
+      edgeId: `edge-wheel-${index + 1}`,
+      kind: 'image',
+      assetId: `wheel-image-${index + 1}`,
+      label: `Wheel image ${index + 1}`,
+    }));
+    render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" slotRowAriaLabel="Scrollable media slots" media={elevenMedia} />);
+
+    const row = screen.getByLabelText('Scrollable media slots') as HTMLDivElement;
+    Object.defineProperty(row, 'clientWidth', { configurable: true, value: 180 });
+    Object.defineProperty(row, 'scrollWidth', { configurable: true, value: 520 });
+    Object.defineProperty(row, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+    fireEvent.wheel(row, { deltaX: 0, deltaY: 64 });
+    expect(row.scrollLeft).toBe(64);
   });
   it('keeps reorder controls inside their own slot hit area', () => {
     const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');

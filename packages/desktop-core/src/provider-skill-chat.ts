@@ -15,7 +15,7 @@ import {
 import { buildSkillChatSystemInstructions } from './skill-chat-visual-analysis.js';
 
 export interface ProjectMemoryContextResolver {
-  resolveSelectedProjectMemory(memoryIds: readonly string[]): Promise<readonly ProjectMemoryContextSnapshot[]>;
+  resolveSelectedProjectMemory(memoryIds: readonly string[], sessionId?: string): Promise<readonly ProjectMemoryContextSnapshot[]>;
 }
 
 export interface ManagedSkillChatImageContent {
@@ -73,6 +73,7 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
   const projectMemory = await resolveProjectMemoryContext(
     validated.context.projectMemoryIds,
     options.projectMemoryContextResolver,
+    validated.sessionId,
   );
   const messages = [
     {
@@ -92,14 +93,19 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
     ...attachManagedImagesToLatestUserMessage(validated.messages, images),
   ];
   const client = options.createClient(snapshot);
+  const codexReasoningEffort = validated.agentMode === 'codex'
+    ? validated.reasoningEffort
+    : undefined;
   const message = profile.capabilities.includes('chat')
     ? (await client.chat({
       model: profile.modelId ?? profile.modelRoute,
       messages,
+      ...(codexReasoningEffort === undefined ? {} : { reasoning_effort: codexReasoningEffort }),
     })).choices[0]?.message?.content
     : extractResponsesText((await client.responses({
       model: profile.modelId ?? profile.modelRoute,
       input: messages,
+      ...(codexReasoningEffort === undefined ? {} : { reasoning: { effort: codexReasoningEffort } }),
     })).output);
   if (typeof message !== 'string' || message.trim().length === 0) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid Skill chat response');
@@ -210,13 +216,16 @@ function attachManagedImagesToLatestUserMessage(
 async function resolveProjectMemoryContext(
   memoryIds: readonly string[],
   resolver: ProjectMemoryContextResolver | undefined,
+  sessionId: string | undefined,
 ): Promise<readonly ProjectMemoryContextSnapshot[]> {
   if (memoryIds.length === 0) return [];
   if (resolver === undefined) {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Selected project memory is unavailable');
   }
   try {
-    const resolved = await resolver.resolveSelectedProjectMemory([...memoryIds]);
+    const resolved = sessionId === undefined
+      ? await resolver.resolveSelectedProjectMemory([...memoryIds])
+      : await resolver.resolveSelectedProjectMemory([...memoryIds], sessionId);
     if (!Array.isArray(resolved) || resolved.length !== memoryIds.length) {
       throw new Error('Selected project memory is unavailable');
     }

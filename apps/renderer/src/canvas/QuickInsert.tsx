@@ -86,8 +86,6 @@ export function QuickInsert({ anchor, compatibleModuleTypes, onClose, onCreate, 
       data-testid="quick-insert"
       data-canvas-density="compact"
       data-canvas-surface="quick-insert"
-      data-figma-density="compact"
-      data-figma-surface="quick-insert"
       aria-label="快速插入模块"
       style={{ left: anchor.x, top: anchor.y }}
       onPointerDownCapture={(event) => event.stopPropagation()}
@@ -108,7 +106,7 @@ export function QuickInsert({ anchor, compatibleModuleTypes, onClose, onCreate, 
         }
       }}
     >
-      <div className="quick-insert__figma-kicker">
+      <div className="quick-insert__canvas-kicker">
         {compatibleModuleTypes === undefined ? '双击空白处 · 快速添加画布节点' : '连接到空白处 · 选择兼容节点'}
       </div>
       <header className="quick-insert__header">
@@ -249,7 +247,7 @@ export function QuickInsert({ anchor, compatibleModuleTypes, onClose, onCreate, 
           />
         </section>
       </div>
-      <footer className="quick-insert__figma-footer"><kbd>Esc</kbd><span>关闭</span><span>点击画布可创建节点</span></footer>
+      <footer className="quick-insert__canvas-footer"><kbd>Esc</kbd><span>关闭</span><span>点击画布可创建节点</span></footer>
     </section>
   );
 }

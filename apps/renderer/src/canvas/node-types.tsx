@@ -50,7 +50,6 @@ export interface ModuleNodeRuntimeContext {
     readonly capabilityStatus?: 'complete' | 'incomplete';
     readonly constraints?: import('@agent-canvas/desktop-core').ProviderBridgeProfile['constraints'];
   }[];
-  readonly onOpenReverseAgentSettings: () => void;
   readonly onGenerateImage: WorkspaceApi['generateImage'];
   readonly onReversePrompt: WorkspaceApi['reversePrompt'];
   readonly onCancelJob: WorkspaceApi['cancelJob'];

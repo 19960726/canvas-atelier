@@ -21,8 +21,9 @@ describe('desktop MCP lifecycle contract', () => {
       expect(source).toContain("join(app.getPath('home'), '.codex', 'config.toml')");
       expect(source).toContain("join(app.getPath('home'), '.workbuddy', 'mcp.json')");
       expect(source).toContain('mcpClientConfigRegistration?.dispose()');
-      expect(source).toContain(`join(app.getPath('appData'), 'CanvasForge', 'mcp', '${entryPoint.runtimeFile}')`);
-      expect(source).not.toContain(`join(app.getPath('appData'), 'CanvasForge', 'mcp', '${entryPoint.otherRuntimeFile}')`);
+      expect(source).toContain(`join(stableUserDataRoot, 'mcp', '${entryPoint.runtimeFile}')`);
+      expect(source).not.toContain(`join(stableUserDataRoot, 'mcp', '${entryPoint.otherRuntimeFile}')`);
+      expect(source).not.toContain(`join(app.getPath('appData'), 'CanvasForge', 'mcp', '${entryPoint.runtimeFile}')`);
       expect(source).toContain('CANVASFORGE_MCP_RUNTIME_FILE');
       expect(source).toMatch(/await createMainWindow\(\);\s*await startMcpRuntime\(\);/u);
       expect(source).toMatch(/async function stopMcpRuntime\(\): Promise<void>/u);

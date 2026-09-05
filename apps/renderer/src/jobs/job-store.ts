@@ -110,6 +110,14 @@ export interface ModelJobStoreOptions {
     build: BuildResultMaterialization,
     ownerJob: ModelJob,
   ) => Promise<ResultMaterializationCommit>;
+  /**
+   * Completed jobs live in one local queue database, while projects have
+   * independent durable sessions.  Callers can veto startup repair for jobs
+   * that do not belong to the currently hydrated project; without this guard
+   * a stale job from another project can append a result while the user is
+   * editing, producing a false save-conflict banner.
+   */
+  shouldRepairCompletedProjectTransaction?: (ownerJob: ModelJob) => boolean | Promise<boolean>;
   canContinueResult?: (
     ownerJob: ModelJob,
     isOwnerRunning: () => Promise<boolean>,
@@ -490,8 +498,24 @@ async function pollJob(
   try {
     const job = await storage.get(id);
     if (!job || job.status !== 'running') return;
+    let result: ModelJobPollResult;
     try {
-      const result = await providerQueue.run(() => options.executor.poll(job));
+      result = await providerQueue.run(() => options.executor.poll(job));
+    } catch (error) {
+      const latest = await storage.get(id);
+      if (!isSameRunningJob(latest, job)) return;
+      if (isRetryableProviderPollError(error)) {
+        const { error: _staleError, ...recoverable } = latest;
+        await putJob({ ...recoverable, updatedAt: now() });
+        return;
+      }
+      await putJob(transitionModelJob(latest, 'failed', {
+        error: sanitizeModelJobError(error),
+        updatedAt: now(),
+      }));
+      return;
+    }
+    try {
       const latest = await storage.get(id);
       if (!isSameRunningJob(latest, job)) return;
       if (result.status === 'running') {
@@ -523,6 +547,17 @@ async function pollJob(
   } finally {
     pollingJobs.delete(id);
   }
+}
+
+function isRetryableProviderPollError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && typeof error.code === 'string'
+    && 'message' in error
+    && typeof error.message === 'string'
+    && 'retryable' in error
+    && error.retryable === true;
 }
 
 async function materializeResult(
@@ -584,6 +619,8 @@ async function repairCompletedCanvasResults(
 ): Promise<void> {
   for (const job of jobs) {
     if (job.status !== 'completed' || job.resultAssetId === undefined) continue;
+    if (options.shouldRepairCompletedProjectTransaction !== undefined
+      && !await options.shouldRepairCompletedProjectTransaction(job)) continue;
     const result = {
       assetId: job.resultAssetId,
       ...(job.resultAssetIds === undefined ? {} : { assetIds: job.resultAssetIds }),

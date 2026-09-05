@@ -1,6 +1,7 @@
 import type {
   DesktopBridgeApi,
   ChatSkillBridgeResult,
+  CodexReasoningEffort,
   JournalTransactionKind,
   PersistenceErrorCode,
   ProjectImageAssetSummary,
@@ -53,11 +54,16 @@ interface SkillChatProviderBridge {
 }
 
 export interface SkillChatRequest {
-  readonly provider: ProviderBridgeProfile['provider'];
+  readonly provider: ProviderBridgeProfile['provider'] | 'codex';
   readonly modelRoute: string;
+  readonly requestId?: string;
   readonly messages: readonly { readonly role: 'user' | 'assistant'; readonly content: string }[];
   readonly context: { readonly knowledgeBaseIds: readonly string[]; readonly projectMemoryIds: readonly string[] };
   readonly referenceAssetIds?: readonly string[];
+  readonly referenceMentions?: readonly { readonly assetId: string; readonly label: string; readonly mention: string }[];
+  readonly agentMode?: 'chat' | 'original' | 'codex';
+  readonly reasoningEffort?: CodexReasoningEffort;
+  readonly visualAnalysis?: boolean;
 }
 
 export type PersistenceMode = 'browser' | 'desktop';
@@ -142,6 +148,7 @@ export interface ProjectPersistenceClient {
     readonly media: readonly ManagedReversePromptMediaIdentity[];
   }): Promise<ReversePromptResult>;
   chatSkill?(input: SkillChatRequest): Promise<ChatSkillBridgeResult>;
+  cancelChatSkill?(requestId: string): Promise<boolean>;
   close(): Promise<void>;
   commit(request: ProjectCommitRequest): Promise<ProjectCommitResult>;
   hydrate(): Promise<ProjectHydrationResult>;
@@ -396,6 +403,20 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   let clientGeneration = 0;
   let startupRestoreAttempted = false;
   let pendingWritableSession: Promise<string | null> | null = null;
+  const activeCodexRequestIds = new Set<string>();
+  const cancelledCodexRequestIds = new Set<string>();
+
+  const cancelActiveCodexRequests = async (): Promise<void> => {
+    const requestIds = [...activeCodexRequestIds];
+    await Promise.all(requestIds.map(async (requestId) => {
+      cancelledCodexRequestIds.add(requestId);
+      try {
+        await bridge.codexCli.cancel({ requestId });
+      } catch {
+        // Closing/switching must continue even if the already-stopping CLI bridge disappeared.
+      }
+    }));
+  };
 
   const importClient: LegacyProjectImportClient = {
     async createFromLegacyBundle(bundle) {
@@ -434,13 +455,49 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       }
     },
     async chatSkill(input) {
+      if (input.provider === 'codex') {
+        if (input.requestId === undefined) throw createImportError('INVALID_REQUEST');
+        const localRequestId = input.requestId;
+        activeCodexRequestIds.add(localRequestId);
+        try {
+          const writableSessionId = await ensureWritableSession();
+          if (writableSessionId === null) throw createImportError('INVALID_REQUEST');
+          if (cancelledCodexRequestIds.has(localRequestId)) throw createCodexCancellationError();
+          if ((input.referenceAssetIds?.length ?? 0) > 0 || (input.referenceMentions?.length ?? 0) > 0) {
+            const unsupported = new Error('Codex CLI managed images are unavailable') as Error & { code?: string; retryable?: boolean };
+            unsupported.code = 'CODEX_CLI_INVALID_REQUEST';
+            unsupported.retryable = false;
+            throw unsupported;
+          }
+          return await bridge.codexCli.chat({
+            provider: 'codex',
+            modelRoute: 'codex/gpt-6-astra',
+            agentMode: 'codex',
+            reasoningEffort: input.reasoningEffort ?? 'medium',
+            messages: input.messages.map((message) => ({ ...message })),
+            context: {
+              knowledgeBaseIds: [...input.context.knowledgeBaseIds],
+              projectMemoryIds: [...input.context.projectMemoryIds],
+            },
+            sessionId: writableSessionId,
+            requestId: localRequestId,
+            ...(input.visualAnalysis === undefined ? {} : { visualAnalysis: input.visualAnalysis }),
+          });
+        } catch (error) {
+          throw createDisplaySafeCodexError(error);
+        } finally {
+          activeCodexRequestIds.delete(localRequestId);
+          cancelledCodexRequestIds.delete(localRequestId);
+        }
+      }
       const writableSessionId = await ensureWritableSession();
       if (writableSessionId === null) throw createImportError('INVALID_REQUEST');
       const provider = bridge.provider as typeof bridge.provider & Partial<SkillChatProviderBridge>;
       if (provider.chat === undefined) throw createImportError('INVALID_REQUEST');
       try {
+        const { requestId: _localRequestId, ...providerInput } = input;
         return await provider.chat({
-          ...input,
+          ...providerInput,
           referenceAssetIds: [...(input.referenceAssetIds ?? [])],
           sessionId: writableSessionId,
         });
@@ -448,7 +505,18 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         throw createDisplaySafeProviderError(error);
       }
     },
+    async cancelChatSkill(requestId) {
+      if (!activeCodexRequestIds.has(requestId)) return false;
+      cancelledCodexRequestIds.add(requestId);
+      try {
+        await bridge.codexCli.cancel({ requestId });
+        return true;
+      } catch {
+        return true;
+      }
+    },
     async close() {
+      await cancelActiveCodexRequests();
       if (sessionId === null) return;
       const closingSessionId = sessionId;
       const closingProjectId = projectId;
@@ -517,13 +585,23 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       };
     },
     async openProject(recentProjectId) {
+      await cancelActiveCodexRequests();
       if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
       const previousSessionId = sessionId;
       const selected = recentProjectId === undefined
         ? await bridge.openProject({ mode: 'write' })
         : await bridge.recentProjects.open({ recentProjectId, mode: 'write' });
       if (selected === null) return null;
-      if (previousSessionId !== null) await bridge.closeProject({ sessionId: previousSessionId });
+      if (previousSessionId !== null) {
+        try {
+          await bridge.closeProject({ sessionId: previousSessionId });
+        } catch (error) {
+          // The main process may have already reclaimed this session when a
+          // renderer reload reopened the same project. Closing an already
+          // removed session is idempotent; preserve all other close errors.
+          if (readErrorCode(error) !== 'INVALID_SESSION') throw error;
+        }
+      }
       return adoptSelectedSession(selected);
     },
     async reloadDurableProject() {
@@ -954,6 +1032,23 @@ function createDisplaySafeProviderError(error: unknown): Error & { code?: string
   if (isRecord(error) && typeof error.code === 'string') safe.code = error.code;
   if (isRecord(error) && typeof error.retryable === 'boolean') safe.retryable = error.retryable;
   return safe;
+}
+
+function createDisplaySafeCodexError(error: unknown): Error & { code?: string; retryable?: boolean } {
+  const code = isRecord(error) && typeof error.code === 'string' && error.code.startsWith('CODEX_CLI_')
+    ? error.code
+    : 'CODEX_CLI_FAILED';
+  const safe = new Error('Codex CLI request failed') as Error & { code?: string; retryable?: boolean };
+  safe.code = code;
+  safe.retryable = isRecord(error) && typeof error.retryable === 'boolean' ? error.retryable : true;
+  return safe;
+}
+
+function createCodexCancellationError(): Error & { code: string; retryable: boolean } {
+  const error = new Error('Codex CLI request cancelled') as Error & { code: string; retryable: boolean };
+  error.code = 'CODEX_CLI_CANCELLED';
+  error.retryable = true;
+  return error;
 }
 
 export async function migrateLegacyProject(

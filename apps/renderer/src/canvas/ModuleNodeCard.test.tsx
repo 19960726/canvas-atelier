@@ -58,6 +58,12 @@ function openVideoGenerationEditor() {
   fireEvent.click(screen.getByRole('button', { name: 'Open video generation editor' }));
 }
 function openGenerationParameterOptions(label: string) {
+  if (label.startsWith('Video preview ')) {
+    const current = screen.queryByRole('dialog', { name: '视频生成参数' });
+    if (current) return current;
+    fireEvent.click(screen.getByRole('button', { name: '打开视频参数设置' }));
+    return screen.getByRole('dialog', { name: '视频生成参数' });
+  }
   const current = screen.queryByRole('menu', { name: label + ' options' });
   if (current) return current;
   fireEvent.click(screen.getByRole('button', { name: label }));
@@ -91,6 +97,12 @@ function createPhotoshopDesktopBridge(importToPhotoshop: ReturnType<typeof vi.fn
 }
 
 function readGenerationParameterOptions(label: string): Array<string | null> {
+  if (label === 'Video preview aspect ratio') {
+    return within(openGenerationParameterOptions(label).querySelector('[aria-label="比例"]') as HTMLElement).getAllByRole('menuitemradio').map((item) => item.textContent);
+  }
+  if (label === 'Video preview resolution') {
+    return within(openGenerationParameterOptions(label).querySelector('[aria-label="清晰度"]') as HTMLElement).getAllByRole('menuitemradio').map((item) => item.textContent);
+  }
   return within(openGenerationParameterOptions(label)).getAllByRole('menuitemradio').map((item) => item.textContent);
 }
 
@@ -155,7 +167,7 @@ describe('ModuleNodeCard', () => {
     })));
   });
 
-  it('opens a reference-style video model picker while retaining the accessible native value control', () => {
+  it('opens a reference-style video model picker with only one visible model control', () => {
     const node = createCanvasModuleNode('video-model-picker', 'video_generation', { x: 0, y: 0 });
     const data = {
       ...node.data,
@@ -173,7 +185,16 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: /MiniMax H3 Max/ }));
 
     expect(screen.getByLabelText('Video preview model')).toHaveValue('video-route-b');
+    expect(screen.getByLabelText('Video preview model')).toHaveClass('module-node__video-native-select');
     expect(screen.queryByRole('listbox', { name: '视频模型' })).not.toBeInTheDocument();
+  });
+
+  it('labels an empty image model picker as an image model control', () => {
+    const node = createCanvasModuleNode('image-empty-model-picker', 'image_generation', { x: 0, y: 0 });
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByRole('button', { name: '打开生图模型列表' })).toHaveTextContent('选择图片模型');
   });
 
   it('does not roll back newer video controls when an older draft snapshot arrives', async () => {
@@ -365,6 +386,43 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('durable result')).toBeVisible();
   });
 
+  it('keeps a cancelled reverse rerun cancelled even when an older result is retained', () => {
+    const baseNode = createCanvasModuleNode('reverse-cancelled-stale-result', 'reverse_agent', { x: 0, y: 0 });
+    const node = {
+      ...baseNode,
+      data: {
+        ...baseNode.data,
+        config: {
+          ...baseNode.data.config,
+          modelRoute: 'reverse-route',
+          role: '视觉分析师',
+          task: '分析构图',
+          reverseAgentRunId: 'reverse-run-cancelled-1',
+          reverseAgentRunState: 'cancelled',
+          reverseAgentStartedAt: '2026-08-17T08:00:00.000Z',
+          reverseAgentCompletedAt: '2026-08-17T08:00:03.000Z',
+          reverseAgentResult: { positivePrompt: 'stale earlier result' },
+        },
+        reverseAgentRoutes: [{
+          provider: 'comfly',
+          modelRoute: 'reverse-route',
+          displayName: 'Reverse',
+          modelId: 'reverse-route',
+          capabilities: ['reverse_prompt', 'gemini_native'],
+        }],
+      },
+    };
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data as never} selected={false} /></ReactFlowProvider>);
+
+    expect(screen.getByLabelText('Reverse task timing'))
+      .toHaveAttribute('data-task-status', 'cancelled');
+    expect(screen.getByLabelText('Reverse task timing'))
+      .toHaveAttribute('data-task-run-id', 'reverse-run-cancelled-1');
+    expect(screen.getByLabelText('Reverse task timing')).toHaveTextContent('已取消 · 3秒');
+    expect(screen.queryByText('已完成')).not.toBeInTheDocument();
+  });
+
   it('renders persisted reverse analysis, prompt, constraints, and checklist', () => {
     const baseNode = createCanvasModuleNode('reverse-complete-result', 'reverse_agent', { x: 0, y: 0 });
     const node = {
@@ -444,7 +502,7 @@ describe('ModuleNodeCard', () => {
     } as typeof imageNode.data;
     const { unmount } = render(<ReactFlowProvider><ModuleNodeCard id={imageNode.id} data={imageData} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
-    expect(within(screen.getByLabelText('Image generation model route')).getAllByRole('option', { name: 'Nano Banana 2' })).toHaveLength(1);
+    expect(within(screen.getByLabelText('Image generation model route')).getAllByRole('option', { name: 'Nano Banana 2', hidden: true })).toHaveLength(1);
     unmount();
 
     const reverseNode = createCanvasModuleNode('dedupe-reverse-routes', 'reverse_agent', { x: 0, y: 0 });
@@ -458,6 +516,59 @@ describe('ModuleNodeCard', () => {
     } as typeof reverseNode.data;
     render(<ReactFlowProvider><ModuleNodeCard id={reverseNode.id} data={reverseData} selected={false} /></ReactFlowProvider>);
     expect(within(screen.getByLabelText('Agent model route')).getAllByRole('option', { name: 'Gemini 3.1 Pro' })).toHaveLength(1);
+  });
+
+  it('keeps the active provider route when duplicate reverse names are supplied', () => {
+    const node = createCanvasModuleNode('reverse-comfly-preferred', 'reverse_agent', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: [
+        { provider: 'relayme', modelRoute: 'relayme-gemini', displayName: 'Gemini 3.1 Pro', modelId: 'gemini-3.1-pro', capabilities: ['reverse_prompt', 'vision', 'chat'] },
+        { provider: 'comfly', modelRoute: 'comfly-gemini', displayName: 'Gemini 3.1 Pro', modelId: 'gemini-3.1-pro', capabilities: ['reverse_prompt', 'vision', 'chat'] },
+      ],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+
+    expect(screen.getByLabelText('Agent model route')).toHaveValue('relayme-gemini');
+  });
+
+  it('keeps the missing reverse-model guidance inline without a duplicate settings button', () => {
+    const node = createCanvasModuleNode('reverse-no-compatible-route', 'reverse_agent', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: [],
+      onOpenReverseAgentSettings: vi.fn(),
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+
+    expect(screen.getByRole('status')).toHaveTextContent('该账号没有此类模型，请先在设置中切换供应商。');
+    expect(screen.queryByRole('button', { name: '打开设置检查连接' })).not.toBeInTheDocument();
+  });
+
+  it('replaces a stale reverse route when the active provider catalog changes', async () => {
+    const node = createCanvasModuleNode('reverse-stale-route', 'reverse_agent', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      config: {
+        ...node.data.config,
+        modelRoute: 'comfly-old-gemini',
+        role: '视觉分析师',
+        task: '分析产品画面',
+      },
+      reverseAgentRoutes: [{
+        provider: 'relayme',
+        modelRoute: 'relayme-gemini-vision',
+        displayName: 'Gemini Vision',
+        modelId: 'gemini-vision',
+        capabilities: ['reverse_prompt', 'vision', 'chat'],
+      }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+
+    await waitFor(() => expect(screen.getByLabelText('Agent model route')).toHaveValue('relayme-gemini-vision'));
   });
 
   it('edits every reverse result field and persists the complete result on its source node', async () => {
@@ -670,7 +781,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Reverse task timing')).toHaveTextContent('失败 · 12秒');
   });
 
-  it('marks image, video, and reverse workflows with isolated Figma surface contracts', () => {
+  it('marks image, video, and reverse workflows with isolated Canvas surface contracts', () => {
     const image = createCanvasModuleNode('image-minimal', 'image_input', { x: 0, y: 0 });
     const generation = createCanvasModuleNode('generation-minimal', 'image_generation', { x: 0, y: 0 });
     const video = createCanvasModuleNode('video-minimal', 'video_generation', { x: 0, y: 0 });
@@ -757,7 +868,7 @@ describe('ModuleNodeCard', () => {
     expect(document.querySelector('.module-node__icon svg')).toHaveAttribute('width', '18');
   });
 
-  it('uses the Figma two-endpoint contract for generation nodes', () => {
+  it('uses the Canvas two-endpoint contract for generation nodes', () => {
     const node = createCanvasModuleNode('generator-round-ports', 'image_generation', { x: 0, y: 0 });
 
     render(
@@ -771,7 +882,7 @@ describe('ModuleNodeCard', () => {
     expect(handles.every((port) => port.getAttribute('data-port-shape') === 'circle')).toBe(true);
   });
 
-  it('shows the Figma video workflow as one visible media input and one visible result output', () => {
+  it('shows the Canvas video workflow as one visible media input and one visible result output', () => {
     const node = createCanvasModuleNode('video-single-flow', 'video_generation', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
@@ -781,7 +892,7 @@ describe('ModuleNodeCard', () => {
     expect(document.querySelectorAll('[data-module-type="video_generation"] [data-port-direction="output"] .react-flow__handle')).toHaveLength(1);
   });
 
-  it('shows the Figma reverse workflow as one visible media input and one visible analysis output', () => {
+  it('shows the Canvas reverse workflow as one visible media input and one visible analysis output', () => {
     const node = createCanvasModuleNode('reverse-single-flow', 'reverse_agent', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
@@ -792,7 +903,7 @@ describe('ModuleNodeCard', () => {
     expect(document.querySelector('[data-module-type="reverse_agent"] [data-port-id="analysis"] .react-flow__handle')).not.toBeNull();
   });
 
-  it('keeps the Figma reverse empty-media rail visible without presenting an unconnected image', () => {
+  it('keeps the Canvas reverse empty-media rail visible without presenting an unconnected image', () => {
     const node = createCanvasModuleNode('reverse-empty-media-rail', 'reverse_agent', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
@@ -804,14 +915,14 @@ describe('ModuleNodeCard', () => {
     expect(within(rail).queryByRole('button', { name: '添加反推素材' })).not.toBeInTheDocument();
   });
 
-  it('keeps the Figma reverse empty-media rail visible until a durable input edge supplies content', () => {
+  it('keeps the Canvas reverse empty-media rail visible until a durable input edge supplies content', () => {
     const node = createCanvasModuleNode('reverse-empty-media', 'reverse_agent', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
     expect(screen.queryByLabelText('Connected reverse media slots')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Reverse media workspace')).toHaveClass('module-node__agent-media-empty-hint');
-    // Figma 408:2 keeps an empty input rail visible while the actual media
+    // Canvas 408:2 keeps an empty input rail visible while the actual media
     // tray remains absent until a durable edge supplies media.
     expect(screen.getByLabelText('Reverse media input')).toHaveClass('module-node__agent-media-label');
     expect(screen.getByLabelText('Reverse media input')).toHaveTextContent('0 / 20');
@@ -943,7 +1054,7 @@ describe('ModuleNodeCard', () => {
       'conflict-edge-image',
     ]);
   });
-  it('keeps all image reference controls out of the Figma image node until media is connected', () => {
+  it('keeps all image reference controls out of the Canvas image node until media is connected', () => {
     const node = createCanvasModuleNode('image-empty-media', 'image_generation', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
@@ -956,7 +1067,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('button', { name: 'Generate image' })).toHaveTextContent('生成');
   });
 
-  it('keeps the Figma image media tray absent before an image edge is connected', () => {
+  it('keeps the Canvas image media tray absent before an image edge is connected', () => {
     const node = createCanvasModuleNode('image-empty-reference-summary', 'image_generation', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
@@ -1098,7 +1209,7 @@ describe('ModuleNodeCard', () => {
 
   it('locks the expanded universal thumbnail row between preview and prompt for both generation nodes', () => {
     const css = [
-      readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8'),
+      readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8'),
       readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8'),
     ].join('\n');
     const finalLayout = css.slice(css.lastIndexOf('Final expanded universal media row layout'));
@@ -1753,9 +1864,8 @@ describe('ModuleNodeCard', () => {
     openVideoGenerationEditor();
 
     expect(readGenerationParameterOptions('Video preview aspect ratio')).toEqual(['AUTO', '16:9', '9:16']);
-    const videoRatioTrigger = screen.getByRole('button', { name: 'Video preview aspect ratio' });
-    expect(videoRatioTrigger.closest('.generation-parameter-popover')).toHaveClass('generation-parameter-popover--ratio-grid');
-    expect(videoRatioTrigger.querySelector('svg')).not.toBeNull();
+    const videoSettingsTrigger = screen.getByRole('button', { name: '打开视频参数设置' });
+    expect(videoSettingsTrigger).toHaveAttribute('aria-expanded', 'true');
     expect(readGenerationParameterOptions('Video preview resolution')).toEqual(['480P', '720P', '1080P']);
     expect(within(screen.getByLabelText('Video preview duration')).getAllByRole('option').map((item) => item.textContent)).toEqual(['4秒', '6秒', '8秒']);
     expect(within(screen.getByLabelText('Video preview quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1', '2']);
@@ -1800,7 +1910,8 @@ describe('ModuleNodeCard', () => {
     const node = createCanvasModuleNode('video-duration-slider', 'video_generation', { x: 0, y: 0 });
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
     openVideoGenerationEditor();
-    const slider = screen.getByLabelText('Video preview duration slider');
+    fireEvent.click(screen.getByRole('button', { name: '打开视频参数设置' }));
+    const slider = screen.getByRole('dialog', { name: '视频生成参数' });
     expect(slider).toBeVisible();
     const input = within(slider).getByRole('slider');
     expect(input).toHaveAttribute('min', '1');
@@ -1867,21 +1978,21 @@ describe('ModuleNodeCard', () => {
     });
   });
 
-  it('groups the Figma video prompt, connected-media tray, controls, and centered action in one composer layer', () => {
-    const node = createCanvasModuleNode('video-figma-composer', 'video_generation' as never, { x: 0, y: 0 });
+  it('groups the Canvas video prompt, connected-media tray, controls, and centered action in one composer layer', () => {
+    const node = createCanvasModuleNode('video-canvas-composer', 'video_generation' as never, { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
     openVideoGenerationEditor();
     const composer = screen.getByLabelText('Video generation composer');
-    expect(composer).toHaveClass('module-node__video-figma-composer');
+    expect(composer).toHaveClass('module-node__video-composer');
     expect(composer).toContainElement(screen.getByLabelText('Video preview prompt workspace'));
     expect(composer).toContainElement(screen.getByLabelText('Video preview parameter controls'));
     expect(composer).toContainElement(screen.getByRole('button', { name: '生成视频' }));
   });
 
-  it('uses the Figma model and media-mode chips ahead of its video controls', () => {
-    const node = createCanvasModuleNode('video-figma-parameters', 'video_generation' as never, { x: 0, y: 0 });
+  it('uses the Canvas model and media-mode chips ahead of its video controls', () => {
+    const node = createCanvasModuleNode('video-canvas-parameters', 'video_generation' as never, { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
@@ -1892,8 +2003,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Video preview resolution')).toHaveValue('1080p');
   });
 
-  it('orders the video controls exactly as the Figma 332:2 parameter rail', () => {
-    const node = createCanvasModuleNode('video-figma-control-order', 'video_generation' as never, { x: 0, y: 0 });
+  it('orders the video controls exactly as the Canvas 332:2 parameter rail', () => {
+    const node = createCanvasModuleNode('video-canvas-control-order', 'video_generation' as never, { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
@@ -1904,14 +2015,32 @@ describe('ModuleNodeCard', () => {
     expect(parameterLabels).toEqual([
       'Video preview model',
       'Video preview mode',
+      '打开视频参数设置',
       'Video preview aspect ratio',
       'Video preview resolution',
-      'Video preview duration slider',
       'Video preview duration',
       'Video preview audio',
       'Video preview quantity',
       '生成视频',
     ]);
+    expect(screen.queryByLabelText('视频脚本')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('翻译提示词')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('视频高级设置')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Video generation reference tools')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '特效' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '运镜' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '角色库' })).not.toBeInTheDocument();
+  });
+
+  it('marks compatibility-only video controls so they cannot participate in the visible rail', () => {
+    const node = createCanvasModuleNode('video-hidden-compat-controls', 'video_generation' as never, { x: 0, y: 0 });
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+
+    openVideoGenerationEditor();
+    const controls = screen.getByLabelText('Video preview parameter controls');
+    expect(controls.querySelector("select[aria-label='Video preview audio']")).toHaveClass('module-node__video-fallback-control');
+    expect(controls.querySelector("select[aria-label='Video preview quantity']")).toHaveClass('module-node__video-fallback-control');
   });
 
   it('keeps mock video prompt, parameters, and mock result in separate regions without a second media picker', () => {
@@ -1926,7 +2055,10 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('button', { name: 'Add image reference' })).not.toBeInTheDocument();
     const videoControls = screen.getByLabelText('Video preview parameter controls');
     expect(videoControls).toBeVisible();
-    expect(screen.getByLabelText('Video generation composer')).toContainElement(screen.getByRole('button', { name: '生成视频' }));
+    const runVideo = screen.getByRole('button', { name: '生成视频' });
+    expect(screen.getByLabelText('Video generation composer')).toContainElement(runVideo);
+    expect(runVideo).toHaveTextContent('生成视频');
+    expect(runVideo.querySelector('svg')).toBeNull();
     expect(screen.queryByLabelText('Video preview result workspace')).not.toBeInTheDocument();
   });
 
@@ -2874,7 +3006,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByTestId('module-node-card')).toHaveClass('module-node--foundation');
   });
 
-  it('opens Figma output actions from the preview surface without a visible action button', () => {
+  it('opens Canvas output actions from the preview surface without a visible action button', () => {
     const node = createCanvasModuleNode('result-preview', 'result_output', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
@@ -2909,8 +3041,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Generated video preview')).toBeVisible();
     expect(screen.getByText('生成视频结果')).toBeVisible();
 
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
-    const rules = [...css.matchAll(/\.workspace--ui-gate \.module-node--foundation\[data-module-type='video_result'\] \.module-node__video-output-preview\s*\{([^}]*)\}/gu)];
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const rules = [...css.matchAll(/\.workspace--canvas-layout \.module-node--foundation\[data-module-type='video_result'\] \.module-node__video-output-preview\s*\{([^}]*)\}/gu)];
     const finalRule = rules[rules.length - 1]?.[1] ?? '';
     expect(finalRule).toContain('position: absolute !important');
     expect(finalRule).toContain('inset: 0 !important');
@@ -3407,8 +3539,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Reverse model workspace')).toHaveClass('module-node__agent-route-region');
   });
 
-  it('prefers the Figma image model when an empty generation node has multiple routes', () => {
-    const node = createCanvasModuleNode('image-default-figma-route', 'image_generation', { x: 0, y: 0 });
+  it('prefers the Canvas image model when an empty generation node has multiple routes', () => {
+    const node = createCanvasModuleNode('image-default-canvas-route', 'image_generation', { x: 0, y: 0 });
     const data = {
       ...node.data,
       imageGenerationRoutes: [
@@ -3423,8 +3555,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Image generation model route')).toHaveValue('nano-banana-pro-actual-route');
   });
 
-  it('prefers the Figma reverse model when an empty Agent node has multiple routes', () => {
-    const node = createCanvasModuleNode('reverse-default-figma-route', 'reverse_agent', { x: 0, y: 0 });
+  it('prefers the Canvas reverse model when an empty Agent node has multiple routes', () => {
+    const node = createCanvasModuleNode('reverse-default-canvas-route', 'reverse_agent', { x: 0, y: 0 });
     const data = {
       ...node.data,
       reverseAgentRoutes: [
@@ -3805,9 +3937,10 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
 
-    expect(screen.getByLabelText('反推anget 节点状态')).toHaveTextContent('等待运行');
-    expect(screen.getByLabelText('反推anget 节点配置')).toBeInTheDocument();
-    expect(screen.getByLabelText('反推anget 节点结果')).toBeInTheDocument();
+    expect(screen.getByLabelText('Agent 反推 节点状态')).toHaveTextContent('等待运行');
+    expect(screen.getByLabelText('Agent 反推 节点配置')).toBeInTheDocument();
+    expect(screen.getByLabelText('Agent 反推 节点结果')).toBeInTheDocument();
+    expect(screen.getByTestId('module-node-card')).not.toHaveTextContent(/反推anget/iu);
   });
 
   it('presents reverse analysis as one compact node workbench instead of a stacked legacy form', () => {
@@ -3827,12 +3960,12 @@ describe('ModuleNodeCard', () => {
     expect(workbench.querySelector('[data-agent-region="knowledge"]')).toHaveClass('module-node__agent-knowledge');
     expect(workbench.querySelector('[data-agent-region="result"]')).not.toBeNull();
     expect(workbench.querySelector('[data-agent-region="actions"]')).not.toBeNull();
-    const result = screen.getByLabelText('反推anget 节点结果');
+    const result = screen.getByLabelText('Agent 反推 节点结果');
     const actions = workbench.querySelector<HTMLElement>('[data-agent-region="actions"]')!;
     expect(result.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('keeps connected media and the reverse language-model selector in one Figma-style control strip', () => {
+  it('keeps connected media and the reverse language-model selector in one Canvas-style control strip', () => {
     const node = createCanvasModuleNode('reverse-model-strip', 'reverse_agent', { x: 0, y: 0 });
     const data = {
       ...node.data,
@@ -3850,8 +3983,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Agent model route')).not.toHaveTextContent('Comfly');
   });
 
-  it('uses the exact Figma 408:2 labels for the reverse-agent configuration form', () => {
-    const node = createCanvasModuleNode('reverse-figma-labels', 'reverse_agent', { x: 0, y: 0 });
+  it('uses the exact Canvas 408:2 labels for the reverse-agent configuration form', () => {
+    const node = createCanvasModuleNode('reverse-canvas-labels', 'reverse_agent', { x: 0, y: 0 });
     const data = {
       ...node.data,
       reverseAgentRoutes: [
@@ -3869,7 +4002,7 @@ describe('ModuleNodeCard', () => {
   });
 
   it('isolates the reverse Agent card from the legacy workbench stylesheet', () => {
-    const node = createCanvasModuleNode('reverse-figma-shell', 'reverse_agent', { x: 0, y: 0 });
+    const node = createCanvasModuleNode('reverse-canvas-shell', 'reverse_agent', { x: 0, y: 0 });
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
     const card = screen.getByLabelText('Agent task configuration').closest('article');
@@ -3908,8 +4041,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('option', { name: 'Image only' })).not.toBeInTheDocument();
   });
 
-  it('uses the Figma knowledge selector for reverse Agent', () => {
-    const node = createCanvasModuleNode('reverse-figma-knowledge', 'reverse_agent', { x: 0, y: 0 });
+  it('uses the Canvas knowledge selector for reverse Agent', () => {
+    const node = createCanvasModuleNode('reverse-canvas-knowledge', 'reverse_agent', { x: 0, y: 0 });
     useAppStore.setState({ knowledgeBases: [] } as never);
     const data = {
       ...node.data,
@@ -3972,7 +4105,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByText('详情页结构、卖点表达与视觉规范')).toBeVisible();
   });
 
-  it('preserves a stale saved Agent route and requires an explicit provider switch', async () => {
+  it('replaces a stale saved Agent route with the active provider route', async () => {
     const node = createCanvasModuleNode('reverse-unavailable', 'reverse_agent', { x: 0, y: 0 });
     node.data.config = {
       modelRoute: 'removed-route',
@@ -3989,8 +4122,9 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Start reverse analysis' })).toBeDisabled());
-    expect(screen.getByRole('status')).toHaveTextContent('当前模型路线不可用，请先切换供应商或重新选择模型。');
+    await waitFor(() => expect(screen.getByLabelText('Agent model route')).toHaveValue('available-route'));
+    expect(screen.getByRole('button', { name: 'Start reverse analysis' })).toBeEnabled();
+    expect(screen.queryByText('当前模型路线不可用，请先切换供应商或重新选择模型。')).not.toBeInTheDocument();
     expect(runReverseAgentNode).not.toHaveBeenCalled();
   });
 
@@ -4141,8 +4275,8 @@ describe('ModuleNodeCard', () => {
     const { rerender } = render(<ReactFlowProvider><ModuleNodeCard id={image.id} data={imageData} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
     const imageSelector = screen.getByLabelText('Image generation model route');
-    expect(within(imageSelector).getByRole('option', { name: 'GPT Image 2' })).toBeVisible();
-    expect(within(imageSelector).getByRole('option', { name: 'Gemini Image' })).toBeVisible();
+    expect(within(imageSelector).getByRole('option', { name: 'GPT Image 2', hidden: true })).toBeInTheDocument();
+    expect(within(imageSelector).getByRole('option', { name: 'Gemini Image', hidden: true })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '折叠图片生成节点' }));
     expect(imageSelector).not.toHaveTextContent('Comfly ·');
     expect(imageSelector).not.toHaveTextContent('RelayMe ·');
@@ -4158,8 +4292,8 @@ describe('ModuleNodeCard', () => {
     rerender(<ReactFlowProvider><ModuleNodeCard id={video.id} data={videoData} selected={false} /></ReactFlowProvider>);
     openVideoGenerationEditor();
     const videoSelector = screen.getByLabelText('Video preview model');
-    expect(within(videoSelector).getByRole('option', { name: 'Veo 3.1 Fast' })).toBeVisible();
-    expect(within(videoSelector).getByRole('option', { name: 'Kling 3' })).toBeVisible();
+    expect(within(videoSelector).getByRole('option', { name: 'Veo 3.1 Fast', hidden: true })).toBeInTheDocument();
+    expect(within(videoSelector).getByRole('option', { name: 'Kling 3', hidden: true })).toBeInTheDocument();
     expect(videoSelector).not.toHaveTextContent('Comfly ·');
     expect(videoSelector).not.toHaveTextContent('RelayMe ·');
   });

@@ -66,9 +66,9 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().agentPanelCollapsed).toBe(true);
   });
 
-  it('migrates only the legacy starter canvas into the reversible Figma workbench', async () => {
+  it('migrates only the legacy starter canvas into the reversible Canvas workbench', async () => {
     const stablePoint = vi.fn(async () => ({
-      availableSnapshotIds: ['legacy-before-ui-gate'],
+      availableSnapshotIds: ['legacy-before-canvas-layout'],
       project: createStarterProject(),
       revision: 4,
     }));
@@ -86,7 +86,7 @@ describe('project optimization memory', () => {
       saveStatus: 'saved',
     });
 
-    await expect(useAppStore.getState().migrateLegacyStarterProjectToFigmaWorkbench()).resolves.toBe(true);
+    await expect(useAppStore.getState().migrateLegacyStarterProjectToCanvasWorkbench()).resolves.toBe(true);
 
     expect(stablePoint).toHaveBeenCalledOnce();
     expect(useAppStore.getState().project.nodes.map((node) => node.type)).toEqual(['module', 'module', 'module', 'module', 'module', 'module', 'module']);
@@ -103,12 +103,12 @@ describe('project optimization memory', () => {
       { x: 1860, y: 732 },
     ]);
     expect(useAppStore.getState().project.edges).toEqual([
-      expect.objectContaining({ source: 'figma-image-input', sourcePortId: 'image', target: 'figma-image-generation', targetPortId: 'references', order: 0 }),
-      expect.objectContaining({ source: 'figma-image-generation', sourcePortId: 'result', target: 'figma-image-result', targetPortId: 'result', order: 0 }),
-      expect.objectContaining({ source: 'figma-image-input', sourcePortId: 'image', target: 'figma-video-generation', targetPortId: 'media', order: 0 }),
-      expect.objectContaining({ source: 'figma-image-input', sourcePortId: 'image', target: 'figma-reverse-agent', targetPortId: 'references', order: 0 }),
-      expect.objectContaining({ source: 'figma-reverse-agent', sourcePortId: 'analysis', target: 'figma-reverse-result', targetPortId: 'analysis', order: 0 }),
-      expect.objectContaining({ source: 'figma-video-generation', sourcePortId: 'result', target: 'figma-video-result', targetPortId: 'video', order: 0 }),
+      expect.objectContaining({ source: 'canvas-image-input', sourcePortId: 'image', target: 'canvas-image-generation', targetPortId: 'references', order: 0 }),
+      expect.objectContaining({ source: 'canvas-image-generation', sourcePortId: 'result', target: 'canvas-image-result', targetPortId: 'result', order: 0 }),
+      expect.objectContaining({ source: 'canvas-image-input', sourcePortId: 'image', target: 'canvas-video-generation', targetPortId: 'media', order: 0 }),
+      expect.objectContaining({ source: 'canvas-image-input', sourcePortId: 'image', target: 'canvas-reverse-agent', targetPortId: 'references', order: 0 }),
+      expect.objectContaining({ source: 'canvas-reverse-agent', sourcePortId: 'analysis', target: 'canvas-reverse-result', targetPortId: 'analysis', order: 0 }),
+      expect.objectContaining({ source: 'canvas-video-generation', sourcePortId: 'result', target: 'canvas-video-result', targetPortId: 'video', order: 0 }),
     ]);
     expect(useAppStore.getState().project.nodes[1]).toMatchObject({
       type: 'module',
@@ -121,7 +121,7 @@ describe('project optimization memory', () => {
     });
     expect(useAppStore.getState().project.nodes[4]).toMatchObject({
       type: 'module',
-      id: 'figma-reverse-agent',
+      id: 'canvas-reverse-agent',
       data: {
         moduleType: 'reverse_agent',
         config: {
@@ -134,12 +134,15 @@ describe('project optimization memory', () => {
     ];
     expect(migrationMemory).toMatchObject({
       kind: 'decision',
-      title: '迁移到 Figma 画布工作台',
-      snapshots: expect.objectContaining({ beforeId: expect.stringContaining('figma-ui-gate') }),
+      title: '迁移到 Canvas 画布工作台',
+      changeSummary: '已将旧版 Reference、Placement 与 Agent plan 节点替换为新版画布模块工作台。',
+      feedback: expect.objectContaining({ change: ['使用新版画布模块工作台'] }),
+      snapshots: expect.objectContaining({ beforeId: expect.stringContaining('canvas-canvas-layout') }),
     });
+    expect(JSON.stringify(migrationMemory)).not.toContain('UI Gate');
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({
       transaction: expect.objectContaining({
-        label: 'Migrate legacy starter canvas to Figma workbench',
+        label: 'Migrate legacy starter canvas to Canvas workbench',
         operations: expect.arrayContaining([
           expect.objectContaining({ kind: 'replace_canvas_state' }),
           expect.objectContaining({ kind: 'append_project_memory' }),
@@ -172,7 +175,7 @@ describe('project optimization memory', () => {
       saveStatus: 'saved',
     });
 
-    await expect(useAppStore.getState().migrateLegacyStarterProjectToFigmaWorkbench()).resolves.toBe(true);
+    await expect(useAppStore.getState().migrateLegacyStarterProjectToCanvasWorkbench()).resolves.toBe(true);
 
     expect(stablePoint).toHaveBeenCalledOnce();
     expect(commit).toHaveBeenCalledOnce();
@@ -212,7 +215,7 @@ describe('project optimization memory', () => {
         : edge),
     } as never;
     const stablePoint = vi.fn(async () => ({
-      availableSnapshotIds: ['legacy-agent-plan-before-ui-gate'],
+      availableSnapshotIds: ['legacy-agent-plan-before-canvas-layout'],
       project: agentPlanStarter,
       revision: 4,
     }));
@@ -252,7 +255,7 @@ describe('project optimization memory', () => {
 
   it('automatically migrates an exact legacy starter during durable hydration', async () => {
     const stablePoint = vi.fn(async () => ({
-      availableSnapshotIds: ['legacy-before-ui-gate'],
+      availableSnapshotIds: ['legacy-before-canvas-layout'],
       project: createStarterProject(),
       revision: 4,
     }));
@@ -288,6 +291,60 @@ describe('project optimization memory', () => {
       'reverse_result',
       'video_result',
     ]);
+  });
+
+  it('reloads once when startup migration hits a revision conflict from an older desktop instance', async () => {
+    const legacyProject = createStarterProject();
+    const durableProject = parseCanvasProject({
+      ...createStarterProject(),
+      name: 'Project from the current desktop instance',
+      nodes: [createCanvasModuleNode('current-text-node', 'text_prompt', { x: 40, y: 40 })],
+      edges: [],
+    });
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['legacy-before-canvas-layout'],
+      project: legacyProject,
+      revision: 4,
+    }));
+    const commit = vi.fn(async (): Promise<ProjectCommitResult> => ({
+      code: 'REVISION_CONFLICT',
+      ok: false,
+      project: durableProject,
+      revision: 7,
+    }));
+    const reloadDurableProject = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      mode: 'desktop' as const,
+      project: durableProject,
+      revision: 7,
+      saveStatus: 'saved' as const,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: legacyProject,
+        revision: 4,
+        saveStatus: 'saved' as const,
+      }),
+      reloadDurableProject,
+      stablePoint,
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(reloadDurableProject).toHaveBeenCalledOnce();
+    expect(useAppStore.getState()).toMatchObject({
+      canReloadDurableProject: false,
+      project: { name: durableProject.name },
+      projectCommitConflictCode: null,
+      saveErrorCode: null,
+      saveStatus: 'saved',
+    });
   });
 
   it('automatically migrates a legacy starter restored from browser persistence', async () => {
@@ -337,7 +394,7 @@ describe('project optimization memory', () => {
       nodes: createStarterProject().nodes.map((node) => ({ ...node, locked: false })),
     };
     const stablePoint = vi.fn(async () => ({
-      availableSnapshotIds: ['legacy-before-ui-gate'],
+      availableSnapshotIds: ['legacy-before-canvas-layout'],
       project: normalizedStarter,
       revision: 4,
     }));
@@ -378,7 +435,7 @@ describe('project optimization memory', () => {
   it('migrates the retired starter during hydration even when historical model jobs remain', async () => {
     const legacyProject = createStarterProject();
     const stablePoint = vi.fn(async () => ({
-      availableSnapshotIds: ['legacy-before-ui-gate'],
+      availableSnapshotIds: ['legacy-before-canvas-layout'],
       project: legacyProject,
       revision: 4,
     }));
@@ -558,7 +615,7 @@ describe('project optimization memory', () => {
   it('replaces a retired canvas immediately after it is opened', async () => {
     const retiredProject = { ...createStarterProject(), name: '从磁盘打开的旧画布' };
     const stablePoint = vi.fn(async () => ({
-      availableSnapshotIds: ['legacy-before-ui-gate'],
+      availableSnapshotIds: ['legacy-before-canvas-layout'],
       project: retiredProject,
       revision: 6,
     }));
@@ -585,7 +642,7 @@ describe('project optimization memory', () => {
   it('replaces a retired canvas opened with historical model jobs so old cards cannot return', async () => {
     const retiredProject = { ...createStarterProject(), name: 'Opened legacy canvas with historical jobs' };
     const stablePoint = vi.fn(async () => ({
-      availableSnapshotIds: ['legacy-before-ui-gate'],
+      availableSnapshotIds: ['legacy-before-canvas-layout'],
       project: retiredProject,
       revision: 6,
     }));
@@ -6002,6 +6059,8 @@ describe('stable module graph commits', () => {
     reverse.data.config = {
       modelRoute: 'gemini-reverse', role: 'Analyst', task: 'Analyze the cited image.',
       knowledgeBaseIds: [], referenceAssetIds: ['dddddddddddddddd'],
+      reverseAgentRunState: 'completed',
+      reverseAgentResult: { positivePrompt: 'Previous reverse prompt must be cleared.' },
     };
     const project = parseCanvasProject({
       ...createStarterProject(),
@@ -6033,6 +6092,9 @@ describe('stable module graph commits', () => {
     await waitForStore(() => useAppStore.getState().project.nodes.some((node) => (
       node.id === reverse.id && node.type === 'module' && node.data.config.reverseAgentRunState === 'running'
     )));
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
+      data: { config: { reverseAgentRunState: 'running', reverseAgentResult: null } },
+    });
     await expect(useAppStore.getState().cancelReverseAgentNode(reverse.id)).resolves.toBe(true);
     expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
       data: { config: { reverseAgentRunState: 'cancelled', reverseAgentError: null } },
@@ -6045,8 +6107,8 @@ describe('stable module graph commits', () => {
       analysis: 'Late analysis must be ignored.',
       keywords: ['late'],
       positivePrompt: 'Late reverse prompt must be ignored.',
-      negativeConstraints: [],
-      executionChecklist: [],
+      negativeConstraints: ['No distortion.'],
+      executionChecklist: ['Review the output.'],
     });
 
     await expect(running).rejects.toMatchObject({ code: 'REVERSE_RUN_CANCELLED' });
@@ -6110,6 +6172,54 @@ describe('stable module graph commits', () => {
         reverseAgentError: null,
       } },
     });
+  });
+
+  it('resolves a reverse model from the active RelayMe catalog without crossing providers', async () => {
+    const reverse = createCanvasModuleNode('reverse-full-dialogue-catalog', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'comfly-vision-dialogue',
+      role: 'Analyst',
+      task: 'Analyze the cited image.',
+      knowledgeBaseIds: [],
+      referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+    };
+    const asset = {
+      assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100,
+      label: 'Managed product', mediaType: 'image/png' as const, origin: 'imported' as const,
+      sha256: 'a'.repeat(64), width: 100,
+    };
+    const project = parseCanvasProject({ ...createStarterProject(), assets: [asset], nodes: [reverse], edges: [] });
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId,
+      nonce: input.run.nonce,
+      knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'Catalog analysis.',
+      keywords: ['catalog'],
+      positivePrompt: 'Catalog reverse prompt.',
+      negativeConstraints: ['No distortion.'],
+      executionChecklist: ['Review the output.'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async (request?: { provider?: 'comfly' | 'relayme' }) => request?.provider === 'relayme'
+          ? [{ provider: 'relayme' as const, modelRoute: 'relayme-vision-dialogue', displayName: 'Vision Dialogue', capabilities: ['chat', 'vision'] as const }]
+          : [{ provider: 'comfly' as const, modelRoute: 'comfly-vision-dialogue', displayName: 'Vision Dialogue', capabilities: ['chat', 'vision'] as const }]),
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({
+      project,
+      projectImages: [{ ...asset, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', usageCount: 0 }],
+    });
+
+    await expect(useAppStore.getState().runReverseAgentNode(reverse.id)).resolves.toMatchObject({ positivePrompt: 'Catalog reverse prompt.' });
+    expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'relayme',
+      run: expect.objectContaining({ agentConfig: expect.objectContaining({ modelRoute: 'relayme-vision-dialogue' }) }),
+    }));
   });
 
   it('autosaves reverse Agent draft fields before the task is run', async () => {

@@ -191,6 +191,48 @@ describe('RelayMe provider service', () => {
     })).rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: true, message: expect.stringMatching(/额度|频率/u) });
   });
 
+  it('closes RelayMe history when a retryable image submission fails before a provider task exists', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({
+        created: true,
+        historyId: 'history_relayme_submit_503',
+        status: 'queued' as const,
+        terminal: null,
+      })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const { service, fetch } = await createService([
+      modelsResponse(),
+      jsonResponse({ message: 'service unavailable' }, { ok: false, status: 503 }),
+    ], { historySink });
+
+    await expect(service.submitImageJob({
+      jobId: 'model-job-v2-relay-submit-503',
+      provider: 'relayme',
+      modelRoute: 'relayme-gpt-image-2',
+      prompt: 'submit 503',
+      conversationId: 'conversation-submit-503',
+      sessionId: 'desktop-session-submit-503',
+      referenceAssetIds: [],
+    })).rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: true });
+
+    expect(historySink.failed).toHaveBeenCalledOnce();
+    expect(historySink.failed).toHaveBeenCalledWith('history_relayme_submit_503', 'provider_failed');
+    expect(historySink.running).not.toHaveBeenCalled();
+    expect(historySink.succeeded).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      expect.stringMatching(/\/images\/generations$/u),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('validates a temporary account JWT against models before persisting it', async () => {
     const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-login-'));
     roots.push(appDataRoot);
@@ -664,7 +706,7 @@ describe('RelayMe provider service', () => {
 
     await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({ provider: 'relayme', modelId: 'gpt-image-2', capabilities: ['image_generation', 'async_tasks'] }),
-      expect.objectContaining({ provider: 'relayme', modelId: 'gemini-3.1-flash-lite', capabilities: ['chat'] }),
+      expect.objectContaining({ provider: 'relayme', modelId: 'gemini-3.1-flash-lite', capabilities: ['chat', 'reverse_prompt'] }),
     ]));
     await expect(service.chat?.({
       provider: 'relayme', modelRoute: 'relayme-gemini-3-1-flash-lite',
@@ -696,6 +738,46 @@ describe('RelayMe provider service', () => {
     })).resolves.toEqual({
       message: 'RelayMe Agent 正常', modelRoute: 'relayme-gemini-3-1-flash-lite', sources: [],
     });
+  });
+
+  it('sends selected project memory and Codex reasoning strength to the RelayMe chat request', async () => {
+    const resolveProjectMemoryContext = vi.fn(async (memoryIds: readonly string[], sessionId?: string) => {
+      expect(memoryIds).toEqual(['memory-1']);
+      expect(sessionId).toBe('desktop-session-codex');
+      return [{
+        memoryId: 'memory-1',
+        projectRevision: 27,
+        summary: '视频节点使用 RelayMe 供应商，并要求先确认再执行。',
+      }];
+    });
+    const { service, fetch } = await createService([
+      jsonResponse({ success: true, data: { models: [{
+        id: '2', name: 'Relay Chat', model: 'gemini-3.1-flash-lite', capability: 'text', modelType: 'TEXT',
+        endpoints: ['/api/ai-tools/v1/chat/completions'],
+      }] } }),
+      jsonResponse({
+        id: 'chat-codex-context', model: 'gemini-3.1-flash-lite',
+        choices: [{ message: { role: 'assistant', content: '已读取项目上下文并完成规划' } }],
+      }),
+    ], { projectMemoryContextResolver: { resolveSelectedProjectMemory: resolveProjectMemoryContext } });
+
+    await expect(service.chat?.({
+      provider: 'relayme', modelRoute: 'relayme-gemini-3-1-flash-lite', sessionId: 'desktop-session-codex',
+      agentMode: 'codex', reasoningEffort: 'high',
+      messages: [{ role: 'user', content: '请按项目约束规划节点' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: ['memory-1'] },
+    })).resolves.toMatchObject({ message: '已读取项目上下文并完成规划' });
+
+    const mockCalls = (fetch as unknown as {
+      readonly mock: { readonly calls: readonly (readonly [string, { readonly body?: unknown } | undefined])[] };
+    }).mock.calls;
+    const chatCall = mockCalls.find(([url]) => url.endsWith('/chat/completions'));
+    expect(chatCall).toBeDefined();
+    const body = JSON.parse(String(chatCall?.[1]?.body));
+    expect(body.reasoning_effort).toBe('high');
+    expect(body.messages[0].content).toContain('视频节点使用 RelayMe 供应商');
+    expect(body.messages[0].content).toContain('"projectRevision":27');
+    expect(resolveProjectMemoryContext).toHaveBeenCalledWith(['memory-1'], 'desktop-session-codex');
   });
 
   it('lists the signed-in RelayMe account task center without exposing result payloads', async () => {
@@ -928,7 +1010,7 @@ describe('RelayMe provider service', () => {
     expect(storedImage).toHaveBeenCalledTimes(2);
   });
 
-  it('marks RelayMe history failed when task polling cannot complete', async () => {
+  it('keeps RelayMe polling and history recoverable across a transport interruption', async () => {
     const historySink = {
       reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_poll_failure', status: 'queued' as const, terminal: null })),
       running: vi.fn(async () => undefined),
@@ -948,8 +1030,261 @@ describe('RelayMe provider service', () => {
       prompt: 'poll failure', conversationId: 'conversation-poll-failure', sessionId: 'desktop-session-poll-failure', referenceAssetIds: [],
     });
 
-    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toThrow();
-    expect(historySink.failed).toHaveBeenCalledWith('history_relayme_poll_failure', 'provider_failed');
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      retryable: true,
+    });
+    expect(historySink.failed).not.toHaveBeenCalled();
+  });
+
+  it('preserves retryable RelayMe 5xx polling metadata and completes the same image task later', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_poll_503', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const storedImage = vi.fn(async () => ({ assetId: '5030503050305030', width: 1024, height: 1024 }));
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-poll-503', status: 'queued' }),
+      jsonResponse({ message: 'service unavailable' }, { ok: false, status: 503 }),
+      jsonResponse({
+        status: 'COMPLETED',
+        imageContent: `data:image/png;base64,${Buffer.from(pngHeaderBytes()).toString('base64')}`,
+        width: 1024,
+        height: 1024,
+      }),
+    ], { historySink, storeGeneratedImage: storedImage });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-poll-503', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'poll 503', conversationId: 'conversation-poll-503', sessionId: 'desktop-session-poll-503', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      retryable: true,
+    });
+    expect(historySink.failed).not.toHaveBeenCalled();
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
+      status: 'completed',
+      result: { assetId: '5030503050305030' },
+    });
+    expect(historySink.succeeded).toHaveBeenCalledWith('history_relayme_poll_503', expect.any(Uint8Array), {
+      width: 1024,
+      height: 1024,
+    });
+  });
+
+  it('keeps RelayMe video history recoverable after a retryable 503 and completes the same task', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_video_503', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1920, height: 1080 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const storedVideo = vi.fn(async () => ({ assetId: '5030503050305031', width: 1920, height: 1080 }));
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-video-poll-503', status: 'queued' }),
+      jsonResponse({ message: 'service unavailable' }, { ok: false, status: 503 }),
+      jsonResponse({
+        status: 'COMPLETED',
+        videoContent: `data:video/mp4;base64,${Buffer.from(mp4HeaderBytes()).toString('base64')}`,
+        width: 1920,
+        height: 1080,
+        durationSeconds: 5,
+      }),
+    ], { historySink, storeGeneratedVideo: storedVideo });
+    const submitted = await service.submitVideoJob!({
+      jobId: 'model-job-v2-relay-video-poll-503', provider: 'relayme', modelRoute: 'relayme-kling-kling-v3-video-generation',
+      prompt: 'video poll 503', conversationId: 'conversation-video-poll-503', sessionId: 'desktop-session-video-poll-503', referenceAssetIds: [],
+      aspectRatio: '16:9', resolution: '1080p', durationSeconds: 5, outputCount: 1, audioEnabled: true,
+    });
+
+    await expect(service.pollVideoJob!({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      retryable: true,
+    });
+    expect(historySink.failed).not.toHaveBeenCalled();
+    await expect(service.pollVideoJob!({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
+      status: 'completed',
+      result: { assetId: '5030503050305031', durationSeconds: 5 },
+    });
+    expect(historySink.succeeded).toHaveBeenCalledWith('history_relayme_video_503', expect.any(Uint8Array), {
+      width: 1920,
+      height: 1080,
+      durationSeconds: 5,
+    });
+  });
+
+  it('retries a completed RelayMe task when its result CDN is temporarily unavailable', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_result_503', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1024, height: 1024 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const storedImage = vi.fn(async () => ({ assetId: '5030503050305032', width: 1024, height: 1024 }));
+    const completed = jsonResponse({
+      status: 'COMPLETED',
+      imageContent: 'https://cdn.example/retry-result.png',
+      width: 1024,
+      height: 1024,
+    });
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-result-poll-503', status: 'queued' }),
+      completed,
+      jsonResponse({ message: 'temporarily unavailable' }, { ok: false, status: 503 }),
+      completed,
+      binaryResponse(pngHeaderBytes()),
+    ], { historySink, storeGeneratedImage: storedImage });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-result-poll-503', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'result poll 503', conversationId: 'conversation-result-poll-503', sessionId: 'desktop-session-result-poll-503', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      retryable: true,
+    });
+    expect(historySink.failed).not.toHaveBeenCalled();
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
+      status: 'completed',
+      result: { assetId: '5030503050305032' },
+    });
+    expect(historySink.succeeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps RelayMe history recoverable for the Electron CDN connection-failure message', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_result_connection', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1024, height: 1024 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const completed = jsonResponse({
+      status: 'COMPLETED',
+      imageContent: 'https://cdn.example/connection-result.png',
+      width: 1024,
+      height: 1024,
+    });
+    const storedImage = vi.fn(async () => ({ assetId: '5030503050305033', width: 1024, height: 1024 }));
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-result-connection', status: 'queued' }),
+      completed,
+      new Error('Provider network request failed (ERR_CONNECTION_RESET)'),
+      completed,
+      binaryResponse(pngHeaderBytes()),
+    ], { historySink, storeGeneratedImage: storedImage });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-result-connection', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'result connection', conversationId: 'conversation-result-connection', sessionId: 'desktop-session-result-connection', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      retryable: true,
+    });
+    expect(historySink.failed).not.toHaveBeenCalled();
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
+      status: 'completed',
+      result: { assetId: '5030503050305033' },
+    });
+    expect(historySink.succeeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps RelayMe history recoverable after a temporary result-host DNS failure', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_result_dns', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1024, height: 1024 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const completed = jsonResponse({
+      status: 'COMPLETED',
+      imageContent: 'https://cdn.example/dns-result.png',
+      width: 1024,
+      height: 1024,
+    });
+    const resolveResultHost = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('getaddrinfo EAI_AGAIN cdn.example'), { code: 'EAI_AGAIN' }))
+      .mockResolvedValueOnce(['8.8.8.8']);
+    const storedImage = vi.fn(async () => ({ assetId: '5030503050305034', width: 1024, height: 1024 }));
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-result-dns', status: 'queued' }),
+      completed,
+      completed,
+      binaryResponse(pngHeaderBytes()),
+    ], { historySink, resolveResultHost, storeGeneratedImage: storedImage });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-result-dns', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'result dns', conversationId: 'conversation-result-dns', sessionId: 'desktop-session-result-dns', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      retryable: true,
+    });
+    expect(historySink.failed).not.toHaveBeenCalled();
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
+      status: 'completed',
+      result: { assetId: '5030503050305034' },
+    });
+    expect(historySink.succeeded).toHaveBeenCalledTimes(1);
+    expect(resolveResultHost).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes RelayMe history for a permanent result-download policy rejection', async () => {
+    const historySink = {
+      reserveSubmission: vi.fn(async () => ({ created: true, historyId: 'history_relayme_result_policy', status: 'queued' as const, terminal: null })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1024, height: 1024 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+      queued: vi.fn(),
+    };
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-result-policy', status: 'queued' }),
+      jsonResponse({
+        status: 'COMPLETED',
+        imageContent: 'https://cdn.example/policy-result.png',
+        width: 1024,
+        height: 1024,
+      }),
+      new Error('Provider network redirect was blocked'),
+    ], { historySink, storeGeneratedImage: vi.fn() });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-result-policy', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'result policy', conversationId: 'conversation-result-policy', sessionId: 'desktop-session-result-policy', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).rejects.toMatchObject({
+      code: 'PROVIDER_INVALID_RESPONSE',
+      retryable: false,
+    });
+    expect(historySink.failed).toHaveBeenCalledOnce();
+    expect(historySink.failed).toHaveBeenCalledWith('history_relayme_result_policy', 'provider_failed');
   });
 
   it('closes RelayMe history when the provider returns a failed task state', async () => {
@@ -1255,15 +1590,17 @@ async function createService(
     readonly readManagedReverseMedia?: (sessionId: string, media: readonly unknown[]) => Promise<readonly { readonly bytes: Uint8Array; readonly mediaType: string }[]>;
     readonly storeGeneratedImage?: (sessionId: string, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
     readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+    readonly projectMemoryContextResolver?: Parameters<typeof createRelayMeProviderService>[0]['projectMemoryContextResolver'];
   } = {},
 ) {
   const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-service-'));
   roots.push(appDataRoot);
-  const fetch: RelayMeFetch = vi.fn(async (url: string) => (
-    url.endsWith('/workflows')
-      ? jsonResponse({ data: { workflows: [] } })
-      : responses.shift() as ReturnType<typeof jsonResponse>
-  ));
+  const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+    if (url.endsWith('/workflows')) return jsonResponse({ data: { workflows: [] } });
+    const response = responses.shift();
+    if (response instanceof Error) throw response;
+    return response as ReturnType<typeof jsonResponse>;
+  });
   const service = createRelayMeProviderService({
     appDataRoot,
     credentialStore: credentialStore({ configured: true, locked: false }),

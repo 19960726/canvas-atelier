@@ -295,10 +295,11 @@ interface AppState {
     readonly media: readonly ManagedReversePromptMediaIdentity[];
   }) => Promise<ReversePromptResult>;
   chatSkill: (input: SkillChatRequest) => Promise<ChatSkillBridgeResult>;
+  cancelChatSkill: (requestId: string) => Promise<boolean>;
   hydratePersistence: () => Promise<void>;
   openProject: (recentProjectId?: string) => Promise<boolean>;
   reloadDurableProject: () => Promise<boolean>;
-  migrateLegacyStarterProjectToFigmaWorkbench: () => Promise<boolean>;
+  migrateLegacyStarterProjectToCanvasWorkbench: () => Promise<boolean>;
   newWorkflow: () => Promise<void>;
   importImageForModule: (nodeId: string, file?: File) => Promise<boolean>;
   importAgentReferenceImage: (file?: File) => Promise<ProjectImageAssetSummary | null>;
@@ -830,6 +831,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const runningPersisted = await persistReverseAgentRunPatch(set, get, nodeId, {
       reverseAgentCompletedAt: null,
       reverseAgentError: null,
+      reverseAgentResult: null,
       reverseAgentRunId: runId,
       reverseAgentRunState: 'running',
       reverseAgentStartedAt: startedAt,
@@ -863,12 +865,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     try {
       const providerBridge = globalThis.window?.novusDesktop?.provider;
+      // Reverse analysis is a dialogue/vision workflow, but it must stay on
+      // the provider selected in Settings.  listRunnableProviderProfiles
+      // scopes the catalog to the active provider, so a RelayMe connection
+      // cannot accidentally submit a Comfly route (and vice versa).
       const reverseProfiles = providerBridge?.listProfiles ? await listRunnableProviderProfiles(providerBridge) : [];
       const reverseProfile = providerBridge?.listProfiles
         ? selectProviderProfile(reverseProfiles, parsedConfig.data.modelRoute, 'reverse_prompt')
           ?? reverseProfiles.find((profile) => profile.modelRoute === parsedConfig.data.modelRoute
-            && profile.capabilities.includes('chat'))
-          ?? reverseProfiles.find((profile) => profile.capabilities.includes('chat'))
+            && isReverseCapableProviderProfile(profile))
+          ?? reverseProfiles.find(isReverseCapableProviderProfile)
         : undefined;
       if (providerBridge?.listProfiles && !reverseProfile) throw new Error('所选模型没有明确声明反推能力');
       // The renderer may retain a historical route alias after the provider
@@ -1497,6 +1503,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (chatSkill === undefined) throw new Error('Skill chat is unavailable');
     return chatSkill(input);
   },
+  cancelChatSkill: async (requestId) => {
+    const cancelChatSkill = projectPersistenceClient.cancelChatSkill;
+    return cancelChatSkill === undefined ? false : cancelChatSkill(requestId);
+  },
   hydratePersistence: async () => {
     const hydrationGeneration = projectPersistenceGeneration;
     const hydrationProject = get().project;
@@ -1544,7 +1554,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       hydrated.recoveryRequired !== true
       && isRetiredStarterCanvasProject(hydrated.project)
     ) {
-      await get().migrateLegacyStarterProjectToFigmaWorkbench();
+      const migrated = await get().migrateLegacyStarterProjectToCanvasWorkbench();
+      // A second desktop instance can win the revision while the startup
+      // migration is being committed.  Recover the durable project once so a
+      // freshly installed app does not remain stuck behind the conflict banner
+      // with every node action disabled.  The retry is deliberately bounded;
+      // the explicit reload affordance remains available if the other writer
+      // is still active.
+      const startupConflict = get().projectCommitConflictCode;
+      if (
+        !migrated
+        && get().canReloadDurableProject
+        && (startupConflict === 'REVISION_CONFLICT' || startupConflict === 'CONCURRENT_WRITER')
+      ) {
+        const reloaded = await get().reloadDurableProject();
+        if (reloaded && isRetiredStarterCanvasProject(get().project) && get().projectCommitConflictCode === null) {
+          await get().migrateLegacyStarterProjectToCanvasWorkbench();
+        }
+      }
     }
     if (hydrated.lifecycle === 'durable') await reconcilePendingClipboardMedia(get().project.id);
     if (hydrated.recoveryRequired !== true) {
@@ -1583,7 +1610,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       && get().modelJobs.length === 0
       && isRetiredStarterCanvasProject(opened.project)
     ) {
-      await get().migrateLegacyStarterProjectToFigmaWorkbench();
+      await get().migrateLegacyStarterProjectToCanvasWorkbench();
     }
     await reconcilePendingClipboardMedia(opened.project.id);
     return true;
@@ -1646,7 +1673,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       undoStack: [],
     });
   },
-  migrateLegacyStarterProjectToFigmaWorkbench: () => enqueueStableProjectOperation(set, get, async (commitNow) => {
+  migrateLegacyStarterProjectToCanvasWorkbench: () => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     if (state.recoveryRequired || !isRetiredStarterCanvasProject(state.project)) return false;
 
@@ -1656,9 +1683,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false;
     }
 
-    const transactionId = `migrate-legacy-starter-to-figma-ui-gate-${Date.now()}-${planSequence++}`;
-    const migratedCanvas = createFigmaHybridCanvasProject(state.project);
-    const memoryEntry = createFigmaWorkbenchMigrationMemory(
+    const transactionId = `migrate-legacy-starter-to-canvas-canvas-layout-${Date.now()}-${planSequence++}`;
+    const migratedCanvas = createDefaultCanvasProject(state.project);
+    const memoryEntry = createCanvasWorkbenchMigrationMemory(
       state.project,
       migratedCanvas,
       transactionId,
@@ -1670,7 +1697,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     const transaction: ProjectTransaction = {
       id: transactionId,
-      label: 'Migrate legacy starter canvas to Figma workbench',
+      label: 'Migrate legacy starter canvas to Canvas workbench',
       operations: [
         { kind: 'replace_canvas_state', nodes: nextProject.nodes, edges: nextProject.edges },
         { kind: 'append_project_memory', entry: memoryEntry },
@@ -2882,8 +2909,8 @@ async function resolveModelExecutionSessionId(): Promise<string | undefined> {
 
 type CompatibleProjectPersistenceClient = Omit<
   ProjectPersistenceClient,
-  'chatSkill' | 'copyHistoryToProject' | 'importProjectImage' | 'importDroppedMedia' | 'importProjectVideo' | 'importAgentReferenceVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'
-> & Partial<Pick<ProjectPersistenceClient, 'chatSkill' | 'copyHistoryToProject' | 'importProjectImage' | 'importDroppedMedia' | 'importProjectVideo' | 'importAgentReferenceVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'>>;
+  'chatSkill' | 'cancelChatSkill' | 'copyHistoryToProject' | 'importProjectImage' | 'importDroppedMedia' | 'importProjectVideo' | 'importAgentReferenceVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'
+> & Partial<Pick<ProjectPersistenceClient, 'chatSkill' | 'cancelChatSkill' | 'copyHistoryToProject' | 'importProjectImage' | 'importDroppedMedia' | 'importProjectVideo' | 'importAgentReferenceVideo' | 'listProjectImages' | 'listProjectVideos' | 'pasteClipboardImage' | 'pasteClipboardVideo'>>;
 
 export function replaceProjectPersistenceClientForTests(client: CompatibleProjectPersistenceClient): void {
   projectPersistenceClient = withProjectImagePersistenceDefaults(client);
@@ -2894,6 +2921,7 @@ function withProjectImagePersistenceDefaults(client: CompatibleProjectPersistenc
   return {
     ...client,
     chatSkill: client.chatSkill ?? (async () => { throw new Error('Skill chat is unavailable'); }),
+    cancelChatSkill: client.cancelChatSkill ?? (async () => false),
     copyHistoryToProject: client.copyHistoryToProject ?? (async () => null),
     importProjectImage: client.importProjectImage ?? (async () => null),
     importDroppedMedia: client.importDroppedMedia ?? (async () => null),
@@ -3565,6 +3593,16 @@ function getModelJobStore(): ModelJobStore {
         const committed = await useAppStore.getState().commitProjectTransaction(materialization.transaction, { kind: 'agent' });
         if (committed) await useAppStore.getState().refreshProjectImages();
         return { committed, resultNodeId: materialization.resultNodeId };
+      },
+      // The IndexedDB queue is shared by every canvas.  Only repair a
+      // completed result when it is owned by the hydrated project/session;
+      // otherwise a historical job from another project can race the first
+      // user edit and surface the misleading "保存失败" state.
+      shouldRepairCompletedProjectTransaction: (ownerJob) => {
+        const currentProject = useAppStore.getState().project;
+        const activeSessionId = projectPersistenceClient.getSessionId?.();
+        return (ownerJob.projectSessionId !== undefined && ownerJob.projectSessionId === activeSessionId)
+          || projectOwnsModelResult(currentProject, ownerJob);
       },
       getProject: () => useAppStore.getState().project,
       pollConcurrency: runtimeProfile.providerPollConcurrency,
@@ -4396,9 +4434,9 @@ function normalizeLegacyStarterNode(node: CanvasProject['nodes'][number]) {
   return unlockedNode;
 }
 
-function createFigmaHybridCanvasProject(project: CanvasProject): CanvasProject {
-  const imageInput = createCanvasModuleNode('figma-image-input', 'image_input', { x: 20, y: 197 });
-  const imageGeneration = createCanvasModuleNode('figma-image-generation', 'image_generation', { x: 340, y: 132 });
+function createDefaultCanvasProject(project: CanvasProject): CanvasProject {
+  const imageInput = createCanvasModuleNode('canvas-image-input', 'image_input', { x: 20, y: 197 });
+  const imageGeneration = createCanvasModuleNode('canvas-image-generation', 'image_generation', { x: 340, y: 132 });
   imageGeneration.data.config = {
     ...imageGeneration.data.config,
     aspectRatio: '1:1',
@@ -4407,20 +4445,20 @@ function createFigmaHybridCanvasProject(project: CanvasProject): CanvasProject {
     resolution: '自动尺寸',
     resultState: 'fresh',
   };
-  const imageResult = createCanvasModuleNode('figma-image-result', 'result_output', { x: 820, y: 282 });
-  const videoGeneration = createCanvasModuleNode('figma-video-generation', 'video_generation', { x: 1174, y: 146 });
+  const imageResult = createCanvasModuleNode('canvas-image-result', 'result_output', { x: 820, y: 282 });
+  const videoGeneration = createCanvasModuleNode('canvas-video-generation', 'video_generation', { x: 1174, y: 146 });
   videoGeneration.data.config = {
     ...videoGeneration.data.config,
     audioEnabled: false,
     durationSeconds: 5,
     modelRoute: 'seedance-1.5-pro',
-    mode: 'mock',
+    mode: 'provider',
     outputCount: 4,
     prompt: '按照参考画面生成产品动态镜头，保持颜色、主体和构图一致。',
     resolution: '1080p',
     resultState: 'fresh',
   };
-  const reverseAgent = createCanvasModuleNode('figma-reverse-agent', 'reverse_agent', { x: 340, y: 1062 });
+  const reverseAgent = createCanvasModuleNode('canvas-reverse-agent', 'reverse_agent', { x: 340, y: 1062 });
   reverseAgent.data.config = {
     ...reverseAgent.data.config,
     knowledgeBaseIds: ['scene-skill', 'ecommerce-detail-knowledge'],
@@ -4429,22 +4467,22 @@ function createFigmaHybridCanvasProject(project: CanvasProject): CanvasProject {
     role: '产品视觉分析师',
     task: '提取构图、材质、镜头、主体和可复用提示词。',
   };
-  const reverseResult = createCanvasModuleNode('figma-reverse-result', 'reverse_result', { x: 1010, y: 1062 });
-  const videoResult = createCanvasModuleNode('figma-video-result', 'video_result', { x: 1860, y: 732 });
-  // The default delivery canvas is the Figma UI Gate image workflow. Other
+  const reverseResult = createCanvasModuleNode('canvas-reverse-result', 'reverse_result', { x: 1010, y: 1062 });
+  const videoResult = createCanvasModuleNode('canvas-video-result', 'video_result', { x: 1860, y: 732 });
+  // The default delivery canvas is the Canvas UI Gate image workflow. Other
   // workflows remain available from the module library instead of appearing
   // as unrelated legacy cards on a new canvas.
   return {
     ...project,
     nodes: [
-      // Figma 411:2 uses one shared delivery coordinate system: the compact
+      // Canvas 411:2 uses one shared delivery coordinate system: the compact
       // upload card sits at (170, 344), the 404x420 generation workbench at
       // (340, 188), and the 404x230 result card at (820, 282).  Keeping the
       // persisted node origins identical to those anchors means the runtime
       // ports, Bézier edges and media trays all land on the same visual rails
       // in both themes instead of falling back to the retired starter layout.
       // React Flow's stage starts below the 56px application topbar, so keep
-      // these as canvas-local coordinates while matching the Figma page rails.
+      // these as canvas-local coordinates while matching the Canvas page rails.
       imageInput,
       imageGeneration,
       imageResult,
@@ -4455,50 +4493,50 @@ function createFigmaHybridCanvasProject(project: CanvasProject): CanvasProject {
     ],
     edges: [
       {
-        id: 'figma-image-input-to-generation',
-        source: 'figma-image-input',
+        id: 'canvas-image-input-to-generation',
+        source: 'canvas-image-input',
         sourcePortId: 'image',
-        target: 'figma-image-generation',
+        target: 'canvas-image-generation',
         targetPortId: 'references',
         order: 0,
       },
       {
-        id: 'figma-image-generation-to-result',
-        source: 'figma-image-generation',
+        id: 'canvas-image-generation-to-result',
+        source: 'canvas-image-generation',
         sourcePortId: 'result',
-        target: 'figma-image-result',
+        target: 'canvas-image-result',
         targetPortId: 'result',
         order: 0,
       },
       {
-        id: 'figma-image-input-to-video',
-        source: 'figma-image-input',
+        id: 'canvas-image-input-to-video',
+        source: 'canvas-image-input',
         sourcePortId: 'image',
-        target: 'figma-video-generation',
+        target: 'canvas-video-generation',
         targetPortId: 'media',
         order: 0,
       },
       {
-        id: 'figma-image-input-to-reverse-agent',
-        source: 'figma-image-input',
+        id: 'canvas-image-input-to-reverse-agent',
+        source: 'canvas-image-input',
         sourcePortId: 'image',
-        target: 'figma-reverse-agent',
+        target: 'canvas-reverse-agent',
         targetPortId: 'references',
         order: 0,
       },
       {
-        id: 'figma-reverse-agent-to-result',
-        source: 'figma-reverse-agent',
+        id: 'canvas-reverse-agent-to-result',
+        source: 'canvas-reverse-agent',
         sourcePortId: 'analysis',
-        target: 'figma-reverse-result',
+        target: 'canvas-reverse-result',
         targetPortId: 'analysis',
         order: 0,
       },
       {
-        id: 'figma-video-generation-to-result',
-        source: 'figma-video-generation',
+        id: 'canvas-video-generation-to-result',
+        source: 'canvas-video-generation',
         sourcePortId: 'result',
-        target: 'figma-video-result',
+        target: 'canvas-video-result',
         targetPortId: 'video',
         order: 0,
       },
@@ -4506,7 +4544,7 @@ function createFigmaHybridCanvasProject(project: CanvasProject): CanvasProject {
   };
 }
 
-function createFigmaWorkbenchMigrationMemory(
+function createCanvasWorkbenchMigrationMemory(
   before: CanvasProject,
   after: CanvasProject,
   transactionId: string,
@@ -4521,8 +4559,8 @@ function createFigmaWorkbenchMigrationMemory(
     createdAt,
     kind: 'decision',
     actor: 'user',
-    title: '迁移到 Figma 画布工作台',
-    changeSummary: '已将旧版 Reference、Placement 与 Agent plan 节点替换为 Figma UI Gate 模块工作台。',
+    title: '迁移到 Canvas 画布工作台',
+    changeSummary: '已将旧版 Reference、Placement 与 Agent plan 节点替换为新版画布模块工作台。',
     rationale: '用户确认保留旧画布稳定点后，迁移到正式模块画布。',
     snapshots: {
       beforeId: `${transactionId}:before`,
@@ -4532,7 +4570,7 @@ function createFigmaWorkbenchMigrationMemory(
       referenceAssetIds: collectReferenceAssetIds(before),
       resultAssetIds: before.nodes.flatMap((node) => node.type === 'image_result' ? [node.data.assetId] : []),
     },
-    feedback: { keep: ['保留旧画布恢复点'], change: ['使用 Figma UI Gate 工作台'], never: ['删除原始项目文件'] },
+    feedback: { keep: ['保留旧画布恢复点'], change: ['使用新版画布模块工作台'], never: ['删除原始项目文件'] },
     nextStep: '连接图片输入、反推或生图模块，继续在正式工作台完成任务。',
   };
 }
@@ -4897,6 +4935,16 @@ function markProjectSaveConflict(
     saveErrorCode: get().projectCommitConflictCode ?? 'PROJECT_SAVE_CONFLICT',
     saveStatus: 'error',
   });
+}
+
+function isReverseCapableProviderProfile(profile: ProviderBridgeProfile): boolean {
+  const hasDialogueReverse = profile.capabilities.includes('reverse_prompt')
+    && (profile.capabilities.includes('chat') || profile.capabilities.includes('responses'));
+  const hasVisionDialogue = profile.capabilities.includes('vision')
+    && (profile.capabilities.includes('chat') || profile.capabilities.includes('responses'));
+  const hasGeminiNativeReverse = profile.capabilities.includes('gemini_native')
+    && profile.capabilities.includes('reverse_prompt');
+  return hasDialogueReverse || hasVisionDialogue || hasGeminiNativeReverse;
 }
 
 function withProjectPersistenceTimeout<T>(operation: Promise<T>): Promise<T> {

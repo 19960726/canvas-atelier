@@ -41,11 +41,11 @@ for (const theme of ['dark', 'light'] as const) {
     const videoPreviewRailY = generationBox!.y + (208 / 720) * generationBox!.height;
     expect(
       Math.abs(targetBox!.y + targetBox!.height / 2 - videoPreviewRailY),
-      'Figma 332:2 anchors the video media socket on the preview rail, not the card midpoint.',
+      'Canvas 332:2 anchors the video media socket on the preview rail, not the card midpoint.',
     ).toBeLessThanOrEqual(14);
     expect(
       Math.abs(resultBox!.y + resultBox!.height / 2 - videoPreviewRailY),
-      'Figma 332:2 keeps the video result socket on the same preview rail as the media input.',
+      'Canvas 332:2 keeps the video result socket on the same preview rail as the media input.',
     ).toBeLessThanOrEqual(14);
     await source.dragTo(target);
     await expect.poll(async () => (await e2eState(page)).edgeCount).toBe(1);
@@ -82,7 +82,7 @@ for (const theme of ['dark', 'light'] as const) {
     await captureLayoutScreenshot(page, testInfo, `video-media-video-${theme}-${viewport.name}`);
   });
 
-  test(`keeps image and video sockets on their Figma source and preview rails in ${theme} at ${viewport.name}`, async ({ page }) => {
+  test(`keeps image and video sockets on their Canvas source and preview rails in ${theme} at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
@@ -189,7 +189,7 @@ for (const theme of ['dark', 'light'] as const) {
     await captureLayoutScreenshot(page, testInfo, `video-generation-${theme}-${viewport.name}`);
   });
 
-  test(`video generation keeps the Figma teal focus treatment in ${theme} at ${viewport.name}`, async ({ page }, testInfo) => {
+  test(`video generation keeps the Canvas teal focus treatment in ${theme} at ${viewport.name}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
@@ -205,7 +205,7 @@ for (const theme of ['dark', 'light'] as const) {
 
     expect(
       await videoNode.evaluate((element) => getComputedStyle(element).outlineColor),
-      'The Figma UI Gate uses teal interaction affordances; a legacy blue React Flow focus ring must never surround video generation.',
+      'The Canvas UI Gate uses teal interaction affordances; a legacy blue React Flow focus ring must never surround video generation.',
     ).toBe(theme === 'dark' ? 'rgb(66, 199, 181)' : 'rgb(15, 118, 110)');
     await captureLayoutScreenshot(page, testInfo, `video-generation-focus-${theme}-${viewport.name}`);
   });

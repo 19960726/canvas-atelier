@@ -9,6 +9,7 @@ import {
 } from '@agent-canvas/domain';
 
 import {
+  MCP_RUNTIME_TTL_MS,
   createMcpRuntimeDescriptor,
   deleteMcpRuntimeFile,
   writeMcpRuntimeFile,
@@ -45,6 +46,10 @@ export interface McpRuntimeServiceOptions {
   readonly processId?: number;
   readonly instanceId?: string;
   readonly requestTimeoutMs?: number;
+  readonly runtimeRefreshIntervalMs?: number;
+  readonly listenServer?: (server: Server, pipeName: string) => Promise<void>;
+  readonly writeRuntimeFile?: (runtimeFilePath: string, descriptor: CanvasMcpRuntimeDescriptor) => Promise<void>;
+  readonly deleteRuntimeFile?: (runtimeFilePath: string) => Promise<void>;
   readonly forwardRequest: (requestId: string, request: CanvasMcpRequest) => Promise<CanvasMcpResponse>;
 }
 
@@ -65,55 +70,168 @@ export function presentMcpRuntimeStatus(
 export function createMcpRuntimeService(options: McpRuntimeServiceOptions): McpRuntimeService {
   let server: Server | null = null;
   let descriptor: CanvasMcpRuntimeDescriptor | null = null;
+  let runtimeGeneration = 0;
+  let startInFlight: Promise<CanvasMcpRuntimeDescriptor> | null = null;
+  let stopInFlight: Promise<void> | null = null;
+  let queuedStartAfterStop: Promise<CanvasMcpRuntimeDescriptor> | null = null;
   let state: McpRuntimeServiceStatus['state'] = 'stopped';
   let rendererConnected = false;
   let lastError: string | null = null;
-  const pendingIds = new Set<string>();
-  const sockets = new Set<Socket>();
+  const pendingRequests = new Map<string, { readonly generation: number; cancel(): void }>();
+  const sockets = new Map<Socket, number>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
+  const runtimeRefreshIntervalMs = options.runtimeRefreshIntervalMs ?? Math.floor(MCP_RUNTIME_TTL_MS / 3);
+  const listenRuntimeServer = options.listenServer ?? listen;
+  const publishRuntimeFile = options.writeRuntimeFile ?? writeMcpRuntimeFile;
+  const removeRuntimeFile = options.deleteRuntimeFile ?? deleteMcpRuntimeFile;
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let refreshPromise: Promise<void> = Promise.resolve();
 
-  async function start(): Promise<CanvasMcpRuntimeDescriptor> {
-    if (server !== null && descriptor !== null) return descriptor;
+  function start(): Promise<CanvasMcpRuntimeDescriptor> {
+    if (stopInFlight !== null) {
+      if (queuedStartAfterStop !== null) return queuedStartAfterStop;
+      const pendingStop = stopInFlight;
+      const queuedStart = pendingStop.then(() => start());
+      queuedStartAfterStop = queuedStart;
+      void queuedStart.then(
+        () => { if (queuedStartAfterStop === queuedStart) queuedStartAfterStop = null; },
+        () => { if (queuedStartAfterStop === queuedStart) queuedStartAfterStop = null; },
+      );
+      return queuedStart;
+    }
+    if (startInFlight !== null) return startInFlight;
+    if (server !== null && descriptor !== null) return Promise.resolve(descriptor);
+    const generation = runtimeGeneration + 1;
+    runtimeGeneration = generation;
+    const attempt = startRuntime(generation);
+    startInFlight = attempt;
+    void attempt.then(
+      () => { if (startInFlight === attempt) startInFlight = null; },
+      () => { if (startInFlight === attempt) startInFlight = null; },
+    );
+    return attempt;
+  }
+
+  async function startRuntime(generation: number): Promise<CanvasMcpRuntimeDescriptor> {
     descriptor = createMcpRuntimeDescriptor({
       instanceId: options.instanceId ?? randomUUID().replace(/-/gu, ''),
       processId: options.processId ?? process.pid,
       serverVersion: options.serverVersion,
     });
     const runtimeDescriptor = descriptor;
-    server = createServer((socket) => handleSocket(socket, runtimeDescriptor));
-    server.on('error', () => {
+    const runtimeServer = createServer((socket) => handleSocket(socket, runtimeDescriptor, generation, runtimeServer));
+    server = runtimeServer;
+    runtimeServer.on('error', () => {
+      if (!isCurrentRuntime(generation, runtimeServer)) return;
       state = 'error';
       lastError = 'MCP_PIPE_ERROR';
     });
-    await listen(server, runtimeDescriptor.pipeName);
-    await writeMcpRuntimeFile(options.runtimeFilePath, runtimeDescriptor);
-    state = 'waiting_for_canvas';
-    lastError = null;
-    return runtimeDescriptor;
+    try {
+      await listenRuntimeServer(runtimeServer, runtimeDescriptor.pipeName);
+      await publishRuntimeFile(options.runtimeFilePath, runtimeDescriptor);
+      if (!isCurrentRuntime(generation, runtimeServer)) throw new Error('MCP_RUNTIME_START_CANCELLED');
+      scheduleRuntimeRefresh(generation, runtimeServer);
+      state = 'waiting_for_canvas';
+      lastError = null;
+      return runtimeDescriptor;
+    } catch (startError) {
+      try {
+        await resetRuntime(runtimeServer, generation);
+      } catch {
+        throw new Error('MCP_RUNTIME_START_ROLLBACK_FAILED');
+      }
+      throw startError;
+    }
   }
 
-  async function stop(): Promise<void> {
+  function stop(): Promise<void> {
+    if (stopInFlight !== null) return stopInFlight;
+    const attempt = stopRuntime();
+    stopInFlight = attempt;
+    void attempt.then(
+      () => { if (stopInFlight === attempt) stopInFlight = null; },
+      () => { if (stopInFlight === attempt) stopInFlight = null; },
+    );
+    return attempt;
+  }
+
+  async function stopRuntime(): Promise<void> {
+    const pendingStart = startInFlight;
+    if (pendingStart !== null) {
+      try { await pendingStart; } catch { /* Failed starts perform their own rollback. */ }
+    }
     const currentServer = server;
-    server = null;
-    descriptor = null;
-    state = 'stopped';
-    rendererConnected = false;
-    for (const socket of sockets) socket.destroy();
-    sockets.clear();
+    await resetRuntime(currentServer, runtimeGeneration);
+  }
+
+  async function resetRuntime(currentServer: Server | null, generation: number): Promise<void> {
+    const ownsCurrentRuntime = generation === runtimeGeneration && server === currentServer;
+    if (ownsCurrentRuntime) {
+      runtimeGeneration += 1;
+      server = null;
+      descriptor = null;
+      state = 'stopped';
+      rendererConnected = false;
+      lastError = null;
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
+    cancelPendingRequests(generation);
+    for (const [socket, socketGeneration] of sockets) {
+      if (socketGeneration !== generation) continue;
+      socket.destroy();
+      sockets.delete(socket);
+    }
     if (currentServer !== null) await closeServer(currentServer);
-    await deleteMcpRuntimeFile(options.runtimeFilePath);
+    if (ownsCurrentRuntime) {
+      const pendingRefresh = refreshPromise;
+      await pendingRefresh;
+      if (refreshPromise === pendingRefresh) refreshPromise = Promise.resolve();
+      await removeRuntimeFile(options.runtimeFilePath);
+    }
+  }
+
+  function scheduleRuntimeRefresh(generation: number, runtimeServer: Server): void {
+    if (!isCurrentRuntime(generation, runtimeServer) || descriptor === null) return;
+    const timer = setTimeout(() => {
+      if (refreshTimer === timer) refreshTimer = null;
+      const currentDescriptor = descriptor;
+      if (!isCurrentRuntime(generation, runtimeServer) || currentDescriptor === null) return;
+      const refreshedDescriptor = Object.freeze({
+        ...currentDescriptor,
+        expiresAt: new Date(Date.now() + MCP_RUNTIME_TTL_MS).toISOString(),
+      });
+      refreshPromise = publishRuntimeFile(options.runtimeFilePath, refreshedDescriptor)
+        .then(() => {
+          if (isCurrentRuntime(generation, runtimeServer) && descriptor === currentDescriptor) descriptor = refreshedDescriptor;
+        })
+        .catch(() => {
+          if (!isCurrentRuntime(generation, runtimeServer)) return;
+          state = 'error';
+          lastError = 'MCP_RUNTIME_FILE_REFRESH_FAILED';
+        })
+        .finally(() => scheduleRuntimeRefresh(generation, runtimeServer));
+    }, runtimeRefreshIntervalMs);
+    refreshTimer = timer;
+    timer.unref?.();
   }
 
   function getStatus(): McpRuntimeServiceStatus {
     return Object.freeze({ state, rendererConnected, serverVersion: options.serverVersion, toolCount: 14, lastError });
   }
 
-  function handleSocket(socket: Socket, runtimeDescriptor: CanvasMcpRuntimeDescriptor): void {
-    sockets.add(socket);
+  function handleSocket(
+    socket: Socket,
+    runtimeDescriptor: CanvasMcpRuntimeDescriptor,
+    generation: number,
+    runtimeServer: Server,
+  ): void {
+    sockets.set(socket, generation);
     socket.setEncoding('utf8');
     let buffer = '';
     let frameRejected = false;
     socket.on('data', (chunk: string) => {
+      if (!isCurrentRuntime(generation, runtimeServer)) { socket.destroy(); return; }
       if (frameRejected) return;
       buffer += chunk;
       if (Buffer.byteLength(buffer, 'utf8') > MAX_FRAME_BYTES) {
@@ -125,7 +243,7 @@ export function createMcpRuntimeService(options: McpRuntimeServiceOptions): McpR
       while (newline >= 0) {
         const frame = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
-        void handleFrame(socket, frame, runtimeDescriptor);
+        void handleFrame(socket, frame, runtimeDescriptor, generation, runtimeServer);
         newline = buffer.indexOf('\n');
       }
     });
@@ -133,7 +251,14 @@ export function createMcpRuntimeService(options: McpRuntimeServiceOptions): McpR
     socket.on('error', () => sockets.delete(socket));
   }
 
-  async function handleFrame(socket: Socket, frame: string, runtimeDescriptor: CanvasMcpRuntimeDescriptor): Promise<void> {
+  async function handleFrame(
+    socket: Socket,
+    frame: string,
+    runtimeDescriptor: CanvasMcpRuntimeDescriptor,
+    generation: number,
+    runtimeServer: Server,
+  ): Promise<void> {
+    if (!isCurrentRuntime(generation, runtimeServer)) return;
     let raw: unknown;
     try {
       raw = JSON.parse(frame) as unknown;
@@ -148,25 +273,29 @@ export function createMcpRuntimeService(options: McpRuntimeServiceOptions): McpR
     }
     const parsedRequest = CanvasMcpRequestSchema.safeParse(raw.request);
     if (!parsedRequest.success) {
-      writeEnvelope(socket, errorEnvelope(requestId, 'MCP_INVALID_REQUEST', 'MCP request does not match the CanvasForge contract.'));
+      writeEnvelope(socket, errorEnvelope(requestId, 'MCP_INVALID_REQUEST', 'MCP request does not match the Canvas Atelier contract.'));
       return;
     }
-    if (pendingIds.has(requestId)) {
+    const pendingKey = `${generation}:${requestId}`;
+    if (pendingRequests.has(pendingKey)) {
       writeEnvelope(socket, errorEnvelope(requestId, 'MCP_DUPLICATE_REQUEST_ID', 'MCP request id is already pending.'));
       return;
     }
-    pendingIds.add(requestId);
     try {
-      const response = await withTimeout(
-        options.forwardRequest(requestId, parsedRequest.data),
+      const response = await withTrackedTimeout(
+        pendingKey,
+        generation,
+        () => options.forwardRequest(requestId, parsedRequest.data),
         requestTimeoutMs,
       );
       const parsedResponse = CanvasMcpResponseSchema.parse(response);
+      if (!isCurrentRuntime(generation, runtimeServer)) return;
       rendererConnected = true;
       state = 'running';
       lastError = null;
       writeEnvelope(socket, { protocol: PIPE_PROTOCOL, requestId, response: parsedResponse });
     } catch (error) {
+      if (!isCurrentRuntime(generation, runtimeServer)) return;
       const code = error instanceof Error && error.message === 'MCP_RENDERER_TIMEOUT'
         ? 'MCP_RENDERER_TIMEOUT'
         : 'MCP_RENDERER_UNAVAILABLE';
@@ -174,11 +303,49 @@ export function createMcpRuntimeService(options: McpRuntimeServiceOptions): McpR
       state = 'waiting_for_canvas';
       lastError = code;
       writeEnvelope(socket, errorEnvelope(requestId, code, code === 'MCP_RENDERER_TIMEOUT'
-        ? 'CanvasForge renderer did not answer in time.'
-        : 'CanvasForge renderer is not available.'));
-    } finally {
-      pendingIds.delete(requestId);
+        ? 'Canvas Atelier renderer did not answer in time.'
+        : 'Canvas Atelier renderer is not available.'));
     }
+  }
+
+  function isCurrentRuntime(generation: number, runtimeServer: Server): boolean {
+    return runtimeGeneration === generation && server === runtimeServer;
+  }
+
+  function cancelPendingRequests(generation: number): void {
+    for (const request of pendingRequests.values()) {
+      if (request.generation === generation) request.cancel();
+    }
+  }
+
+  function withTrackedTimeout<T>(
+    pendingKey: string,
+    generation: number,
+    operation: () => Promise<T>,
+    timeoutMs: number,
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout>;
+      const finish = (callback: (value: T | unknown) => void, value: T | unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (pendingRequests.get(pendingKey) === controller) pendingRequests.delete(pendingKey);
+        callback(value);
+      };
+      const controller = {
+        generation,
+        cancel: () => finish(reject, new Error('MCP_RUNTIME_STOPPED')),
+      };
+      timer = setTimeout(() => finish(reject, new Error('MCP_RENDERER_TIMEOUT')), timeoutMs);
+      timer.unref?.();
+      pendingRequests.set(pendingKey, controller);
+      void Promise.resolve().then(operation).then(
+        (value) => finish(resolve as (result: T | unknown) => void, value),
+        (error) => finish(reject, error),
+      );
+    });
   }
 
   return { start, stop, getStatus };

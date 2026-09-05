@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createMcpStdioHealthCheck } from './mcp-stdio-health';
+import { createMcpStdioHealthCheck, MCP_STDIO_HEALTH_CLIENT_INFO } from './mcp-stdio-health';
 
 describe('MCP stdio health check', () => {
+  it('uses the current product identity for its MCP client handshake', () => {
+    expect(MCP_STDIO_HEALTH_CLIENT_INFO).toEqual({ name: 'canvas-atelier-health-check', version: '1.0.0' });
+  });
+
   it('initializes the configured bridge, verifies the stable tools, describes the canvas, and closes', async () => {
     const transport = {
       start: vi.fn(async () => undefined),

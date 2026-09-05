@@ -166,7 +166,7 @@ describe('desktop persistence', () => {
     await client.openProject?.();
 
     await client.chatSkill?.({
-      provider: 'comfly', modelRoute: 'vision-skill', referenceAssetIds: ['a'.repeat(16)],
+      provider: 'comfly', modelRoute: 'vision-skill', requestId: 'must-not-cross-provider-boundary', referenceAssetIds: ['a'.repeat(16)],
       messages: [{ role: 'user', content: 'Assess the selected product image.' }],
       context: { knowledgeBaseIds: [], projectMemoryIds: [] },
     });
@@ -177,6 +177,65 @@ describe('desktop persistence', () => {
       context: { knowledgeBaseIds: [], projectMemoryIds: [] },
     });
     expect(JSON.stringify(chat.mock.calls)).not.toMatch(/path|url|base64|bytes|credential/iu);
+    expect(JSON.stringify(chat.mock.calls)).not.toContain('must-not-cross-provider-boundary');
+  });
+
+  it('routes the independent GPT-6 Astra profile through Codex CLI without touching provider chat', async () => {
+    const project = createStarterProject();
+    const providerChat = vi.fn();
+    const codexChat = vi.fn(async () => ({
+      message: 'Astra replied through local Codex.', modelRoute: 'codex/gpt-6-astra', sources: [],
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)), restore: vi.fn(),
+      provider: { chat: providerChat },
+      codexCli: { chat: codexChat, cancel: vi.fn(), listProfiles: vi.fn() },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    await client.chatSkill?.({
+      provider: 'codex', modelRoute: 'codex/gpt-6-astra', requestId: 'request-astra-1', agentMode: 'codex', reasoningEffort: 'max',
+      messages: [{ role: 'user', content: '读取画布节点' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    });
+
+    expect(codexChat).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'codex', modelRoute: 'codex/gpt-6-astra', requestId: 'request-astra-1', sessionId: 'desktop-session', reasoningEffort: 'max',
+    }));
+    expect(providerChat).not.toHaveBeenCalled();
+  });
+
+  it('cancels an in-flight local Codex request before closing its project session', async () => {
+    const project = createStarterProject();
+    let rejectChat: ((error: Error) => void) | undefined;
+    const codexChat = vi.fn(() => new Promise<never>((_resolve, reject) => { rejectChat = reject; }));
+    const closeProject = vi.fn(async () => undefined);
+    const cancel = vi.fn(async () => {
+      rejectChat?.(Object.assign(new Error('cancelled'), { code: 'CODEX_CLI_CANCELLED' }));
+      return { cancelled: true };
+    });
+    const bridge = {
+      closeProject, commit: vi.fn(), createStablePoint: vi.fn(), getRecoveryPlan: vi.fn(),
+      openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)), restore: vi.fn(),
+      provider: { chat: vi.fn() }, codexCli: { chat: codexChat, cancel, listProfiles: vi.fn() },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const chatOutcome = client.chatSkill?.({
+      provider: 'codex', modelRoute: 'codex/gpt-6-astra', requestId: 'request-close-1', agentMode: 'codex',
+      messages: [{ role: 'user', content: '修改画布' }], context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(codexChat).toHaveBeenCalledOnce());
+
+    await client.close();
+    await chatOutcome;
+
+    expect(cancel).toHaveBeenCalledWith({ requestId: 'request-close-1' });
+    expect(cancel.mock.invocationCallOrder[0]).toBeLessThan(closeProject.mock.invocationCallOrder[0]!);
   });
 
   it('creates a writable desktop session before the first Skill chat on an untitled canvas', async () => {
@@ -209,6 +268,33 @@ describe('desktop persistence', () => {
       provider: 'comfly', modelRoute: 'chat-default', sessionId: 'created-chat-session',
     }));
     expect(result?.message).toBe('The untitled canvas can chat.');
+  });
+
+  it('honors Codex cancellation while an untitled writable session is still being created', async () => {
+    const project = createStarterProject();
+    let finishCreate: ((session: ReturnType<typeof createDesktopSession>) => void) | undefined;
+    const createProject = vi.fn(() => new Promise<ReturnType<typeof createDesktopSession>>((resolve) => { finishCreate = resolve; }));
+    const codexChat = vi.fn();
+    const cancel = vi.fn(async () => ({ cancelled: false }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createProject, createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => null), restore: vi.fn(),
+      provider: { chat: vi.fn() }, codexCli: { chat: codexChat, cancel, listProfiles: vi.fn() },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.hydrate();
+    const outcome = client.chatSkill?.({
+      provider: 'codex', modelRoute: 'codex/gpt-6-astra', requestId: 'request-before-session', agentMode: 'codex',
+      messages: [{ role: 'user', content: '读取画布' }], context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(createProject).toHaveBeenCalledOnce());
+
+    await expect(client.cancelChatSkill?.('request-before-session')).resolves.toBe(true);
+    finishCreate?.(createDesktopSession(project, 'created-cancelled-session', 0));
+
+    await expect(outcome).resolves.toMatchObject({ code: 'CODEX_CLI_CANCELLED' });
+    expect(codexChat).not.toHaveBeenCalled();
   });
 
   it('creates a writable desktop session before reverse analysis on an untitled canvas', async () => {
@@ -727,6 +813,30 @@ describe('desktop persistence', () => {
     expect(closeProject).toHaveBeenCalledWith({ sessionId: 'first-session' });
     expect(first).toMatchObject({ lifecycle: 'durable', project: { name: 'First durable project' }, revision: 3 });
     expect(second).toMatchObject({ lifecycle: 'durable', project: { id: 'second-project', name: '未命名画布' }, revision: 7 });
+  });
+
+  it('treats a main-process-reclaimed previous session as an idempotent close', async () => {
+    const firstProject = { ...createStarterProject(), name: 'First durable project' };
+    const secondProject = { ...createStarterProject(), id: 'second-project', name: 'Second durable project' };
+    const openProject = vi.fn()
+      .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3))
+      .mockResolvedValueOnce(createDesktopSession(secondProject, 'second-session', 7));
+    const closeProject = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('session already closed'), { code: 'INVALID_SESSION' }));
+    const bridge = {
+      closeProject,
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(async () => ({ action: 'auto_recover', candidates: [], issues: [], projectId: secondProject.id, recoveredRevision: null, stableSnapshotId: null, targetRevision: null })),
+      openProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    await client.openProject?.();
+    await expect(client.openProject?.()).resolves.toMatchObject({ project: { id: 'second-project' }, revision: 7 });
+    expect(closeProject).toHaveBeenCalledOnce();
   });
 
   it.each(['hydrate', 'open', 'restore', 'reload', 'close'] as const)(

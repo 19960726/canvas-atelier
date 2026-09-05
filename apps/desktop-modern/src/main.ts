@@ -18,6 +18,7 @@ import {
   ManagedKnowledgeStore,
   MockReleaseFeed,
   createComflyProviderService,
+  createCodexCliService,
   createRelayMeProviderService,
   createProviderRegistry,
   createMcpClientConfigManager,
@@ -35,6 +36,7 @@ import {
   createNodeWindowsPhotoshopSmartObjectAdapter,
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
+  installRendererSecurityHeaders,
   parseCloseFlushAck,
   createProviderBridgeHandlers,
   createProviderActiveStore,
@@ -50,9 +52,11 @@ import {
   type UpdateDriverEvent,
   redactNovusPackDiagnostics,
   registerDesktopBridgeHandlers,
+  registerCodexCliIpc,
   registerMcpClientConfigIpc,
   registerProviderBridgeHandlers,
   resolveLegacyUserDataRoots,
+  resolveCodexCliExecutablePath,
   resolveStableUserDataRoot,
   startApprovedSnapshotOutboxDrain,
   startConfiguredKnowledgeRefresh,
@@ -144,6 +148,7 @@ let updateClient: UpdateClient | null = null;
 let mcpRendererBridge: McpRendererBridge | null = null;
 let mcpRuntimeService: McpRuntimeService | null = null;
 let mcpClientConfigRegistration: McpClientConfigIpcRegistration | null = null;
+let codexCliRegistration: { dispose(): Promise<void> } | null = null;
 
 function createDevelopmentUpdateDriver(): UpdateDriver {
   let listener: ((event: UpdateDriverEvent) => void) | null = null;
@@ -170,6 +175,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+  installRendererSecurityHeaders(session.defaultSession);
   await migrateLegacyUserData({
     stableRoot: stableUserDataRoot,
     legacyRoots: legacyUserDataRoots,
@@ -315,6 +321,14 @@ app.whenReady().then(async () => {
   const relayMeProviderFetch = createElectronNetComflyFetch(net, {
     requestSession: relayMeNetworkSession,
   });
+  const projectMemoryContextResolver = {
+    resolveSelectedProjectMemory: async (memoryIds: readonly string[], sessionId?: string) => {
+      if (sessionId === undefined || desktopHandlers === null) {
+        throw new Error('Selected project memory is unavailable');
+      }
+      return desktopHandlers.resolveProjectMemoryContext(sessionId, memoryIds);
+    },
+  };
   const generationHistorySink = new GenerationHistoryProviderSink({
     store: generationHistoryStore,
     trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
@@ -331,6 +345,7 @@ app.whenReady().then(async () => {
       fetch: providerFetch,
       discoverModelCatalog: true,
       historySink: generationHistorySink,
+      projectMemoryContextResolver,
       resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
         .map((entry) => entry.address),
       readManagedReverseMedia: desktopHandlers.readManagedReverseMedia,
@@ -353,6 +368,7 @@ app.whenReady().then(async () => {
         session: relayMeWebLoginSession,
       }),
       historySink: generationHistorySink,
+      projectMemoryContextResolver,
       resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
         .map((entry) => entry.address),
       readManagedReverseMedia: desktopHandlers.readManagedReverseMedia,
@@ -360,6 +376,26 @@ app.whenReady().then(async () => {
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
     }),
   }), { activeStore: providerActiveStore }), { getTrustedSender: () => mainWindow?.webContents ?? null });
+  const codexCliExecutablePath = await resolveCodexCliExecutablePath();
+  codexCliRegistration = registerCodexCliIpc({
+    ipcMain,
+    service: createCodexCliService({
+      executablePath: codexCliExecutablePath,
+      mcpServer: createCanvasMcpLaunchSpec(),
+      resolveKnowledge: async (ids) => Promise.all(ids.map(async (knowledgeBaseId) => {
+        const active = await knowledgeStore.readActive(knowledgeBaseId);
+        if (active === null) throw new Error('Selected Codex knowledge is unavailable');
+        return {
+          knowledgeBaseId: active.knowledgeBaseId,
+          version: active.version,
+          displayName: active.displayName,
+          documents: active.documents.map(({ relativePath, content }) => ({ relativePath, content })),
+        };
+      })),
+      resolveProjectMemory: (sessionId, ids) => desktopHandlers!.resolveProjectMemoryContext(sessionId, ids),
+    }),
+    getTrustedSender: () => mainWindow?.webContents ?? null,
+  });
   ipcMain.on(diagnosticsChannel, (_event, message) => {
     void loadSafeMode(redactNovusPackDiagnostics(String(message)));
   });
@@ -428,7 +464,7 @@ async function startMcpRuntime(): Promise<void> {
     }, isMcpRendererAvailable()),
   });
   service = createMcpRuntimeService({
-    runtimeFilePath: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-modern-v1.json'),
+    runtimeFilePath: mcpRuntimeFilePath,
     serverVersion: app.getVersion(),
     forwardRequest: rendererBridge.forwardRequest,
   });
@@ -436,14 +472,7 @@ async function startMcpRuntime(): Promise<void> {
   mcpRuntimeService = service;
   try {
     await service.start();
-    const mcpLaunchSpec = {
-      command: process.execPath,
-      args: [mcpBridgeEntryPath],
-      env: {
-        ELECTRON_RUN_AS_NODE: '1',
-        CANVASFORGE_MCP_RUNTIME_FILE: join(app.getPath('appData'), 'CanvasForge', 'mcp', 'runtime-modern-v1.json'),
-      },
-    } as const;
+    const mcpLaunchSpec = createCanvasMcpLaunchSpec();
     const manager = createMcpClientConfigManager({
       clientPaths: {
         codex: process.env.CANVASFORGE_CODEX_CONFIG_PATH ?? join(app.getPath('home'), '.codex', 'config.toml'),
@@ -481,6 +510,8 @@ function isMcpRendererAvailable(): boolean {
 }
 
 async function stopMcpRuntime(): Promise<void> {
+  await codexCliRegistration?.dispose();
+  codexCliRegistration = null;
   mcpClientConfigRegistration?.dispose();
   mcpClientConfigRegistration = null;
   const rendererBridge = mcpRendererBridge;
@@ -489,6 +520,19 @@ async function stopMcpRuntime(): Promise<void> {
   mcpRuntimeService = null;
   rendererBridge?.dispose();
   await runtimeService?.stop();
+}
+
+const mcpRuntimeFilePath = join(stableUserDataRoot, 'mcp', 'runtime-modern-v1.json');
+
+function createCanvasMcpLaunchSpec() {
+  return {
+    command: process.execPath,
+    args: [mcpBridgeEntryPath],
+    env: {
+      ELECTRON_RUN_AS_NODE: '1',
+      CANVASFORGE_MCP_RUNTIME_FILE: mcpRuntimeFilePath,
+    },
+  } as const;
 }
 async function createMainWindow(): Promise<void> {
   const window = createDesktopWindow(preloadPath);

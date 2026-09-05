@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
-import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Expand, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, Send, Video, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Expand, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, Send, Video, Volume2, X } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -111,7 +111,6 @@ interface ModuleNodeCardProps {
     videoGenerationRoutes?: readonly ImageGenerationRouteSummary[];
     reverseAgentRoutes?: readonly ReverseAgentRouteSummary[];
     storyboardRoutes?: readonly ReverseAgentRouteSummary[];
-    onOpenReverseAgentSettings?: () => void;
     onGenerateImage?: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
     onReversePrompt?: (nodeId: string) => Promise<{ positivePrompt: string }>;
     onCancelJob?: (jobId: string) => Promise<void>;
@@ -388,8 +387,6 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       };
     });
   })();
-  const displayPrimaryName = data.moduleType === 'reverse_agent' ? '反推anget' : definition.primaryName;
-  const displaySecondaryName = data.moduleType === 'reverse_agent' ? 'Reverse Agent' : definition.secondaryName;
   return (
     <article
       className={`module-node nowheel${hasMediaControls ? ' module-node--media-controls' : ''}${hasImageControls ? ' module-node--image-controls' : ''}${hasSelectedImage || hasSelectedVideo ? ' module-node--has-media' : ''}${isFoundationNode ? ' module-node--foundation' : ''}${data.moduleType === 'reverse_agent' ? ' module-node--reverse' : data.moduleType === 'image_generation' ? ' module-node--image-generation' : data.moduleType === 'video_generation' ? ' module-node--video-generation' : isProfessionalWorkbench ? ' module-node--workbench' : ''}${selected ? ' is-selected' : ''}`}
@@ -407,8 +404,8 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           <Icon size={18} strokeWidth={1.8} />
         </span>
         <span className="module-node__heading">
-          <strong>{displayPrimaryName}</strong>
-          <small>{displaySecondaryName}</small>
+          <strong>{definition.primaryName}</strong>
+          <small>{definition.secondaryName}</small>
         </span>
         <button
           type="button"
@@ -498,6 +495,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       ) : data.moduleType === 'reverse_agent' ? (
         <ReverseAgentSummary
           id={id}
+          label={definition.primaryName}
           config={data.config}
           projectImages={projectImages}
           projectVideos={projectVideos}
@@ -507,7 +505,6 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
           executionState={data.execution.state}
           onRun={data.onReversePrompt ?? runReverseAgentNode}
           onReorderMedia={(edgeIds) => reorderModuleInputDurably(id, 'references', edgeIds)}
-          onOpenSettings={data.onOpenReverseAgentSettings}
         />
       ) : data.moduleType === 'storyboard_sheet' ? (
         <StoryboardSheetSummary
@@ -857,7 +854,7 @@ function VideoGenerationSummary({
         label="视频生成"
         status={result}
         resultBeforeConfiguration={hasCompletedResult}
-        configuration={<section className="module-node__video-figma-composer nodrag nopan" aria-label="Video generation composer" onPointerDown={stopCanvasPointer}>
+        configuration={<section className="module-node__video-composer nodrag nopan" aria-label="Video generation composer" onPointerDown={stopCanvasPointer}>
           {expanded && hasConnectedMedia && <ConnectedMediaSlots
             ariaLabel="Connected video media editor"
             slotRowAriaLabel="Video editor reference slots"
@@ -871,11 +868,6 @@ function VideoGenerationSummary({
           <section className="module-node__prompt-workspace nodrag nopan" aria-label="Video preview prompt workspace" onPointerDown={stopCanvasPointer}>
             <div className="module-node__video-prompt-header">
               <span>提示词</span>
-              <div className="module-node__video-reference-tools" aria-label="Video generation reference tools">
-                <button type="button" className="nodrag nopan">特效</button>
-                <button type="button" className="nodrag nopan">运镜</button>
-                <button type="button" className="nodrag nopan">角色库</button>
-              </div>
             </div>
             <MediaMentionTextarea
               className="module-node__prompt-editor"
@@ -916,34 +908,42 @@ function VideoGenerationSummary({
               triggerAriaLabel="打开视频模型列表"
               listAriaLabel="视频模型"
               emptyLabel="未配置视频模型"
+              emptyTriggerLabel="选择视频模型"
+              modelKind="video"
               onPointerDown={stopCanvasPointer}
             />
             <VideoModePicker value={keyframe} onChange={setKeyframe} onPointerDown={stopCanvasPointer} />
-            <AspectRatioPopover
-              ariaLabel="Video preview aspect ratio"
-              value={aspectRatio === 'Auto' ? 'AUTO' : aspectRatio}
-              options={videoAspectRatioOptions.map((value) => value === 'Auto' ? 'AUTO' : value)}
-              onChange={(value) => setAspectRatio(value === 'AUTO' ? 'Auto' : value)}
+            <VideoSettingsPopover
+              id={id}
+              aspectRatio={aspectRatio}
+              onAspectRatioChange={setAspectRatio}
+              resolution={resolution}
+              onResolutionChange={(value) => setResolution(normalizeVideoResolutionSelection(value))}
+              durationSeconds={durationSeconds}
+              onDurationChange={setDurationSeconds}
+              audioEnabled={audioEnabled}
+              onAudioChange={setAudioEnabled}
+              outputCount={outputCount}
+              onOutputCountChange={setOutputCount}
+              aspectRatioOptions={videoAspectRatioOptions}
+              resolutionOptions={videoResolutionOptions}
+              outputCountOptions={videoOutputCountOptions}
+              onPointerDown={stopCanvasPointer}
             />
-            <ClarityPopover
-              ariaLabel="Video preview resolution"
-              value={resolution}
-              options={[...videoResolutionOptions]}
-              onChange={(value) => setResolution(normalizeVideoResolutionSelection(value))}
-            />
-            <div className="module-node__video-duration-slider nodrag nopan" aria-label="Video preview duration slider" onPointerDown={stopCanvasPointer}>
-              <label htmlFor={`video-duration-${id}`}>视频时长</label>
-              <input id={`video-duration-${id}`} type="range" min={1} max={15} step={1} value={Math.min(15, Math.max(1, durationSeconds))} onChange={(event) => setDurationSeconds(Number(event.target.value))} />
-              <output htmlFor={`video-duration-${id}`}>{Math.min(15, Math.max(1, durationSeconds))}s</output>
-            </div>
-            <select className="nodrag nopan module-node__video-duration-fallback" aria-label="Video preview duration" value={durationSeconds} onPointerDown={stopCanvasPointer} onChange={(event) => setDurationSeconds(Number(event.target.value))}>
+            <select className="nodrag nopan module-node__video-native-select module-node__video-fallback-control" aria-label="Video preview aspect ratio" value={aspectRatio === 'Auto' ? 'AUTO' : aspectRatio} onPointerDown={stopCanvasPointer} onChange={(event) => setAspectRatio(event.target.value === 'AUTO' ? 'Auto' : event.target.value)}>
+              {videoAspectRatioOptions.map((value) => <option key={value} value={value === 'Auto' ? 'AUTO' : value}>{value === 'Auto' ? 'AUTO' : value}</option>)}
+            </select>
+            <select className="nodrag nopan module-node__video-native-select module-node__video-fallback-control" aria-label="Video preview resolution" value={resolution} onPointerDown={stopCanvasPointer} onChange={(event) => setResolution(normalizeVideoResolutionSelection(event.target.value))}>
+              {videoResolutionOptions.map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
+            </select>
+            <select className="nodrag nopan module-node__video-duration-fallback module-node__video-fallback-control" aria-label="Video preview duration" value={durationSeconds} onPointerDown={stopCanvasPointer} onChange={(event) => setDurationSeconds(Number(event.target.value))}>
               {videoDurationOptions.map((value) => <option key={value} value={value}>{value === 0 ? '模型默认' : `${value}秒`}</option>)}
             </select>
-            <select className="nodrag nopan" aria-label="Video preview audio" value={audioEnabled ? 'on' : 'off'} onPointerDown={stopCanvasPointer} onChange={(event) => setAudioEnabled(event.target.value === 'on')}>
+            <select className="nodrag nopan module-node__video-fallback-control" aria-label="Video preview audio" value={audioEnabled ? 'on' : 'off'} onPointerDown={stopCanvasPointer} onChange={(event) => setAudioEnabled(event.target.value === 'on')}>
               <option value="on">生成音频：开</option>
               <option value="off">生成音频：关</option>
             </select>
-            <select className="nodrag nopan" aria-label="Video preview quantity" title="生成数量，最多 4 个视频" value={outputCount} onPointerDown={stopCanvasPointer} onChange={(event) => setOutputCount(readSupportedImageCount(Number(event.target.value)))}>
+            <select className="nodrag nopan module-node__video-fallback-control" aria-label="Video preview quantity" title="生成数量，最多 4 个视频" value={outputCount} onPointerDown={stopCanvasPointer} onChange={(event) => setOutputCount(readSupportedImageCount(Number(event.target.value)))}>
               {videoOutputCountOptions.map((value) => <option key={value} value={value}>{value} 个</option>)}
             </select>
             <button
@@ -976,7 +976,7 @@ function VideoGenerationSummary({
                 });
               }}
             >
-              {activeJobId === undefined ? '生成视频' : '停止生成'}
+              {activeJobId === undefined ? <span className="module-node__run-generation-label">生成视频</span> : '停止生成'}
             </button>
           </div>
           {(runError ?? failedVideoJobError) !== null && <p role="alert">{runError ?? failedVideoJobError}</p>}
@@ -1046,7 +1046,7 @@ function ImageGenerationSummary({
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>([]);
   const connectedReferenceAssetIds = connectedMedia.filter((item) => item.kind === 'image').map((item) => item.assetId);
   // Generated results belong to the formal job store.  Reading them here keeps
-  // the four-up Figma preview in sync with real completed jobs, rather than
+  // the four-up Canvas preview in sync with real completed jobs, rather than
   // relying on stale presentation metadata saved on the node.
   const modelJobs = useAppStore((state) => state.modelJobs);
   const latestImageJob = selectLatestGenerationJob(modelJobs, id, 'image');
@@ -1339,6 +1339,8 @@ function ImageGenerationSummary({
               triggerAriaLabel="打开生图模型列表"
               listAriaLabel="生图模型"
               emptyLabel="未配置模型"
+              emptyTriggerLabel="选择图片模型"
+              modelKind="image"
               onPointerDown={stopCanvasPointer}
             />
             <AspectRatioPopover
@@ -1852,6 +1854,7 @@ function ExecutableNodeWorkbench({
 
 function ReverseAgentSummary({
   id,
+  label,
   config,
   projectImages,
   projectVideos,
@@ -1861,9 +1864,9 @@ function ReverseAgentSummary({
   executionState,
   onRun,
   onReorderMedia,
-  onOpenSettings,
 }: {
   id: string;
+  label: string;
   config: Record<string, unknown>;
   projectImages: readonly ProjectImageAssetSummary[];
   projectVideos: readonly ProjectVideoAssetSummary[];
@@ -1873,7 +1876,6 @@ function ReverseAgentSummary({
   executionState: CanvasModuleNodeData['execution']['state'];
   onRun: (nodeId: string, config?: ReverseAgentNodeConfig) => Promise<{ positivePrompt: string }>;
   onReorderMedia: (edgeIds: string[]) => Promise<boolean>;
-  onOpenSettings?: () => void;
 }) {
   const connectedImages = useMemo(() => connectedMedia
     .filter((item) => item.kind === 'image')
@@ -1924,7 +1926,7 @@ function ReverseAgentSummary({
   }, [externalRole, externalTask]);
   useEffect(() => {
     if (compatibleRoutes.length === 0) return;
-    setModelRoute((current) => current.length > 0
+    setModelRoute((current) => compatibleRoutes.some((route) => route.modelRoute === current)
       ? current
       : preferredReverseAgentRoute(compatibleRoutes)?.modelRoute ?? '');
   }, [compatibleRoutes]);
@@ -1986,7 +1988,8 @@ function ReverseAgentSummary({
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const [localStartedAt, setLocalStartedAt] = useState<string | null>(null);
   const [localCompletedAt, setLocalCompletedAt] = useState<string | null>(null);
-  const interruptedPersistedRun = !isRunningLocally && config.reverseAgentRunState === 'running';
+  const persistedRunState = readNonEmptyString(config.reverseAgentRunState);
+  const interruptedPersistedRun = !isRunningLocally && persistedRunState === 'running';
   const isRunning = isRunningLocally;
   useEffect(() => {
     setResult(readReverseAgentResult(config.reverseAgentResult));
@@ -1997,13 +2000,24 @@ function ReverseAgentSummary({
   const toggleKnowledge = (knowledgeBaseId: string) => setSelectedIds((current) => current.includes(knowledgeBaseId)
     ? current.filter((id) => id !== knowledgeBaseId)
     : [...current, knowledgeBaseId]);
+  const timingStatus: ModelJob['status'] | undefined = isRunning
+    ? 'running'
+    : persistedRunState === 'cancelled' || interruptedPersistedRun
+      ? 'cancelled'
+      : persistedRunState === 'failed' || runError !== null || executionState === 'failed'
+        ? 'failed'
+        : persistedRunState === 'completed' || (persistedRunState === null && (result !== null || executionState === 'completed'))
+          ? 'completed'
+          : undefined;
   const statusLabel = isRunning
     ? '分析中'
-    : interruptedPersistedRun || runError !== null || executionState === 'failed'
+    : interruptedPersistedRun || timingStatus === 'failed'
       ? '需要处理'
-      : result !== null || executionState === 'completed'
-        ? '已完成'
-        : '等待运行';
+      : timingStatus === 'cancelled'
+        ? '已取消'
+        : timingStatus === 'completed'
+          ? '已完成'
+          : '等待运行';
 
   // A visible tray reflects a durable canvas edge, never stale presentation
   // metadata saved on the node. This keeps the UI and executor in sync.
@@ -2019,15 +2033,16 @@ function ReverseAgentSummary({
     <section className="module-node__summary module-node__summary--compact module-node__summary--agent module-node__summary--agent-studio" aria-label="Agent task configuration">
       <TaskTimingBadge
         ariaLabel="Reverse task timing"
-        status={isRunning ? 'running' : runError !== null ? 'failed' : result !== null ? 'completed' : undefined}
+        status={timingStatus}
+        runId={readNonEmptyString(config.reverseAgentRunId) ?? undefined}
         startedAt={localStartedAt ?? readNonEmptyString(config.reverseAgentStartedAt) ?? undefined}
         completedAt={localCompletedAt ?? readNonEmptyString(config.reverseAgentCompletedAt) ?? undefined}
       />
       <ExecutableNodeWorkbench
-        label="反推anget"
+        label={label}
         status={statusLabel}
         configuration={<div className="module-node__agent-form-flow">
-          <section className="module-node__agent-control-strip--figma" aria-label="Reverse model control strip">
+          <section className="module-node__agent-control-strip" aria-label="Reverse model control strip">
           <p className="module-node__agent-media-label" aria-label="Reverse media input">素材输入 · {media.length} / {MAX_GENERATION_REFERENCES}</p>
           {media.length > 0 ? <section className="module-node__agent-media-region nodrag nopan" aria-label="Reverse media workspace" data-agent-region="media" onPointerDown={stopCanvasPointer}>
             <ConnectedAgentMediaSlots
@@ -2059,9 +2074,6 @@ function ReverseAgentSummary({
           </section>
           {!routeAvailable && modelRoute.length > 0 && <p className="module-node__agent-notice" role="status">当前模型路线不可用，请先切换供应商或重新选择模型。</p>}
           {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="status">该账号没有此类模型，请先在设置中切换供应商。</p>}
-          {compatibleRoutes.length === 0 && onOpenSettings && (
-            <button className="module-node__settings-agent nodrag nopan" type="button" aria-label="打开设置检查连接" onClick={onOpenSettings}>打开设置</button>
-          )}
           {interruptedPersistedRun && <p className="module-node__agent-notice" role="status">上次反推已中断，可以重新执行。</p>}
           <section className="module-node__agent-task nodrag nopan" aria-label="Reverse task editor" data-agent-region="task" onPointerDown={stopCanvasPointer}>
             <label><span>角色</span><input aria-label="Role positioning" value={role} placeholder="例如：产品视觉分析师" onChange={(event) => {
@@ -2182,6 +2194,8 @@ function ReverseAgentSummary({
                 const runSequence = ++runSequenceRef.current;
                 const startedAt = new Date().toISOString();
                 setRunError(null);
+                setResult(null);
+                setCopyFeedback(null);
                 setLocalStartedAt(startedAt);
                 setLocalCompletedAt(null);
                 setIsApplying(true);
@@ -2340,6 +2354,8 @@ function GenerationModelPicker({
   triggerAriaLabel,
   listAriaLabel,
   emptyLabel,
+  emptyTriggerLabel,
+  modelKind,
   onPointerDown,
 }: {
   readonly routes: readonly ImageGenerationRouteSummary[];
@@ -2349,6 +2365,8 @@ function GenerationModelPicker({
   readonly triggerAriaLabel: string;
   readonly listAriaLabel: string;
   readonly emptyLabel: string;
+  readonly emptyTriggerLabel: string;
+  readonly modelKind: 'image' | 'video';
   readonly onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -2382,8 +2400,8 @@ function GenerationModelPicker({
       disabled={routes.length === 0}
       onClick={() => setOpen((current) => !current)}
     >
-      <span className="module-node__video-model-icon" aria-hidden="true"><Video size={14} /></span>
-      <span className="module-node__video-model-name">{selected ? modelRouteOptionLabel(selected, routes) : '选择视频模型'}</span>
+      <span className="module-node__video-model-icon" aria-hidden="true">{modelKind === 'image' ? <ImageIcon size={14} /> : <Video size={14} />}</span>
+      <span className="module-node__video-model-name">{selected ? modelRouteOptionLabel(selected, routes) : emptyTriggerLabel}</span>
       <ChevronDown size={14} aria-hidden="true" />
     </button>
     {open && <div className="module-node__video-model-menu" role="listbox" aria-label={listAriaLabel}>
@@ -2400,7 +2418,7 @@ function GenerationModelPicker({
             setOpen(false);
           }}
         >
-          <span className="module-node__video-model-icon" aria-hidden="true"><Video size={14} /></span>
+          <span className="module-node__video-model-icon" aria-hidden="true">{modelKind === 'image' ? <ImageIcon size={14} /> : <Video size={14} />}</span>
           <span className="module-node__video-model-copy">
             <strong>{modelRouteOptionLabel(route, routes)}</strong>
             <small>{route.provider === 'relayme' ? 'RelayMe' : route.provider === 'comfly' ? 'Comfly' : route.provider}</small>
@@ -2456,6 +2474,93 @@ function VideoModePicker({
         onChange(option.value);
         setOpen(false);
       }}>{option.label}{option.value === 'long_video' && <small>Beta</small>}</button>)}
+    </div>}
+  </div>;
+}
+
+function VideoSettingsPopover({
+  id,
+  aspectRatio,
+  onAspectRatioChange,
+  resolution,
+  onResolutionChange,
+  durationSeconds,
+  onDurationChange,
+  audioEnabled,
+  onAudioChange,
+  outputCount,
+  onOutputCountChange,
+  aspectRatioOptions,
+  resolutionOptions,
+  outputCountOptions,
+  onPointerDown,
+}: {
+  readonly id: string;
+  readonly aspectRatio: string;
+  readonly onAspectRatioChange: (value: string) => void;
+  readonly resolution: string;
+  readonly onResolutionChange: (value: string) => void;
+  readonly durationSeconds: number;
+  readonly onDurationChange: (value: number) => void;
+  readonly audioEnabled: boolean;
+  readonly onAudioChange: (value: boolean) => void;
+  readonly outputCount: 1 | 2 | 3 | 4;
+  readonly onOutputCountChange: (value: 1 | 2 | 3 | 4) => void;
+  readonly aspectRatioOptions: readonly string[];
+  readonly resolutionOptions: readonly string[];
+  readonly outputCountOptions: readonly (1 | 2 | 3 | 4)[];
+  readonly onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const normalizedRatio = aspectRatio === 'Auto' ? 'AUTO' : aspectRatio;
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: globalThis.MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  return <div className="module-node__video-settings-picker nodrag nopan" ref={rootRef} onPointerDown={onPointerDown}>
+    <button className="module-node__video-settings-trigger" type="button" aria-label="打开视频参数设置" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)}>
+      <span className="module-node__video-settings-summary">{normalizedRatio} · {resolution.toUpperCase()} · {durationSeconds}s · {outputCount}个</span>
+      <Volume2 size={15} aria-hidden="true" />
+      <ChevronDown size={14} aria-hidden="true" />
+    </button>
+    {open && <div className="module-node__video-settings-menu" role="dialog" aria-label="视频生成参数">
+      <section className="module-node__video-settings-section" aria-label="比例">
+        <span>比例</span>
+        <div className="module-node__video-settings-grid module-node__video-settings-grid--ratio">
+          {aspectRatioOptions.map((option) => {
+            const value = option === 'Auto' ? 'AUTO' : option;
+            return <button key={option} type="button" role="menuitemradio" aria-checked={value === normalizedRatio} className={value === normalizedRatio ? 'is-selected' : undefined} onClick={() => onAspectRatioChange(option)}>{value}</button>;
+          })}
+        </div>
+      </section>
+      <section className="module-node__video-settings-section" aria-label="清晰度">
+        <span>清晰度</span>
+        <div className="module-node__video-settings-grid">
+          {resolutionOptions.map((option) => <button key={option} type="button" role="menuitemradio" aria-checked={option === resolution} className={option === resolution ? 'is-selected' : undefined} onClick={() => onResolutionChange(option)}>{option.toUpperCase()}</button>)}
+        </div>
+      </section>
+      <section className="module-node__video-settings-section" aria-label="视频时长">
+        <label htmlFor={`video-duration-${id}`}>视频时长 <output>{Math.min(15, Math.max(1, durationSeconds))}s</output></label>
+        <input id={`video-duration-${id}`} type="range" min={1} max={15} step={1} value={Math.min(15, Math.max(1, durationSeconds))} onChange={(event) => onDurationChange(Number(event.target.value))} />
+      </section>
+      <section className="module-node__video-settings-section" aria-label="生成音频">
+        <span>生成音频</span>
+        <div className="module-node__video-settings-segmented">
+          <button type="button" role="menuitemradio" aria-checked={audioEnabled} className={audioEnabled ? 'is-selected' : undefined} onClick={() => onAudioChange(true)}>开启</button>
+          <button type="button" role="menuitemradio" aria-checked={!audioEnabled} className={!audioEnabled ? 'is-selected' : undefined} onClick={() => onAudioChange(false)}>关闭</button>
+        </div>
+      </section>
+      <section className="module-node__video-settings-section" aria-label="生成数量">
+        <span>生成数量</span>
+        <div className="module-node__video-settings-segmented">
+          {outputCountOptions.map((count) => <button key={count} type="button" role="menuitemradio" aria-checked={count === outputCount} className={count === outputCount ? 'is-selected' : undefined} onClick={() => onOutputCountChange(count)}>{count}个</button>)}
+        </div>
+      </section>
     </div>}
   </div>;
 }
@@ -2572,12 +2677,14 @@ function formatGenerationJobError(job: ModelJob | undefined, kind: 'image' | 'vi
 function TaskTimingBadge({
   ariaLabel,
   job,
+  runId,
   status = job?.status,
   startedAt = job?.startedAt ?? job?.confirmedAt ?? job?.createdAt,
   completedAt = job?.completedAt ?? (job?.status === 'failed' || job?.status === 'cancelled' ? job.updatedAt : undefined),
 }: {
   ariaLabel: string;
   job?: ModelJob;
+  runId?: string;
   status?: ModelJob['status'];
   startedAt?: string;
   completedAt?: string;
@@ -2594,7 +2701,7 @@ function TaskTimingBadge({
         : status === 'cancelled'
           ? '已取消'
           : '等待';
-  return <span className="module-node__task-timing nodrag nopan" data-task-status={status} aria-label={ariaLabel}>{label} · {seconds}秒</span>;
+  return <span className="module-node__task-timing nodrag nopan" data-task-status={status} data-task-run-id={runId} aria-label={ariaLabel}>{label} · {seconds}秒</span>;
 }
 
 function useTaskElapsedSeconds(startedAt: string | undefined, completedAt: string | undefined, running: boolean): number | null {

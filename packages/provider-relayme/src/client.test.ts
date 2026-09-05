@@ -325,6 +325,46 @@ describe('RelayMeClient', () => {
     expect((error as Error).message).not.toContain('供应商返回了无效错误响应');
   });
 
+  it('keeps a malformed successful response non-retryable', async () => {
+    const fetch = vi.fn(async () => jsonResponse({ unexpected: true }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
+
+    const error = await client.listModels().catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toMatchObject({ retryable: true });
+    expect((error as Error).message).toContain('RelayMe 响应格式无效');
+    expect((error as Error).message).not.toContain('RelayMe 请求失败');
+  });
+
+  it('preserves non-retryable HTTP status when an error response body is malformed', async () => {
+    const fetch = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      async json() { throw new SyntaxError('invalid json'); },
+    }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
+
+    const error = await client.listModels().catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ status: 400, retryable: false });
+    expect((error as Error).message).toContain('400');
+    expect((error as Error).message).not.toContain('RelayMe 请求失败');
+  });
+
+  it('marks transport failures as retryable without exposing protected details', async () => {
+    const fetch = vi.fn(async () => Promise.reject(new Error('socket closed Authorization: Bearer relay-secret')));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
+
+    const error = await client.listModels().catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ retryable: true });
+    expect((error as Error).message).toContain('RelayMe 请求失败');
+    expect((error as Error).message).not.toContain('relay-secret');
+  });
+
   it('aborts timed out requests', async () => {
     vi.useFakeTimers();
     const fetch: RelayMeFetch = vi.fn((_url: string, init) => new Promise<never>((_resolve, reject) => {
@@ -338,6 +378,7 @@ describe('RelayMeClient', () => {
 
     expect((error as Error).message).toContain('timed out');
     expect((error as Error).message).not.toContain('relay-secret');
+    expect(error).toMatchObject({ retryable: true });
   });
 });
 

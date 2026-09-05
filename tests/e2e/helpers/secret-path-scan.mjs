@@ -626,6 +626,70 @@ const allowedFindings = [
       "Authorization: Bearer secret-unlisted-variant-token\\n',",
     ],
   },
+  {
+    file: "apps/renderer/src/app/mcp-workspace-adapter.test.ts",
+    name: "Authorization header",
+    evidence: ["Authorization: Bearer sk-super-secret-token',"],
+  },
+  {
+    file: "apps/renderer/src/app/mcp-workspace-adapter.test.ts",
+    name: "API key",
+    evidence: ["sk-super-secret-token", "sk-live-secret-value"],
+  },
+  {
+    file: "packages/desktop-core/src/codex-cli-runner.test.ts",
+    name: "private absolute path",
+    evidence: [String.raw`C:\\Codex\\codex.exe`, String.raw`C:\\safe-temp`],
+  },
+  {
+    file: "packages/desktop-core/src/codex-cli-service.test.ts",
+    name: "Authorization header",
+    evidence: ["Authorization: Bearer secret-token',"],
+  },
+  {
+    file: "packages/desktop-core/src/codex-cli-service.test.ts",
+    name: "private absolute path",
+    evidence: [
+      String.raw`\\1111111111111111\\codex.exe`,
+      String.raw`\\9ba750cce02d5e5c\\codex.exe`,
+      String.raw`\\mcp\\canvasforge-mcp.cjs`,
+      String.raw`C:\\Canvas Atelier\\Canvas Atelier.exe`,
+      String.raw`C:\\Codex\\codex.exe`,
+      String.raw`C:\\runtime.json`,
+      String.raw`C:\\Users\\Test`,
+      String.raw`C:\\Users\\Test\\.codex`,
+      String.raw`C:\\Users\\Test\\AppData\\Local`,
+      String.raw`C:\\Users\\Test\\AppData\\Local\\OpenAI\\Codex\\bin`,
+      String.raw`C:\\Users\\Test\\AppData\\Roaming`,
+      String.raw`C:\\Users\\Test\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe`,
+      String.raw`C:\\Windows\\System32`,
+    ],
+  },
+  {
+    file: "packages/desktop-core/src/codex-cli-service.ts",
+    name: "private absolute path",
+    evidence: [String.raw`C:\\Windows`],
+  },
+  {
+    file: "packages/desktop-core/dist/codex-cli-service.js",
+    name: "private absolute path",
+    evidence: [String.raw`C:\\Windows`],
+  },
+  {
+    file: "packages/desktop-core/src/renderer-security-headers.test.ts",
+    name: "private absolute path",
+    evidence: ["file://*/*"],
+  },
+  {
+    file: "packages/desktop-core/src/renderer-security-headers.ts",
+    name: "private absolute path",
+    evidence: ["file://*/*"],
+  },
+  {
+    file: "packages/desktop-core/dist/renderer-security-headers.js",
+    name: "private absolute path",
+    evidence: ["file://*/*"],
+  },
 ];
 
 const checks = [

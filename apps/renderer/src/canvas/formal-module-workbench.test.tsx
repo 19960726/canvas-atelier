@@ -105,8 +105,8 @@ describe('formal module node presentation', () => {
     expect(screen.getByText('最新')).toBeVisible();
   });
 
-  it('keeps the reverse Figma card out of the retired workbench shell', () => {
-    const node = createCanvasModuleNode('reverse-figma-shell', 'reverse_agent', { x: 0, y: 0 });
+  it('keeps the reverse Canvas card out of the retired workbench shell', () => {
+    const node = createCanvasModuleNode('reverse-canvas-shell', 'reverse_agent', { x: 0, y: 0 });
 
     renderCard(node);
 

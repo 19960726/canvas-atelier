@@ -159,6 +159,7 @@ export function filterProviderCatalogProfiles(
 
 export function buildCanvasProviderRouteSets(
   profiles: readonly ProviderBridgeProfile[],
+  reverseProfiles: readonly ProviderBridgeProfile[] = profiles,
 ): {
   readonly imageGeneration: ProviderBridgeProfile[];
   readonly videoGeneration: ProviderBridgeProfile[];
@@ -168,19 +169,24 @@ export function buildCanvasProviderRouteSets(
   const catalog = filterProviderCatalogProfiles(
     profiles.filter((profile) => profile.capabilityStatus !== 'incomplete'),
   );
+  const reverseCatalog = filterProviderCatalogProfiles(
+    reverseProfiles.filter((profile) => profile.capabilityStatus !== 'incomplete'),
+  );
   return {
     imageGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('image_generation'))),
     videoGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('video_generation'))),
-    // Reverse analysis is a vision workflow, not ordinary text chat.  A
-    // provider may advertise the same multimodal route with image/video
-    // generation capabilities as well; do not discard it through the
-    // chat-only filter or the reverse node will incorrectly show no model.
-    reversePrompt: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => {
+    // Reverse analysis uses the provider's dialogue endpoint.  RelayMe's
+    // catalog can omit vision metadata for a dialogue deployment, so the
+    // reverse route is keyed by the explicit reverse_prompt capability rather
+    // than requiring a separate vision flag.
+    reversePrompt: dedupeProviderProfilesByVisibleName(reverseCatalog.filter((profile) => {
+      const hasDialogueReverse = profile.capabilities.includes('reverse_prompt')
+        && (profile.capabilities.includes('chat') || profile.capabilities.includes('responses'));
       const hasVisionDialogue = profile.capabilities.includes('vision')
         && (profile.capabilities.includes('chat') || profile.capabilities.includes('responses'));
       const hasGeminiNativeReverse = profile.capabilities.includes('gemini_native')
         && profile.capabilities.includes('reverse_prompt');
-      return hasVisionDialogue || hasGeminiNativeReverse;
+      return hasDialogueReverse || hasVisionDialogue || hasGeminiNativeReverse;
     })),
     storyboard: listAgentChatProfiles(catalog),
   };
@@ -188,9 +194,11 @@ export function buildCanvasProviderRouteSets(
 
 function isProviderActionRoute(profile: ProviderBridgeProfile): boolean {
   const identity = `${profile.modelRoute} ${profile.modelId ?? ''} ${profile.displayName}`.toLocaleLowerCase();
+  const isMidjourneyActionRoute = /(?:^|[\s/_-])(?:mid[-_ ]?journey|mj)(?:$|[\s/_-])/u.test(identity);
   return /(?:^|[\s/_-])(?:upload|modal|pan|zoom|reroll|vary|variation|extend|element|elements|identify|presets?|custom-voices|voices-list|models-list|list-models|tts|speech|audio)(?:$|[\s/_-])/u.test(identity)
     || /(?:create|update|delete|get|list)[\s/_-]+(?:element|voice|preset)/u.test(identity)
-    || /(?:^|[\s/_-])(?:blend|describe|edits?|imagine|inpaint|outpaint|shorten|upscale(?:[-_]?\d+x)?|ric[-_]?reader|ricreader[-_]?retry)(?:$|[\s/_-])/u.test(identity);
+    || (isMidjourneyActionRoute
+      && /(?:^|[\s/_-])(?:blend|describe|edits?|imagine|inpaint|outpaint|shorten|upscale(?:[-_]?\d+x)?|ric[-_]?reader|ricreader[-_]?retry)(?:$|[\s/_-])/u.test(identity));
 }
 
 function catalogProfileFamilyKey(profile: ProviderBridgeProfile): string {

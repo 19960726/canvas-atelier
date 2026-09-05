@@ -14,14 +14,14 @@ afterEach(() => {
 });
 
 describe('SettingsDrawer', () => {
-  it('exposes the Figma settings heading, close control, and segmented tabs with readable Chinese labels', () => {
+  it('exposes the Canvas settings heading, close control, and segmented tabs with readable Chinese labels', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
-    expect(screen.getByTestId('settings-drawer')).toHaveAttribute('data-figma-surface', 'settings');
+    expect(screen.getByTestId('settings-drawer')).toHaveAttribute('data-canvas-surface', 'settings');
     expect(screen.getByTestId('settings-drawer-heading')).toHaveTextContent('设置');
     expect(screen.getByTestId('settings-drawer-heading')).toHaveTextContent('Settings');
     expect(screen.getByTestId('settings-drawer-close')).toHaveAccessibleName('关闭设置');
-    expect(screen.getByRole('tablist', { name: '设置分类' })).toHaveAttribute('data-figma-tabs', 'segmented');
+    expect(screen.getByRole('tablist', { name: '设置分类' })).toHaveAttribute('data-canvas-tabs', 'segmented');
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'API 与模型', '存储与备份', 'MCP 联动', '同步',
     ]);
@@ -29,15 +29,15 @@ describe('SettingsDrawer', () => {
   });
 
   it('uses four equal shared-theme columns for the four settings tabs', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
-    const tabsRule = css.match(/\.workspace--ui-gate \.settings-tabs \{[^}]+\}/u)?.[0];
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const tabsRule = css.match(/\.workspace--canvas-layout \.settings-tabs \{[^}]+\}/u)?.[0];
 
     expect(tabsRule).toContain('grid-template-columns: repeat(4, minmax(104px, 1fr))');
     expect(tabsRule).not.toContain('repeat(5');
   });
 
   it('uses a two-provider final layout and compact capability metadata in both themes', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const finalContract = css.slice(css.lastIndexOf('/* Dual-provider settings final contract */'));
 
     expect(finalContract).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))');
@@ -47,16 +47,16 @@ describe('SettingsDrawer', () => {
     expect(finalContract).toContain(":root[data-theme='light']");
   });
   it('keeps advanced diagnostics compact instead of inheriting the retired oversized card rules', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const finalDiagnostics = css.slice(css.lastIndexOf('/* Final compact diagnostics contract */'));
 
-    expect(finalDiagnostics).toContain('.workspace--ui-gate .settings-status-card');
+    expect(finalDiagnostics).toContain('.workspace--canvas-layout .settings-status-card');
     expect(finalDiagnostics).toContain('min-height: 0 !important');
     expect(finalDiagnostics).toContain('font-size: 14px !important');
     expect(finalDiagnostics).toContain('align-items: center !important');
   });
   it('uses the compact provider credential layout from the approved settings reference', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('/* Final provider credential layout contract */'));
 
     expect(contract).toContain('.settings-key-heading');
@@ -79,7 +79,7 @@ describe('SettingsDrawer', () => {
   });
 
   it('keeps long model names readable with a simple checkbox-and-name model row', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('/* Final simple model-row contract: checkbox plus model name only. */'));
 
     expect(contract).toContain('.settings-model-list > article');
@@ -185,6 +185,60 @@ describe('SettingsDrawer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /检测连接/u }));
     await waitFor(() => expect(checkConnection).toHaveBeenCalledWith({ provider: 'relayme' }));
+  });
+
+  it('notifies the canvas after switching the durable active provider', async () => {
+    const getActiveProvider = vi.fn(async () => ({ activeProvider: 'comfly' as const }));
+    const setActiveProvider = vi.fn(async ({ activeProvider }: { activeProvider: 'comfly' | 'relayme' }) => ({ activeProvider }));
+    const getStatus = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
+    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme'
+      ? [{ provider: 'relayme' as const, modelRoute: 'relayme/vision', displayName: 'Relay Vision', modelId: 'relayme-vision', capabilities: ['chat' as const, 'vision' as const, 'reverse_prompt' as const] }]
+      : [{ provider: 'comfly' as const, modelRoute: 'comfly/vision', displayName: 'Comfly Vision', modelId: 'comfly-vision', capabilities: ['chat' as const, 'vision' as const, 'reverse_prompt' as const] }]);
+    const changedProviders: string[] = [];
+    const onCatalogChanged = (event: Event) => {
+      const provider = (event as CustomEvent<{ provider?: unknown }>).detail?.provider;
+      if (typeof provider === 'string') changedProviders.push(provider);
+    };
+    window.addEventListener('novus:provider-catalog-changed', onCatalogChanged);
+    window.novusDesktop = { provider: { getActiveProvider, setActiveProvider, getStatus, listProfiles } } as unknown as typeof window.novusDesktop;
+
+    try {
+      render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+      fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+
+      await waitFor(() => expect(setActiveProvider).toHaveBeenCalledWith({ activeProvider: 'relayme' }));
+      expect(changedProviders).toContain('relayme');
+    } finally {
+      window.removeEventListener('novus:provider-catalog-changed', onCatalogChanged);
+    }
+  });
+
+  it('notifies the canvas after RelayMe logout clears the active provider', async () => {
+    const getActiveProvider = vi.fn(async () => ({ activeProvider: 'relayme' as const }));
+    const logoutRelayMe = vi.fn(async () => ({ activeProvider: null }));
+    const getStatus = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => ({
+      configured: provider === 'relayme', locked: false, encryption: 'safeStorage' as const,
+    }));
+    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme'
+      ? [{ provider: 'relayme' as const, modelRoute: 'relayme/vision', displayName: 'Relay Vision', modelId: 'relayme-vision', capabilities: ['chat' as const, 'vision' as const, 'reverse_prompt' as const] }]
+      : []);
+    const changedProviders: unknown[] = [];
+    const onCatalogChanged = (event: Event) => {
+      changedProviders.push((event as CustomEvent<{ provider?: unknown }>).detail?.provider);
+    };
+    window.addEventListener('novus:provider-catalog-changed', onCatalogChanged);
+    window.novusDesktop = { provider: { getActiveProvider, logoutRelayMe, getStatus, listProfiles } } as unknown as typeof window.novusDesktop;
+
+    try {
+      render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+      await waitFor(() => expect(screen.getByRole('button', { name: '退出 RelayMe' })).toBeVisible());
+      fireEvent.click(screen.getByRole('button', { name: '退出 RelayMe' }));
+
+      await waitFor(() => expect(logoutRelayMe).toHaveBeenCalledTimes(1));
+      expect(changedProviders).toContain(null);
+    } finally {
+      window.removeEventListener('novus:provider-catalog-changed', onCatalogChanged);
+    }
   });
 
   it('organizes the API tab as a layered workbench with chat adaptation guidance', async () => {
@@ -787,7 +841,7 @@ describe('SettingsDrawer', () => {
     expect(screen.getByRole('button', { name: '恢复默认目录' })).toBeDisabled();
   });
 
-  it('renders storage and backup using Figma-style cache cards without the retired capacity preview control', () => {
+  it('renders storage and backup using Canvas-style cache cards without the retired capacity preview control', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
     fireEvent.click(screen.getByRole('tab', { name: '存储与备份' }));
@@ -795,7 +849,7 @@ describe('SettingsDrawer', () => {
     expect(screen.getByLabelText('下载输出目录')).toBeVisible();
     expect(screen.getByLabelText('本地保存')).toBeVisible();
     expect(screen.getByRole('button', { name: '刷新' }).querySelector(':scope > .settings-action-content')).not.toBeNull();
-    expect(screen.getByTestId('settings-storage-card')).toHaveAttribute('data-figma-layout', 'storage');
+    expect(screen.getByTestId('settings-storage-card')).toHaveAttribute('data-canvas-layout', 'storage');
     expect(screen.getByRole('button', { name: '清理全部缓存' })).toBeVisible();
     expect(screen.getAllByRole('button', { name: '清理' })).toHaveLength(4);
     expect(screen.queryByRole('button', { name: '10GB 清理预览' })).toBeNull();
@@ -832,7 +886,7 @@ describe('SettingsDrawer', () => {
     const css = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('/* FINAL SETTINGS DRAWER OCCLUSION CONTRACT */'));
 
-    expect(contract).toContain('.workspace--ui-gate .settings-drawer');
+    expect(contract).toContain('.workspace--canvas-layout .settings-drawer');
     expect(contract).toContain('background: var(--gate-card) !important');
     expect(contract).toContain('backdrop-filter: none !important');
   });
@@ -865,7 +919,7 @@ describe('SettingsDrawer', () => {
     expect(screen.getByText('WebDAV')).toBeVisible();
   });
 
-it('shows live MCP runtime status and separate Codex and WorkBuddy controls', async () => {
+  it('shows live MCP runtime status and separate Codex and WorkBuddy controls', async () => {
     const connect = vi.fn(async (client: 'codex' | 'workbuddy') => ({ client, state: 'connected' as const, toolCount: 14 as const, lastError: null }));
     const disconnect = vi.fn(async (client: 'codex' | 'workbuddy') => ({ client, state: 'unconfigured' as const, toolCount: 0 as const, lastError: null }));
     const testConnection = vi.fn(async (client: 'codex' | 'workbuddy') => ({ client, state: 'connected' as const, toolCount: 14 as const, lastError: null }));
@@ -889,16 +943,24 @@ it('shows live MCP runtime status and separate Codex and WorkBuddy controls', as
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
 
-    const server = await screen.findByRole('region', { name: 'CanvasForge MCP server' });
+    const server = await screen.findByRole('region', { name: 'Canvas Atelier MCP server' });
     expect(server).toHaveTextContent('1.6.32');
     expect(server).toHaveTextContent('14');
     expect(screen.getByRole('group', { name: 'Codex MCP client' }).querySelector('[data-mcp-client-state]')).toHaveAttribute('data-mcp-client-state', 'configured');
     expect(screen.getByRole('group', { name: 'WorkBuddy MCP client' }).querySelector('[data-mcp-client-state]')).toHaveAttribute('data-mcp-client-state', 'unconfigured');
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect WorkBuddy' }));
-    expect(screen.getByRole('dialog', { name: 'Confirm WorkBuddy connection' })).toBeVisible();
+    const confirmation = screen.getByRole('dialog', { name: 'Confirm WorkBuddy connection' });
+    expect(confirmation).toBeVisible();
+    expect(confirmation).toHaveTextContent('只写入 Canvas Atelier 这一项');
+    expect(confirmation).toHaveTextContent('canvas_atelier');
+    expect(confirmation).not.toHaveTextContent(/CanvasForge|canvasforge/u);
     fireEvent.click(screen.getByRole('button', { name: 'Confirm WorkBuddy config write' }));
     await waitFor(() => expect(connect).toHaveBeenCalledWith('workbuddy'));
+    const workBuddyClient = screen.getByRole('group', { name: 'WorkBuddy MCP client' });
+    expect(workBuddyClient.querySelector('[data-mcp-client-state]')).toHaveTextContent('配置匹配 · 桥接可用');
+    expect(workBuddyClient).not.toHaveTextContent('已连接');
+    expect(screen.getByText('WorkBuddy 配置与当前安装版匹配，14 个工具桥接可用；这不代表已打开的客户端已重载配置。')).toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy Codex config' }));
     await waitFor(() => expect(copyConfig).toHaveBeenCalledWith('codex'));
@@ -908,6 +970,56 @@ it('shows live MCP runtime status and separate Codex and WorkBuddy controls', as
     await waitFor(() => expect(testConnection).toHaveBeenCalledWith('codex'));
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Codex' }));
     await waitFor(() => expect(disconnect).toHaveBeenCalledWith('codex'));
+  });
+
+  it('warns that a matching WorkBuddy config still needs trust approval and a client reload', async () => {
+    window.novusDesktop = {
+      mcpRuntime: { getStatus: vi.fn(async () => ({ state: 'running' as const, rendererConnected: true, serverVersion: '1.6.100', toolCount: 14 as const, lastError: null })) },
+      mcpIntegration: {
+        getStatus: vi.fn(async () => [
+          { client: 'codex' as const, state: 'configured' as const, toolCount: 0 as const, lastError: null },
+          { client: 'workbuddy' as const, state: 'connected' as const, toolCount: 14 as const, lastError: null },
+        ]),
+        connect: vi.fn(), disconnect: vi.fn(), test: vi.fn(), copyConfig: vi.fn(),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
+
+    const workBuddyClient = await screen.findByRole('group', { name: 'WorkBuddy MCP client' });
+    expect(workBuddyClient.querySelector('[data-mcp-client-state]')).toHaveTextContent('配置匹配 · 桥接可用');
+    expect(screen.getByTestId('mcp-workbuddy-trust-hint')).toHaveTextContent('配置匹配不等于 WorkBuddy 已加载');
+    expect(screen.getByTestId('mcp-workbuddy-trust-hint')).toHaveTextContent(/Trust|信任/u);
+    expect(screen.getByTestId('mcp-workbuddy-trust-hint')).toHaveTextContent(/刷新或重启 WorkBuddy/u);
+  });
+
+  it('explains how to repair a stale MCP client entry instead of calling it connected', async () => {
+    const testConnection = vi.fn(async () => ({
+      client: 'codex' as const,
+      state: 'connection_failed' as const,
+      toolCount: 0 as const,
+      lastError: 'MCP_CONFIG_MISMATCH',
+    }));
+    window.novusDesktop = {
+      mcpRuntime: { getStatus: vi.fn(async () => ({ state: 'running' as const, rendererConnected: true, serverVersion: '1.6.100', toolCount: 14 as const, lastError: null })) },
+      mcpIntegration: {
+        getStatus: vi.fn(async () => [
+          { client: 'codex' as const, state: 'configured' as const, toolCount: 0 as const, lastError: null },
+          { client: 'workbuddy' as const, state: 'unconfigured' as const, toolCount: 0 as const, lastError: null },
+        ]),
+        connect: vi.fn(), disconnect: vi.fn(), test: testConnection, copyConfig: vi.fn(),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
+    await screen.findByRole('region', { name: 'Canvas Atelier MCP server' });
+    fireEvent.click(screen.getByRole('button', { name: 'Test Codex connection' }));
+
+    expect(await screen.findByText('Codex 配置与当前安装版不一致，请点击连接重新写入。')).toBeVisible();
+    expect(screen.getByRole('group', { name: 'Codex MCP client' }).querySelector('[data-mcp-client-state]'))
+      .toHaveAttribute('data-mcp-client-state', 'connection_failed');
   });
 
   it('shows desktop-only MCP state in browser mode without active integration controls', () => {
@@ -934,11 +1046,40 @@ it('keeps safe permission defaults and the workflow capability summary below the
     expect(screen.getByRole('checkbox', { name: '导出文件' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: '外部文件读写' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: '危险操作' })).not.toBeChecked();
-    expect(screen.getByText('canvasforge.mcp.workflow.v1')).toBeVisible();
+    expect(screen.getByText('本机工作流协议 v1')).toBeVisible();
+    expect(screen.getByTestId('settings-mcp-card')).not.toHaveTextContent(/CanvasForge|canvasforge/u);
+  });
+
+  it('persists MCP permission changes across settings drawer remounts', () => {
+    const storageKey = 'agent-canvas:mcp-permissions:v1';
+    localStorage.removeItem(storageKey);
+    window.novusDesktop = undefined;
+    const first = render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '外部文件读写' }));
+    expect(screen.getByRole('checkbox', { name: '外部文件读写' })).toBeChecked();
+
+    first.unmount();
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
+
+    expect(screen.getByRole('checkbox', { name: '外部文件读写' })).toBeChecked();
+    localStorage.removeItem(storageKey);
+  });
+
+  it('describes only implemented MCP permissions and marks reserved capabilities honestly', () => {
+    window.novusDesktop = undefined;
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
+
+    expect(screen.getByText('预留权限；当前 MCP 没有新建、切换、重命名或复制整张画布的工具。')).toBeVisible();
+    expect(screen.getByText('预留权限；当前 MCP 没有导出文件工具。')).toBeVisible();
+    expect(screen.getByText('只能打开 Canvas Atelier 自己的图片或视频选择器；MCP 不能读写任意外部路径。')).toBeVisible();
+    expect(screen.queryByText('允许访问项目外部文件，默认关闭。')).not.toBeInTheDocument();
   });
 
   it('copies the executable client config from the trusted desktop bridge without credentials', async () => {
-    const config = '[mcp_servers.canvasforge]\ncommand = "CanvasForge.exe"\nargs = ["canvasforge-mcp.cjs"]\n';
+    const config = '[mcp_servers.canvas_atelier]\ncommand = "Canvas Atelier.exe"\nargs = ["canvasforge-mcp.cjs"]\n';
     const writeText = vi.fn<(text: string) => Promise<void>>(async () => undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     window.novusDesktop = {
@@ -955,7 +1096,7 @@ it('keeps safe permission defaults and the workflow capability summary below the
 
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
-    await screen.findByRole('region', { name: 'CanvasForge MCP server' });
+    await screen.findByRole('region', { name: 'Canvas Atelier MCP server' });
     fireEvent.click(screen.getByRole('button', { name: 'Copy Codex config' }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(config));

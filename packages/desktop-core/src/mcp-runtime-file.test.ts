@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -72,5 +72,13 @@ describe('MCP runtime discovery file', () => {
     await deleteMcpRuntimeFile(runtimeFilePath);
     await expect(stat(runtimeFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(deleteMcpRuntimeFile(runtimeFilePath)).resolves.toBeUndefined();
+  });
+
+  it('still attempts to remove the temporary descriptor when removing the primary path fails', async () => {
+    await mkdir(runtimeFilePath, { recursive: true });
+    await writeFile(`${runtimeFilePath}.tmp`, 'stale temporary descriptor', 'utf8');
+
+    await expect(deleteMcpRuntimeFile(runtimeFilePath)).rejects.toBeDefined();
+    await expect(stat(`${runtimeFilePath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

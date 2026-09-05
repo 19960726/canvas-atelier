@@ -22,6 +22,8 @@ test('image and video generation expose the final ratio and clarity controls wit
   const imageAction = imageNode.locator('.module-node__generation-control-bar .module-node__run-generation');
   const imageActionWidth = await imageAction.evaluate((button) => button.getBoundingClientRect().width);
   expect(imageActionWidth).toBeGreaterThan(0);
+  await expect(imageNode.locator('.module-node__generation-control-bar > *:visible'), 'Image generation keeps exactly model, ratio, clarity, quantity, and generate visible').toHaveCount(5);
+  await expect(imageNode.locator('.module-node__video-model-picker')).toHaveCSS('border-top-width', '0px');
 
   const imageRatio = imageNode.getByRole('button', { name: 'Image generation aspect ratio' });
   await expect(imageRatio.locator('svg')).toHaveCount(2);
@@ -97,64 +99,85 @@ test('image and video generation expose the final ratio and clarity controls wit
   await videoNode.getByRole('button', { name: 'Open video generation editor' }).click();
   const videoAction = videoNode.locator('.module-node__video-control-bar .module-node__run-generation');
   await expect(videoAction).toBeVisible();
+  await expect(videoNode.locator('.module-node__video-control-bar > *:visible'), 'Video generation keeps exactly model, mode, combined settings, and generate visible').toHaveCount(4);
+  for (const selector of ['.module-node__video-model-picker', '.module-node__video-mode-picker', '.module-node__video-settings-picker']) {
+    await expect(videoNode.locator(selector)).toHaveCSS('border-top-width', '0px');
+    await expect(videoNode.locator(selector)).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  }
   const videoActionWidth = await videoAction.evaluate((button) => button.getBoundingClientRect().width);
-  expect(videoActionWidth).toBeCloseTo(imageActionWidth, 0);
+  // The final rail names the action explicitly so it cannot be mistaken for a
+  // generic send button, while preserving the compact four-column layout.
+  await expect(videoAction).toHaveText('生成视频');
+  expect(videoActionWidth).toBeGreaterThanOrEqual(104);
+  expect(videoActionWidth).toBeLessThanOrEqual(116);
   const actionBox = await videoAction.evaluate((button) => {
     const rect = button.getBoundingClientRect();
     const bar = button.parentElement?.getBoundingClientRect();
     const node = button.closest('[data-module-type="video_generation"]')?.getBoundingClientRect();
     return {
-      rightWithinBar: bar !== undefined ? rect.right <= bar.right - 2 : false,
+      rightWithinBar: bar !== undefined ? rect.right <= bar.right + 1 : false,
       barInsideNode: bar !== undefined && node !== undefined ? bar.left >= node.left && bar.right <= node.right : false,
     };
   });
   expect(actionBox.rightWithinBar).toBe(true);
   expect(actionBox.barInsideNode).toBe(true);
-  const videoRatio = videoNode.getByRole('button', { name: 'Video preview aspect ratio' });
-  await expect(videoRatio.locator('svg')).toHaveCount(2);
-  await videoRatio.click();
-  const videoRatioMenu = videoNode.getByRole('menu', { name: 'Video preview aspect ratio options' });
-  await expect(videoRatioMenu.getByRole('menuitemradio')).toHaveText([
-    'AUTO', '1:1', '16:9', '9:16',
-  ]);
-  await expect(videoRatioMenu.locator('svg').first()).toBeVisible();
-  const videoRatioLayout = await videoRatio.evaluate((trigger) => {
-    const menu = trigger.parentElement?.querySelector<HTMLElement>('.generation-parameter-popover__menu');
-    const label = trigger.querySelector<HTMLElement>('span');
+  const videoSettings = videoNode.getByRole('button', { name: '打开视频参数设置' });
+  await expect(videoSettings).toContainText('16:9');
+  await expect(videoSettings).toContainText('1080P');
+  await videoSettings.click();
+  const videoSettingsMenu = videoNode.getByRole('dialog', { name: '视频生成参数' });
+  await expect(videoSettingsMenu.getByRole('menuitemradio', { name: 'AUTO' })).toBeVisible();
+  await expect(videoSettingsMenu.getByRole('menuitemradio', { name: '16:9' })).toBeVisible();
+  const videoSettingsLayout = await videoSettings.evaluate((trigger) => {
+    const menu = trigger.parentElement?.querySelector<HTMLElement>('.module-node__video-settings-menu');
+    const label = trigger.querySelector<HTMLElement>('.module-node__video-settings-summary');
     const triggerRect = trigger.getBoundingClientRect();
     const menuRect = menu?.getBoundingClientRect();
     return {
       triggerWidth: triggerRect.width,
       labelFits: label !== null && label.scrollWidth <= label.clientWidth,
-      menuGap: menuRect === undefined ? Number.POSITIVE_INFINITY : triggerRect.top - menuRect.bottom,
+      menuInsideNode: menuRect !== undefined
+        ? (() => {
+          const nodeRect = trigger.closest<HTMLElement>('[data-module-type="video_generation"]')?.getBoundingClientRect();
+          return nodeRect !== undefined && menuRect.left >= nodeRect.left && menuRect.right <= nodeRect.right;
+        })()
+        : false,
     };
   });
-  expect(videoRatioLayout.triggerWidth).toBeGreaterThanOrEqual(108);
-  expect(videoRatioLayout.triggerWidth).toBeLessThanOrEqual(116);
-  expect(videoRatioLayout.labelFits).toBe(true);
-  expect(videoRatioLayout.menuGap).toBeGreaterThanOrEqual(4);
-  expect(videoRatioLayout.menuGap).toBeLessThanOrEqual(12);
+  expect(videoSettingsLayout.triggerWidth).toBeGreaterThanOrEqual(220);
+  expect(videoSettingsLayout.labelFits).toBe(true);
+  expect(videoSettingsLayout.menuInsideNode).toBe(true);
+  const videoSettingsColors = await videoSettingsMenu.evaluate((menu) => {
+    const node = menu.closest<HTMLElement>('[data-module-type="video_generation"]');
+    if (node === null) return { actual: '', expected: '' };
+    const probe = document.createElement('span');
+    probe.style.position = 'absolute';
+    probe.style.backgroundColor = 'var(--gate-card)';
+    node.append(probe);
+    const expected = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return { actual: getComputedStyle(menu).backgroundColor, expected };
+  });
+  expect(videoSettingsColors.actual, 'The video settings popover must use the same themed surface as the node').toBe(videoSettingsColors.expected);
 
   const videoQuantity = videoNode.getByRole('combobox', { name: 'Video preview quantity' });
   await expect(videoQuantity).toBeHidden();
-  await expect(videoNode.getByRole('combobox', { name: 'Video preview duration' })).toBeVisible();
+  await expect(videoNode.getByRole('combobox', { name: 'Video preview duration' })).toBeHidden();
 
-  const videoResolution = videoNode.getByRole('button', { name: 'Video preview resolution' });
-  await expect(videoResolution.locator('svg')).toHaveCount(1);
-  await videoResolution.click();
-  const videoResolutionOptions = videoNode
-    .getByRole('menu', { name: 'Video preview resolution options' })
+  const videoResolutionOptions = videoSettingsMenu
     .getByRole('menuitemradio');
-  await expect(videoResolutionOptions).toHaveText(['720P', '1080P', '2K', '4K']);
+  await expect(videoResolutionOptions).toContainText(['720P', '1080P', '2K', '4K']);
   await page.screenshot({ path: artifact('03-video-ratio-dark.png'), fullPage: true });
   await videoResolutionOptions.filter({ hasText: '1080P' }).click();
-  await expect(videoResolution).toHaveAttribute('value', '1080p');
+  await expect(videoSettings).toContainText('1080P');
+  await videoSettings.click();
+  await expect(videoSettingsMenu).toBeHidden();
   await page.screenshot({ path: artifact('06-video-node-compact-dark.png'), fullPage: true });
 
   expect((await e2eState(page)).modelSubmissions).toHaveLength(0);
 });
 
-test('captures the image ratio control in light theme without submitting a paid task', async ({ page }) => {
+test('captures the final image and video controls in light theme without submitting a paid task', async ({ page }) => {
   await page.setViewportSize({ width: 1680, height: 1050 });
   await page.addInitScript(() => localStorage.setItem('novus.theme.mode', 'light'));
   await openEmptyApp(page);
@@ -164,9 +187,42 @@ test('captures the image ratio control in light theme without submitting a paid 
 
   const imageNode = page.locator('[data-module-type="image_generation"]');
   await imageNode.getByRole('button', { name: 'Open image generation editor' }).click();
+  await expect(imageNode.locator('.module-node__generation-control-bar > *:visible')).toHaveCount(5);
+  await page.screenshot({ path: artifact('07-image-node-compact-light.png'), fullPage: true });
   await imageNode.getByRole('button', { name: 'Image generation aspect ratio' }).click();
   await expect(imageNode.getByRole('menu', { name: 'Image generation aspect ratio options' })).toBeVisible();
   await page.screenshot({ path: artifact('04-image-ratio-light.png'), fullPage: true });
+
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.resetEmpty();
+    await window.__NOVUS_E2E__!.createModule('video_generation', { x: 500, y: 180 });
+  });
+  const videoNode = page.locator('[data-module-type="video_generation"]');
+  await videoNode.getByRole('button', { name: 'Open video generation editor' }).click();
+  await expect(videoNode.locator('.module-node__video-control-bar > *:visible')).toHaveCount(4);
+  for (const selector of ['.module-node__video-model-picker', '.module-node__video-mode-picker', '.module-node__video-settings-picker']) {
+    await expect(videoNode.locator(selector)).toHaveCSS('border-top-width', '0px');
+    await expect(videoNode.locator(selector)).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  }
+  await page.screenshot({ path: artifact('08-video-node-compact-light.png'), fullPage: true });
+
+  const videoSettings = videoNode.getByRole('button', { name: '打开视频参数设置' });
+  await videoSettings.click();
+  const videoSettingsMenu = videoNode.getByRole('dialog', { name: '视频生成参数' });
+  await expect(videoSettingsMenu).toBeVisible();
+  const lightSettingsColors = await videoSettingsMenu.evaluate((menu) => {
+    const node = menu.closest<HTMLElement>('[data-module-type="video_generation"]');
+    if (node === null) return { actual: '', expected: '' };
+    const probe = document.createElement('span');
+    probe.style.position = 'absolute';
+    probe.style.backgroundColor = 'var(--gate-card)';
+    node.append(probe);
+    const expected = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return { actual: getComputedStyle(menu).backgroundColor, expected };
+  });
+  expect(lightSettingsColors.actual).toBe(lightSettingsColors.expected);
+  await page.screenshot({ path: artifact('09-video-settings-light.png'), fullPage: true });
 
   expect((await e2eState(page)).modelSubmissions).toHaveLength(0);
 });

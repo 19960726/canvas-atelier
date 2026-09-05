@@ -290,9 +290,10 @@ export class RelayMeClient {
   ): Promise<T> {
     const controller = new AbortController();
     const timer = this.timeoutMs > 0 ? globalThis.setTimeout(() => controller.abort(), this.timeoutMs) : null;
+    let response: RelayMeFetchResponse;
     try {
       const token = await this.tokenSupplier();
-      const response = await this.fetch(`${this.baseUrl}${path}`, {
+      response = await this.fetch(`${this.baseUrl}${path}`, {
         method: options.method,
         headers: {
           authorization: `Bearer ${token}`,
@@ -302,16 +303,16 @@ export class RelayMeClient {
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         signal: controller.signal,
       });
-      return await parseResponse(response, path, options.schema, options.allowEmptyAccepted === true);
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new Error(`RelayMe 请求在 ${this.timeoutMs}ms 后 timed out: ${path}`);
+        throw retryableRelayMeTransportError(`RelayMe 请求在 ${this.timeoutMs}ms 后 timed out: ${path}`);
       }
       if (isRelayMeError(error)) throw error;
-      throw new Error(`RelayMe 请求失败: ${path}: ${sanitizeRelayMeMessage(error)}`);
+      throw retryableRelayMeTransportError(`RelayMe 请求失败: ${path}: ${sanitizeRelayMeMessage(error)}`);
     } finally {
       if (timer !== null) globalThis.clearTimeout(timer);
     }
+    return parseResponse(response, path, options.schema, options.allowEmptyAccepted === true);
   }
 }
 
@@ -425,7 +426,15 @@ async function parseResponse<T>(response: RelayMeFetchResponse, path: string, sc
       const runId = locationParts[locationParts.length - 1];
       if (runId !== undefined && /^[0-9a-f-]{20,}$/iu.test(runId)) return { runId, status: 'QUEUED' } as T;
     }
-    throw error;
+    if (!response.ok) {
+      const httpError = new Error(`RelayMe 请求 ${path} 返回 ${response.status}: 供应商返回了无效错误响应`) as Error & {
+        status?: number; retryable?: boolean;
+      };
+      httpError.status = response.status;
+      httpError.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+      throw httpError;
+    }
+    throw new Error(`RelayMe 响应格式无效: ${path}: ${sanitizeRelayMeMessage(error)}`);
   }
   if (!response.ok) {
     const parsed = errorBodySchema.safeParse(body);
@@ -436,7 +445,7 @@ async function parseResponse<T>(response: RelayMeFetchResponse, path: string, sc
       status?: number; retryable?: boolean;
     };
     error.status = response.status;
-    error.retryable = response.status >= 500 || response.status === 429;
+    error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
     throw error;
   }
   try {
@@ -469,4 +478,8 @@ function sanitizeRelayMeMessage(value: unknown): string {
 
 function isRelayMeError(value: unknown): value is Error & { readonly status?: number; readonly retryable?: boolean } {
   return value instanceof Error && ('status' in value || 'retryable' in value);
+}
+
+function retryableRelayMeTransportError(message: string): Error & { readonly retryable: true } {
+  return Object.assign(new Error(message), { retryable: true as const });
 }

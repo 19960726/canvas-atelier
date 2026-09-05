@@ -50,7 +50,7 @@ for (const theme of ['light', 'dark'] as const) {
 
       await startInteractionStallObserver(page);
       let commitCount = graph.commitCount;
-      // The Figma shell keeps the 56px top bar above the canvas. Use a stress
+      // The Canvas shell keeps the 56px top bar above the canvas. Use a stress
       // node from the second canvas row so pointer-based interaction is not
       // hidden beneath that chrome while preserving the same node contract.
       const node = page.locator('.react-flow__node[data-id="stress-image_input-20"]');

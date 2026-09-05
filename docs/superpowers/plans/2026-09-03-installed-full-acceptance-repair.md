@@ -501,7 +501,7 @@ Append confirmed root causes, exact files, red/green tests, full command outputs
 
 - [ ] **Step 10: Decide installer handoff**
 
-Handoff is allowed only when all local required rows pass. If paid provider generation, Photoshop active-document import, signing, or remote release remain unexecuted, list them plainly as external/manual rows and do not describe them as passed.
+Independently self-review the complete diff and every requirement in the approved specification. Open and inspect every accepted screenshot/result artifact, rerun the key installed image/video/reverse/save/MCP paths, and confirm the reviewed executable SHA-256 exactly matches the handoff executable. Any finding returns to the owning task, followed by rebuild and affected-gate reruns. Handoff is allowed only when all required rows pass. List genuinely external signing or Photoshop environment rows separately and do not describe them as passed.
 
 ---
 
@@ -515,4 +515,5 @@ Handoff is allowed only when all local required rows pass. If paid provider gene
 - [ ] Image, video, Reverse Agent, persistence, and coexistence each have separate pass/fail tables.
 - [ ] Whole-product functions, every formal module, and MCP configuration/runtime each have separate pass/fail tables.
 - [ ] One real image generation and one real video generation include installed UI, provider terminal state, asset persistence, reopen, and playback evidence.
+- [ ] Final self-review covers the approved specification, complete diff, all screenshots/results, repeated installed paths, residual risks, and exact handoff EXE hash.
 - [ ] The final claim names all skipped, blocked, manual, paid, external-service, signing, and machine-dependent rows.

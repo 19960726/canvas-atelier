@@ -14,7 +14,7 @@ import type { KnowledgeClient } from './knowledge-client';
 import type { ProjectCommitRequest, ProjectCommitResult, ProjectPersistenceClient } from './desktop-persistence';
 import { createBrowserPersistenceClient } from './desktop-persistence';
 import { PROJECT_STORAGE_KEY } from './project-persistence';
-import { App, resetAppHydrationForTests } from './App';
+import { App, cancelMcpCanvasJob, listMcpWorkspaceJobs, resetAppHydrationForTests, runMcpCanvasNode } from './App';
 import { mcpUiConfirmationStore } from './mcp-ui-confirmation-store';
 
 describe('App persistence hydration', () => {
@@ -237,7 +237,7 @@ describe('App persistence hydration', () => {
     expect(useAppStore.getState().saveErrorCode).toBe('INVALID_REQUEST');
     expect(ackCloseFlush.mock.calls).toEqual([
       [{ requestId: 'close-request-failed-1', phase: 'save_started' }],
-      [{ requestId: 'close-request-failed-1', phase: 'completed', outcome: 'failed' }],
+      [{ requestId: 'close-request-failed-1', phase: 'completed', outcome: 'failed', errorCode: 'INVALID_REQUEST' }],
     ]);
   });
 
@@ -489,6 +489,69 @@ describe('App persistence hydration', () => {
       projectId: useAppStore.getState().project.id,
       revision: useAppStore.getState().desktopRevision,
     });
+  });
+
+  it('returns all newly enqueued model job ids to MCP after starting image generation', async () => {
+    const image = createCanvasModuleNode('mcp-image', 'image_generation', { x: 20, y: 40 });
+    image.data.config = { prompt: 'A studio product image', outputCount: 2 };
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [image], edges: [] },
+      modelJobs: [],
+      runImageGenerationNode: vi.fn(async () => {
+        useAppStore.setState({
+          modelJobs: [
+            { id: 'job-image-1', kind: 'image', modelId: 'model', status: 'queued', promptNodeId: 'mcp-image', retryCount: 0, referenceAssetIds: [] },
+            { id: 'job-image-2', kind: 'image', modelId: 'model', status: 'queued', promptNodeId: 'mcp-image', retryCount: 0, referenceAssetIds: [] },
+          ],
+        } as never);
+        return true;
+      }),
+    } as never);
+
+    await expect(runMcpCanvasNode('mcp-image')).resolves.toEqual({
+      started: true,
+      jobIds: ['job-image-1', 'job-image-2'],
+    });
+  });
+
+  it('starts reverse analysis asynchronously and exposes it as a cancellable MCP job', async () => {
+    const reverse = createCanvasModuleNode('mcp-reverse', 'reverse_agent', { x: 20, y: 40 });
+    reverse.data.config = { modelRoute: 'reverse-route', role: 'analyst', task: 'Analyze the reference' };
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] },
+      runReverseAgentNode: vi.fn(() => {
+        const running = { ...reverse, data: { ...reverse.data, config: { ...reverse.data.config, reverseAgentRunId: 'reverse-run-1', reverseAgentRunState: 'running' } } };
+        useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [running], edges: [] } } as never);
+        return new Promise(() => undefined);
+      }),
+    } as never);
+
+    await expect(Promise.race([
+      runMcpCanvasNode('mcp-reverse'),
+      new Promise((resolve) => setTimeout(() => resolve({ started: false, jobIds: ['timed-out'] }), 250)),
+    ])).resolves.toEqual({ started: true, jobIds: ['reverse-run-1'] });
+    expect(listMcpWorkspaceJobs()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'reverse-run-1', nodeId: 'mcp-reverse', kind: 'reverse', status: 'running' }),
+    ]));
+  });
+
+  it('routes reverse MCP cancellation to the reverse runner instead of the model job queue', async () => {
+    const reverse = createCanvasModuleNode('mcp-reverse-cancel', 'reverse_agent', { x: 20, y: 40 });
+    reverse.data.config = { reverseAgentRunId: 'reverse-run-cancel', reverseAgentRunState: 'running' };
+    const cancelReverseAgentNode = vi.fn(async () => true);
+    const cancelModelJob = vi.fn(async () => undefined);
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] },
+      cancelReverseAgentNode,
+      cancelModelJob,
+    } as never);
+
+    await expect(cancelMcpCanvasJob('reverse-run-cancel')).resolves.toBeUndefined();
+    expect(cancelReverseAgentNode).toHaveBeenCalledWith('mcp-reverse-cancel');
+    expect(cancelModelJob).not.toHaveBeenCalled();
   });
 });
 

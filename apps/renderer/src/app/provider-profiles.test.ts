@@ -43,6 +43,17 @@ describe('canvas provider route sets', () => {
     ]);
   });
 
+  it('keeps a RelayMe dialogue reverse route visible when vision metadata is absent', () => {
+    const routes = buildCanvasProviderRouteSets([{
+      provider: 'relayme', modelRoute: 'relayme/dialogue-default', modelId: 'dialogue-default',
+      displayName: 'Dialogue Default', capabilities: ['chat', 'reverse_prompt'], capabilityStatus: 'complete',
+    }]);
+
+    expect(routes.reversePrompt).toEqual([
+      expect.objectContaining({ provider: 'relayme', modelRoute: 'relayme/dialogue-default' }),
+    ]);
+  });
+
   it('uses vision-capable dialogue models for reverse analysis even without a derived reverse tag', () => {
     const routes = buildCanvasProviderRouteSets([{
       provider: 'comfly', modelRoute: 'comfly/vision-chat', modelId: 'vision-chat', displayName: 'Vision Chat',
@@ -61,6 +72,27 @@ describe('canvas provider route sets', () => {
     }]);
 
     expect(routes.reversePrompt).toEqual([]);
+  });
+
+  it('builds reverse routes from the supplied dialogue catalog', () => {
+    const routes = buildCanvasProviderRouteSets([
+      {
+        provider: 'relayme', modelRoute: 'relay/image-only', modelId: 'image-only', displayName: 'Nano Banana Pro',
+        capabilities: ['image_generation'],
+      },
+    ], [
+      {
+        provider: 'comfly', modelRoute: 'comfly/vision-chat', modelId: 'vision-chat', displayName: 'Vision Chat',
+        capabilities: ['chat', 'vision'],
+      },
+    ]);
+
+    expect(routes.imageGeneration).toEqual([
+      expect.objectContaining({ modelRoute: 'relay/image-only' }),
+    ]);
+    expect(routes.reversePrompt).toEqual([
+      expect.objectContaining({ modelRoute: 'comfly/vision-chat' }),
+    ]);
   });
 
   it('keeps the same visible generation model once per provider', () => {
@@ -137,6 +169,115 @@ describe('canvas provider route sets', () => {
     expect(routes.imageGeneration).toHaveLength(1);
     expect(routes.videoGeneration).toHaveLength(1);
     expect(routes.reversePrompt.length).toBeLessThan(20);
+  });
+
+  it('keeps Reverse Agent routes scoped to the active canvas provider by default', () => {
+    const activeRelayMeProfiles: ProviderBridgeProfile[] = [{
+      provider: 'relayme',
+      modelRoute: 'relayme-gemini-vision',
+      modelId: 'gemini-vision',
+      displayName: 'Gemini Vision',
+      capabilities: ['chat', 'vision', 'reverse_prompt'],
+    }];
+    const routes = buildCanvasProviderRouteSets(activeRelayMeProfiles);
+
+    expect(routes.reversePrompt).toEqual([
+      expect.objectContaining({ provider: 'relayme', modelRoute: 'relayme-gemini-vision' }),
+    ]);
+    expect(routes.reversePrompt.some((profile) => profile.provider === 'comfly')).toBe(false);
+  });
+
+  it('routes the 2026-09-04 Comfly additions only into compatible canvas nodes', () => {
+    const imageProfiles: ProviderBridgeProfile[] = [
+      { provider: 'comfly', modelRoute: 'comfly-grok-imagine-image-2-0', modelId: 'grok-imagine-image-2.0', displayName: 'grok-imagine-image-2.0', capabilities: ['image_generation', 'image_edit'], capabilityStatus: 'complete' },
+      ...['nano-banana-2', 'nano-banana-2-2k', 'nano-banana-2-4k'].map((modelId) => ({
+        provider: 'comfly' as const,
+        modelRoute: `comfly-${modelId}`,
+        modelId,
+        displayName: modelId,
+        capabilities: ['image_generation' as const, 'image_edit' as const, 'chat' as const],
+        capabilityStatus: 'complete' as const,
+      })),
+    ];
+    const videoProfiles: ProviderBridgeProfile[] = ['grok-imagine-video-1.5', 'wan3.0-video', 'wan3.0-video-prime'].map((modelId) => ({
+      provider: 'comfly',
+      modelRoute: `comfly-${modelId.replace(/\./g, '-')}`,
+      modelId,
+      displayName: modelId,
+      capabilities: ['video_generation', 'async_tasks'],
+      capabilityStatus: 'complete',
+    }));
+    const reverseProfiles: ProviderBridgeProfile[] = [
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp',
+      'deepseek-v4-pro',
+      'gemini-3.7-flash',
+      'gemini-3.7-flash-thinking-high',
+      'gemini-3.7-flash-thinking-low',
+      'gemini-3.7-flash-thinking-medium',
+      'gemini-3.8-flash',
+      'gemini-3.8-flash-thinking-high',
+      'gemini-3.8-flash-thinking-low',
+      'gemini-3.8-flash-thinking-medium',
+      'glm-5.3-flash',
+      'grok-4.6',
+      'qwen3.8-max',
+    ].map((modelId) => ({
+      provider: 'comfly',
+      modelRoute: `comfly-${modelId.replace(/\./g, '-')}`,
+      modelId,
+      displayName: modelId,
+      capabilities: ['chat', 'vision', 'reverse_prompt'],
+      capabilityStatus: 'complete',
+    }));
+    const conflictingImageMetadata: ProviderBridgeProfile[] = [{
+      provider: 'comfly',
+      modelRoute: 'comfly-gemini-3-1-flash-lite-image',
+      modelId: 'gemini-3.1-flash-lite-image',
+      displayName: 'gemini-3.1-flash-lite-image',
+      capabilities: ['chat', 'async_tasks'],
+      capabilityStatus: 'complete',
+    }, {
+      provider: 'comfly',
+      modelRoute: 'comfly-volcv-v1',
+      modelId: 'volcv-v1',
+      displayName: 'volcv-v1',
+      capabilities: ['async_tasks'],
+      capabilityStatus: 'complete',
+    }];
+
+    const routes = buildCanvasProviderRouteSets([
+      ...imageProfiles,
+      ...videoProfiles,
+      ...reverseProfiles,
+      ...conflictingImageMetadata,
+    ]);
+
+    expect(routes.imageGeneration.map((profile) => profile.modelId).sort()).toEqual([
+      'grok-imagine-image-2.0',
+      'nano-banana-2',
+    ]);
+    expect(routes.videoGeneration.map((profile) => profile.modelId).sort()).toEqual([
+      'grok-imagine-video-1.5',
+      'wan3.0-video',
+      'wan3.0-video-prime',
+    ]);
+    expect(routes.reversePrompt.map((profile) => profile.modelId).sort()).toEqual([
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp',
+      'deepseek-v4-pro',
+      'gemini-3.7-flash',
+      'gemini-3.8-flash',
+      'glm-5.3-flash',
+      'grok-4.6',
+      'qwen3.8-max',
+    ]);
+    const generationRouteIds = [...routes.imageGeneration, ...routes.videoGeneration]
+      .map((profile) => profile.modelId);
+    expect(generationRouteIds).not.toEqual(expect.arrayContaining([
+      'gemini-3.1-flash-lite-image',
+      'volcv-v1',
+    ]));
   });
 });
 

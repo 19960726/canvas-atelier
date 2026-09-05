@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ChatSkillBridgeResult, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
+import { CODEX_ASTRA_PROFILE, type ChatSkillBridgeResult, type ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import { resolveClipboardPasteAction, SkillChatWorkbench, type SkillChatRequest } from './SkillChatWorkbench';
 import { createAgentConversation, writeAgentConversationCollection } from './skill-chat-session-store';
@@ -116,11 +116,37 @@ describe('SkillChatWorkbench', () => {
     expect(write.mock.calls.length).toBe(baselineWrites);
   });
 
+  it('clamps restored project-memory selections to the 32 currently available ids', async () => {
+    const availableMemoryIds = Array.from({ length: 35 }, (_, index) => `memory-${index}`);
+    const initialConversation = {
+      ...createAgentConversation(8),
+      mode: 'chat' as const,
+      modelRoute: 'chat/creative',
+      projectMemoryIds: ['superseded-memory', ...availableMemoryIds],
+    };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: initialConversation.id,
+      conversations: [initialConversation],
+    });
+    const chat = vi.fn(async () => ({ message: '记忆上下文有效', modelRoute: 'chat/creative', sources: [] }));
+    renderWorkbench({ chat, projectMemoryIds: availableMemoryIds });
+
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '检查项目记忆' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ projectMemoryIds: availableMemoryIds.slice(0, 32) }),
+    }));
+  });
+
   it.each([
     ['CREDENTIALS_LOCKED', '模型密钥不可用，请在设置中重新配置。'],
     ['PROVIDER_UNAVAILABLE', '模型服务暂时不可用，请检查网络或连接设置。'],
     ['CAPABILITY_UNSUPPORTED', '当前模型不支持该素材或任务，请切换模型。'],
     ['PROVIDER_INVALID_RESPONSE', '模型返回内容无效，请重试或切换模型。'],
+    ['CODEX_CLI_UPSTREAM_UNAVAILABLE', 'GPT-6 Astra 当前上游通道不可用，请检查 Codex 账号的模型权限后重试。'],
   ])('shows a safe actionable message for Agent error %s', async (code, expectedMessage) => {
     const chat = vi.fn().mockRejectedValue({
       code,
@@ -194,11 +220,11 @@ describe('SkillChatWorkbench', () => {
     expect(await screen.findByText('视觉模型也可以正常聊天')).toBeVisible();
   });
   it('centers the single send glyph without a translated tail or generated counter', () => {
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
-    const iconRule = css.match(/\.workspace--ui-gate \.agent-panel--skill-chat \.skill-chat-workbench__composer-footer > button svg \{[^}]+\}/u)?.[0] ?? '';
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const iconRule = css.match(/\.workspace--canvas-layout \.agent-panel--skill-chat \.skill-chat-workbench__composer-footer > button svg \{[^}]+\}/u)?.[0] ?? '';
 
     expect(iconRule).toContain('transform: none');
-    const submitAfterRule = css.match(/\.workspace--ui-gate \.agent-panel--skill-chat \.skill-chat-workbench__composer-footer > button\[type='submit'\]::after \{[^}]+\}/u)?.[0] ?? '';
+    const submitAfterRule = css.match(/\.workspace--canvas-layout \.agent-panel--skill-chat \.skill-chat-workbench__composer-footer > button\[type='submit'\]::after \{[^}]+\}/u)?.[0] ?? '';
     expect(submitAfterRule).toContain('content: none');
   });
   it('places the final scoped Codex Agent contract after every legacy Agent rule', () => {
@@ -213,7 +239,7 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByTestId('agent-composer-input')).toHaveAttribute('aria-label', '向 Agent 发送消息');
   });
 
-  it('uses icon-only Figma tools without showing the removed image-reference button by default', () => {
+  it('uses icon-only Canvas tools without showing the removed image-reference button by default', () => {
     const { container } = renderWorkbench();
 
     const tools = Array.from(container.querySelectorAll('.skill-chat-workbench__tool'));
@@ -244,7 +270,7 @@ describe('SkillChatWorkbench', () => {
     const modelDialog = container.querySelector('.skill-chat-workbench__sheet:not(.skill-chat-workbench__sheet--library)');
     expect(modelDialog).toHaveAttribute('data-anchor', 'composer-footer');
   });
-  it('keeps the Figma image-reference affordance hidden until the user types @', () => {
+  it('keeps the Canvas image-reference affordance hidden until the user types @', () => {
     renderWorkbench();
 
     expect(screen.queryByTestId('agent-image-reference-affordance')).not.toBeInTheDocument();
@@ -268,7 +294,7 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByLabelText('Selected image references')).toHaveTextContent('Generated hero');
   });
 
-  it('exposes the Figma new-chat action above an empty Skill conversation', () => {
+  it('exposes the Canvas new-chat action above an empty Skill conversation', () => {
     renderWorkbench();
 
     expect(screen.getByTestId('agent-new-chat')).toBeVisible();
@@ -318,6 +344,15 @@ describe('SkillChatWorkbench', () => {
     expect(screen.queryByRole('combobox', { name: '推理强度' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '原智能' }));
     expect(screen.queryByRole('combobox', { name: '推理强度' })).not.toBeInTheDocument();
+  });
+
+  it('distinguishes embedded Codex planning from external MCP canvas control', () => {
+    renderWorkbench();
+
+    const emptyState = screen.getByLabelText('Agent conversation empty state');
+    expect(emptyState).toHaveTextContent('外部 Codex 客户端');
+    expect(emptyState).toHaveTextContent('Canvas Atelier MCP');
+    expect(emptyState).not.toHaveTextContent('通过 Canvas Atelier MCP 完成操作');
   });
 
   it('keeps non-Codex routes out of Codex mode and selects an available Codex route', async () => {
@@ -398,6 +433,127 @@ describe('SkillChatWorkbench', () => {
     })));
   });
 
+  it('selects local GPT-6 Astra independently of RelayMe and sends its exact max effort with a cancellable request id', async () => {
+    const chat = vi.fn(async () => ({ message: 'Astra result', modelRoute: CODEX_ASTRA_PROFILE.modelRoute, sources: [] }));
+    const onImportReferenceImage = vi.fn();
+    const onImportReferenceVideo = vi.fn();
+    renderWorkbench({
+      profiles: [{
+        provider: 'relayme', modelRoute: 'relayme/chat', modelId: 'gemini-3.1-flash-lite',
+        displayName: 'Gemini 3.1 Flash Lite', capabilities: ['chat'],
+      }],
+      codexProfiles: [CODEX_ASTRA_PROFILE],
+      chat,
+      onImportReferenceImage,
+      onImportReferenceVideo,
+    });
+
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Astra'));
+    expect(screen.getByText('本机 CLI 已安装 · 上游调用时验证')).toBeVisible();
+    expect(screen.getByRole('button', { name: '添加素材' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Gemini 3.1 Flash Lite'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Astra'));
+    fireEvent.change(screen.getByRole('combobox', { name: '推理强度' }), { target: { value: 'max' } });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '读取当前画布结构' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'codex',
+      modelRoute: 'codex/gpt-6-astra',
+      requestId: expect.stringMatching(/^[A-Za-z0-9_-]+$/u),
+      agentMode: 'codex',
+      reasoningEffort: 'max',
+    })));
+  });
+
+  it('cancels the current local Codex request when a new task replaces it', async () => {
+    let rejectChat: ((error: Error) => void) | undefined;
+    const chat = vi.fn((_request: SkillChatRequest) => new Promise<ChatSkillBridgeResult>((_resolve, reject) => { rejectChat = reject; }));
+    const cancelChat = vi.fn(async () => {
+      rejectChat?.(Object.assign(new Error('cancelled'), { code: 'CODEX_CLI_CANCELLED' }));
+      return true;
+    });
+    renderWorkbench({ profiles: [], codexProfiles: [CODEX_ASTRA_PROFILE], chat, cancelChat });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '修改当前画布' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const sentRequestId = (chat.mock.calls[0]?.[0] as SkillChatRequest | undefined)?.requestId;
+    expect(sentRequestId).toMatch(/^[A-Za-z0-9_-]+$/u);
+
+    fireEvent.click(screen.getByTestId('agent-new-chat'));
+
+    await waitFor(() => expect(cancelChat).toHaveBeenCalledWith(sentRequestId));
+    await waitFor(() => expect(screen.queryByLabelText('Agent 正在思考')).not.toBeInTheDocument());
+  });
+
+  it('cancels the current local Codex request when switching out of Codex mode', async () => {
+    let rejectChat: ((error: Error) => void) | undefined;
+    const chat = vi.fn((_request: SkillChatRequest) => new Promise<ChatSkillBridgeResult>((_resolve, reject) => { rejectChat = reject; }));
+    const cancelChat = vi.fn(async () => {
+      rejectChat?.(Object.assign(new Error('cancelled'), { code: 'CODEX_CLI_CANCELLED' }));
+      return true;
+    });
+    renderWorkbench({ profiles: [], codexProfiles: [CODEX_ASTRA_PROFILE], chat, cancelChat });
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Astra'));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '读取画布' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const sentRequestId = (chat.mock.calls[0]?.[0])?.requestId;
+
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+
+    await waitFor(() => expect(cancelChat).toHaveBeenCalledWith(sentRequestId));
+  });
+
+  it('cancels the current local Codex request when the workbench unmounts', async () => {
+    const chat = vi.fn((_request: SkillChatRequest) => new Promise<ChatSkillBridgeResult>(() => undefined));
+    const cancelChat = vi.fn(async () => true);
+    const view = renderWorkbench({ profiles: [], codexProfiles: [CODEX_ASTRA_PROFILE], chat, cancelChat });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '读取画布' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const sentRequestId = (chat.mock.calls[0]?.[0])?.requestId;
+
+    view.unmount();
+
+    await waitFor(() => expect(cancelChat).toHaveBeenCalledWith(sentRequestId));
+  });
+
+  it('lets local Astra handle full canvas intent through MCP instead of the legacy node shortcut', async () => {
+    const chat = vi.fn(async () => ({ message: '已通过 MCP 创建节点', modelRoute: CODEX_ASTRA_PROFILE.modelRoute, sources: [] }));
+    const executeCanvasAction = vi.fn();
+    renderWorkbench({
+      profiles: [],
+      codexProfiles: [CODEX_ASTRA_PROFILE],
+      chat,
+      executeCanvasAction,
+    });
+
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Astra'));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '创建一个生图节点并连接提示词节点' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    expect(executeCanvasAction).not.toHaveBeenCalled();
+  });
+
+  it('explains the Codex image paste boundary and keeps the clipboard image out of the request', async () => {
+    const image = new File(['one'], 'codex-reference.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: 'c'.repeat(16), label: 'codex-reference.png', displayUrl: 'novus-asset://codex-reference',
+    });
+    renderWorkbench({ profiles: [], codexProfiles: [CODEX_ASTRA_PROFILE], onImportReferenceImage });
+
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.paste(composer, { clipboardData: { files: [image], items: [], getData: () => '' } });
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('GPT-6 Astra 当前为文本/MCP 模式，不支持图片或视频粘贴'));
+    expect(onImportReferenceImage).not.toHaveBeenCalled();
+    expect(composer).toHaveValue('');
+  });
+
   it('gives an empty Skill timeline a Chinese, non-canvas action next step', () => {
     renderWorkbench({ profiles: [] });
 
@@ -415,11 +571,18 @@ describe('SkillChatWorkbench', () => {
     expect(emptyState).toHaveTextContent('提示词优化');
     expect(emptyState).toHaveTextContent('生成方案');
     expect(emptyState).toHaveTextContent('知识库检索');
-    expect(screen.getByRole('button', { name: '分析当前画布' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '梳理创作目标' })).toBeVisible();
     expect(screen.getByRole('button', { name: '生成视觉方向' })).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: '分析当前画布' }));
-    expect(screen.getByTestId('agent-composer-input')).toHaveValue('分析当前画布并指出下一步可优化的节点。');
+    fireEvent.click(screen.getByRole('button', { name: '梳理创作目标' }));
+    expect(screen.getByTestId('agent-composer-input')).toHaveValue('请帮我梳理创作目标、约束条件和下一步方案。');
+  });
+
+  it('does not claim embedded canvas execution readiness before a chat model is available', () => {
+    renderWorkbench({ profiles: [] });
+
+    expect(screen.getByText('等待模型配置')).toBeVisible();
+    expect(screen.queryByText('运行就绪')).not.toBeInTheDocument();
   });
 
   it('keeps knowledge cards out of the empty conversation above the composer', () => {
@@ -466,7 +629,7 @@ describe('SkillChatWorkbench', () => {
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: 'Draft a direction.' } });
     fireEvent.submit(screen.getByTestId('agent-composer-input').closest('form')!);
     await waitFor(() => expect(screen.getByText('A focused direction.')).toBeVisible());
-    expect(screen.queryByRole('button', { name: '分析当前画布' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '梳理创作目标' })).not.toBeInTheDocument();
   });
 
   it('lists only configured chat routes and sends controlled text context to chat', async () => {
@@ -692,6 +855,9 @@ describe('SkillChatWorkbench', () => {
     await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({
       referenceAssetIds: ['a'.repeat(16)],
     })));
+    const sentReferences = screen.getByRole('region', { name: '已发送素材' });
+    expect(within(sentReferences).getByRole('img', { name: 'Bottle reference' })).toHaveAttribute('src', 'novus-project://asset/bottle');
+    expect(sentReferences).toHaveTextContent('@图片1');
     expect(screen.queryByLabelText('知识库请求: Vision chat')).not.toBeInTheDocument();
     expect(screen.getByText('The bottle has a soft studio highlight.')).toBeVisible();
   });
@@ -961,7 +1127,7 @@ describe('SkillChatWorkbench', () => {
     expect(within(presentation).getByText('视频1')).toHaveAttribute('data-media-mention', 'video');
     expect(presentation).not.toHaveTextContent('@');
     expect(within(screen.getByLabelText('Selected image references')).getByLabelText('Media reference slot 1')).toHaveTextContent('1');
-    const css = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     expect(css).toMatch(/skill-chat-workbench__image-tags[^{]*video[^{]*\{[^}]*object-fit:\s*contain/isu);
   });
   it('imports a clipboard image exposed through DataTransfer items when files is empty', async () => {
@@ -985,6 +1151,27 @@ describe('SkillChatWorkbench', () => {
     await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(pastedImage));
     expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1');
     expect(within(screen.getByLabelText('Selected image references')).getByRole('img', { name: 'clipboard.png' })).toBeVisible();
+  });
+  it('closes the reference picker when a clipboard image is pasted over it', async () => {
+    const pastedImage = new File([new Uint8Array([1, 2, 3])], 'pasted.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: 'pasted-image-1', label: 'pasted.png', displayUrl: 'novus-asset://pasted-image-1',
+    });
+    renderWorkbench({
+      profiles: [{ provider: 'comfly', modelRoute: 'chat/vision', modelId: 'vision-chat', displayName: 'Vision chat', capabilities: ['chat', 'vision'] }],
+      referenceImages: [{ assetId: 'existing-image-1', label: 'Existing image', displayUrl: 'novus-asset://existing-image-1' }],
+      onImportReferenceImage,
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    const composer = screen.getByTestId('agent-composer-input');
+    fireEvent.change(composer, { target: { value: '@' } });
+    expect(screen.getByRole('menu', { name: 'Reference images' })).toBeVisible();
+    fireEvent.paste(composer, { clipboardData: { files: [pastedImage], items: [], getData: () => '' } });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('menu', { name: 'Reference images' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Selected image references')).toHaveTextContent('pasted.png');
   });
   it('keeps text-only paste behavior', () => {
     renderWorkbench();
@@ -1819,6 +2006,25 @@ it('requires confirmation before an Agent image command executes a canvas node',
   await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith({
     kind: 'image_generation', nodeId: 'image-node-1', prompt: '生成一张产品主图', modelRoute: 'image/only',
   }));
+});
+
+it('keeps action-shaped language as ordinary conversation in chat mode', async () => {
+  const executeCanvasAction = vi.fn(async () => true);
+  const chat = vi.fn(async () => ({ message: '我可以先帮你梳理这张产品图的方向。', modelRoute: 'chat/creative', sources: [] }));
+  renderWorkbench({
+    chat,
+    canvasActionTargets: [{ kind: 'image_generation', nodeId: 'image-node-1', label: 'Image node 1', selected: true }],
+    executeCanvasAction,
+  } as never);
+
+  fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+  fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '帮我生成一张产品主图' } });
+  fireEvent.submit(screen.getByTestId('agent-composer-input').closest('form')!);
+
+  await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({ agentMode: 'chat' })));
+  expect(await screen.findByText('我可以先帮你梳理这张产品图的方向。')).toBeVisible();
+  expect(executeCanvasAction).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText('待确认画布操作')).not.toBeInTheDocument();
 });
 
 it.each([

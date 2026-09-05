@@ -35,10 +35,10 @@ export function buildRelayMeModelProfiles(models: readonly RelayMeModel[]): Prov
 }
 
 function relayMeCapabilityStatus(model: RelayMeModel): ProviderBridgeProfile['capabilityStatus'] {
-  // RelayMe image/video generation uses provider-wide direct endpoints. The
-  // catalog capability and real deployment id are sufficient; a redundant
-  // per-model endpoint list is not required for these routes to run.
-  if (model.capability === 'image' || model.capability === 'video') return 'complete';
+  // RelayMe image/video generation and dialogue use provider-wide direct
+  // endpoints. The catalog capability and real deployment id are sufficient;
+  // a redundant per-model endpoint list is not required for these routes.
+  if (model.capability === 'image' || model.capability === 'video' || model.capability === 'text') return 'complete';
   return model.endpoints === undefined || model.endpoints.length === 0 ? 'incomplete' : 'complete';
 }
 
@@ -125,9 +125,14 @@ function cloneProviderConstraints(
 function capabilitiesForComflyModel(model: ComflyCatalogModel): ProviderBridgeProfile['capabilities'] {
   const tags = new Set(model.tags);
   const capabilities: ProviderBridgeProfile['capabilities'] = [];
+  const hasExplicitVideoTag = tags.has('视频');
   const hasImageGeneration = hasComflyApi(model, '/v1/images/generations');
   const hasImageEdit = hasComflyApi(model, '/v1/images/edits');
-  const hasVideoGeneration = hasComflyApi(model, '/v2/videos/generations');
+  // The public Comfly catalog can attach its provider-wide video endpoint to
+  // non-video models. Require positive model-level video evidence as well as
+  // the executable endpoint so chat, vision, and action routes stay out of the
+  // video generator.
+  const hasVideoGeneration = hasExplicitVideoTag && hasComflyApi(model, '/v2/videos/generations');
   const hasChat = hasComflyApi(model, '/v1/chat/completions');
   const hasVisionTag = tags.has('识图') || tags.has('图生文') || tags.has('多模态');
   const hasVision = hasChat && hasVisionTag;
@@ -330,11 +335,20 @@ function parseOutputCount(value: string): 1 | 2 | 3 | 4 | undefined {
   if (model.capability === 'video') capabilities.push('video_generation', 'async_tasks');
   if (model.capability === 'text') capabilities.push('chat');
   if (model.capability === 'image' && model.supportsImageToImage === true) capabilities.push('image_edit');
-  const hasImageInput = model.supportsVision === true || model.inputModalities?.includes('image') === true;
+  const explicitlyRejectsImageInput = model.supportsVision === false
+    || (model.inputModalities !== undefined && !model.inputModalities.includes('image'));
+  const hasImageInput = !explicitlyRejectsImageInput
+    && (model.supportsVision === true || model.inputModalities?.includes('image') === true);
   const hasVideoInput = model.inputModalities?.includes('video') === true;
-  const hasChatEndpoint = model.endpoints?.some((endpoint) => endpoint.includes('/chat/completions')) === true;
   if (hasImageInput) capabilities.push('vision');
-  if (hasImageInput && model.capability === 'text' && hasChatEndpoint) capabilities.push('reverse_prompt');
+  // RelayMe's public directory can omit image-input metadata for this exact
+  // reverse-analysis deployment. Keep the compatibility fallback narrow, and
+  // never override explicit text-only or supportsVision=false metadata.
+  const isVerifiedReverseFallback = model.deploymentName.trim().toLocaleLowerCase() === 'gemini-3.1-flash-lite';
+  if (model.capability === 'text'
+    && (hasImageInput || (isVerifiedReverseFallback && !explicitlyRejectsImageInput))) {
+    capabilities.push('reverse_prompt');
+  }
   if (hasVideoInput) capabilities.push('video_understanding');
   return capabilities;
 }

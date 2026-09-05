@@ -44,6 +44,7 @@ export function ConnectedAgentMediaSlots({
     setOrderedMedia(media.slice(0, MAX_GENERATION_REFERENCES));
   }, [mediaSignature]);
   const visibleMedia = orderedMedia;
+  const hasOverflow = visibleMedia.length > 10;
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [pointerDragIndex, setPointerDragIndex] = useState<number | null>(null);
@@ -78,7 +79,12 @@ export function ConnectedAgentMediaSlots({
   return (
     <section className="module-node__agent-media-slots module-node__unified-media-slots connected-agent-media-slots nodrag nopan" aria-label={ariaLabel} onPointerDown={stopPointer}>
       <header><span>{title}</span><b>{visibleMedia.length} / {MAX_GENERATION_REFERENCES}</b></header>
-      <div className="module-node__agent-media-slot-row connected-agent-media-slots__row" aria-label={slotRowAriaLabel} onWheel={scrollSlots}>
+      <div
+        className="module-node__agent-media-slot-row connected-agent-media-slots__row"
+        aria-label={slotRowAriaLabel}
+        data-overflow={hasOverflow ? 'true' : undefined}
+        onWheel={scrollSlots}
+      >
         {visibleMedia.map((item, index) => (
           <div
             key={mediaItemId(item, index)}

@@ -78,7 +78,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
   };
 
   return (
-    <aside className="module-library" aria-label="模块库 / Module library" data-canvas-surface="module-library" data-figma-surface="module-library" data-testid="module-library">
+    <aside className="module-library" aria-label="模块库 / Module library" data-canvas-surface="module-library" data-testid="module-library">
       <header className="module-library__header">
         <div data-testid="module-library-heading">
           <strong>模块库</strong>
@@ -100,7 +100,7 @@ export function ModuleLibrary({ onCreate, onClose }: ModuleLibraryProps) {
           onChange={(event) => setQuery(event.target.value)}
         />
       </label>
-      <div className="module-library__categories" role="tablist" aria-label="模块分类" data-figma-tabs="segmented">
+      <div className="module-library__categories" role="tablist" aria-label="模块分类" data-canvas-tabs="segmented">
         {moduleCatalogCategories.map((item, index) => (
           <button
             key={item.id}

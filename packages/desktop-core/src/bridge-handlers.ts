@@ -23,6 +23,7 @@ import {
   type PlacementObject,
   type ReferenceRole,
   type SkillPromotionCandidate,
+  buildProjectMemoryContext,
 } from '@agent-canvas/domain';
 import {
   buildSkillPromotionCandidate,
@@ -111,7 +112,7 @@ import {
   type PhotoshopImportResult,
 } from './contracts.js';
 import { AssetStore, type AssetMetadata } from './asset-store.js';
-import type { ManagedReversePromptMediaIdentity } from './provider-contracts.js';
+import type { ManagedReversePromptMediaIdentity, ProjectMemoryContextSnapshot } from './provider-contracts.js';
 import type { ClipboardImageAdapter, TrustedClipboardImage } from './electron-clipboard-image.js';
 import type { ClipboardVideoAdapter } from './electron-clipboard-video.js';
 import { openSafeLocalMp4Source, type SafeLocalMp4Source } from './local-video-source.js';
@@ -370,6 +371,7 @@ export interface DesktopBridgeHandlers {
   storeGeneratedVideo(sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4'): Promise<ProjectVideoAsset>;
   restore(event: unknown, request: unknown): Promise<RestoreBridgeResult>;
   readManagedReverseMedia(sessionId: string, media: readonly ManagedReversePromptMediaIdentity[]): Promise<readonly ManagedReversePromptMediaContent[]>;
+  resolveProjectMemoryContext(sessionId: string, memoryIds: readonly string[]): Promise<readonly ProjectMemoryContextSnapshot[]>;
   resolveProjectImagePath(displayUrl: string): Promise<string | null>;
   resolveRecentProjectPreviewPath(displayUrl: string): Promise<string | null>;
   resolveGenerationHistoryImagePath(displayUrl: string): Promise<string | null>;
@@ -666,6 +668,12 @@ export function createDesktopBridgeHandlers(
     root: string,
     mode: 'write' | 'read_only',
   ): Promise<OpenProjectBridgeResult> {
+    // A renderer reload keeps the Electron main process alive. In that case
+    // the previous renderer session can still own this process's project lock
+    // even though no renderer can use it anymore. Close only sessions owned by
+    // this bridge before acquiring the replacement write session; external
+    // processes remain protected by the repository lock.
+    if (mode === 'write') await closeExistingProjectSessionsForRoot(root);
     const openedAt = now();
     const opened = await requireMethod(repository, 'open')(root, { mode });
     const sessionId = createId();
@@ -743,6 +751,25 @@ export function createDesktopBridgeHandlers(
         // Preserve the open initialization failure for the caller.
       }
       throw error;
+    }
+  }
+
+  async function closeExistingProjectSessionsForRoot(root: string): Promise<void> {
+    const existing = [...sessions.values()].filter((session) => (
+      session.session.root === root
+      && (session.closeState === 'open' || session.closeState === 'retry_only')
+    ));
+    for (const session of existing) {
+      session.closeState = 'closing';
+      try {
+        await enqueueSessionMaintenance(session, () => closeBridgeSession(session));
+        if (sessions.get(session.sessionId) === session) sessions.delete(session.sessionId);
+      } catch {
+        // If the old session cannot flush/close, preserve it and let the
+        // repository lock report the project as read-only rather than risking
+        // a second writer.
+        session.closeState = 'retry_only';
+      }
     }
   }
   async function commit(_event: unknown, request: unknown): Promise<CommitAck> {
@@ -2045,6 +2072,28 @@ export function createDesktopBridgeHandlers(
     await knowledgeRefreshService.stop();
   }
 
+  async function resolveProjectMemoryContext(
+    sessionId: string,
+    memoryIds: readonly string[],
+  ): Promise<readonly ProjectMemoryContextSnapshot[]> {
+    const session = requireSession(sessions, sessionId);
+    const project = await repository.readCurrentProject(session.session);
+    const selected = buildProjectMemoryContext(project.projectMemory, 50);
+    const byId = new Map(selected.map((entry) => [entry.id, entry]));
+    return memoryIds.map((memoryId) => {
+      const entry = byId.get(memoryId);
+      if (entry === undefined) throw invalidRequest('Selected project memory is unavailable');
+      return {
+        memoryId: entry.id,
+        projectRevision: entry.projectRevision,
+        summary: [entry.title, entry.changeSummary, entry.rationale, entry.nextStep]
+          .filter((value) => value.trim().length > 0)
+          .join('\n')
+          .slice(0, 2_000),
+      };
+    });
+  }
+
   return {
     closeAllProjects,
     closeProject,
@@ -2087,6 +2136,7 @@ export function createDesktopBridgeHandlers(
     restore,
     readManagedReverseMedia,
     readManagedSkillChatImages,
+    resolveProjectMemoryContext,
     storeGeneratedImage,
     storeGeneratedVideo,
     resolveGenerationHistoryImagePath,

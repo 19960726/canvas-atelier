@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createMcpRuntimeClient } from './runtime-client.js';
 
-describe('CanvasForge MCP runtime client', () => {
+describe('Canvas Atelier MCP runtime client', () => {
   let root: string;
   let runtimeFilePath: string;
   const closeCallbacks: Array<() => Promise<void>> = [];
@@ -26,7 +26,7 @@ describe('CanvasForge MCP runtime client', () => {
     const client = createMcpRuntimeClient({ runtimeFilePath, timeoutMs: 100 });
     await expect(client.call({ tool: 'canvas_read_workflow' })).resolves.toMatchObject({
       ok: false,
-      error: { code: 'MCP_WAITING_FOR_CANVAS' },
+      error: { code: 'MCP_WAITING_FOR_CANVAS', message: 'Open Canvas Atelier and keep a canvas window active.' },
     });
   });
 
@@ -55,7 +55,20 @@ describe('CanvasForge MCP runtime client', () => {
 
   it('rejects invalid tool input before opening the local pipe', async () => {
     const client = createMcpRuntimeClient({ runtimeFilePath, timeoutMs: 100 });
-    await expect(client.call({ tool: 'canvas_shell' })).resolves.toMatchObject({ ok: false, error: { code: 'MCP_INVALID_REQUEST' } });
+    await expect(client.call({ tool: 'canvas_shell' })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MCP_INVALID_REQUEST', message: 'Tool arguments do not match the Canvas Atelier contract.' },
+    });
+  });
+
+  it('uses the current product identity when the client has already closed', async () => {
+    const client = createMcpRuntimeClient({ runtimeFilePath, timeoutMs: 100 });
+    await client.close();
+
+    await expect(client.call({ tool: 'canvas_read_workflow' })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MCP_CLIENT_CLOSED', message: 'The Canvas Atelier MCP client is closed.' },
+    });
   });
 });
 type TestRuntimeDescriptor = {

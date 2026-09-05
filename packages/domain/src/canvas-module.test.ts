@@ -64,15 +64,18 @@ describe('canvas module registry', () => {
     expect(new Set(CANVAS_MODULE_DEFINITIONS.map((item) => item.type)).size).toBe(CANVAS_MODULE_DEFINITIONS.length);
   });
 
-  it('registers an offline video preview module with its media contract while the canvas exposes one media socket', () => {
+  it('registers a managed provider video generation module with its media contract while the canvas exposes one media socket', () => {
     const video = getCanvasModuleDefinition('video_generation' as never);
 
     expect(video).toMatchObject({
       type: 'video_generation',
       category: 'generation',
-      executionMode: 'local',
+      executionMode: 'provider',
       capabilities: ['video_generation'],
     });
+    expect(video.description).toContain('Provider');
+    expect(video.limitations).toContain('确认');
+    expect(video.limitations).not.toContain('离线模拟');
     expect(video.ports.map((port) => [port.id, port.direction, port.dataType])).toEqual([
       ['media', 'input', 'media_asset'],
       ['prompt', 'input', 'text_prompt'],
@@ -82,7 +85,7 @@ describe('canvas module registry', () => {
       ['result', 'output', 'video_asset'],
     ]);
     expect(video.createDefaultConfig()).toMatchObject({
-      mode: 'mock',
+      mode: 'provider',
       durationSeconds: 5,
       resolution: '1080p',
     });
@@ -95,7 +98,7 @@ describe('canvas module registry', () => {
     expect(getCanvasModuleDefinition('video_generation').recommendedDownstreamModuleTypes).toContain('video_result');
   });
 
-  it('keeps a reverse result as a pass-through analysis document for the Figma output socket', () => {
+  it('keeps a reverse result as a pass-through analysis document for the Canvas output socket', () => {
     const result = getCanvasModuleDefinition('reverse_result');
 
     expect(result.ports.map((port) => [port.id, port.direction, port.dataType])).toEqual([

@@ -1434,6 +1434,37 @@ describe('Comfly provider service', () => {
     ]));
     await cleanupTempRoot(appDataRoot);
   });
+
+  it('refreshes the discovered Comfly catalog after a successful connection check', async () => {
+    const appDataRoot = await makeTempRoot();
+    let visibleModelId = 'first-image-model';
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/models')) return jsonResponse({ object: 'list', data: [{ id: visibleModelId }] });
+      if (url.endsWith('/api/models/price')) return jsonResponse({ data: {
+        version: `catalog-${visibleModelId}`,
+        models: [{ key: visibleModelId, name: visibleModelId, provider: 'Test', tags: '绘图,异步任务', apis: ['POST-/v1/images/generations-1'] }],
+      } });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({ appDataRoot, credentialStore, fetch, discoverModelCatalog: true });
+
+    await service.configure({ token });
+    await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'first-image-model' }),
+    ]));
+
+    visibleModelId = 'second-image-model';
+    await expect(service.checkConnection()).resolves.toMatchObject({ status: 'connected' });
+    const refreshedProfiles = await service.listProfiles();
+    expect(refreshedProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'second-image-model' }),
+    ]));
+    expect(refreshedProfiles).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: 'first-image-model' }),
+    ]));
+    await cleanupTempRoot(appDataRoot);
+  });
   it('updates model routes without replacing the saved provider credential', async () => {
     const appDataRoot = await makeTempRoot();
     const safeStorage = createFakeSafeStorage();

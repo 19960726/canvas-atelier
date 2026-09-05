@@ -3,7 +3,7 @@ import { e2eState, openEmptyApp } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
 
 test('manual acceptance keeps model, storage, and Agent controls interactive', async ({ page }) => {
-  await openEmptyApp(page, '/?novusHarness=novus-e2e-codex-ui-gate');
+  await openEmptyApp(page, '/?novusHarness=novus-e2e-codex-canvas-layout');
 
   await page.getByTestId('settings-toggle').click();
   const settings = page.getByTestId('settings-drawer');
@@ -50,7 +50,7 @@ test('manual acceptance keeps model, storage, and Agent controls interactive', a
   await expect(page.locator('.skill-chat-workbench__sheet')).toBeVisible();
 });
 test('manual canvas upload renders the selected image bytes in input and connected generation slots', async ({ page }) => {
-  await openEmptyApp(page, '/?novusHarness=novus-e2e-codex-ui-gate');
+  await openEmptyApp(page, '/?novusHarness=novus-e2e-codex-canvas-layout');
   await page.evaluate(async () => {
     await window.__NOVUS_E2E__!.createModule('image_input', { x: 180, y: 220 });
     await window.__NOVUS_E2E__!.createModule('image_generation', { x: 620, y: 180 });

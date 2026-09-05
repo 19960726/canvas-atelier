@@ -1,5 +1,5 @@
 export type AgentConversationMode = 'chat' | 'original' | 'codex';
-export type AgentReasoningEffort = 'low' | 'medium' | 'high';
+export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type StoredAgentRequestStatus = 'sending' | 'completed' | 'error';
 
 export interface StoredAgentMessageSource {
@@ -252,7 +252,11 @@ function parseMode(value: unknown): AgentConversationMode | null {
 }
 
 function parseReasoningEffort(value: unknown): AgentReasoningEffort | null {
-  return value === 'low' || value === 'medium' || value === 'high' ? value : null;
+  if (value === 'ultra') return 'max';
+  return value === 'low' || value === 'medium' || value === 'high'
+    || value === 'xhigh' || value === 'max'
+    ? value
+    : null;
 }
 
 function readSafeTextList(value: unknown, limit: number, maxLength: number): string[] | null {

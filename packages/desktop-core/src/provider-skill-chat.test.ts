@@ -75,6 +75,72 @@ describe('executeSkillChat', () => {
     expect(chat).not.toHaveBeenCalled();
   });
 
+  it('passes the selected Codex reasoning effort to a chat-completions model request', async () => {
+    const chat = vi.fn(async (request: ComflyChatRequest) => ({
+      id: 'chat-codex-reasoning-1',
+      model: 'gpt-5.6-sol',
+      choices: [{ message: { role: 'assistant', content: 'Deep plan.' } }],
+      request,
+    }));
+
+    await executeSkillChat({
+      request: {
+        provider: 'comfly',
+        modelRoute: 'comfly-gpt-5-6-sol',
+        agentMode: 'codex',
+        reasoningEffort: 'high',
+        messages: [{ role: 'user', content: 'Plan the canvas workflow.' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-gpt-5-6-sol',
+        modelId: 'gpt-5.6-sol',
+        displayName: 'gpt-5.6-sol',
+        capabilities: ['chat'],
+      }] }),
+      createClient: () => ({ chat, responses: vi.fn() }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+    });
+
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gpt-5.6-sol',
+      reasoning_effort: 'high',
+    }));
+  });
+
+  it('passes the selected Codex reasoning effort to a Responses API request', async () => {
+    const responses = vi.fn(async () => ({
+      id: 'response-codex-reasoning-1',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'Deep plan.' }] }],
+    }));
+
+    await executeSkillChat({
+      request: {
+        provider: 'comfly',
+        modelRoute: 'responses/codex',
+        agentMode: 'codex',
+        reasoningEffort: 'high',
+        messages: [{ role: 'user', content: 'Plan the canvas workflow.' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly',
+        modelRoute: 'responses/codex',
+        modelId: 'gpt-5.6-sol',
+        displayName: 'gpt-5.6-sol',
+        capabilities: ['responses'],
+      }] }),
+      createClient: () => ({ chat: vi.fn(), responses }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+    });
+
+    expect(responses).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gpt-5.6-sol',
+      reasoning: { effort: 'high' },
+    }));
+  });
+
   it('sends managed image references through a Codex responses route when discovery omits vision', async () => {
     const responses = vi.fn(async () => ({
       id: 'response-codex-image-1',

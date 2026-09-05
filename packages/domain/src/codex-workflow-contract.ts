@@ -35,7 +35,7 @@ export interface CodexWorkflowModuleContract {
 }
 
 export interface CodexWorkflowContract {
-  readonly productName: 'CanvasForge';
+  readonly productName: 'Canvas Atelier';
   readonly protocol: 'canvasforge.mcp.workflow.v1';
   readonly permissions: McpPermissionFlags;
   readonly safetyRules: readonly string[];
@@ -60,7 +60,7 @@ export const DEFAULT_MCP_PERMISSION_FLAGS: McpPermissionFlags = Object.freeze({
 
 export function createCodexWorkflowContract(): CodexWorkflowContract {
   return Object.freeze({
-    productName: 'CanvasForge',
+    productName: 'Canvas Atelier',
     protocol: 'canvasforge.mcp.workflow.v1',
     permissions: DEFAULT_MCP_PERMISSION_FLAGS,
     safetyRules: Object.freeze([

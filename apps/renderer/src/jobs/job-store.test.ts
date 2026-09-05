@@ -5,6 +5,7 @@ import { createStarterProject } from '../app/app-store';
 import {
   createInMemoryModelJobStorage,
   createModelJobStore,
+  type BuildResultMaterialization,
   type ModelJobExecutor,
   type ModelJobRequest,
 } from './job-store';
@@ -238,6 +239,44 @@ describe('persistent model job store', () => {
       },
     });
     expect(project.nodes.some((node) => node.type === 'image_result')).toBe(false);
+  });
+
+  it('does not repair a completed queue record vetoed as belonging to another project', async () => {
+    const source = createCanvasModuleNode('cross-project-repair-source', 'image_generation', { x: 0, y: 0 });
+    let project: CanvasProject = { ...createStarterProject(), nodes: [source], edges: [] };
+    const completedJob = {
+      ...request({ id: 'cross-project-repair-job', promptNodeId: source.id, referenceAssetIds: [] }),
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      completedAt: confirmedAt,
+      kind: 'image' as const,
+      status: 'completed' as const,
+      retryCount: 0,
+      projectSessionId: 'other-project-session',
+      resultAssetId: 'asset-from-other-project',
+    } satisfies ModelJob;
+    const repair = vi.fn(async (build: BuildResultMaterialization) => {
+      project = applyProjectTransaction(project, build(project).transaction);
+      return { committed: true, resultNodeId: source.id };
+    });
+    const store = createModelJobStore({
+      storage: createInMemoryModelJobStorage([completedJob]),
+      executor: createExecutor(),
+      commitProjectTransaction: vi.fn(),
+      repairCompletedProjectTransaction: repair,
+      shouldRepairCompletedProjectTransaction: () => false,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.recover();
+
+    expect(repair).not.toHaveBeenCalled();
+    const unchanged = project.nodes.find((node) => node.id === source.id);
+    expect(unchanged?.type === 'module' ? unchanged.data.config.resultAssetIds ?? [] : []).not.toContain('asset-from-other-project');
   });
 
   it('runs submit and poll with bounded concurrency', async () => {
@@ -1192,6 +1231,136 @@ describe('persistent model job store', () => {
     }));
     expect(JSON.stringify(project)).not.toMatch(/https?:\/\/|169\.254|redirect|generated\.png/i);
     expect(JSON.stringify(await storage.get('job-ack-complete'))).not.toMatch(/https?:\/\/|169\.254|redirect|generated\.png/i);
+  });
+
+  it('keeps a running provider job recoverable after a retryable polling outage', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const poll = vi.fn()
+      .mockRejectedValueOnce({ code: 'PROVIDER_ERROR', message: 'temporary network outage', retryable: true })
+      .mockResolvedValueOnce({ status: 'running' as const, progress: 0.4 });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({ poll }),
+      commitProjectTransaction: vi.fn(async () => ({ committed: true, resultNodeId: '' })),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+    await store.enqueueConfirmedJobs({
+      conversationId: 'agent-conversation-shared',
+      confirmedAt,
+      requests: [request({ id: 'job-retryable-poll-outage' })],
+    });
+    await storage.put({
+      ...(await storage.get('job-retryable-poll-outage'))!,
+      status: 'running',
+      providerTaskId: 'provider-job-retryable-poll-outage',
+    });
+
+    await store.pollActiveJobs();
+    expect(await storage.get('job-retryable-poll-outage')).toMatchObject({ status: 'running' });
+    expect(await storage.get('job-retryable-poll-outage')).not.toHaveProperty('error');
+
+    await store.pollActiveJobs();
+    expect(poll).toHaveBeenCalledTimes(2);
+    expect(await storage.get('job-retryable-poll-outage')).toMatchObject({ status: 'running', progress: 0.4 });
+  });
+
+  it('does not mistake a retryable local materialization failure for a provider polling outage', async () => {
+    const imageNode = createCanvasModuleNode('image-node-local-retryable-error', 'image_generation', { x: 0, y: 0 });
+    const project = { ...createStarterProject(), nodes: [imageNode], edges: [] };
+    const runningJob = {
+      ...request({ id: 'job-local-retryable-error', promptNodeId: imageNode.id }),
+      conversationId: 'conversation-local-retryable-error',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-local-retryable-error',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'e'.repeat(16) } })),
+      }),
+      getProject: () => project,
+      commitProjectTransaction: vi.fn(async () => {
+        throw Object.assign(new Error('local durable commit failed'), { code: 'PROVIDER_ERROR', retryable: true });
+      }),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.pollActiveJobs();
+
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'failed' });
+    expect(await storage.get(runningJob.id)).not.toHaveProperty('resultAssetId');
+  });
+
+  it('does not mistake a retryable result decode failure for a provider polling outage', async () => {
+    const runningJob = {
+      ...request({ id: 'job-local-retryable-decode' }),
+      conversationId: 'conversation-local-retryable-decode',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-local-retryable-decode',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    const commitProjectTransaction = vi.fn(async () => ({ committed: true, resultNodeId: '' }));
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({
+          status: 'completed' as const,
+          result: {
+            assetId: 'f'.repeat(16),
+            decode: vi.fn(async () => {
+              throw Object.assign(new Error('local decode failed'), { code: 'PROVIDER_ERROR', retryable: true });
+            }),
+          },
+        })),
+      }),
+      commitProjectTransaction,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.pollActiveJobs();
+
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'failed' });
+    expect(commitProjectTransaction).not.toHaveBeenCalled();
+    expect(await storage.get(runningJob.id)).not.toHaveProperty('resultAssetId');
+  });
+
+  it('fails a running job when provider polling throws a non-retryable error', async () => {
+    const runningJob = {
+      ...request({ id: 'job-provider-non-retryable' }),
+      conversationId: 'conversation-provider-non-retryable',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-non-retryable',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => Promise.reject({ code: 'PROVIDER_ERROR', message: 'terminal poll error', retryable: false })),
+      }),
+      commitProjectTransaction: vi.fn(async () => ({ committed: true, resultNodeId: '' })),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.pollActiveJobs();
+
+    expect(await storage.get(runningJob.id)).toMatchObject({ status: 'failed' });
   });
 
   it('keeps locked jobs running and acks failed/cancelled terminals after durable terminal writes', async () => {

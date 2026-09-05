@@ -16,8 +16,60 @@ async function captureSurface(
   await captureLayoutScreenshot(page, testInfo, name);
 }
 
+async function assertReversePortCentersOnCardEdges(
+  page: Parameters<typeof openEmptyApp>[0],
+  context: string,
+): Promise<number> {
+  const reverse = page.locator('[data-module-type="reverse_agent"]');
+  const [nodeBox, inputBox, outputBox, zoom] = await Promise.all([
+    reverse.boundingBox(),
+    reverse.locator('[data-port-id="references"][data-port-direction="input"] .react-flow__handle').boundingBox(),
+    reverse.locator('[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle').boundingBox(),
+    page.locator('.react-flow__viewport').evaluate((element) => {
+      const transform = getComputedStyle(element).transform;
+      return transform === 'none' ? 1 : new DOMMatrixReadOnly(transform).a;
+    }),
+  ]);
+  expect(nodeBox, `${context}: reverse card must be measurable`).not.toBeNull();
+  expect(inputBox, `${context}: reverse input must be measurable`).not.toBeNull();
+  expect(outputBox, `${context}: reverse output must be measurable`).not.toBeNull();
+  const roundingAllowance = Math.max(2, zoom * 1.5);
+  expect(
+    Math.abs((inputBox!.x + inputBox!.width / 2) - nodeBox!.x),
+    `${context}: reverse input centre must remain on the left card edge`,
+  ).toBeLessThanOrEqual(roundingAllowance);
+  expect(
+    Math.abs((outputBox!.x + outputBox!.width / 2) - (nodeBox!.x + nodeBox!.width)),
+    `${context}: reverse output centre must remain on the right card edge`,
+  ).toBeLessThanOrEqual(roundingAllowance);
+  expect(inputBox!.x, `${context}: the input socket must retain its outer half`).toBeLessThan(nodeBox!.x);
+  expect(inputBox!.x + inputBox!.width, `${context}: the input socket must retain its inner half`).toBeGreaterThan(nodeBox!.x);
+  expect(outputBox!.x, `${context}: the output socket must retain its inner half`).toBeLessThan(nodeBox!.x + nodeBox!.width);
+  expect(outputBox!.x + outputBox!.width, `${context}: the output socket must retain its outer half`).toBeGreaterThan(nodeBox!.x + nodeBox!.width);
+  const outerHitEvidence = await page.evaluate(({ inputPoint, outputPoint }) => {
+    const reverseNode = document.querySelector('[data-module-type="reverse_agent"]');
+    const input = reverseNode?.querySelector('[data-port-id="references"][data-port-direction="input"] .react-flow__handle');
+    const output = reverseNode?.querySelector('[data-port-id="analysis"][data-port-direction="output"] .react-flow__handle');
+    const hits = (element: Element | null | undefined, point: { x: number; y: number }) => (
+      element !== null
+      && element !== undefined
+      && document.elementsFromPoint(point.x, point.y).includes(element)
+    );
+    return {
+      inputOuterHit: hits(input, inputPoint),
+      outputOuterHit: hits(output, outputPoint),
+    };
+  }, {
+    inputPoint: { x: nodeBox!.x - inputBox!.width / 4, y: inputBox!.y + inputBox!.height / 2 },
+    outputPoint: { x: nodeBox!.x + nodeBox!.width + outputBox!.width / 4, y: outputBox!.y + outputBox!.height / 2 },
+  });
+  expect(outerHitEvidence.inputOuterHit, `${context}: the visible outer half of the input socket must remain hit-testable`).toBe(true);
+  expect(outerHitEvidence.outputOuterHit, `${context}: the visible outer half of the output socket must remain hit-testable`).toBe(true);
+  return zoom;
+}
+
 for (const theme of ['dark', 'light'] as const) {
-  test(`keeps the Figma 408 reverse-agent form intact in ${theme}`, async ({ page }, testInfo) => {
+  test(`keeps the Canvas 408 reverse-agent form intact in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
@@ -54,12 +106,26 @@ for (const theme of ['dark', 'light'] as const) {
       (element as HTMLDivElement & { value?: string }).value ?? ''
     ))).toBe('@图片1');
     await expect(mentionMenu).toBeHidden();
+    const reverseChip = analysisTask.locator('[data-media-mention="image"]');
+    await expect(reverseChip).toBeVisible();
+    const [reverseChipBox, analysisTaskBox] = await Promise.all([
+      reverseChip.boundingBox(),
+      analysisTask.boundingBox(),
+    ]);
+    expect(reverseChipBox).not.toBeNull();
+    expect(analysisTaskBox).not.toBeNull();
+    expect(reverseChipBox!.width, 'Reference capsules must size to their content, not become a full-width bar').toBeLessThan(240);
+    expect(reverseChipBox!.width).toBeLessThan(analysisTaskBox!.width);
+    expect(reverseChipBox!.height).toBeLessThanOrEqual(36);
+    expect(reverseChipBox!.x).toBeGreaterThanOrEqual(analysisTaskBox!.x);
+    expect(reverseChipBox!.x + reverseChipBox!.width).toBeLessThanOrEqual(analysisTaskBox!.x + analysisTaskBox!.width);
     const knowledgeTrigger = reverse.getByLabel('Reverse knowledge context').getByRole('button');
     await expect(knowledgeTrigger).toHaveCSS('width', '390px');
     await expect(knowledgeTrigger).toHaveCSS('height', '38px');
-    const [reverseBox, mediaBox, routeBox, roleBox, taskBox, addReferenceBox, knowledgeBox, actionsBox] = await Promise.all([
+    const [reverseBox, mediaBox, routeRegionBox, routeBox, roleBox, taskBox, addReferenceBox, knowledgeBox, actionsBox] = await Promise.all([
       reverse.boundingBox(),
       reverse.getByLabel('Reverse media workspace').boundingBox(),
+      reverse.getByLabel('Reverse model workspace').boundingBox(),
       reverse.getByLabel('Agent model route').boundingBox(),
       reverse.getByRole('textbox', { name: 'Role positioning' }).boundingBox(),
       analysisTask.boundingBox(),
@@ -67,8 +133,13 @@ for (const theme of ['dark', 'light'] as const) {
       knowledgeTrigger.boundingBox(),
       reverse.getByLabel('Reverse task actions').boundingBox(),
     ]);
-    expect([reverseBox, mediaBox, routeBox, roleBox, taskBox, addReferenceBox, knowledgeBox, actionsBox].every(Boolean)).toBe(true);
+    expect([reverseBox, mediaBox, routeRegionBox, routeBox, roleBox, taskBox, addReferenceBox, knowledgeBox, actionsBox].every(Boolean)).toBe(true);
     expect(reverseBox!.height).toBeGreaterThanOrEqual(646);
+    expect(routeRegionBox!.width, 'The language-model region must occupy the full 390px content row').toBe(390);
+    expect(routeBox!.width, 'The language-model select must occupy the full 390px content row').toBe(390);
+    expect(routeRegionBox!.x, 'The language-model row must align with the media workspace').toBe(mediaBox!.x);
+    expect(routeBox!.x, 'The language-model select must align with the media workspace').toBe(mediaBox!.x);
+    expect(routeRegionBox!.y, 'The language-model row must sit below the media workspace').toBeGreaterThanOrEqual(mediaBox!.y + mediaBox!.height);
     await testInfo.attach('reverse-agent-layout.json', {
       body: JSON.stringify({
         media: mediaBox!.y - reverseBox!.y,
@@ -88,9 +159,19 @@ for (const theme of ['dark', 'light'] as const) {
     expect(actionsBox!.y + actionsBox!.height, 'Reverse task actions must remain inside the reverse-agent card').toBeLessThanOrEqual(reverseBox!.y + reverseBox!.height);
     expect(
       Math.abs((actionsBox!.x + actionsBox!.width / 2) - (reverseBox!.x + reverseBox!.width / 2)),
-      'Reverse action buttons must stay centered on the Figma card midpoint in both themes',
+      'Reverse action buttons must stay centered on the Canvas card midpoint in both themes',
     ).toBeLessThanOrEqual(1);
     await captureSurface(page, testInfo, `reverse-agent-${theme}`);
+    const initialZoom = await assertReversePortCentersOnCardEdges(page, `${theme} initial zoom`);
+    await page.locator('.react-flow__controls-zoomin').evaluate((element) => {
+      if (!(element instanceof HTMLButtonElement)) throw new Error('React Flow zoom-in control is unavailable');
+      element.click();
+    });
+    await expect.poll(() => page.locator('.react-flow__viewport').evaluate((element) => {
+      const transform = getComputedStyle(element).transform;
+      return transform === 'none' ? 1 : new DOMMatrixReadOnly(transform).a;
+    })).toBeGreaterThan(initialZoom);
+    await assertReversePortCentersOnCardEdges(page, `${theme} zoomed in`);
   });
 }
 
@@ -117,20 +198,25 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
     await Promise.all([
       window.__NOVUS_E2E__.createModule('image_generation', { x: 100, y: 112 }),
       window.__NOVUS_E2E__.createModule('reverse_agent', { x: 1000, y: 88 }),
+      window.__NOVUS_E2E__.createModule('result_output', { x: 720, y: 620 }),
     ]);
   });
   await expect(page.locator('[data-module-type="image_generation"]')).toBeVisible();
   await expect(page.locator('[data-module-type="reverse_agent"]')).toBeVisible();
-  await expect(page.locator('[data-module-type="result_output"]')).toHaveCount(0);
+  await expect(
+    page.locator('[data-module-type="result_output"]'),
+    'A persisted current Result Output module must remain visible after the canvas opens',
+  ).toBeVisible();
   await openAgentPanel(page);
   await page.locator('[data-module-type="image_generation"]').click({ position: { x: 200, y: 120 } });
   await expect(page.locator('[data-module-type="image_generation"] .module-node__summary--generation')).toHaveAttribute('data-editor-expanded', 'true');
+  await expect(minimap, 'The minimap must yield while a large generation editor is open so it cannot cover node actions').toBeHidden();
   const imageNodeBounds = await page.locator('[data-module-type="image_generation"]').boundingBox();
   const reverseNodeBounds = await page.locator('[data-module-type="reverse_agent"]').boundingBox();
   expect(imageNodeBounds).toMatchObject({ x: 100, y: 112 });
   expect(reverseNodeBounds).toMatchObject({ x: 1000, y: 88 });
   const imagePromptBounds = await page.getByRole('textbox', { name: 'Image generation prompt' }).boundingBox();
-  // Figma 411:2 uses the same generous prompt field as the reverse task,
+  // Canvas 411:2 uses the same generous prompt field as the reverse task,
   // rather than the earlier compact 58px generation prompt.
   expect(imagePromptBounds).toMatchObject({ width: 826, height: 104 });
   expect(Math.abs((imagePromptBounds!.x - imageNodeBounds!.x) - 39)).toBeLessThanOrEqual(1);
@@ -172,14 +258,14 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
 
   await page.getByTestId('tool-modules').click();
   await expect(page.getByTestId('module-library')).toBeVisible();
-  await expect(page.getByTestId('module-library')).toHaveAttribute('data-figma-surface', 'module-library');
+  await expect(page.getByTestId('module-library')).toHaveAttribute('data-canvas-surface', 'module-library');
   await expect(page.getByTestId('workspace')).toHaveAttribute('data-secondary-surface', 'module-library');
   await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', /scale\(1\)/);
   await captureSurface(page, testInfo, '02-module-library-dark');
 
   await openAgentPanel(page);
   await expect(page.getByTestId('module-library')).toBeHidden();
-  await expect(page.getByTestId('agent-panel')).toHaveAttribute('data-figma-surface', 'agent');
+  await expect(page.getByTestId('agent-panel')).toHaveAttribute('data-canvas-surface', 'agent');
   await expect(page.getByTestId('workspace')).toHaveAttribute('data-secondary-surface', 'agent');
   const agentPanelBounds = await page.getByTestId('agent-panel').boundingBox();
   const toolrailBounds = await page.getByTestId('toolrail').boundingBox();
@@ -190,7 +276,7 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
   const newChatBounds = await page.getByTestId('agent-new-chat').boundingBox();
   const darkAgentTitleBounds = await page.getByTestId('agent-panel').locator('.skill-chat-workbench__header h2').boundingBox();
   const darkAgentCloseBounds = await page.getByRole('button', { name: '关闭 Codex Agent' }).boundingBox();
-  const welcomeBounds = await page.locator('.skill-chat-workbench__figma-intro--codex').boundingBox();
+  const welcomeBounds = await page.locator('.skill-chat-workbench__intro--codex').boundingBox();
   const composerBounds = await page.locator('.skill-chat-workbench__composer').boundingBox();
   expect(newChatBounds).toMatchObject({ width: 34, height: 34 });
   expect(darkAgentTitleBounds!.x).toBeGreaterThanOrEqual(agentPanelBounds!.x + 16);
@@ -417,7 +503,7 @@ for (const theme of ['dark', 'light'] as const) {
         probe.remove();
         return value;
       };
-      const workspace = document.querySelector<HTMLElement>('.workspace--ui-gate');
+      const workspace = document.querySelector<HTMLElement>('.workspace--canvas-layout');
       const surface = workspace === null
         ? 'rgba(0, 0, 0, 0)'
         : getComputedStyle(workspace).getPropertyValue('--gate-card').trim();
@@ -445,7 +531,7 @@ for (const theme of ['dark', 'light'] as const) {
       },
       {
         label: 'Video Generation primary media input',
-        // Figma 332:2: node top=120 and the 16px input socket starts at
+        // Canvas 332:2: node top=120 and the 16px input socket starts at
         // y=328, so its centre is 216px down the canonical 672×720 card.
         portAxis: 'video-preview-axis',
         node: page.locator('[data-module-type="video_generation"]'),
@@ -453,7 +539,7 @@ for (const theme of ['dark', 'light'] as const) {
       },
       {
         label: 'Video Generation result output',
-        // Figma puts the result output on the same 216px preview axis.
+        // Canvas puts the result output on the same 216px preview axis.
         portAxis: 'video-preview-axis',
         node: page.locator('[data-module-type="video_generation"]'),
         target: page.locator('[data-module-type="video_generation"] [data-port-id="result"].react-flow__handle'),
@@ -474,7 +560,7 @@ for (const theme of ['dark', 'light'] as const) {
       expect(
         Math.abs(targetCenterY - expectedCenterY),
         portAxis === 'video-preview-axis'
-          ? `${label} must align with Figma's preview connection axis`
+          ? `${label} must align with Canvas's preview connection axis`
           : `${label} must remain on its card midpoint`,
       ).toBeLessThanOrEqual(16);
       await expect(target).toHaveCSS('background-color', expectedPortSurface);
@@ -489,7 +575,7 @@ for (const theme of ['dark', 'light'] as const) {
     await expect(imageReferenceSlots).toBeVisible();
     await expect(
       imageGeneration.getByLabel('Image generation connected references'),
-      'The Figma image card uses a dedicated reference tray; the legacy managed-reference badge must not render as a second surface.',
+      'The Canvas image card uses a dedicated reference tray; the legacy managed-reference badge must not render as a second surface.',
     ).toBeHidden();
     const [imagePromptBox, imageReferenceSlotsBox] = await Promise.all([
       imagePrompt.boundingBox(),
@@ -504,11 +590,11 @@ for (const theme of ['dark', 'light'] as const) {
     expect(firstImageReferenceBox).not.toBeNull();
     expect(
       firstImageReferenceBox!.x,
-      'Figma 411:2 pins connected image thumbnails to the tray start; legacy CSS must not center them.',
+      'Canvas 411:2 pins connected image thumbnails to the tray start; legacy CSS must not center them.',
     ).toBeLessThanOrEqual(imageReferenceSlotsBox!.x + 12);
     expect(
       imageReferenceSlotsBox!.y + imageReferenceSlotsBox!.height,
-      'Figma 411:2 places connected reference media in its own tray above the prompt, never inside the text area.',
+      'Canvas 411:2 places connected reference media in its own tray above the prompt, never inside the text area.',
     ).toBeLessThanOrEqual(imagePromptBox!.y);
     const resolutionTrigger = imageGeneration.getByRole('button', { name: 'Image generation resolution' });
     await expect(resolutionTrigger).toHaveAttribute('value', '2K');
@@ -533,7 +619,7 @@ for (const theme of ['dark', 'light'] as const) {
     expect(resultBox).not.toBeNull();
     expect(
       Math.abs((resultBox!.y + resultBox!.height / 2) - (generationBox!.y + generationBox!.height / 2)),
-      'Image Generation result endpoint must stay on the Figma card midpoint, never the top rail',
+      'Image Generation result endpoint must stay on the Canvas card midpoint, never the top rail',
     ).toBeLessThanOrEqual(14);
 
     await expect(page.locator('.react-flow__edge')).toHaveCount(3);
@@ -651,7 +737,7 @@ for (const theme of ['dark', 'light'] as const) {
     expect(resultBox).not.toBeNull();
     expect(sourceBox).not.toBeNull();
     expect(targetBox).not.toBeNull();
-    expect(Math.abs((sourceBox!.x + sourceBox!.width) - (reverseBox!.x + reverseBox!.width))).toBeLessThanOrEqual(1);
+    expect(Math.abs((sourceBox!.x + sourceBox!.width / 2) - (reverseBox!.x + reverseBox!.width))).toBeLessThanOrEqual(1.5);
     expect(Math.abs((targetBox!.x + targetBox!.width / 2) - resultBox!.x)).toBeLessThanOrEqual(1);
     await source.dragTo(target);
     await expect.poll(async () => page.locator('.react-flow__edge').count()).toBe(1);

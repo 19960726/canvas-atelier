@@ -9,4 +9,8 @@ describe('supportsAgentMediaReferences', () => {
   it('still blocks ordinary non-visual chat routes from sending media', () => {
     expect(supportsAgentMediaReferences({ capabilities: ['chat'] }, 'chat')).toBe(false);
   });
+
+  it('does not mistake the local Codex CLI text profile for managed-image support', () => {
+    expect(supportsAgentMediaReferences({ provider: 'codex', capabilities: ['responses'] }, 'codex')).toBe(false);
+  });
 });

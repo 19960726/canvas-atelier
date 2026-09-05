@@ -290,13 +290,13 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
   };
 
   return (
-    <aside className="history-drawer" aria-label="生成历史 / Generation History" data-canvas-surface="history" data-figma-surface="history" data-testid="history-drawer">
+    <aside className="history-drawer" aria-label="生成历史 / Generation History" data-canvas-surface="history" data-testid="history-drawer">
       <header className="surface-drawer__header">
         <div className="surface-drawer__title" data-testid="history-drawer-heading">
           <span aria-hidden="true"><History size={17} /></span>
           <div><strong>生图历史</strong><small>统一生成历史 ({total})　支持图片与视频筛选</small></div>
         </div>
-        <div className="history-figma-toolbar" aria-label="History actions">
+        <div className="history-canvas-toolbar" aria-label="History actions">
           <button type="button" aria-label="Toggle history sort" onClick={() => setSort((current) => current === 'newest' ? 'oldest' : 'newest')}>{sort === 'newest' ? '↑ 时间降序' : '↓ 时间升序'}</button>
           <i aria-hidden="true" />
           <button type="button" aria-label="Batch history actions" disabled={compareIds.length === 0}>批量操作</button>
@@ -360,7 +360,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
               </div>
             )}
             <div className="history-filters">
-              <div className="history-figma-filter-pills" aria-label="History quick filters">
+              <div className="history-canvas-filter-pills" aria-label="History quick filters">
                 <button type="button" className={kind === 'all' ? 'is-active' : ''} aria-pressed={kind === 'all'} onClick={() => setKind('all')}>全部媒体</button>
                 <button type="button" className={kind === 'image' ? 'is-active' : ''} aria-pressed={kind === 'image'} onClick={() => setKind('image')}>图片</button>
                 <button type="button" className={kind === 'video' ? 'is-active' : ''} aria-pressed={kind === 'video'} onClick={() => setKind('video')}>视频</button>

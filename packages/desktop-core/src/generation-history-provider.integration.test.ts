@@ -4,21 +4,16 @@ import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 
 import type { ComflyFetch, ComflyFetchResponse } from '@agent-canvas/provider-comfly';
+import type { RelayMeFetch } from '@agent-canvas/provider-relayme';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as desktopCore from './index';
 import type { ProviderCredentialStore } from './provider-credential-vault';
 import type { ProviderService } from './provider-service-types';
+import type { GenerationHistoryProviderSinkContract } from './generation-history-provider-sink';
 import { GenerationHistoryStore } from './generation-history-store';
 
-interface HistorySink {
-  cancelled(historyId: string): Promise<unknown>;
-  failed(historyId: string, code: 'provider_failed' | 'provider_unavailable' | 'invalid_result'): Promise<unknown>;
-  reserveSubmission(input: { readonly jobId: string; readonly kind?: 'image' | 'video'; readonly modelDisplayName: string; readonly provider?: 'comfly' | 'relayme' }): Promise<{ readonly historyId: string }>;
-  queued(input: { readonly jobId: string; readonly kind?: 'image' | 'video'; readonly modelDisplayName: string; readonly provider?: 'comfly' | 'relayme' }): Promise<string>;
-  running(historyId: string): Promise<void>;
-  succeeded(historyId: string, bytes: Uint8Array, metadata?: { readonly durationSeconds?: number; readonly height?: number; readonly width?: number }): Promise<unknown>;
-}
+type HistorySink = GenerationHistoryProviderSinkContract;
 type HistorySinkConstructor = new (options: {
   readonly trustedImageDecoder?: (bytes: Uint8Array, image: unknown) => boolean | Promise<boolean>;
   readonly store: GenerationHistoryStore;
@@ -334,6 +329,135 @@ describe('provider generation history production sink', () => {
       output: { durationSeconds: 4, height: 720, mediaType: 'video/mp4', width: 1280 },
     });
   });
+
+  it('keeps RelayMe history recoverable after a result CDN 503 and completes the same image task', async () => {
+    const { appDataRoot, sink, store } = await createHistorySink();
+    const rawTaskId = 'relay-history-result-cdn-503';
+    const resultUrl = 'https://cdn.example/recoverable-result.png';
+    const taskUrl = `https://www.ml.relayme.uk/api/ai-tools/v1/tasks/${rawTaskId}`;
+    const storedAssetId = '5030503050305032';
+    let submitPostCount = 0;
+    let taskGetCount = 0;
+    let cdnGetCount = 0;
+    const fetch: RelayMeFetch = vi.fn(async (url, init) => {
+      if (url.endsWith('/models')) {
+        return jsonResponse({
+          success: true,
+          data: {
+            models: [{
+              id: 'relay-image-history-model',
+              name: 'Relay Image',
+              model: 'gpt-image-2',
+              capability: 'image',
+              modelType: 'IMAGE',
+              endpoints: ['/api/ai-tools/v1/images/generations'],
+              pricing: { image1k: '1' },
+            }],
+          },
+        });
+      }
+      if (url.endsWith('/workflows')) return jsonResponse({ data: { workflows: [] } });
+      if (url.endsWith('/images/generations')) {
+        expect(init?.method).toBe('POST');
+        submitPostCount += 1;
+        return jsonResponse({ taskId: rawTaskId, status: 'queued' });
+      }
+      if (url === taskUrl) {
+        expect(init?.method).toBe('GET');
+        taskGetCount += 1;
+        return jsonResponse({
+          status: 'COMPLETED',
+          imageContent: resultUrl,
+          width: 2,
+          height: 3,
+        });
+      }
+      if (url === resultUrl) {
+        expect(init).toMatchObject({ method: 'GET', trustedResolvedAddress: '93.184.216.34' });
+        cdnGetCount += 1;
+        if (cdnGetCount === 1) {
+          return { ok: false, status: 503, json: async () => ({ message: 'temporarily unavailable' }) };
+        }
+        return binaryResponse(pngBytes);
+      }
+      throw new Error(`unexpected RelayMe request: ${url}`);
+    });
+    const storeGeneratedImage = vi.fn(async () => ({ assetId: storedAssetId, width: 2, height: 3 }));
+    const service = desktopCore.createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore(),
+      fetch,
+      historySink: sink,
+      resolveResultHost: async () => ['93.184.216.34'],
+      storeGeneratedImage,
+    });
+    const submitted = await service.submitImageJob({
+      jobId: 'job-relayme-history-result-cdn-503',
+      provider: 'relayme',
+      modelRoute: 'relayme-gpt-image-2',
+      prompt: 'private recoverable result prompt',
+      conversationId: 'conversation-relayme-history-result-cdn-503',
+      sessionId: 'desktop-session-relayme-history-result-cdn-503',
+      referenceAssetIds: [],
+      aspectRatio: '1:1',
+      resolution: '1K',
+      outputCount: 1,
+    });
+
+    await expect(service.pollImageJob({
+      provider: 'relayme',
+      providerTaskId: submitted.providerTaskId,
+    })).rejects.toMatchObject({ code: 'PROVIDER_ERROR', retryable: true });
+    const runningRecords = (await store.list({ filters: { trashState: 'all' } })).records;
+    expect(runningRecords).toHaveLength(1);
+    expect(runningRecords[0]).toMatchObject({
+      completedAt: null,
+      kind: 'image',
+      status: 'running',
+      output: null,
+      termination: null,
+    });
+
+    await expect(service.pollImageJob({
+      provider: 'relayme',
+      providerTaskId: submitted.providerTaskId,
+    })).resolves.toMatchObject({
+      status: 'completed',
+      result: { assetId: storedAssetId, width: 2, height: 3 },
+    });
+    const succeededRecords = (await store.list({ filters: { trashState: 'all' } })).records;
+    expect(succeededRecords).toHaveLength(1);
+    const succeeded = succeededRecords[0]!;
+    expect(succeeded.id).toBe(runningRecords[0]!.id);
+    expect(succeeded).toMatchObject({
+      completedAt: expect.any(String),
+      kind: 'image',
+      status: 'succeeded',
+      provider: { displayName: 'RelayMe', modelDisplayName: 'Relay Image' },
+      output: {
+        availability: 'available',
+        byteSize: pngBytes.byteLength,
+        format: 'png',
+        height: 3,
+        mediaType: 'image/png',
+        width: 2,
+      },
+      termination: null,
+    });
+    expect(await readFile(join(
+      appDataRoot,
+      'generation-history',
+      'originals',
+      `${succeeded.output!.historyAssetId}.png`,
+    ))).toEqual(pngBytes);
+    expect(storeGeneratedImage).toHaveBeenCalledOnce();
+    expect({ submitPostCount, taskGetCount, cdnGetCount }).toEqual({
+      submitPostCount: 1,
+      taskGetCount: 2,
+      cdnGetCount: 2,
+    });
+  });
+
   it('persists submission failures without durable prompt or conversation content', async () => {
     const { appDataRoot, sink, store } = await createHistorySink();
     const fetch: ComflyFetch = vi.fn(async () => {

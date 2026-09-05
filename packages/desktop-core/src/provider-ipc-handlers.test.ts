@@ -41,6 +41,48 @@ describe('active provider IPC handlers', () => {
     expect(relayme.submitImageJob).not.toHaveBeenCalled();
   });
 
+  it('allows Codex chat to use a configured Comfly route while RelayMe remains the active generation provider', async () => {
+    const comfly = fakeService({ configured: true });
+    const relayme = fakeService({ configured: true });
+    const registry: ProviderRegistry = { get: (provider) => provider === 'comfly' ? comfly : relayme };
+    const activeStore = {
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+      setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+    };
+    const handlers = createHandlers(registry, { activeStore });
+
+    await expect(handlers.chat({}, chatRequest('comfly', 'codex'))).resolves.toEqual({
+      message: 'ok',
+      modelRoute: 'chat',
+      sources: [],
+    });
+    expect(comfly.chat).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'comfly',
+      modelRoute: 'chat',
+      agentMode: 'codex',
+    }));
+    expect(relayme.chat).not.toHaveBeenCalled();
+
+    await expect(handlers.chat({}, chatRequest('comfly', 'chat'))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
+    await expect(handlers.chat({}, chatRequest('comfly', 'original'))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
+    await expect(handlers.submitImageJob({}, imageRequest('comfly'))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
+    await expect(handlers.submitVideoJob({}, videoRequest('comfly'))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
+  });
+
+  it('does not let a RelayMe chat request claim Codex mode to bypass the active-provider boundary', async () => {
+    const comfly = fakeService({ configured: true });
+    const relayme = fakeService({ configured: true });
+    const registry: ProviderRegistry = { get: (provider) => provider === 'comfly' ? comfly : relayme };
+    const activeStore = {
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
+      setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+    };
+    const handlers = createHandlers(registry, { activeStore });
+
+    await expect(handlers.chat({}, chatRequest('relayme', 'codex'))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
+    expect(relayme.chat).not.toHaveBeenCalled();
+  });
+
   it('allows active-provider changes only for configured providers without deleting the other provider', async () => {
     const comfly = fakeService({ configured: true });
     const relayme = fakeService({ configured: false });
@@ -144,8 +186,12 @@ function imageRequest(provider: 'comfly' | 'relayme') {
   return { jobId: 'job-1', provider, modelRoute: 'image', prompt: 'Draw a chair', conversationId: 'conversation-1', referenceAssetIds: [] };
 }
 
-function chatRequest(provider: 'comfly' | 'relayme') {
-  return { provider, modelRoute: 'chat', messages: [{ role: 'user' as const, content: 'Hello' }], context: { knowledgeBaseIds: [], projectMemoryIds: [] } };
+function videoRequest(provider: 'comfly' | 'relayme') {
+  return { jobId: 'job-1', provider, modelRoute: 'video', prompt: 'Animate a chair', conversationId: 'conversation-1', referenceAssetIds: [] };
+}
+
+function chatRequest(provider: 'comfly' | 'relayme', agentMode: 'chat' | 'original' | 'codex' = 'chat') {
+  return { provider, modelRoute: 'chat', agentMode, messages: [{ role: 'user' as const, content: 'Hello' }], context: { knowledgeBaseIds: [], projectMemoryIds: [] } };
 }
 
 function taskRequest(provider: 'comfly' | 'relayme') {

@@ -38,10 +38,10 @@ describe('GenerationHistoryDrawer', () => {
     expect(screen.getByText('生成超时')).toBeVisible();
     expect(listTasks).toHaveBeenCalledWith({ provider: 'relayme', page: 1, size: 20 });
   });
-  it('exposes the Figma history surface heading and keyboard close control', () => {
+  it('exposes the Canvas history surface heading and keyboard close control', () => {
     render(<GenerationHistoryDrawer onClose={vi.fn()} />);
 
-    expect(screen.getByTestId('history-drawer')).toHaveAttribute('data-figma-surface', 'history');
+    expect(screen.getByTestId('history-drawer')).toHaveAttribute('data-canvas-surface', 'history');
     expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('生图历史');
     expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('统一生成历史');
     expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('支持图片与视频筛选');

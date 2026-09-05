@@ -83,7 +83,7 @@ for (const viewport of viewports) {
     const imageGenerationNode = page.locator('[data-module-type="image_generation"]').last();
     await expect(imageGenerationNode).toHaveCSS('width', '654px');
     await expect(imageGenerationNode).toHaveCSS('background-color', 'rgb(15, 20, 29)');
-    // Figma UI Gate gives image generation its dedicated image-card border,
+    // Canvas UI Gate gives image generation its dedicated image-card border,
     // while the reverse card keeps the shared neutral card border below.
     await expect(imageGenerationNode).toHaveCSS('border-color', 'rgb(24, 169, 153)');
     await page.evaluate((position) => window.__NOVUS_E2E__?.createModule('reverse_agent', position), {
@@ -129,8 +129,8 @@ for (const viewport of viewports) {
       return [Number.parseFloat(style.width), Number.parseFloat(style.height)];
     });
     // Current UI Gate keeps the import slot large enough to show the real media cover.
-    expect(moduleCssWidth, `Figma media source width at ${viewport.name}`).toBe(292);
-    expect(moduleCssHeight, `Figma media source height at ${viewport.name}`).toBe(326);
+    expect(moduleCssWidth, `Canvas media source width at ${viewport.name}`).toBe(292);
+    expect(moduleCssHeight, `Canvas media source height at ${viewport.name}`).toBe(326);
     await captureLayoutScreenshot(page, testInfo, `renderer-module-stress-${viewport.name}`);
 
     // Placement preview belongs to the retired canvas and must not reappear
@@ -238,7 +238,9 @@ for (const theme of ['dark', 'light'] as const) {
       expect(childGeometry.trigger!.bottom).toBeLessThanOrEqual(boxes[3]!.box!.y);
       const alert = reverse.getByRole('alert');
       await expect(alert).toBeVisible();
-      const horizontalMetrics = await reverse.evaluate((element) => ({
+      const content = reverse.locator('.module-node__summary--agent-studio');
+      await expect(content).toBeVisible();
+      const horizontalMetrics = await content.evaluate((element) => ({
         contentRight: element.getBoundingClientRect().left + element.clientLeft + element.clientWidth,
         scrollWidth: element.scrollWidth,
         clientWidth: element.clientWidth,

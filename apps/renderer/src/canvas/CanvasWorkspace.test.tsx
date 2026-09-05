@@ -19,12 +19,12 @@ import type {
   ProjectHydrationResult,
   ProjectPersistenceClient,
 } from '../app/desktop-persistence';
-import { calculateModuleInsertionPosition, calculateModulePlacement, CanvasWorkspace, createCanvasConnectionValidator, getCompatibleQuickInsertModuleTypes, getCompatibleQuickInsertSourceModuleTypes, getModulePlacementSize, getWorkbenchFocusTarget, isCanvasModuleDropSurface, isValidCanvasConnection, resolveQuickInsertConnection, setConnectorPreviewQuality, shouldAutoFocusFlowNode, shouldCloseAgentForModuleLibrary, type ModulePlacementBounds } from './CanvasWorkspace';
+import { calculateModuleInsertionPosition, calculateModulePlacement, CanvasWorkspace, createCanvasConnectionValidator, getCompatibleQuickInsertModuleTypes, getCompatibleQuickInsertSourceModuleTypes, getModulePlacementSize, getWorkbenchFocusTarget, isCanvasModuleDropSurface, isValidCanvasConnection, resolveQuickInsertConnection, selectAgentProjectMemoryIds, setConnectorPreviewQuality, shouldAutoFocusFlowNode, shouldCloseAgentForModuleLibrary, type ModulePlacementBounds } from './CanvasWorkspace';
 import { MODULE_DRAG_MIME } from './ModuleLibrary';
 import { CONNECTED_MEDIA_DRAG_MIME, encodeConnectedMediaDragPayload } from './connected-media-drag';
 
 const appStyles = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
-const figmaHybridStyles = readFileSync('apps/renderer/src/styles/figma-hybrid-canvas.css', 'utf8');
+const canvasHybridStyles = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
 
 beforeEach(() => {
   delete window.novusDesktop;
@@ -102,7 +102,7 @@ describe('CanvasWorkspace', () => {
     expect(isCanvasModuleDropSurface(handle, stage)).toBe(false);
   });
 
-  it('shows the Figma Skill workspace on the initial formal canvas', () => {
+  it('shows the Canvas Skill workspace on the initial formal canvas', () => {
     useAppStore.setState({ agentPanelCollapsed: false });
     render(<CanvasWorkspace />);
 
@@ -111,23 +111,23 @@ describe('CanvasWorkspace', () => {
   });
 
   it('keeps the Agent panel geometry token-neutral across themes', () => {
-    expect(figmaHybridStyles).not.toContain(":root[data-theme='light'] .workspace--ui-gate .agent-panel--skill-chat {");
+    expect(canvasHybridStyles).not.toContain(":root[data-theme='light'] .workspace--canvas-layout .agent-panel--skill-chat {");
   });
 
   it('targets the renderer root when styling the light reverse knowledge picker', () => {
-    expect(figmaHybridStyles).toContain(":root[data-theme='light'] .workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__knowledge-picker");
-    expect(figmaHybridStyles).toContain(":root[data-theme='light'] .workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__sheet--library");
-    expect(figmaHybridStyles).not.toContain(".workspace--ui-gate[data-theme='light'] .module-node[data-module-type='reverse_agent'] .module-node__knowledge-picker");
-    expect(figmaHybridStyles).not.toContain(".workspace--ui-gate[data-theme='light'] .agent-panel--skill-chat .skill-chat-workbench__sheet--library");
+    expect(canvasHybridStyles).toContain(":root[data-theme='light'] .workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__knowledge-picker");
+    expect(canvasHybridStyles).toContain(":root[data-theme='light'] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__sheet--library");
+    expect(canvasHybridStyles).not.toContain(".workspace--canvas-layout[data-theme='light'] .module-node[data-module-type='reverse_agent'] .module-node__knowledge-picker");
+    expect(canvasHybridStyles).not.toContain(".workspace--canvas-layout[data-theme='light'] .agent-panel--skill-chat .skill-chat-workbench__sheet--library");
   });
 
   it('keeps advanced settings diagnostics on the compact settings typography scale', () => {
-    expect(figmaHybridStyles).toContain('.workspace--ui-gate .settings-status-card > p,');
-    expect(figmaHybridStyles).toContain('font-size: 11px !important;');
-    expect(figmaHybridStyles).toContain('.workspace--ui-gate .settings-status-card input {');
+    expect(canvasHybridStyles).toContain('.workspace--canvas-layout .settings-status-card > p,');
+    expect(canvasHybridStyles).toContain('font-size: 11px !important;');
+    expect(canvasHybridStyles).toContain('.workspace--canvas-layout .settings-status-card input {');
   });
   it('keeps a visible focus ring on formal module nodes when the canvas node receives focus', () => {
-    expect(figmaHybridStyles).toContain('.workspace--ui-gate .react-flow__node:focus .module-node');
+    expect(canvasHybridStyles).toContain('.workspace--canvas-layout .react-flow__node:focus .module-node');
   });
 
   it('does not expose a retired-canvas migration banner in the formal UI', async () => {
@@ -146,7 +146,7 @@ describe('CanvasWorkspace', () => {
 
   it('keeps the dedicated video result module empty until a real video result exists', async () => {
     await act(async () => {
-      await useAppStore.getState().migrateLegacyStarterProjectToFigmaWorkbench();
+      await useAppStore.getState().migrateLegacyStarterProjectToCanvasWorkbench();
     });
     render(<CanvasWorkspace />);
 
@@ -167,7 +167,7 @@ describe('CanvasWorkspace', () => {
 
   it('lowers interaction quality as soon as a connector preview starts', () => {
     const workspace = document.createElement('div');
-    workspace.className = 'workspace workspace--ui-gate';
+    workspace.className = 'workspace workspace--canvas-layout';
     const stage = document.createElement('section');
     workspace.append(stage);
 
@@ -179,7 +179,7 @@ describe('CanvasWorkspace', () => {
 
   it('scopes connector preview quality to the canvas for large graphs', () => {
     const workspace = document.createElement('div');
-    workspace.className = 'workspace workspace--ui-gate';
+    workspace.className = 'workspace workspace--canvas-layout';
     const stage = document.createElement('section');
     stage.className = 'canvas-stage';
     workspace.append(stage);
@@ -251,7 +251,7 @@ describe('CanvasWorkspace', () => {
     expect(placement).not.toEqual(occupiedCenter);
   });
 
-  it('uses the real Figma card footprint when placing a video module beside existing workbenches', () => {
+  it('uses the real Canvas card footprint when placing a video module beside existing workbenches', () => {
     const bounds = { left: 0, right: 1800, top: 0, bottom: 1000 };
     const placement = calculateModuleInsertionPosition(bounds, [
       { x: 500, y: 140, width: 426, height: 594, moduleType: 'reverse_agent' },
@@ -300,13 +300,13 @@ describe('CanvasWorkspace', () => {
     expect(placement!.y + getModulePlacementSize('video_generation').height).toBeLessThanOrEqual(bounds.bottom);
   });
 
-  it('uses the current Figma UI Gate image-generation footprint for fresh module placement', () => {
+  it('uses the current Canvas UI Gate image-generation footprint for fresh module placement', () => {
     expect(getModulePlacementSize('image_generation')).toEqual({ width: 654, height: 486 });
   });
 
-  it('matches the Figma 799:6 topbar actions and final geometry', () => {
-    const topbarRules = [...figmaHybridStyles.matchAll(/\.workspace--ui-gate \.topbar\s*\{([^}]*)\}/gu)];
-    const actionRules = [...figmaHybridStyles.matchAll(/\.workspace--ui-gate \.topbar-canvas-action\s*\{([^}]*)\}/gu)];
+  it('matches the Canvas 799:6 topbar actions and final geometry', () => {
+    const topbarRules = [...canvasHybridStyles.matchAll(/\.workspace--canvas-layout \.topbar\s*\{([^}]*)\}/gu)];
+    const actionRules = [...canvasHybridStyles.matchAll(/\.workspace--canvas-layout \.topbar-canvas-action\s*\{([^}]*)\}/gu)];
     const finalTopbarRule = topbarRules[topbarRules.length - 1]?.[1] ?? '';
     const finalActionRule = actionRules[actionRules.length - 1]?.[1] ?? '';
 
@@ -346,9 +346,9 @@ describe('CanvasWorkspace', () => {
     releaseClose?.();
     await waitFor(() => expect(closeButton).not.toBeDisabled());
   });
-  it('keeps the final CSS cascade on the compact Figma rail geometry', () => {
-    const railRules = [...figmaHybridStyles.matchAll(/\.workspace--ui-gate \.toolrail--floating\s*\{([^}]*)\}/gu)];
-    const buttonRules = [...figmaHybridStyles.matchAll(/\.workspace--ui-gate \.toolrail--floating > button\s*\{([^}]*)\}/gu)];
+  it('keeps the final CSS cascade on the compact Canvas rail geometry', () => {
+    const railRules = [...canvasHybridStyles.matchAll(/\.workspace--canvas-layout \.toolrail--floating\s*\{([^}]*)\}/gu)];
+    const buttonRules = [...canvasHybridStyles.matchAll(/\.workspace--canvas-layout \.toolrail--floating > button\s*\{([^}]*)\}/gu)];
     const finalRailRule = railRules[railRules.length - 1]?.[1] ?? '';
     const finalButtonRule = buttonRules[buttonRules.length - 1]?.[1] ?? '';
 
@@ -364,10 +364,10 @@ describe('CanvasWorkspace', () => {
     expect(finalButtonRule).toContain('height: 40px !important');
     expect(finalButtonRule).toContain('margin: 0 !important');
   });
-  it('marks the canvas shell, floating tool rail, and Agent workbench for the Figma UI Gate', () => {
+  it('marks the canvas shell, floating tool rail, and Agent workbench for the Canvas UI Gate', () => {
     render(<CanvasWorkspace />);
 
-    expect(screen.getByTestId('workspace')).toHaveClass('workspace--ui-gate');
+    expect(screen.getByTestId('workspace')).toHaveClass('workspace--canvas-layout');
     expect(screen.getByTestId('toolrail')).toHaveClass('toolrail--floating');
 
     fireEvent.click(screen.getByTestId('agent-toggle'));
@@ -405,7 +405,21 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存项目' }));
 
     await waitFor(() => expect(saveProjectExplicitly).toHaveBeenCalledOnce());
-    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('本地保存失败');
+    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('本地写入失败，请检查磁盘空间或目录权限后重试');
+  });
+
+  it.each([
+    ['SAVE_TIMEOUT', '保存超时，项目仍保持打开，请重试保存'],
+    ['DURABLE_WRITE_FAILED', '本地写入失败，请检查磁盘空间或目录权限后重试'],
+    ['PROJECT_WRITE_FAILED', '本地写入失败，请检查磁盘空间或目录权限后重试'],
+    ['DISK_FULL', '本地写入失败，请检查磁盘空间或目录权限后重试'],
+    ['CONCURRENT_WRITER', '项目正在由另一窗口写入，请关闭另一窗口后重新载入'],
+  ])('shows an actionable save status for %s', (saveErrorCode, expected) => {
+    useAppStore.setState({ saveErrorCode, saveStatus: 'error' });
+
+    render(<CanvasWorkspace />);
+
+    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent(expected);
   });
 
   it('shows recent projects separately from recovery versions in canvas management', async () => {
@@ -879,7 +893,7 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('tool-add-node')).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('uses only the seven Figma left-rail actions and does not expose the legacy upload control', () => {
+  it('uses only the seven Canvas left-rail actions and does not expose the legacy upload control', () => {
     render(<CanvasWorkspace />);
 
     const rail = screen.getByTestId('toolrail');
@@ -898,7 +912,7 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('quick-insert')).toBeVisible();
   });
 
-  it('matches the Figma rail with seven visible actions and a topbar save affordance', () => {
+  it('matches the Canvas rail with seven visible actions and a topbar save affordance', () => {
     render(<CanvasWorkspace />);
 
     const toolrail = screen.getByTestId('toolrail');
@@ -913,7 +927,7 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('settings-drawer')).toBeVisible();
   });
 
-  it('keeps the Figma UI Gate shell labels readable instead of mojibake', () => {
+  it('keeps the Canvas UI Gate shell labels readable instead of mojibake', () => {
     render(<CanvasWorkspace />);
 
     expect(screen.getByLabelText('Canvas Atelier')).toHaveTextContent('Canvas Atelier');
@@ -927,9 +941,9 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByRole('button', { name: '撤销' })).toHaveAttribute('title', '撤销');
   });
 
-  it('keeps the Figma left rail above secondary drawers so overlay buttons remain clickable', () => {
-    expect(figmaHybridStyles).toContain('z-index: 80 !important;');
-    expect(figmaHybridStyles).toContain(".workspace--ui-gate .history-drawer[data-figma-surface='history']");
+  it('keeps the Canvas left rail above secondary drawers so overlay buttons remain clickable', () => {
+    expect(canvasHybridStyles).toContain('z-index: 80 !important;');
+    expect(canvasHybridStyles).toContain(".workspace--canvas-layout .history-drawer[data-canvas-surface='history']");
   });
 
   it('uses one spacer-free grid for the seven visible rail actions', () => {
@@ -2397,7 +2411,44 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('RelayMe Chat Active'));
-    expect(screen.queryByText('Comfly Chat Hidden')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
+    const modelDialog = screen.getByRole('dialog', { name: '选择聊天模型' });
+    expect(within(modelDialog).getByText('RelayMe Chat Active')).toBeVisible();
+    expect(within(modelDialog).queryByText('Comfly Chat Hidden')).not.toBeInTheDocument();
+  });
+
+  it('projects only the latest 32 active project memories into Agent context', () => {
+    const baseMemories = Array.from({ length: 35 }, (_, index): ProjectMemoryEntry => ({
+      actor: 'agent',
+      changeSummary: `change-${index}`,
+      context: { referenceAssetIds: [], resultAssetIds: [] },
+      createdAt: new Date(Date.UTC(2026, 8, 1, 0, index)).toISOString(),
+      feedback: { change: [], keep: [], never: [] },
+      id: `memory-${index}`,
+      kind: 'optimization',
+      nextStep: `next-${index}`,
+      projectId: 'project-memory-cap',
+      projectRevision: index + 1,
+      rationale: `reason-${index}`,
+      schemaVersion: 1,
+      snapshots: { beforeId: `before-${index}`, afterId: `after-${index}` },
+      title: `Memory ${index}`,
+    }));
+    const replacement: ProjectMemoryEntry = {
+      ...baseMemories[34]!,
+      createdAt: '2026-09-01T02:00:00.000Z',
+      id: 'memory-34-replacement',
+      projectRevision: 36,
+      supersedesMemoryId: 'memory-34',
+      title: 'Replacement memory',
+    };
+
+    const selected = selectAgentProjectMemoryIds([...baseMemories, replacement]);
+
+    expect(selected).toHaveLength(32);
+    expect(selected[0]).toBe('memory-34-replacement');
+    expect(selected).not.toContain('memory-34');
+    expect(selected).not.toContain('memory-0');
   });
 
   it('shows RelayMe models even when Comfly itself is unconfigured', async () => {
@@ -3250,9 +3301,9 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByRole('menu', { name: '文件' })).toBeVisible();
   });
   it('uses a compact twelve-pixel rhythm for every rail action', () => {
-    expect(figmaHybridStyles).toContain('gap: 12px !important;');
-    expect(figmaHybridStyles).toContain('flex: 0 0 40px !important;');
-    expect(figmaHybridStyles).not.toContain('row-gap: 58px !important;');
+    expect(canvasHybridStyles).toContain('gap: 12px !important;');
+    expect(canvasHybridStyles).toContain('flex: 0 0 40px !important;');
+    expect(canvasHybridStyles).not.toContain('row-gap: 58px !important;');
   });
 });
 

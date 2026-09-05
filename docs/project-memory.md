@@ -1,5 +1,66 @@
 # Canvas Atelier project memory
 
+## 2026-09-05 Agent 已发送图片在消息流中缺少展示
+
+- 根因：`SkillChatWorkbench` 将图片引用保存在用户消息的 `request.references` 中并正常发送给视觉模型，但消息气泡只渲染 `message.content`，没有把引用重新映射到当前项目素材并渲染缩略图，因此模型已收到素材而对话看不到图片。
+- 修复：用户消息现在显示“已发送素材”区域；按 `assetId` 从当前受管图片/视频集合恢复缩略图，历史素材不在当前上下文时仍保留引用标签，不改变 Provider、Codex 或 MCP 请求协议。
+- 回归位置：`apps/renderer/src/agent/SkillChatWorkbench.test.tsx` 的视觉引用发送用例，验证用户消息气泡出现图片和 `@图片1`。
+- 新鲜验证：SkillChatWorkbench 100/100；全工作区 `npm.cmd run typecheck` 退出 0；目标 diff whitespace 检查退出 0。
+- 复核发现：截图所用的本机 GPT-6 Astra 属于 text/MCP-only 路线，图片粘贴被正确拒绝，但原提示过于笼统。现在 Codex 模式显示明确的切换建议；视觉聊天路线的图片粘贴端到端 5/5 通过，Codex 边界回归也通过。
+- 根因补充：如果用户在输入 `@` 后打开了“@ 图片引用”浮层，再粘贴图片，媒体导入路径此前没有关闭该浮层，导致浮层遮住新生成的引用缩略图，看起来像粘贴仍停留在引用提示。媒体粘贴现在立即关闭引用浮层；新增回归验证浮层消失且素材仍附加。
+- 新鲜验证：SkillChatWorkbench 102/102；Agent 图片/视频粘贴 E2E 5/5；全工作区 typecheck 退出 0。
+
+## 2026-09-05 WorkBuddy MCP 信任层阻断（配置文件本身无解析错误）
+
+- 对真实运行中的 WorkBuddy 5.5.3 做只读复核后发现，`C:\Users\Administrator\.workbuddy\mcp.json` 能正常解析，且同时保留 `canvasforge` 与 `canvas_atelier`；但 WorkBuddy 主进程日志 `C:\Users\Administrator\.workbuddy\logs\2026-09-05\workbuddyMainThread__22be230a230dcc2f1d23d3d261812acb.log` 在本次检查期间累计 26 次记录 `MCP Security ... skipping untrusted server "canvas_atelier"`，最新记录仍在 13:08。对应 `refreshAndSync` 的 desired list 只包含 `custom-mcp:canvasforge` 等既有条目，没有 `custom-mcp:canvas_atelier`。
+- `C:\Users\Administrator\.workbuddy\mcp-approvals.json` 当前只有一个 `canvasforge` 审批键，没有 `canvas_atelier`。因此“Canvas Atelier 自己的配置管理器/renderer bridge 返回 WorkBuddy configured、14-tool connected”只能证明本地配置与 Canvas Atelier bridge 健康，不能证明 WorkBuddy 实际 Agent 已接入；真实 WorkBuddy 用户路径当前应标为 `BLOCKED`。
+- 这不是本项目的 JSON/TOML 解析、路径、重复 section、备份或 runtime 清理错误，也不是通过手工写入审批键可以安全绕过的问题。未修改 WorkBuddy 配置、审批文件或进程；需要用户在 WorkBuddy 的 MCP 安全/审批界面明确信任 `canvas_atelier` 后重启或刷新 WorkBuddy，再重新检查日志中的 desired list 和实际连接。
+
+## 2026-09-05 登录后 RelayMe 安装版 Provider 门禁恢复
+
+- 用户完成 RelayMe 登录后，隔离只读状态检查返回 `activeProvider=relayme`、`configured=true`、`locked=false`、连接 `connected`，并读取到 10 个 profile；10 个 profile 的 `capabilityStatus` 全部为 `complete`。`RENAF` 已恢复 `chat + reverse_prompt`，路由为 `relayme-gemini-3-1-flash-lite`。
+- 安装版 `D:\CanvasAtelier\Canvas Atelier.exe` 1.6.100 的 Provider 隔离门禁已新鲜通过：图片、视频、反推三条目录均加载并完成真实控件选择，选项分别为 3、4、1；三条 rail 的元素均 `attached=true`、`positioned=true`，`pageErrors=[]`。完整结果与截图位于 `work/qa-installed-provider-isolation-1.6.100-after-login/`，固化日志为 `run.log`。
+- 本次仅读取连接/任务目录并做 UI/目录隔离验证，没有提交图片、视频、反推或 Astra 生成任务。Comfly 仍为 `configured=false`、`locked=true`，因此不把 Comfly 记为通过；Photoshop 导入、付费生成、真实 Astra 对话、签名发布与多系统矩阵仍保持原边界。
+
+## 2026-09-05 1.6.100 安装版全链验收与当前外部边界
+
+- 当前正式核验产物为已安装的 `D:\CanvasAtelier\Canvas Atelier.exe` 1.6.100。安装包 `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.100.exe` 为 103238623 字节，SHA-256 `1E39A90A99C7097E6BBBA1A53E9CF96B14A5A8FA9E41C707727295FD2DBA867E`；安装包解包与安装目录的 `app.asar` 完全一致，均为 5872033 字节、SHA-256 `2D5E6D30F9576816358DF97171C1E7F0AFDFF7247542211F15AF7EAB4ABF9ADF`。安装版 EXE SHA-256 为 `1022E86905C094DEABA5E7105D6189F6CC40CFAAE5ADCAF85E2A129EA0BB0488`。注册表安装版本与 asar 内 package 版本均为 1.6.100。
+- 新鲜源码证据：完整 Vitest 220 个文件通过、2 个性能文件按设计跳过，2838 个测试通过、2 个跳过；完整 Playwright 147/147；repo typecheck、build、`scan:e2e`、10k persistence replay 与 knowledge performance 均通过。生产修复包含 WorkBuddy `mcpServers` 非对象值必须返回 `MCP_CONFIG_PARSE_FAILED`，不再静默覆盖；反推视觉验收改为测量 Agent summary 而不是有意伸出卡片外的输出 handle。
+- 新鲜安装版证据：packaged/installed CSP smoke 均通过；UI 门禁在 light/dark 两套主题下通过，10 个正式节点均可创建，图片/视频控制条均为 38px、无嵌套边框，视频选中态为单层 2px 边框，深色视频菜单与节点同为 `rgb(15,20,29)`，反推模型行宽约 390px 且位于素材区下方；正式模块目录 10/10 可发现类型和 24/24 兼容类型通过，零网络 mutation、无 renderer/runtime failure。对比图位于 `work/qa-ui-comparison-1.6.100-formal2/`，已人工检查无空白、裁切、重叠或旧双层描边。
+- 安装版 MCP 零费用链已通过：14/14 工具逐一调用，创建/更新/移动/连接/删除、媒体导入、QA 图片任务完成/取消、视频生成与 Agent 反推结果持久化、重启读取、公开 MCP 节点 roundtrip 均通过，网络提交次数为 0，真实项目保持不变。Canvas Atelier 自己的配置管理器/bridge 对 Codex 与 WorkBuddy 配置返回过 14-tool connected；但这不等于 WorkBuddy 外部 Agent 已通过信任层，当前真实 WorkBuddy 日志仍需以顶部 2026-09-05 记录为准。Codex 原有 `cua_repl/figma/node_repl` 和 WorkBuddy 原有 `canvasforge` 均保留；每次配置前精确备份；Codex 与 WorkBuddy 最终字节指纹不变；真实应用生命周期关闭后 `runtime-modern-v1.json` 已删除。QA runner 已改为调用 renderer `lifecycle.requestClose()`，不再用 `app.exit()` 绕过生产清理。
+- 旧项目保存链已通过：对现有 QA 旧项目的只读源复制执行“打开→显式保存→关闭→重开”，4 个节点、2 条连线、3 张图片和 revision 21 全部保持；两次离线网络 guard 均启用且 blockedAttemptCount=0；源目录整树 SHA-256 前后同为 `c3ff4087c45726221e6931e2e0457ac5ee33ef1b7540f0514e570760ddc856f5`。
+- Provider 当前是外部状态阻断而非产品通过：RelayMe 原始目录仍返回 10 个模型，但真实连接为 `authentication_failed`；`relayme-gemini-3-1-flash-lite` 从旧证据的 `complete + chat + reverse_prompt` 降为 `incomplete + chat`，因此产品正确地不将其暴露为可执行反推路线。需用户重新登录 RelayMe 后重跑 `work/qa-installed-provider-isolation.mjs`。Comfly 在真实安装配置中未配置，安装版目录门禁返回 `COMFLY_NOT_CONFIGURED`。未执行任何付费图片/视频生成或真实 Astra 对话。
+- Photoshop 只读 COM 探测发现运行中的 20.x 实例且当前有 2 个打开文档；未执行真实智能对象导入，因为该操作会改变用户当前活动 PSD/PSB。需用户明确指定可修改的测试文档后才可做实机导入。WorkBuddy 运行进程热重载/人工重启、Windows 7/10/11 独立机器矩阵也尚未完成。
+- 发布边界：安装包与安装版 EXE 的 Authenticode 状态均为 `NotSigned`，没有签名证书不能成为正式签名发布件。本轮未 commit、push、创建 PR 或 Release；这些动作仍需明确仓库、分支、提交和发布目标授权。
+
+## 2026-09-05 MCP 启动事务与 Codex TOML 配置边界加固
+
+- 运行时启动根因：`mcp-runtime-service.start()` 先完成 named-pipe `listen`，再发布 discovery runtime 文件；后一步失败时没有回滚，已监听的 pipe、已接入 socket、descriptor 与 service 状态会留在内存中，下一次 `start()` 还会把这个未完成启动误当作成功。现在 runtime 文件 write/delete 与 listen 可做窄适配注入；启动事务失败会先清空 descriptor/state、取消刷新 timer、销毁 socket、关闭 server、等待刷新写入并删除 runtime 与 `.tmp`，正常清理后保留原始启动错误，随后可重新启动。
+- Codex 配置根因：旧 section 正则只识别 `[mcp_servers.canvas_atelier]`，无法识别等价的 `[mcp_servers."canvas_atelier"]`，而下一 section 正则不识别 `[[array.table]]`，替换时可能把后续数组表吞掉；同时配置合并前没有对整份 TOML 做结构校验，明显未闭合的字符串、表头或数组仍会被写回。现在使用仓库内受控 TOML 扫描器解析 quoted/bare dotted key、普通/数组表、单双引号及多行字符串、数组/inline-table 配对和顶层赋值；目标 section 按解析后的 key path 定位，后续任意 table header 都是硬边界，明显 malformed 文档只备份、不写入且不执行健康检查。
+- 保留语义：目标 section 之外的 prefix/suffix 字节保持原样，CRLF 文档继续使用 CRLF；同秒备份继续使用独占创建的递增后缀，旧 CanvasForge 配置和备份不改动。真实本机 Codex 配置仅经 `getStatus()` 只读验证，返回 `configured`，没有写入用户配置。
+- TDD 证据：新增回归在旧实现上先得到 5 个预期失败（runtime 用例超时、quoted key 被判 `unconfigured`、3 类结构 malformed TOML 被错误写入），第二轮 invalid scalar 又单独取得 1 个预期 RED；修复后聚焦 2 文件 `21/21`，MCP 宽回归 11 文件 `130/130`；`@agent-canvas/desktop-core` typecheck、build 与全工作区 `npm.cmd run typecheck` 均退出 0。回归位于 `packages/desktop-core/src/mcp-runtime-service.test.ts` 与 `packages/desktop-core/src/mcp-client-config.test.ts`。
+- 交付边界：本轮没有打包、安装、启动正式应用、修改真实 Codex/WorkBuddy 配置或调用外部/付费服务；最终安装版 MCP 仍需由根任务重新构建、安装并跑真实 14 工具及客户端连接验收。
+
+## 2026-09-05 GPT-6 Astra 本机 Codex 安全桥接 checkpoint
+
+- 内嵌 Codex 现在通过独立 `codexCli` profile/channel 执行精确模型 `gpt-6-astra`，不把它伪装为 Comfly/RelayMe 路由，也不修改 active provider。当前安装机 resolver 选择 `C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\9ba750cce02d5e5c\codex.exe`（`codex-cli 0.153.0`），优先于 npm 0.130；只执行原生 exe，不执行 cmd/ps1 shim。
+- 执行前必须通过 0.153+与 feature capability 检查。CLI 使用 `--ignore-user-config --ignore-rules --ephemeral`，只注入 `canvas_atelier` MCP；显式禁用 unified_exec、shell、view_image、skill_search、hooks、goals、sleep、plugins、multi_agent、browser/computer 等，并启用 `skip_host_skill_discovery`。本机只读 `--version`、`features list`、`exec --help` 已证明目标 0.153.0 具备这些开关；未发真实模型请求。
+- JSONL 必须存在，只有一个 `turn.completed` 且为最终事件；canvas_atelier MCP 采用 completed-only allowlist：status 经 trim/lowercase 后必须严格为 completed 且 error 为空。状态缺失、`failed `、rejected、in_progress、任意失败/未知状态或非空 error 都使整次失败，不能被后续成功文本覆盖。非 canvas MCP 或 shell/file/web item 固定拒绝。
+- Renderer→persistence→preload→IPC→service→runner 使用独立 requestId/cancel；模式/任务切换、新建、卸载、项目关闭/切换与 dispose 都中止旧请求。Service 从 preflight 开始全局单飞；Windows 通过 `taskkill.exe /T /F` 终止完整树并等待 close，timeout/output limit/EPIPE/卡死 close 都有受控失败，无法确认退出时 runner 熔断。临时执行目录在 runner 结束后 finally 清理。
+- 本地 Codex 仍为 text/MCP-only，拒绝图片/视频引用；公开 reasoning effort 为 low/medium/high/xhigh/max，`ultra` 已移除并将旧存储值迁移为 max。二次复审修复后的新鲜相关回归为 12 files / 616 tests，desktop-modern 最近结果为 11 files / 63 tests；repo-wide typecheck 退出 0。未打包、未安装、未做 Astra live 或安装版 MCP 写画布，均不得标为 PASS。详细证据：`work/qa-codex-astra-change.md`。
+
+## 2026-09-05 安装版正式模块目录第六节点与反推端口根因
+
+- 正式目录脚本中第六个 `image_generation` 按 Enter 后不创建不是节点事件失效：脚本在每个小节点后执行 Fit View，使前一 `text_prompt` 把 React Flow 保留在约 `2.5x`；新建项目后模块库占宽，剩余画布坐标空间小于生图节点的安装版放置尺寸，生产安全放置逻辑因此正确拒绝。验收脚本现在每次插入前只用真实缩小控件把空画布归一到不高于 `100%`。
+- 正式目录重置不得接受原生“放弃未保存”确认。脚本已移除 `dialog.accept()`/discard 路径，改为读取明确的 `data-save-state`、必要时点击真实“保存项目”、证明 `saved` 后才新建；保存失败必须直接阻断。每次隐藏运行记录 Electron PID，并证明自然退出及脚本自有临时根删除。
+- Fit View 几何审核必须使用渲染缩放和节点实际边框：端口中心可位于缩放后的边框内沿，Chromium 独立矩形换算允许额外 `0.5` viewport px 数值误差；一 CSS px 的圆角内容溢出也按缩放判断。明显偏离端口及真实越界继续失败。
+- 端口边缘验收必须计算“端口中心到对应卡片边”的绝对距离，不能只拒绝向卡片内部偏移；输入、输出端口向内或向外偏移 50 viewport px 均由回归明确拒绝。
+- 修正后的验收脚本已在安装版依次通过目录节点 1–7（含生图、视频），随后发现真实 `reverse_agent` 生产缺陷：右输出端口中心向内偏移正好 9 CSS px，原因是终端 release CSS 把右端口改成 `translate(0, -50%)` 并裁切。源码现恢复零外边距、可见溢出和 `translate(50%, -50%)`，使左右端口中心落在卡片边界。
+- 端口“完整可见”不能只看 `boundingBox`：明暗主题、初始/放大缩放均需证明端口框跨越卡片边界，内外半圆同时存在，并在外半圆取点通过 `elementsFromPoint` 命中真实 handle，从而捕获祖先裁切。
+- 安装版正式目录脚本也必须执行同一硬门禁，而不能从源码 E2E 推断：每个端口记录与浏览器 viewport 及所有 overflow 裁剪祖先求交后的 `visibleBox`，并记录外半圆采样点是否由 `elementsFromPoint` 命中该 handle。lib 断言要求原始框跨越对应卡片边、内外两部分和垂直范围均未被裁掉、采样点确在外侧可见区且命中为真；“中心仍对齐但只剩内半圆”和“完整可见但外侧不可命中”都有独立回归反例。
+- 高倍缩放且模块库占宽时，大节点无安全放置区不能静默 `return false`。画布现在显示独立 `模块创建提示`，明确要求缩小画布或关闭模块库重试；真实浏览器回归在 `≥2.49x` 下通过 Enter 尝试生图节点，证明不创建越界节点、保留模块库并显示可操作提示。
+- 新鲜源码证据：正式目录脚本单元 `23/23`，CanvasWorkspace/样式/ModuleNodeCard `400/400`，完整 release UI audit `11/11`，完整 module-library workflow `11/11`，正式模块工作台明暗主题及三种视口 `8/8`。本轮 repo-wide typecheck 已执行，但暂时只被并行中的 Codex/Astra 未提交改动阻断，formal 任务没有修改这些文件，待并行任务收敛后由根任务统一复跑。当前已安装 `1.6.99` 仍是修复前产物，完整安装版目录仍未通过；必须重包、安装并重跑到 10 个目录节点与 24 个兼容节点全部完成后才能交付。详细报告：`work/qa-formal-catalog-debug.md`。
+
 ## 2026-09-01 MCP、RelayMe 持久化与 Photoshop 实机边界
 
 - 脱敏读取正式 WorkBuddy 配置：当前已有键 `canvasforge`，命令文件为 `CanvasForge.exe`；Canvas Atelier 尚未在正式配置中连接，因此没有修改正式配置。
@@ -545,3 +606,77 @@ Before producing an installer, verify at minimum:
 - 系统确实启用了 `127.0.0.1:7890` 用户代理，旧代码却对 RelayMe API 和网页登录强制 `mode: 'direct'`。Electron 实测显示当前机器的 system/direct 两条路径都能快速到达 RelayMe 并返回未认证 401，因此“直连就是本次唯一根因”的早期判断不成立；改为 `relayme-system-network` 和 `mode: 'system'` 作为兼容系统网络策略的修正保留。
 - 设置页在凭据已配置时显示“重新登录 RelayMe”，未配置时才显示“登录 RelayMe”，避免把可选的重新认证按钮误读成登录丢失。相关回归覆盖 SettingsDrawer、网页登录网络策略、runtime entry 和连接降级探测。
 - 最终 1.6.87 新包验证：聚焦 115/115、完整 Vitest 2635 通过且 2 个性能测试按设计跳过、Playwright 146/146、typecheck/build/NSIS 均通过。隔离 packaged 启动返回 RelayMe `connected`、10 个模型、可读任务历史；启动烟测恢复 1 个保存图片节点，`fatalAlertCount=0`、`pageErrors=[]`。未提交新的付费生成，未安装、提交、推送或发布。
+
+## 2026-09-03 1.6.90 全量验收与媒体控制栏修复
+
+- 根因确认：`ModuleNodeCard` 仍渲染已退役的视频脚本/翻译/高级设置按钮；图片和视频模型同时存在原生 `select` 与自定义触发器，造成重复可见入口；展开态 CSS 中旧的高特异性 `:has()` 规则把媒体控制栏回写为 30px/48px；`App.tsx` 关闭 ACK 使用了保存前的旧 store 快照，导致保存失败时错误码丢失。
+- 修复：移除退役视频工具按钮；原生模型/模式下拉保留可访问语义但设为透明、绝对定位、不可拦截指针，仅保留自定义入口可见；补齐图片/视频展开控制栏和视频主操作按钮的最终高特异性 38px/60px 规则；关闭保存后从最新 store 状态读取 `saveErrorCode`。
+- TDD 与回归：先取得 3 个预期失败的红灯证据，修复后聚焦参数/图片执行/视频执行 10/10 通过；完整 Vitest 211 文件、2669 测试通过，2 个性能测试按设计跳过；全工作区 typecheck 与 production build 通过；Playwright 全量 146/146 通过。
+- 真实最终 packaged smoke：版本两次均为 1.6.90，页面错误为空；图片生成栏 60px 高、可见控件均 38px；视频栏可见控件均 38px、生成按钮 52px；退役视频工具按钮 0；保存状态为 `saved`。生产包没有测试专用桥接，因此临时目录的跨进程最近项目自动恢复不作为 packaged smoke 判据，持久化与退出 ACK 由现有 renderer/desktop-core 回归及 E2E 覆盖。
+- 1.6.90 Windows x64 NSIS：`CanvasAtelier-Win10-11-x64-1.6.90.exe` 为 103211920 字节，SHA-256 `CAAA3FEA5718511F0D16A58861191F8EC20D203B66FBA1FEFC32E79175F5AB0E`；blockmap 为 109554 字节，SHA-256 `222147BE6A8E591D3AB549C5970B53918D982393EEB375B61556064376E9B88D`；`latest.yml` SHA-256 `435517A78C1DDF9AB01FDB90E5472FC6EF073F18FFC23EFE8B27343977A879B3`。安装包未签名，未安装、提交、推送或发布 GitHub Release。
+
+## 2026-09-04 MCP 媒体导入双权限边界
+
+- 根因：`canvas_import_media` 只检查 `externalFileAccess`，所以该权限开启但 `editCanvas` 关闭时仍会打开媒体选择器，并可在用户选取后修改画布。
+- 保护行为：媒体导入必须同时具备 `externalFileAccess` 和 `editCanvas`；任一权限缺失时在 adapter 边界返回 `MCP_PERMISSION_DENIED`，且不调用 `requestMediaImport`。现有外部文件权限错误优先级保持不变。
+- 回归位置：`apps/renderer/src/app/mcp-workspace-adapter.test.ts` 的 `requires edit permission before opening the media picker`。该用例修复前返回 `ok: true`，最小实现后通过。
+- 新鲜验证：单文件回归 16/16；MCP 相关 5 文件 39/39；`npx.cmd tsc -p apps/renderer/tsconfig.json --noEmit` 退出 0。未打包、安装或执行外部服务操作。
+
+## 2026-09-04 Comfly 视频与 RelayMe 反推目录正证据边界
+
+- 根因：Comfly 目录把 provider-wide `/v2/videos/generations` 当成模型级视频能力，导致没有 `视频` tag 的对话、识图和动作模型进入视频生成目录；RelayMe 目录又把“text 且非 video-only”当成反推能力，导致普通文本模型、`supportsVision: false` 以及仅文本输入模型被提升为图片反推模型。
+- 保护行为：Comfly 只有同时声明规范视频 endpoint 和明确 `视频` tag 才获得 `video_generation`。RelayMe 只有明确的图片输入正证据才获得 `vision`/`reverse_prompt`；唯一 fallback 是项目真实反推 UI harness 已固定验证的精确 deployment `gemini-3.1-flash-lite`，且 `supportsVision: false` 或显式仅文本 modalities 优先否决该 fallback。
+- 回归位置：`packages/desktop-core/src/provider-model-catalog.test.ts` 覆盖 Comfly 对话/识图/动作负例、明确视频正例、RelayMe 缺失视觉证据负例、显式视觉否定、仅文本输入，以及已验证 RelayMe fallback 正例。4 条收紧用例在实现前按预期失败，实现后目录单测 27/27 通过。
+- 新鲜验证：provider catalog、RelayMe 服务、provider bridge/IPC、Skill chat 与 renderer profile 联合回归 6 文件 241/241；`npm.cmd run typecheck` 退出 0；目标 diff whitespace 检查退出 0。未打包、安装或发起任何付费/外部生成。
+
+## 2026-09-04 独立 Provider UI 截图证据加固
+
+- 根因：`work/qa-installed-provider-isolation.mjs` 的拖动辅助只根据拖动前的 bbox 返回成功，截图矩形只裁剪 `x/y` 而保留原始 `width/height`，写盘后也不检查截图像素；因此反推区域即使仍在视口外，结果仍可记录 `positioned: false` 并把全白 PNG 当作通过证据。
+- 保护行为：拖动后必须重新读取目标 bbox 并确认与 viewport 相交；三类 UI 证据都必须记录并断言 `positioned === true` 与 element scope。截图矩形同时裁剪四个字段，PNG 经 Electron `nativeImage` 解码为 bitmap 后必须包含非白且非单色的 RGB 像素，否则验收立即失败。独立脚本版本固定为 `1.6.99`，环境变量不能把它降级到其他版本。
+- 回归位置：`work/qa-installed-provider-isolation.test.mjs`；辅助契约位于 `work/qa-provider-isolation-helpers.mjs`。红灯首先得到 4 个预期失败，最小实现后目标文件 12/12 通过；全部 `work/*.test.mjs` 纯单元契约 59/59 通过，三个目标 `.mjs` 的 `node --check` 退出 0。
+- 验证命令：`node --test work/qa-installed-provider-isolation.test.mjs`；`$tests = Get-ChildItem work -File -Filter '*.test.mjs' | ForEach-Object { $_.FullName }; node --test $tests`。本轮未启动安装版、未调用外部服务、未执行安装或付费生成。
+
+## 2026-09-04 独立 Comfly 安装版目录验收契约
+
+- 新增独立 `work/qa-installed-comfly-catalog.mjs`，不修改 RelayMe gate。它固定正式安装入口 `D:\CanvasAtelier\Canvas Atelier.exe`、`resources\app.asar` 与版本 `1.6.99`，要求调用方显式提供两个 SHA-256，再对真实文件流式哈希；任一哈希或版本不符都在 provider 网络检查前失败。
+- 隔离边界只复制 `Local State` 与 `providers/comfly` 到经过校验的 `mkdtemp` QA 根；不复制 RelayMe、活动供应商文件、项目或 IndexedDB。启动环境移除 token、password、secret、key、auth 等凭据形状变量，脚本不调用 reveal、生成、反推、导入或聊天 API。
+- 只读验收通过 renderer provider bridge 检查 Comfly `configured=true`、`locked=false`、连接状态 `connected`，并要求返回目录全部属于 Comfly 且 `image_generation`、`video_generation`、`reverse_prompt` 各至少一条。隔离 profile 内激活 Comfly 后，UI 依次创建图片生成、视频生成和 Reverse Agent 节点，只读取三个 select，要求选中值及所有选项均为 Comfly、无 RelayMe。
+- 若正式 Comfly 目录缺失、`configured=false` 或安全状态锁定，runner 写入 `blocked.json`、状态为 `BLOCKED` 并设置非零退出码；其他错误写入脱敏 `failure.json`。测试位于 `work/qa-installed-comfly-catalog.test.mjs`，初始 11 项全部红灯，后续清理顺序、扩展环境凭据名与 quoted failure 值也分别经过红转绿。
+- 本轮只运行纯单元测试与 `node --check`，没有启动安装版、没有调用外部服务、没有安装或付费操作；真实安装版 Comfly 状态仍待带双 SHA 的正式执行取得证据。
+
+## 2026-09-05 Electron CSP frame-ancestors 响应头修复
+
+- 根因：共享 renderer 把 `frame-ancestors 'none'` 放在 `Content-Security-Policy` 的 `<meta>` 中。CSP Level 3 明确要求浏览器忽略 meta 策略内的该指令，因此安装版持续输出 `frame-ancestors is ignored`，且原本期望的防嵌入策略实际没有生效；这不是 QA 对普通 console error 的误判。
+- 保护行为：原有 script/style/image/media/font/connect/object/base/form meta 限制保持不变；只把 `frame-ancestors 'none'` 移到 Electron `defaultSession` 的 `file://` document 响应头。modern 与 legacy shell 都在创建窗口前注册；helper 保留已有 CSP header 并按大小写不敏感查找 header 名。只有实际生效且 source list 精确为 `'none'` 的 directive 才去重；已有 `'self'`、`*` 或其他弱值时会追加独立的 conjunctive `'none'` policy，不能绕过防嵌入边界。图片/脚本等非文档响应保持不变。
+- 回归位置：`packages/desktop-core/src/renderer-security-headers.test.ts` 首轮先因 helper 缺失取得预期 RED；reviewer 加固又让弱 `'self'` 和多 policy `*` 两项按预期失败，最终 4/4 通过，覆盖混合大小写精确 `'none'` 和弱策略加固。`work/qa-csp-packaged-smoke.test.mjs` 首轮先因正式 helper/runner 缺失取得 2 个预期 RED；reviewer 随后用 1/2 RED 证明 `firstWindow().url()` 存在启动竞态，runner 现在先等待精确 `file:` renderer `index.html` 和 `domcontentloaded` 再复制 URL，最终 2/2 通过；同时继续禁止不存在的 `ChildProcess.exited` 与会触发原生退出确认框的 `electronApp.close()`。
+- 新鲜验证：CSP/runtime 聚焦契约 28/28；desktop-core/desktop-bridge/desktop-modern 宽回归 92 个文件、1017 个测试通过，2 个性能文件/测试按设计跳过；desktop-core、modern、legacy typecheck 通过；desktop-core、renderer、modern build 通过。
+- reviewer 后的隐藏 packaged-directory smoke 使用 Electron 43.1.0 且不读取正式数据：document response 实测为 `content-security-policy: frame-ancestors 'none'`，meta 不含该指令，CSP console message 为 0；runner exit 0、状态 `passed`，PID 7368 和隔离 `canvasforge-qa-csp-YS8uZK` 根均清零。临时 `dist-builder/csp-smoke` 随后经路径/进程校验删除。报告为 `work/qa-csp-warning-fix.md`。
+- 交付边界：当前已安装 1.6.99 仍是修复前二进制。必须在所有并行修改合并后重新构建/安装最终版本，并对 `D:\CanvasAtelier\Canvas Atelier.exe` 重跑同一 CSP smoke，才能把安装版该项标为通过。
+
+## 2026-09-05 MCP 产品身份与默认运行时路径隔离
+
+- 根因：MCP 客户端配置键已是 `canvas_atelier`，但品牌迁移只完成了配置入口；stdio server 握手、工具/错误文案、设置页、工作流 `productName` 以及 bridge 无显式环境变量时的 AppData fallback 仍写死 `CanvasForge`。这会让新配置看起来仍属于旧产品，并可能在手工启动 bridge 时读取旧产品目录。
+- 保护行为：用户可见身份统一为 `Canvas Atelier`，稳定 server name 为 `canvas_atelier`；Codex 配置仍只写 `[mcp_servers.canvas_atelier]`。新增备份/原子临时文件使用 `.canvas-atelier-*` 后缀，既有 `canvasforge` server 项和旧 `.canvasforge-backup-*` 文件原样保留；内部 `canvasforge.mcp.*` wire protocol、pipe 名和 `CANVASFORGE_MCP_RUNTIME_FILE` 环境变量继续兼容，不做破坏性迁移。无显式 runtime 环境变量时只回退到 `%APPDATA%\Canvas Atelier\mcp\runtime-modern-v1.json`，不再读取 `%APPDATA%\CanvasForge`。
+- 回归位置：`packages/mcp-bridge/src/server.test.ts`、`runtime-client.test.ts`、`runtime-path.test.ts`，`packages/domain/src/codex-workflow-contract.test.ts`、`mcp-workflow.test.ts`，`packages/desktop-core/src/mcp-client-config.test.ts`、`mcp-runtime-service.test.ts`、`mcp-stdio-health.test.ts`，以及 `apps/renderer/src/settings/SettingsDrawer.test.tsx`。首轮 21 项按预期失败，覆盖旧身份、旧 fallback 和旧后缀；最小实现后 MCP 聚焦 8 文件 101/101、首轮 MCP 宽回归 17 文件 223/223 通过。
+- 独立复核随后发现 renderer adapter 的权限、无效请求、任务、确认、持久化和付费任务错误，以及 Agent 空状态介绍仍含用户可见 `CanvasForge`。新增 `mcp-product-identity-scan.test.ts` 扫描 `apps`/`packages` 生产源码；allowlist 只容许稳定 wire protocol、pipe、兼容资源文件名、旧环境变量、旧数据迁移、旧快捷方式清理及隔离 formal-QA 内部命名。扫描首先以 14 个未授权命中 RED，行为回归同时 5 项失败、108 项通过；替换用户文案后聚焦 3 文件 114/114 通过，生产扫描 1/1 通过。
+- 供应商隔离复核：复核修正后重新运行 Comfly/RelayMe 目录、RelayMe 服务、bridge、IPC、Agent 和 renderer profile 联合回归，6 文件 241/241 通过。本次没有修改 provider 选择、凭据或模型路由。复核后的 MCP 宽回归 19 文件 321/321 通过；完整工作区 `npm.cmd run typecheck` 退出 0，MCP bridge build 退出 0。
+- 交付边界：未打包、未安装、未修改或删除用户 MCP 配置/旧 CanvasForge 数据。最终安装版仍必须重跑真实 Codex/WorkBuddy 连接、14 工具和零付费画布往返，才能把安装版 MCP 标为通过。
+
+## 2026-09-05 安装版 MCP 14 工具零付费全链与重启持久化
+
+- 正式安装入口 `D:\CanvasAtelier\Canvas Atelier.exe`、版本 1.6.99 在完全隔离的 `APPDATA`、`LOCALAPPDATA` 与 user-data root 下完成 bundled MCP 验收；真实项目、供应商凭据和用户 MCP 配置均未读取或改写。本轮没有打包、安装、联网或真实付费生成。
+- bundled schema 精确为 14 项，SHA-256 `7a765fe40550d2cf78dc44b3f845a895d85b2106cf91c242da64bc6283a58576`；运行 ledger 证明 14/14 工具均被实际调用。精确计数：describe 1、read 11、get_selection 1、get_job_status 5、plan 2、apply 2、create 5、update 1、connect 1、move 1、delete_selection 2、run_node 7、cancel_job 1、import_media 1。
+- 受控零付费 executor 记录 2 次提交、2 次轮询、1 次 provider cancel、`completed`/`cancelled` 两种 terminal ACK，且 `networkAttemptCount=0`。完成任务的受管结果落回节点；可取消任务先进入 running，再由 MCP 调用真实 provider cancel channel，最终状态为 cancelled。
+- `canvas_get_selection` 使用真实 React Flow DOM 选中节点；`canvas_delete_selection` 经安装版 UI 确认、同一计划重试与 apply 后节点消失。`canvas_import_media` 的请求抵达可信 filechooser bridge，由 Playwright 注入 QA root 内 2x2 PNG，不弹原生对话框；生成的 `image_input` 节点、坐标和 managed asset 均由 MCP read 验证。
+- 同一隔离 root 下先保存 MCP 创建/修改的节点、边、生成结果与导入媒体，再关闭首个 MCP client、destroy 隐藏窗口、`app.exit(0)`，清除隔离 runtime descriptor 后重启同一安装版。第二个全新 bundled MCP client 读取到完全相同 revision 13、3 个要求节点、原 edge 与媒体 node/asset；先前删除的 selection node 仍不存在。
+- 最终执行的两组 Electron main、Playwright wrapper 与 MCP bridge PID 均精确停止，QA root 随后移除；不调用 `app.close()`，因此没有原生保存/退出对话框。验收报告：`work/qa-installed-mcp-zero-cost-full-chain.md`。
+- 边界：当前 `canvas_run_node` 的安装版正向证据覆盖 image completion 与 image cancellation，尚未分别覆盖 video_generation 和 reverse_agent 的安装版执行；它们需要独立的零付费 video IPC 与完整 reverse result/media fixture，不能由“14 工具都调用”外推为已通过。
+
+## 2026-09-05 安装版 MCP 视频与反推零付费执行门禁
+
+- 新增独立 `work/qa-installed-mcp-video-reverse-zero-cost.mjs`，不修改 14-tool/restart gate。它在隔离安装版 1.6.99 内注册 video submit/poll/cancel/ACK 和 reverse analyze IPC，移除凭据形状环境变量并拒绝所有 main-process `fetch`；真实项目、供应商配置、凭据和 MCP 客户端配置均未读取或改写。
+- 视频节点通过 MCP 三段付费确认后，真实 model-job 队列提交 1、轮询 1、取消 0、completed ACK 1；`canvas_get_job_status=completed`，视频 asset `fedcba9876543210` 回写同一 `video_generation` 节点并由 MCP workflow read 验证。
+- 反推输入通过 trusted filechooser 导入 QA root 内 2x2 PNG，不弹原生 picker；managed asset `1701ee1866e400ef` 被写入 `reverse_agent.referenceAssetIds`。MCP 三段确认后 analyze IPC 只调用一次，严格匹配 route、task、run identity、SHA/byte/media/ordered-media identity，并返回带 `@图片1` 素材职责的完整合法结果。
+- 反推不属于 modelJobs；其 `reverseAgentRunId` 仍由 `canvas_get_job_status` 读到 completed，随后 MCP read 验证 `reverseAgentRunState=completed` 与 identity-matched result 已持久化。首次安装版 RED 是 gate 错把通用 `executionState=completed` 套到反推节点；TDD 以 `executionState=idle` 的合法 fixture 复现并改为检查真实 reverse 状态，没有修改生产代码。
+- 最终 1.6.99 gate exit 0/status passed，`networkAttemptCount=0`；PID 58672、47896、34792 均停止，隔离 root `canvasforge-qa-installed-mcp-video-reverse-7fJQpS` 已删除。目标单测 6/6、相关源码 8 文件 408/408、两个 node syntax check 均通过。报告为 `work/qa-installed-mcp-video-reverse-zero-cost.md`。
+- 发布边界：以上只是当前安装版 1.6.99 的受控零付费资格验证，不是 live provider/真实付费结果。最终 1.6.100 安装后必须用 `CANVASFORGE_QA_EXPECTED_VERSION=1.6.100` 重跑同一脚本才能转为正式版本证据。

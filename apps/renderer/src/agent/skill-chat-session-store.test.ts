@@ -79,4 +79,29 @@ describe('skill chat conversation storage', () => {
       .toBe('为 产品 创建一个高级电商场景，并保');
     expect(deriveAgentConversationTitle('   ')).toBe('新任务');
   });
+
+  it('persists the advanced reasoning levels supported by local GPT-6 Astra', () => {
+    const conversation = { ...createAgentConversation(900), reasoningEffort: 'max' as const };
+    writeAgentConversationCollection('astra', {
+      version: 2,
+      activeConversationId: conversation.id,
+      conversations: [conversation],
+    });
+
+    expect(readAgentConversationCollection('astra', 901).conversations[0]?.reasoningEffort).toBe('max');
+  });
+
+  it('migrates the removed ultra effort to max without discarding the conversation', () => {
+    const conversation = { ...createAgentConversation(910), id: 'legacy-ultra', reasoningEffort: 'ultra' };
+    window.localStorage.setItem('agent-canvas:skill-chat:v2:astra-migration', JSON.stringify({
+      version: 2,
+      activeConversationId: conversation.id,
+      conversations: [conversation],
+    }));
+
+    expect(readAgentConversationCollection('astra-migration', 911).conversations[0]).toMatchObject({
+      id: 'legacy-ultra',
+      reasoningEffort: 'max',
+    });
+  });
 });

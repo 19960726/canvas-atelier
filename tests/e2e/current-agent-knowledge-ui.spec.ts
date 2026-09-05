@@ -4,7 +4,7 @@ import { openEmptyApp } from './helpers/app';
 
 const artifact = (name: string) => path.join(process.cwd(), 'artifacts', '2026-08-06-agent-multimedia', name);
 
-test('captures Agent bottom selectors and the Figma reverse knowledge picker', async ({ page }) => {
+test('captures Agent bottom selectors and the Canvas reverse knowledge picker', async ({ page }) => {
   await page.setViewportSize({ width: 1680, height: 1050 });
   await page.addInitScript(() => localStorage.setItem('novus.theme.mode', 'dark'));
   await openEmptyApp(page);

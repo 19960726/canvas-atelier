@@ -15,7 +15,7 @@ const viewports = [
 ];
 
 for (const theme of ['light', 'dark'] as const) {
-  test(`automatically opens the exact legacy starter as the Figma workbench in ${theme}`, async ({ page }, testInfo) => {
+  test(`automatically opens the exact legacy starter as the Canvas workbench in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openApp(page);
@@ -36,7 +36,7 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.getByTestId('agent-panel')).toBeVisible();
     expect((await e2eState(page)).projectNodeTypes).toEqual(['module', 'module', 'module', 'module', 'module', 'module', 'module']);
 
-    await captureLayoutScreenshot(page, testInfo, `legacy-to-figma-workbench-${theme}`);
+    await captureLayoutScreenshot(page, testInfo, `legacy-to-canvas-workbench-${theme}`);
   });
 }
 

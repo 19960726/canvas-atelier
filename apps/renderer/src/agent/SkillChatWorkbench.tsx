@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent } from 'react';
 import { Bot, Diamond, Grid3X3, Plus, RotateCcw, X } from 'lucide-react';
-import type { ChatSkillBridgeResult, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
+import type { ChatSkillBridgeResult, CodexCliProfile, CodexReasoningEffort, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import type { ImageMentionValue, MentionableImageReference } from './ImageMentionComposer';
 import { reduceTransientPopover } from '../app/transient-popover';
@@ -41,6 +41,8 @@ type SkillMessage = {
   readonly request?: SkillRequestSummary;
 };
 
+type AgentChatProfile = ProviderBridgeProfile | CodexCliProfile;
+
 type SkillRequestStatus = 'sending' | 'completed' | 'error';
 
 type SkillChatMentionReference = MentionableImageReference & {
@@ -49,13 +51,15 @@ type SkillChatMentionReference = MentionableImageReference & {
 };
 
 export interface SkillChatRequest {
-  readonly provider: ProviderBridgeProfile['provider'];
+  readonly provider: ProviderBridgeProfile['provider'] | 'codex';
   readonly modelRoute: string;
+  readonly requestId?: string;
   readonly messages: readonly { readonly role: 'user' | 'assistant'; readonly content: string }[];
   readonly context: { readonly knowledgeBaseIds: readonly string[]; readonly projectMemoryIds: readonly string[] };
   readonly referenceAssetIds?: readonly string[];
   readonly referenceMentions?: readonly { readonly assetId: string; readonly label: string; readonly mention: string }[];
   readonly agentMode?: 'chat' | 'original' | 'codex';
+  readonly reasoningEffort?: CodexReasoningEffort;
   readonly visualAnalysis?: boolean;
 }
 
@@ -81,7 +85,14 @@ export interface SkillWorkflowDraftRequest {
 
 const IMAGE_MENTION_CAPABILITY_ERROR = '当前模型不支持图片引用，请切换具备视觉能力的聊天模型。';
 const MEDIA_CAPABILITY_ERROR = '当前模型不支持图片或视频，请切换视觉模型后再引用';
-const MEDIA_CAPABILITY_ERRORS = new Set([IMAGE_MENTION_CAPABILITY_ERROR, MEDIA_CAPABILITY_ERROR]);
+const CODEX_IMAGE_MENTION_CAPABILITY_ERROR = 'GPT-6 Astra 当前为文本/MCP 模式，不支持图片引用；请切换到“对话”模式并选择视觉模型。';
+const CODEX_MEDIA_CAPABILITY_ERROR = 'GPT-6 Astra 当前为文本/MCP 模式，不支持图片或视频粘贴；请切换到“对话”模式并选择视觉模型。';
+const MEDIA_CAPABILITY_ERRORS = new Set([
+  IMAGE_MENTION_CAPABILITY_ERROR,
+  MEDIA_CAPABILITY_ERROR,
+  CODEX_IMAGE_MENTION_CAPABILITY_ERROR,
+  CODEX_MEDIA_CAPABILITY_ERROR,
+]);
 const AGENT_REQUEST_TIMEOUT_MS = 30_000;
 const REQUIRED_AGENT_KNOWLEDGE_CHOICES = [
   { knowledgeBaseId: 'scene-skill', displayName: '场景 Skill', description: '产品场景、构图、材质与灯光规则' },
@@ -125,6 +136,7 @@ export interface SkillCanvasActionRequest {
 export interface SkillChatWorkbenchProps {
   readonly projectId: string;
   readonly profiles: readonly ProviderBridgeProfile[];
+  readonly codexProfiles?: readonly CodexCliProfile[];
   readonly knowledgeBases: readonly KnowledgeBaseStateSummary[];
   readonly projectMemoryIds: readonly string[];
   readonly reverseTimeline: readonly ReverseTimelineEntry[];
@@ -137,11 +149,25 @@ export interface SkillChatWorkbenchProps {
   readonly draftWorkflowFromAnalysis?: (request: SkillWorkflowDraftRequest) => void;
   readonly onClose?: () => void;
   readonly chat: (request: SkillChatRequest) => Promise<ChatSkillBridgeResult>;
+  readonly cancelChat?: (requestId: string) => Promise<boolean>;
+}
+
+const MAX_AGENT_PROJECT_MEMORY_IDS = 32;
+
+function clampProjectMemoryIds(
+  selectedIds: readonly string[],
+  availableIds: readonly string[],
+): string[] {
+  const available = new Set(availableIds.slice(0, MAX_AGENT_PROJECT_MEMORY_IDS));
+  return [...new Set(selectedIds)]
+    .filter((id) => available.has(id))
+    .slice(0, MAX_AGENT_PROJECT_MEMORY_IDS);
 }
 
 export function SkillChatWorkbench({
   projectId,
   profiles,
+  codexProfiles: localCodexProfiles = [],
   knowledgeBases,
   projectMemoryIds,
   reverseTimeline,
@@ -154,6 +180,7 @@ export function SkillChatWorkbench({
   draftWorkflowFromAnalysis,
   onClose,
   chat,
+  cancelChat,
 }: SkillChatWorkbenchProps) {
   const chatProfiles = useMemo(
     () => listAgentChatProfiles(profiles),
@@ -162,6 +189,10 @@ export function SkillChatWorkbench({
   const availableKnowledge = useMemo(
     () => knowledgeBases.filter((knowledgeBase) => knowledgeBase.status === 'active'),
     [knowledgeBases],
+  );
+  const availableProjectMemoryIds = useMemo(
+    () => [...new Set(projectMemoryIds)].slice(0, MAX_AGENT_PROJECT_MEMORY_IDS),
+    [projectMemoryIds],
   );
   const initialCollection = useRef(readAgentConversationCollection(projectId)).current;
   const initialConversation = initialCollection.conversations.find((conversation) => conversation.id === initialCollection.activeConversationId)
@@ -172,7 +203,9 @@ export function SkillChatWorkbench({
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>(
     () => [...initialConversation.knowledgeBaseIds],
   );
-  const [selectedProjectMemoryIds, setSelectedProjectMemoryIds] = useState<string[]>(() => initialConversation.projectMemoryIds.length > 0 ? [...initialConversation.projectMemoryIds] : [...projectMemoryIds]);
+  const [selectedProjectMemoryIds, setSelectedProjectMemoryIds] = useState<string[]>(() => initialConversation.projectMemoryIds.length > 0
+    ? clampProjectMemoryIds(initialConversation.projectMemoryIds, availableProjectMemoryIds)
+    : [...availableProjectMemoryIds]);
   const [messages, setMessages] = useState<SkillMessage[]>(() => [...initialConversation.messages]);
   const [composer, setComposer] = useState<ImageMentionValue>({ text: '', citations: [] });
   const [importedReferenceImages, setImportedReferenceImages] = useState<SkillChatReferenceImage[]>([]);
@@ -189,7 +222,7 @@ export function SkillChatWorkbench({
   const [libraryCategory, setLibraryCategory] = useState<'common' | 'favorite' | 'mine'>('common');
   const [status, setStatus] = useState<'idle' | 'sending'>('idle');
   const [agentMode, setAgentMode] = useState<'chat' | 'original' | 'codex'>(initialConversation.mode);
-  const [reasoningEffort, setReasoningEffort] = useState<'low' | 'medium' | 'high'>(initialConversation.reasoningEffort);
+  const [reasoningEffort, setReasoningEffort] = useState<CodexReasoningEffort>(initialConversation.reasoningEffort);
   const [error, setError] = useState<string | null>(null);
   const [pendingCanvasAction, setPendingCanvasAction] = useState<SkillCanvasActionRequest | null>(null);
   const [pendingCanvasModelRoute, setPendingCanvasModelRoute] = useState<string | undefined>(undefined);
@@ -197,18 +230,35 @@ export function SkillChatWorkbench({
   const [expandedReverseIds, setExpandedReverseIds] = useState<string[]>([]);
   const [dismissedWorkflowOfferIds, setDismissedWorkflowOfferIds] = useState<string[]>([]);
   const requestId = useRef(0);
+  const activeLocalCodexRequestId = useRef<string | null>(null);
+  const cancelChatRef = useRef(cancelChat);
+  cancelChatRef.current = cancelChat;
   const pasteInsertionSequence = useRef(0);
   const pasteImportQueues = useRef(new Map<number, Promise<void>>([[0, Promise.resolve()] ]));
   const pasteImportState = useRef(createPasteImportState());
   const importTokenSequence = useRef(0);
   const mounted = useRef(true);
   const pendingPasteMarkers = useRef(new Set<string>());
-  const codexProfiles = useMemo(() => listCodexAgentProfiles(chatProfiles), [chatProfiles]);
+  const codexProfiles = useMemo<AgentChatProfile[]>(() => [
+    ...localCodexProfiles,
+    ...listCodexAgentProfiles(chatProfiles).filter((profile) => (
+      !localCodexProfiles.some((localProfile) => localProfile.modelRoute === profile.modelRoute)
+    )),
+  ], [chatProfiles, localCodexProfiles]);
   const visibleChatProfiles = agentMode === 'codex' ? codexProfiles : chatProfiles;
   const selectedProfile = visibleChatProfiles.find((profile) => profile.modelRoute === modelRoute);
+  const isLocalCodexProfile = selectedProfile?.provider === 'codex';
   const supportsImageMentions = supportsAgentMediaReferences(selectedProfile, agentMode);
+  const imageMentionCapabilityError = isLocalCodexProfile ? CODEX_IMAGE_MENTION_CAPABILITY_ERROR : IMAGE_MENTION_CAPABILITY_ERROR;
+  const mediaCapabilityError = isLocalCodexProfile ? CODEX_MEDIA_CAPABILITY_ERROR : MEDIA_CAPABILITY_ERROR;
   const pasteContext = useRef({ generation: 0, supportsMedia: supportsImageMentions });
   pasteContext.current.supportsMedia = supportsImageMentions;
+  useEffect(() => {
+    if (selectedProfile?.provider === 'codex') return;
+    if (reasoningEffort === 'xhigh' || reasoningEffort === 'max') {
+      setReasoningEffort('high');
+    }
+  }, [reasoningEffort, selectedProfile?.provider]);
   const referenceImporting = isPasteImportBusy(pasteImportState.current);
   useEffect(() => {
     if (activePopover === null) return undefined;
@@ -329,15 +379,28 @@ export function SkillChatWorkbench({
   useEffect(() => {
     mounted.current = true;
     return () => {
+      const activeRequestId = activeLocalCodexRequestId.current;
+      if (activeRequestId !== null) void cancelChatRef.current?.(activeRequestId).catch(() => false);
       mounted.current = false;
       pasteImportState.current = invalidatePasteImportState(pasteImportState.current);
       pasteImportQueues.current.clear();
       pendingPasteMarkers.current.clear();
     };
   }, []);
+
+  const cancelActiveCodexRequest = async (): Promise<boolean> => {
+    const activeRequestId = activeLocalCodexRequestId.current;
+    if (activeRequestId === null) return false;
+    requestId.current += 1;
+    try {
+      return await (cancelChatRef.current?.(activeRequestId) ?? Promise.resolve(false));
+    } finally {
+      if (activeLocalCodexRequestId.current === activeRequestId) activeLocalCodexRequestId.current = null;
+    }
+  };
   const toggleImageMention = (reference: SkillChatMentionReference) => {
     if (!supportsImageMentions) {
-      setError(IMAGE_MENTION_CAPABILITY_ERROR);
+      setError(imageMentionCapabilityError);
       return;
     }
     setComposer((current) => {
@@ -364,7 +427,7 @@ export function SkillChatWorkbench({
       return;
     }
     if (!supportsImageMentions) {
-      setError(IMAGE_MENTION_CAPABILITY_ERROR);
+      setError(imageMentionCapabilityError);
       return;
     }
     if (mentionReferences.length > 0) {
@@ -408,6 +471,10 @@ export function SkillChatWorkbench({
     file?: File,
     options?: { readonly fromClipboard?: boolean; readonly insertionMarker?: string; readonly generation?: number },
   ): Promise<boolean> => {
+    if (isLocalCodexProfile) {
+      setError(mediaCapabilityError);
+      return false;
+    }
     if (hasCurrentReferenceImport() && options?.fromClipboard !== true) return false;
     const isVideo = file !== undefined && (file.type.startsWith('video/') || /\.(?:mp4|webm|mov)$/iu.test(file.name));
     const importer = isVideo ? onImportReferenceVideo : onImportReferenceImage;
@@ -419,7 +486,7 @@ export function SkillChatWorkbench({
       if (imported === null) return false;
       if (generation === undefined || !isPasteGenerationCurrent(generation)) return false;
       if (!pasteContext.current.supportsMedia) {
-        setError(MEDIA_CAPABILITY_ERROR);
+        setError(mediaCapabilityError);
         return false;
       }
       const media = isVideo ? canonicalReferences.current.videos : canonicalReferences.current.images;
@@ -454,7 +521,7 @@ export function SkillChatWorkbench({
       for (const item of media) {
         if (!isPasteGenerationCurrent(generation)) return;
         if (!pasteContext.current.supportsMedia) {
-          setError(MEDIA_CAPABILITY_ERROR);
+          setError(mediaCapabilityError);
           return;
         }
         const imported = await importReferenceFile(item.file, {
@@ -501,7 +568,7 @@ export function SkillChatWorkbench({
         insertComposerText(current.text, payload.text, selection.start, selection.end),
         mentionReferences,
       ));
-      setError(MEDIA_CAPABILITY_ERROR);
+      setError(mediaCapabilityError);
       if (payload.text.length > 0) setTimeout(() => {
         if (isPasteGenerationCurrent(generation)) restoreComposerCaret(composerElement, selection.start + payload.text.length);
       }, 0);
@@ -518,6 +585,9 @@ export function SkillChatWorkbench({
       }, 0);
       return;
     }
+    // A pasted file is already a concrete media reference; keep the mention
+    // picker from covering the newly attached thumbnail while the import runs.
+    dispatchPopover({ type: 'close-external' });
     const insertionMarker = createPasteInsertionMarker(pasteInsertionSequence.current++);
     pendingPasteMarkers.current.add(insertionMarker);
     setComposer((current) => reducePasteComposer(
@@ -563,12 +633,11 @@ export function SkillChatWorkbench({
   }, [projectId]);
 
   useEffect(() => {
-    const availableIds = new Set(projectMemoryIds);
     setSelectedProjectMemoryIds((current) => {
-      const next = current.filter((id) => availableIds.has(id));
+      const next = clampProjectMemoryIds(current, availableProjectMemoryIds);
       return sameStringList(current, next) ? current : next;
     });
-  }, [projectMemoryIds]);
+  }, [availableProjectMemoryIds]);
 
   useEffect(() => {
     const receiveGeneratedImage = (event: Event) => {
@@ -577,7 +646,7 @@ export function SkillChatWorkbench({
       const reference = mentionReferences.find((candidate) => candidate.assetId === assetId);
       if (reference === undefined) return;
       if (!supportsImageMentions) {
-        setError(IMAGE_MENTION_CAPABILITY_ERROR);
+        setError(imageMentionCapabilityError);
         return;
       }
       setComposer((current) => {
@@ -627,17 +696,19 @@ export function SkillChatWorkbench({
   const activateConversation = (conversationId: string) => {
     const conversation = conversationCollection.conversations.find((candidate) => candidate.id === conversationId);
     if (conversation === undefined || conversation.id === activeConversationId) return;
+    const cancellingCodex = activeLocalCodexRequestId.current !== null;
+    if (cancellingCodex) void cancelActiveCodexRequest().finally(() => { if (mounted.current) setStatus('idle'); });
     invalidatePastedReferences();
     requestId.current += 1;
     setActiveConversationId(conversation.id);
     setModelRoute(conversation.modelRoute ?? chatProfiles.find((profile) => profile.modelRoute === 'chat-default')?.modelRoute ?? chatProfiles[0]?.modelRoute);
     setSelectedKnowledgeBaseIds([...conversation.knowledgeBaseIds]);
-    setSelectedProjectMemoryIds([...conversation.projectMemoryIds]);
+    setSelectedProjectMemoryIds(clampProjectMemoryIds(conversation.projectMemoryIds, availableProjectMemoryIds));
     setMessages([...conversation.messages]);
     setAgentMode(conversation.mode);
     setReasoningEffort(conversation.reasoningEffort);
     setComposer({ text: '', citations: [] });
-    setStatus('idle');
+    setStatus(cancellingCodex ? 'sending' : 'idle');
     setPendingCanvasAction(null);
     setCanvasActionRunning(false);
     setError(null);
@@ -645,6 +716,8 @@ export function SkillChatWorkbench({
   };
 
   const createConversation = () => {
+    const cancellingCodex = activeLocalCodexRequestId.current !== null;
+    if (cancellingCodex) void cancelActiveCodexRequest().finally(() => { if (mounted.current) setStatus('idle'); });
     invalidatePastedReferences();
     requestId.current += 1;
     let now = Date.now();
@@ -652,7 +725,7 @@ export function SkillChatWorkbench({
     const created: StoredAgentConversation = {
       ...createAgentConversation(now),
       ...(chatProfiles[0]?.modelRoute === undefined ? {} : { modelRoute: chatProfiles[0].modelRoute }),
-      projectMemoryIds: [...projectMemoryIds],
+      projectMemoryIds: [...availableProjectMemoryIds],
     };
     const next = {
       version: 2 as const,
@@ -669,7 +742,7 @@ export function SkillChatWorkbench({
     setAgentMode(created.mode);
     setReasoningEffort(created.reasoningEffort);
     setComposer({ text: '', citations: [] });
-    setStatus('idle');
+    setStatus(cancellingCodex ? 'sending' : 'idle');
     setPendingCanvasAction(null);
     setCanvasActionRunning(false);
     setError(null);
@@ -692,10 +765,16 @@ export function SkillChatWorkbench({
     invalidatePastedReferences();
     const selectedReferences = resolveSelectedPasteReferences(cleanComposer.citations, mentionReferences);
     if (selectedReferences.length > 0 && !supportsImageMentions) {
-      setError(IMAGE_MENTION_CAPABILITY_ERROR);
+      setError(imageMentionCapabilityError);
       return;
     }
-    const actionKind = detectCanvasActionKind(content);
+    // Provider-backed Codex routes retain the legacy confirmation shortcut.
+    // The local Codex CLI route must receive canvas intent so it can execute
+    // the full, revision-aware canvas_atelier MCP workflow rather than being
+    // reduced to the three legacy generation/reverse actions.
+    const actionKind = agentMode === 'codex' && selectedProfile.provider !== 'codex'
+      ? detectCanvasActionKind(content)
+      : null;
     const isReferencedReverseAnalysis = actionKind === 'reverse_agent' && selectedReferences.length > 0;
     if (actionKind !== null && executeCanvasAction !== undefined && !isReferencedReverseAnalysis) {
       const target = resolveCanvasActionTarget(canvasActionTargets, actionKind);
@@ -736,6 +815,8 @@ export function SkillChatWorkbench({
     const activeKnowledgeBaseIds = new Set(availableKnowledge.map((knowledgeBase) => knowledgeBase.knowledgeBaseId));
     const activeRequestId = requestId.current + 1;
     requestId.current = activeRequestId;
+    const localCodexRequestId = selectedProfile.provider === 'codex' ? createMessageId() : undefined;
+    if (localCodexRequestId !== undefined) activeLocalCodexRequestId.current = localCodexRequestId;
     dispatchPopover({ type: 'close-external' });
     setMessages(nextMessages);
     setComposer({ text: '', citations: [] });
@@ -745,17 +826,18 @@ export function SkillChatWorkbench({
       const result = await withProviderOperationTimeout(chat({
         provider: selectedProfile?.provider ?? 'comfly',
         modelRoute,
+        ...(localCodexRequestId === undefined ? {} : { requestId: localCodexRequestId }),
         messages: nextMessages.map(({ role, content: messageContent }) => ({ role, content: messageContent })),
         context: {
           knowledgeBaseIds: selectedKnowledgeBaseIds.filter((knowledgeBaseId) => activeKnowledgeBaseIds.has(knowledgeBaseId)),
-          projectMemoryIds: [...selectedProjectMemoryIds],
+          projectMemoryIds: clampProjectMemoryIds(selectedProjectMemoryIds, availableProjectMemoryIds),
         },
         ...(selectedReferences.length > 0 ? { referenceAssetIds: selectedReferences.map((reference) => reference.assetId) } : {}),
         ...(selectedReferences.length > 0 ? { referenceMentions: selectedReferences } : {}),
         agentMode,
         ...(agentMode === 'codex' ? { reasoningEffort } : {}),
         visualAnalysis: shouldUseVisualAnalysis(agentMode, content, selectedReferences.length),
-      }), AGENT_REQUEST_TIMEOUT_MS);
+      }), selectedProfile.provider === 'codex' ? 10 * 60_000 : AGENT_REQUEST_TIMEOUT_MS);
       if (requestId.current !== activeRequestId) return;
       setMessages((current) => [...current.map((message) => message.id === userMessage.id && message.request !== undefined
         ? { ...message, request: { ...message.request, status: 'completed' as const } }
@@ -774,6 +856,10 @@ export function SkillChatWorkbench({
         ? { ...message, request: { ...message.request, status: 'error' as const } }
         : message));
       setError(skillChatErrorMessage(caught));
+    } finally {
+      if (localCodexRequestId !== undefined && activeLocalCodexRequestId.current === localCodexRequestId) {
+        activeLocalCodexRequestId.current = null;
+      }
     }
   };
 
@@ -813,7 +899,9 @@ export function SkillChatWorkbench({
       <header className="skill-chat-workbench__header skill-chat-workbench__header--codex">
         <div>
           <h2>Codex Agent <small>画布接入</small></h2>
-          <p><i aria-hidden="true" />运行就绪</p>
+          <p><i aria-hidden="true" />{selectedProfile?.provider === 'codex'
+            ? '本机 CLI 已安装 · 上游调用时验证'
+            : visibleChatProfiles.length > 0 ? '对话就绪' : '等待模型配置'}</p>
         </div>
         <div className="skill-chat-workbench__header-actions">
           <select aria-label="Codex 任务" value={activeConversationId} onChange={(event) => activateConversation(event.target.value)}>
@@ -852,13 +940,18 @@ export function SkillChatWorkbench({
                     aria-pressed={selected}
                     className={selected ? 'is-selected' : undefined}
                     onClick={() => {
+                      if (profile.modelRoute !== modelRoute && activeLocalCodexRequestId.current !== null) {
+                        void cancelActiveCodexRequest().finally(() => { if (mounted.current) setStatus('idle'); });
+                      }
                       invalidatePastedReferences();
                       setModelRoute(profile.modelRoute);
                       dispatchPopover({ type: 'close-external' });
                     }}
                   >
                     <strong>{providerModelLabel(profile, chatProfiles)}</strong>
-                    <span>{selected ? '当前选择' : '选择此模型'}</span>
+                    <span>{profile.provider === 'codex'
+                      ? selected ? '当前选择 · 上游调用时验证' : '本机 CLI · 上游调用时验证'
+                      : selected ? '当前选择' : '选择此模型'}</span>
                   </button>
                 </div>
               );
@@ -893,7 +986,7 @@ export function SkillChatWorkbench({
                 <span><strong>{item.displayName}</strong><small>{available ? `已同步 · ${item.description}` : `尚未同步 · ${item.description}`}</small></span>
               </button>;
             })}
-            {projectMemoryIds.map((memoryId) => {
+            {availableProjectMemoryIds.map((memoryId) => {
               const selected = selectedProjectMemoryIds.includes(memoryId);
               return <button key={memoryId} type="button" aria-pressed={selected} onClick={() => setSelectedProjectMemoryIds((current) => toggleId(current, memoryId))}>
                 <i aria-hidden="true">{selected ? '✓' : ''}</i><span><strong>项目记忆</strong><small>{memoryId}</small></span>
@@ -925,8 +1018,8 @@ export function SkillChatWorkbench({
             </fieldset>
             <fieldset>
               <legend>项目记忆</legend>
-              {projectMemoryIds.length === 0 && <p>没有可选项目记忆。</p>}
-              {projectMemoryIds.map((memoryId) => (
+              {availableProjectMemoryIds.length === 0 && <p>没有可选项目记忆。</p>}
+              {availableProjectMemoryIds.map((memoryId) => (
                 <label key={memoryId}>
                   <input
                     type="checkbox"
@@ -973,14 +1066,14 @@ export function SkillChatWorkbench({
                 </>
               ) : (
                 <>
-                  <div className="skill-chat-workbench__figma-intro skill-chat-workbench__figma-intro--codex">
+                  <div className="skill-chat-workbench__intro skill-chat-workbench__intro--codex">
                     <i aria-hidden="true"><Bot size={22} strokeWidth={1.6} /></i>
-                    <strong>Codex 已接入当前画布</strong>
-                    <p>它会读取画布上下文，通过 CanvasForge MCP 完成操作。命令和文件改写会按确认流程执行。</p>
+                    <strong>Codex 画布助手</strong>
+                    <p>这里用于对话、分析和确认节点任务；外部 Codex 客户端可通过 Canvas Atelier MCP 直接读取和操作画布。</p>
                   </div>
               {chatProfiles.length > 0 && (
                 <div className="skill-chat-workbench__suggestions" aria-label="推荐 Skill">
-                  <button type="button" aria-label="分析当前画布" onClick={() => setComposer({ text: '分析当前画布并指出下一步可优化的节点。', citations: [] })}>
+                  <button type="button" aria-label="梳理创作目标" onClick={() => setComposer({ text: '请帮我梳理创作目标、约束条件和下一步方案。', citations: [] })}>
                     <span className="skill-chat-workbench__suggestion-icon">⌁</span>
                     <span><strong>产品分析</strong><small>点击填入任务</small></span>
                   </button>
@@ -1031,6 +1124,21 @@ export function SkillChatWorkbench({
             <article key={message.id} className={`skill-chat-workbench__message skill-chat-workbench__message--${message.role}`}>
               <span>{message.role === 'user' ? '你的请求' : 'Agent 建议'}</span>
               <p>{message.content}</p>
+              {message.role === 'user' && message.request?.references.length ? (
+                <section className="skill-chat-workbench__sent-references" aria-label="已发送素材">
+                  {message.request.references.map((reference, referenceIndex) => {
+                    const media = allReferenceMedia.find((candidate) => candidate.assetId === reference.assetId);
+                    return (
+                      <div key={`${reference.assetId}-${referenceIndex}`} className="skill-chat-workbench__sent-reference">
+                        {media?.kind === 'video'
+                          ? <video src={media.displayUrl} aria-label={`${reference.label} video`} muted playsInline preload="metadata" />
+                          : media && <img src={media.displayUrl} alt={reference.label} />}
+                        <span><b>{reference.label}</b><small>@图片{referenceIndex + 1}</small></span>
+                      </div>
+                    );
+                  })}
+                </section>
+              ) : null}
               {message.sources && message.sources.length > 0 && (
                 <section className="skill-chat-workbench__sources" aria-label="来源">
                   {message.sources.map((source) => (
@@ -1171,9 +1279,12 @@ export function SkillChatWorkbench({
             </div>
           )}
           <input ref={referenceFileInput} className="sr-only" data-testid="agent-reference-file-input" type="file" accept="image/*,video/mp4,video/webm,video/quicktime" tabIndex={-1} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importReferenceFile(file); }} />
-          <button type="button" className="skill-chat-workbench__tool" aria-label="添加素材" title="导入项目图片或视频" disabled={(onImportReferenceImage === undefined && onImportReferenceVideo === undefined) || referenceImporting} onClick={requestReferenceImport}><Plus size={14} strokeWidth={1.6} /></button>
+          <button type="button" className="skill-chat-workbench__tool" aria-label="添加素材" title={isLocalCodexProfile ? '本机 Codex 暂不支持图片或视频素材' : '导入项目图片或视频'} disabled={isLocalCodexProfile || (onImportReferenceImage === undefined && onImportReferenceVideo === undefined) || referenceImporting} onClick={requestReferenceImport}><Plus size={14} strokeWidth={1.6} /></button>
           <div className="skill-chat-workbench__mode-tabs" role="tablist" aria-label="Agent 模式">
             {([['chat', '对话'], ['original', '原智能'], ['codex', 'Codex']] as const).map(([mode, label]) => <button key={mode} type="button" role="tab" aria-selected={agentMode === mode} className={agentMode === mode ? 'is-active' : undefined} onClick={() => {
+              if (mode !== agentMode && activeLocalCodexRequestId.current !== null) {
+                void cancelActiveCodexRequest().finally(() => { if (mounted.current) setStatus('idle'); });
+              }
               invalidatePastedReferences();
               setAgentMode(mode);
               const profilesForMode = mode === 'codex' ? codexProfiles : chatProfiles;
@@ -1183,7 +1294,7 @@ export function SkillChatWorkbench({
             }}>{label}</button>)}
           </div>
           <button type="button" className="skill-chat-workbench__model-pill" data-testid="agent-model-trigger" aria-label="打开聊天模型菜单" data-selected-model={selectedProfile?.displayName ?? '未配置'} onClick={() => dispatchPopover({ type: 'open', id: 'model' })}>{selectedProfile ? providerModelLabel(selectedProfile, chatProfiles) : agentMode === 'codex' ? '未发现 Codex 模型' : '选择模型'}</button>
-          {agentMode === 'codex' && <select className="skill-chat-workbench__effort" aria-label="推理强度" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as typeof reasoningEffort)}><option value="low">快</option><option value="medium">中</option><option value="high">深</option></select>}
+          {agentMode === 'codex' && <select className="skill-chat-workbench__effort" aria-label="推理强度" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as CodexReasoningEffort)}><option value="low">快</option><option value="medium">中</option><option value="high">深</option>{selectedProfile?.provider === 'codex' && <><option value="xhigh">很深</option><option value="max">最大</option></>}</select>}
           <div className="skill-chat-workbench__composer-actions">
             <button type="button" className="skill-chat-workbench__tool skill-chat-workbench__knowledge-compact" data-testid="knowledge-base-trigger" aria-label="打开知识库" onClick={() => dispatchPopover({ type: 'open', id: 'knowledge' })}><Grid3X3 size={14} strokeWidth={1.6} /></button>
             <button type="button" className="skill-chat-workbench__tool" aria-label="新建对话" onClick={createConversation}><RotateCcw size={14} strokeWidth={1.6} /></button>
@@ -1388,6 +1499,29 @@ function skillChatErrorMessage(caught: unknown): string {
     case 'PROVIDER_UNAVAILABLE':
     case 'PROVIDER_ERROR':
       return '模型服务暂时不可用，请检查网络或连接设置。';
+    case 'CODEX_CLI_NOT_INSTALLED':
+      return '未检测到 Codex CLI，请先安装或更新本机 Codex。';
+    case 'CODEX_CLI_AUTH_REQUIRED':
+      return 'Codex CLI 尚未登录或认证已失效，请先完成 Codex 登录。';
+    case 'CODEX_CLI_UPSTREAM_UNAVAILABLE':
+      return 'GPT-6 Astra 当前上游通道不可用，请检查 Codex 账号的模型权限后重试。';
+    case 'CODEX_CLI_INVALID_REQUEST':
+      return '当前 GPT-6 Astra 请求不受支持，请检查素材与模型设置。';
+    case 'CODEX_CLI_TIMEOUT':
+      return 'GPT-6 Astra 请求超时，请稍后重试。';
+    case 'CODEX_CLI_UNSAFE_RUNTIME':
+      return '当前 Codex CLI 缺少安全执行能力，请更新 Codex 后重试。';
+    case 'CODEX_CLI_MCP_FAILED':
+      return 'Canvas Atelier MCP 操作未完成，未采用后续成功文本。';
+    case 'CODEX_CLI_BUSY':
+      return '已有 Codex 画布请求正在执行，请等待或先切换任务取消。';
+    case 'CODEX_CLI_CANCELLED':
+      return 'Codex 请求已取消。';
+    case 'CODEX_CLI_FORBIDDEN_SIDE_EFFECT':
+      return '已阻止非 Canvas Atelier 的工具调用。';
+    case 'CODEX_CLI_INVALID_RESPONSE':
+    case 'CODEX_CLI_FAILED':
+      return 'Codex CLI 调用失败，请检查本机 Codex 状态后重试。';
     default:
       return 'Agent 对话暂时不可用，请稍后重试。';
   }
@@ -1412,7 +1546,7 @@ function createMessageId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-function providerModelLabel(profile: ProviderBridgeProfile, _profiles: readonly ProviderBridgeProfile[]): string {
+function providerModelLabel(profile: AgentChatProfile, _profiles: readonly ProviderBridgeProfile[]): string {
   const identity = `${profile.modelRoute} ${profile.modelId ?? ''}`.toLocaleLowerCase();
   if (!identity.includes('codex')) return profile.displayName;
   const variant = identity.match(/(?:^|[-_/])(low|medium|high|minimal|max)(?:$|[-_/])/u)?.[1];

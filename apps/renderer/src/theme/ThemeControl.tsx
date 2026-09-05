@@ -4,8 +4,8 @@ import { isThemeMode, type ThemePreference } from './theme';
 
 export function ThemeControl({ theme, compact = false }: { readonly theme: ThemePreference; readonly compact?: boolean }) {
   return (
-    <label className={`theme-control${compact ? ' theme-control--figma' : ''}`} title={`当前主题：${theme.resolvedTheme}`}>
-      {compact ? <span className="theme-control__figma-value">Theme · {theme.resolvedTheme === 'dark' ? 'Dark' : 'Light'}</span> : <>
+    <label className={`theme-control${compact ? ' theme-control--compact' : ''}`} title={`当前主题：${theme.resolvedTheme}`}>
+      {compact ? <span className="theme-control__compact-value">Theme · {theme.resolvedTheme === 'dark' ? 'Dark' : 'Light'}</span> : <>
         <MonitorCog aria-hidden="true" size={14} />
         <span className="theme-control__label">主题</span>
       </>}

@@ -191,6 +191,10 @@ export type {
   TrustedImageDecoder,
 } from './generation-history-provider-sink.js';
 export { isHistoryNetworkPath } from './history-network-path.js';
+export {
+  FRAME_ANCESTORS_POLICY,
+  installRendererSecurityHeaders,
+} from './renderer-security-headers.js';
 export type { HistoryNetworkPathOptions } from './history-network-path.js';
 export { shutdownDesktopServices } from './desktop-shutdown.js';
 export type { DesktopShutdownServices } from './desktop-shutdown.js';
@@ -280,6 +284,45 @@ export {
   redactBridgeDiagnostics,
 } from './preload-api.js';
 export {
+  CODEX_ASTRA_MODEL_ID,
+  CODEX_ASTRA_MODEL_ROUTE,
+  CODEX_ASTRA_PROFILE,
+  CODEX_CLI_CHANNELS,
+  CodexCliBridgeException,
+  parseCodexCliChatRequest,
+  parseCodexCliChatResult,
+  parseCodexCliProfiles,
+  unwrapCodexCliEnvelope,
+} from './codex-cli-contract.js';
+export type {
+  CodexCliBridgeEnvelope,
+  CodexCliBridgeError,
+  CodexCliChatRequest,
+  CodexCliChatResult,
+  CodexCliErrorCode,
+  CodexCliProfile,
+  CodexReasoningEffort,
+} from './codex-cli-contract.js';
+export {
+  buildCodexCliArgs,
+  buildCodexCliProcessEnvironment,
+  createCodexCliService,
+  createNodeCodexCliProcessRunner,
+  normalizeCodexCliError,
+  resolveCodexCliExecutablePath,
+} from './codex-cli-service.js';
+export type {
+  CodexCliKnowledgeContext,
+  CodexCliMcpServer,
+  CodexCliProcessInvocation,
+  CodexCliProcessResult,
+  CodexCliProcessRunner,
+  CodexCliProjectMemoryContext,
+  CodexCliService,
+  CreateCodexCliServiceOptions,
+} from './codex-cli-service.js';
+export { registerCodexCliIpc } from './codex-cli-ipc.js';
+export {
   DEFAULT_PROVIDER_PROFILES,
   PROVIDER_BRIDGE_CHANNELS,
   createComflyProviderService,
@@ -341,6 +384,7 @@ export type {
   DesktopGenerationHistoryBridgeApi,
   DesktopMcpIntegrationBridgeApi,
   DesktopMcpRuntimeBridgeApi,
+  DesktopCodexCliBridgeApi,
   DesktopProviderBridgeApi,
   DesktopProjectImageBridgeApi,
   DesktopRecentProjectBridgeApi,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Cable, Check, Copy, Database, Eye, EyeOff, KeyRound, Layers3, Link2, RefreshCw, ShieldCheck, X } from 'lucide-react';
-import { createCodexWorkflowContract, DEFAULT_MCP_PERMISSION_FLAGS, type McpPermissionFlags } from '@agent-canvas/domain';
+import { createCodexWorkflowContract, type McpPermissionFlags } from '@agent-canvas/domain';
 import type { ThemePreference } from '../theme/theme';
 import type {
   GenerationHistoryCapacityBridgeResult,
@@ -11,6 +11,7 @@ import type {
 import { ProviderModelCatalog, createProviderProfileKey, type CatalogCapability } from './ProviderModelCatalog';
 import { ProviderOperationTimeoutError, withProviderOperationTimeout } from './provider-operation-timeout';
 import { filterProviderCatalogProfiles, listActiveProviderProfiles, selectFirstProfileForCapability } from '../app/provider-profiles';
+import { readMcpPermissions, subscribeMcpPermissions, updateMcpPermissions } from './mcp-permissions';
 
 type ProviderBridgeProvider = ProviderBridgeProfile['provider'];
 
@@ -133,13 +134,13 @@ const MCP_PERMISSION_ITEMS: readonly {
   readonly description: string;
   readonly tone?: 'danger';
 }[] = Object.freeze([
-  { key: 'readCanvas', label: '读取画布', description: '读取当前画布、节点、连线、选中项和工作流能力。' },
-  { key: 'editCanvas', label: '编辑画布', description: '创建和修改节点、连线、分组，并执行事务式写入。' },
-  { key: 'manageCanvas', label: '管理画布', description: '新建、切换、重命名、复制画布，并定位指定节点。' },
-  { key: 'executeAiGeneration', label: '执行 AI 生成', description: '允许工作流触发生图、分析等会消耗模型额度的任务。' },
-  { key: 'exportFiles', label: '导出文件', description: '读取或导出生图结果、工作流和运行归档。' },
-  { key: 'externalFileAccess', label: '外部文件读写', description: '允许访问项目外部文件，默认关闭。' },
-  { key: 'dangerousOperations', label: '危险操作', description: '允许删除、覆盖已有内容和恢复旧快照，默认关闭。', tone: 'danger' },
+  { key: 'readCanvas', label: '读取画布', description: '读取公开节点、连线、选中项和受管任务状态；不返回密钥或本地路径。' },
+  { key: 'editCanvas', label: '编辑画布', description: '创建、更新、连接和移动受支持的画布节点。' },
+  { key: 'manageCanvas', label: '管理画布', description: '预留权限；当前 MCP 没有新建、切换、重命名或复制整张画布的工具。' },
+  { key: 'executeAiGeneration', label: '执行 AI 生成', description: '运行反推、生图和视频节点；付费任务仍需在画布中单独确认。' },
+  { key: 'exportFiles', label: '导出文件', description: '预留权限；当前 MCP 没有导出文件工具。' },
+  { key: 'externalFileAccess', label: '外部文件读写', description: '只能打开 Canvas Atelier 自己的图片或视频选择器；MCP 不能读写任意外部路径。' },
+  { key: 'dangerousOperations', label: '危险操作', description: '允许请求删除当前选中内容；仍需一次性确认，不提供覆盖文件或恢复快照。', tone: 'danger' },
 ]);
 
 export function SettingsDrawer({
@@ -188,7 +189,7 @@ export function SettingsDrawer({
   const [cacheAction, setCacheAction] = useState<CacheAction>(null);
   const [cacheError, setCacheError] = useState<string | null>(null);
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
-const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT_MCP_PERMISSION_FLAGS);
+  const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(readMcpPermissions);
   const [mcpRuntimeStatus, setMcpRuntimeStatus] = useState<McpRuntimePublicStatus | null>(null);
   const [mcpClientStatuses, setMcpClientStatuses] = useState<readonly McpClientStatus[]>([]);
   const [mcpBusyClient, setMcpBusyClient] = useState<McpClientId | null>(null);
@@ -258,6 +259,8 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
       setSavingDefaults(false);
     }
   };
+
+  useEffect(() => subscribeMcpPermissions(setMcpPermissions), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -567,6 +570,10 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
       setActiveProvider(state.activeProvider);
       setSelectedProvider(state.activeProvider ?? providerId);
       setMessage(`${formatProviderName(providerId)} 已切换为当前活动供应商`);
+      // CanvasWorkspace owns the live node route catalog. Notify it after the
+      // durable provider switch so generation and Reverse Agent controls do
+      // not keep rendering the previously active provider's models.
+      globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed', { detail: { provider: providerId } }));
     } catch {
       setMessage(`${formatProviderName(providerId)} 切换失败，请检查供应商配置`);
     } finally {
@@ -674,6 +681,9 @@ const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(DEFAULT
         const status = await provider.getStatus({ provider: 'relayme' });
         setProviderStatuses((current) => ({ ...current, relayme: status }));
       }
+      // Clear generation and Reverse Agent catalogs immediately after the
+      // durable logout so no authenticated RelayMe route remains selectable.
+      globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed', { detail: { provider: state.activeProvider } }));
       setMessage('RelayMe 已退出登录');
     } catch {
       setMessage('RelayMe 退出登录失败，请稍后重试');
@@ -838,7 +848,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
     try {
       const status = await bridge.mcpIntegration[action](client);
       updateMcpClientStatus(status);
-      setMessage(`${formatMcpClientName(client)} · ${formatMcpClientState(status.state)}`);
+      setMessage(formatMcpClientActionResult(status));
     } catch {
       setMcpError(`${formatMcpClientName(client)}_MCP_${action.toUpperCase()}_FAILED`);
     } finally {
@@ -862,7 +872,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
     }
   };
   const toggleMcpPermission = (key: McpPermissionKey) => {
-    setMcpPermissions((current) => ({ ...current, [key]: !current[key] }));
+    setMcpPermissions(updateMcpPermissions((current) => ({ ...current, [key]: !current[key] })));
   };
 
   const knowledgeSyncItems = REQUIRED_KNOWLEDGE_BASES.map((required) => ({
@@ -953,7 +963,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
 
   const cacheControlsDisabled = !bridge?.storage || cacheAction !== null || cacheDirectory?.busy === true;
   return <>
-    <aside className="settings-drawer" aria-label="设置 / Settings" data-canvas-surface="settings" data-figma-surface="settings" data-testid="settings-drawer">
+    <aside className="settings-drawer" aria-label="设置 / Settings" data-canvas-surface="settings" data-testid="settings-drawer">
       <header className="settings-drawer__header">
         <div data-testid="settings-drawer-heading">
           <strong>设置</strong>
@@ -963,7 +973,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           <X size={16} />
         </button>
       </header>
-      <div className="settings-tabs" role="tablist" aria-label="设置分类" data-figma-tabs="segmented">
+      <div className="settings-tabs" role="tablist" aria-label="设置分类" data-canvas-tabs="segmented">
         {([
           ['api', 'API 与模型'],
           ['storage', '存储与备份'],
@@ -1109,7 +1119,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           </div>
         </section>
 
-        <section className="settings-section settings-clearable-cache settings-layer" aria-label="可清理缓存" data-testid="settings-storage-card" data-figma-layout="storage">
+        <section className="settings-section settings-clearable-cache settings-layer" aria-label="可清理缓存" data-testid="settings-storage-card" data-canvas-layout="storage">
           <header><div><strong>可清理缓存</strong><small>只清理可再生成缓存，不删除作品或画布原图。</small></div><button className="settings-danger-button settings-cache-primary-action" type="button" disabled={!capacity || cleaningStorage} onClick={() => { void cleanUnusedMedia(); }}>{cleaningStorage ? '清理中…' : '清理全部缓存'}</button></header>
           <div className="settings-cache-grid">
             {[
@@ -1134,12 +1144,12 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
                 {formatMcpRuntimeState(mcpRuntimeStatus?.state)}
               </b>
             </header>
-            <p>让 Codex 与 WorkBuddy 读取节点能力、规划工作流，并在 CanvasForge 内完成确认后写入画布。</p>
+            <p>让 Codex 与 WorkBuddy 读取节点能力、规划工作流，并在 Canvas Atelier 内完成确认后写入画布。</p>
 
-            <article className="settings-mcp-server" role="region" aria-label="CanvasForge MCP server">
+            <article className="settings-mcp-server" role="region" aria-label="Canvas Atelier MCP server">
               <div className="settings-mcp-server__identity">
                 <i data-mcp-runtime-state={mcpRuntimeStatus?.state ?? 'desktop-only'}><Cable size={15} /></i>
-                <span><strong>CanvasForge MCP</strong><small>canvasforge · stdio</small></span>
+                <span><strong>Canvas Atelier MCP</strong><small>canvas_atelier · stdio</small></span>
               </div>
               {bridge?.mcpRuntime ? (
                 <dl>
@@ -1171,14 +1181,19 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
                     <button type="button" aria-label={`Test ${clientName} connection`} disabled={!desktopAvailable || busy} onClick={() => { void runMcpClientAction(client, 'test'); }}><RefreshCw size={13} className={busy ? 'is-spinning' : undefined} />测试</button>
                     <button type="button" aria-label={`Disconnect ${clientName}`} disabled={!desktopAvailable || busy || !status || status.state === 'unconfigured'} onClick={() => { void runMcpClientAction(client, 'disconnect'); }}><X size={13} />断开</button>
                   </div>
+                  {client === 'workbuddy' && (status?.state === 'configured' || status?.state === 'connected') && (
+                    <p className="settings-mcp-client__trust-hint" data-testid="mcp-workbuddy-trust-hint">
+                      配置匹配不等于 WorkBuddy 已加载：请在 WorkBuddy 的自定义连接器 / 安全审批中对 canvas_atelier 点击 Trust（信任），然后刷新或重启 WorkBuddy。
+                    </p>
+                  )}
                 </article>;
               })}
             </div>
 
             {pendingMcpConnect && <div className="settings-mcp-connect-confirmation" role="dialog" aria-modal="true" aria-label={`Confirm ${formatMcpClientName(pendingMcpConnect)} connection`}>
-              <div><strong>连接 {formatMcpClientName(pendingMcpConnect)}</strong><p>只写入 CanvasForge 这一项；现有 MCP 配置会保留，并在修改前创建时间戳备份。</p></div>
+              <div><strong>连接 {formatMcpClientName(pendingMcpConnect)}</strong><p>只写入 Canvas Atelier 这一项；现有 MCP 配置会保留，并在修改前创建时间戳备份。</p></div>
               <dl>
-                <div><dt>服务名</dt><dd>canvasforge</dd></div>
+                <div><dt>服务名</dt><dd>canvas_atelier</dd></div>
                 <div><dt>传输</dt><dd>stdio</dd></div>
                 <div><dt>工具</dt><dd>14</dd></div>
                 <div><dt>授权</dt><dd>工作流写入与付费任务分别确认</dd></div>
@@ -1195,7 +1210,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
                 <ShieldCheck size={15} />
                 <div>
                   <strong id="mcp-permissions-title">MCP 权限中心</strong>
-                  <small>读取与规划默认开启；实际修改工作流和付费生成仍需在画布中分别确认。</small>
+                  <small>权限保存在本机，并可由 MCP 画布执行层读取；付费任务与删除仍需单独确认。</small>
                 </div>
               </header>
               <div className="settings-mcp-permission-grid">
@@ -1209,7 +1224,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
               </div>
             </section>
             <dl className="settings-mcp-contract-summary" aria-label="Codex 节点能力摘要">
-              <div><dt>协议</dt><dd>{codexWorkflowContract.protocol}</dd></div>
+              <div><dt>协议</dt><dd>本机工作流协议 v1</dd></div>
               <div><dt>节点能力</dt><dd>{codexWorkflowContract.modules.length} 个模块</dd></div>
               <div><dt>执行规则</dt><dd>生成工作流先预览确认</dd></div>
             </dl>
@@ -1452,10 +1467,27 @@ function formatMcpClientName(client: McpClientId): 'Codex' | 'WorkBuddy' {
 function formatMcpClientState(state: McpClientStatus['state'] | undefined): string {
   return ({
     unconfigured: '未配置',
-    configured: '已配置',
-    connected: '已连接',
-    connection_failed: '连接失败',
+    configured: '配置匹配',
+    connected: '配置匹配 · 桥接可用',
+    connection_failed: '配置或桥接异常',
   })[state ?? 'unconfigured'];
+}
+
+function formatMcpClientActionResult(status: McpClientStatus): string {
+  const clientName = formatMcpClientName(status.client);
+  if (status.state === 'connection_failed' && status.lastError === 'MCP_CONFIG_MISMATCH') {
+    return `${clientName} 配置与当前安装版不一致，请点击连接重新写入。`;
+  }
+  if (status.state === 'connection_failed' && status.lastError === 'MCP_CONFIG_PARSE_FAILED') {
+    return `${clientName} 配置文件无法解析；原文件未修改，请先修复配置格式。`;
+  }
+  if (status.state === 'connection_failed') {
+    return `${clientName} 连接测试失败，请保持 Canvas Atelier 画布打开后重试。`;
+  }
+  if (status.state === 'connected') {
+    return `${clientName} 配置与当前安装版匹配，14 个工具桥接可用；这不代表已打开的客户端已重载配置。`;
+  }
+  return `${clientName} · ${formatMcpClientState(status.state)}`;
 }
 
 function formatMcpRuntimeState(state: McpRuntimePublicStatus['state'] | undefined): string {
@@ -1472,7 +1504,7 @@ function formatMcpError(error: string): string {
   if (error.includes('COPY_FAILED')) return '复制配置失败，请检查系统剪贴板权限。';
   if (error.includes('CONNECT_FAILED')) return '连接失败，原配置已自动恢复。';
   if (error.includes('DISCONNECT_FAILED')) return '断开失败，现有配置保持不变。';
-  return '连接测试失败，请确认 CanvasForge 画布已打开。';
+  return '连接测试失败，请确认 Canvas Atelier 画布已打开。';
 }
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '0 B';

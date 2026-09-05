@@ -37,6 +37,7 @@ interface McpStdioHealthDependencies {
 
 const HEALTH_TIMEOUT_MS = 10_000;
 const EXPECTED_TOOL_NAMES = CANVAS_MCP_TOOL_DEFINITIONS.map((tool) => tool.name);
+export const MCP_STDIO_HEALTH_CLIENT_INFO = Object.freeze({ name: 'canvas-atelier-health-check', version: '1.0.0' });
 
 export function createMcpStdioHealthCheck(
   spec: McpStdioLaunchSpec,
@@ -45,7 +46,7 @@ export function createMcpStdioHealthCheck(
   const createTransport: McpStdioHealthDependencies['createTransport'] =
     dependencies.createTransport ?? ((parameters) => new StdioClientTransport(parameters));
   const createClient: McpStdioHealthDependencies['createClient'] =
-    dependencies.createClient ?? (() => new Client({ name: 'canvasforge-health-check', version: '1.0.0' }));
+    dependencies.createClient ?? (() => new Client(MCP_STDIO_HEALTH_CLIENT_INFO));
   const inheritedEnv = dependencies.inheritedEnv ?? getDefaultEnvironment();
 
   return async () => {

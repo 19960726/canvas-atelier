@@ -101,8 +101,18 @@ export async function readMcpRuntimeFile(
 }
 
 export async function deleteMcpRuntimeFile(runtimeFilePath: string): Promise<void> {
-  await rm(runtimeFilePath, { force: true });
-  await rm(`${runtimeFilePath}.tmp`, { force: true });
+  let removalError: unknown;
+  try {
+    await rm(runtimeFilePath, { force: true });
+  } catch (error) {
+    removalError = error;
+  }
+  try {
+    await rm(`${runtimeFilePath}.tmp`, { force: true });
+  } catch (error) {
+    removalError ??= error;
+  }
+  if (removalError !== undefined) throw removalError;
 }
 
 function parseJson(input: string): unknown {

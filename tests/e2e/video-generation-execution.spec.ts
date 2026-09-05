@@ -11,7 +11,10 @@ test('Generate video submits the selected model job and exposes a running state'
   await generation.getByRole('button', { name: 'Open video generation editor' }).click();
   await generation.getByRole('textbox', { name: 'Video preview prompt' }).fill('A slow cinematic product orbit');
 
-  const route = generation.getByRole('combobox', { name: 'Video preview model' });
+  // The custom model trigger is the visible control. Keep the native select as
+  // the semantic value source without asking Playwright to treat it as visible.
+  const route = generation.locator('select[aria-label="Video preview model"]');
+  await expect(route).toBeAttached();
   await expect(route).toBeEnabled();
   const selectedRoute = await route.inputValue();
   expect(selectedRoute).not.toBe('');

@@ -51,6 +51,7 @@ describe('desktop bridge contract', () => {
 
     expect(Object.keys(createPreloadApi(mockInvoke)).sort()).toEqual([
       'closeProject',
+      'codexCli',
       'commit',
       'configureKnowledgeBase',
       'createProject',
@@ -238,6 +239,32 @@ describe('desktop bridge contract', () => {
       provider: 'comfly',
       modelRoute: 'skill-chat',
     }));
+  });
+
+  it('exposes GPT-6 Astra through an independent local Codex channel', async () => {
+    const invoke = vi.fn(async (channel: string) => channel === BRIDGE_CHANNELS.codexCli.listProfiles
+      ? [{
+          provider: 'codex', modelRoute: 'codex/gpt-6-astra', modelId: 'gpt-6-astra', displayName: 'GPT-6 Astra',
+          capabilities: ['responses'], capabilityStatus: 'complete', transport: 'codex-cli', availability: 'installed',
+        }]
+      : channel === BRIDGE_CHANNELS.codexCli.cancel
+        ? { ok: true, value: { cancelled: true } }
+        : { ok: true, value: { message: 'Astra reply', modelRoute: 'codex/gpt-6-astra', sources: [] } }) as DesktopBridgeInvoke;
+    const api = createPreloadApi(invoke);
+
+    await expect(api.codexCli.listProfiles()).resolves.toEqual([
+      expect.objectContaining({ provider: 'codex', modelId: 'gpt-6-astra' }),
+    ]);
+    await expect(api.codexCli.chat({
+      provider: 'codex', modelRoute: 'codex/gpt-6-astra', sessionId: 'desktop-session', agentMode: 'codex',
+      requestId: 'request-astra-1', reasoningEffort: 'max', messages: [{ role: 'user', content: '读取画布' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    })).resolves.toMatchObject({ message: 'Astra reply' });
+    await expect(api.codexCli.cancel({ requestId: 'request-astra-1' })).resolves.toEqual({ cancelled: true });
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.codexCli.chat, expect.objectContaining({
+      provider: 'codex', modelRoute: 'codex/gpt-6-astra', requestId: 'request-astra-1', reasoningEffort: 'max',
+    }));
+    expect(invoke).toHaveBeenCalledWith(BRIDGE_CHANNELS.codexCli.cancel, { requestId: 'request-astra-1' });
   });
 
   it('forwards provider selection when reading status and model catalogs', async () => {
@@ -2866,6 +2893,71 @@ describe('desktop bridge contract', () => {
     expect(close).toHaveBeenCalledTimes(2);
     await expect(handlers.closeProject({}, { sessionId: first!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
     await expect(handlers.closeProject({}, { sessionId: second!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+  });
+
+  it('replaces a stale same-process session when a renderer reopens the same project', async () => {
+    const projectRoot = ['C:', 'redacted', 'RendererReload.novus-project'].join(String.fromCharCode(92));
+    const firstSession = createOpenedSession(projectRoot);
+    const secondSession = createOpenedSession(projectRoot);
+    const close = vi.fn(async () => undefined);
+    const repositoryOpen = vi.fn()
+      .mockResolvedValueOnce(firstSession)
+      .mockResolvedValueOnce(secondSession);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      repository: {
+        close,
+        open: repositoryOpen,
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => starterProject),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(),
+      } as unknown as SnapshotScheduler,
+    });
+
+    const first = await handlers.openProject({}, { mode: 'write' });
+    const second = await handlers.openProject({}, { mode: 'write' });
+
+    expect(first?.mode).toBe('write');
+    expect(second?.mode).toBe('write');
+    expect(close).toHaveBeenCalledWith(firstSession);
+    await expect(handlers.closeProject({}, { sessionId: first!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+    await handlers.closeProject({}, { sessionId: second!.sessionId });
+  });
+
+  it('retries a same-process session whose first close attempt failed', async () => {
+    const projectRoot = ['C:', 'redacted', 'RendererReloadRetry.novus-project'].join(String.fromCharCode(92));
+    const firstSession = createOpenedSession(projectRoot);
+    const secondSession = createOpenedSession(projectRoot);
+    const close = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary flush failure'))
+      .mockResolvedValue(undefined);
+    const repositoryOpen = vi.fn()
+      .mockResolvedValueOnce(firstSession)
+      .mockResolvedValueOnce(secondSession);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      repository: {
+        close,
+        open: repositoryOpen,
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => starterProject),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(),
+      } as unknown as SnapshotScheduler,
+    });
+
+    const first = await handlers.openProject({}, { mode: 'write' });
+    await expect(handlers.closeProject({}, { sessionId: first!.sessionId })).rejects.toThrow('temporary flush failure');
+    const second = await handlers.openProject({}, { mode: 'write' });
+
+    expect(second?.mode).toBe('write');
+    expect(close).toHaveBeenCalledTimes(2);
+    await handlers.closeProject({}, { sessionId: second!.sessionId });
   });
 
   it('releases an acquired write session when open initialization fails before registration', async () => {

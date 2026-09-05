@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   createCanvasModuleNode,
@@ -117,6 +119,21 @@ describe('formal current module catalog', () => {
       ['workflow', 'sanitized_workflow', 'input', 'one', true],
       ['result', 'generation_result', 'output', 'one', true],
     ]));
+  });
+
+  it('keeps production renderer sources free of the historical Reverse Agent typo', () => {
+    const rendererRoot = join(process.cwd(), 'apps', 'renderer', 'src');
+    const productionFiles: string[] = [];
+    const visit = (directory: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) visit(path);
+        else if (/\.(?:ts|tsx)$/u.test(entry.name) && !/\.test\.[^.]+$/u.test(entry.name)) productionFiles.push(path);
+      }
+    };
+    visit(rendererRoot);
+    const offenders = productionFiles.filter((path) => /anget/iu.test(readFileSync(path, 'utf8')));
+    expect(offenders).toEqual([]);
   });
 });
 

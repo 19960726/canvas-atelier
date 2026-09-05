@@ -6,7 +6,7 @@ describe('createCodexWorkflowContract', () => {
   it('describes real canvas modules so Codex can plan valid workflows', () => {
     const contract = createCodexWorkflowContract();
 
-    expect(contract.productName).toBe('CanvasForge');
+    expect(contract.productName).toBe('Canvas Atelier');
     expect(contract.protocol).toBe('canvasforge.mcp.workflow.v1');
     expect(contract.modules.map((module) => module.type)).toEqual(expect.arrayContaining([
       'image_input',

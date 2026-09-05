@@ -2,7 +2,7 @@ import { expect, test } from './helpers/e2e-test';
 import { captureLayoutScreenshot, e2eState, openApp, openEmptyApp } from './helpers/app';
 
 for (const theme of ['dark', 'light'] as const) {
-  test(`keeps reverse Agent visible in the Figma quick-insert menu in ${theme}`, async ({ page }, testInfo) => {
+  test(`keeps reverse Agent visible in the Canvas quick-insert menu in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.addInitScript((selectedTheme) => localStorage.setItem('novus.theme.mode', selectedTheme), theme);
     await openEmptyApp(page);
@@ -13,7 +13,7 @@ for (const theme of ['dark', 'light'] as const) {
     const videoGeneration = quickInsert.locator('[data-module-type="video_generation"]');
 
     await expect(quickInsert).toBeVisible();
-    // Figma 202:143: the formal double-click palette is one 300 × 578
+    // Canvas 202:143: the formal double-click palette is one 300 × 578
     // surface with a 16px outer radius, not the compact legacy menu.
     await expect(quickInsert).toHaveJSProperty('offsetWidth', 300);
     await expect(quickInsert).toHaveJSProperty('offsetHeight', 578);
@@ -46,7 +46,7 @@ test('creates an upstream module from a left input port Quick Insert connection'
   const before = await e2eState(page);
   expect(before.edgeCount).toBeGreaterThan(0);
 
-  const target = page.locator('.react-flow__node[data-id="figma-image-generation"] .react-flow__handle.target[data-handleid="references"]');
+  const target = page.locator('.react-flow__node[data-id="canvas-image-generation"] .react-flow__handle.target[data-handleid="references"]');
   await expect(target).toBeVisible();
   const targetBox = await target.boundingBox();
   expect(targetBox).not.toBeNull();
@@ -76,7 +76,7 @@ test('creates a downstream generation module from an image output Quick Insert c
   await openApp(page);
 
   const before = await e2eState(page);
-  const source = page.locator('.react-flow__node[data-id="figma-image-input"] .react-flow__handle.source[data-handleid="image"]');
+  const source = page.locator('.react-flow__node[data-id="canvas-image-input"] .react-flow__handle.source[data-handleid="image"]');
   await expect(source).toBeVisible();
   const sourceBox = await source.boundingBox();
   expect(sourceBox).not.toBeNull();

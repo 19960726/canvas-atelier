@@ -121,6 +121,20 @@ import {
 import type { CacheDirectoryState } from './cache-directory-service.js';
 import type { McpClientId, McpClientStatus } from './mcp-client-config.js';
 import type { UpdateCheckResult, UpdateRestartResult, UpdateState } from './update-client.js';
+import {
+  CODEX_CLI_CHANNELS,
+  parseCodexCliCancelRequest,
+  parseCodexCliCancelResult,
+  parseCodexCliChatRequest,
+  parseCodexCliChatResult,
+  parseCodexCliProfiles,
+  unwrapCodexCliEnvelope,
+  type CodexCliChatRequest,
+  type CodexCliChatResult,
+  type CodexCliCancelRequest,
+  type CodexCliCancelResult,
+  type CodexCliProfile,
+} from './codex-cli-contract.js';
 
 export const DESKTOP_BRIDGE_PRELOAD_KEY = 'novusDesktop';
 
@@ -202,6 +216,7 @@ export const BRIDGE_CHANNELS = {
     test: 'novus-desktop:mcp-integration:test',
     disconnect: 'novus-desktop:mcp-integration:disconnect',
   },
+  codexCli: CODEX_CLI_CHANNELS,
   provider: PROVIDER_BRIDGE_CHANNELS,
 } as const;
 
@@ -238,6 +253,7 @@ export interface DesktopBridgeApi {
   lifecycle: DesktopLifecycleBridgeApi;
   mcpRuntime: DesktopMcpRuntimeBridgeApi;
   mcpIntegration: DesktopMcpIntegrationBridgeApi;
+  codexCli: DesktopCodexCliBridgeApi;
   provider: DesktopProviderBridgeApi;
   projectImages: DesktopProjectImageBridgeApi;
   projectVideos: DesktopProjectVideoBridgeApi;
@@ -348,6 +364,12 @@ export interface DesktopProviderBridgeApi {
   generateStoryboard(request: GenerateStoryboardBridgeRequest): Promise<GenerateStoryboardBridgeResult>;
 }
 
+export interface DesktopCodexCliBridgeApi {
+  listProfiles(): Promise<CodexCliProfile[]>;
+  chat(request: CodexCliChatRequest): Promise<CodexCliChatResult>;
+  cancel(request: CodexCliCancelRequest): Promise<CodexCliCancelResult>;
+}
+
 export interface SafeModeBridgeApi {
   openProject(request: OpenProjectBridgeRequest): Promise<OpenProjectBridgeResult | null>;
   restore(request: RestoreBridgeRequest): Promise<RestoreBridgeResult>;
@@ -375,6 +397,25 @@ export function createPreloadApi(
   send: DesktopBridgeSend = () => undefined,
 ): DesktopBridgeApi {
   return {
+    codexCli: {
+      async listProfiles() {
+        return parseCodexCliProfiles(await invoke<unknown>(CODEX_CLI_CHANNELS.listProfiles));
+      },
+      async chat(request) {
+        const parsed = parseCodexCliChatRequest(request);
+        return unwrapCodexCliEnvelope(
+          await invoke<unknown>(CODEX_CLI_CHANNELS.chat, parsed),
+          parseCodexCliChatResult,
+        );
+      },
+      async cancel(request) {
+        const parsed = parseCodexCliCancelRequest(request);
+        return unwrapCodexCliEnvelope(
+          await invoke<unknown>(CODEX_CLI_CHANNELS.cancel, parsed),
+          parseCodexCliCancelResult,
+        );
+      },
+    },
     mcpIntegration: {
       async getStatus() {
         return parseMcpClientStatusList(await invoke<unknown>(BRIDGE_CHANNELS.mcpIntegration.status));

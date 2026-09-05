@@ -4,6 +4,7 @@ import {
   CanvasWorkflowSnapshotSchema,
   applyProjectTransaction,
   createCanvasModuleNode,
+  DEFAULT_MCP_PERMISSION_FLAGS,
   getCanvasModuleDefinition,
   listCanvasModuleDefinitions,
   parseCanvasProject,
@@ -15,6 +16,7 @@ import {
   type CanvasProject,
   type CanvasWorkflowMutation,
   type ProjectTransaction,
+  type McpPermissionFlags,
 } from '@agent-canvas/domain';
 
 import {
@@ -31,6 +33,19 @@ export interface McpWorkspaceJobSummary {
   readonly nodeId?: string;
   readonly status: string;
   readonly progress?: number;
+  readonly kind?: 'image' | 'video' | 'reverse';
+  readonly provider?: string;
+  readonly modelRoute?: string;
+  readonly displayName?: string;
+  readonly error?: string;
+  readonly resultAssetId?: string;
+  readonly resultAssetIds?: readonly string[];
+  readonly resultNodeId?: string;
+}
+
+export interface McpWorkspaceRunResult {
+  readonly started: boolean;
+  readonly jobIds: readonly string[];
 }
 
 export interface McpWorkspaceSource {
@@ -39,9 +54,14 @@ export interface McpWorkspaceSource {
   getSelection(): { readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] };
   getJobs(): readonly McpWorkspaceJobSummary[];
   commitProjectTransaction(transaction: ProjectTransaction): Promise<boolean>;
-  runNode(nodeId: string): Promise<boolean>;
+  runNode(nodeId: string): Promise<McpWorkspaceRunResult>;
   cancelJob(jobId: string): Promise<void>;
   requestMediaImport(kind: 'image' | 'video', position: { readonly x: number; readonly y: number }): Promise<void>;
+}
+
+export interface McpWorkspaceAdapterOptions {
+  /** Read the latest user-controlled MCP permission switches for every call. */
+  readonly getPermissions?: () => McpPermissionFlags;
 }
 
 export interface McpWorkspaceAdapter {
@@ -71,17 +91,40 @@ let adapterSequence = 0;
 export function createMcpWorkspaceAdapter(
   source: McpWorkspaceSource,
   confirmations: McpConfirmationStore = createMcpConfirmationStore(),
+  options: McpWorkspaceAdapterOptions = {},
 ): McpWorkspaceAdapter {
   const pendingPlans = new Map<string, PendingPlan>();
   const pendingPaidJobs = new Map<string, PendingPaidJob>();
 
+  const permissionDenied = (tool: CanvasMcpRequest['tool'], required: keyof McpPermissionFlags): CanvasMcpResponse | null => {
+    let permissions: McpPermissionFlags;
+    try {
+      permissions = options.getPermissions?.() ?? DEFAULT_MCP_PERMISSION_FLAGS;
+    } catch {
+      permissions = DEFAULT_MCP_PERMISSION_FLAGS;
+    }
+    return permissions[required] === true
+      ? null
+      : error('MCP_PERMISSION_DENIED', `MCP permission '${required}' is disabled in Canvas Atelier settings.`, { permission: required, tool });
+  };
+
+  const permissionDeniedFor = (tool: CanvasMcpRequest['tool'], required: readonly (keyof McpPermissionFlags)[]): CanvasMcpResponse | null => {
+    for (const permission of required) {
+      const denied = permissionDenied(tool, permission);
+      if (denied !== null) return denied;
+    }
+    return null;
+  };
+
   async function handle(input: CanvasMcpRequest): Promise<CanvasMcpResponse> {
     const parsed = CanvasMcpRequestSchema.safeParse(input);
-    if (!parsed.success) return error('MCP_INVALID_REQUEST', 'Request does not match the CanvasForge MCP contract.');
+    if (!parsed.success) return error('MCP_INVALID_REQUEST', 'Request does not match the Canvas Atelier MCP contract.');
     const request = parsed.data;
     try {
       switch (request.tool) {
-        case 'canvas_describe_nodes':
+        case 'canvas_describe_nodes': {
+          const denied = permissionDenied(request.tool, 'readCanvas');
+          if (denied !== null) return denied;
           return success({
             toolCount: CANVAS_MCP_TOOL_DEFINITIONS.length,
             modules: listCanvasModuleDefinitions().map((definition) => ({
@@ -90,6 +133,12 @@ export function createMcpWorkspaceAdapter(
               secondaryName: definition.secondaryName,
               category: definition.category,
               executionMode: definition.executionMode,
+              purpose: definition.purpose,
+              usage: definition.usage,
+              limitations: definition.limitations,
+              recommendedDownstreamModuleTypes: [...definition.recommendedDownstreamModuleTypes],
+              defaultConfig: definition.createDefaultConfig(),
+              mcpRunnable: paidJobKind(definition.type) !== null,
               capabilities: [...definition.capabilities],
               ports: definition.ports.map((port) => ({
                 id: port.id,
@@ -101,55 +150,119 @@ export function createMcpWorkspaceAdapter(
               })),
             })),
           });
-        case 'canvas_read_workflow':
+        }
+        case 'canvas_read_workflow': {
+          const denied = permissionDenied(request.tool, 'readCanvas');
+          if (denied !== null) return denied;
           return success(createPublicSnapshot(source));
+        }
         case 'canvas_get_selection': {
+          const denied = permissionDenied(request.tool, 'readCanvas');
+          if (denied !== null) return denied;
           const selection = source.getSelection();
           return success({ nodeIds: [...selection.nodeIds], edgeIds: [...selection.edgeIds] });
         }
         case 'canvas_get_job_status': {
+          const denied = permissionDenied(request.tool, 'readCanvas');
+          if (denied !== null) return denied;
           const job = source.getJobs().find((candidate) => candidate.id === request.jobId);
-          return job ? success(publicJob(job)) : error('JOB_NOT_FOUND', 'Managed CanvasForge job was not found.');
+          return job ? success(publicJob(job)) : error('JOB_NOT_FOUND', 'Managed Canvas Atelier job was not found.');
         }
-        case 'canvas_plan_workflow':
+        case 'canvas_plan_workflow': {
+          const denied = permissionDeniedFor(request.tool, ['readCanvas', 'editCanvas']);
+          if (denied !== null) return denied;
+          if (request.mutations.some((mutation) => mutation.kind === 'delete_nodes' || mutation.kind === 'delete_edges')) {
+            const dangerousDenied = permissionDenied(request.tool, 'dangerousOperations');
+            if (dangerousDenied !== null) return dangerousDenied;
+          }
           return planWorkflow(request.expectedRevision, request.workflowIntent, request.mutations);
-        case 'canvas_apply_workflow':
+        }
+        case 'canvas_apply_workflow': {
+          const denied = permissionDenied(request.tool, 'editCanvas');
+          if (denied !== null) return denied;
+          const pendingPlan = pendingPlans.get(request.planId);
+          if (pendingPlan?.mutations.some((mutation) => mutation.kind === 'delete_nodes' || mutation.kind === 'delete_edges')) {
+            const dangerousDenied = permissionDenied(request.tool, 'dangerousOperations');
+            if (dangerousDenied !== null) return dangerousDenied;
+          }
           return applyWorkflow(request.expectedRevision, request.planId, request.confirmationToken);
-        case 'canvas_create_node':
+        }
+        case 'canvas_create_node': {
+          const denied = permissionDenied(request.tool, 'editCanvas');
+          if (denied !== null) return denied;
+          const nodeId = createId(`mcp-${request.moduleType}`);
           return commitMutations(request.expectedRevision, [{
             kind: 'create_node',
-            nodeId: createId(`mcp-${request.moduleType}`),
+            nodeId,
             moduleType: request.moduleType,
             position: request.position,
             ...(request.config === undefined ? {} : { config: request.config }),
-          }], 'Create MCP canvas node');
-        case 'canvas_update_node':
-          return commitMutations(request.expectedRevision, [{ kind: 'update_node', nodeId: request.nodeId, config: request.config }], 'Update MCP canvas node');
-        case 'canvas_connect_nodes':
+          }], 'Create MCP canvas node', { nodeId });
+        }
+        case 'canvas_update_node': {
+          const denied = permissionDenied(request.tool, 'editCanvas');
+          if (denied !== null) return denied;
+          return commitMutations(request.expectedRevision, [{ kind: 'update_node', nodeId: request.nodeId, config: request.config }], 'Update MCP canvas node', { nodeId: request.nodeId });
+        }
+        case 'canvas_connect_nodes': {
+          const denied = permissionDenied(request.tool, 'editCanvas');
+          if (denied !== null) return denied;
+          const edgeId = createId('mcp-edge');
           return commitMutations(request.expectedRevision, [{
             kind: 'connect_nodes',
-            edgeId: createId('mcp-edge'),
+            edgeId,
             sourceNodeId: request.sourceNodeId,
             sourcePortId: request.sourcePortId,
             targetNodeId: request.targetNodeId,
             targetPortId: request.targetPortId,
-          }], 'Connect MCP canvas nodes');
-        case 'canvas_move_nodes':
-          return commitMutations(request.expectedRevision, [{ kind: 'move_nodes', positions: request.positions }], 'Move MCP canvas nodes');
-        case 'canvas_delete_selection':
-          return error('CONFIRMATION_REQUIRED', 'Delete selection must be included in a confirmed workflow plan.');
-        case 'canvas_run_node':
+          }], 'Connect MCP canvas nodes', { edgeId });
+        }
+        case 'canvas_move_nodes': {
+          const denied = permissionDenied(request.tool, 'editCanvas');
+          if (denied !== null) return denied;
+          return commitMutations(request.expectedRevision, [{ kind: 'move_nodes', positions: request.positions }], 'Move MCP canvas nodes', { nodeIds: request.positions.map((position) => position.nodeId) });
+        }
+        case 'canvas_delete_selection': {
+          const denied = permissionDeniedFor(request.tool, ['readCanvas', 'editCanvas', 'dangerousOperations']);
+          if (denied !== null) return denied;
+          const selection = source.getSelection();
+          const mutations: CanvasWorkflowMutation[] = [];
+          if (selection.edgeIds.length > 0) mutations.push({ kind: 'delete_edges', edgeIds: [...selection.edgeIds] });
+          if (selection.nodeIds.length > 0) mutations.push({ kind: 'delete_nodes', nodeIds: [...selection.nodeIds] });
+          if (mutations.length === 0) return error('SELECTION_EMPTY', 'Select one or more canvas nodes or edges before deleting.');
+          return planWorkflow(request.expectedRevision, 'Delete the current Canvas Atelier selection', mutations);
+        }
+        case 'canvas_run_node': {
+          const denied = permissionDenied(request.tool, 'executeAiGeneration');
+          if (denied !== null) return denied;
           return runNode(request.expectedRevision, request.nodeId, request.confirmationToken);
+        }
         case 'canvas_cancel_job': {
+          const denied = permissionDenied(request.tool, 'executeAiGeneration');
+          if (denied !== null) return denied;
           const job = source.getJobs().find((candidate) => candidate.id === request.jobId);
-          if (!job) return error('JOB_NOT_FOUND', 'Managed CanvasForge job was not found.');
+          if (!job) return error('JOB_NOT_FOUND', 'Managed Canvas Atelier job was not found.');
           await source.cancelJob(request.jobId);
+          const cancelledJob = source.getJobs().find((candidate) => candidate.id === request.jobId);
+          const cancellationStatus = publicJobStatus(cancelledJob?.status);
+          if (cancellationStatus !== 'cancelled') {
+            return error(
+              cancellationStatus === 'failed' ? 'JOB_CANCEL_FAILED' : 'JOB_CANCEL_UNCONFIRMED',
+              cancellationStatus === 'failed'
+                ? 'Canvas Atelier could not cancel the managed job.'
+                : 'Canvas Atelier could not confirm that the managed job was cancelled.',
+              { jobId: request.jobId, status: cancellationStatus },
+            );
+          }
           return success({ cancelled: true, jobId: request.jobId });
         }
-        case 'canvas_import_media':
+        case 'canvas_import_media': {
+          const denied = permissionDeniedFor(request.tool, ['externalFileAccess', 'editCanvas']);
+          if (denied !== null) return denied;
           if (request.expectedRevision !== source.getRevision()) return revisionConflict(source.getRevision());
-          await source.requestMediaImport(request.mediaKind, request.position);
-          return error('FILE_SELECTION_REQUIRED', 'Choose the image or video inside CanvasForge.', { mediaKind: request.mediaKind });
+          void Promise.resolve(source.requestMediaImport(request.mediaKind, request.position)).catch(() => undefined);
+          return success({ pickerOpened: true, mediaKind: request.mediaKind, position: request.position });
+        }
       }
     } catch (cause) {
       return error('MCP_WORKSPACE_ERROR', stableMessage(cause));
@@ -236,9 +349,9 @@ function planWorkflow(
       expectedRevision: plan.expectedRevision,
       mutationHash: plan.mutationHash,
     });
-    if (!consumed.ok) return error('CONFIRMATION_REQUIRED', 'Confirm this exact workflow plan inside CanvasForge.', { reason: consumed.code });
+    if (!consumed.ok) return error('CONFIRMATION_REQUIRED', 'Confirm this exact workflow plan inside Canvas Atelier.', { reason: consumed.code });
     const committed = await commitReplacement(source, plan.nextProject, `Apply MCP workflow: ${plan.intent}`);
-    if (!committed) return error('DURABLE_WRITE_FAILED', 'CanvasForge could not persist the confirmed workflow.');
+    if (!committed) return error('DURABLE_WRITE_FAILED', 'Canvas Atelier could not persist the confirmed workflow.');
     pendingPlans.delete(planId);
     mcpUiConfirmationStore.dismiss(planId);
     return success({ applied: true, planId, revision: source.getRevision() });
@@ -248,6 +361,7 @@ function planWorkflow(
     expectedRevision: number,
     mutations: readonly CanvasWorkflowMutation[],
     label: string,
+    result: Readonly<Record<string, unknown>> = {},
   ): Promise<CanvasMcpResponse> {
     const currentRevision = source.getRevision();
     if (expectedRevision !== currentRevision) return revisionConflict(currentRevision);
@@ -257,8 +371,8 @@ function planWorkflow(
     } catch (cause) {
       return error('INVALID_WORKFLOW', stableMessage(cause));
     }
-    if (!await commitReplacement(source, nextProject, label)) return error('DURABLE_WRITE_FAILED', 'CanvasForge could not persist the canvas change.');
-    return success({ applied: true, revision: source.getRevision() });
+    if (!await commitReplacement(source, nextProject, label)) return error('DURABLE_WRITE_FAILED', 'Canvas Atelier could not persist the canvas change.');
+    return success({ applied: true, revision: source.getRevision(), ...result });
   }
 
   async function runNode(expectedRevision: number, nodeId: string, token: string | undefined): Promise<CanvasMcpResponse> {
@@ -290,7 +404,7 @@ function planWorkflow(
           reject: () => rejectPaidJob(requestId),
         });
       }
-      return error('PAID_CONFIRMATION_REQUIRED', 'Confirm the paid model job inside CanvasForge.', {
+      return error('PAID_CONFIRMATION_REQUIRED', 'Confirm the paid model job inside Canvas Atelier.', {
         requestId: pending.requestId,
         nodeId,
         jobKind,
@@ -304,12 +418,12 @@ function planWorkflow(
     }
     if (!pending) return error('PAID_CONFIRMATION_REQUIRED', 'No matching paid confirmation request is pending.');
     const consumed = confirmations.consumePaidJob({ token, nodeId, projectId: pending.projectId, expectedRevision, jobKind, modelRoute, requestHash });
-    if (!consumed.ok) return error('PAID_CONFIRMATION_REQUIRED', 'Confirm this exact paid model job inside CanvasForge.', { reason: consumed.code });
-    const started = await source.runNode(nodeId);
-    if (!started) return error('JOB_START_FAILED', 'CanvasForge could not start the managed model job.');
+    if (!consumed.ok) return error('PAID_CONFIRMATION_REQUIRED', 'Confirm this exact paid model job inside Canvas Atelier.', { reason: consumed.code });
+    const run = await source.runNode(nodeId);
+    if (!run.started || run.jobIds.length === 0) return error('JOB_START_FAILED', 'Canvas Atelier could not start a trackable managed model job.');
     pendingPaidJobs.delete(pending.requestId);
     mcpUiConfirmationStore.dismiss(pending.requestId);
-    return success({ started: true, nodeId, jobKind });
+    return success({ started: true, nodeId, jobKind, jobIds: [...run.jobIds] });
   }
 
 function confirmPlan(planId: string): McpConfirmationGrant {
@@ -419,7 +533,14 @@ function publicConfig(config: Readonly<Record<string, unknown>>): Record<string,
 }
 
 function managedResultIds(node: CanvasModuleNode): string[] {
-  const values = [node.data.result?.id, node.data.result?.assetId, ...(node.data.result?.assetIds ?? [])];
+  const configAssetIds = Array.isArray(node.data.config.resultAssetIds) ? node.data.config.resultAssetIds : [];
+  const videoAssetIds = Array.isArray(node.data.config.videoResults)
+    ? node.data.config.videoResults.flatMap((result) => result && typeof result === 'object' && typeof Reflect.get(result, 'assetId') === 'string'
+      ? [Reflect.get(result, 'assetId') as string]
+      : [])
+    : [];
+  const reverseRunId = typeof node.data.config.reverseAgentRunId === 'string' ? node.data.config.reverseAgentRunId : undefined;
+  const values = [node.data.result?.id, node.data.result?.assetId, ...(node.data.result?.assetIds ?? []), ...configAssetIds, ...videoAssetIds, reverseRunId];
   return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0))].slice(0, 20);
 }
 
@@ -429,7 +550,26 @@ function publicJob(job: McpWorkspaceJobSummary): Record<string, unknown> {
     status: job.status,
     ...(job.nodeId === undefined ? {} : { nodeId: job.nodeId }),
     ...(job.progress === undefined ? {} : { progress: job.progress }),
+    ...(job.kind === undefined ? {} : { kind: job.kind }),
+    ...(job.provider === undefined ? {} : { provider: job.provider }),
+    ...(job.modelRoute === undefined ? {} : { modelRoute: job.modelRoute }),
+    ...(job.displayName === undefined ? {} : { displayName: job.displayName }),
+    ...(job.error === undefined ? {} : { error: job.error }),
+    ...(job.resultAssetId === undefined ? {} : { resultAssetId: job.resultAssetId }),
+    ...(job.resultAssetIds === undefined ? {} : { resultAssetIds: [...job.resultAssetIds] }),
+    ...(job.resultNodeId === undefined ? {} : { resultNodeId: job.resultNodeId }),
   };
+}
+
+function publicJobStatus(value: unknown): 'queued' | 'submitting' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown' {
+  return value === 'queued'
+    || value === 'submitting'
+    || value === 'running'
+    || value === 'completed'
+    || value === 'failed'
+    || value === 'cancelled'
+    ? value
+    : 'unknown';
 }
 
 function applyMcpMutations(project: CanvasProject, mutations: readonly CanvasWorkflowMutation[]): CanvasProject {
@@ -466,9 +606,17 @@ function applyMcpMutations(project: CanvasProject, mutations: readonly CanvasWor
     if (mutation.kind === 'move_nodes') {
       const positions = new Map(mutation.positions.map((entry) => [entry.nodeId, { x: entry.x, y: entry.y }]));
       for (const nodeId of positions.keys()) {
-        if (!nodes.some((node) => node.id === nodeId)) throw new Error(`Unknown node: ${nodeId}`);
+        const node = nodes.find((candidate) => candidate.id === nodeId);
+        if (!node) throw new Error(`Unknown node: ${nodeId}`);
+        if (node.locked === true) throw new Error(`Locked node cannot be moved: ${nodeId}`);
       }
-      nodes = nodes.map((node) => positions.has(node.id) && node.locked !== true ? { ...node, position: positions.get(node.id)! } : node);
+      nodes = nodes.map((node) => positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node);
+      continue;
+    }
+    if (mutation.kind === 'delete_edges') {
+      const ids = new Set(mutation.edgeIds);
+      for (const edgeId of ids) if (!edges.some((edge) => edge.id === edgeId)) throw new Error(`Unknown edge: ${edgeId}`);
+      edges = edges.filter((edge) => !ids.has(edge.id));
       continue;
     }
     const ids = new Set(mutation.nodeIds);
@@ -501,9 +649,9 @@ function findPaidJobs(project: CanvasProject, mutations: readonly CanvasWorkflow
 }
 
 function paidJobKind(moduleType: string): 'image' | 'video' | 'reverse' | null {
-  if (moduleType === 'image_generation' || moduleType === 'image_editor' || moduleType === 'local_redraw' || moduleType === 'comfy_workflow') return 'image';
+  if (moduleType === 'image_generation') return 'image';
   if (moduleType === 'video_generation') return 'video';
-  if (moduleType === 'reverse_agent' || moduleType === 'skill_agent' || moduleType === 'detail_page_agent' || moduleType === 'line_art_material') return 'reverse';
+  if (moduleType === 'reverse_agent') return 'reverse';
   return null;
 }
 
@@ -526,12 +674,15 @@ function createId(prefix: string): string {
 }
 
 function stableMessage(cause: unknown): string {
-  const message = cause instanceof Error ? cause.message : 'CanvasForge rejected the workspace operation.';
+  const message = cause instanceof Error ? cause.message : 'Canvas Atelier rejected the workspace operation.';
+  if (/(?:authorization\s*:\s*(?:bearer|basic)\s+\S+|["']?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|token|secret|password|credential|x-api-key)["']?\s*[:=]\s*\S+|\b(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b)/iu.test(message)) {
+    return 'Canvas Atelier rejected the workspace operation.';
+  }
   try {
     redactMcpValue(message);
     return message.slice(0, 500);
   } catch {
-    return 'CanvasForge rejected the workspace operation.';
+    return 'Canvas Atelier rejected the workspace operation.';
   }
 }
 

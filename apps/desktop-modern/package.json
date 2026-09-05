@@ -1,11 +1,11 @@
 {
   "name": "@agent-canvas/desktop-modern",
   "private": true,
-  "version": "1.6.89",
+  "version": "1.6.100",
   "type": "module",
   "main": "./dist/main.cjs",
   "scripts": {
-    "build": "npm run build -w @agent-canvas/mcp-bridge && node ../../scripts/clean-desktop-dist.mjs desktop-modern && esbuild src/main.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/main.cjs --external:electron && esbuild ../../packages/desktop-core/src/snapshot-worker-entry.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/snapshot-worker-entry.cjs && esbuild src/preload.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/preload.cjs --external:electron && esbuild src/safe-preload.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/safe-preload.cjs --external:electron && esbuild src/safe-mode.ts --bundle --platform=browser --target=es2019 --format=esm --outfile=dist/safe-mode.js && node scripts/copy-static.mjs",
+    "build": "npm run build -w @agent-canvas/mcp-bridge && node ../../scripts/clean-desktop-dist.mjs desktop-modern && esbuild src/bootstrap.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/main.cjs --external:electron && esbuild ../../packages/desktop-core/src/snapshot-worker-entry.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/snapshot-worker-entry.cjs && esbuild src/preload.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/preload.cjs --external:electron && esbuild src/safe-preload.ts --bundle --platform=node --target=node16 --format=cjs --outfile=dist/safe-preload.cjs --external:electron && esbuild src/safe-mode.ts --bundle --platform=browser --target=es2019 --format=esm --outfile=dist/safe-mode.js && node scripts/copy-static.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

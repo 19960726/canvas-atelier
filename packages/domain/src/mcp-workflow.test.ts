@@ -25,10 +25,17 @@ const TOOL_NAMES = [
   'canvas_import_media',
 ] as const;
 
-describe('CanvasForge MCP workflow contract', () => {
+describe('Canvas Atelier MCP workflow contract', () => {
   it('publishes exactly the stable 14-tool catalog in protocol order', () => {
     expect(CANVAS_MCP_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual(TOOL_NAMES);
     expect(new Set(CANVAS_MCP_TOOL_DEFINITIONS.map((tool) => tool.name)).size).toBe(14);
+  });
+
+  it('publishes only the current product identity in user-facing tool descriptions', () => {
+    const descriptions = CANVAS_MCP_TOOL_DEFINITIONS.map((tool) => tool.description).join('\n');
+
+    expect(descriptions).toContain('Canvas Atelier');
+    expect(descriptions).not.toContain('CanvasForge');
   });
 
   it('rejects unknown tools and unknown request keys', () => {
@@ -54,6 +61,15 @@ describe('CanvasForge MCP workflow contract', () => {
     for (const request of mutationRequests) {
       expect(() => CanvasMcpRequestSchema.parse(request), request.tool).toThrow();
     }
+  });
+
+  it('accepts edge-only deletion inside a confirmed workflow plan', () => {
+    expect(CanvasMcpRequestSchema.parse({
+      tool: 'canvas_plan_workflow',
+      expectedRevision: 2,
+      workflowIntent: 'Disconnect selected nodes',
+      mutations: [{ kind: 'delete_edges', edgeIds: ['edge-1'] }],
+    })).toMatchObject({ mutations: [{ kind: 'delete_edges', edgeIds: ['edge-1'] }] });
   });
 
   it('accepts a bounded public workflow snapshot with ports and managed result ids', () => {

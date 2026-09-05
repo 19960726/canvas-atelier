@@ -156,12 +156,17 @@ const deleteNodesMutationSchema = z.object({
   kind: z.literal('delete_nodes'),
   nodeIds: z.array(idSchema).min(1).max(MAX_COLLECTION_SIZE),
 }).strict();
+const deleteEdgesMutationSchema = z.object({
+  kind: z.literal('delete_edges'),
+  edgeIds: z.array(idSchema).min(1).max(MAX_COLLECTION_SIZE),
+}).strict();
 
 export const CanvasWorkflowMutationSchema = z.discriminatedUnion('kind', [
   createNodeMutationSchema,
   updateNodeMutationSchema,
   connectNodesMutationSchema,
   moveNodesMutationSchema,
+  deleteEdgesMutationSchema,
   deleteNodesMutationSchema,
 ]);
 
@@ -283,6 +288,7 @@ export interface CanvasMcpToolDefinition {
   readonly name: CanvasMcpToolName;
   readonly title: string;
   readonly description: string;
+  readonly inputSchema: z.ZodTypeAny;
   readonly requestSchema: z.ZodTypeAny;
 }
 
@@ -290,9 +296,15 @@ function tool(
   name: CanvasMcpToolName,
   title: string,
   description: string,
-  requestSchema: z.ZodTypeAny,
+  requestSchema: z.AnyZodObject,
 ): CanvasMcpToolDefinition {
-  return Object.freeze({ name, title, description, requestSchema });
+  return Object.freeze({
+    name,
+    title,
+    description,
+    inputSchema: requestSchema.omit({ tool: true }),
+    requestSchema,
+  });
 }
 
 export const CANVAS_MCP_TOOL_DEFINITIONS: readonly CanvasMcpToolDefinition[] = Object.freeze([
@@ -308,8 +320,8 @@ export const CANVAS_MCP_TOOL_DEFINITIONS: readonly CanvasMcpToolDefinition[] = O
   tool('canvas_move_nodes', 'Move nodes', 'Move one or more nodes in one transaction.', moveNodesRequestSchema),
   tool('canvas_delete_selection', 'Delete selection', 'Delete the current confirmed selection.', deleteSelectionRequestSchema),
   tool('canvas_run_node', 'Run node', 'Run one node after any paid-job confirmation.', runNodeRequestSchema),
-  tool('canvas_cancel_job', 'Cancel job', 'Cancel one managed CanvasForge job.', cancelJobRequestSchema),
-  tool('canvas_import_media', 'Import media', 'Ask CanvasForge to open its own image or video picker.', importMediaRequestSchema),
+  tool('canvas_cancel_job', 'Cancel job', 'Cancel one managed Canvas Atelier job.', cancelJobRequestSchema),
+  tool('canvas_import_media', 'Import media', 'Ask Canvas Atelier to open its own image or video picker.', importMediaRequestSchema),
 ]);
 
 export type CanvasWorkflowSnapshot = z.infer<typeof CanvasWorkflowSnapshotSchema>;

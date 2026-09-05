@@ -27,13 +27,13 @@ export function createMcpRuntimeClient(options: McpRuntimeClientOptions): McpRun
   return {
     async call(input) {
       const parsedRequest = CanvasMcpRequestSchema.safeParse(input);
-      if (!parsedRequest.success) return error('MCP_INVALID_REQUEST', 'Tool arguments do not match the CanvasForge contract.');
-      if (closed) return error('MCP_CLIENT_CLOSED', 'The CanvasForge MCP client is closed.');
+      if (!parsedRequest.success) return error('MCP_INVALID_REQUEST', 'Tool arguments do not match the Canvas Atelier contract.');
+      if (closed) return error('MCP_CLIENT_CLOSED', 'The Canvas Atelier MCP client is closed.');
       let descriptor;
       try {
         descriptor = await readRuntimeDescriptor(options.runtimeFilePath);
       } catch {
-        return error('MCP_WAITING_FOR_CANVAS', 'Open CanvasForge and keep a canvas window active.');
+        return error('MCP_WAITING_FOR_CANVAS', 'Open Canvas Atelier and keep a canvas window active.');
       }
       try {
         return await sendPipeRequest(descriptor.pipeName, descriptor.authToken, parsedRequest.data, options.timeoutMs ?? 15_000);
@@ -41,8 +41,8 @@ export function createMcpRuntimeClient(options: McpRuntimeClientOptions): McpRun
         return error(
           cause instanceof Error && cause.message === 'MCP_RUNTIME_TIMEOUT' ? 'MCP_RUNTIME_TIMEOUT' : 'MCP_RUNTIME_UNAVAILABLE',
           cause instanceof Error && cause.message === 'MCP_RUNTIME_TIMEOUT'
-            ? 'CanvasForge did not answer in time.'
-            : 'CanvasForge runtime is unavailable; reopen the desktop app.',
+            ? 'Canvas Atelier did not answer in time.'
+            : 'Canvas Atelier runtime is unavailable; reopen the desktop app.',
         );
       }
     },

@@ -2,10 +2,10 @@
    This file is intentionally imported last. It owns the current product
    surfaces and prevents historical prototype rules from reviving. */
 
-.workspace--ui-gate .agent-panel--skill-chat,
-.workspace--ui-gate .agent-panel--skill-chat > .agent-thread,
-.workspace--ui-gate .agent-panel--skill-chat .agent-thread__conversation,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench {
+.workspace--canvas-layout .agent-panel--skill-chat,
+.workspace--canvas-layout .agent-panel--skill-chat > .agent-thread,
+.workspace--canvas-layout .agent-panel--skill-chat .agent-thread__conversation,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench {
   box-sizing: border-box !important;
   width: 100% !important;
   max-width: 100% !important;
@@ -14,7 +14,7 @@
   overflow: hidden !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat {
+.workspace--canvas-layout .agent-panel--skill-chat {
   --agent-compact-control-size: 34px;
   position: fixed !important;
   top: 0 !important;
@@ -32,7 +32,7 @@
   box-shadow: -12px 0 36px rgb(20 42 54 / 12%) !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .sr-only {
+.workspace--canvas-layout .agent-panel--skill-chat .sr-only {
   position: absolute !important;
   width: 1px !important;
   height: 1px !important;
@@ -44,11 +44,11 @@
   border: 0 !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat > .agent-panel__header {
+.workspace--canvas-layout .agent-panel--skill-chat > .agent-panel__header {
   display: none !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench {
   display: grid !important;
   grid-template-rows: auto minmax(0, 1fr) auto !important;
   height: 100% !important;
@@ -56,7 +56,7 @@
   background: var(--gate-card, var(--surface)) !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex {
   box-sizing: border-box !important;
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) !important;
@@ -71,32 +71,32 @@
   border-bottom: 1px solid var(--gate-border, var(--border)) !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex > div:first-child {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex > div:first-child {
   display: block !important;
   min-width: 0 !important;
   align-items: center !important;
   position: relative !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex h2,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex p {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex h2,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex p {
   margin: 0 !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex h2 {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex h2 {
   min-width: 0 !important;
   font-size: 14px !important;
   white-space: nowrap !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header--codex p {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex p {
   position: absolute !important;
   top: 47px !important;
   left: 0 !important;
   font-size: 10px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header-actions {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions {
   box-sizing: border-box !important;
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) var(--agent-compact-control-size) !important;
@@ -107,7 +107,7 @@
   margin-left: 64px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__close {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__close {
   box-sizing: border-box !important;
   position: absolute !important;
   top: 12px !important;
@@ -125,7 +125,7 @@
 
 /* FINAL AGENT CLOSE CONTROL CONTRACT: keep the close action quiet and aligned
    with the current Canvas Atelier compact controls. */
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__close {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__close {
   top: 10px !important;
   right: 10px !important;
   width: 30px !important;
@@ -141,13 +141,13 @@
   box-shadow: none !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__close:hover,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__close:focus-visible {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__close:hover,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__close:focus-visible {
   color: var(--gate-text, var(--text)) !important;
   background: var(--gate-card-muted, var(--surface-muted)) !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__header-actions :is(select, button) {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions :is(select, button) {
   box-sizing: border-box !important;
   width: 100% !important;
   min-width: 0 !important;
@@ -158,7 +158,7 @@
   border-radius: 8px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__stream {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__stream {
   box-sizing: border-box !important;
   width: 100% !important;
   min-width: 0 !important;
@@ -168,16 +168,16 @@
   overflow-y: auto !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__stream > *,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__messages,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__stream > *,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__messages,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message {
   box-sizing: border-box !important;
   max-width: 100% !important;
   min-width: 0 !important;
   overflow-wrap: anywhere !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer {
   box-sizing: border-box !important;
   position: relative !important;
   inset: auto !important;
@@ -199,16 +199,16 @@
   box-shadow: 0 8px 22px rgb(30 62 76 / 8%) !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer > label,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea__editor {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer > label,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea__editor {
   box-sizing: border-box !important;
   width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea__editor {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea__editor {
   min-height: 54px !important;
   max-height: 110px !important;
   padding: 7px 8px !important;
@@ -217,7 +217,7 @@
   font-size: 11px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer {
   box-sizing: border-box !important;
   display: grid !important;
   grid-template-columns: 34px minmax(96px, 1.25fr) minmax(0, 1fr) 44px 34px 34px !important;
@@ -230,18 +230,18 @@
   overflow: visible !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not([data-agent-mode='codex']) {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not([data-agent-mode='codex']) {
   grid-template-columns: 34px minmax(96px, 1.25fr) minmax(0, 1fr) 34px 34px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > *,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__mode-tabs,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__mode-tabs > button {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > *,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__mode-tabs,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__mode-tabs > button {
   box-sizing: border-box !important;
   min-width: 0 !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__mode-tabs {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__mode-tabs {
   display: grid !important;
   grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   width: 100% !important;
@@ -251,7 +251,7 @@
   border-radius: 17px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__mode-tabs > button {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__mode-tabs > button {
   width: 100% !important;
   height: var(--agent-compact-control-size) !important;
   padding: 0 4px !important;
@@ -262,7 +262,7 @@
   border-radius: 15px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__model-pill {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__model-pill {
   display: block !important;
   width: 100% !important;
   min-width: 0 !important;
@@ -275,7 +275,7 @@
   border-radius: 17px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__effort {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__effort {
   box-sizing: border-box !important;
   width: 42px !important;
   min-width: 42px !important;
@@ -284,8 +284,8 @@
   font-size: 10px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > button[type='submit'] {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > button[type='submit'] {
   box-sizing: border-box !important;
   display: inline-grid !important;
   width: var(--agent-compact-control-size) !important;
@@ -296,7 +296,7 @@
   place-items: center !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > button[type='submit'] {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > button[type='submit'] {
   width: var(--agent-compact-control-size) !important;
   min-width: var(--agent-compact-control-size) !important;
   height: var(--agent-compact-control-size) !important;
@@ -304,7 +304,7 @@
   border-radius: 50% !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer :is(
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer :is(
   .skill-chat-workbench__mode-tabs,
   .skill-chat-workbench__mode-tabs > button,
   .skill-chat-workbench__model-pill,
@@ -320,19 +320,19 @@
 
 /* The header already owns new-task creation, so the duplicate footer reset
    cannot consume width in the compact composer. */
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer
   > .skill-chat-workbench__tool:not(.skill-chat-workbench__knowledge-compact):not(:first-of-type) {
   display: none !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer
   > button[data-testid='agent-model-trigger']::after,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer
   > button[data-testid='knowledge-base-trigger']::after {
   content: none !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__sheet[data-anchor='composer-footer'] {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__sheet[data-anchor='composer-footer'] {
   box-sizing: border-box !important;
   right: 10px !important;
   left: 10px !important;
@@ -344,15 +344,15 @@
 
 /* Ordered reference media: every one of the twenty items stays in the same
    scrollable drag lane. Arrow controls are keyboard-only and never cover art. */
-.workspace--ui-gate .connected-agent-media-slots,
-.workspace--ui-gate .connected-agent-media-slots__row {
+.workspace--canvas-layout .connected-agent-media-slots,
+.workspace--canvas-layout .connected-agent-media-slots__row {
   box-sizing: border-box !important;
   width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
 }
 
-.workspace--ui-gate .connected-agent-media-slots__row {
+.workspace--canvas-layout .connected-agent-media-slots__row {
   display: flex !important;
   align-items: center !important;
   gap: 6px !important;
@@ -363,17 +363,26 @@
   scrollbar-color: var(--gate-border-strong, var(--border-strong)) transparent !important;
 }
 
-.workspace--ui-gate .connected-agent-media-slots__row::-webkit-scrollbar {
+/* Once the tray has more than ten slots, reserve a real horizontal scrollbar
+   rail below the thumbnails.  `overflow-x: scroll` avoids platform auto-hide
+   behavior while keeping the row itself the only scrolling surface. */
+.workspace--canvas-layout .connected-agent-media-slots__row[data-overflow='true'] {
+  overflow-x: scroll !important;
+  scrollbar-gutter: stable !important;
+  padding-bottom: 8px !important;
+}
+
+.workspace--canvas-layout .connected-agent-media-slots__row::-webkit-scrollbar {
   display: block !important;
   width: 6px !important;
   height: 6px !important;
 }
-.workspace--ui-gate .connected-agent-media-slots__row::-webkit-scrollbar-thumb {
+.workspace--canvas-layout .connected-agent-media-slots__row::-webkit-scrollbar-thumb {
   background: var(--gate-border-strong, var(--border-strong)) !important;
   border-radius: 999px !important;
 }
 
-.workspace--ui-gate .connected-agent-media-slots__item {
+.workspace--canvas-layout .connected-agent-media-slots__item {
   box-sizing: border-box !important;
   position: relative !important;
   flex: 0 0 36px !important;
@@ -386,11 +395,11 @@
   touch-action: none !important;
 }
 
-.workspace--ui-gate .connected-agent-media-slots__item:active {
+.workspace--canvas-layout .connected-agent-media-slots__item:active {
   cursor: grabbing !important;
 }
 
-.workspace--ui-gate .connected-agent-media-slots__item > :is(img, video) {
+.workspace--canvas-layout .connected-agent-media-slots__item > :is(img, video) {
   display: block !important;
   width: 100% !important;
   height: 100% !important;
@@ -398,7 +407,7 @@
   pointer-events: none !important;
 }
 
-.workspace--ui-gate .connected-agent-media-slots__reorder {
+.workspace--canvas-layout .connected-agent-media-slots__reorder {
   position: absolute !important;
   width: 1px !important;
   height: 1px !important;
@@ -409,7 +418,7 @@
   pointer-events: none !important;
 }
 
-.workspace--ui-gate .connected-agent-media-slots__reorder:focus-within {
+.workspace--canvas-layout .connected-agent-media-slots__reorder:focus-within {
   right: 3px !important;
   bottom: 3px !important;
   left: 3px !important;
@@ -427,14 +436,14 @@
 
 /* Reference-inspired floating chrome.  The controls keep Canvas Atelier's
    own behavior while matching the compact three-tab + Agent entry rhythm. */
-.workspace--ui-gate .canvas-stage {
+.workspace--canvas-layout .canvas-stage {
   position: absolute !important;
   inset: 0 !important;
   width: 100% !important;
   height: 100% !important;
 }
 
-.workspace--ui-gate .topbar {
+.workspace--canvas-layout .topbar {
   box-sizing: border-box !important;
   position: fixed !important;
   z-index: 150 !important;
@@ -457,11 +466,11 @@
   backdrop-filter: blur(18px) !important;
 }
 
-.workspace--ui-gate[data-agent-collapsed='false'] .topbar {
+.workspace--canvas-layout[data-agent-collapsed='false'] .topbar {
   left: calc((100vw - 460px) / 2) !important;
 }
 
-.workspace--ui-gate .topbar__identity {
+.workspace--canvas-layout .topbar__identity {
   box-sizing: border-box !important;
   display: none !important;
   flex: none !important;
@@ -472,7 +481,7 @@
   overflow: hidden !important;
 }
 
-.workspace--ui-gate .product-mark {
+.workspace--canvas-layout .product-mark {
   flex: 0 0 auto !important;
   width: auto !important;
   min-width: 0 !important;
@@ -481,18 +490,18 @@
   white-space: nowrap !important;
 }
 
-.workspace--ui-gate .project-menu,
-.workspace--ui-gate .project-button {
+.workspace--canvas-layout .project-menu,
+.workspace--canvas-layout .project-button {
   min-width: 0 !important;
   max-width: 100% !important;
 }
 
-.workspace--ui-gate .project-button {
+.workspace--canvas-layout .project-button {
   padding: 0 !important;
   font-size: 10px !important;
 }
 
-.workspace--ui-gate .topbar__canvas-actions {
+.workspace--canvas-layout .topbar__canvas-actions {
   box-sizing: border-box !important;
   display: flex !important;
   flex: none !important;
@@ -504,24 +513,24 @@
   gap: 6px !important;
 }
 
-.workspace--ui-gate .save-project-control,
-.workspace--ui-gate .topbar-canvas-action {
+.workspace--canvas-layout .save-project-control,
+.workspace--canvas-layout .topbar-canvas-action {
   height: 38px !important;
   min-height: 38px !important;
 }
 
-.workspace--ui-gate .topbar-canvas-action {
+.workspace--canvas-layout .topbar-canvas-action {
   width: auto !important;
   min-width: 92px !important;
   padding: 0 12px !important;
   border-radius: 10px !important;
 }
 
-.workspace--ui-gate .topbar-canvas-action--history {
+.workspace--canvas-layout .topbar-canvas-action--history {
   display: none !important;
 }
 
-.workspace--ui-gate .topbar__actions {
+.workspace--canvas-layout .topbar__actions {
   box-sizing: border-box !important;
   display: flex !important;
   flex: none !important;
@@ -563,8 +572,8 @@
   border-color: #6574df !important;
 }
 
-.workspace--ui-gate .topbar__actions .theme-control--figma,
-.workspace--ui-gate .topbar-close-action {
+.workspace--canvas-layout .topbar__actions .theme-control--compact,
+.workspace--canvas-layout .topbar-close-action {
   box-sizing: border-box !important;
   flex: 0 0 38px !important;
   width: 38px !important;
@@ -575,18 +584,18 @@
   border-radius: 10px !important;
 }
 
-.workspace--ui-gate .topbar__actions .theme-control--figma,
-.workspace--ui-gate .topbar-close-action {
+.workspace--canvas-layout .topbar__actions .theme-control--compact,
+.workspace--canvas-layout .topbar-close-action {
   display: none !important;
 }
 
 /* Compact node controls follow the visual reference without reviving its
    colors.  Every node family shares the same Canvas Atelier geometry. */
-.workspace--ui-gate {
+.workspace--canvas-layout {
   --node-compact-control-height: 32px;
 }
 
-.workspace--ui-gate :is(
+.workspace--canvas-layout :is(
   .module-node__generation-control-bar,
   .module-node__video-control-bar,
   .module-node__parameter-row,
@@ -598,14 +607,14 @@
   gap: 6px !important;
 }
 
-.workspace--ui-gate .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
-.workspace--ui-gate .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
-.workspace--ui-gate .module-node__parameter-row > :is(select, button, input),
-.workspace--ui-gate .module-node__storyboard-editor :is(select, button),
-.workspace--ui-gate .module-node__workbench-actions button,
-.workspace--ui-gate .module-node__agent-actions > button,
-.workspace--ui-gate .module-node__generation-control-bar .generation-parameter-popover__trigger,
-.workspace--ui-gate .module-node__video-control-bar .generation-parameter-popover__trigger {
+.workspace--canvas-layout .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--canvas-layout .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--canvas-layout .module-node__parameter-row > :is(select, button, input),
+.workspace--canvas-layout .module-node__storyboard-editor :is(select, button),
+.workspace--canvas-layout .module-node__workbench-actions button,
+.workspace--canvas-layout .module-node__agent-actions > button,
+.workspace--canvas-layout .module-node__generation-control-bar .generation-parameter-popover__trigger,
+.workspace--canvas-layout .module-node__video-control-bar .generation-parameter-popover__trigger {
   box-sizing: border-box !important;
   height: var(--node-compact-control-height) !important;
   min-height: var(--node-compact-control-height) !important;
@@ -614,7 +623,7 @@
   border-radius: 8px !important;
   line-height: 1 !important;
 }
-.workspace--ui-gate .module-node__video-duration-slider {
+.workspace--canvas-layout .module-node__video-duration-slider {
   display: inline-flex !important;
   align-items: center !important;
   gap: 7px !important;
@@ -626,14 +635,14 @@
   border-radius: 10px !important;
   font-size: 11px !important;
 }
-.workspace--ui-gate .module-node__video-duration-slider label { white-space: nowrap !important; }
-.workspace--ui-gate .module-node__video-duration-slider input[type='range'] { width: 92px !important; accent-color: var(--accent, #16a99b) !important; }
-.workspace--ui-gate .module-node__video-duration-slider output { min-width: 27px !important; color: var(--text, #20313b) !important; font-variant-numeric: tabular-nums !important; font-weight: 700 !important; }
-.workspace--ui-gate .module-node__video-duration-fallback { display: none !important; }
+.workspace--canvas-layout .module-node__video-duration-slider label { white-space: nowrap !important; }
+.workspace--canvas-layout .module-node__video-duration-slider input[type='range'] { width: 92px !important; accent-color: var(--accent, #16a99b) !important; }
+.workspace--canvas-layout .module-node__video-duration-slider output { min-width: 27px !important; color: var(--text, #20313b) !important; font-variant-numeric: tabular-nums !important; font-weight: 700 !important; }
+.workspace--canvas-layout .module-node__video-duration-fallback { display: none !important; }
 
-.workspace--ui-gate .module-node__generation-preview-item > :is(img, video),
-.workspace--ui-gate .module-node__generation-collapsed-open > :is(img, video),
-.workspace--ui-gate .module-node__video-output-stage > :is(img, video) {
+.workspace--canvas-layout .module-node__generation-preview-item > :is(img, video),
+.workspace--canvas-layout .module-node__generation-collapsed-open > :is(img, video),
+.workspace--canvas-layout .module-node__video-output-stage > :is(img, video) {
   display: block !important;
   width: 100% !important;
   height: 100% !important;
@@ -645,17 +654,17 @@
 }
 
 @media (max-width: 1080px) {
-  .workspace--ui-gate .topbar {
+  .workspace--canvas-layout .topbar {
     grid-template-columns: auto auto !important;
     width: max-content !important;
     max-width: calc(100vw - 32px) !important;
   }
 
-  .workspace--ui-gate .topbar__identity {
+  .workspace--canvas-layout .topbar__identity {
     display: none !important;
   }
 
-  .workspace--ui-gate .topbar__canvas-actions {
+  .workspace--canvas-layout .topbar__canvas-actions {
     justify-self: start !important;
   }
 }
@@ -664,7 +673,7 @@
    Historical node selectors use several incompatible heights. This final
    contract keeps controls visually aligned while preserving small square
    affordances for icons and media thumbnails. */
-.workspace--ui-gate .module-node :is(button, select, input) {
+.workspace--canvas-layout .module-node :is(button, select, input) {
   box-sizing: border-box !important;
   height: 38px !important;
   min-height: 38px !important;
@@ -675,7 +684,7 @@
 /* Generated previews are media stages, not compact controls. Keep this after
    the broad control-size contract so a completed image fills the preview
    instead of collapsing into a 38px strip. */
-.workspace--ui-gate .module-node .module-node__generation-preview-item {
+.workspace--canvas-layout .module-node .module-node__generation-preview-item {
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) !important;
   grid-template-rows: minmax(0, 1fr) !important;
@@ -685,7 +694,7 @@
   max-height: none !important;
 }
 
-.workspace--ui-gate .module-node :is(.module-node__icon-button, .module-node__collapse-editor) {
+.workspace--canvas-layout .module-node :is(.module-node__icon-button, .module-node__collapse-editor) {
   width: 36px !important;
   min-width: 36px !important;
   height: 36px !important;
@@ -694,7 +703,7 @@
   padding: 0 !important;
 }
 
-.workspace--ui-gate .module-node :is(.module-node__agent-media-slot, .connected-agent-media-slots__item) {
+.workspace--canvas-layout .module-node :is(.module-node__agent-media-slot, .connected-agent-media-slots__item) {
   width: 36px !important;
   min-width: 36px !important;
   height: 36px !important;
@@ -707,18 +716,18 @@
    Popover controls have a wrapper plus an inner trigger. Both layers must
    occupy the same fixed rail so native selects and the green primary action
    share one baseline. */
-.workspace--ui-gate .module-node__generation-control-bar > :is(
+.workspace--canvas-layout .module-node__generation-control-bar > :is(
   select,
   .generation-parameter-popover,
   .module-node__run-generation
 ),
-.workspace--ui-gate .module-node__video-control-bar > :is(
+.workspace--canvas-layout .module-node__video-control-bar > :is(
   select,
   .generation-parameter-popover,
   .module-node__run-generation
 ),
-.workspace--ui-gate .module-node__generation-control-bar > .generation-parameter-popover > .generation-parameter-popover__trigger,
-.workspace--ui-gate .module-node__video-control-bar > .generation-parameter-popover > .generation-parameter-popover__trigger {
+.workspace--canvas-layout .module-node__generation-control-bar > .generation-parameter-popover > .generation-parameter-popover__trigger,
+.workspace--canvas-layout .module-node__video-control-bar > .generation-parameter-popover > .generation-parameter-popover__trigger {
   box-sizing: border-box !important;
   width: 100% !important;
   min-width: 0 !important;
@@ -734,21 +743,21 @@
   border-radius: 10px !important;
 }
 
-.workspace--ui-gate .module-node__generation-control-bar > .generation-parameter-popover,
-.workspace--ui-gate .module-node__video-control-bar > .generation-parameter-popover {
+.workspace--canvas-layout .module-node__generation-control-bar > .generation-parameter-popover,
+.workspace--canvas-layout .module-node__video-control-bar > .generation-parameter-popover {
   overflow: visible !important;
 }
 
 /* FINAL CHAT COMPOSER CONTRACT
    The footer contains five direct children; the action group owns the last
    three icon buttons. Keep the visible controls on one compact baseline. */
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer {
   grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1.12fr) 44px minmax(0, auto) !important;
   align-items: center !important;
   gap: 6px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > :is(
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > :is(
   .skill-chat-workbench__tool,
   .skill-chat-workbench__mode-tabs,
   .skill-chat-workbench__model-pill,
@@ -762,7 +771,7 @@
   align-self: center !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-actions {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-actions {
   display: flex !important;
   width: auto !important;
   min-width: 0 !important;
@@ -771,8 +780,8 @@
   gap: 6px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-actions > :is(button, select),
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-actions > :is(button, select),
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool {
   box-sizing: border-box !important;
   width: 34px !important;
   min-width: 34px !important;
@@ -784,7 +793,7 @@
   place-items: center !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-actions > .skill-chat-workbench__submit-hidden {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-actions > .skill-chat-workbench__submit-hidden {
   position: absolute !important;
   width: 1px !important;
   min-width: 1px !important;
@@ -798,8 +807,8 @@
   pointer-events: none !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort {
   width: 100% !important;
   min-width: 0 !important;
   padding: 0 8px !important;
@@ -808,7 +817,7 @@
 /* FINAL NODE ACTION CONTRACT
    Keep every executable node action on one predictable hit target while
    preserving square icon affordances and the wider primary generation action. */
-.workspace--ui-gate .module-node :is(
+.workspace--canvas-layout .module-node :is(
   .module-node__run-generation,
   .module-node__reference-add,
   .module-node__agent-actions > button,
@@ -832,7 +841,7 @@
   border-radius: 10px !important;
 }
 
-.workspace--ui-gate .module-node :is(
+.workspace--canvas-layout .module-node :is(
   .module-node__icon-button,
   .module-node__collapse-editor,
   .module-node__agent-media-add,
@@ -852,19 +861,19 @@
   border-radius: 10px !important;
 }
 
-.workspace--ui-gate .module-node .module-node__run-generation {
+.workspace--canvas-layout .module-node .module-node__run-generation {
   width: 100% !important;
   min-width: 0 !important;
 }
 
-.workspace--ui-gate .module-node .connected-agent-media-slots__reorder {
+.workspace--canvas-layout .module-node .connected-agent-media-slots__reorder {
   gap: 4px !important;
 }
 
 /* FINAL CURRENT IMAGE NODE OVERRIDE
    This owns the current Canvas Atelier image-generation bar directly. It
-   does not depend on the retired Figma node class or any reference geometry. */
-.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__generation-control-bar {
+   does not depend on the retired Canvas node class or any reference geometry. */
+.workspace--canvas-layout .module-node[data-module-type='image_generation'] .module-node__generation-control-bar {
   grid-template-columns: minmax(0, 1fr) minmax(0, .64fr) minmax(0, .64fr) minmax(0, .64fr) minmax(0, .76fr) !important;
   gap: 5px !important;
   grid-template-rows: 30px !important;
@@ -874,7 +883,7 @@
   padding: 9px 0 !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__generation-control-bar > :is(
+.workspace--canvas-layout .module-node[data-module-type='image_generation'] .module-node__generation-control-bar > :is(
   select,
   .generation-parameter-popover,
   .generation-parameter-popover > .generation-parameter-popover__trigger,
@@ -891,12 +900,12 @@
   line-height: 1 !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='image_generation'] .module-node__generation-control-bar .generation-parameter-popover__trigger {
+.workspace--canvas-layout .module-node[data-module-type='image_generation'] .module-node__generation-control-bar .generation-parameter-popover__trigger {
   width: 100% !important;
   padding: 0 7px !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-control-bar {
   grid-template-columns: minmax(0, 1.1fr) minmax(0, .45fr) minmax(0, .45fr) minmax(0, .5fr) minmax(0, .76fr) !important;
   gap: 5px !important;
   grid-template-rows: 30px !important;
@@ -906,7 +915,7 @@
   padding: 9px 0 !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-control-bar > :is(
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-control-bar > :is(
   select,
   .generation-parameter-popover,
   .generation-parameter-popover > .generation-parameter-popover__trigger,
@@ -923,12 +932,12 @@
   line-height: 1 !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-control-bar .generation-parameter-popover__trigger {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-control-bar .generation-parameter-popover__trigger {
   width: 100% !important;
   padding: 0 7px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__model-pill {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__model-pill {
   width: min(100%, 132px) !important;
   max-width: 132px !important;
   height: 30px !important;
@@ -939,8 +948,8 @@
   border-radius: 8px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-actions > .skill-chat-workbench__tool,
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-actions > .skill-chat-workbench__tool,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool {
   width: 30px !important;
   min-width: 30px !important;
   height: 30px !important;
@@ -951,7 +960,7 @@
 /* FINAL TOPBAR SAVE SPLIT BUTTON CONTRACT
    Keep the primary save label readable while retaining a separate manager
    toggle with the same visual height as the neighboring actions. */
-.workspace--ui-gate .save-project-control {
+.workspace--canvas-layout .save-project-control {
   grid-template-columns: 108px 30px !important;
   width: 138px !important;
   min-width: 138px !important;
@@ -959,7 +968,7 @@
   min-height: 36px !important;
 }
 
-.workspace--ui-gate .save-project-control__main {
+.workspace--canvas-layout .save-project-control__main {
   width: 108px !important;
   min-width: 108px !important;
   height: 36px !important;
@@ -968,7 +977,7 @@
   border-radius: 10px 0 0 10px !important;
 }
 
-.workspace--ui-gate .save-project-control__toggle {
+.workspace--canvas-layout .save-project-control__toggle {
   width: 30px !important;
   min-width: 30px !important;
   height: 36px !important;
@@ -978,8 +987,8 @@
 /* FINAL BUTTON SIZE LOCK
    Legacy generation selectors still target the same data attributes. Repeat
    the node class here so the current compact contract wins the cascade. */
-.workspace--ui-gate .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar,
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar {
   grid-template-rows: 30px !important;
   height: 48px !important;
   min-height: 48px !important;
@@ -988,10 +997,10 @@
   gap: 4px !important;
 }
 
-.workspace--ui-gate .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
-.workspace--ui-gate .module-node.module-node[data-module-type='image_generation'] .generation-parameter-popover__trigger,
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation'] .generation-parameter-popover__trigger {
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .generation-parameter-popover__trigger,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .generation-parameter-popover__trigger {
   width: 100% !important;
   min-width: 0 !important;
   height: 30px !important;
@@ -1004,7 +1013,7 @@
 }
 
 /* FINAL AGENT BUTTON SIZE LOCK */
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > :is(
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > :is(
   .skill-chat-workbench__tool,
   .skill-chat-workbench__mode-tabs,
   .skill-chat-workbench__model-pill,
@@ -1016,16 +1025,16 @@
   max-height: 30px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort {
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort {
   width: min(100%, 132px) !important;
   max-width: 132px !important;
   min-width: 0 !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-actions > :is(button, select),
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool,
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__close {
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-actions > :is(button, select),
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool,
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__close {
   width: 30px !important;
   min-width: 30px !important;
   max-width: 30px !important;
@@ -1040,7 +1049,7 @@
    resolve against the padding box and add a second copy of that padding to
    the right edge. Use the content width explicitly and keep the action group
    in a fixed compact column so no icon can cross the rounded border. */
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer {
   box-sizing: border-box !important;
   width: calc(100% - 20px) !important;
   max-width: calc(100% - 20px) !important;
@@ -1052,26 +1061,26 @@
   z-index: 3 !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__mention-menu {
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__mention-menu {
   z-index: 4 !important;
   pointer-events: auto !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs,
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort,
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs,
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__effort,
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
   min-width: 0 !important;
   max-width: 100% !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs > button {
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs > button {
   height: 30px !important;
   min-height: 30px !important;
   max-height: 30px !important;
 }
 
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
   width: 30px !important;
   min-width: 30px !important;
   max-width: 30px !important;
@@ -1083,8 +1092,8 @@
    Expanded generation cards still carry a legacy :has() rail selector. Match
    that specificity here so the current compact geometry wins after hydration
    for both image and video nodes. */
-.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
   grid-template-rows: 30px !important;
   height: 48px !important;
   min-height: 48px !important;
@@ -1093,19 +1102,19 @@
   gap: 4px !important;
 }
 
-.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
   grid-template-columns: minmax(0, 1.1fr) minmax(0, .45fr) minmax(0, .45fr) minmax(0, .5fr) minmax(0, .76fr) !important;
 }
 
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
   grid-template-columns: minmax(0, 1.1fr) minmax(0, .44fr) minmax(0, .44fr) minmax(0, .52fr) minmax(0, .76fr) !important;
 }
 
-.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
-.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .generation-parameter-popover__trigger,
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .generation-parameter-popover__trigger {
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .generation-parameter-popover__trigger,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .generation-parameter-popover__trigger {
   box-sizing: border-box !important;
   width: 100% !important;
   min-width: 0 !important;
@@ -1118,8 +1127,8 @@
   line-height: 1 !important;
 }
 
-.workspace--ui-gate .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > .module-node__run-generation,
-.workspace--ui-gate .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > .module-node__run-generation {
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > .module-node__run-generation,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > .module-node__run-generation {
   grid-column: 5 !important;
   width: calc(100% - 2px) !important;
   justify-self: end !important;
@@ -1133,7 +1142,7 @@
    The compact reasoning control is intentionally icon-only. Remove the
    browser-specific select arrow and draw one centered chevron so Chromium
    and Electron do not place it against the right edge of the 30px button. */
-.workspace--ui-gate .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__effort {
+.workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__effort {
   appearance: none !important;
   -webkit-appearance: none !important;
   box-sizing: border-box !important;
@@ -1154,7 +1163,7 @@
 }
 
 /* FINAL SETTINGS BUTTON CONTRACT */
-.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh) {
+.workspace--canvas-layout .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh) {
   box-sizing: border-box !important;
   display: inline-flex !important;
   flex-direction: row !important;
@@ -1173,7 +1182,7 @@
   transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease, opacity 120ms ease !important;
 }
 
-.workspace--ui-gate .settings-drawer .settings-action-content {
+.workspace--canvas-layout .settings-drawer .settings-action-content {
   display: inline-flex !important;
   flex-direction: row !important;
   align-items: center !important;
@@ -1182,52 +1191,52 @@
   white-space: nowrap !important;
 }
 
-.workspace--ui-gate .settings-drawer .settings-action-content > svg {
+.workspace--canvas-layout .settings-drawer .settings-action-content > svg {
   flex: 0 0 auto !important;
 }
 
-.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh) {
+.workspace--canvas-layout .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh) {
   color: var(--text) !important;
   background: var(--surface) !important;
   border: 1px solid var(--border-strong) !important;
 }
 
-.workspace--ui-gate .settings-drawer .settings-storage-refresh {
+.workspace--canvas-layout .settings-drawer .settings-storage-refresh {
   min-width: 84px !important;
 }
 
-.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):hover:not(:disabled) {
+.workspace--canvas-layout .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):hover:not(:disabled) {
   border-color: var(--accent) !important;
   background: var(--surface-raised) !important;
 }
 
-.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):active:not(:disabled) {
+.workspace--canvas-layout .settings-drawer :is(.settings-cache-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):active:not(:disabled) {
   transform: translateY(1px) !important;
 }
 
-.workspace--ui-gate .settings-drawer .settings-cache-primary-action {
+.workspace--canvas-layout .settings-drawer .settings-cache-primary-action {
   min-width: 112px !important;
   color: var(--on-accent) !important;
   background: var(--accent) !important;
   border: 1px solid var(--accent) !important;
 }
 
-.workspace--ui-gate .settings-drawer .settings-cache-primary-action:hover:not(:disabled) {
+.workspace--canvas-layout .settings-drawer .settings-cache-primary-action:hover:not(:disabled) {
   background: var(--accent-strong, var(--accent)) !important;
   border-color: var(--accent-strong, var(--accent)) !important;
 }
 
-.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):focus-visible {
+.workspace--canvas-layout .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent) !important;
   outline-offset: 2px !important;
 }
 
-.workspace--ui-gate .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):disabled {
+.workspace--canvas-layout .settings-drawer :is(.settings-cache-action, .settings-cache-primary-action, .settings-update-action, .settings-connection-check, .settings-storage-refresh):disabled {
   cursor: not-allowed !important;
   opacity: .55 !important;
 }
 
-.workspace--ui-gate .settings-drawer .settings-cache-item-action {
+.workspace--canvas-layout .settings-drawer .settings-cache-item-action {
   box-sizing: border-box !important;
   display: inline-flex !important;
   align-items: center !important;
@@ -1244,26 +1253,26 @@
   line-height: 1 !important;
 }
 
-.workspace--ui-gate .settings-drawer .settings-cache-item-action:hover:not(:disabled) {
+.workspace--canvas-layout .settings-drawer .settings-cache-item-action:hover:not(:disabled) {
   color: var(--accent) !important;
   border-color: var(--accent) !important;
   background: var(--surface-raised) !important;
 }
 
 @media (max-width: 620px) {
-  .workspace--ui-gate .settings-drawer .settings-cache-directory-actions {
+  .workspace--canvas-layout .settings-drawer .settings-cache-directory-actions {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 }
 
 /* FINAL SETTINGS DRAWER OCCLUSION CONTRACT */
-.workspace--ui-gate .settings-drawer {
+.workspace--canvas-layout .settings-drawer {
   background: var(--gate-card) !important;
   backdrop-filter: none !important;
 }
 
 /* FINAL REVERSE ACTION BUTTON CONTRACT */
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__workbench-actions {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__workbench-actions {
   box-sizing: border-box !important;
   position: absolute !important;
   top: auto !important;
@@ -1276,7 +1285,7 @@
   padding: 0 !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-actions {
   box-sizing: border-box !important;
   display: grid !important;
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
@@ -1288,7 +1297,7 @@
   padding: 0 !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions > button {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-actions > button {
   box-sizing: border-box !important;
   width: 100% !important;
   height: 34px !important;
@@ -1301,54 +1310,54 @@
   line-height: 1 !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions .module-node__apply-agent {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-actions .module-node__apply-agent {
   color: var(--gate-text) !important;
   background: var(--gate-card) !important;
   border: 1px solid var(--gate-border-strong, var(--gate-border)) !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions .module-node__run-agent {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-actions .module-node__run-agent {
   color: var(--on-accent, #fff) !important;
   background: var(--gate-accent, var(--accent)) !important;
   border: 1px solid var(--gate-accent, var(--accent)) !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .module-node__agent-actions > button:disabled {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-actions > button:disabled {
   cursor: not-allowed !important;
   opacity: .55 !important;
 }
 
-/* Keep the inset reverse output socket draggable above the workbench. The
-   transparent port rail must not intercept any other form controls. */
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports {
+/* Keep both reverse sockets centred on the card border and draggable above
+   the workbench. The transparent rail must not intercept form controls. */
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] > .module-node__ports {
   z-index: 30 !important;
   pointer-events: none !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports .react-flow__handle {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] > .module-node__ports .react-flow__handle {
   z-index: 31 !important;
   pointer-events: auto !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports :is(
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] > .module-node__ports :is(
   .module-node__ports-column--outputs,
   .module-node__port-row--output
 ) {
-  overflow: clip !important;
+  overflow: visible !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports .module-node__ports-column--outputs {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] > .module-node__ports .module-node__ports-column--outputs {
   margin-right: 0 !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] > .module-node__ports .react-flow__handle-right {
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] > .module-node__ports .react-flow__handle-right {
   right: 0 !important;
-  transform: translate(0, -50%) !important;
+  transform: translate(50%, -50%) !important;
 }
 
 /* FINAL CONNECTED MEDIA REORDER HIT TARGET CONTRACT */
-.workspace--ui-gate .module-node .connected-agent-media-slots__reorder,
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__reorder {
+.workspace--canvas-layout .module-node .connected-agent-media-slots__reorder,
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__reorder {
   box-sizing: border-box !important;
   position: absolute !important;
   z-index: 9 !important;
@@ -1368,16 +1377,16 @@
   pointer-events: none !important;
 }
 
-.workspace--ui-gate .module-node .connected-agent-media-slots__item:hover .connected-agent-media-slots__reorder,
-.workspace--ui-gate .module-node .connected-agent-media-slots__item:focus-within .connected-agent-media-slots__reorder,
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__item:hover .connected-agent-media-slots__reorder,
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__item:focus-within .connected-agent-media-slots__reorder {
+.workspace--canvas-layout .module-node .connected-agent-media-slots__item:hover .connected-agent-media-slots__reorder,
+.workspace--canvas-layout .module-node .connected-agent-media-slots__item:focus-within .connected-agent-media-slots__reorder,
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__item:hover .connected-agent-media-slots__reorder,
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__item:focus-within .connected-agent-media-slots__reorder {
   opacity: 1 !important;
   pointer-events: auto !important;
 }
 
-.workspace--ui-gate .module-node .connected-agent-media-slots__reorder > button,
-.workspace--ui-gate .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__reorder > button {
+.workspace--canvas-layout .module-node .connected-agent-media-slots__reorder > button,
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .connected-agent-media-slots__reorder > button {
   box-sizing: border-box !important;
   display: inline-grid !important;
   width: 16px !important;
@@ -1395,7 +1404,7 @@
    Completed image/video nodes return to a media-only canvas surface. Prompt,
    references and parameters remain available only after explicitly opening
    the editor again. */
-.workspace--ui-gate .module-node:is([data-module-type='image_generation'], [data-module-type='video_generation']):has(
+.workspace--canvas-layout .module-node:is([data-module-type='image_generation'], [data-module-type='video_generation']):has(
   .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
 ) {
   width: 760px !important;
@@ -1407,7 +1416,7 @@
   box-shadow: none !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='image_generation']:has(
+.workspace--canvas-layout .module-node[data-module-type='image_generation']:has(
   .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true'][data-result-count='1'][data-result-orientation='portrait']
 ) {
   width: 520px !important;
@@ -1416,7 +1425,7 @@
   min-height: 650px !important;
 }
 
-.workspace--ui-gate .module-node[data-module-type='image_generation']:has(
+.workspace--canvas-layout .module-node[data-module-type='image_generation']:has(
   .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true'][data-result-count='1'][data-result-orientation='square']
 ) {
   width: 600px !important;
@@ -1425,7 +1434,7 @@
   min-height: 620px !important;
 }
 
-.workspace--ui-gate .module-node:is([data-module-type='image_generation'], [data-module-type='video_generation'])
+.workspace--canvas-layout .module-node:is([data-module-type='image_generation'], [data-module-type='video_generation'])
   .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
   .module-node__generation-collapsed-open {
   top: 46px !important;
@@ -1443,7 +1452,7 @@
   border-radius: 18px !important;
 }
 
-.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+.workspace--canvas-layout .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
   .module-node__generation-preview-gallery--collapsed {
   grid-template-columns: minmax(0, 1fr) !important;
   grid-template-rows: minmax(0, 1fr) !important;
@@ -1453,38 +1462,38 @@
   gap: 3px !important;
 }
 
-.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+.workspace--canvas-layout .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
   .module-node__generation-preview-gallery--collapsed.module-node__generation-preview-gallery--2 {
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   grid-template-rows: minmax(0, 1fr) !important;
   align-content: stretch !important;
 }
 
-.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+.workspace--canvas-layout .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
   .module-node__generation-preview-gallery--collapsed.module-node__generation-preview-gallery--3 {
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
 }
 
-.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+.workspace--canvas-layout .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
   .module-node__generation-preview-gallery--collapsed.module-node__generation-preview-gallery--3
   .module-node__generation-preview-item:first-child {
   grid-row: span 2 !important;
 }
 
-.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+.workspace--canvas-layout .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
   .module-node__generation-preview-gallery--collapsed.module-node__generation-preview-gallery--4 {
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
 }
 
-.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+.workspace--canvas-layout .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
   .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item {
   border: 0 !important;
   border-radius: 14px !important;
 }
 
-.workspace--ui-gate .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
+.workspace--canvas-layout .module-node__summary--generation[data-editor-expanded='false'][data-has-result='true']
   .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item > :is(img, video) {
   display: block !important;
   width: 100% !important;
@@ -1496,7 +1505,7 @@
 }
 
 /* FINAL PORTALED IMAGE ACTION MENU CONTRACT
-   This menu is rendered under document.body, outside .workspace--ui-gate, so
+   This menu is rendered under document.body, outside .workspace--canvas-layout, so
    it must not depend on workspace-scoped --gate-* variables. */
 :root[data-theme='light'] .generated-image-action-menu,
 :root:not([data-theme='dark']) .generated-image-action-menu {
@@ -1543,24 +1552,24 @@
 }
 
 /* FINAL PROVIDER COMPATIBILITY ACTIONS CONTRACT */
-.workspace--ui-gate .settings-key-actions {
+.workspace--canvas-layout .settings-key-actions {
   grid-template-columns: minmax(0, 1fr) !important;
   align-items: start !important;
 }
 
-.workspace--ui-gate .settings-key-actions > div:first-child {
+.workspace--canvas-layout .settings-key-actions > div:first-child {
   min-width: 0 !important;
   width: 100% !important;
 }
 
-.workspace--ui-gate .settings-key-actions > div:last-child {
+.workspace--canvas-layout .settings-key-actions > div:last-child {
   width: 100% !important;
   min-width: 0 !important;
   justify-content: flex-start !important;
   flex-wrap: wrap !important;
 }
 
-.workspace--ui-gate .settings-provider-compatibility {
+.workspace--canvas-layout .settings-provider-compatibility {
   display: grid !important;
   grid-template-columns: auto minmax(0, 1fr) auto !important;
   align-items: center !important;
@@ -1569,36 +1578,36 @@
   flex: 1 1 100% !important;
 }
 
-.workspace--ui-gate .settings-provider-compatibility summary {
+.workspace--canvas-layout .settings-provider-compatibility summary {
   white-space: nowrap !important;
 }
 
-.workspace--ui-gate .settings-provider-compatibility small {
+.workspace--canvas-layout .settings-provider-compatibility small {
   min-width: 0 !important;
   overflow-wrap: normal !important;
   white-space: nowrap !important;
 }
 
-.workspace--ui-gate .settings-provider-compatibility button {
+.workspace--canvas-layout .settings-provider-compatibility button {
   white-space: nowrap !important;
 }
 
 /* FINAL LAYERED SETTINGS WORKBENCH CONTRACT */
-.workspace--ui-gate .settings-provider-overview.settings-layer,
-.workspace--ui-gate .settings-provider-panel.settings-layer,
-.workspace--ui-gate .settings-model-layer,
-.workspace--ui-gate .settings-diagnostics-layer { min-width: 0 !important; border-radius: 12px !important; }
-.workspace--ui-gate .settings-provider-panel.settings-layer,
-.workspace--ui-gate .settings-diagnostics-layer { margin-inline: 12px !important; }
-.workspace--ui-gate .settings-model-layer { margin: 12px !important; overflow: hidden !important; }
-.workspace--ui-gate .settings-chat-adaptation { color: var(--accent) !important; font-weight: 650 !important; }
-.workspace--ui-gate .settings-diagnostics-summary { display: flex !important; flex-wrap: wrap !important; gap: 8px !important; }
+.workspace--canvas-layout .settings-provider-overview.settings-layer,
+.workspace--canvas-layout .settings-provider-panel.settings-layer,
+.workspace--canvas-layout .settings-model-layer,
+.workspace--canvas-layout .settings-diagnostics-layer { min-width: 0 !important; border-radius: 12px !important; }
+.workspace--canvas-layout .settings-provider-panel.settings-layer,
+.workspace--canvas-layout .settings-diagnostics-layer { margin-inline: 12px !important; }
+.workspace--canvas-layout .settings-model-layer { margin: 12px !important; overflow: hidden !important; }
+.workspace--canvas-layout .settings-chat-adaptation { color: var(--accent) !important; font-weight: 650 !important; }
+.workspace--canvas-layout .settings-diagnostics-summary { display: flex !important; flex-wrap: wrap !important; gap: 8px !important; }
 
 /* FINAL CANVAS-STYLE MODEL CATALOG AND TOOL ACTIONS */
-.workspace--ui-gate .settings-model-catalog { gap: 14px !important; padding: 16px !important; background: transparent !important; }
-.workspace--ui-gate .settings-model-catalog__summary { padding: 2px 2px 12px !important; border-bottom: 1px solid var(--gate-border) !important; }
-.workspace--ui-gate .settings-model-catalog__summary > span { padding: 5px 10px !important; border-radius: 999px !important; background: var(--gate-card-muted) !important; }
-.workspace--ui-gate .settings-model-group {
+.workspace--canvas-layout .settings-model-catalog { gap: 14px !important; padding: 16px !important; background: transparent !important; }
+.workspace--canvas-layout .settings-model-catalog__summary { padding: 2px 2px 12px !important; border-bottom: 1px solid var(--gate-border) !important; }
+.workspace--canvas-layout .settings-model-catalog__summary > span { padding: 5px 10px !important; border-radius: 999px !important; background: var(--gate-card-muted) !important; }
+.workspace--canvas-layout .settings-model-group {
   grid-template-columns: minmax(150px, .42fr) minmax(0, 1fr) !important;
   gap: 12px 16px !important;
   padding: 14px !important;
@@ -1608,40 +1617,40 @@
   background: var(--gate-card) !important;
   box-shadow: 0 4px 12px rgba(28, 44, 66, .04) !important;
 }
-.workspace--ui-gate .settings-model-group > header { display: grid !important; grid-template-columns: 34px minmax(0, 1fr) !important; align-content: start !important; justify-content: stretch !important; gap: 10px !important; padding-bottom: 10px !important; border-bottom: 1px solid var(--gate-border) !important; }
-.workspace--ui-gate .settings-model-group > header > i { width: 34px !important; height: 34px !important; display: grid !important; place-items: center !important; color: var(--gate-accent) !important; background: var(--gate-accent-soft) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 9px !important; font-size: 9px !important; font-style: normal !important; font-weight: 800 !important; }
-.workspace--ui-gate .settings-model-list { grid-column: 2 !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; align-content: start !important; }
-.workspace--ui-gate .settings-model-list > article { min-height: 52px !important; grid-template-columns: 20px minmax(0, 1fr) auto !important; padding: 7px 9px !important; border: 1px solid var(--gate-border) !important; border-radius: 8px !important; background: var(--gate-card-muted) !important; }
-.workspace--ui-gate .settings-model-list > article.is-enabled { border-color: color-mix(in srgb, var(--gate-accent) 32%, var(--gate-border)) !important; background: color-mix(in srgb, var(--gate-accent-soft) 48%, var(--gate-card)) !important; }
-.workspace--ui-gate .settings-model-identity { display: grid !important; gap: 3px !important; }
-.workspace--ui-gate .settings-model-identity small { display: block !important; color: var(--gate-muted) !important; font-size: 9px !important; }
-.workspace--ui-gate .settings-model-identity em { display: none !important; }
-.workspace--ui-gate .settings-model-list > article > em { padding: 3px 7px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 999px !important; font-size: 9px !important; font-style: normal !important; font-weight: 750 !important; }
-.workspace--ui-gate .settings-model-default { grid-column: 1 !important; align-self: end !important; padding: 9px !important; background: var(--gate-card-muted) !important; border: 1px solid var(--gate-border) !important; border-radius: 8px !important; }
-.workspace--ui-gate .settings-model-default select { width: 100% !important; height: 38px !important; color: var(--gate-text) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-border-strong) !important; border-radius: 8px !important; }
-.workspace--ui-gate .settings-tool-card { min-height: 250px !important; display: flex !important; flex-direction: column !important; padding: 16px !important; border-top: 3px solid var(--gate-accent) !important; background: linear-gradient(160deg, var(--gate-card), var(--gate-card-muted)) !important; }
-.workspace--ui-gate .settings-tool-card > p { min-height: 32px !important; color: var(--gate-muted) !important; }
-.workspace--ui-gate .settings-tool-card__status { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 12px !important; padding: 10px 12px !important; background: var(--gate-card) !important; border: 1px solid var(--gate-border) !important; border-radius: 9px !important; }
-.workspace--ui-gate .settings-tool-card__status span { color: var(--gate-muted) !important; font-size: 10px !important; }
-.workspace--ui-gate .settings-tool-card__status strong { font-size: 11px !important; }
-.workspace--ui-gate .settings-tool-action { min-height: 40px !important; color: var(--gate-on-accent) !important; background: var(--gate-accent) !important; border-color: var(--gate-accent) !important; border-radius: 9px !important; box-shadow: 0 8px 18px color-mix(in srgb, var(--gate-accent) 20%, transparent) !important; }
-.workspace--ui-gate .settings-tool-card > .settings-tool-action,
-.workspace--ui-gate .settings-tool-card > .settings-connection-row { margin-top: auto !important; }
-.workspace--ui-gate .settings-tool-action:hover:not(:disabled) { filter: brightness(1.05) !important; transform: translateY(-1px) !important; }
+.workspace--canvas-layout .settings-model-group > header { display: grid !important; grid-template-columns: 34px minmax(0, 1fr) !important; align-content: start !important; justify-content: stretch !important; gap: 10px !important; padding-bottom: 10px !important; border-bottom: 1px solid var(--gate-border) !important; }
+.workspace--canvas-layout .settings-model-group > header > i { width: 34px !important; height: 34px !important; display: grid !important; place-items: center !important; color: var(--gate-accent) !important; background: var(--gate-accent-soft) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 9px !important; font-size: 9px !important; font-style: normal !important; font-weight: 800 !important; }
+.workspace--canvas-layout .settings-model-list { grid-column: 2 !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; align-content: start !important; }
+.workspace--canvas-layout .settings-model-list > article { min-height: 52px !important; grid-template-columns: 20px minmax(0, 1fr) auto !important; padding: 7px 9px !important; border: 1px solid var(--gate-border) !important; border-radius: 8px !important; background: var(--gate-card-muted) !important; }
+.workspace--canvas-layout .settings-model-list > article.is-enabled { border-color: color-mix(in srgb, var(--gate-accent) 32%, var(--gate-border)) !important; background: color-mix(in srgb, var(--gate-accent-soft) 48%, var(--gate-card)) !important; }
+.workspace--canvas-layout .settings-model-identity { display: grid !important; gap: 3px !important; }
+.workspace--canvas-layout .settings-model-identity small { display: block !important; color: var(--gate-muted) !important; font-size: 9px !important; }
+.workspace--canvas-layout .settings-model-identity em { display: none !important; }
+.workspace--canvas-layout .settings-model-list > article > em { padding: 3px 7px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 999px !important; font-size: 9px !important; font-style: normal !important; font-weight: 750 !important; }
+.workspace--canvas-layout .settings-model-default { grid-column: 1 !important; align-self: end !important; padding: 9px !important; background: var(--gate-card-muted) !important; border: 1px solid var(--gate-border) !important; border-radius: 8px !important; }
+.workspace--canvas-layout .settings-model-default select { width: 100% !important; height: 38px !important; color: var(--gate-text) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-border-strong) !important; border-radius: 8px !important; }
+.workspace--canvas-layout .settings-tool-card { min-height: 250px !important; display: flex !important; flex-direction: column !important; padding: 16px !important; border-top: 3px solid var(--gate-accent) !important; background: linear-gradient(160deg, var(--gate-card), var(--gate-card-muted)) !important; }
+.workspace--canvas-layout .settings-tool-card > p { min-height: 32px !important; color: var(--gate-muted) !important; }
+.workspace--canvas-layout .settings-tool-card__status { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 12px !important; padding: 10px 12px !important; background: var(--gate-card) !important; border: 1px solid var(--gate-border) !important; border-radius: 9px !important; }
+.workspace--canvas-layout .settings-tool-card__status span { color: var(--gate-muted) !important; font-size: 10px !important; }
+.workspace--canvas-layout .settings-tool-card__status strong { font-size: 11px !important; }
+.workspace--canvas-layout .settings-tool-action { min-height: 40px !important; color: var(--gate-on-accent) !important; background: var(--gate-accent) !important; border-color: var(--gate-accent) !important; border-radius: 9px !important; box-shadow: 0 8px 18px color-mix(in srgb, var(--gate-accent) 20%, transparent) !important; }
+.workspace--canvas-layout .settings-tool-card > .settings-tool-action,
+.workspace--canvas-layout .settings-tool-card > .settings-connection-row { margin-top: auto !important; }
+.workspace--canvas-layout .settings-tool-action:hover:not(:disabled) { filter: brightness(1.05) !important; transform: translateY(-1px) !important; }
 @media (max-width: 900px) {
-  .workspace--ui-gate .settings-model-group { grid-template-columns: 1fr !important; }
-  .workspace--ui-gate .settings-model-list, .workspace--ui-gate .settings-model-default { grid-column: 1 !important; }
-  .workspace--ui-gate .settings-model-list { grid-template-columns: 1fr !important; }
+  .workspace--canvas-layout .settings-model-group { grid-template-columns: 1fr !important; }
+  .workspace--canvas-layout .settings-model-list, .workspace--canvas-layout .settings-model-default { grid-column: 1 !important; }
+  .workspace--canvas-layout .settings-model-list { grid-template-columns: 1fr !important; }
 }
 
 /* 微信式 Agent 对话：消息按角色对齐，正文保持可读且永不撑破面板。 */
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__messages {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__messages {
   display: flex !important;
   flex-direction: column !important;
   gap: 12px !important;
   padding: 4px 2px 18px !important;
 }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message {
   position: relative !important;
   width: fit-content !important;
   max-width: min(78%, 560px) !important;
@@ -1652,7 +1661,7 @@
   box-shadow: 0 2px 8px rgb(31 55 67 / 7%) !important;
   line-height: 1.55 !important;
 }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message::before {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message::before {
   content: '' !important;
   position: absolute !important;
   top: 12px !important;
@@ -1661,34 +1670,34 @@
   background: inherit !important;
   transform: rotate(45deg) !important;
 }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--assistant {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--assistant {
   align-self: flex-start !important;
   color: var(--text, #20313b) !important;
   background: #fff !important;
   border-top-left-radius: 4px !important;
 }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--assistant::before { left: -3px !important; }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--user {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--assistant::before { left: -3px !important; }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--user {
   align-self: flex-end !important;
   color: #123c38 !important;
   background: #b8eee4 !important;
   border-top-right-radius: 4px !important;
 }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--user::before { right: -3px !important; }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message > span {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--user::before { right: -3px !important; }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message > span {
   display: block !important;
   margin-bottom: 3px !important;
   color: #6e858c !important;
   font-size: 10px !important;
   font-weight: 600 !important;
 }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--user > span { color: #388e83 !important; text-align: right !important; }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message > p { margin: 0 !important; white-space: pre-wrap !important; overflow-wrap: anywhere !important; }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--thinking { padding: 9px 12px !important; color: #687d83 !important; background: #f4f8f8 !important; }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status { display: inline-flex !important; align-items: center !important; gap: 7px !important; color: #687d83 !important; font-size: 12px !important; }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status i { width: 12px !important; height: 12px !important; border: 2px solid #9aacb0 !important; border-right-color: transparent !important; border-radius: 50% !important; animation: agent-thinking-spin .8s linear infinite !important; }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--user > span { color: #388e83 !important; text-align: right !important; }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message > p { margin: 0 !important; white-space: pre-wrap !important; overflow-wrap: anywhere !important; }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--thinking { padding: 9px 12px !important; color: #687d83 !important; background: #f4f8f8 !important; }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status { display: inline-flex !important; align-items: center !important; gap: 7px !important; color: #687d83 !important; font-size: 12px !important; }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status i { width: 12px !important; height: 12px !important; border: 2px solid #9aacb0 !important; border-right-color: transparent !important; border-radius: 50% !important; animation: agent-thinking-spin .8s linear infinite !important; }
 @keyframes agent-thinking-spin { to { transform: rotate(360deg); } }
-.workspace--ui-gate .agent-panel--skill-chat .skill-chat-workbench__error {
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__error {
   align-self: flex-start !important;
   max-width: min(82%, 560px) !important;
   margin: 0 4px 8px !important;
@@ -1701,12 +1710,12 @@
 }
 
 /* The decorative play glyph must never sit above the native video controls. */
-.workspace--ui-gate .module-node__video-output-play,
-.workspace--ui-gate .module-node__video-preview-play,
-.workspace--ui-gate .module-node__generation-preview-play {
+.workspace--canvas-layout .module-node__video-output-play,
+.workspace--canvas-layout .module-node__video-preview-play,
+.workspace--canvas-layout .module-node__generation-preview-play {
   pointer-events: none !important;
 }
-.workspace--ui-gate .module-node__video-preview-play {
+.workspace--canvas-layout .module-node__video-preview-play {
   pointer-events: auto !important;
   z-index: 30 !important;
   cursor: pointer !important;
@@ -1715,25 +1724,25 @@
 /* The expanded composer spans the full video node only for positioning its
    controls. Its transparent box must not sit above the native <video>
    controls; opt only the real editor regions back into pointer handling. */
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__workbench {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__workbench {
   pointer-events: none !important;
 }
-.workspace--ui-gate .module-node[data-module-type='video_generation'],
-.workspace--ui-gate .react-flow__node-module.canvas-flow-node--module-video_generation {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'],
+.workspace--canvas-layout .react-flow__node-module.canvas-flow-node--module-video_generation {
   pointer-events: auto !important;
 }
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__workbench-header,
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__result {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__workbench-header,
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__result {
   pointer-events: auto !important;
 }
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__summary--generation {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__summary--generation {
   pointer-events: none !important;
 }
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__configuration,
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-figma-composer {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__configuration,
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer {
   pointer-events: none !important;
 }
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__video-figma-composer > :is(
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer > :is(
   .module-node__unified-media-slots,
   .module-node__prompt-workspace,
   .module-node__video-control-bar,
@@ -1741,19 +1750,19 @@
 ) {
   pointer-events: auto !important;
 }
-.workspace--ui-gate .module-node[data-module-type='video_generation'] .module-node__result video {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__result video {
   position: relative !important;
   z-index: 20 !important;
   pointer-events: auto !important;
 }
 @media (max-width: 560px) {
-  .workspace--ui-gate .settings-model-list { grid-template-columns: 1fr !important; }
+  .workspace--canvas-layout .settings-model-list { grid-template-columns: 1fr !important; }
 }
-.workspace--ui-gate .module-node__generation-error { display: grid !important; gap: 10px !important; pointer-events: auto !important; }
-.workspace--ui-gate .module-node__generation-error > button { min-height: 34px !important; padding: 0 12px !important; color: #fff !important; background: #d9485f !important; border: 0 !important; border-radius: 8px !important; cursor: pointer !important; font-weight: 700 !important; }
+.workspace--canvas-layout .module-node__generation-error { display: grid !important; gap: 10px !important; pointer-events: auto !important; }
+.workspace--canvas-layout .module-node__generation-error > button { min-height: 34px !important; padding: 0 12px !important; color: #fff !important; background: #d9485f !important; border: 0 !important; border-radius: 8px !important; cursor: pointer !important; font-weight: 700 !important; }
 
 /* UPDATE ANNOUNCEMENT CARD */
-.workspace--ui-gate .settings-update-dialog__hero {
+.workspace--canvas-layout .settings-update-dialog__hero {
   display: grid !important;
   grid-template-columns: 42px minmax(0, 1fr) auto 28px !important;
   align-items: center !important;
@@ -1764,28 +1773,28 @@
   border: 1px solid var(--gate-accent-border) !important;
   border-radius: 12px !important;
 }
-.workspace--ui-gate .settings-update-dialog__icon { display: grid !important; place-items: center !important; width: 42px !important; height: 42px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 11px !important; }
-.workspace--ui-gate .settings-update-dialog__hero > div { display: grid !important; gap: 2px !important; min-width: 0 !important; }
-.workspace--ui-gate .settings-update-dialog__hero small { color: var(--gate-accent) !important; font-size: 10px !important; font-weight: 750 !important; letter-spacing: .03em !important; }
-.workspace--ui-gate .settings-update-dialog__hero strong { color: var(--gate-text) !important; font-size: 19px !important; line-height: 1.1 !important; }
-.workspace--ui-gate .settings-update-dialog__hero p { margin: 2px 0 0 !important; color: var(--gate-muted) !important; font-size: 11px !important; }
-.workspace--ui-gate .settings-update-dialog__version { padding: 6px 9px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 999px !important; font-size: 11px !important; white-space: nowrap !important; }
-.workspace--ui-gate .settings-update-dialog__notes { display: grid !important; gap: 10px !important; margin-bottom: 16px !important; padding: 13px 14px !important; background: var(--gate-card-muted) !important; border: 1px solid var(--gate-border) !important; border-radius: 10px !important; }
-.workspace--ui-gate .settings-update-dialog__notes > header { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 8px !important; }
-.workspace--ui-gate .settings-update-dialog__notes > header strong { color: var(--gate-text) !important; font-size: 12px !important; }
-.workspace--ui-gate .settings-update-dialog__notes > header span { color: var(--gate-muted) !important; font-size: 10px !important; }
-.workspace--ui-gate .settings-update-dialog__notes > p { margin: 0 !important; padding: 10px 11px !important; color: var(--gate-text) !important; background: var(--gate-card) !important; border-left: 3px solid var(--gate-accent) !important; border-radius: 7px !important; font-size: 12px !important; line-height: 1.55 !important; white-space: pre-wrap !important; }
-.workspace--ui-gate .settings-update-dialog { width: min(520px, calc(100vw - 40px)) !important; padding: 24px !important; }
-.workspace--ui-gate .settings-update-dialog__actions { display: flex !important; align-items: center !important; justify-content: flex-start !important; gap: 12px !important; margin-top: 20px !important; padding-top: 14px !important; border-top: 1px solid var(--gate-border) !important; }
-.workspace--ui-gate .settings-update-dialog__actions > button { flex: 0 0 auto !important; min-width: 112px !important; height: 40px !important; min-height: 40px !important; padding: 0 16px !important; border-radius: 10px !important; }
-.workspace--ui-gate .settings-update-dialog__actions > button.settings-section__secondary { min-width: 84px !important; }
+.workspace--canvas-layout .settings-update-dialog__icon { display: grid !important; place-items: center !important; width: 42px !important; height: 42px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 11px !important; }
+.workspace--canvas-layout .settings-update-dialog__hero > div { display: grid !important; gap: 2px !important; min-width: 0 !important; }
+.workspace--canvas-layout .settings-update-dialog__hero small { color: var(--gate-accent) !important; font-size: 10px !important; font-weight: 750 !important; letter-spacing: .03em !important; }
+.workspace--canvas-layout .settings-update-dialog__hero strong { color: var(--gate-text) !important; font-size: 19px !important; line-height: 1.1 !important; }
+.workspace--canvas-layout .settings-update-dialog__hero p { margin: 2px 0 0 !important; color: var(--gate-muted) !important; font-size: 11px !important; }
+.workspace--canvas-layout .settings-update-dialog__version { padding: 6px 9px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 999px !important; font-size: 11px !important; white-space: nowrap !important; }
+.workspace--canvas-layout .settings-update-dialog__notes { display: grid !important; gap: 10px !important; margin-bottom: 16px !important; padding: 13px 14px !important; background: var(--gate-card-muted) !important; border: 1px solid var(--gate-border) !important; border-radius: 10px !important; }
+.workspace--canvas-layout .settings-update-dialog__notes > header { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 8px !important; }
+.workspace--canvas-layout .settings-update-dialog__notes > header strong { color: var(--gate-text) !important; font-size: 12px !important; }
+.workspace--canvas-layout .settings-update-dialog__notes > header span { color: var(--gate-muted) !important; font-size: 10px !important; }
+.workspace--canvas-layout .settings-update-dialog__notes > p { margin: 0 !important; padding: 10px 11px !important; color: var(--gate-text) !important; background: var(--gate-card) !important; border-left: 3px solid var(--gate-accent) !important; border-radius: 7px !important; font-size: 12px !important; line-height: 1.55 !important; white-space: pre-wrap !important; }
+.workspace--canvas-layout .settings-update-dialog { width: min(520px, calc(100vw - 40px)) !important; padding: 24px !important; }
+.workspace--canvas-layout .settings-update-dialog__actions { display: flex !important; align-items: center !important; justify-content: flex-start !important; gap: 12px !important; margin-top: 20px !important; padding-top: 14px !important; border-top: 1px solid var(--gate-border) !important; }
+.workspace--canvas-layout .settings-update-dialog__actions > button { flex: 0 0 auto !important; min-width: 112px !important; height: 40px !important; min-height: 40px !important; padding: 0 16px !important; border-radius: 10px !important; }
+.workspace--canvas-layout .settings-update-dialog__actions > button.settings-section__secondary { min-width: 84px !important; }
 @media (max-width: 560px) {
-  .workspace--ui-gate .settings-update-dialog__hero { grid-template-columns: 38px minmax(0, 1fr) 28px !important; }
-  .workspace--ui-gate .settings-update-dialog__version { grid-column: 2 !important; justify-self: start !important; }
+  .workspace--canvas-layout .settings-update-dialog__hero { grid-template-columns: 38px minmax(0, 1fr) 28px !important; }
+  .workspace--canvas-layout .settings-update-dialog__version { grid-column: 2 !important; justify-self: start !important; }
 }
 
 /* FINAL SETTINGS MODEL WORKSPACE V2 */
-.workspace--ui-gate .settings-model-catalog {
+.workspace--canvas-layout .settings-model-catalog {
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) !important;
   gap: 12px !important;
@@ -1794,7 +1803,7 @@
   border: 1px solid var(--gate-border) !important;
   border-radius: 14px !important;
 }
-.workspace--ui-gate .settings-model-tabs {
+.workspace--canvas-layout .settings-model-tabs {
   display: grid !important;
   grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)) !important;
   gap: 8px !important;
@@ -1803,7 +1812,7 @@
   border: 1px solid var(--gate-border) !important;
   border-radius: 11px !important;
 }
-.workspace--ui-gate .settings-model-tabs > button {
+.workspace--canvas-layout .settings-model-tabs > button {
   display: grid !important;
   grid-template-columns: 18px minmax(0, 1fr) auto !important;
   align-items: center !important;
@@ -1819,15 +1828,15 @@
   font-weight: 650 !important;
   text-align: left !important;
 }
-.workspace--ui-gate .settings-model-tabs > button > span { overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important; }
-.workspace--ui-gate .settings-model-tabs > button > b { display: grid !important; place-items: center !important; min-width: 22px !important; height: 22px !important; padding: 0 6px !important; border-radius: 999px !important; background: var(--gate-card-muted) !important; font-size: 9px !important; }
-.workspace--ui-gate .settings-model-tabs > button.is-active {
+.workspace--canvas-layout .settings-model-tabs > button > span { overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important; }
+.workspace--canvas-layout .settings-model-tabs > button > b { display: grid !important; place-items: center !important; min-width: 22px !important; height: 22px !important; padding: 0 6px !important; border-radius: 999px !important; background: var(--gate-card-muted) !important; font-size: 9px !important; }
+.workspace--canvas-layout .settings-model-tabs > button.is-active {
   color: var(--gate-accent) !important;
   background: var(--gate-accent-soft) !important;
   border-color: var(--gate-accent-border) !important;
   box-shadow: 0 4px 12px color-mix(in srgb, var(--gate-accent) 10%, transparent) !important;
 }
-.workspace--ui-gate .settings-model-group.settings-model-group--active {
+.workspace--canvas-layout .settings-model-group.settings-model-group--active {
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) minmax(230px, .42fr) !important;
   gap: 12px 16px !important;
@@ -1838,7 +1847,7 @@
   border-radius: 12px !important;
   box-shadow: 0 8px 22px rgba(28, 44, 66, .06) !important;
 }
-.workspace--ui-gate .settings-model-group.settings-model-group--active > header {
+.workspace--canvas-layout .settings-model-group.settings-model-group--active > header {
   grid-column: 1 !important;
   display: grid !important;
   grid-template-columns: 38px minmax(0, 1fr) !important;
@@ -1847,9 +1856,9 @@
   padding: 0 !important;
   border: 0 !important;
 }
-.workspace--ui-gate .settings-model-group.settings-model-group--active > header > i { width: 38px !important; height: 38px !important; }
-.workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-default { grid-column: 2 !important; grid-row: 1 !important; align-self: center !important; padding: 0 !important; background: transparent !important; border: 0 !important; }
-.workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-list {
+.workspace--canvas-layout .settings-model-group.settings-model-group--active > header > i { width: 38px !important; height: 38px !important; }
+.workspace--canvas-layout .settings-model-group.settings-model-group--active .settings-model-default { grid-column: 2 !important; grid-row: 1 !important; align-self: center !important; padding: 0 !important; background: transparent !important; border: 0 !important; }
+.workspace--canvas-layout .settings-model-group.settings-model-group--active .settings-model-list {
   grid-column: 1 / -1 !important;
   grid-row: 2 !important;
   display: grid !important;
@@ -1858,11 +1867,11 @@
   max-height: 272px !important;
   padding: 2px 4px 2px 2px !important;
 }
-.workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-list > article { min-height: 58px !important; padding: 8px 11px !important; background: var(--gate-card-muted) !important; border-radius: 10px !important; }
-.workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-list > article.is-enabled { box-shadow: inset 3px 0 0 var(--gate-accent) !important; }
-.workspace--ui-gate .settings-drawer .settings-tool-action,
-.workspace--ui-gate .settings-drawer .settings-update-action,
-.workspace--ui-gate .settings-drawer .settings-connection-check {
+.workspace--canvas-layout .settings-model-group.settings-model-group--active .settings-model-list > article { min-height: 58px !important; padding: 8px 11px !important; background: var(--gate-card-muted) !important; border-radius: 10px !important; }
+.workspace--canvas-layout .settings-model-group.settings-model-group--active .settings-model-list > article.is-enabled { box-shadow: inset 3px 0 0 var(--gate-accent) !important; }
+.workspace--canvas-layout .settings-drawer .settings-tool-action,
+.workspace--canvas-layout .settings-drawer .settings-update-action,
+.workspace--canvas-layout .settings-drawer .settings-connection-check {
   height: 42px !important;
   min-height: 42px !important;
   max-height: 42px !important;
@@ -1873,9 +1882,1684 @@
   border-radius: 10px !important;
   box-shadow: 0 7px 16px color-mix(in srgb, var(--gate-accent) 18%, transparent) !important;
 }
-.workspace--ui-gate .settings-key-heading .settings-connection-check { min-width: 132px !important; }
+.workspace--canvas-layout .settings-key-heading .settings-connection-check { min-width: 132px !important; }
 @media (max-width: 900px) {
-  .workspace--ui-gate .settings-model-group.settings-model-group--active { grid-template-columns: minmax(0, 1fr) !important; }
-  .workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-default { grid-column: 1 !important; grid-row: 2 !important; }
-  .workspace--ui-gate .settings-model-group.settings-model-group--active .settings-model-list { grid-column: 1 !important; grid-row: 3 !important; grid-template-columns: minmax(0, 1fr) !important; }
+  .workspace--canvas-layout .settings-model-group.settings-model-group--active { grid-template-columns: minmax(0, 1fr) !important; }
+  .workspace--canvas-layout .settings-model-group.settings-model-group--active .settings-model-default { grid-column: 1 !important; grid-row: 2 !important; }
+  .workspace--canvas-layout .settings-model-group.settings-model-group--active .settings-model-list { grid-column: 1 !important; grid-row: 3 !important; grid-template-columns: minmax(0, 1fr) !important; }
+}
+
+/* FINAL REFERENCE MEDIA RAIL CONTRACT
+   This block is intentionally last because the hybrid stylesheet contains
+   older expanded-card grids. Keep the visible controls on one compact row,
+   while preserving native selects as clipped accessibility/automation hooks. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+  box-sizing: border-box !important;
+  display: grid !important;
+  align-items: stretch !important;
+  align-content: stretch !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 6px !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar {
+  grid-template-columns: minmax(138px, 1.35fr) minmax(78px, .8fr) minmax(72px, .8fr) minmax(68px, .7fr) minmax(86px, .85fr) !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+  grid-template-columns: minmax(122px, 1.35fr) minmax(78px, .82fr) minmax(68px, .72fr) minmax(72px, .78fr) minmax(104px, 1fr) minmax(90px, .9fr) !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar > :is(
+  .module-node__video-model-picker,
+  .generation-parameter-popover,
+  select,
+  .module-node__run-generation
+),
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > :is(
+  .module-node__video-model-picker,
+  .module-node__video-mode-picker,
+  .generation-parameter-popover,
+  .module-node__video-duration-slider,
+  .module-node__run-generation
+) {
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  align-self: stretch !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-picker,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar :is(.module-node__video-model-picker, .module-node__video-mode-picker) {
+  position: relative !important;
+  grid-column: auto !important;
+  z-index: 6 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-picker {
+  grid-column: 1 !important;
+}
+
+/* The hybrid stylesheet has a legacy :has(editor-expanded) rule that resets
+   every control to position:static. Match that state explicitly so the
+   invisible select remains anchored to its picker rather than the whole bar. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar .module-node__video-model-picker,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar .module-node__video-model-picker {
+  position: relative !important;
+  grid-column: auto !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar .module-node__video-model-picker {
+  grid-column: 1 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar {
+  gap: 5px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
+  gap: 5px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > .generation-parameter-popover,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > .generation-parameter-popover {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > .generation-parameter-popover--ratio-grid {
+  padding-inline: 2px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-trigger,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar :is(.module-node__video-model-trigger, .module-node__video-mode-trigger) {
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  padding: 0 10px !important;
+  overflow: hidden !important;
+  color: var(--gate-text, var(--text)) !important;
+  background: var(--gate-card, var(--surface)) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 10px !important;
+  font-size: 11px !important;
+  line-height: 1 !important;
+  text-align: left !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-icon,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-icon {
+  display: inline-grid !important;
+  flex: 0 0 22px !important;
+  width: 22px !important;
+  height: 22px !important;
+  place-items: center !important;
+  color: var(--gate-accent, var(--accent)) !important;
+  background: var(--gate-accent-soft, var(--surface-muted)) !important;
+  border-radius: 6px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-name,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-name,
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-copy,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-copy {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+/* Keep the native values available to keyboard users and test automation, but
+   do not let duplicate duration/audio/count selects occupy grid columns. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > select {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 1px !important;
+  min-height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* The model select is intentionally invisible because the custom trigger owns
+   the visual interaction. Keep it stretched over the same grid cell, though,
+   so layout measurement, focus outlines, and assistive tooling see the real
+   model-control bounds instead of a clipped 1px element. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-picker > .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-picker > .module-node__video-native-select {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  min-width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: auto !important;
+  clip-path: none !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-duration-slider {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 0 8px !important;
+  color: var(--gate-muted, var(--muted)) !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 10px !important;
+  font-size: 10px !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-duration-slider label { white-space: nowrap !important; }
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-duration-slider input[type='range'] { width: 100% !important; min-width: 0 !important; accent-color: var(--gate-accent, var(--accent)) !important; }
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-duration-slider output { min-width: 24px !important; color: var(--gate-text, var(--text)) !important; font-variant-numeric: tabular-nums !important; text-align: right !important; }
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-menu,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-menu,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-mode-menu {
+  position: absolute !important;
+  z-index: 80 !important;
+  bottom: calc(100% + 8px) !important;
+  max-height: min(320px, 60vh) !important;
+  overflow-y: auto !important;
+  color: var(--gate-text, var(--text)) !important;
+  background: var(--gate-card, var(--surface)) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 16px 34px color-mix(in srgb, var(--gate-text, var(--text)) 18%, transparent) !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-menu,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-menu {
+  left: 0 !important;
+  right: auto !important;
+  display: grid !important;
+  width: min(320px, 72vw) !important;
+  padding: 6px !important;
+  gap: 3px !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-mode-menu {
+  left: 0 !important;
+  right: auto !important;
+  display: grid !important;
+  width: min(220px, 72vw) !important;
+  padding: 8px !important;
+  gap: 3px !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-menu > button,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-menu > button {
+  display: grid !important;
+  grid-template-columns: 24px minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-height: 40px !important;
+  padding: 5px 8px !important;
+  color: inherit !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  font: inherit !important;
+  text-align: left !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-menu > button:hover,
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-model-menu > button.is-selected,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-menu > button:hover,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-model-menu > button.is-selected,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-mode-menu > button:hover:not(:disabled),
+ .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-mode-menu > button.is-selected { background: var(--gate-accent-soft, var(--surface-muted)) !important; }
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__run-generation {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: var(--gate-on-accent, #fff) !important;
+  background: var(--gate-accent, var(--accent)) !important;
+  border-color: var(--gate-accent, var(--accent)) !important;
+  border-radius: 10px !important;
+  font-weight: 700 !important;
+  white-space: nowrap !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__run-generation {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: #fff !important;
+  background: var(--gate-accent, var(--accent)) !important;
+  border-color: var(--gate-accent, var(--accent)) !important;
+  border-radius: 10px !important;
+  font-weight: 700 !important;
+  white-space: nowrap !important;
+}
+
+@media (max-width: 700px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar,
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+    gap: 4px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar {
+    grid-template-columns: minmax(112px, 1.35fr) minmax(64px, .8fr) minmax(60px, .8fr) minmax(58px, .7fr) minmax(76px, .85fr) !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+    grid-template-columns: minmax(102px, 1.25fr) minmax(66px, .82fr) minmax(58px, .72fr) minmax(60px, .78fr) minmax(92px, 1fr) minmax(80px, .9fr) !important;
+  }
+}
+
+/* FINAL MEDIA REFERENCE PILL CONTRACT
+   References belong to the text flow. They must remain small inline pills;
+   the editor itself owns the available width and scrolling. This rule is
+   deliberately last so legacy canvas selectors cannot stretch a single
+   mention across the whole task surface. */
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-task .media-mention-textarea {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  position: relative !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-task .media-mention-textarea__editor {
+  display: block !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 168px !important;
+  max-height: 280px !important;
+  padding: 12px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 10px !important;
+  background: var(--gate-card, var(--surface)) !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-task .media-mention-textarea__chip {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  width: max-content !important;
+  max-width: min(100%, 240px) !important;
+  min-height: 32px !important;
+  box-sizing: border-box !important;
+  align-items: center !important;
+  vertical-align: middle !important;
+  margin: 0 3px 2px 0 !important;
+  padding: 3px 9px 3px 6px !important;
+  border-radius: 999px !important;
+  white-space: nowrap !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-task .media-mention-textarea__chip :is(img, video) {
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  min-height: 26px !important;
+  flex: 0 0 26px !important;
+  object-fit: cover !important;
+  border-radius: 6px !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags {
+  display: flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  gap: 6px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 44px !important;
+  padding: 0 !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  overscroll-behavior: contain !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  width: max-content !important;
+  min-width: 0 !important;
+  max-width: min(240px, 70vw) !important;
+  min-height: 32px !important;
+  max-height: 36px !important;
+  box-sizing: border-box !important;
+  gap: 5px !important;
+  padding: 3px 8px 3px 4px !important;
+  border-radius: 999px !important;
+  white-space: nowrap !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button :is(img, video) {
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 22px !important;
+  min-height: 22px !important;
+  flex: 0 0 22px !important;
+  object-fit: cover !important;
+  border-radius: 5px !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button > span {
+  display: inline-flex !important;
+  min-width: 0 !important;
+  align-items: center !important;
+  gap: 4px !important;
+  overflow: hidden !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button b,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button span small {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+/* FINAL INLINE REFERENCE CAPSULE CONTRACT
+   A media citation is part of the editor text flow. Keep it content-sized
+   in every authoring surface so legacy flex/grid rules cannot turn it into a
+   full-width highlighted bar. Long asset labels stay clipped inside the
+   capsule while the editor remains the scrolling surface. */
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'],
+  .module-node[data-module-type='video_generation'],
+  .module-node[data-module-type='reverse_agent'],
+  .agent-panel--skill-chat
+) .media-mention-textarea__chip {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  box-sizing: border-box !important;
+  width: max-content !important;
+  max-width: min(240px, 100%) !important;
+  min-width: 0 !important;
+  align-items: center !important;
+  vertical-align: middle !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+}
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'],
+  .module-node[data-module-type='video_generation'],
+  .module-node[data-module-type='reverse_agent'],
+  .agent-panel--skill-chat
+) .media-mention-textarea__chip > :last-child {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .media-mention-textarea__chip :is(img, video) {
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px !important;
+  min-height: 16px !important;
+  flex: 0 0 16px !important;
+  object-fit: contain !important;
+  border-radius: 3px !important;
+}
+
+/* FINAL VIDEO CONTROL RAIL CONTRACT
+   The video editor is a normal flow layout. One prompt surface sits above a
+   four-control rail: model, mode, parameter summary, run. Native parameter
+   fields remain hidden compatibility state, so menus stay attached to their
+   trigger at every canvas zoom. */
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer {
+  position: relative !important;
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr) auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 360px !important;
+  height: 100% !important;
+  gap: 12px !important;
+  overflow: visible !important;
+  pointer-events: none !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer > :is(
+  .module-node__unified-media-slots,
+  .module-node__prompt-workspace,
+  .module-node__video-control-bar,
+  .module-node__agent-notice
+) {
+  pointer-events: auto !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__prompt-workspace {
+  position: relative !important;
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 14px 16px !important;
+  overflow: visible !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 12px !important;
+  background: var(--gate-card, var(--surface)) !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__prompt-editor {
+  display: block !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  padding: 4px 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  resize: none !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar {
+  position: relative !important;
+  inset: auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(160px, 1.45fr) minmax(118px, 1fr) minmax(220px, 2fr) 52px !important;
+  grid-template-rows: 38px !important;
+  align-items: stretch !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 8px !important;
+  overflow: visible !important;
+  transform: none !important;
+  pointer-events: auto !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar > :is(
+  .module-node__video-model-picker,
+  .module-node__video-mode-picker,
+  .module-node__video-settings-picker,
+  .module-node__run-generation
+) {
+  position: relative !important;
+  inset: auto !important;
+  grid-column: auto !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  align-self: stretch !important;
+  pointer-events: auto !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+  grid-column: 4 !important;
+  width: 52px !important;
+  min-width: 52px !important;
+  max-width: 52px !important;
+  justify-self: end !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar .module-node__video-model-trigger,
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar .module-node__video-mode-trigger,
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar .generation-parameter-popover__trigger {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  text-overflow: ellipsis !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar .module-node__video-duration-slider {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 0 9px !important;
+  box-sizing: border-box !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 10px !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar .module-node__video-duration-slider label {
+  white-space: nowrap !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar .module-node__video-duration-slider input[type='range'] {
+  width: 100% !important;
+  min-width: 0 !important;
+  accent-color: var(--gate-accent, var(--accent)) !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar .module-node__video-model-menu,
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar .module-node__video-mode-menu {
+  position: absolute !important;
+  z-index: 80 !important;
+  right: auto !important;
+  bottom: calc(100% + 8px) !important;
+  left: 0 !important;
+  max-height: min(320px, 60vh) !important;
+  overflow-y: auto !important;
+  pointer-events: auto !important;
+}
+
+@media (max-width: 980px) {
+  .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: minmax(130px, 1.2fr) minmax(100px, 1fr) minmax(180px, 1.7fr) 42px !important;
+    gap: 5px !important;
+  }
+}
+@media (max-width: 720px) {
+  .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer {
+    min-height: 320px !important;
+  }
+  .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    grid-template-rows: repeat(2, 38px) !important;
+    height: 84px !important;
+    min-height: 84px !important;
+    max-height: 84px !important;
+  }
+  .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    grid-column: 3 !important;
+    grid-row: 2 !important;
+  }
+}
+
+/* FINAL GENERIC VIDEO VISIBLE RAIL CONTRACT (release terminal).
+   This is intentionally the last release-layer rule. Keep compatibility
+   fields semantic but out of the visible four-control rail, and make the
+   picker wrappers transparent so only their triggers draw a surface. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  position: relative !important;
+  inset: auto !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: minmax(160px, 1.45fr) minmax(118px, 1fr) minmax(220px, 2fr) 52px !important;
+  grid-template-rows: 38px !important;
+  grid-auto-flow: column !important;
+  align-items: stretch !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 8px !important;
+  overflow: visible !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-fallback-control,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar :is(.module-node__video-model-picker, .module-node__video-mode-picker) > .module-node__video-native-select {
+  display: none !important;
+  visibility: hidden !important;
+  position: absolute !important;
+  inline-size: 1px !important;
+  block-size: 1px !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker, .module-node__run-generation) {
+  position: relative !important;
+  inset: auto !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  grid-column: auto !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  align-self: stretch !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar :is(.module-node__video-model-trigger, .module-node__video-mode-trigger, .module-node__video-settings-trigger) {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 10px !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-settings-menu
+) {
+  color: var(--gate-text) !important;
+  background: var(--gate-card) !important;
+  border-color: var(--gate-border) !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu
+) > button,
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu :is(.module-node__video-settings-grid, .module-node__video-settings-segmented) > button {
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border-color: var(--gate-border) !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu
+) > button:is(:hover, .is-selected),
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu :is(.module-node__video-settings-grid, .module-node__video-settings-segmented) > button:is(:hover, .is-selected) {
+  color: var(--gate-text) !important;
+  background: var(--gate-accent-soft) !important;
+  border-color: var(--gate-accent) !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  width: 52px !important;
+  min-width: 52px !important;
+  max-width: 52px !important;
+  justify-self: end !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation .module-node__run-generation-label {
+  display: none !important;
+}
+
+@media (max-width: 980px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: minmax(130px, 1.2fr) minmax(100px, 1fr) minmax(180px, 1.7fr) 42px !important;
+    gap: 5px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    width: 42px !important;
+    min-width: 42px !important;
+    max-width: 42px !important;
+    grid-column: 4 !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    grid-template-rows: repeat(2, 38px) !important;
+    height: 84px !important;
+    min-height: 84px !important;
+    max-height: 84px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-settings-picker {
+    grid-column: span 2 !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    grid-column: 3 !important;
+    grid-row: 2 !important;
+  }
+}
+
+/* FINAL RELEASE VIDEO RAIL CONTRACT (true EOF).
+   Keep this terminal block after every historical compatibility rule. The
+   live component exposes only model, mode, settings and run controls; all
+   native/select fallbacks are semantic compatibility fields and never take
+   visible space. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  position: relative !important;
+  inset: auto !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: minmax(160px, 1.45fr) minmax(118px, 1fr) minmax(220px, 2fr) 52px !important;
+  grid-template-rows: 38px !important;
+  grid-auto-flow: column !important;
+  align-items: stretch !important;
+  align-content: stretch !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 8px !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-fallback-control, .module-node__video-duration-slider, .generation-parameter-popover),
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar :is(.module-node__video-model-picker, .module-node__video-mode-picker) > .module-node__video-native-select {
+  display: none !important;
+  visibility: hidden !important;
+  position: absolute !important;
+  inline-size: 1px !important;
+  block-size: 1px !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker, .module-node__run-generation) {
+  position: relative !important;
+  inset: auto !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  grid-column: auto !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  align-self: stretch !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar :is(.module-node__video-model-trigger, .module-node__video-mode-trigger, .module-node__video-settings-trigger) {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 10px !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-settings-menu
+) {
+  color: var(--gate-text) !important;
+  background: var(--gate-card) !important;
+  border-color: var(--gate-border) !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu
+) > button,
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu :is(.module-node__video-settings-grid, .module-node__video-settings-segmented) > button {
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border-color: var(--gate-border) !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu
+) > button:is(:hover, .is-selected),
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu :is(.module-node__video-settings-grid, .module-node__video-settings-segmented) > button:is(:hover, .is-selected) {
+  color: var(--gate-text) !important;
+  background: var(--gate-accent-soft) !important;
+  border-color: var(--gate-accent) !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  width: 52px !important;
+  min-width: 52px !important;
+  max-width: 52px !important;
+  justify-self: end !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation .module-node__run-generation-label {
+  display: none !important;
+}
+
+@media (max-width: 980px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: minmax(130px, 1.2fr) minmax(100px, 1fr) minmax(180px, 1.7fr) 42px !important;
+    gap: 5px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    grid-column: 4 !important;
+    width: 42px !important;
+    min-width: 42px !important;
+    max-width: 42px !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    grid-template-rows: repeat(2, 38px) !important;
+    height: 84px !important;
+    min-height: 84px !important;
+    max-height: 84px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-settings-picker {
+    grid-column: span 2 !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    grid-column: 3 !important;
+    grid-row: 2 !important;
+  }
+}
+
+/* FINAL VIDEO RAIL CASCADE GUARD
+   Older UI-gate rules use :has(...) with a higher selector specificity. Keep
+   the same state-qualified selector here so the reference rail cannot be
+   re-expanded by a legacy rule when the editor is open. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  position: relative !important;
+  inset: auto !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(160px, 1.45fr) minmax(118px, 1fr) minmax(220px, 2fr) 52px !important;
+  grid-template-rows: 38px !important;
+  grid-auto-flow: column !important;
+  align-items: stretch !important;
+  align-content: stretch !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 8px !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(
+  .module-node__video-model-picker,
+  .module-node__video-mode-picker,
+  .module-node__video-settings-picker,
+  .module-node__run-generation
+) {
+  position: relative !important;
+  inset: auto !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  display: flex !important;
+  grid-column: auto !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  align-self: stretch !important;
+  transform: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > select {
+  display: none !important;
+  position: absolute !important;
+  inset: 0 auto auto 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 1px !important;
+  min-height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  width: 52px !important;
+  min-width: 52px !important;
+  max-width: 52px !important;
+  justify-self: end !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar :is(.module-node__video-model-trigger, .module-node__video-mode-trigger, .generation-parameter-popover__trigger) {
+  position: relative !important;
+  inset: auto !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  transform: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar .module-node__video-duration-slider {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  padding: 0 9px !important;
+  transform: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer {
+  position: relative !important;
+  inset: auto !important;
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr) auto !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 360px !important;
+  height: 100% !important;
+  gap: 12px !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__prompt-workspace {
+  position: relative !important;
+  inset: auto !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 190px !important;
+  max-height: 280px !important;
+  align-self: end !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  justify-self: stretch !important;
+}
+
+/* REFERENCE VIDEO TOOLBAR CONTRACT
+   Match the reference hierarchy: model and mode remain individual controls;
+   all generation parameters live behind one anchored summary trigger. The
+   runtime exposes four visible controls, so the action stays in the fourth
+   column instead of creating an implicit empty grid column. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  grid-template-columns: minmax(160px, 1.45fr) minmax(118px, 1fr) minmax(220px, 2fr) 52px !important;
+  grid-template-rows: 38px !important;
+  grid-auto-flow: column !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker, .module-node__run-generation) {
+  display: flex !important;
+  position: relative !important;
+  grid-column: auto !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  align-self: stretch !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-settings-picker {
+  display: block !important;
+  overflow: visible !important;
+}
+.module-node__video-settings-trigger {
+  display: flex;
+  width: 100% !important;
+  height: 38px !important;
+  min-width: 0 !important;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px !important;
+  color: var(--text-primary, #e9ecef);
+  background: var(--surface-muted, #303234);
+  border: 1px solid var(--border, #4a4d50);
+  border-radius: 9px;
+  cursor: pointer;
+  font: inherit;
+}
+.module-node__video-settings-trigger:hover,
+.module-node__video-settings-trigger[aria-expanded='true'] { background: var(--surface-hover, #3b3d3d); }
+.module-node__video-settings-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.module-node__video-settings-menu {
+  position: absolute;
+  z-index: 100;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(420px, 72vw);
+  max-height: min(560px, 72vh);
+  overflow-y: auto;
+  padding: 16px;
+  color: var(--text-primary, #eef0f2);
+  background: var(--surface-raised, #242526);
+  border: 1px solid var(--border-strong, #55585b);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgb(0 0 0 / 32%);
+}
+.module-node__video-settings-section { display: grid; gap: 8px; margin: 0 0 14px; }
+.module-node__video-settings-section:last-child { margin-bottom: 0; }
+.module-node__video-settings-section > span,
+.module-node__video-settings-section > label { color: var(--text-secondary, #a8adb3); font-size: 12px; }
+.module-node__video-settings-section label { display: flex; justify-content: space-between; }
+.module-node__video-settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.module-node__video-settings-grid--ratio { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.module-node__video-settings-grid button,
+.module-node__video-settings-segmented button {
+  min-height: 36px;
+  padding: 0 8px;
+  color: var(--text-secondary, #a8adb3);
+  background: transparent;
+  border: 1px solid var(--border, #4a4d50);
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+.module-node__video-settings-grid button:hover,
+.module-node__video-settings-segmented button:hover,
+.module-node__video-settings-grid button.is-selected,
+.module-node__video-settings-segmented button.is-selected { color: var(--text-primary, #fff); border-color: var(--text-primary, #fff); background: var(--surface-hover, #3b3d3d); }
+.module-node__video-settings-section input[type='range'] { width: 100%; accent-color: var(--accent, #20b6a5); }
+.module-node__video-settings-segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.module-node__video-settings-section[aria-label='生成数量'] .module-node__video-settings-segmented { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__run-generation svg { width: 18px !important; height: 18px !important; min-width: 18px !important; }
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-composer .module-node__run-generation-label { display: none !important; }
+.module-node__video-composer .module-node__video-control-bar > .module-node__video-settings-picker { grid-column: auto !important; }
+
+/* Final reverse-agent field contract. The reference workbench keeps the
+   analysis task textarea at a stable 130px rail; older mention-textarea
+   rules used a larger minimum and pushed the footer out of the card. */
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-task .media-mention-textarea__editor {
+  box-sizing: border-box !important;
+  height: 130px !important;
+  min-height: 130px !important;
+  max-height: 130px !important;
+}
+@media (max-width: 980px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: minmax(130px, 1.2fr) minmax(100px, 1fr) minmax(180px, 1.7fr) 42px !important;
+    gap: 5px !important;
+  }
+  .module-node__video-settings-menu { width: min(380px, 86vw); }
+}
+@media (max-width: 720px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    grid-template-rows: repeat(2, 38px) !important;
+    height: 84px !important;
+    max-height: 84px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-settings-picker { grid-column: span 2 !important; }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation { grid-column: 3 !important; grid-row: 2 !important; }
+}
+
+/* FINAL SHARED MEDIA CONTROL CONTRACT
+   This is the single terminal rule for the live media rails. Older UI-gate
+   blocks used 30px and 44px variants; keeping the final contract here makes
+   hydrated legacy nodes converge on the same 38px geometry. */
+.workspace--canvas-layout .module-node :is(.module-node__generation-control-bar, .module-node__video-control-bar) {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-rows: 38px !important;
+  align-items: center !important;
+  align-content: center !important;
+  gap: 8px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+.workspace--canvas-layout .module-node :is(.module-node__generation-control-bar, .module-node__video-control-bar) > :is(select, .generation-parameter-popover, .module-node__run-generation),
+.workspace--canvas-layout .module-node :is(.module-node__generation-control-bar, .module-node__video-control-bar) .generation-parameter-popover__trigger {
+  box-sizing: border-box !important;
+  align-self: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  color: var(--gate-text) !important;
+  border-color: var(--gate-border) !important;
+  background: var(--gate-card-muted) !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-control-bar {
+  grid-template-columns: minmax(160px, 1.45fr) minmax(118px, 1fr) minmax(220px, 2fr) 52px !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='image_generation'] .module-node__generation-control-bar {
+  grid-template-columns: minmax(138px, 1.35fr) minmax(78px, .8fr) minmax(72px, .8fr) minmax(68px, .7fr) minmax(86px, .85fr) !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-control-bar > .module-node__video-fallback-control {
+  display: none !important;
+  visibility: hidden !important;
+  position: absolute !important;
+  inline-size: 1px !important;
+  block-size: 1px !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  pointer-events: none !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-route select {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 0 34px 0 14px !important;
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 10px !important;
+  text-align: left !important;
+  text-align-last: left !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-route small {
+  color: var(--gate-muted) !important;
+}
+
+/* FINAL LIVE MEDIA RAIL OVERRIDE
+   The legacy expanded-card selectors above have equal !important weight but
+   higher :has() specificity. Match that specificity here so the installed
+   runtime uses the same 38px visible controls that the component contract
+   describes, while native compatibility selects remain truly invisible. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar {
+  grid-template-rows: 38px !important;
+  height: 60px !important;
+  min-height: 60px !important;
+  max-height: 60px !important;
+  padding-block: 11px !important;
+  gap: 8px !important;
+  align-items: center !important;
+  align-content: center !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > :is(.module-node__video-model-picker, .generation-parameter-popover, select, .module-node__run-generation),
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker, .module-node__video-duration-slider, .generation-parameter-popover, select, .module-node__run-generation) {
+  box-sizing: border-box !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  align-self: center !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar > .module-node__video-model-picker > .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > .module-node__video-model-picker > .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > .module-node__video-mode-picker > .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar > .module-node__video-model-picker,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > .module-node__video-model-picker,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > .module-node__video-mode-picker {
+  position: relative !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  display: flex !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-control-bar .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > .module-node__video-fallback-control {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation'] .module-node__video-control-bar > .module-node__video-fallback-control {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 1px !important;
+  min-height: 1px !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+}
+
+/* Match the expanded legacy selector for nested controls as well. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar .generation-parameter-popover__trigger,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar .generation-parameter-popover__trigger {
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  border-radius: 10px !important;
+  font-size: 11px !important;
+  line-height: 1 !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar :is(.module-node__video-model-trigger, .module-node__video-mode-trigger, .module-node__video-settings-trigger) {
+  box-sizing: border-box !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  line-height: 1 !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > .module-node__run-generation {
+  width: 52px !important;
+  min-width: 52px !important;
+  max-width: 52px !important;
+  justify-self: end !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > .module-node__run-generation .module-node__run-generation-label {
+  display: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__generation-control-bar > .module-node__video-model-picker > .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-model-picker > .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-mode-picker > .module-node__video-native-select {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  min-width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  clip: auto !important;
+  clip-path: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+  width: 52px !important;
+  min-width: 52px !important;
+  max-width: 52px !important;
+  justify-self: end !important;
+  grid-column: 4 !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation .module-node__run-generation-label {
+  display: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar .module-node__video-model-picker > .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar .module-node__video-model-picker > .module-node__video-native-select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar .module-node__video-mode-picker > .module-node__video-native-select {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 38px !important;
+}
+
+/* FINAL SINGLE-BORDER MEDIA CONTROL CONTRACT
+   Picker and popover elements are structural layout wrappers. Only their
+   interactive trigger owns a visible surface; otherwise legacy generic-child
+   rules render a second rounded rectangle around the same control. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker, .generation-parameter-popover),
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker, .generation-parameter-popover) {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar .module-node__video-model-trigger,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar :is(.module-node__video-model-trigger, .module-node__video-mode-trigger, .module-node__video-settings-trigger) {
+  border: 1px solid var(--gate-border) !important;
+  background: var(--gate-card-muted) !important;
+}
+
+/* FINAL REVERSE MODEL ROW CONTRACT
+   The reverse model route follows the material tray as a full-width row. The
+   former two-column control strip added 14px padding on both sides, shrinking
+   the route to 362px and visually detaching it from the 390px form fields. */
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-control-strip {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  align-items: stretch !important;
+  gap: 8px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] :is(
+  .module-node__agent-media-label,
+  .module-node__agent-media-region,
+  .module-node__agent-media-empty-hint,
+  .module-node__agent-route-region
+) {
+  box-sizing: border-box !important;
+  grid-column: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin-inline: 0 !important;
+}
+
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-route-region,
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-route,
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-route > label {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding-inline: 0 !important;
+  justify-content: stretch !important;
+}
+
+/* FINAL VIDEO SETTINGS THEME CONTRACT
+   The settings popover belongs to the video node. Reuse its theme tokens so
+   the menu does not switch to the retired neutral palette. */
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu {
+  color: var(--gate-text) !important;
+  background: var(--gate-card) !important;
+  border-color: var(--gate-border) !important;
+  box-shadow: 0 16px 34px rgb(0 0 0 / 28%) !important;
+}
+
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu :is(
+  .module-node__video-settings-grid,
+  .module-node__video-settings-segmented
+) > button {
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border-color: var(--gate-border) !important;
+}
+
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu :is(
+  .module-node__video-settings-grid,
+  .module-node__video-settings-segmented
+) > button.is-selected {
+  color: var(--gate-text) !important;
+  background: var(--gate-accent-soft) !important;
+  border-color: var(--gate-accent) !important;
+}
+
+/* FINAL SINGLE SELECTION OUTLINE CONTRACT
+   The module border already communicates selection. Suppress the additional
+   focus halo so large image/video workbenches do not look double-framed. */
+.workspace--canvas-layout .module-node.module-node.is-selected,
+.workspace--canvas-layout .module-node.module-node.is-selected[data-module-type='image_generation'],
+.workspace--canvas-layout .module-node.module-node.is-selected[data-module-type='video_generation'] {
+  border-color: var(--gate-accent, var(--accent)) !important;
+  box-shadow: none !important;
+  transition: border-color 120ms ease !important;
+}
+
+.workspace--canvas-layout .react-flow__node:focus > .module-node.is-selected,
+.workspace--canvas-layout .react-flow__node:focus-visible > .module-node.is-selected {
+  outline: none !important;
+  outline-offset: 0 !important;
+}
+
+/* FINAL VIDEO VISIBLE RAIL CONTRACT
+   The video composer has four visible controls in the live DOM: model,
+   generation mode, parameter summary, and the readable run action. Native
+   selects remain compatibility fields and are intentionally hidden. Keep the
+   action in column four so no implicit grid column can create a blank gap. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  grid-template-columns: minmax(160px, 1.45fr) minmax(118px, 1fr) minmax(220px, 2fr) 116px !important;
+  grid-template-rows: 38px !important;
+  grid-auto-flow: column !important;
+}
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  width: 116px !important;
+  min-width: 116px !important;
+  max-width: 116px !important;
+  justify-self: end !important;
+}
+
+@media (max-width: 980px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: minmax(130px, 1.2fr) minmax(100px, 1fr) minmax(180px, 1.7fr) 104px !important;
+    gap: 5px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    width: 104px !important;
+    min-width: 104px !important;
+    max-width: 104px !important;
+    grid-column: 4 !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    grid-template-rows: repeat(2, 38px) !important;
+    height: 84px !important;
+    max-height: 84px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-settings-picker {
+    grid-column: span 2 !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    grid-column: 3 !important;
+    grid-row: 2 !important;
+  }
+}
+
+/* FINAL RELEASE VIDEO RAIL CONTRACT (true EOF).
+   Keep this block after every historical compatibility rule. The runtime
+   exposes only model, mode, settings and run controls; native/select fields
+   stay semantic but never create a visible slot or vertical gutter. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  position: relative !important;
+  inset: auto !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: minmax(160px, 1.45fr) minmax(118px, 1fr) minmax(220px, 2fr) 116px !important;
+  grid-template-rows: 38px !important;
+  grid-auto-flow: column !important;
+  align-items: stretch !important;
+  align-content: stretch !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 8px !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-fallback-control, .module-node__video-duration-slider, .generation-parameter-popover),
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > select,
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar :is(.module-node__video-model-picker, .module-node__video-mode-picker) > .module-node__video-native-select {
+  display: none !important;
+  visibility: hidden !important;
+  position: absolute !important;
+  inline-size: 1px !important;
+  block-size: 1px !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker, .module-node__run-generation) {
+  position: relative !important;
+  inset: auto !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  grid-column: auto !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  margin: 0 !important;
+  align-self: stretch !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .module-node__video-settings-picker) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar :is(.module-node__video-model-trigger, .module-node__video-mode-trigger, .module-node__video-settings-trigger) {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 10px !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-settings-menu
+) {
+  color: var(--gate-text) !important;
+  background: var(--gate-card) !important;
+  border-color: var(--gate-border) !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu
+) > button,
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu :is(.module-node__video-settings-grid, .module-node__video-settings-segmented) > button {
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border-color: var(--gate-border) !important;
+}
+
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-model-menu,
+  .module-node[data-module-type='video_generation'] .module-node__video-mode-menu
+) > button:is(:hover, .is-selected),
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu :is(.module-node__video-settings-grid, .module-node__video-settings-segmented) > button:is(:hover, .is-selected) {
+  color: var(--gate-text) !important;
+  background: var(--gate-accent-soft) !important;
+  border-color: var(--gate-accent) !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  width: 116px !important;
+  min-width: 116px !important;
+  max-width: 116px !important;
+  justify-self: end !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation .module-node__run-generation-label {
+  display: inline !important;
+  white-space: nowrap !important;
+}
+
+@media (max-width: 980px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: minmax(130px, 1.2fr) minmax(100px, 1fr) minmax(180px, 1.7fr) 104px !important;
+    gap: 5px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    grid-column: 4 !important;
+    width: 104px !important;
+    min-width: 104px !important;
+    max-width: 104px !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    grid-template-rows: repeat(2, 38px) !important;
+    height: 84px !important;
+    min-height: 84px !important;
+    max-height: 84px !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-settings-picker {
+    grid-column: span 2 !important;
+  }
+  .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+    grid-column: 3 !important;
+    grid-row: 2 !important;
+  }
 }

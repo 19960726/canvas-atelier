@@ -178,6 +178,10 @@ export function createComflyProviderService(options: {
       if (!status.configured) return { checkedAt, status: 'unconfigured' };
       if (status.locked) return { checkedAt, status: 'service_limited' };
       try {
+        // A user-initiated connection check is also the explicit model-catalog
+        // refresh path in Settings. Drop the in-process discovery cache first
+        // so newly published account-visible routes appear without a restart.
+        discoveredProfileCache = null;
         const snapshot = await captureRuntimeSnapshot();
         await createClient(snapshot).checkConnection();
         return { checkedAt, status: 'connected' };

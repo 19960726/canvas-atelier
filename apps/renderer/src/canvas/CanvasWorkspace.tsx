@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Background, BackgroundVariant, ConnectionLineType, ConnectionMode, Controls, MiniMap, ReactFlow, SelectionMode, useUpdateNodeInternals } from '@xyflow/react';
 import type { Connection, Edge, Node, OnConnectEnd, OnConnectStart, Viewport } from '@xyflow/react';
-import type { ProviderBridgeProfile, ProviderConfigurationStatus } from '@agent-canvas/desktop-core';
+import type { CodexCliProfile, ProviderBridgeProfile, ProviderConfigurationStatus } from '@agent-canvas/desktop-core';
 import type {
   AgentPlanState,
   CanvasModuleNode,
   CanvasModuleType,
   CanvasNode,
   PlacementBoard as PlacementBoardValue,
+  ProjectMemoryEntry,
   ProjectTransaction,
   ReferenceRole,
 } from '@agent-canvas/domain';
-import { canConnectCanvasPorts, createCanvasModuleNode, getCanvasModuleDefinition, MAX_GENERATION_REFERENCES } from '@agent-canvas/domain';
+import { buildProjectMemoryContext, canConnectCanvasPorts, createCanvasModuleNode, getCanvasModuleDefinition, MAX_GENERATION_REFERENCES } from '@agent-canvas/domain';
 import {
   ChevronDown,
   Clock3,
@@ -53,6 +54,12 @@ import { initialGenerationEditorState, reduceGenerationEditorState } from './gen
 import { CONNECTED_MEDIA_DRAG_MIME, decodeConnectedMediaDragPayload } from './connected-media-drag';
 
 type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
+
+const MAX_AGENT_PROJECT_MEMORY_IDS = 32;
+
+export function selectAgentProjectMemoryIds(timeline: readonly ProjectMemoryEntry[]): string[] {
+  return buildProjectMemoryContext([...timeline], MAX_AGENT_PROJECT_MEMORY_IDS).map((memory) => memory.id);
+}
 
 interface CanvasFlowInstance {
   getViewport: () => Viewport;
@@ -398,7 +405,7 @@ export interface ModulePlacementPosition {
   moduleType?: CanvasModuleType;
 }
 
-const FIGMA_MODULE_SIZES: Partial<Record<CanvasModuleType, { width: number; height: number }>> = {
+const CANVAS_MODULE_SIZES: Partial<Record<CanvasModuleType, { width: number; height: number }>> = {
   image_generation: { width: 654, height: 486 },
   reverse_agent: { width: 426, height: 594 },
   video_generation: { width: 654, height: 486 },
@@ -411,7 +418,7 @@ const FIGMA_MODULE_SIZES: Partial<Record<CanvasModuleType, { width: number; heig
 };
 
 function modulePlacementSize(moduleType?: CanvasModuleType): { width: number; height: number } {
-  return (moduleType === undefined ? undefined : FIGMA_MODULE_SIZES[moduleType]) ?? MODULE_NODE_SIZE;
+  return (moduleType === undefined ? undefined : CANVAS_MODULE_SIZES[moduleType]) ?? MODULE_NODE_SIZE;
 }
 
 function placementRect(position: ModulePlacementPosition): { left: number; right: number; top: number; bottom: number } {
@@ -617,6 +624,7 @@ export function CanvasWorkspace() {
   const addModuleNode = useAppStore((state) => state.addModuleNode);
   const addProjectImageInput = useAppStore((state) => state.addProjectImageInput);
   const chatSkill = useAppStore((state) => state.chatSkill);
+  const cancelChatSkill = useAppStore((state) => state.cancelChatSkill);
   const runImageGenerationNode = useAppStore((state) => state.runImageGenerationNode);
   const runVideoPreviewNode = useAppStore((state) => state.runVideoPreviewNode);
   const runReverseAgentNode = useAppStore((state) => state.runReverseAgentNode);
@@ -676,6 +684,7 @@ export function CanvasWorkspace() {
   const openProject = useAppStore((state) => state.openProject);
   const [providerProfiles, setProviderProfiles] = useState<ProviderBridgeProfile[]>([]);
   const [agentProviderProfiles, setAgentProviderProfiles] = useState<ProviderBridgeProfile[]>([]);
+  const [codexCliProfiles, setCodexCliProfiles] = useState<CodexCliProfile[]>([]);
   useEffect(() => {
     const onCanvasImage = (event: Event) => {
       const assetId = (event as CustomEvent<{ assetId?: unknown }>).detail?.assetId;
@@ -715,6 +724,7 @@ export function CanvasWorkspace() {
   const workspaceApi = useMemo(() => createWorkspaceApi({
     addModuleNode,
     chatSkill,
+    cancelChatSkill,
     importDroppedMedia,
     flushProjectSave,
     saveProjectExplicitly,
@@ -722,7 +732,7 @@ export function CanvasWorkspace() {
     runReverseAgentNode,
     cancelModelJob,
     generateStoryboardNode,
-  }), [addModuleNode, cancelModelJob, chatSkill, flushProjectSave, saveProjectExplicitly, generateStoryboardNode, importDroppedMedia, runImageGenerationNode, runReverseAgentNode]);
+  }), [addModuleNode, cancelChatSkill, cancelModelJob, chatSkill, flushProjectSave, saveProjectExplicitly, generateStoryboardNode, importDroppedMedia, runImageGenerationNode, runReverseAgentNode]);
 
   useReadOnlyWritePromotion({
     projectId: project.id,
@@ -843,13 +853,18 @@ export function CanvasWorkspace() {
     changeSurface(null);
     return openProject(recentProjectId);
   }, [changeSurface, openProject, prepareForProjectSwitch]);
-  const canvasProviderRoutes = useMemo(() => buildCanvasProviderRouteSets(providerProfiles), [providerProfiles]);
+  const canvasProviderRoutes = useMemo(
+    // Canvas generation and Reverse Agent are both execution surfaces. They
+    // must stay scoped to the active provider; the full catalog remains
+    // available only to the independent Agent chat surface below.
+    () => buildCanvasProviderRouteSets(providerProfiles),
+    [providerProfiles],
+  );
   const moduleNodeRuntimeContext = useMemo<ModuleNodeRuntimeContext>(() => ({
     imageGenerationRoutes: canvasProviderRoutes.imageGeneration,
     videoGenerationRoutes: canvasProviderRoutes.videoGeneration,
     reverseAgentRoutes: canvasProviderRoutes.reversePrompt,
     storyboardRoutes: canvasProviderRoutes.storyboard,
-    onOpenReverseAgentSettings: () => changeSurface('settings'),
     onGenerateImage: workspaceApi.generateImage,
     onReversePrompt: workspaceApi.reversePrompt,
     onCancelJob: workspaceApi.cancelJob,
@@ -859,17 +874,16 @@ export function CanvasWorkspace() {
     onCloseGenerationEditor: closeGenerationEditor,
     resultOutputMenuNodeId,
     onResultOutputMenuChange: setResultOutputMenuOpen,
-  }), [canvasProviderRoutes, changeSurface, closeGenerationEditor, generationEditorState.expandedNodeId, openGenerationEditor, resultOutputMenuNodeId, setResultOutputMenuOpen, workspaceApi.cancelJob, workspaceApi.generateImage, workspaceApi.generateStoryboard, workspaceApi.reversePrompt]);
+  }), [canvasProviderRoutes, closeGenerationEditor, generationEditorState.expandedNodeId, openGenerationEditor, resultOutputMenuNodeId, setResultOutputMenuOpen, workspaceApi.cancelJob, workspaceApi.generateImage, workspaceApi.generateStoryboard, workspaceApi.reversePrompt]);
 
   const reconciledFlowNodesRef = useRef<Node<CanvasFlowNodeData>[]>([]);
   const reconciledFlowEdgesRef = useRef<Edge[]>([]);
   const flowNodeState = useMemo(() => {
-    // The formal UI Gate canvas is module-first. Legacy semantic nodes
-    // remain persisted for migration/history compatibility, but are not
-    // mounted as cards in the current canvas.
+    // The current canvas is module-first. Legacy semantic nodes remain
+    // persisted for migration/history compatibility, but every current
+    // module type must still mount as a card when a project contains it.
     const formalNodes = project.nodes.filter((node): node is CanvasModuleNode => (
       node.type === 'module'
-      && node.data.moduleType !== 'result_output'
     ));
     const formalNodeIds = new Set(formalNodes.map((node) => node.id));
     const formalEdges = project.edges.filter((edge) => formalNodeIds.has(edge.source) && formalNodeIds.has(edge.target));
@@ -898,7 +912,6 @@ export function CanvasWorkspace() {
     const formalNodeIds = new Set(project.nodes
       .filter((node): node is CanvasModuleNode => (
         node.type === 'module'
-        && node.data.moduleType !== 'result_output'
       ))
       .map((node) => node.id));
     const formalEdges = project.edges.filter((edge) => formalNodeIds.has(edge.source) && formalNodeIds.has(edge.target));
@@ -947,12 +960,13 @@ export function CanvasWorkspace() {
   const showBatchConnectionToolbar = selectedFlowNodeIds.length >= 2 && selectedBatchMediaCount >= 2;
   const [activeFlowEdgeIds, setActiveFlowEdgeIds] = useState<string[]>([]);
   const [batchRoutingNotice, setBatchRoutingNotice] = useState<string | null>(null);
+  const [modulePlacementNotice, setModulePlacementNotice] = useState<string | null>(null);
   useEffect(() => {
     setMcpCanvasSelection({ nodeIds: selectedFlowNodeIds, edgeIds: activeFlowEdgeIds });
     return () => resetMcpCanvasSelection();
   }, [activeFlowEdgeIds, selectedFlowNodeIds]);
 
-  const alwaysRenderedFigmaOutputNodeIds = useMemo(() => {
+  const alwaysRenderedOutputNodeIds = useMemo(() => {
     const outputNodeIds = new Set(draftNodes.flatMap((node) => {
       const moduleType = (node.data as { moduleType?: CanvasModuleType }).moduleType;
       return moduleType === 'video_result' || moduleType === 'reverse_result' ? [node.id] : [];
@@ -971,7 +985,7 @@ export function CanvasWorkspace() {
   const lastCanvasPointerRef = useRef<{ x: number; y: number } | null>(null);
   const interactionQuality = useInteractionQuality(runtimeProfile);
   const viewportCulling = useViewportCulling({
-    activeNodeIds: alwaysRenderedFigmaOutputNodeIds,
+    activeNodeIds: alwaysRenderedOutputNodeIds,
     activeEdgeIds: activeFlowEdgeIds,
     enabled: enableReactFlowVisibilityCulling,
     edges: flowEdges,
@@ -1196,7 +1210,11 @@ export function CanvasWorkspace() {
 
   const createModuleAtViewportCenter = useCallback(async (moduleType: CanvasModuleType) => {
     const position = getSafeViewportCenter(moduleType);
-    if (!position) return false;
+    if (!position) {
+      setModulePlacementNotice('当前缩放下没有足够空间放置此节点。请缩小画布或关闭模块库后重试。');
+      return false;
+    }
+    setModulePlacementNotice(null);
     return createModuleFromSelectedMedia(moduleType, position, selectedFlowNodeIds);
   }, [createModuleFromSelectedMedia, getSafeViewportCenter, selectedFlowNodeIds]);
 
@@ -1619,30 +1637,33 @@ export function CanvasWorkspace() {
       };
     }
 
+    let refreshSequence = 0;
     const refreshProviderCatalog = () => {
+      const requestSequence = ++refreshSequence;
       void Promise.all([
         provider.getStatus().catch(() => null),
         listAllProviderProfiles(provider).catch(() => []),
         provider.getActiveProvider?.().catch(() => ({ activeProvider: null })),
-      ]).then(([status, profiles, activeState]) => {
-        if (cancelled) return;
-        const activeProfiles = activeState === undefined
+      ]).then(async ([status, profiles, activeState]) => {
+        if (cancelled || requestSequence !== refreshSequence) return;
+        // A provider switch can complete while the parallel catalog requests
+        // are still in flight. Re-read the durable selection immediately
+        // before applying results so a late Comfly response cannot overwrite
+        // a newer RelayMe catalog (or the reverse).
+        const latestActiveState = provider.getActiveProvider === undefined
+          ? activeState
+          : await provider.getActiveProvider().catch(() => ({ activeProvider: null }));
+        if (cancelled || requestSequence !== refreshSequence) return;
+        const activeProfiles = latestActiveState === undefined
           ? profiles
-          : listActiveProviderProfiles(profiles, activeState.activeProvider);
+          : listActiveProviderProfiles(profiles, latestActiveState.activeProvider);
         setProviderStatus(status);
-        // Generation nodes stay scoped to the active provider, while Agent
-        // chat must retain the independent Codex catalog when RelayMe is
-        // selected for image/video generation.
-        // Keep ordinary Agent chat aligned with the active provider while
-        // retaining the full catalog so Codex mode can independently select
-        // a Codex route from the other provider.  SkillChatWorkbench picks
-        // the first compatible route for a fresh conversation.
-        const orderedAgentProfiles = activeState?.activeProvider
-          ? [...profiles].sort((left, right) => (
-            Number(right.provider === activeState.activeProvider) - Number(left.provider === activeState.activeProvider)
-          ))
-          : profiles;
-        setAgentProviderProfiles(orderedAgentProfiles);
+        // Every embedded Agent route is executed by the same active-provider
+        // bridge as generation nodes. Passing inactive routes here leaves a
+        // persisted Comfly choice visible after switching to RelayMe and the
+        // main process correctly rejects it as PROVIDER_INACTIVE. External
+        // Codex-to-canvas MCP remains a separate, provider-independent path.
+        setAgentProviderProfiles(activeProfiles);
         setProviderProfiles(filterProviderCatalogProfiles(activeProfiles));
       });
     };
@@ -1653,6 +1674,19 @@ export function CanvasWorkspace() {
       cancelled = true;
       globalThis.removeEventListener('novus:provider-catalog-changed', refreshProviderCatalog);
     };
+  }, [activeSurface]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const codexCli = window.novusDesktop?.codexCli;
+    if (codexCli === undefined) {
+      setCodexCliProfiles([]);
+      return () => { cancelled = true; };
+    }
+    void codexCli.listProfiles()
+      .then((profiles) => { if (!cancelled) setCodexCliProfiles(profiles); })
+      .catch(() => { if (!cancelled) setCodexCliProfiles([]); });
+    return () => { cancelled = true; };
   }, [activeSurface]);
 
   const updatePlacement = (nextPlacement: PlacementBoardValue, options: { schedulePersist?: boolean } = {}) => {
@@ -1705,7 +1739,7 @@ export function CanvasWorkspace() {
   };
 
   return (
-    <div data-testid="workspace" data-agent-collapsed={activeSurface !== 'agent'} data-secondary-surface={secondarySurface} data-connectors-suppressed={quickInsert !== null ? 'true' : undefined} className={`workspace workspace--ui-gate${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
+    <div data-testid="workspace" data-agent-collapsed={activeSurface !== 'agent'} data-secondary-surface={secondarySurface} data-connectors-suppressed={quickInsert !== null ? 'true' : undefined} className={`workspace workspace--canvas-layout${interactionQuality.disableExpensiveShadows ? ' is-interaction-low-quality' : ''}`}>
       <header className="topbar" data-testid="topbar" data-surface="chrome">
         <div className="topbar__identity">
           <div className="product-mark" aria-label="Canvas Atelier">
@@ -1746,7 +1780,7 @@ export function CanvasWorkspace() {
             <button
               className="topbar-canvas-action topbar-canvas-action--primary save-project-control__main"
               type="button"
-              data-figma-node-id="809:4"
+              data-node-id="809:4"
               aria-label={saveStatus === 'saving' ? '正在保存项目' : '保存项目'}
               title={saveStatus === 'saving' ? '正在保存项目' : '保存项目'}
               disabled={saveStatus === 'saving' || saveStatus === 'read_only' || recoveryRequired}
@@ -1805,11 +1839,11 @@ export function CanvasWorkspace() {
               />
             )}
           </div>
-          <button className="topbar-canvas-action" type="button" data-figma-node-id="809:9" aria-label="新建项目" onClick={startNewProject}>
+          <button className="topbar-canvas-action" type="button" data-node-id="809:9" aria-label="新建项目" onClick={startNewProject}>
             <Plus size={18} aria-hidden="true" />
             <span>新建项目</span>
           </button>
-          <button className="topbar-canvas-action topbar-canvas-action--history" type="button" data-figma-node-id="809:13" aria-label="生图历史" onClick={() => changeSurface('history')}>
+          <button className="topbar-canvas-action topbar-canvas-action--history" type="button" data-node-id="809:13" aria-label="生图历史" onClick={() => changeSurface('history')}>
             <Clock3 size={18} aria-hidden="true" />
             <span>生图历史</span>
           </button>
@@ -1826,7 +1860,7 @@ export function CanvasWorkspace() {
             <span>问问 AI</span>
           </button>
           <ThemeControl theme={theme} compact />
-          <button className="topbar-close-action" type="button" data-figma-node-id="1044:2" aria-label="关闭应用" title="关闭应用" disabled={closeRequestPending} onClick={requestDesktopClose}>
+          <button className="topbar-close-action" type="button" data-node-id="1044:2" aria-label="关闭应用" title="关闭应用" disabled={closeRequestPending} onClick={requestDesktopClose}>
             <X size={24} aria-hidden="true" />
           </button>
         </div>
@@ -1844,7 +1878,7 @@ export function CanvasWorkspace() {
             title={label}
             onClick={() => activateCanvasTool(id)}
           >
-            <span className="toolrail__glyph" data-figma-rail-icon={id} aria-hidden="true">{glyph}</span>
+            <span className="toolrail__glyph" data-rail-icon={id} aria-hidden="true">{glyph}</span>
           </button>
         ))}
         <button
@@ -1856,7 +1890,7 @@ export function CanvasWorkspace() {
           title="添加节点"
           onClick={() => openQuickInsertAtScreenPosition()}
         >
-          <span className="toolrail__glyph" data-figma-rail-icon="add-node" aria-hidden="true">＋</span>
+          <span className="toolrail__glyph" data-rail-icon="add-node" aria-hidden="true">＋</span>
         </button>
         <button
           type="button"
@@ -1867,7 +1901,7 @@ export function CanvasWorkspace() {
           title="模块库"
           onClick={toggleModuleLibrary}
         >
-          <span className="toolrail__glyph" data-figma-rail-icon="modules" aria-hidden="true">▦</span>
+          <span className="toolrail__glyph" data-rail-icon="modules" aria-hidden="true">▦</span>
         </button>
         <button
           type="button"
@@ -1878,10 +1912,10 @@ export function CanvasWorkspace() {
           disabled={undoStack.length === 0}
           onClick={() => undo()}
         >
-          <span className="toolrail__glyph" data-figma-rail-icon="undo" aria-hidden="true">↶</span>
+          <span className="toolrail__glyph" data-rail-icon="undo" aria-hidden="true">↶</span>
         </button>
         {/* Retained as a non-rendered compatibility hook for persisted
-            placement workflows; it is intentionally not part of the Figma
+            placement workflows; it is intentionally not part of the Canvas
             rail or any user-facing menu. */}
         <button
           type="button"
@@ -1905,7 +1939,7 @@ export function CanvasWorkspace() {
           title="Agent 对话"
           onClick={() => changeSurface('agent')}
         >
-          <span className="toolrail__glyph" data-figma-rail-icon="agent" aria-hidden="true">✦</span>
+          <span className="toolrail__glyph" data-rail-icon="agent" aria-hidden="true">✦</span>
         </button>
         <button
           className={`tool-button${activeSurface === 'history' ? ' is-active' : ''}`}
@@ -1916,7 +1950,7 @@ export function CanvasWorkspace() {
           title="历史记录"
           onClick={() => changeSurface('history')}
         >
-          <span className="toolrail__glyph" data-figma-rail-icon="history" aria-hidden="true">◷</span>
+          <span className="toolrail__glyph" data-rail-icon="history" aria-hidden="true">◷</span>
           {historyUnread && <i className="tool-button__dot" data-testid="history-unread-dot" aria-label="有新的生成结果" />}
         </button>
         <button
@@ -1928,7 +1962,7 @@ export function CanvasWorkspace() {
           title="设置"
           onClick={() => changeSurface('settings')}
         >
-          <span className="toolrail__glyph" data-figma-rail-icon="settings" aria-hidden="true"><Settings size={18} /></span>
+          <span className="toolrail__glyph" data-rail-icon="settings" aria-hidden="true"><Settings size={18} /></span>
         </button>
       </nav>
 
@@ -2014,7 +2048,9 @@ export function CanvasWorkspace() {
         >
           <EdgeEndpointInternalsUpdater edges={viewportCulling.edges} />
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--canvas-grid)" />
-          <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
+          {generationEditorState.expandedNodeId === null && (
+            <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
+          )}
           <Controls showInteractive={false} />
         </ReactFlow>
         {showBatchConnectionToolbar && (
@@ -2037,6 +2073,12 @@ export function CanvasWorkspace() {
         {projectImageError === 'CLIPBOARD_MEDIA_UNAVAILABLE' && (
           <section className="canvas-media-feedback" role="alert" aria-label="画布媒体导入提示">
             <span>{mediaImportErrorMessage(projectImageError)}</span>
+          </section>
+        )}
+        {modulePlacementNotice !== null && (
+          <section className="canvas-media-feedback" role="alert" aria-label="模块创建提示">
+            <span>{modulePlacementNotice}</span>
+            <button type="button" onClick={() => setModulePlacementNotice(null)} aria-label="关闭模块创建提示">关闭</button>
           </section>
         )}
         {batchRoutingNotice !== null && (
@@ -2141,7 +2183,7 @@ export function CanvasWorkspace() {
         )}
       </main>
 
-      <aside className="agent-panel agent-panel--skill-chat" aria-label="Novus Agent 工作台" data-canvas-surface="agent" data-figma-surface="agent" data-testid="agent-panel" hidden={activeSurface !== 'agent'}>
+      <aside className="agent-panel agent-panel--skill-chat" aria-label="Novus Agent 工作台" data-canvas-surface="agent" data-testid="agent-panel" hidden={activeSurface !== 'agent'}>
         <div className="agent-panel__header">
           <div>
             <strong>Agent 对话</strong>
@@ -2157,8 +2199,9 @@ export function CanvasWorkspace() {
               key={project.id}
               projectId={project.id}
               profiles={agentProviderProfiles}
+              codexProfiles={codexCliProfiles}
               knowledgeBases={knowledgeBases}
-              projectMemoryIds={project.projectMemory.map((memory) => memory.id)}
+              projectMemoryIds={selectAgentProjectMemoryIds(project.projectMemory)}
               reverseTimeline={reverseTimeline}
               referenceImages={projectImages.map(({ assetId, label, displayUrl }) => ({ assetId, label, displayUrl }))}
               referenceVideos={projectVideos.map(({ assetId, label, displayUrl }) => ({ assetId, label, displayUrl }))}
@@ -2182,6 +2225,7 @@ export function CanvasWorkspace() {
               }}
               onClose={closeAgentPanel}
               chat={workspaceApi.chat}
+              cancelChat={workspaceApi.cancelChat}
             />
           </div>
           {agentPlan !== null && isPlanPreviewVisible(agentPlan.state) && (
@@ -2330,7 +2374,12 @@ function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'rea
   if (status === 'saved') return '本地稳定点已保存';
   if (errorCode === 'RECOVERY_REQUIRED') return '需要先恢复或放弃恢复预览';
   if (errorCode === 'REVISION_CONFLICT') return '桌面项目已被其他版本更新，请点击重新载入';
+  if (errorCode === 'CONCURRENT_WRITER') return '项目正在由另一窗口写入，请关闭另一窗口后重新载入';
   if (errorCode === 'INVALID_REQUEST') return '保存失败：当前画布与已保存版本不一致，请重新载入后再编辑';
+  if (errorCode === 'SAVE_TIMEOUT') return '保存超时，项目仍保持打开，请重试保存';
+  if (errorCode === 'DURABLE_WRITE_FAILED' || errorCode === 'PROJECT_WRITE_FAILED' || errorCode === 'DISK_FULL') {
+    return '本地写入失败，请检查磁盘空间或目录权限后重试';
+  }
   if (status === 'read_only') return '只读模式，等待当前写入者释放';
   if (status === 'error') return errorCode ? `本地保存失败（${errorCode}）` : '本地保存失败';
   return '等待本地稳定点保存';
