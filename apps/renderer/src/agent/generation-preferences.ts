@@ -1,4 +1,5 @@
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
+import { supportsVerifiedComflyVideoInputMode } from '@agent-canvas/domain';
 
 export type GenerationKind = 'image' | 'video';
 export interface GenerationParameters {
@@ -20,17 +21,67 @@ export interface GenerationPreferences {
 export function defaultGenerationPreferences(): GenerationPreferences {
   return { kind: 'image', image: { mode: 'auto', parameters: {} }, video: { mode: 'auto', parameters: {} } };
 }
-export function generationProfiles(profiles: readonly ProviderBridgeProfile[], kind: GenerationKind): ProviderBridgeProfile[] {
-  return profiles.filter((profile) => profile.capabilityStatus !== 'incomplete' && profile.capabilities.includes(`${kind}_generation`));
+export function generationProfiles(
+  profiles: readonly ProviderBridgeProfile[],
+  kind: GenerationKind,
+  referenceCount = 0,
+): ProviderBridgeProfile[] {
+  return profiles.filter((profile) => profile.capabilityStatus !== 'incomplete'
+    && profile.capabilities.includes(`${kind}_generation`)
+    && supportsGenerationReferences(profile, kind, referenceCount));
 }
-export function resolveGenerationPreference(kind: GenerationKind, preferences: GenerationPreferences, profiles: readonly ProviderBridgeProfile[], suggestedRoute?: string) {
+
+/** Reference images must go through an image-edit/native Gemini route. */
+export function supportsImageReferences(profile: ProviderBridgeProfile): boolean {
+  return profile.capabilities.includes('image_edit') || profile.capabilities.includes('gemini_native');
+}
+
+/** Canvas has a verified reference-image transport for Comfly video jobs.
+ * RelayMe's direct video request has no reference field, so it must fail closed. */
+export function supportsGenerationReferences(profile: ProviderBridgeProfile, kind: GenerationKind, referenceCount: number): boolean {
+  if (referenceCount < 1) {
+    return kind === 'image'
+      || profile.provider === 'relayme'
+      || supportsVerifiedComflyVideoInputMode(profile.modelId ?? profile.modelRoute, 0);
+  }
+  return kind === 'image'
+    ? supportsImageReferences(profile)
+    : profile.provider === 'comfly'
+      && supportsVerifiedComflyVideoInputMode(profile.modelId ?? profile.modelRoute, referenceCount);
+}
+export function resolveGenerationPreference(
+  kind: GenerationKind,
+  preferences: GenerationPreferences,
+  profiles: readonly ProviderBridgeProfile[],
+  suggestedRoute?: string,
+  referenceCount = 0,
+) {
   const preference = preferences[kind];
-  const candidates = generationProfiles(profiles, kind);
-  const profile = preference.mode === 'fixed'
+  const candidates = generationProfiles(profiles, kind, referenceCount);
+  const fixedProfile = preference.mode === 'fixed'
     ? candidates.find((item) => item.modelRoute === preference.modelRoute)
-    : candidates.find((item) => item.modelRoute === suggestedRoute) ?? candidates[0];
-  if (!profile) throw new Error('生成模型不可用，请在生成偏好中重新选择。');
-  const parameters = preference.mode === 'fixed' ? { ...preference.parameters } : {};
+    : undefined;
+  const suggestedProfile = candidates.find((item) => item.modelRoute === suggestedRoute);
+  // A fixed image route may be a text-only/image-create route saved before the
+  // user attached references. Keep the preference strict for ordinary jobs,
+  // but safely fall back to a compatible route for this request so the action
+  // can still be reviewed and the user can choose another compatible model.
+  const canRecoverFixedSelection = referenceCount > 0 || preference.modelRoute === undefined;
+  const profile = preference.mode === 'fixed'
+    ? fixedProfile
+      ?? (canRecoverFixedSelection
+        ? suggestedProfile ?? candidates[0]
+        : undefined)
+    : suggestedProfile ?? candidates[0];
+  if (!profile) {
+    throw new Error(referenceCount > 0
+      ? kind === 'image'
+        ? '当前参考图需要支持图像编辑的生成模型，请在生成偏好中重新选择。'
+        : '当前参考素材需要支持参考图输入的视频生成模型，请在生成偏好中重新选择。'
+      : '生成模型不可用，请在生成偏好中重新选择。');
+  }
+  const usedReferenceFallback = preference.mode === 'fixed' && fixedProfile === undefined;
+  const parameters = preference.mode === 'fixed' && !usedReferenceFallback ? { ...preference.parameters } : {};
   const constraints = profile.constraints?.[kind];
   for (const [key, values] of [['aspectRatio', constraints?.aspectRatios], ['resolution', constraints?.resolutions], ['outputCount', constraints?.outputCounts]] as const) {
     const value = parameters[key];

@@ -168,7 +168,7 @@ function imageProfile() {
     modelRoute: 'image-generation',
     displayName: 'GPT Image',
     modelId: 'gpt-image-1',
-    capabilities: ['image_generation', 'async_tasks'],
+    capabilities: ['image_generation', 'image_edit', 'async_tasks'],
   };
 }
 

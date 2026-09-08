@@ -27,6 +27,49 @@ export function isMediaOutputModelIdentity(...identities: (string | undefined)[]
   });
 }
 
+// Comfly's public catalog currently describes the Gemini 3.1 Flash Image
+// variants as supporting reference-image editing, while listing only the
+// shared `/v1/images/generations` transport (the image is sent in the
+// `image` field). Keep this exception deliberately narrow: a display name or
+// a generic "image"/"edit" label is not enough evidence to grant the
+// capability to an arbitrary model.
+const VERIFIED_COMFLY_GEMINI_IMAGE_EDIT_MODELS = new Set([
+  'gemini-3.1-flash-image-preview',
+  'gemini-3.1-flash-image-preview-512px',
+  'gemini-3.1-flash-image-preview-2k',
+  'gemini-3.1-flash-image-preview-4k',
+]);
+
+export function isVerifiedComflyGeminiImageEditModel(modelId: string | undefined): boolean {
+  if (modelId === undefined) return false;
+  // The model id is forwarded to Comfly unchanged. Only exact canonical ids
+  // observed in the provider catalog are safe to promote to image editing.
+  return VERIFIED_COMFLY_GEMINI_IMAGE_EDIT_MODELS.has(modelId);
+}
+
+/**
+ * Repair the known Comfly catalog omission for Gemini 3.1 Flash Image.
+ *
+ * The migration is applied both to freshly discovered catalog profiles and to
+ * cached user profiles, so an existing canvas can be reopened and submitted
+ * without requiring the user to delete/reselect the model. It only adds the
+ * capability when image generation is already present and the model identity
+ * is one of the verified Gemini 3.1 Flash Image variants.
+ */
+export function repairComflyImageEditCapability(profile: ProviderBridgeProfile): ProviderBridgeProfile {
+  if (profile.provider !== 'comfly'
+    || !profile.capabilities.includes('image_generation')
+    || profile.capabilities.includes('image_edit')
+    || profile.capabilityStatus === 'incomplete'
+    || !isVerifiedComflyGeminiImageEditModel(profile.modelId)) {
+    return profile;
+  }
+  const capabilities = [...profile.capabilities];
+  const generationIndex = capabilities.indexOf('image_generation');
+  capabilities.splice(generationIndex + 1, 0, 'image_edit');
+  return { ...profile, capabilities };
+}
+
 export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog): ProviderBridgeProfile[] {
   const seenModelKeys = new Set<string>();
   const validModels = catalog.models.filter((model) => {
@@ -36,7 +79,7 @@ export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog):
     seenModelKeys.add(key);
     return true;
   });
-  return ensureUniqueModelRoutes(validModels.map((model) => ProviderBridgeProfileSchema.parse({
+  return ensureUniqueModelRoutes(validModels.map((model) => repairComflyImageEditCapability(ProviderBridgeProfileSchema.parse({
     provider: 'comfly',
     modelRoute: `comfly-${routeSlug(model.key)}`,
     displayName: model.name,
@@ -44,7 +87,7 @@ export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog):
     capabilities: capabilitiesForComflyModel(model),
     capabilityStatus: model.capabilityStatus,
     constraints: constraintsForComflyModel(model),
-  })));
+  }))));
 }
 
 export function buildRelayMeModelProfiles(models: readonly RelayMeModel[]): ProviderBridgeProfile[] {
@@ -111,7 +154,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 export function mergeProviderModelProfiles(profiles: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
   const merged = new Map<string, ProviderBridgeProfile>();
   for (const profile of profiles) {
-    const parsed = ProviderBridgeProfileSchema.parse(profile);
+    const parsed = repairComflyImageEditCapability(ProviderBridgeProfileSchema.parse(profile));
     const key = `${parsed.provider}::${parsed.modelRoute}`;
     if (!merged.has(key)) merged.set(key, parsed);
   }

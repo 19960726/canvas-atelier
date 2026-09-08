@@ -117,6 +117,8 @@ export interface ComflyModelRegistration {
   readonly displayName: string;
   readonly modelId?: string;
   readonly capabilities: readonly ComflyModelCapability[];
+  readonly capabilityStatus?: 'complete' | 'incomplete';
+  readonly constraints?: unknown;
 }
 
 export interface ComflyMergedModelRegistration extends ComflyModelRegistration {

@@ -167,6 +167,36 @@ describe('ModuleNodeCard', () => {
     })));
   });
 
+  it('preserves a saved video route while the provider catalog is empty', async () => {
+    const node = createCanvasModuleNode('video-empty-catalog-route', 'video_generation', { x: 0, y: 0 });
+    node.data.config = {
+      ...node.data.config,
+      prompt: 'Keep this saved draft',
+      modelRoute: 'saved/video-route',
+      aspectRatio: '16:9',
+      keyframe: 'auto',
+      durationSeconds: 4,
+      resolution: '1080p',
+      outputCount: 1,
+      audioEnabled: true,
+    };
+    const draftGenerationNodeConfig = vi.fn(async () => true);
+    const data = { ...node.data, videoGenerationRoutes: [] } as typeof node.data;
+    useAppStore.setState({
+      draftGenerationNodeConfig,
+      project: { ...useAppStore.getState().project, nodes: [{ ...node, data }], edges: [] },
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+
+    await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
+      modelRoute: 'saved/video-route',
+      prompt: 'Keep this saved draft',
+    })));
+    expect(screen.getByRole('button', { name: '生成视频' })).toBeDisabled();
+  });
+
   it('opens a reference-style video model picker with only one visible model control', () => {
     const node = createCanvasModuleNode('video-model-picker', 'video_generation', { x: 0, y: 0 });
     const data = {
@@ -187,6 +217,110 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Video preview model')).toHaveValue('video-route-b');
     expect(screen.getByLabelText('Video preview model')).toHaveClass('module-node__video-native-select');
     expect(screen.queryByRole('listbox', { name: '视频模型' })).not.toBeInTheDocument();
+  });
+
+  it('shows only the exact video input modes compatible with a connected reference image', async () => {
+    const image = createCanvasModuleNode('video-route-reference-image', 'image_input', { x: 0, y: 0 });
+    image.data.config = { assetId: projectImage.assetId };
+    const node = createCanvasModuleNode('video-route-reference-target', 'video_generation', { x: 420, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'relay/video', prompt: 'Animate the product' };
+    const runVideoPreviewNode = vi.fn(async () => true);
+    const draftGenerationNodeConfig = vi.fn(async () => true);
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [
+        { provider: 'relayme', modelRoute: 'relay/video', displayName: 'Relay video', modelId: 'relay-video', capabilities: ['video_generation'] },
+        { provider: 'comfly', modelRoute: 'wan/text', displayName: 'Wan text', modelId: 'wan2.2-t2v-plus', capabilities: ['video_generation'] },
+        { provider: 'comfly', modelRoute: 'wan/image', displayName: 'Wan image', modelId: 'wan2.2-i2v-plus', capabilities: ['video_generation'] },
+        { provider: 'comfly', modelRoute: 'wan/keyframe', displayName: 'Wan keyframe', modelId: 'wanx2.1-kf2v-plus', capabilities: ['video_generation'] },
+      ],
+    } as typeof node.data;
+    useAppStore.setState({
+      draftGenerationNodeConfig,
+      runVideoPreviewNode,
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [image, { ...node, data }],
+        edges: [{ id: 'video-route-reference-edge', source: image.id, sourcePortId: 'image', target: node.id, targetPortId: 'media', order: 0 }],
+        assets: [projectImage],
+      },
+      projectImages: [projectImage],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+    await waitFor(() => expect(screen.getByLabelText('Video preview model')).toHaveValue('wan/image'));
+    fireEvent.click(screen.getByRole('button', { name: '打开视频模型列表' }));
+    expect(screen.getByRole('menuitemradio', { name: /Wan image/u })).toBeVisible();
+    expect(screen.queryByRole('menuitemradio', { name: /Relay video/u })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: /Wan text/u })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: /Wan keyframe/u })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '打开视频模型列表' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
+    expect(runVideoPreviewNode).toHaveBeenCalledWith(node.id, expect.objectContaining({
+      modelRoute: 'wan/image',
+      referenceAssetIds: [projectImage.assetId],
+    }));
+  });
+
+  it('counts config-only video reference mentions when filtering routes', async () => {
+    const node = createCanvasModuleNode('video-config-reference-target', 'video_generation', { x: 0, y: 0 });
+    node.data.config = {
+      ...node.data.config,
+      modelRoute: 'relay/video',
+      prompt: 'Animate @图片1',
+      referenceAssetIds: [projectImage.assetId],
+    };
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [
+        { provider: 'relayme', modelRoute: 'relay/video', displayName: 'Relay video', modelId: 'relay-video', capabilities: ['video_generation'] },
+        { provider: 'comfly', modelRoute: 'wan/image', displayName: 'Wan image', modelId: 'wan2.2-i2v-plus', capabilities: ['video_generation'] },
+      ],
+    } as typeof node.data;
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [{ ...node, data }], edges: [], assets: [projectImage] },
+      projectImages: [projectImage],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+    await waitFor(() => expect(screen.getByLabelText('Video preview model')).toHaveValue('wan/image'));
+    fireEvent.click(screen.getByRole('button', { name: '打开视频模型列表' }));
+    expect(screen.queryByRole('menuitemradio', { name: /Relay video/u })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: /Wan image/u })).toBeVisible();
+  });
+
+  it('clears and disables video generation when a source video is connected', async () => {
+    const source = createCanvasModuleNode('video-to-video-source', 'video_input', { x: 0, y: 0 });
+    source.data.config = { assetId: projectVideo.assetId };
+    const node = createCanvasModuleNode('video-to-video-target', 'video_generation', { x: 420, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'veo/text', prompt: 'Transform this clip' };
+    const runVideoPreviewNode = vi.fn(async () => true);
+    const draftGenerationNodeConfig = vi.fn(async () => true);
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [{ provider: 'comfly', modelRoute: 'veo/text', displayName: 'Veo', modelId: 'veo3.1', capabilities: ['video_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({
+      draftGenerationNodeConfig,
+      runVideoPreviewNode,
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [source, { ...node, data }],
+        edges: [{ id: 'video-to-video-edge', source: source.id, sourcePortId: 'video', target: node.id, targetPortId: 'media', order: 0 }],
+        assets: [projectVideo],
+      },
+      projectVideos: [projectVideo],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+    expect(screen.getByRole('alert')).toHaveTextContent('当前版本尚无支持视频作为生成输入的模型');
+    await waitFor(() => expect(screen.getByLabelText('Video preview model')).toHaveValue(''));
+    expect(screen.getByRole('button', { name: '生成视频' })).toBeDisabled();
+    await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({ modelRoute: '' })));
+    expect(runVideoPreviewNode).not.toHaveBeenCalled();
   });
 
   it('labels an empty image model picker as an image model control', () => {
@@ -1406,7 +1540,7 @@ describe('ModuleNodeCard', () => {
         modelRoute: 'image-gen',
         displayName: 'Image Gen',
         modelId: 'image-gen',
-        capabilities: ['image_generation'],
+        capabilities: ['image_generation', 'image_edit'],
       }],
     } as typeof generation.data;
     const runImageGenerationNode = vi.fn(async () => true);
@@ -1482,6 +1616,98 @@ describe('ModuleNodeCard', () => {
 
     expect(runImageGenerationNode).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toHaveTextContent('RelayMe 当前不支持参考图生图，请选择 Comfly 模型或断开参考图。');
+  });
+
+  it('switches a connected reference-image request away from a text-only image route before submission', async () => {
+    const image = createCanvasModuleNode('reference-capability-source', 'image_input', { x: 0, y: 0 });
+    image.data.config = { assetId: projectImage.assetId };
+    const generation = createCanvasModuleNode('reference-capability-target', 'image_generation', { x: 420, y: 0 });
+    const runImageGenerationNode = vi.fn(async () => true);
+    const data = {
+      ...generation.data,
+      config: {
+        ...generation.data.config,
+        prompt: 'Replace the face while preserving the scene',
+        modelRoute: 'comfly-text-image',
+      },
+      onGenerateImage: runImageGenerationNode,
+      imageGenerationRoutes: [
+        {
+          provider: 'comfly',
+          modelRoute: 'comfly-text-image',
+          displayName: 'Nano Banana 2',
+          modelId: 'text-image',
+          capabilities: ['image_generation'],
+        },
+        {
+          provider: 'comfly',
+          modelRoute: 'comfly-image-edit',
+          displayName: 'Nano Banana Pro',
+          modelId: 'image-edit',
+          capabilities: ['image_generation', 'image_edit'],
+        },
+      ],
+    } as typeof generation.data;
+    useAppStore.setState({
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [image, { ...generation, data }],
+        edges: [{ id: 'reference-capability-edge', source: image.id, sourcePortId: 'image', target: generation.id, targetPortId: 'references', order: 0 }],
+      },
+      projectImages: [projectImage],
+      modelJobs: [],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={generation.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    await waitFor(() => expect(screen.getByLabelText('Image generation model route')).toHaveValue('comfly-image-edit'));
+    expect(within(screen.getByLabelText('Image generation model route')).queryByRole('option', { name: 'Nano Banana 2', hidden: true })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
+    expect(runImageGenerationNode).toHaveBeenCalledWith(generation.id, expect.objectContaining({
+      modelRoute: 'comfly-image-edit',
+      referenceAssetIds: [projectImage.assetId],
+    }));
+  });
+
+  it('explains that a reference request needs an image-edit model before queueing', () => {
+    const image = createCanvasModuleNode('reference-unsupported-source', 'image_input', { x: 0, y: 0 });
+    image.data.config = { assetId: projectImage.assetId };
+    const generation = createCanvasModuleNode('reference-unsupported-target', 'image_generation', { x: 420, y: 0 });
+    const runImageGenerationNode = vi.fn(async () => true);
+    const data = {
+      ...generation.data,
+      config: {
+        ...generation.data.config,
+        prompt: 'Use the connected reference',
+        modelRoute: 'comfly-text-image',
+      },
+      onGenerateImage: runImageGenerationNode,
+      imageGenerationRoutes: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-text-image',
+        displayName: 'Nano Banana 2',
+        modelId: 'text-image',
+        capabilities: ['image_generation'],
+      }],
+    } as typeof generation.data;
+    useAppStore.setState({
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [image, { ...generation, data }],
+        edges: [{ id: 'reference-unsupported-edge', source: image.id, sourcePortId: 'image', target: generation.id, targetPortId: 'references', order: 0 }],
+      },
+      projectImages: [projectImage],
+      modelJobs: [],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={generation.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
+
+    expect(runImageGenerationNode).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('当前参考图任务需要支持图片编辑的模型，请切换模型或断开参考图。');
   });
 
   it('keeps the connected video-media slot visible while an upstream upload is still unresolved', () => {
@@ -1622,7 +1848,7 @@ describe('ModuleNodeCard', () => {
     } as never);
     const data = {
       ...node.data,
-      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'image-gen', displayName: 'Image Gen', modelId: 'image-gen', capabilities: ['image_generation'] }],
+      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'image-gen', displayName: 'Image Gen', modelId: 'image-gen', capabilities: ['image_generation', 'image_edit'] }],
     } as typeof node.data;
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
@@ -2081,8 +2307,14 @@ describe('ModuleNodeCard', () => {
     const node = createCanvasModuleNode('video-preview', 'video_generation' as never, { x: 0, y: 0 });
     const runVideoPreviewNode = vi.fn(async () => true);
     useAppStore.setState({ projectImages: [projectImage], runVideoPreviewNode } as never);
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [{
+        provider: 'comfly', modelRoute: 'seedance-1.5-pro', displayName: 'Seedance', modelId: 'doubao-seedance-2.5', capabilities: ['video_generation'],
+      }],
+    } as typeof node.data;
 
-    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
 
     openVideoGenerationEditor();
     fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: 'A quiet product reveal' } });
@@ -2107,10 +2339,16 @@ describe('ModuleNodeCard', () => {
     image.data.config = { assetId: projectImage.assetId };
     const video = createCanvasModuleNode('video-action-target', 'video_generation' as never, { x: 0, y: 0 });
     const runVideoPreviewNode = vi.fn(async () => true);
+    const data = {
+      ...video.data,
+      videoGenerationRoutes: [{
+        provider: 'comfly', modelRoute: 'seedance-1.5-pro', displayName: 'Seedance', modelId: 'doubao-seedance-2.5', capabilities: ['video_generation'],
+      }],
+    } as typeof video.data;
     useAppStore.setState({
       project: {
         ...useAppStore.getState().project,
-        nodes: [image, video],
+        nodes: [image, { ...video, data }],
         edges: [{ id: 'video-action-edge', source: image.id, sourcePortId: 'image', target: video.id, targetPortId: 'media', order: 0 }],
         assets: [projectImage],
       },
@@ -2118,7 +2356,7 @@ describe('ModuleNodeCard', () => {
       runVideoPreviewNode,
     } as never);
 
-    render(<ReactFlowProvider><ModuleNodeCard id={video.id} data={video.data} selected={false} /></ReactFlowProvider>);
+    render(<ReactFlowProvider><ModuleNodeCard id={video.id} data={data} selected={false} /></ReactFlowProvider>);
     openVideoGenerationEditor();
     fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: 'A connected product reveal' } });
     fireEvent.click(screen.getByRole('button', { name: '生成视频' }));

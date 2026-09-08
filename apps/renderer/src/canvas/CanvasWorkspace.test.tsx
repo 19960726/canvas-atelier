@@ -3292,9 +3292,10 @@ describe('CanvasWorkspace', () => {
   it('creates and executes a new image generation node after Agent command confirmation', async () => {
     const chat = installSkillChatBridgeForTests([
       { provider: 'comfly', modelRoute: 'chat/creative', displayName: 'Creative chat', modelId: 'codex-creative-chat', capabilities: ['chat'] },
-      { provider: 'comfly', modelRoute: 'image/creative', displayName: 'Creative image', modelId: 'image-creative', capabilities: ['image_generation'] },
+      { provider: 'comfly', modelRoute: 'qa/gemini-native', displayName: 'QA Gemini Native', modelId: 'qa-gemini-native', capabilities: ['image_generation', 'gemini_native'] },
+      { provider: 'comfly', modelRoute: 'qa/image-edit', displayName: 'QA Image Edit', modelId: 'qa-image-edit', capabilities: ['image_generation', 'image_edit'] },
     ]);
-    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'image/creative' }] }), modelRoute: 'chat/creative', sources: [] });
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'qa/gemini-native' }] }), modelRoute: 'chat/creative', sources: [] });
     const imageNode = createCanvasModuleNode('agent-image-node', 'image_generation', { x: 120, y: 120 });
     imageNode.data.config = { modelRoute: 'image/creative' };
     const runImageGenerationNode = vi.fn(async () => true);
@@ -3311,17 +3312,24 @@ describe('CanvasWorkspace', () => {
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成一张产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     fireEvent.click(await screen.findByRole('button', { name: '选择方案：棚拍' }));
+    fireEvent.change(await screen.findByRole('combobox', { name: '选择生图模型' }), { target: { value: 'qa/image-edit' } });
     fireEvent.click(await screen.findByRole('button', { name: '确认执行生图' }));
 
     await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith(expect.stringMatching(/^agent-image-/u), expect.objectContaining({
-      modelRoute: 'image/creative',
+      modelRoute: 'qa/image-edit',
       prompt: '生成一张产品主图',
     })));
     const createdNodeId = (runImageGenerationNode.mock.calls as unknown as Array<[string]>)[0]![0];
     expect(createdNodeId).not.toBe('agent-image-node');
     expect(useAppStore.getState().project.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'agent-image-node' }),
-      expect.objectContaining({ id: createdNodeId, data: expect.objectContaining({ moduleType: 'image_generation' }) }),
+      expect.objectContaining({
+        id: createdNodeId,
+        data: expect.objectContaining({
+          moduleType: 'image_generation',
+          config: expect.objectContaining({ modelRoute: 'qa/image-edit', prompt: '生成一张产品主图' }),
+        }),
+      }),
     ]));
   });
 

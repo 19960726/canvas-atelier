@@ -901,4 +901,15 @@ Before producing an installer, verify at minimum:
 - Codex 事件解析忽略正常的 `item.started`，仅把完成事件作为结果；一次 `PROJECT_REVISION_CONFLICT` 只有在重新读取画布并成功重试同一工具时才接受，其他失败仍拒绝并不采用后续文本。
 - 最终 1.6.118 候选真实 API 模式验收通过：Codex 0.153.4 实际调用 `canvas_atelier`，新建两个独立节点、更新、移动、连线并最终读取确认，revision 从 0 到 5；没有执行生图、没有触碰用户项目，Codex 配置前后 SHA-256 相同。
 - 最终候选完成 31 节点项目保存、关闭、重启和重新打开，原项目树 SHA-256 未改变；全量 Vitest 225 个文件、3053 项通过，2 项性能测试按配置跳过；全工作区 typecheck、production build、NSIS 打包和 12 文件 payload 比对通过。
-- 本地候选安装器为 `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.118.exe`，103265789 字节，SHA-256 `8349B38F3DE030EA5228DCE3DA84D9A0688C528FC36073A76BE6A705EC8DDB88`，未发布 GitHub，等待用户安装验收后再发布。
+- 正式安装器为 `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.118.exe`，103265789 字节，SHA-256 `8349B38F3DE030EA5228DCE3DA84D9A0688C528FC36073A76BE6A705EC8DDB88`。v1.6.118 已发布为 GitHub latest：`https://github.com/19960726/canvas-atelier/releases/tag/v1.6.118`。
+
+## 2026-09-09 1.6.119 生图、Agent 路线与保存恢复正式候选
+
+- “连接成功但 API 生图失败”的主要根因在能力分类与请求契约，不是画布连线本身。Comfly 现在只对精确官方 Gemini 生图模型 ID 启用原生参考图路由：`gemini-3.1-flash-image-preview` 及其 `-512px`、`-2k`、`-4k` 变体；引用图按供应商已验证的 `image` 数组提交，原生尺寸映射与模型能力缓存同时修复。缺失或不完整的能力信息继续 fail closed，不再把相似名称、大小写或别名误判成可执行模型。
+- 生图执行会把受管结果写回当前任务和历史记录；Agent 则在用户选定方案、模型、比例、分辨率、张数和参考图后，原子创建新的独立生成节点。方案卡与确认卡使用对话区完整宽度，选择按钮居中且有明确选中态；固定路线不会在节点挂载时被默认模型覆盖，提示词、参数、引用、route 和结果在保存、关闭、重启后保持一致。
+- 图片编辑只向 `image_edit` 或 Gemini 原生图片路线传递参考图。视频节点与 Agent 共用同一个精确输入能力判定，覆盖已验证的 WAN、Seedance 和 Veo 文生视频、图生视频与首尾帧数量边界；只有已有目录证据证明当前输入不兼容时才清理旧路线，目录为空、未配置或加载中会保留已保存选择，避免仅打开项目就产生无关草稿修订。
+- 最近项目元数据写入改为串行化。可用性和预览路径的文件状态检查共用有界队列，超时请求会从队列移除，已开始的检查在真正结束前继续占用槽位；最近项目索引本身不再排在可能失效的 UNC、映射盘或本地路径检查之后，因此坏路径不会饿死保存、历史刷新或关闭落盘。
+- 最终源码验证为 Vitest 225 个文件通过、2 个性能文件按设计跳过，3103 项通过、2 项跳过；全工作区 typecheck、production build、secret/path scan 与 diff-check 通过。NSIS 正式候选的 12/12 应用载荷、8/8 安装进程边界及真实编译钩子通过。
+- 最终候选安装包 103269060 字节、SHA-256 `65900D5B82D616715DA89D5481374A4459B82047D780BC1A1C751DA40BB1434A`；blockmap 109651 字节、SHA-256 `42081D08F5B9972AAC967D07DEECD5A81B1A578DB6BEAFA4EEF53D29F6EB9F25`；`latest.yml` 375 字节、SHA-256 `A9C544E526C057F0FF4FBD052D7CE65B0641E459739DD4885B64623C343A5C27`。候选 EXE SHA-256 `9F4B2AB06905B912B8B5445FB80795CDF503879E896ADCD03736D74BD8755F75`，`app.asar` SHA-256 `F2E70077414027F0BAD0B55394CB22A6BB1BB4AED044125F4CAD05988B3ADF46`；安装包仍为 `NotSigned`。
+- 零费用候选验收中，方案、确认、独立节点、返图缩略图、保存与重启恢复通过；手选 `qa/image-edit` 后提交、节点与重启 route 完全一致，Provider 网络请求和付费调用均为 0。31 节点真实项目副本显式保存为 `saved -> saving -> saved`，稳定点保持 revision 304，原项目树前后 SHA-256 同为 `b364afbcfbf1906e95cbf09faca97cd03441a8a4b6396726f0cb4ef04c9b0c9a`。bundled MCP 14/14 工具在隔离环境完整执行，创建、更新、移动、连线、确认、运行、取消、媒体导入、删除和重启读取全部通过，网络尝试为 0。
+- 本轮只读核对了 Comfly 当前公开模型目录和已验证提交端点，没有发送真实生图、视频或反推任务，也没有消耗供应商额度。目录连通和零费用 fixture 证明路由与落盘链路，不等于真实供应商产物成功；正式 GitHub 在线更新和日常安装目录验收在 Release 发布后记录。

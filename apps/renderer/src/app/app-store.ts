@@ -32,6 +32,7 @@ import {
   revertTransaction,
   selectActiveProjectMemoryEntries,
   skillPromotionCandidateSchema,
+  supportsVerifiedComflyVideoInputMode,
   type AgentCanvasPlan,
   type AgentKnowledgeLease,
   type AgentPlanApprovalSelection,
@@ -280,7 +281,12 @@ interface AppState {
     position: { readonly x: number; readonly y: number },
   ) => Promise<boolean>;
   addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
-  ensureAgentGenerationNode: (nodeId: string, moduleType: 'image_generation' | 'video_generation', referenceAssetIds: readonly string[]) => Promise<boolean>;
+  ensureAgentGenerationNode: (
+    nodeId: string,
+    moduleType: 'image_generation' | 'video_generation',
+    referenceAssetIds: readonly string[],
+    initialConfig?: GenerationNodeDraftConfig,
+  ) => Promise<boolean>;
   addProjectImageInput: (assetId: string, position: { x: number; y: number }) => Promise<boolean>;
   connectModulePorts: (connection: Connection) => Promise<boolean>;
   commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
@@ -464,8 +470,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       imageAspectRatio = adaptedImageParameters?.actual.aspectRatio ?? requestedImageAspectRatio;
       imageResolution = adaptedImageParameters?.actual.resolution ?? requestedImageResolution;
-    }    const referenceAssetIds = resolveImageGenerationReferenceAssetIds(state.project, nodeId, input.referenceAssetIds);
+    }
+    const referenceAssetIds = resolveImageGenerationReferenceAssetIds(state.project, nodeId, input.referenceAssetIds);
     if (referenceAssetIds === null) return false;
+    if (referenceAssetIds.length > 0
+      && !profile.capabilities.includes('image_edit')
+      && !profile.capabilities.includes('gemini_native')) {
+      throw createGenerationStartError(
+        'CAPABILITY_UNSUPPORTED',
+        'Selected image model does not support reference images; choose an image-edit model',
+      );
+    }
 
     const timestamp = new Date().toISOString();
     const requests = Array.from({ length: imageOutputCount }, () => ({
@@ -625,6 +640,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       throw createGenerationStartError(
         'CAPABILITY_UNSUPPORTED',
         'RelayMe video generation does not support verified media references',
+      );
+    }
+    if (profile.provider === 'comfly'
+      && !supportsVerifiedComflyVideoInputMode(profile.modelId ?? profile.modelRoute, frameAssetIds.length)) {
+      throw createGenerationStartError(
+        'CAPABILITY_UNSUPPORTED',
+        'Selected Comfly video model does not support this reference-image mode',
       );
     }
     if (sourceVideoAssetId !== undefined) {
@@ -1017,7 +1039,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
     });
   }),
-  ensureAgentGenerationNode: (nodeId, moduleType, referenceAssetIds) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+  ensureAgentGenerationNode: (nodeId, moduleType, referenceAssetIds, initialConfig) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const project = get().project;
     if (!/^[A-Za-z0-9_-]{1,160}$/u.test(nodeId) || !['image_generation', 'video_generation'].includes(moduleType) || referenceAssetIds.length > 20) return false;
     const existing = project.nodes.find((node) => node.id === nodeId);
@@ -1025,7 +1047,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const assets = referenceAssetIds.map((assetId) => project.assets?.find((asset) => asset.assetId === assetId));
     if (new Set(referenceAssetIds).size !== referenceAssetIds.length || assets.some((asset) => !asset || !asset.mediaType.startsWith('image/'))) return false;
     const node = createCanvasModuleNode(nodeId, moduleType, { x: 460, y: 160 + project.nodes.length * 30 });
-    node.data.config = { ...node.data.config, referenceAssetIds: [...referenceAssetIds] };
+    node.data.config = {
+      ...node.data.config,
+      ...(initialConfig ?? {}),
+      referenceAssetIds: [...referenceAssetIds],
+    };
     const operations: ProjectTransaction['operations'] = [{ kind: 'canvas', operation: { kind: 'create_node', node } }];
     assets.forEach((asset, index) => {
       const source = project.nodes.find((candidate) => candidate.type === 'module' && ['image_input', 'upload_image'].includes(candidate.data.moduleType) && candidate.data.config.assetId === asset!.assetId);
@@ -1320,9 +1346,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     const currentDraft = Object.fromEntries(Object.keys(nextDraft).map((key) => [key, node.data.config[key]]));
     if (JSON.stringify(currentDraft) === JSON.stringify(nextDraft)) return true;
+    const nextConfig: Record<string, unknown> = { ...node.data.config, ...nextDraft };
+    if (node.data.config.modelRoute !== nextDraft.modelRoute) {
+      delete nextConfig.providerDisplayName;
+      delete nextConfig.modelDisplayName;
+      delete nextConfig.routeDisplayName;
+    }
     const nextNode = {
       ...node,
-      data: { ...node.data, config: { ...node.data.config, ...nextDraft } },
+      data: { ...node.data, config: nextConfig },
     };
     const project = {
       ...state.project,
@@ -3828,7 +3860,21 @@ export function filterGenerationModelProfiles(
   });
   if (moduleTypes.includes('video_generation') && moduleTypes.includes('image_generation')) return [];
   const capability = moduleTypes.includes('video_generation') ? 'video_generation' : 'image_generation';
-  return profiles.filter((profile) => profile.capabilityStatus !== 'incomplete' && profile.capabilities.includes(capability));
+  const operationReferenceCounts = plan.transaction.operations.flatMap((operation) => {
+    if ((operation.kind !== 'create_node' && operation.kind !== 'update_node') || operation.node.type !== 'module' || operation.node.data.moduleType !== capability) return [];
+    const ids = operation.node.data.config.referenceAssetIds;
+    return [Array.isArray(ids) ? ids.filter((id) => typeof id === 'string').length : 0];
+  });
+  const referenceCounts = operationReferenceCounts.length > 0
+    ? operationReferenceCounts
+    : [plan.referenceSnapshot?.references.length ?? 0];
+  return profiles.filter((profile) => profile.capabilityStatus !== 'incomplete'
+    && profile.capabilities.includes(capability)
+    && referenceCounts.every((referenceCount) => capability === 'image_generation'
+      ? referenceCount === 0 || profile.capabilities.includes('image_edit') || profile.capabilities.includes('gemini_native')
+      : profile.provider === 'relayme'
+        ? referenceCount === 0
+        : supportsVerifiedComflyVideoInputMode(profile.modelId ?? profile.modelRoute, referenceCount)));
 }
 
 function shouldExecuteModels(plan: AgentCanvasPlan): boolean {

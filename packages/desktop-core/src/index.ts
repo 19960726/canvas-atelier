@@ -336,6 +336,7 @@ export {
   parseProviderBridgeResponse,
   registerProviderBridgeHandlers,
 } from './provider-bridge.js';
+export { supportsVerifiedComflyVideoInputMode } from './comfly-video-jobs.js';
 export type {
   AckImageJobTerminalBridgeRequest,
   AckImageJobTerminalBridgeResult,

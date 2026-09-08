@@ -1074,7 +1074,16 @@ export function CanvasWorkspace() {
     if (request.projectId !== undefined && request.projectId !== useAppStore.getState().project.id) return false;
     if (request.createNode) {
       if (request.kind === 'reverse_agent') return false;
-      if (!await useAppStore.getState().ensureAgentGenerationNode(request.nodeId, request.kind, request.referenceAssetIds ?? [])) {
+      if (!await useAppStore.getState().ensureAgentGenerationNode(
+        request.nodeId,
+        request.kind,
+        request.referenceAssetIds ?? [],
+        {
+          prompt: request.prompt,
+          ...(request.modelRoute === undefined ? {} : { modelRoute: request.modelRoute }),
+          ...(request.parameters ?? {}),
+        },
+      )) {
         const saveErrorCode = useAppStore.getState().saveErrorCode;
         if (saveErrorCode !== null) {
           throw Object.assign(new Error('Agent generation node could not be saved.'), { code: saveErrorCode });

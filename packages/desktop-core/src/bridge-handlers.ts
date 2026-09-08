@@ -435,6 +435,7 @@ const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const MAX_PROJECT_IMAGE_BYTES = 256 * 1024 * 1024;
 const MAX_PROJECT_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
 const PROJECT_PREVIEW_CAPTURE_TIMEOUT_MS = 2_000;
+const RECENT_PROJECT_CLOSE_WAIT_MS = 2_000;
 type ImportableReferenceRole = Exclude<ReferenceRole, 'placement_preview'>;
 const PROJECT_IMAGE_REFERENCE_LAYOUT: Record<
   ImportableReferenceRole,
@@ -2245,7 +2246,26 @@ export function createDesktopBridgeHandlers(
         stablePoint: false,
       });
     }
+    if (options.flush !== false) {
+      await waitForRecentProjectTail(session.sessionId);
+    }
     await requireMethod(repository, 'close')(session.session);
+  }
+
+  async function waitForRecentProjectTail(sessionId: string): Promise<void> {
+    const tail = recentProjectTails.get(sessionId);
+    if (tail === undefined) return;
+    let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+    try {
+      await Promise.race([
+        tail.catch(() => undefined),
+        new Promise<void>((resolve) => {
+          timeoutId = globalThis.setTimeout(resolve, RECENT_PROJECT_CLOSE_WAIT_MS);
+        }),
+      ]);
+    } finally {
+      if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+    }
   }
 
   function enqueueSessionMaintenance<T>(

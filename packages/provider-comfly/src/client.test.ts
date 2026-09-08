@@ -221,6 +221,45 @@ describe('ComflyClient', () => {
     });
     expect(requestBody).not.toHaveProperty('size');
   });
+
+  it.each([
+    'gemini-3.1-flash-image-preview',
+    'gemini-3.1-flash-image-preview-512px',
+    'gemini-3.1-flash-image-preview-2k',
+    'gemini-3.1-flash-image-preview-4k',
+  ])('uses the provider-native image_size tier for Gemini 3.1 Flash Image variant %s', async (model) => {
+    let postedBody: string | undefined;
+    const fetch: ComflyFetch = vi.fn(async (_url, init) => {
+      postedBody = init?.body;
+      return jsonResponse({ taskId: `task-${model}`, status: 'queued' });
+    });
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    await expect(client.generateImage({
+      model, prompt: 'high resolution product poster', async: true, aspect_ratio: '16:9', size: '4K',
+    })).resolves.toMatchObject({ taskId: `task-${model}` });
+
+    const requestBody = JSON.parse(String(postedBody));
+    expect(requestBody).toMatchObject({ model, aspect_ratio: '16:9', image_size: '4K' });
+    expect(requestBody).not.toHaveProperty('size');
+  });
+
+  it('does not submit non-canonical Gemini image aliases as native 4K models', async () => {
+    const fetch: ComflyFetch = vi.fn(async () => jsonResponse({ taskId: 'unexpected', status: 'queued' }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    for (const model of [
+      'gemini-3-1-flash-image-preview-4k',
+      ' gemini-3.1-flash-image-preview-4k ',
+      'GEMINI-3.1-FLASH-IMAGE-PREVIEW-4K',
+    ]) {
+      await expect(client.generateImage({
+        model, prompt: 'high resolution product poster', size: '4K',
+      })).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('posts image edit payloads to /v1/images/edits', async () => {
     const fetch = vi.fn(async () => jsonResponse({
       created: 1721121600,
@@ -464,6 +503,27 @@ describe('mergeComflyModelRegistries', () => {
         source: 'profile',
       },
     ]);
+  });
+
+  it('preserves incomplete capability evidence and profile constraints while merging routes', () => {
+    const merged = mergeComflyModelRegistries({
+      providerModels: [{
+        provider: 'comfly', modelRoute: 'gemini-image', modelId: 'gemini-3.1-flash-image-preview',
+        displayName: 'Gemini Image', capabilities: ['image_generation'], capabilityStatus: 'complete',
+      }],
+      profileModels: [{
+        provider: 'comfly', modelRoute: 'gemini-image', modelId: 'gemini-3.1-flash-image-preview',
+        displayName: 'Cached Gemini Image', capabilities: ['image_generation'], capabilityStatus: 'incomplete',
+        constraints: { image: { resolutions: ['2K'] } },
+      }],
+    });
+
+    expect(merged).toEqual([expect.objectContaining({
+      capabilityStatus: 'incomplete',
+      constraints: { image: { resolutions: ['2K'] } },
+      displayName: 'Cached Gemini Image',
+      source: 'merged',
+    })]);
   });
 });
 

@@ -10,12 +10,30 @@ import {
   type ProviderBridgeProfile,
   type SafeStorageAdapter,
 } from './provider-bridge.js';
+import { supportsVerifiedComflyVideoInputMode } from './comfly-video-jobs.js';
 
 const roots: string[] = [];
 
 describe('Comfly capability regressions', () => {
   afterEach(async () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
+  });
+
+  it.each([
+    ['Wan text-to-video accepts no images', 'wan2.2-t2v-plus', 0, true],
+    ['Wan text-to-video rejects one image', 'wan2.2-t2v-plus', 1, false],
+    ['Wan image-to-video accepts exactly one image', 'wan2.2-i2v-plus', 1, true],
+    ['Wan image-to-video rejects no image', 'wan2.2-i2v-plus', 0, false],
+    ['Wan image-to-video rejects two images', 'wan2.2-i2v-plus', 2, false],
+    ['Wan keyframe video accepts exactly two images', 'wanx2.1-kf2v-plus', 2, true],
+    ['Wan keyframe video rejects one image', 'wanx2.1-kf2v-plus', 1, false],
+    ['Veo text-only rejects one image', 'veo3-fast', 1, false],
+    ['Veo single-frame accepts one image', 'veo3-pro-frames', 1, true],
+    ['Veo single-frame rejects two images', 'veo3-pro-frames', 2, false],
+    ['Veo two-frame accepts two images', 'veo2-fast-frames', 2, true],
+    ['Veo two-frame rejects three images', 'veo2-fast-frames', 3, false],
+  ] as const)('%s in the shared video-input predicate', (_label, modelId, referenceCount, expected) => {
+    expect(supportsVerifiedComflyVideoInputMode(modelId, referenceCount)).toBe(expected);
   });
 
   it('keeps Nano Banana reference generation on the documented synchronous generations route', async () => {

@@ -4,6 +4,15 @@ import { hasVerifiedComflyVideoSubmissionContract } from '../../../../packages/d
 import { createE2EProviderProfiles } from './e2e-harness';
 
 describe('E2E provider profile contract', () => {
+  it('does not let the audited fixture bypass production reference-image capability rules', () => {
+    const comflyProfiles = createE2EProviderProfiles().filter((profile) => profile.provider === 'comfly');
+    const liteImage = comflyProfiles.find((profile) => profile.modelId === 'gemini-3.1-flash-lite-image');
+    const flashImage = comflyProfiles.find((profile) => profile.modelId === 'gemini-3.1-flash-image-preview-2k');
+
+    expect(liteImage?.capabilities).not.toEqual(expect.arrayContaining(['image_generation', 'image_edit']));
+    expect(flashImage?.capabilities).toEqual(expect.arrayContaining(['image_generation', 'image_edit']));
+  });
+
   it('advertises only Comfly video models with a production submission contract', () => {
     const videoProfiles = createE2EProviderProfiles().filter((profile) => (
       profile.provider === 'comfly' && profile.capabilities.includes('video_generation')

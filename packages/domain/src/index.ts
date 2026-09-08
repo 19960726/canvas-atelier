@@ -73,6 +73,10 @@ export type {
   GenerationHistoryStatus,
 } from './generation-history';
 export { normalizePlacementObject, placementToPromptConstraints } from './placement';
+export {
+  hasVerifiedComflyVideoSubmissionContract,
+  supportsVerifiedComflyVideoInputMode,
+} from './comfly-video-input';
 export { parseCanvasProject } from './project-schema';
 export {
   canConnectCanvasPorts,

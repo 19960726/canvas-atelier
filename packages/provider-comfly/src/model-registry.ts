@@ -10,6 +10,8 @@ export function mergeComflyModelRegistries(options: {
     displayName: string;
     modelId?: string;
     capabilities: Set<ComflyModelCapability>;
+    capabilityStatus?: 'complete' | 'incomplete';
+    constraints?: unknown;
     hasProvider: boolean;
     hasProfile: boolean;
   }>();
@@ -34,6 +36,8 @@ export function mergeComflyModelRegistries(options: {
         displayName: value.displayName,
         ...(value.modelId === undefined ? {} : { modelId: value.modelId }),
         capabilities: [...value.capabilities].sort(),
+        ...(value.capabilityStatus === undefined ? {} : { capabilityStatus: value.capabilityStatus }),
+        ...(value.constraints === undefined ? {} : { constraints: value.constraints }),
         source,
       };
     })
@@ -53,6 +57,8 @@ function upsertModel(
     displayName: string;
     modelId?: string;
     capabilities: Set<ComflyModelCapability>;
+    capabilityStatus?: 'complete' | 'incomplete';
+    constraints?: unknown;
     hasProvider: boolean;
     hasProfile: boolean;
   }>,
@@ -66,12 +72,20 @@ function upsertModel(
     displayName: model.displayName,
     modelId: model.modelId,
     capabilities: new Set<ComflyModelCapability>(),
+    capabilityStatus: undefined,
+    constraints: undefined,
     hasProvider: false,
     hasProfile: false,
   };
   for (const capability of model.capabilities) {
     current.capabilities.add(capability);
   }
+  if (model.capabilityStatus === 'incomplete' || current.capabilityStatus === 'incomplete') {
+    current.capabilityStatus = 'incomplete';
+  } else if (model.capabilityStatus === 'complete') {
+    current.capabilityStatus = 'complete';
+  }
+  if (model.constraints !== undefined) current.constraints = model.constraints;
   if (source === 'provider') {
     current.hasProvider = true;
     current.modelId = model.modelId ?? current.modelId;

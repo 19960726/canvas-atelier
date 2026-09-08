@@ -1373,6 +1373,49 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().project).toBe(projectBeforeRun);
   });
 
+  it('rejects a Comfly text-to-video route with an image before committing or enqueueing', async () => {
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly',
+      modelRoute: 'comfly-wan-t2v',
+      displayName: 'Wan text-to-video',
+      modelId: 'wan2.2-t2v-plus',
+      capabilities: ['video_generation', 'async_tasks'],
+    }]);
+    resetAppStoreForTests();
+    const image = createCanvasModuleNode('comfly-t2v-reference', 'image_input', { x: 20, y: 20 });
+    image.data.config = { assetId: '0123456789abcdef' };
+    const preview = createCanvasModuleNode('comfly-t2v-target', 'video_generation', { x: 420, y: 20 });
+    useAppStore.setState({
+      project: {
+        ...createStarterProject(),
+        nodes: [image, preview],
+        edges: [{
+          id: 'comfly-t2v-image-edge', source: image.id, sourcePortId: 'image', target: preview.id, targetPortId: 'media', order: 0,
+        }],
+        assets: [{
+          assetId: '0123456789abcdef', sha256: '0'.repeat(64), byteSize: 1024, extension: 'png', height: 720,
+          label: 'Unsupported frame', mediaType: 'image/png', origin: 'imported', width: 1280,
+        }],
+      },
+    });
+    const projectBeforeRun = useAppStore.getState().project;
+
+    await expect(useAppStore.getState().runVideoPreviewNode(preview.id, {
+      prompt: 'This route must stay text-only', referenceAssetIds: [], modelRoute: 'comfly-wan-t2v',
+      aspectRatio: '16:9', keyframe: 'first-frame', durationSeconds: 5, resolution: '720p', outputCount: 1, audioEnabled: false,
+    })).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().project).toBe(projectBeforeRun);
+  });
+
   it('rejects a connected video source before it can enter the image-only provider reference queue', async () => {
     installVideoProviderForModelJobTests({
       provider: 'comfly',
@@ -2629,7 +2672,7 @@ describe('project optimization memory', () => {
       cancel: vi.fn(async () => {}),
     });
     installProviderProfilesForModelJobTests([{
-      provider: 'comfly', modelRoute: 'kling-duration-only', displayName: 'Kling duration only', modelId: 'kling-duration-only',
+      provider: 'comfly', modelRoute: 'kling-duration-only', displayName: 'Video duration only', modelId: 'doubao-seedance-2.5',
       capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete',
       constraints: { video: { duration: { mode: 'options', options: [5, 10] }, outputCounts: [1] } },
     }]);
@@ -2654,7 +2697,7 @@ describe('project optimization memory', () => {
       provider: 'comfly',
       modelRoute: 'gpt-image',
       displayName: 'GPT Image',
-      capabilities: ['image_generation', 'async_tasks'],
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
     }]);
     window.novusDesktop = {
       provider: {
@@ -2696,7 +2739,7 @@ describe('project optimization memory', () => {
       modelRoute: 'nano-banana-2-actual-route',
       displayName: 'Nano Banana 2',
       modelId: 'nano-banana-2',
-      capabilities: ['image_generation', 'async_tasks'],
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
     }]);
     window.novusDesktop = {
       provider: {
@@ -2903,7 +2946,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
       displayName: 'GPT Image',
       modelId: 'gpt-image-1',
-      capabilities: ['image_generation', 'async_tasks'],
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
     }]);
     await confirmation;
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
@@ -2965,7 +3008,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
       displayName: 'GPT Image',
       modelId: 'gpt-image-1',
-      capabilities: ['image_generation', 'async_tasks'],
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
     }]);
     await confirmation;
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
@@ -3026,7 +3069,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
       displayName: 'GPT Image',
       modelId: 'gpt-image-1',
-      capabilities: ['image_generation', 'async_tasks'],
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
     }]);
     await confirmation;
 
@@ -3083,7 +3126,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
       displayName: 'GPT Image',
       modelId: 'gpt-image-1',
-      capabilities: ['image_generation', 'async_tasks'],
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
     }]);
     await Promise.all([firstConfirmation, secondConfirmation]);
     await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
@@ -3137,7 +3180,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
       displayName: 'GPT Image',
       modelId: 'gpt-image-1',
-      capabilities: ['image_generation', 'async_tasks'],
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
     }]);
     await waitForStore(() => commit.mock.calls.length === 1);
 
@@ -3195,7 +3238,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
       displayName: 'GPT Image',
       modelId: 'gpt-image-1',
-      capabilities: ['image_generation', 'async_tasks'],
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
     }]);
     await waitForStore(() => commit.mock.calls.length === 1);
 
@@ -3809,12 +3852,12 @@ describe('project optimization memory', () => {
         cancelImageJob: vi.fn(),
         configure: vi.fn(),
         getStatus: vi.fn(async () => ({ configured: true, locked: !unlocked, encryption: 'passphrase' as const })),
-        listProfiles: vi.fn(async () => [{
-          provider: 'comfly',
-          modelRoute: 'gpt-image',
-          displayName: 'GPT Image',
-          capabilities: ['image_generation', 'async_tasks'],
-        }]),
+      listProfiles: vi.fn(async () => [{
+        provider: 'comfly',
+        modelRoute: 'gpt-image',
+        displayName: 'GPT Image',
+        capabilities: ['image_generation', 'image_edit', 'async_tasks'],
+      }]),
         pollImageJob,
         submitImageJob,
         unlock,
@@ -6433,6 +6476,13 @@ describe('stable module graph commits', () => {
 
   it('autosaves image-generation draft text and controls before the task is run', async () => {
     const generation = createCanvasModuleNode('image-draft-autosave', 'image_generation', { x: 360, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelRoute: 'old-route',
+      providerDisplayName: 'relayme',
+      modelDisplayName: 'Old model',
+      routeDisplayName: 'Old model',
+    };
     const project = parseCanvasProject({ ...createStarterProject(), nodes: [generation], edges: [] });
     let durableProject = project;
     let revision = 8;
@@ -6456,6 +6506,10 @@ describe('stable module graph commits', () => {
     expect(durableProject.nodes.find((node) => node.id === generation.id)).toMatchObject({
       data: { config: { prompt: 'Durable image prompt', modelRoute: 'image-route', aspectRatio: '4:5', resolution: '2K', outputCount: 2 } },
     });
+    const durableConfig = (durableProject.nodes.find((node) => node.id === generation.id) as typeof generation | undefined)?.data.config;
+    expect(durableConfig).not.toHaveProperty('providerDisplayName');
+    expect(durableConfig).not.toHaveProperty('modelDisplayName');
+    expect(durableConfig).not.toHaveProperty('routeDisplayName');
   });
 
   it('serializes a newer reverse draft behind an in-flight autosave revision', async () => {
@@ -6926,7 +6980,7 @@ function installProviderProfilesForModelJobTests(profiles: ProviderBridgeProfile
   modelRoute: 'image-generation',
   displayName: 'GPT Image',
   modelId: 'gpt-image-1',
-  capabilities: ['image_generation', 'async_tasks'],
+  capabilities: ['image_generation', 'image_edit', 'async_tasks'],
 }]): void {
   window.novusDesktop = {
     provider: {
@@ -6973,7 +7027,7 @@ function createDesktopProviderBridgeForCancel(options: {
         provider: 'comfly',
         modelRoute: 'gpt-image',
         displayName: 'GPT Image',
-        capabilities: ['image_generation', 'async_tasks'],
+        capabilities: ['image_generation', 'image_edit', 'async_tasks'],
       }]),
       pollImageJob: options.pollImageJob,
       submitImageJob: vi.fn(async () => ({ providerTaskId: options.providerTaskId })),
@@ -7394,8 +7448,75 @@ describe('agent generation model selection', () => {
     } as unknown as AgentCanvasPlan;
     const profiles = [
       { provider: 'comfly', modelRoute: 'image/route', displayName: 'Image', modelId: 'image', capabilities: ['image_generation'] },
-      { provider: 'comfly', modelRoute: 'video/route', displayName: 'Video', modelId: 'video', capabilities: ['video_generation'] },
+      { provider: 'comfly', modelRoute: 'video/route', displayName: 'Video', modelId: 'veo3.1', capabilities: ['video_generation'] },
     ] as unknown as ProviderBridgeProfile[];
     expect(filterGenerationModelProfiles(profiles, plan).map((profile) => profile.modelRoute)).toEqual(['video/route']);
+  });
+  it('filters referenced video plans to the verified Comfly reference transport', () => {
+    const generation = createCanvasModuleNode('reference-video-plan-node', 'video_generation', { x: 0, y: 0 });
+    generation.data.config = { ...generation.data.config, referenceAssetIds: ['a'.repeat(16)] };
+    const plan = {
+      transaction: { operations: [{ kind: 'create_node', node: generation }] },
+    } as unknown as AgentCanvasPlan;
+    const profiles = [
+      { provider: 'relayme', modelRoute: 'video/relay', displayName: 'Relay video', modelId: 'relay-video', capabilities: ['video_generation'] },
+      { provider: 'comfly', modelRoute: 'video/text', displayName: 'Comfly text video', modelId: 'wan2.2-t2v-plus', capabilities: ['video_generation'] },
+      { provider: 'comfly', modelRoute: 'video/one-frame', displayName: 'Comfly image video', modelId: 'wan2.2-i2v-plus', capabilities: ['video_generation'] },
+      { provider: 'comfly', modelRoute: 'video/two-frame', displayName: 'Comfly keyframe video', modelId: 'wanx2.1-kf2v-plus', capabilities: ['video_generation'] },
+    ] as unknown as ProviderBridgeProfile[];
+    expect(filterGenerationModelProfiles(profiles, plan).map((profile) => profile.modelRoute)).toEqual(['video/one-frame']);
+  });
+  it('filters image plans with references to routes that can consume reference images', () => {
+    const generation = createCanvasModuleNode('reference-image-plan-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = { ...generation.data.config, referenceAssetIds: ['a'.repeat(16)] };
+    const plan = {
+      transaction: { operations: [{ kind: 'create_node', node: generation }] },
+    } as unknown as AgentCanvasPlan;
+    const profiles = [
+      { provider: 'comfly', modelRoute: 'image/text-only', displayName: 'Text only', modelId: 'text-only', capabilities: ['image_generation'] },
+      { provider: 'comfly', modelRoute: 'image/edit', displayName: 'Image edit', modelId: 'image-edit', capabilities: ['image_generation', 'image_edit'] },
+      { provider: 'comfly', modelRoute: 'image/gemini', displayName: 'Gemini native', modelId: 'gemini-image', capabilities: ['image_generation', 'gemini_native'] },
+    ] as unknown as ProviderBridgeProfile[];
+    expect(filterGenerationModelProfiles(profiles, plan).map((profile) => profile.modelRoute)).toEqual(['image/edit', 'image/gemini']);
+  });
+  it('filters review-only Agent plans by the confirmed reference snapshot', () => {
+    const plan = {
+      transaction: { operations: [] },
+      referenceSnapshot: {
+        projectRevision: 7,
+        fingerprint: 'snapshot-with-reference',
+        references: [{ assetId: 'a'.repeat(16) }],
+      },
+    } as unknown as AgentCanvasPlan;
+    const profiles = [
+      { provider: 'comfly', modelRoute: 'image/text-only', displayName: 'Text only', modelId: 'text-only', capabilities: ['image_generation'] },
+      { provider: 'comfly', modelRoute: 'image/edit', displayName: 'Image edit', modelId: 'image-edit', capabilities: ['image_generation', 'image_edit'] },
+      { provider: 'comfly', modelRoute: 'image/gemini', displayName: 'Gemini native', modelId: 'gemini-image', capabilities: ['image_generation', 'gemini_native'] },
+    ] as unknown as ProviderBridgeProfile[];
+
+    expect(filterGenerationModelProfiles(profiles, plan).map((profile) => profile.modelRoute)).toEqual(['image/edit', 'image/gemini']);
+  });
+  it('rejects a direct image-node run with references when the selected route is text-only', async () => {
+    const generation = createCanvasModuleNode('reference-image-run-node', 'image_generation', { x: 0, y: 0 });
+    const asset = {
+      assetId: 'a'.repeat(16), byteSize: 3, extension: 'png' as const, height: 1, label: 'Reference',
+      mediaType: 'image/png' as const, origin: 'imported' as const, sha256: 'a'.repeat(64), width: 1,
+    };
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [generation], edges: [], assets: [asset] });
+    const submitImageJob = vi.fn();
+    window.novusDesktop = { provider: {
+      getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+      listProfiles: vi.fn(async () => [{
+        provider: 'comfly' as const, modelRoute: 'image/text-only', displayName: 'Text only', modelId: 'text-only', capabilities: ['image_generation' as const],
+      }]),
+      submitImageJob,
+    } } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+    useAppStore.setState({ project, persistenceMode: 'desktop', projectLifecycle: 'durable', saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'image/text-only', prompt: 'Edit the reference', referenceAssetIds: [asset.assetId], outputCount: 1,
+    })).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED', message: expect.stringContaining('reference images') });
+    expect(submitImageJob).not.toHaveBeenCalled();
   });
 });

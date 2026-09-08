@@ -244,6 +244,98 @@ describe('SkillChatWorkbench', () => {
     expect(await screen.findByLabelText('生成执行进度')).toHaveTextContent('结果已生成，但尚未回写画布');
   });
 
+  it('does not allow a fixed generation preference before its model directory is available', () => {
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/only', displayName: 'Chat only', capabilities: ['chat'] }],
+    });
+    fireEvent.click(screen.getByRole('button', { name: '生成偏好' }));
+    expect(screen.getByRole('option', { name: '固定模型与参数' })).toBeDisabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('请先在设置中配置图片生成模型');
+  });
+
+  it('auto-switches an incompatible fixed image preference for references and keeps compatible routes selectable', async () => {
+    window.localStorage.setItem('agent-canvas:generation-preferences:v1:project-a', JSON.stringify({
+      kind: 'image',
+      image: { mode: 'fixed', modelRoute: 'image/only', parameters: { resolution: '4K' } },
+      video: { mode: 'auto', parameters: {} },
+    }));
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        summary: '参考图生图方案',
+        observations: ['保留主体'],
+        estimates: [],
+        unknowns: [],
+        options: [{ id: 'edit', title: '参考图编辑', reason: '保留主体', kind: 'image', prompt: '保持主体并调整背景', modelRoute: 'image/only' }],
+      }),
+      modelRoute: 'chat/vision',
+      sources: [],
+    }));
+    const imageOnly = { ...profiles[1]!, modelRoute: 'image/only', displayName: 'Image only', capabilities: ['image_generation'] as ProviderBridgeProfile['capabilities'] };
+    const imageEdit = { ...profiles[1]!, modelRoute: 'image/edit', displayName: 'Image edit', capabilities: ['image_generation', 'image_edit'] as ProviderBridgeProfile['capabilities'] };
+    const geminiNative = { ...profiles[1]!, modelRoute: 'image/gemini', displayName: 'Gemini native', capabilities: ['image_generation', 'gemini_native'] as ProviderBridgeProfile['capabilities'] };
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', displayName: 'Vision chat', capabilities: ['chat', 'vision'] }, imageOnly, imageEdit, geminiNative],
+      referenceImages: [{ assetId: 'a'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/product' }],
+      executeCanvasAction,
+      chat,
+    });
+
+    window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'a'.repeat(16) } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 生成一张参考图编辑' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({ referenceAssetIds: ['a'.repeat(16)] })));
+
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：参考图编辑' }));
+    const modelSelect = screen.getByRole('combobox', { name: '选择生图模型' });
+    expect(modelSelect).toBeEnabled();
+    expect(modelSelect).toHaveValue('image/edit');
+    expect(screen.getByText(/固定模型不支持参考素材，已自动切换到兼容路线/u)).toBeVisible();
+    fireEvent.change(modelSelect, { target: { value: 'image/gemini' } });
+    expect(modelSelect).toHaveValue('image/gemini');
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith(expect.objectContaining({ modelRoute: 'image/gemini', createNode: true })));
+  });
+
+  it('does not create a RelayMe video node when a creative option includes a reference image', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({
+      message: JSON.stringify({
+        summary: '参考图视频方案',
+        observations: ['保留主体'],
+        estimates: [],
+        unknowns: [],
+        options: [{ id: 'video', title: '参考图运镜', reason: '保持产品一致', kind: 'video', prompt: '围绕产品运镜', modelRoute: 'video/relay' }],
+      }),
+      modelRoute: 'chat/vision',
+      sources: [],
+    }));
+    renderWorkbench({
+      profiles: [
+        { ...profiles[0]!, modelRoute: 'chat/vision', displayName: 'Vision chat', capabilities: ['chat', 'vision'] },
+        { provider: 'relayme', modelRoute: 'video/relay', displayName: 'Relay video', modelId: 'relay-video', capabilities: ['video_generation', 'async_tasks'] },
+      ],
+      referenceImages: [{ assetId: 'v'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/video-product' }],
+      executeCanvasAction,
+      chat,
+    });
+
+    window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'v'.repeat(16) } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 生成参考图视频' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    expect(JSON.stringify(chat.mock.calls[0]?.[0]?.messages)).not.toContain('video/relay');
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：参考图运镜' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前参考素材需要支持参考图输入的视频生成模型');
+    expect(screen.queryByLabelText('待确认画布操作')).not.toBeInTheDocument();
+    expect(executeCanvasAction).not.toHaveBeenCalled();
+  });
+
   it('explains a local save permission failure before an Agent node can be created', async () => {
     const executeCanvasAction = vi.fn(async () => {
       throw Object.assign(new Error('Project commit failed'), { code: 'PERMISSION_DENIED' });
@@ -1549,7 +1641,7 @@ describe('SkillChatWorkbench', () => {
     const chat = vi.fn(async () => ({ message: '结构化反推结果', modelRoute: 'chat/vision', sources: [] }));
     const draftWorkflowFromAnalysis = vi.fn();
     renderWorkbench({
-      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }, profiles[1]!],
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }],
       referenceImages: [
         { assetId: 'a'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/product' },
         { assetId: 'b'.repeat(16), label: '场景参考', displayUrl: 'novus-project://asset/scene' },

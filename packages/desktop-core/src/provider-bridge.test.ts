@@ -1327,6 +1327,110 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('repairs a cached Gemini 3.1 image profile whose Comfly edit capability was omitted', async () => {
+    const appDataRoot = await makeTempRoot();
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch: vi.fn(),
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-gemini-3-1-flash-image-preview',
+        modelId: 'gemini-3.1-flash-image-preview',
+        displayName: 'Nano Banana 2',
+        capabilities: ['image_generation', 'chat'],
+      }],
+    });
+
+    await expect(service.listProfiles()).resolves.toEqual([
+      expect.objectContaining({
+        modelRoute: 'comfly-gemini-3-1-flash-image-preview',
+        capabilities: expect.arrayContaining(['image_generation', 'image_edit', 'chat']),
+      }),
+    ]);
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('keeps an incomplete cached Gemini 3.1 image profile unavailable for reference editing', async () => {
+    const appDataRoot = await makeTempRoot();
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch: vi.fn(),
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-gemini-3-1-flash-image-preview',
+        modelId: 'gemini-3.1-flash-image-preview',
+        displayName: 'Gemini 3.1 Flash Image',
+        capabilities: ['image_generation'],
+        capabilityStatus: 'incomplete',
+      }],
+    });
+
+    const [profile] = await service.listProfiles();
+    expect(profile).toMatchObject({
+      modelRoute: 'comfly-gemini-3-1-flash-image-preview',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'incomplete',
+    });
+    expect(profile?.capabilities).not.toContain('image_edit');
+    await cleanupTempRoot(appDataRoot);
+  });
+
+  it('submits cached Gemini 3.1 reference images through generations with the native size tier', async () => {
+    const appDataRoot = await makeTempRoot();
+    let postedBody: string | undefined;
+    const fetch = vi.fn(async (url: string, init?: { body?: unknown }) => {
+      if (url.includes('/images/edits')) throw new Error('reference images must not use the edits endpoint');
+      postedBody = init?.body === undefined || init.body === null ? undefined : String(init.body);
+      return jsonResponse({ taskId: 'gemini-reference-task', status: 'queued' });
+    });
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      readManagedGenerationImages: vi.fn(async () => [{
+        bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
+        mediaType: 'image/png' as const,
+      }]),
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-gemini-3-1-flash-image-preview',
+        modelId: 'gemini-3.1-flash-image-preview',
+        displayName: 'Gemini 3.1 Flash Image',
+        capabilities: ['image_generation', 'chat'],
+      }],
+    });
+    await service.configure({ token });
+
+    await expect(service.submitImageJob({
+      jobId: 'gemini-reference-job-33333333333333333333333333333333',
+      provider: 'comfly',
+      modelRoute: 'comfly-gemini-3-1-flash-image-preview',
+      prompt: 'Use the selected reference image.',
+      conversationId: 'conversation-gemini-reference',
+      sessionId: 'desktop-session-gemini-reference',
+      referenceAssetIds: ['1'.repeat(16)],
+      aspectRatio: '16:9',
+      resolution: '4K',
+      outputCount: 1,
+    })).resolves.toEqual({ providerTaskId: expect.stringMatching(/^provider-job-/u) });
+
+    expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/images/generations', expect.anything());
+    const requestBody = JSON.parse(postedBody ?? '{}') as Record<string, unknown>;
+    expect(requestBody).toMatchObject({
+      model: 'gemini-3.1-flash-image-preview',
+      image_size: '4K',
+      image: ['data:image/png;base64,iVBORw=='],
+    });
+    expect(requestBody).not.toHaveProperty('size');
+    expect(fetch.mock.calls.some(([url]) => url.includes('/images/edits'))).toBe(false);
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('executes a dynamically discovered Comfly image model immediately after the key is saved', async () => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn(async (url: string) => {

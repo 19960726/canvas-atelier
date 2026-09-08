@@ -17,9 +17,13 @@ export function parseCreativePlan(message: string): CreativePlan | null {
     return { summary: source.summary, observations: strings(source.observations), estimates: strings(source.estimates), unknowns: strings(source.unknowns), options };
   } catch { return null; }
 }
-export function creativePlanningInstructions(preferences: GenerationPreferences, profiles: readonly ProviderBridgeProfile[]): string {
+export function creativePlanningInstructions(
+  preferences: GenerationPreferences,
+  profiles: readonly ProviderBridgeProfile[],
+  referenceCount = 0,
+): string {
   const routes = (['image', 'video'] as const).map((kind) => {
-    const candidates = generationProfiles(profiles, kind);
+    const candidates = generationProfiles(profiles, kind, referenceCount);
     const fixed = candidates.find((profile) => profile.modelRoute === preferences[kind].modelRoute);
     const ordered = fixed ? [fixed, ...candidates.filter((profile) => profile !== fixed)] : candidates;
     const models: { route: string; name: string; parameters: unknown }[] = [];
@@ -38,6 +42,7 @@ export function creativePlanningInstructions(preferences: GenerationPreferences,
     '区分 observations（观察）、estimates（估计，含依据）、unknowns（未知）。需求不足以形成方案时，用普通文字询问缺失信息，不编造可执行方案。',
     '图片/视频生成需求明确时，返回纯 JSON：{"summary":"需求与取舍摘要","observations":[],"estimates":[],"unknowns":[],"options":[{"id":"option-1","title":"方案名称","reason":"适用原因","kind":"image 或 video","prompt":"完整具体可执行的提示词","modelRoute":"从可用生成模型中选择"}]}。提供1至3个有实质差异的方案，不能用相同提示词填充。',
     `用户未指定产物时的偏好：${preferences.kind}。明确的图片或视频要求优先。固定模型与参数必须遵守，可用目录：${JSON.stringify(routes)}`,
+    ...(referenceCount > 0 ? ['本次请求含有参考图，图片方案只能引用支持 image_edit 或 gemini_native 的路线；视频方案必须匹配参考图数量对应的输入模式。'] : []),
     '聊天模型只负责规划。选项中只引用生成目录的路线，不能使用聊天路线。没有可用生成模型时给出建议并说明需配置，不能声称可以执行。',
   ].join('\n');
 }

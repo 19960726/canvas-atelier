@@ -219,7 +219,11 @@ function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Recor
 }
 
 function isNanoBananaImageModel(model: string): boolean {
-  return /^nano-banana-(?:2|pro)(?:-(?:2k|4k))?$/iu.test(model.trim());
+  // Comfly exposes Gemini 3.1 Flash Image through the same image-generation
+  // contract as Nano Banana. Preserve the provider's resolution tier instead
+  // of converting 2K/4K to the generic size field (or rejecting native 4K).
+  if (/^gemini-3\.1-flash-image-preview(?:-(?:512px|2k|4k))?$/u.test(model)) return true;
+  return /^nano-banana-(?:2|pro)(?:-(?:2k|4k))?$/u.test(model.trim().toLocaleLowerCase());
 }
 export class ComflyClient {
   private readonly baseUrl: string;

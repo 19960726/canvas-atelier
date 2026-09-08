@@ -7,6 +7,7 @@ import {
   MAX_GENERATION_REFERENCES,
   reversePromptResultSchema,
   sanitizeModelJobError,
+  supportsVerifiedComflyVideoInputMode,
   type CanvasModuleDefinition,
   type CanvasModuleNodeData,
   type CanvasModulePortDefinition,
@@ -729,13 +730,20 @@ function VideoGenerationSummary({
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
-  const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>([]);
+  const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>(() => readStringArray(config.referenceAssetIds));
   const referenceAssetIds = connectedMedia.filter((item) => item.kind === 'image').map((item) => item.assetId);
   const sourceVideoAssetId = connectedMedia.find((item) => item.kind === 'video')?.assetId;
-  const compatibleRoutes = useMemo(
+  const effectiveReferenceAssetIds = mergeAssetIds(referenceAssetIds, mentionedReferenceAssetIds);
+  const videoGenerationRoutes = useMemo(
     () => dedupeVisibleModelRoutes(routes.filter((route) => route.capabilities.includes('video_generation'))),
     [routes],
   );
+  const compatibleRoutes = useMemo(() => {
+    if (sourceVideoAssetId !== undefined) return [];
+    if (effectiveReferenceAssetIds.length === 0) return videoGenerationRoutes;
+    return videoGenerationRoutes.filter((route) => route.provider === 'comfly'
+      && supportsVerifiedComflyVideoInputMode(route.modelId ?? route.modelRoute, effectiveReferenceAssetIds.length));
+  }, [effectiveReferenceAssetIds, sourceVideoAssetId, videoGenerationRoutes]);
   const [modelRoute, setModelRoute] = useExternallyHydratedDraftState(readNonEmptyString(config.modelRoute) ?? compatibleRoutes[0]?.modelRoute ?? '');
   const [aspectRatio, setAspectRatio] = useExternallyHydratedDraftState(readNonEmptyString(config.aspectRatio) ?? '16:9');
   const [keyframe, setKeyframe] = useExternallyHydratedDraftState(readNonEmptyString(config.keyframe) ?? 'auto');
@@ -770,11 +778,22 @@ function VideoGenerationSummary({
     if (!videoOutputCountOptions.includes(outputCount)) setOutputCount(videoOutputCountOptions[0] ?? 1);
   }, [modelRoute, videoOptionsKey]);
   useEffect(() => {
-    if (compatibleRoutes.length === 0) return;
+    if (compatibleRoutes.length === 0) {
+      // An empty catalog is also the normal loading/unconfigured state. Keep a
+      // saved route in that case so merely opening a project cannot rewrite it.
+      // Clear only when the currently attached media proves every listed route
+      // incompatible with this request.
+      const inputProvesRouteIncompatible = sourceVideoAssetId !== undefined
+        || (effectiveReferenceAssetIds.length > 0 && videoGenerationRoutes.length > 0);
+      if (inputProvesRouteIncompatible) {
+        setModelRoute((current) => current.length === 0 ? current : '');
+      }
+      return;
+    }
     setModelRoute((current) => compatibleRoutes.some((route) => route.modelRoute === current)
       ? current
       : compatibleRoutes[0]?.modelRoute ?? '');
-  }, [compatibleRoutes]);
+  }, [compatibleRoutes, effectiveReferenceAssetIds.length, sourceVideoAssetId, videoGenerationRoutes.length]);
   useEffect(() => {
     const draft = {
       prompt,
@@ -928,7 +947,11 @@ function VideoGenerationSummary({
             }} />}
           </section>
 
-          {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
+          {sourceVideoAssetId !== undefined
+            ? <p className="module-node__agent-notice" role="alert">当前版本尚无支持视频作为生成输入的模型，请断开视频素材后再生成。</p>
+            : compatibleRoutes.length === 0 && effectiveReferenceAssetIds.length > 0
+              ? <p className="module-node__agent-notice" role="alert">当前参考图数量没有兼容的视频生成模型，请调整参考图或切换供应商。</p>
+              : compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
           <div className="module-node__generation-control-bar module-node__video-control-bar" aria-label="Video preview parameter controls" onPointerDownCapture={clearBrowserSelection}>
             <GenerationModelPicker
               routes={compatibleRoutes}
@@ -980,7 +1003,7 @@ function VideoGenerationSummary({
               className={`module-node__run-generation nodrag nopan${activeJobId === undefined ? '' : ' is-cancelling'}`}
               type="button"
               aria-label={activeJobId === undefined ? '生成视频' : '停止生成'}
-              disabled={activeJobId === undefined && (prompt.trim().length === 0 || modelRoute.length === 0)}
+              disabled={activeJobId === undefined && (prompt.trim().length === 0 || !compatibleRoutes.some((route) => route.modelRoute === modelRoute))}
               onClick={() => {
                 if (activeJobId !== undefined) {
                   void onCancel(activeJobId);
@@ -989,7 +1012,7 @@ function VideoGenerationSummary({
                 setRunError(null);
                 void onRun(id, {
                   prompt: prompt.trim(),
-                  referenceAssetIds: mergeAssetIds(referenceAssetIds, mentionedReferenceAssetIds),
+                  referenceAssetIds: effectiveReferenceAssetIds,
                   modelRoute,
                   aspectRatio: aspectRatio === 'Auto'
                     ? resolveAutomaticVideoAspectRatio(connectedMedia, projectImages, projectVideos) ?? 'Auto'
@@ -1079,9 +1102,16 @@ function ImageGenerationSummary({
   // relying on stale presentation metadata saved on the node.
   const modelJobs = useAppStore((state) => state.modelJobs);
   const latestImageJob = selectLatestGenerationJob(modelJobs, id, 'image');
-  const compatibleRoutes = useMemo(
+  const hasReferenceInput = connectedReferenceAssetIds.length > 0 || mentionedReferenceAssetIds.length > 0;
+  const imageGenerationRoutes = useMemo(
     () => dedupeVisibleModelRoutes(routes.filter((route) => route.capabilities.includes('image_generation'))),
     [routes],
+  );
+  const compatibleRoutes = useMemo(
+    () => hasReferenceInput
+      ? imageGenerationRoutes.filter((route) => route.capabilities.includes('image_edit') || route.capabilities.includes('gemini_native'))
+      : imageGenerationRoutes,
+    [hasReferenceInput, imageGenerationRoutes],
   );
   const [localGenerationStartedAt, setLocalGenerationStartedAt] = useState<string | null>(null);
   const [modelRoute, setModelRoute] = useExternallyHydratedDraftState(
@@ -1202,9 +1232,12 @@ function ImageGenerationSummary({
       ? selectedModelRoute
       : preferredImageGenerationRoute(compatibleRoutes)?.modelRoute ?? '';
     const runnableRoute = compatibleRoutes.find((route) => route.modelRoute === runnableModelRoute);
-    if (runnableRoute?.provider === 'relayme' && referenceAssetIds.length > 0) {
+    const selectedConfiguredRoute = imageGenerationRoutes.find((route) => route.modelRoute === selectedModelRoute);
+    if (referenceAssetIds.length > 0 && runnableRoute === undefined) {
       setLocalGenerationStartedAt(null);
-      setRunError('RelayMe 当前不支持参考图生图，请选择 Comfly 模型或断开参考图。');
+      setRunError(selectedConfiguredRoute?.provider === 'relayme'
+        ? 'RelayMe 当前不支持参考图生图，请选择 Comfly 模型或断开参考图。'
+        : '当前参考图任务需要支持图片编辑的模型，请切换模型或断开参考图。');
       return;
     }
     setLocalGenerationStartedAt(new Date().toISOString());

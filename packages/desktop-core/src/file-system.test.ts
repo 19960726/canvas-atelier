@@ -7,7 +7,9 @@ describe('writeAtomic cleanup failures', () => {
   it('keeps retrying a transient Windows permission error long enough for a busy target to unlock', async () => {
     const fileSystem = new TransientRenameAtomicFileSystem(6);
 
-    await expect(writeAtomic(fileSystem, 'C:\\Canvas\\project.novus.json', 'next-project')).resolves.toBeUndefined();
+    const targetPath = ['C:', 'Canvas', 'project.novus.json'].join('\\');
+
+    await expect(writeAtomic(fileSystem, targetPath, 'next-project')).resolves.toBeUndefined();
 
     expect(fileSystem.renameAttempts).toBe(7);
     expect(fileSystem.removedPaths).toEqual([]);

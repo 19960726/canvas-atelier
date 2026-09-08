@@ -34,7 +34,7 @@ import {
 import { parseReverseAnalysisResponse, type ReverseAnalysisResult } from './reverse-workflow-contract';
 import { GenerationPreferencesSheet } from './GenerationPreferencesSheet';
 import { CodexReasoningPopover } from './CodexReasoningPopover';
-import { readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
+import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
 import { creativePlanningInstructions, parseCreativePlan, type CreativePlanOption } from './creative-plan';
 
 type SkillMessage = {
@@ -850,7 +850,7 @@ export function SkillChatWorkbench({
     }
     const visualAnalysis = shouldUseVisualAnalysis(agentMode, content, selectedReferences.length);
     const planning = agentMode === 'original';
-    const planningInstructions = planning ? creativePlanningInstructions(generationPreferences, profiles) : '';
+    const planningInstructions = planning ? creativePlanningInstructions(generationPreferences, profiles, selectedReferences.length) : '';
     if (content.length + planningInstructions.length + 2 > 16000) {
       setError('消息过长，请分段发送。');
       return;
@@ -941,7 +941,7 @@ export function SkillChatWorkbench({
 
   const chooseCreativeOption = (messageId: string, option: CreativePlanOption, references: readonly { assetId: string }[]) => {
     try {
-      const { profile, parameters } = resolveGenerationPreference(option.kind, generationPreferences, profiles, option.modelRoute);
+      const { profile, parameters } = resolveGenerationPreference(option.kind, generationPreferences, profiles, option.modelRoute, references.length);
       const kind = `${option.kind}_generation` as const;
       setPendingCanvasAction({ kind, nodeId: `agent-${option.kind}-${createMessageId()}`, createNode: true, projectId, prompt: option.prompt, modelRoute: profile.modelRoute, parameters, referenceAssetIds: references.map((item) => item.assetId) });
       setSelectedCreativeOptionKey(`${messageId}:${option.id}`);
@@ -977,7 +977,7 @@ export function SkillChatWorkbench({
     setError(null);
     try {
       const kind = action.kind === 'video_generation' ? 'video' : 'image';
-      const resolved = resolveGenerationPreference(kind, generationPreferences, profiles, pendingCanvasModelRoute);
+      const resolved = resolveGenerationPreference(kind, generationPreferences, profiles, pendingCanvasModelRoute, action.referenceAssetIds?.length ?? 0);
       const started = await executeCanvasAction({ ...action, modelRoute: resolved.profile.modelRoute, parameters: resolved.parameters });
       if (!mounted.current || epoch !== conversationEpoch.current) return;
       if (!started) {
@@ -1031,6 +1031,22 @@ export function SkillChatWorkbench({
     }
     if (mounted.current) setSentImageCopyFeedback(copied ? 'success' : failure);
   };
+
+  const pendingCanvasActionKind = pendingCanvasAction?.kind === 'video_generation' ? 'video' : 'image';
+  const pendingCanvasActionNeedsReferences = pendingCanvasAction !== null
+    && pendingCanvasAction.kind !== 'reverse_agent'
+    && (pendingCanvasAction.referenceAssetIds?.length ?? 0) > 0;
+  const pendingCanvasActionProfiles = pendingCanvasAction === null
+    ? []
+    : pendingCanvasAction.kind === 'reverse_agent'
+      ? profiles.filter((profile) => profile.capabilityStatus !== 'incomplete' && profile.capabilities.includes('reverse_prompt'))
+      : generationProfiles(profiles, pendingCanvasActionKind, pendingCanvasAction?.referenceAssetIds?.length ?? 0);
+  const pendingCanvasPreference = pendingCanvasAction === null || pendingCanvasAction.kind === 'reverse_agent'
+    ? undefined
+    : generationPreferences[pendingCanvasActionKind];
+  const pendingCanvasFixedRouteIsCompatible = pendingCanvasPreference?.mode !== 'fixed'
+    || pendingCanvasActionProfiles.some((profile) => profile.modelRoute === pendingCanvasPreference.modelRoute);
+  const pendingCanvasModelLocked = pendingCanvasPreference?.mode === 'fixed' && pendingCanvasFixedRouteIsCompatible;
 
   return (
     <section
@@ -1343,7 +1359,7 @@ export function SkillChatWorkbench({
                       let generation: SkillWorkflowDraftRequest['generation'];
                       try {
                         const kind = generationPreferences.kind;
-                        const { profile, parameters } = resolveGenerationPreference(kind, generationPreferences, profiles);
+                        const { profile, parameters } = resolveGenerationPreference(kind, generationPreferences, profiles, undefined, workflowReferences.length);
                         generation = { kind, modelRoute: profile.modelRoute, modelRouteDisplayName: profile.displayName, parameters };
                       } catch (error) { setError(error instanceof Error ? error.message : '请配置生成模型'); return; }
                       draftWorkflowFromAnalysis?.({
@@ -1378,17 +1394,23 @@ export function SkillChatWorkbench({
               <span>等待确认</span>
               <p>{pendingCanvasAction.createNode ? `将新建独立节点并执行${canvasActionLabel(pendingCanvasAction.kind)}` : `将在节点 ${pendingCanvasAction.nodeId} 执行${canvasActionLabel(pendingCanvasAction.kind)}`}。</p>
               <details><summary>查看执行提示词与参数</summary><p>{pendingCanvasAction.prompt}</p><p>{Object.entries(pendingCanvasAction.parameters ?? {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '使用模型默认参数'}</p></details>
-              {profiles.filter((profile) => profile.capabilities.includes(pendingCanvasAction.kind === 'image_generation' ? 'image_generation' : pendingCanvasAction.kind === 'video_generation' ? 'video_generation' : 'reverse_prompt')).length > 0 && (
+              {pendingCanvasActionProfiles.length > 0 && (
                 <label className="skill-chat-workbench__action-model">使用模型
-                  <select aria-label={`选择${canvasActionLabel(pendingCanvasAction.kind)}模型`} disabled={generationPreferences[pendingCanvasAction.kind === 'video_generation' ? 'video' : 'image'].mode === 'fixed'} value={pendingCanvasModelRoute ?? ''} onChange={(event) => setPendingCanvasModelRoute(event.target.value)}>
-                    {profiles.filter((profile) => profile.capabilities.includes(pendingCanvasAction.kind === 'image_generation' ? 'image_generation' : pendingCanvasAction.kind === 'video_generation' ? 'video_generation' : 'reverse_prompt')).map((profile) => <option key={profile.modelRoute} value={profile.modelRoute}>{profile.displayName}</option>)}
+                  <select aria-label={`选择${canvasActionLabel(pendingCanvasAction.kind)}模型`} disabled={pendingCanvasModelLocked} value={pendingCanvasModelRoute ?? ''} onChange={(event) => setPendingCanvasModelRoute(event.target.value)}>
+                    {pendingCanvasActionProfiles.map((profile) => <option key={profile.modelRoute} value={profile.modelRoute}>{profile.displayName}</option>)}
                   </select>
                 </label>
+              )}
+              {pendingCanvasActionNeedsReferences && pendingCanvasPreference?.mode === 'fixed' && !pendingCanvasFixedRouteIsCompatible && pendingCanvasActionProfiles.length > 0 && (
+                <p className="skill-chat-workbench__status" role="status">固定模型不支持参考素材，已自动切换到兼容路线；你可以在这里选择其他兼容模型。</p>
+              )}
+              {pendingCanvasActionProfiles.length === 0 && pendingCanvasActionNeedsReferences && (
+                <p className="skill-chat-workbench__error" role="alert">当前参考素材没有可用的兼容生成模型，请先在生成偏好中配置兼容模型。</p>
               )}
               <section className="skill-chat-workbench__request-card skill-chat-workbench__confirmation-card is-sending">
                 <header><strong>画布操作</strong><span>待确认</span></header>
                 <div className="skill-chat-workbench__confirmation-actions">
-                  <button type="button" className="is-primary" aria-label={`确认执行${canvasActionLabel(pendingCanvasAction.kind)}`} disabled={canvasActionRunning} onClick={() => void confirmCanvasAction()}>{canvasActionRunning ? '正在创建…' : '确认并新建节点'}</button>
+                  <button type="button" className="is-primary" aria-label={`确认执行${canvasActionLabel(pendingCanvasAction.kind)}`} disabled={canvasActionRunning || pendingCanvasActionProfiles.length === 0} onClick={() => void confirmCanvasAction()}>{canvasActionRunning ? '正在创建…' : '确认并新建节点'}</button>
                   <button type="button" className="is-secondary" aria-label="取消画布操作" disabled={canvasActionRunning} onClick={() => { setPendingCanvasAction(null); setSelectedCreativeOptionKey(null); }}>取消</button>
                 </div>
               </section>

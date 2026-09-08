@@ -8,6 +8,8 @@ const RECENT_PROJECT_INDEX_SCHEMA_VERSION = 1;
 const RECENT_PROJECT_INDEX_FILE = 'recent-projects.index.json';
 const PROJECT_MANIFEST_FILE = 'project.novus.json';
 const PROJECT_PREVIEW_FILE = 'preview.png';
+const RECENT_PROJECT_STAT_TIMEOUT_MS = 2_000;
+const RECENT_PROJECT_STAT_QUEUE_LIMIT = 256;
 
 export interface RecentProjectSummary {
   readonly recentProjectId: string;
@@ -47,10 +49,26 @@ interface RecentProjectIndex {
   readonly entries: readonly InternalRecentProjectEntry[];
 }
 
+interface QueuedStatOperation {
+  started: boolean;
+  settled: boolean;
+  readonly execute: () => Promise<void>;
+  readonly cancel: () => void;
+}
+
 export class RecentProjectStore {
   private readonly appDataRoot: string;
   private readonly fileSystem: FileSystem;
   private readonly indexPath: string;
+  // The index is a read-modify-write document. Serialize mutations for this
+  // store instance so simultaneous project sessions cannot overwrite each
+  // other's recent entry with a stale snapshot.
+  private mutationTail: Promise<void> = Promise.resolve();
+  // Windows cannot abort an in-flight fs.stat against an unavailable UNC or
+  // mapped drive. Keep availability probes in one bounded lane so stale recent
+  // entries cannot consume the libuv worker pool used by project persistence.
+  private statOperationActive = false;
+  private readonly statOperationQueue: QueuedStatOperation[] = [];
 
   constructor(options: RecentProjectStoreOptions) {
     if (typeof options.appDataRoot !== 'string' || options.appDataRoot.length === 0) {
@@ -63,16 +81,23 @@ export class RecentProjectStore {
 
   async upsert(input: RecentProjectEntryInput): Promise<readonly RecentProjectSummary[]> {
     const entry = validateRecentProjectEntry(input);
-    const index = await this.readIndex();
-    const recentProjectId = createRecentProjectId(entry.root);
-    const entries = index.entries
-      .filter((existing) => existing.projectId !== entry.projectId && existing.recentProjectId !== recentProjectId)
-      .concat({ ...entry, recentProjectId });
-    await this.writeIndex(entries);
-    return this.list();
+    await this.enqueueMutation(async () => {
+      const index = await this.readIndex();
+      const recentProjectId = createRecentProjectId(entry.root);
+      const entries = index.entries
+        .filter((existing) => existing.projectId !== entry.projectId && existing.recentProjectId !== recentProjectId)
+        .concat({ ...entry, recentProjectId });
+      await this.writeIndex(entries);
+    });
+    return this.readSummaries();
   }
 
   async list(): Promise<readonly RecentProjectSummary[]> {
+    await this.mutationTail;
+    return this.readSummaries();
+  }
+
+  private async readSummaries(): Promise<readonly RecentProjectSummary[]> {
     const index = await this.readIndex();
     const summaries = await Promise.all(index.entries.map((entry) => this.toSummary(entry)));
     return summaries.sort((left, right) => {
@@ -84,13 +109,16 @@ export class RecentProjectStore {
 
   async remove(recentProjectId: string): Promise<readonly RecentProjectSummary[]> {
     assertRecentProjectId(recentProjectId);
-    const index = await this.readIndex();
-    await this.writeIndex(index.entries.filter((entry) => entry.recentProjectId !== recentProjectId));
-    return this.list();
+    await this.enqueueMutation(async () => {
+      const index = await this.readIndex();
+      await this.writeIndex(index.entries.filter((entry) => entry.recentProjectId !== recentProjectId));
+    });
+    return this.readSummaries();
   }
 
   async resolveRoot(recentProjectId: string): Promise<string | null> {
     assertRecentProjectId(recentProjectId);
+    await this.mutationTail;
     const entry = (await this.readIndex()).entries.find((candidate) => candidate.recentProjectId === recentProjectId);
     if (entry === undefined || !(await this.isAvailable(entry.root))) return null;
     return entry.root;
@@ -99,30 +127,37 @@ export class RecentProjectStore {
     const root = await this.resolveRoot(recentProjectId);
     if (root === null) return null;
     const previewPath = join(root, PROJECT_PREVIEW_FILE);
-    return await fileExists(this.fileSystem, previewPath, 'file') ? previewPath : null;
+    return await this.fileExists(previewPath, 'file') ? previewPath : null;
   }
 
   async relocate(recentProjectId: string, root: string): Promise<RecentProjectSummary | null> {
     assertRecentProjectId(recentProjectId);
-    const index = await this.readIndex();
-    const entry = index.entries.find((candidate) => candidate.recentProjectId === recentProjectId);
-    if (entry === undefined) return null;
-    const relocated = validateRecentProjectEntry({ ...entry, root });
-    const nextRecentProjectId = createRecentProjectId(relocated.root);
-    const entries = index.entries
-      .filter((candidate) => candidate.recentProjectId !== recentProjectId && candidate.recentProjectId !== nextRecentProjectId)
-      .concat({ ...relocated, recentProjectId: nextRecentProjectId });
-    await this.writeIndex(entries);
-    return (await this.list()).find((summary) => summary.recentProjectId === nextRecentProjectId) ?? null;
+    const nextRecentProjectId = await this.enqueueMutation(async () => {
+      const index = await this.readIndex();
+      const entry = index.entries.find((candidate) => candidate.recentProjectId === recentProjectId);
+      if (entry === undefined) return null;
+      const relocated = validateRecentProjectEntry({ ...entry, root });
+      const nextId = createRecentProjectId(relocated.root);
+      const entries = index.entries
+        .filter((candidate) => candidate.recentProjectId !== recentProjectId && candidate.recentProjectId !== nextId)
+        .concat({ ...relocated, recentProjectId: nextId });
+      await this.writeIndex(entries);
+      return nextId;
+    });
+    if (nextRecentProjectId === null) return null;
+    return (await this.readSummaries()).find((summary) => summary.recentProjectId === nextRecentProjectId) ?? null;
+  }
+
+  private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationTail.then(operation, operation);
+    this.mutationTail = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   private async toSummary(entry: InternalRecentProjectEntry): Promise<RecentProjectSummary> {
     const availability = await this.isAvailable(entry.root) ? 'available' : 'missing';
-    const previewAvailable = availability === 'available' && await fileExists(
-      this.fileSystem,
-      join(entry.root, PROJECT_PREVIEW_FILE),
-      'file',
-    );
+    const previewPath = join(entry.root, PROJECT_PREVIEW_FILE);
+    const previewAvailable = availability === 'available' && await this.fileExists(previewPath, 'file');
     return {
       recentProjectId: entry.recentProjectId,
       projectId: entry.projectId,
@@ -140,8 +175,88 @@ export class RecentProjectStore {
   }
 
   private async isAvailable(root: string): Promise<boolean> {
-    return await fileExists(this.fileSystem, root, 'directory')
-      && await fileExists(this.fileSystem, join(root, PROJECT_MANIFEST_FILE), 'file');
+    const manifestPath = join(root, PROJECT_MANIFEST_FILE);
+    return this.runStatOperation(async () => {
+      const rootStat = await this.fileSystem.stat(root);
+      if (!rootStat.isDirectory()) return false;
+      return (await this.fileSystem.stat(manifestPath)).isFile();
+    }, false);
+  }
+
+  private fileExists(path: string, kind: 'directory' | 'file'): Promise<boolean> {
+    return this.runStatOperation(async () => {
+      const stat = await this.fileSystem.stat(path);
+      return kind === 'directory' ? stat.isDirectory() : stat.isFile();
+    }, false);
+  }
+
+  private async runStatOperation<T>(operation: () => Promise<T>, fallback: T): Promise<T> {
+    const scheduled = this.scheduleStatOperation(operation, fallback);
+    const timeoutId = globalThis.setTimeout(scheduled.cancel, RECENT_PROJECT_STAT_TIMEOUT_MS);
+    try {
+      return await scheduled.promise;
+    } finally {
+      globalThis.clearTimeout(timeoutId);
+    }
+  }
+
+  private scheduleStatOperation<T>(
+    operation: () => Promise<T>,
+    fallback: T,
+  ): { readonly promise: Promise<T>; readonly cancel: () => void } {
+    let resolveResult!: (value: T) => void;
+    const promise = new Promise<T>((resolve) => { resolveResult = resolve; });
+    let entry!: QueuedStatOperation;
+    const settle = (value: T): void => {
+      if (entry.settled) return;
+      entry.settled = true;
+      resolveResult(value);
+    };
+    entry = {
+      started: false,
+      settled: false,
+      execute: async () => {
+        try {
+          settle(await operation());
+        } catch {
+          settle(fallback);
+        }
+      },
+      cancel: () => {
+        if (entry.settled) return;
+        if (!entry.started) {
+          const index = this.statOperationQueue.indexOf(entry);
+          if (index >= 0) this.statOperationQueue.splice(index, 1);
+        }
+        settle(fallback);
+      },
+    };
+    if (!this.statOperationActive) {
+      this.startStatOperation(entry);
+    } else if (this.statOperationQueue.length < RECENT_PROJECT_STAT_QUEUE_LIMIT) {
+      this.statOperationQueue.push(entry);
+    } else {
+      entry.cancel();
+    }
+    return { promise, cancel: entry.cancel };
+  }
+
+  private startStatOperation(entry: QueuedStatOperation): void {
+    this.statOperationActive = true;
+    entry.started = true;
+    void entry.execute().finally(() => {
+      this.statOperationActive = false;
+      this.startNextStatOperation();
+    });
+  }
+
+  private startNextStatOperation(): void {
+    while (this.statOperationQueue.length > 0) {
+      const next = this.statOperationQueue.shift()!;
+      if (next.settled) continue;
+      this.startStatOperation(next);
+      return;
+    }
   }
 
   private async readIndex(): Promise<RecentProjectIndex> {
@@ -223,16 +338,6 @@ function assertRecentProjectId(value: unknown): asserts value is string {
 
 function isIsoDate(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
-}
-
-async function fileExists(fileSystem: FileSystem, path: string, kind: 'directory' | 'file'): Promise<boolean> {
-  try {
-    const stat = await fileSystem.stat(path);
-    return kind === 'directory' ? stat.isDirectory() : stat.isFile();
-  } catch (error) {
-    if (hasErrno(error, 'ENOENT')) return false;
-    return false;
-  }
 }
 
 function hasErrno(error: unknown, errno: string): boolean {

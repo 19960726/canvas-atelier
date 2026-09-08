@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { parseCreativePlan, creativePlanningInstructions } from './creative-plan';
-import { defaultGenerationPreferences, resolveGenerationPreference, readGenerationPreferences, writeGenerationPreferences } from './generation-preferences';
+import { defaultGenerationPreferences, generationProfiles, resolveGenerationPreference, readGenerationPreferences, writeGenerationPreferences } from './generation-preferences';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
 const profiles: ProviderBridgeProfile[] = [
   { provider: 'comfly', modelRoute: 'chat', displayName: 'Chat', capabilities: ['chat'] },
   { provider: 'comfly', modelRoute: 'image', displayName: 'Image', capabilities: ['image_generation'] },
-  { provider: 'comfly', modelRoute: 'video', displayName: 'Video', capabilities: ['video_generation'], constraints: { video: { aspectRatios: ['16:9'], resolutions: ['720p'], outputCounts: [1], duration: { mode: 'options', options: [4, 8] } } } },
+  { provider: 'comfly', modelRoute: 'video', displayName: 'Video', modelId: 'veo3.1', capabilities: ['video_generation'], constraints: { video: { aspectRatios: ['16:9'], resolutions: ['720p'], outputCounts: [1], duration: { mode: 'options', options: [4, 8] } } } },
 ];
 describe('creative plan boundary', () => {
   it('accepts only model-provided executable choices, preserving evidence labels', () => {
@@ -28,6 +28,15 @@ describe('creative plan boundary', () => {
     expect(text).toContain('不输出隐藏思考');
     expect(text).toContain('video');
   });
+  it('limits image routes in planning instructions when references are present', () => {
+    const text = creativePlanningInstructions(defaultGenerationPreferences(), [
+      ...profiles,
+      { provider: 'comfly', modelRoute: 'image-edit', displayName: 'Image edit', capabilities: ['image_generation', 'image_edit'] as ProviderBridgeProfile['capabilities'] },
+    ], 1);
+    expect(text).toContain('image-edit');
+    expect(text).not.toContain('"route":"image"');
+    expect(text).toContain('本次请求含有参考图');
+  });
   it('bounds the model catalog while retaining the fixed choice', () => {
     const catalog: ProviderBridgeProfile[] = Array.from({ length: 120 }, (_, i) => ({ provider: 'comfly', modelRoute: `image-${i}`, displayName: 'Model '.repeat(30), capabilities: ['image_generation'] }));
     const prefs = defaultGenerationPreferences();
@@ -41,12 +50,44 @@ describe('separate generation preferences', () => {
   it('resolves video auto choice by capability and never picks the chat route', () => {
     expect(resolveGenerationPreference('video', defaultGenerationPreferences(), profiles, 'chat').profile.modelRoute).toBe('video');
   });
+  it('filters referenced video choices by the exact Comfly input mode', () => {
+    const routes: ProviderBridgeProfile[] = [
+      { provider: 'comfly', modelRoute: 'wan/t2v', modelId: 'wan2.2-t2v-plus', displayName: 'Wan text', capabilities: ['video_generation'] },
+      { provider: 'comfly', modelRoute: 'wan/i2v', modelId: 'wan2.2-i2v-plus', displayName: 'Wan image', capabilities: ['video_generation'] },
+      { provider: 'comfly', modelRoute: 'wan/kf2v', modelId: 'wanx2.1-kf2v-plus', displayName: 'Wan keyframe', capabilities: ['video_generation'] },
+      { provider: 'comfly', modelRoute: 'veo/one', modelId: 'veo3-pro-frames', displayName: 'Veo one frame', capabilities: ['video_generation'] },
+      { provider: 'comfly', modelRoute: 'veo/two', modelId: 'veo2-fast-frames', displayName: 'Veo two frames', capabilities: ['video_generation'] },
+    ];
+    expect(generationProfiles(routes, 'video', 1).map((profile) => profile.modelRoute)).toEqual(['wan/i2v', 'veo/one', 'veo/two']);
+    expect(generationProfiles(routes, 'video', 2).map((profile) => profile.modelRoute)).toEqual(['wan/kf2v', 'veo/two']);
+  });
   it('blocks missing fixed model and unsupported parameters instead of silently changing either', () => {
     const prefs = defaultGenerationPreferences();
     prefs.video = { mode: 'fixed', modelRoute: 'gone', parameters: {} };
     expect(() => resolveGenerationPreference('video', prefs, profiles)).toThrow();
     prefs.video = { mode: 'fixed', modelRoute: 'video', parameters: { durationSeconds: 99 } };
     expect(() => resolveGenerationPreference('video', prefs, profiles)).toThrow();
+  });
+  it('recovers a fixed preference saved before the model directory loaded', () => {
+    const prefs = defaultGenerationPreferences();
+    prefs.image = { mode: 'fixed', parameters: { resolution: '4K' } };
+    expect(resolveGenerationPreference('image', prefs, profiles, 'image')).toEqual({
+      profile: profiles[1],
+      parameters: {},
+    });
+  });
+  it('chooses a reference-capable image route when the request includes reference images', () => {
+    const imageOnly = profiles.find((profile) => profile.modelRoute === 'image')!;
+    const imageEdit: ProviderBridgeProfile = { ...imageOnly, modelRoute: 'image-edit', capabilities: ['image_generation', 'image_edit'] };
+    expect(resolveGenerationPreference('image', defaultGenerationPreferences(), [imageOnly, imageEdit], undefined, 1).profile.modelRoute)
+      .toBe('image-edit');
+    const fixedIncompatible = resolveGenerationPreference('image', { ...defaultGenerationPreferences(), image: { mode: 'fixed', modelRoute: 'image', parameters: {} } }, [imageOnly, imageEdit], undefined, 1);
+    expect(fixedIncompatible.profile.modelRoute).toBe('image-edit');
+    expect(fixedIncompatible.parameters).toEqual({});
+  });
+  it('reports a clear error when no image route can accept reference images', () => {
+    expect(() => resolveGenerationPreference('image', defaultGenerationPreferences(), profiles, undefined, 1))
+      .toThrow(/参考图需要支持图像编辑/u);
   });
   it('persists image and video preferences independently for each project', () => {
     const prefs = defaultGenerationPreferences();

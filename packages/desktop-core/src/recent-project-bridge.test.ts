@@ -171,6 +171,154 @@ describe('recent project desktop bridge', () => {
     }
   });
 
+  it('waits for the latest recent-project metadata write before a saved project closes', async () => {
+    const projectRoot = 'C:\\private\\RecentClose.novus-project';
+    const openedSession = createOpenedSession(projectRoot);
+    let recentWriteCount = 0;
+    let releaseLatestWrite!: () => void;
+    let reportLatestWriteStarted!: () => void;
+    const latestWriteStarted = new Promise<void>((resolve) => { reportLatestWriteStarted = resolve; });
+    const latestWriteGate = new Promise<void>((resolve) => { releaseLatestWrite = resolve; });
+    const upsert = vi.fn(async () => {
+      recentWriteCount += 1;
+      if (recentWriteCount > 1) {
+        reportLatestWriteStarted();
+        await latestWriteGate;
+      }
+      return [summary];
+    });
+    const close = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      createId: () => 'session-recent-close',
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      recentProjectStore: createRecentProjectStoreStub({ upsert }),
+      repository: {
+        close,
+        open: vi.fn(async () => openedSession),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn(async () => ({
+          committedAt: '2026-08-10T09:00:01.000Z',
+          projectId: project.id,
+          revision: 1,
+          sequence: 1,
+          transactionId: 'recent-close-commit',
+        })) })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 0),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(async () => ({ path: 'snapshots/stable.json.gz', reason: 'stable_point' as const, revision: 1, snapshotId: 'stable-recent-close' })),
+      } as never,
+    });
+
+    const opened = await handlers.openProject({}, { mode: 'write' });
+    await handlers.commit({}, {
+      baseRevision: 0,
+      kind: 'canvas',
+      projectId: project.id,
+      sessionId: opened!.sessionId,
+      transaction: {
+        id: 'recent-close-commit',
+        label: 'create saved prompt',
+        operations: [{
+          kind: 'canvas',
+          operation: {
+            kind: 'create_node',
+            node: { id: 'saved-prompt', type: 'prompt', position: { x: 0, y: 0 }, data: { prompt: 'saved', requirementIds: [] } },
+          },
+        }],
+      },
+    });
+    await latestWriteStarted;
+
+    const closing = handlers.closeProject({}, { sessionId: opened!.sessionId });
+    const closedBeforeLatestMetadata = await Promise.race([
+      closing.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30)),
+    ]);
+    releaseLatestWrite();
+    await closing;
+    expect(closedBeforeLatestMetadata).toBe(false);
+    expect(close).toHaveBeenCalledOnce();
+    expect(upsert).toHaveBeenLastCalledWith(expect.objectContaining({ nodeCount: 1 }));
+  });
+
+  it('releases a saved project when the auxiliary recent-project write never settles', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const projectRoot = 'C:\\private\\RecentCloseTimeout.novus-project';
+    const openedSession = createOpenedSession(projectRoot);
+    let recentWriteCount = 0;
+    let releaseLatestWrite!: () => void;
+    let reportLatestWriteStarted!: () => void;
+    const latestWriteStarted = new Promise<void>((resolve) => { reportLatestWriteStarted = resolve; });
+    const latestWriteGate = new Promise<void>((resolve) => { releaseLatestWrite = resolve; });
+    const upsert = vi.fn(async () => {
+      recentWriteCount += 1;
+      if (recentWriteCount > 1) {
+        reportLatestWriteStarted();
+        await latestWriteGate;
+      }
+      return [summary];
+    });
+    const close = vi.fn(async () => undefined);
+    const handlers = createDesktopBridgeHandlers({
+      createId: () => 'session-recent-close-timeout',
+      fileSystem: { stat: vi.fn(async () => ({ size: 0 })) } as never,
+      knowledgeStore: { listStagedKnowledgeTransitions: vi.fn(async () => []) } as never,
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      recentProjectStore: createRecentProjectStoreStub({ upsert }),
+      repository: {
+        close,
+        open: vi.fn(async () => openedSession),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn(async () => ({
+          committedAt: '2026-08-10T09:00:01.000Z',
+          projectId: project.id,
+          revision: 1,
+          sequence: 1,
+          transactionId: 'recent-close-timeout-commit',
+        })) })),
+        readCurrentProject: vi.fn(async () => project),
+        readCurrentRevision: vi.fn(async () => 0),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => null),
+        flush: vi.fn(async () => ({ path: 'snapshots/stable.json.gz', reason: 'stable_point' as const, revision: 1, snapshotId: 'stable-recent-close-timeout' })),
+      } as never,
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      await handlers.commit({}, {
+        baseRevision: 0,
+        kind: 'canvas',
+        projectId: project.id,
+        sessionId: opened!.sessionId,
+        transaction: {
+          id: 'recent-close-timeout-commit',
+          label: 'create saved prompt',
+          operations: [{
+            kind: 'canvas',
+            operation: {
+              kind: 'create_node',
+              node: { id: 'saved-timeout-prompt', type: 'prompt', position: { x: 0, y: 0 }, data: { prompt: 'saved', requirementIds: [] } },
+            },
+          }],
+        },
+      });
+      await latestWriteStarted;
+
+      const closing = handlers.closeProject({}, { sessionId: opened!.sessionId });
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(2_001);
+      await expect(closing).resolves.toBeUndefined();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      releaseLatestWrite();
+      vi.useRealTimers();
+    }
+  });
+
   it('opens an opaque recent-project id without asking the renderer for a native path', async () => {
     const projectRoot = 'C:\\private\\Recent.novus-project';
     const recentProjectStore = createRecentProjectStoreStub({ resolveRoot: vi.fn(async () => projectRoot) });

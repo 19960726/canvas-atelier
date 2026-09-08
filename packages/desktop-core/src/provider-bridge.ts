@@ -7,10 +7,7 @@ import {
 } from '@agent-canvas/provider-comfly';
 import type { FileSystem } from './file-system.js';
 import { createSecureProviderCredentialStore, type ProviderCredentialStore, type SafeStorageAdapter } from './provider-credential-vault.js';
-import {
-  createProviderTaskMappingStore,
-  type ProviderTaskMappingRecord,
-} from './provider-task-ledger.js';
+import { createProviderTaskMappingStore, type ProviderTaskMappingRecord } from './provider-task-ledger.js';
 import { createProviderConfigurationStore } from './provider-configuration-store.js';
 import { createElectronNetComflyFetch } from './electron-net-fetch.js';
 import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
@@ -28,7 +25,7 @@ import type {
   GenerationHistoryProviderSinkContract,
 } from './generation-history-provider-sink.js';
 import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
-import { buildComflyModelProfiles, cloneProviderProfile, mergeProviderModelProfiles } from './provider-model-catalog.js';
+import { buildComflyModelProfiles, cloneProviderProfile, mergeProviderModelProfiles, repairComflyImageEditCapability } from './provider-model-catalog.js';
 import { createComflyVideoJobHandlers } from './comfly-video-jobs.js';
 import { isPublicProviderAddress, parseSafeProviderResultUrl } from './provider-result-security.js';
 import type { ProviderService } from './provider-service-types.js';
@@ -791,7 +788,7 @@ async function translateProviderCall<T>(
   }
 }
 function sanitizeProfiles(value: readonly ComflyModelRegistration[]): ProviderBridgeProfile[] {
-  return parseProviderBridgeProfiles(value.flatMap((profile) => {
+  const parsed = parseProviderBridgeProfiles(value.flatMap((profile) => {
     if (profile.provider !== 'comfly') return [];
     return {
       provider: 'comfly' as const,
@@ -799,8 +796,11 @@ function sanitizeProfiles(value: readonly ComflyModelRegistration[]): ProviderBr
       displayName: profile.displayName,
       ...(profile.modelId === undefined ? {} : { modelId: profile.modelId }),
       capabilities: [...profile.capabilities],
+      ...(profile.capabilityStatus === undefined ? {} : { capabilityStatus: profile.capabilityStatus }),
+      ...(profile.constraints === undefined ? {} : { constraints: profile.constraints }),
     };
   }));
+  return parsed.map(repairComflyImageEditCapability);
 }
 function mergeUpdatedProfiles(existing: readonly ProviderBridgeProfile[], updates: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
   const updatesByRoute = new Map(updates.map((profile) => [profile.modelRoute, profile]));

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildComflyModelProfiles, buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, mergeProviderModelProfiles } from './provider-model-catalog';
+import { buildComflyModelProfiles, buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, mergeProviderModelProfiles, repairComflyImageEditCapability } from './provider-model-catalog';
+import type { ProviderBridgeProfile } from './provider-contracts';
 import type { ComflyAccessibleModelCatalog } from '@agent-canvas/provider-comfly';
 import type { RelayMeModel } from '@agent-canvas/provider-relayme';
 
@@ -103,6 +104,50 @@ describe('provider model catalog', () => {
       modelId: 'nano-banana-2',
       capabilities: ['image_generation', 'image_edit', 'chat'],
     });
+  });
+
+  it('keeps the four verified Gemini 3.1 image variants editable when Comfly omits its edits endpoint metadata', () => {
+    const modelIds = [
+      'gemini-3.1-flash-image-preview',
+      'gemini-3.1-flash-image-preview-512px',
+      'gemini-3.1-flash-image-preview-2k',
+      'gemini-3.1-flash-image-preview-4k',
+    ];
+    const profiles = buildComflyModelProfiles({
+      version: 'catalog-gemini-3-1-image-missing-edit-endpoint',
+      models: modelIds.map((key) => ({
+        key,
+        name: 'Nano Banana 2',
+        provider: 'Google',
+        tags: ['绘图', '图像编辑', '对话'],
+        apis: ['POST-/v1/images/generations-1', 'POST-/v1/chat/completions-2'],
+        capabilityStatus: 'complete' as const,
+      })),
+    });
+
+    for (const modelId of modelIds) {
+      const profile = profiles.find((candidate) => candidate.modelId === modelId);
+      expect(profile?.capabilities).toEqual(['image_generation', 'image_edit']);
+      expect(profile?.capabilities).not.toContain('chat');
+    }
+  });
+
+  it('does not infer Gemini image editing from editable routes, names, or unverified model ids', () => {
+    const base: Pick<ProviderBridgeProfile, 'provider' | 'displayName' | 'capabilities'> = { provider: 'comfly', displayName: 'Nano Banana 2', capabilities: ['image_generation'] };
+    for (const profile of [
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-image-preview', modelId: 'text-model' },
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-image-preview' },
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-image-4k', modelId: 'gemini-3.1-flash-image-4k' },
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-lite-image', modelId: 'gemini-3.1-flash-lite-image' },
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-image-preview', modelId: 'gemini/3.1/flash/image/preview' },
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-image-preview', modelId: 'gemini-3-1-flash-image-preview' },
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-image-preview', modelId: ' gemini-3.1-flash-image-preview ' },
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-image-preview', modelId: 'GEMINI-3.1-FLASH-IMAGE-PREVIEW' },
+      { ...base, modelRoute: 'comfly-gemini-3-1-flash-image-preview', modelId: 'gemini-3.1-flash-image-preview', capabilityStatus: 'incomplete' as const },
+      { ...base, modelRoute: 'comfly-text-image', modelId: 'text-image' },
+    ]) {
+      expect(repairComflyImageEditCapability(profile)).toBe(profile);
+    }
   });
 
   it('advertises video generation only for model ids with a verified Comfly submission contract', () => {

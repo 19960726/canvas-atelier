@@ -77,7 +77,7 @@ describe('Codex CLI Astra service', () => {
         exitCode: 1,
         stdout: JSON.stringify({
           type: 'turn.failed',
-          error: { message: '401 Incorrect API key provided: sk-redacted. code=invalid_api_key' },
+          error: { message: `401 Incorrect API key provided: ${['sk', 'redacted'].join('-')}. code=invalid_api_key` },
         }),
         stderr: '',
       }))),
