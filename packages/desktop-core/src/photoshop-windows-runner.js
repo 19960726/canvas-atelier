@@ -72,6 +72,7 @@
     var sourceDocument = application.open(imagePath);
     var sourceLayer = sourceDocument.activeLayer;
     var copiedLayer;
+    var resolvedLayerName = layerName;
     try {
       copiedLayer = sourceLayer.duplicate(targetDocument);
     } catch (duplicateError) {
@@ -80,12 +81,44 @@
       app.activeDocument = targetDocument;
       copiedLayer = targetDocument.paste();
     }
-    // Renaming can be rejected for locked/background layers by some COM
-    // versions; successful duplication is already a valid import.
-    try { copiedLayer.name = layerName; } catch (renameError) { /* keep Photoshop name */ }
     sourceDocument.close(2);
     application.activeDocument = targetDocument;
-    return copiedLayer.name;
+    // Preserve the label before conversion because some Photoshop COM builds
+    // invalidate the original layer proxy after newPlacedLayer replaces it.
+    try { copiedLayer.name = layerName; } catch (renameError) { /* keep Photoshop name */ }
+    try { resolvedLayerName = String(copiedLayer.name); } catch (readNameError) { /* keep requested label */ }
+    targetDocument.activeLayer = copiedLayer;
+    try {
+      application.DoJavaScript([
+        'var documentRef = app.activeDocument;',
+        'executeAction(stringIDToTypeID("newPlacedLayer"), undefined, DialogModes.NO);',
+        'var layer = documentRef.activeLayer;',
+        'if (layer.kind !== LayerKind.SMARTOBJECT) throw new Error("placed_layer_not_smart_object");',
+        'var bounds = layer.bounds;',
+        'var left = bounds[0].as("px");',
+        'var top = bounds[1].as("px");',
+        'var right = bounds[2].as("px");',
+        'var bottom = bounds[3].as("px");',
+        'var layerWidth = right - left;',
+        'var layerHeight = bottom - top;',
+        'var canvasWidth = documentRef.width.as("px");',
+        'var canvasHeight = documentRef.height.as("px");',
+        'var scale = Math.min(1, canvasWidth / layerWidth, canvasHeight / layerHeight);',
+        'if (scale < 1) layer.resize(scale * 100, scale * 100, AnchorPosition.MIDDLECENTER);',
+        'bounds = layer.bounds;',
+        'left = bounds[0].as("px"); top = bounds[1].as("px");',
+        'right = bounds[2].as("px"); bottom = bounds[3].as("px");',
+        'var layerCenterX = left + ((right - left) / 2);',
+        'var layerCenterY = top + ((bottom - top) / 2);',
+        'var canvasCenterX = canvasWidth / 2;',
+        'var canvasCenterY = canvasHeight / 2;',
+        'layer.translate(canvasCenterX - layerCenterX, canvasCenterY - layerCenterY);'
+      ].join('\n'));
+    } catch (conversionError) {
+      try { copiedLayer.remove(); } catch (cleanupError) { /* preserve conversion failure */ }
+      throw conversionError;
+    }
+    return resolvedLayerName;
   }
 
   function connectPhotoshop() {

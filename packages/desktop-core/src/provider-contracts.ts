@@ -532,13 +532,14 @@ export const ChatSkillBridgeRequestSchema = z.object({
     referenceMentions.length !== referenceAssetIds.length
     || referenceMentions.some((reference, index) => (
       reference.assetId !== referenceAssetIds[index]
-      || reference.mention !== `@图片${index + 1}`
+      || !/^@图片[1-9][0-9]{0,2}$/u.test(reference.mention)
     ))
+    || new Set(referenceMentions.map((reference) => reference.mention)).size !== referenceMentions.length
   )) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['referenceMentions'],
-      message: 'Skill chat reference mentions must match ordered image references exactly',
+      message: 'Skill chat reference mentions must uniquely match ordered image references',
     });
   }
   if (value.visualAnalysis === true && referenceMentions.length === 0) {

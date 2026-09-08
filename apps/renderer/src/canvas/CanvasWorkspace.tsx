@@ -67,9 +67,12 @@ interface CanvasFlowInstance {
   setCenter: (x: number, y: number, options?: { zoom?: number; duration?: number }) => void;
 }
 
-function EdgeEndpointInternalsUpdater({ edges }: { readonly edges: readonly Edge[] }) {
+function EdgeEndpointInternalsUpdater({ edges, nodes }: { readonly edges: readonly Edge[]; readonly nodes: readonly Node[] }) {
   const updateNodeInternals = useUpdateNodeInternals();
-  const endpointIds = useMemo(() => [...new Set(edges.flatMap((edge) => [edge.source, edge.target]))], [edges]);
+  const endpointIds = useMemo(() => [...new Set([
+    ...edges.flatMap((edge) => [edge.source, edge.target]),
+    ...(nodes.length <= 40 ? nodes.map(node => node.id) : []),
+  ])], [edges, nodes]);
   const endpointKey = endpointIds.join('\u0000');
   const previousEndpointIdsRef = useRef<Set<string> | null>(null);
 
@@ -123,9 +126,8 @@ export interface PendingCanvasConnection {
 }
 
 export function setConnectorPreviewQuality(stage: HTMLElement | null, active: boolean, graphNodeCount = 0): void {
-  const canvasStage = stage?.querySelector<HTMLElement>('.react-flow') ?? stage;
-  if (!canvasStage) return;
-  canvasStage.classList.toggle('is-connection-preview', active && graphNodeCount >= 200);
+  if (!stage) return;
+  stage.classList.toggle('is-connection-preview', active && graphNodeCount >= 200);
   stage?.closest<HTMLElement>('.workspace')?.classList.toggle('is-interaction-low-quality', active && graphNodeCount < 200);
 }
 
@@ -618,6 +620,7 @@ function calculateOverflowPlacement(
 export function CanvasWorkspace() {
   const theme = useThemePreference();
   const project = useAppStore((state) => state.project);
+  const canvasDraftResetKey = useAppStore((state) => state.canvasDraftResetKey);
   const activeTool = useAppStore((state) => state.activeTool);
   const agentPanelCollapsed = useAppStore((state) => state.agentPanelCollapsed);
   const setActiveTool = useAppStore((state) => state.setActiveTool);
@@ -701,10 +704,13 @@ export function CanvasWorkspace() {
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const canvasStageRef = useRef<HTMLElement | null>(null);
   const flowInstanceRef = useRef<CanvasFlowInstance | null>(null);
+  const clipboardImageImportBatchRef = useRef(0);
   const [moduleLibraryOpen, setModuleLibraryOpen] = useState(false);
   const newProjectInFlightRef = useRef(false);
   const [quickInsert, setQuickInsert] = useState<QuickInsertState | null>(null);
   const pendingConnectionRef = useRef<PendingCanvasConnection | null>(null);
+  const connectionPreviewActiveRef = useRef(false);
+  const connectionPreviewEndEventRef = useRef(false);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [saveManagerOpen, setSaveManagerOpen] = useState(false);
   const [closeRequestPending, setCloseRequestPending] = useState(false);
@@ -733,6 +739,14 @@ export function CanvasWorkspace() {
     cancelModelJob,
     generateStoryboardNode,
   }), [addModuleNode, cancelChatSkill, cancelModelJob, chatSkill, flushProjectSave, saveProjectExplicitly, generateStoryboardNode, importDroppedMedia, runImageGenerationNode, runReverseAgentNode]);
+
+  const cancelClipboardImageImportBatch = useCallback(() => {
+    clipboardImageImportBatchRef.current += 1;
+  }, []);
+
+  useEffect(() => () => {
+    cancelClipboardImageImportBatch();
+  }, [cancelClipboardImageImportBatch, project.id]);
 
   useReadOnlyWritePromotion({
     projectId: project.id,
@@ -787,6 +801,22 @@ export function CanvasWorkspace() {
     agentToggleRef.current?.focus();
   }, [changeSurface]);
 
+  const openAgentSurface = useCallback(() => {
+    setQuickInsert(null);
+    setResultOutputMenuNodeId(null);
+    setModuleLibraryOpen(false);
+    if (activeSurface !== 'agent') {
+      if (useAppStore.getState().agentPanelCollapsed) toggleAgentPanel();
+      setActiveSurface('agent');
+    }
+  }, [activeSurface, toggleAgentPanel]);
+
+  useEffect(() => {
+    const openAgentFromGeneratedImage = () => openAgentSurface();
+    globalThis.addEventListener('novus:open-agent', openAgentFromGeneratedImage);
+    return () => globalThis.removeEventListener('novus:open-agent', openAgentFromGeneratedImage);
+  }, [openAgentSurface]);
+
   const openGenerationEditor = useCallback((nodeId: string) => {
     dispatchGenerationEditor({ type: 'open', nodeId });
   }, []);
@@ -818,6 +848,7 @@ export function CanvasWorkspace() {
 
   const startNewProject = useCallback(() => {
     if (newProjectInFlightRef.current) return;
+    cancelClipboardImageImportBatch();
     newProjectInFlightRef.current = true;
     void (async () => {
       try {
@@ -831,9 +862,10 @@ export function CanvasWorkspace() {
         newProjectInFlightRef.current = false;
       }
     })();
-  }, [changeSurface, newWorkflow, prepareForProjectSwitch]);
+  }, [cancelClipboardImageImportBatch, changeSurface, newWorkflow, prepareForProjectSwitch]);
 
   const openSavedProject = useCallback(() => {
+    cancelClipboardImageImportBatch();
     void (async () => {
       if (!await prepareForProjectSwitch('打开其他项目')) return;
       setFileMenuOpen(false);
@@ -842,9 +874,10 @@ export function CanvasWorkspace() {
       changeSurface(null);
       await openProject();
     })();
-  }, [changeSurface, openProject, prepareForProjectSwitch]);
+  }, [cancelClipboardImageImportBatch, changeSurface, openProject, prepareForProjectSwitch]);
 
   const openRecentSavedProject = useCallback(async (recentProjectId: string) => {
+    cancelClipboardImageImportBatch();
     if (!await prepareForProjectSwitch('打开其他项目')) return false;
     setFileMenuOpen(false);
     setModuleLibraryOpen(false);
@@ -852,7 +885,7 @@ export function CanvasWorkspace() {
     setResultOutputMenuNodeId(null);
     changeSurface(null);
     return openProject(recentProjectId);
-  }, [changeSurface, openProject, prepareForProjectSwitch]);
+  }, [cancelClipboardImageImportBatch, changeSurface, openProject, prepareForProjectSwitch]);
   const canvasProviderRoutes = useMemo(
     // Canvas generation and Reverse Agent are both execution surfaces. They
     // must stay scoped to the active provider; the full catalog remains
@@ -940,7 +973,11 @@ export function CanvasWorkspace() {
   const formalCanvasNodeCount = flowNodes.length;
   const enableReactFlowVisibilityCulling = formalCanvasNodeCount > 20;
   const formalCanvasEdgeCount = flowEdges.length;
-  const canvasDraft = useCanvasDraft({ nodes: flowNodes, onCommitPositions: commitNodePositions });
+  const canvasDraft = useCanvasDraft({
+    nodes: flowNodes,
+    resetKey: canvasDraftResetKey,
+    onCommitPositions: commitNodePositions,
+  });
   const draftNodes = canvasDraft.nodes;
   const validateCanvasConnection = useMemo(
     () => createCanvasConnectionValidator(draftNodes, flowEdges),
@@ -1034,42 +1071,70 @@ export function CanvasWorkspace() {
     }];
   }), [project.nodes, selectedFlowNodeIds]);
   const executeAgentCanvasAction = useCallback(async (request: SkillCanvasActionRequest) => {
-    const node = project.nodes.find((candidate) => candidate.id === request.nodeId && candidate.type === 'module');
+    if (request.projectId !== undefined && request.projectId !== useAppStore.getState().project.id) return false;
+    if (request.createNode) {
+      if (request.kind === 'reverse_agent') return false;
+      if (!await useAppStore.getState().ensureAgentGenerationNode(request.nodeId, request.kind, request.referenceAssetIds ?? [])) {
+        const saveErrorCode = useAppStore.getState().saveErrorCode;
+        if (saveErrorCode !== null) {
+          throw Object.assign(new Error('Agent generation node could not be saved.'), { code: saveErrorCode });
+        }
+        return false;
+      }
+      if (request.projectId !== useAppStore.getState().project.id) return false;
+    }
+    const node = useAppStore.getState().project.nodes.find((candidate) => candidate.id === request.nodeId && candidate.type === 'module');
     if (node?.type !== 'module' || node.data.moduleType !== request.kind) return false;
-    const config = node.data.config as Record<string, unknown>;
+    const config = { ...node.data.config, ...request.parameters } as Record<string, unknown>;
     const requestedModelRoute = request.modelRoute ?? (typeof config.modelRoute === 'string' ? config.modelRoute : undefined);
-    const referenceAssetIds = Array.isArray(config.referenceAssetIds)
+    const referenceAssetIds = request.referenceAssetIds?.length ? [...request.referenceAssetIds] : Array.isArray(config.referenceAssetIds)
       ? config.referenceAssetIds.filter((value): value is string => typeof value === 'string')
       : [];
+    const rethrowGenerationSaveError = (caught: unknown): never => {
+      const code = isRecord(caught) && typeof caught.code === 'string' ? caught.code : undefined;
+      const saveErrorCode = useAppStore.getState().saveErrorCode;
+      if (code === 'PROJECT_COMMIT_FAILED' && saveErrorCode !== null) {
+        throw Object.assign(new Error('Agent generation node could not enter the saved queue.'), { code: saveErrorCode });
+      }
+      throw caught;
+    };
     if (request.kind === 'image_generation') {
-      return runImageGenerationNode(request.nodeId, {
-        prompt: request.prompt,
-        ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
-        ...(typeof config.aspectRatio === 'string' ? { aspectRatio: config.aspectRatio } : {}),
-        ...(typeof config.resolution === 'string' ? { resolution: config.resolution } : {}),
-        ...(typeof config.outputCount === 'number' ? { outputCount: config.outputCount } : {}),
-        referenceAssetIds,
-      });
+      try {
+        return await runImageGenerationNode(request.nodeId, {
+          prompt: request.prompt,
+          ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
+          ...(typeof config.aspectRatio === 'string' ? { aspectRatio: config.aspectRatio } : {}),
+          ...(typeof config.resolution === 'string' ? { resolution: config.resolution } : {}),
+          ...(typeof config.outputCount === 'number' ? { outputCount: config.outputCount } : {}),
+          referenceAssetIds,
+        });
+      } catch (caught) {
+        return rethrowGenerationSaveError(caught);
+      }
     }
     if (request.kind === 'video_generation') {
       const promptDuration = Number(request.prompt.match(/(\d{1,2})\s*(?:秒|s)/iu)?.[1]);
       const configuredDuration = typeof config.durationSeconds === 'number' ? config.durationSeconds : 4;
-      const durationSeconds = Number.isInteger(promptDuration) && promptDuration >= 1 && promptDuration <= 60
+      const durationSeconds = request.parameters?.durationSeconds ?? (Number.isInteger(promptDuration) && promptDuration >= 1 && promptDuration <= 60
         ? promptDuration
-        : configuredDuration;
+        : configuredDuration);
       const configuredOutputCount = typeof config.outputCount === 'number' ? config.outputCount : 1;
       const outputCount = ([1, 2, 3, 4] as const).find((value) => value === configuredOutputCount) ?? 1;
-      return runVideoPreviewNode(request.nodeId, {
-        prompt: request.prompt,
-        ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
-        referenceAssetIds,
-        aspectRatio: typeof config.aspectRatio === 'string' ? config.aspectRatio : '16:9',
-        keyframe: typeof config.keyframe === 'string' ? config.keyframe : 'auto',
-        durationSeconds,
-        resolution: typeof config.resolution === 'string' ? config.resolution : '720p',
-        outputCount,
-        audioEnabled: typeof config.audioEnabled === 'boolean' ? config.audioEnabled : true,
-      });
+      try {
+        return await runVideoPreviewNode(request.nodeId, {
+          prompt: request.prompt,
+          ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
+          referenceAssetIds,
+          aspectRatio: typeof config.aspectRatio === 'string' ? config.aspectRatio : '16:9',
+          keyframe: typeof config.keyframe === 'string' ? config.keyframe : 'auto',
+          durationSeconds,
+          resolution: typeof config.resolution === 'string' ? config.resolution : '720p',
+          outputCount,
+          audioEnabled: typeof config.audioEnabled === 'boolean' ? config.audioEnabled : true,
+        });
+      } catch (caught) {
+        return rethrowGenerationSaveError(caught);
+      }
     }
     try {
       await runReverseAgentNode(request.nodeId, requestedModelRoute ? {
@@ -1269,6 +1334,7 @@ export function CanvasWorkspace() {
   }, [addModuleWithDurableReload, connectModulePorts, createModuleFromSelectedMedia, deleteCanvasNodes, quickInsert, recordRecentModule, selectedFlowNodeIds]);
 
   const handleConnectStart = useCallback<OnConnectStart>((_, params) => {
+    connectionPreviewActiveRef.current = true;
     setConnectorPreviewQuality(canvasStageRef.current, true, formalCanvasNodeCount);
     if ((params.handleType !== 'source' && params.handleType !== 'target') || params.nodeId === null || params.handleId === null) {
       pendingConnectionRef.current = null;
@@ -1283,6 +1349,11 @@ export function CanvasWorkspace() {
   }, [formalCanvasNodeCount]);
 
   const handleConnectEnd = useCallback<OnConnectEnd>((event, connectionState) => {
+    connectionPreviewActiveRef.current = false;
+    connectionPreviewEndEventRef.current = true;
+    queueMicrotask(() => {
+      connectionPreviewEndEventRef.current = false;
+    });
     setConnectorPreviewQuality(canvasStageRef.current, false, formalCanvasNodeCount);
     const pending = pendingConnectionRef.current;
     pendingConnectionRef.current = null;
@@ -1358,16 +1429,29 @@ export function CanvasWorkspace() {
       // when Electron's native clipboard API reports only an unreadable
       // text/uri-list. Route that File through the same managed importer used
       // by drag and drop; use native clipboard IPC only when no File exists.
-      const clipboardFile = readClipboardMediaFile(event.clipboardData);
-      if (clipboardFile !== null) {
-        if (importToSelectedImage(clipboardFile)) return;
+      const clipboardFiles = readClipboardMediaFiles(event.clipboardData);
+      if (clipboardFiles.length > 0) {
+        if (clipboardFiles.length === 1 && importToSelectedImage(clipboardFiles[0]!)) return;
         // A clipboard File can be exposed by Chromium even when Electron
         // cannot resolve a filesystem path for it.  Try the file importer
         // first, then let the native clipboard reader recover the bitmap so
         // Ctrl+V on the blank canvas never silently does nothing.
-        void useAppStore.getState().importDroppedMedia(clipboardFile, position).then((imported) => {
-          if (!imported) void useAppStore.getState().pasteClipboardMedia(position);
-        });
+        const projectId = useAppStore.getState().project.id;
+        const batch = ++clipboardImageImportBatchRef.current;
+        void (async () => {
+          for (const [index, file] of clipboardFiles.entries()) {
+            if (clipboardImageImportBatchRef.current !== batch || useAppStore.getState().project.id !== projectId) return;
+            const imported = await useAppStore.getState().importDroppedMedia(file, {
+              x: position.x + (index % 5) * 340,
+              y: position.y + Math.floor(index / 5) * 420,
+            });
+            if (clipboardImageImportBatchRef.current !== batch || useAppStore.getState().project.id !== projectId) return;
+            if (!imported) {
+              if (clipboardFiles.length === 1) await useAppStore.getState().pasteClipboardMedia(position);
+              return;
+            }
+          }
+        })();
         return;
       }
       const clipboardTypes = event.clipboardData?.types;
@@ -1570,11 +1654,12 @@ export function CanvasWorkspace() {
       }
       if (event.ctrlKey || event.metaKey) return;
       if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (selectedFlowNodeIds.length === 0 || isEditableKeyboardTarget(event.target)) return;
+        if (isEditableKeyboardTarget(event.target) || event.repeat) return;
+        cancelClipboardImageImportBatch();
+        if (selectedFlowNodeIds.length === 0) return;
         // Delete is a canvas command. Capture it before React Flow or a node
         // control can stop propagation, and ignore key auto-repeat so one
         // held key cannot enqueue competing durable transactions.
-        if (event.repeat) return;
         event.preventDefault();
         dispatchGenerationEditor({ type: 'node-removed', nodeIds: selectedFlowNodeIds });
         void deleteCanvasNodesWithDurableReload(selectedFlowNodeIds).then((deleted) => {
@@ -1584,6 +1669,22 @@ export function CanvasWorkspace() {
         return;
       }
       if (event.key !== 'Escape') return;
+      // React Flow owns Escape while a connector gesture is active. Closing a
+      // floating surface here would rerender the whole workspace before the
+      // connector cleanup runs, which is especially costly on large graphs.
+      if (connectionPreviewActiveRef.current) {
+        // Escape cancels the connector instead of completing it on the later
+        // pointerup. Clear our blank-canvas insertion intent now, otherwise
+        // that pointerup opens Quick Insert and closes the active surface.
+        connectionPreviewActiveRef.current = false;
+        pendingConnectionRef.current = null;
+        setConnectorPreviewQuality(canvasStageRef.current, false, formalCanvasNodeCount);
+        return;
+      }
+      if (connectionPreviewEndEventRef.current) return;
+      // Let the topmost Agent menu consume Escape before closing its panel.
+      // This listener runs in capture, earlier than the menu's React handler.
+      if (activeSurface === 'agent' && document.querySelector('.skill-chat-workbench[data-transient-popover]')) return;
       if (generationEditorState.expandedNodeId !== null) {
         dispatchGenerationEditor({ type: 'escape' });
         return;
@@ -1604,7 +1705,7 @@ export function CanvasWorkspace() {
     };
     window.addEventListener('keydown', handleCanvasKeyboardShortcut, true);
     return () => window.removeEventListener('keydown', handleCanvasKeyboardShortcut, true);
-  }, [activeSurface, changeSurface, closeAgentPanel, deleteCanvasNodesWithDurableReload, generationEditorState.expandedNodeId, quickInsert, resultOutputMenuNodeId, selectedFlowNodeIds, undo]);
+  }, [activeSurface, cancelClipboardImageImportBatch, changeSurface, closeAgentPanel, deleteCanvasNodesWithDurableReload, generationEditorState.expandedNodeId, quickInsert, resultOutputMenuNodeId, selectedFlowNodeIds, undo]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2001,6 +2102,7 @@ export function CanvasWorkspace() {
           nodeTypes={nodeTypes}
           edgeTypes={canvasEdgeTypes}
           connectionMode={ConnectionMode.Loose}
+          connectionRadius={48 / Math.max(0.08, viewportCulling.viewport.zoom)}
           connectionLineType={formalCanvasNodeCount >= 200 ? ConnectionLineType.Straight : ConnectionLineType.Bezier}
           minZoom={0.08}
           maxZoom={2.5}
@@ -2046,7 +2148,7 @@ export function CanvasWorkspace() {
           }}
           proOptions={{ hideAttribution: true }}
         >
-          <EdgeEndpointInternalsUpdater edges={viewportCulling.edges} />
+          <EdgeEndpointInternalsUpdater edges={viewportCulling.edges} nodes={interactionNodes} />
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--canvas-grid)" />
           {generationEditorState.expandedNodeId === null && (
             <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
@@ -2208,8 +2310,16 @@ export function CanvasWorkspace() {
               onImportReferenceImage={importAgentReferenceImage}
               onImportReferenceVideo={importAgentReferenceVideo}
               canvasActionTargets={agentCanvasActionTargets}
+              canvasActionResults={project.nodes.flatMap((node) => {
+                if (node.type !== 'module' || !['image_generation', 'video_generation'].includes(node.data.moduleType)) return [];
+                const jobs = modelJobs.filter((job) => job.promptNodeId === node.id);
+                const latest = jobs[jobs.length - 1];
+                if (!latest) return [];
+                const assetIds = [latest.resultAssetId, ...(Array.isArray(node.data.config.resultAssetIds) ? node.data.config.resultAssetIds : []), node.data.config.resultAssetId].filter((id): id is string => typeof id === 'string');
+                return [{ nodeId: node.id, status: latest.status, assetIds: [...new Set(assetIds)] }];
+              })}
               executeCanvasAction={executeAgentCanvasAction}
-              draftWorkflowFromAnalysis={({ analysis, reverseAnalysis, references, modelRoute, modelRouteDisplayName, knowledgeBaseIds }) => {
+              draftWorkflowFromAnalysis={({ analysis, reverseAnalysis, references, modelRoute, modelRouteDisplayName, knowledgeBaseIds, generation }) => {
                 if (reverseAnalysis?.runnable && modelRoute !== undefined) {
                   draftReverseWorkflowPlan({
                     analysis: reverseAnalysis,
@@ -2217,11 +2327,12 @@ export function CanvasWorkspace() {
                     modelRoute,
                     modelRouteDisplayName,
                     knowledgeBaseIds,
+                    generation,
                   });
                   return;
                 }
                 const orderedReferences = references.map((reference) => `${reference.mention}=${reference.label}[${reference.assetId}]`).join('\n');
-                draftAgentPlan(`${analysis}\n\n工作流引用顺序：\n${orderedReferences}`, { modelRoute, modelRouteDisplayName });
+                draftAgentPlan(`${analysis}\n\n工作流引用顺序：\n${orderedReferences}`, { modelRoute: generation?.modelRoute, modelRouteDisplayName: generation?.modelRouteDisplayName });
               }}
               onClose={closeAgentPanel}
               chat={workspaceApi.chat}
@@ -2306,18 +2417,17 @@ async function readClipboardImageFile(): Promise<File | null> {
   return null;
 }
 
-function readClipboardMediaFile(data: DataTransfer | null): File | null {
-  if (data === null) return null;
-  const file = Array.from(data.files ?? []).find((candidate) => (
+function readClipboardMediaFiles(data: DataTransfer | null): File[] {
+  if (data === null) return [];
+  const isMedia = (candidate: File) => (
     candidate.type.startsWith('image/') || candidate.type === 'video/mp4' || /\.mp4$/iu.test(candidate.name)
-  ));
-  if (file) return file;
-  for (const item of Array.from(data.items ?? [])) {
-    if (!item.type.startsWith('image/') && item.type !== 'video/mp4') continue;
-    const itemFile = item.getAsFile();
-    if (itemFile) return itemFile;
-  }
-  return null;
+  );
+  const files = Array.from(data.files ?? []).filter(isMedia);
+  if (files.length > 0) return files;
+  return Array.from(data.items ?? []).flatMap((item) => {
+    const file = item.getAsFile();
+    return file && isMedia(file) ? [file] : [];
+  });
 }
 
 function isEditablePasteTarget(target: EventTarget | null): boolean {
@@ -2380,6 +2490,7 @@ function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'rea
   if (errorCode === 'DURABLE_WRITE_FAILED' || errorCode === 'PROJECT_WRITE_FAILED' || errorCode === 'DISK_FULL') {
     return '本地写入失败，请检查磁盘空间或目录权限后重试';
   }
+  if (errorCode === 'PERMISSION_DENIED') return '保存文件被系统短暂占用，请重试；持续失败请检查项目目录权限';
   if (status === 'read_only') return '只读模式，等待当前写入者释放';
   if (status === 'error') return errorCode ? `本地保存失败（${errorCode}）` : '本地保存失败';
   return '等待本地稳定点保存';

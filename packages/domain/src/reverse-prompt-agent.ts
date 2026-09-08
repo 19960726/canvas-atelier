@@ -249,6 +249,8 @@ const sceneObjectSchema = z.object({
   scaleAndProportion: nonEmptyTrimmedStringSchema,
   depthLayer: z.enum(['foreground', 'midground', 'background']),
   occlusionAndZOrder: nonEmptyTrimmedStringSchema,
+  shapeAndGeometry: nonEmptyTrimmedStringSchema.optional(),
+  modelAndStructure: nonEmptyTrimmedStringSchema.optional(),
 }).strict();
 
 const effectAnalysisSchema = z.object({
@@ -285,6 +287,8 @@ const videoTimelineShotSchema = z.object({
   transition: nonEmptyTrimmedStringSchema,
   keyframes: professionalDetailListSchema,
   productAdaptation: nonEmptyTrimmedStringSchema,
+  explodedViewMotion: nonEmptyTrimmedStringSchema.optional(),
+  fluidMotionAndFunction: nonEmptyTrimmedStringSchema.optional(),
 }).strict();
 
 export const seedance25TaskTypeSchema = z.enum([
@@ -355,6 +359,8 @@ const seedance25ResultSchema = z.object({
   negativeConstraints: professionalDetailListSchema,
   capabilityBoundaries: professionalDetailListSchema,
 }).strict();
+
+export const REVERSE_ANALYSIS_CHAPTERS = ['sceneDecomposition', 'composition', 'camera', 'depthAndFocus', 'materialsAndTextures', 'lightingAndColor', 'effects', 'fluids', 'whiteBackgroundAdaptation', 'subjectScaleAndPlacement', 'videoTimeline', 'promptLogic', 'seedance25', 'uncertainties', 'evidence'] as const;
 
 export const reversePromptResultSchema = z.object({
   sessionId: z.string().min(1),
@@ -427,6 +433,17 @@ export const reversePromptResultSchema = z.object({
   positivePromptZh: nonEmptyTrimmedStringSchema.optional(),
   positivePromptEn: nonEmptyTrimmedStringSchema.optional(),
   uncertainties: z.array(nonEmptyTrimmedStringSchema).optional(),
+  evidence: z.object({
+    observations: z.array(nonEmptyTrimmedStringSchema),
+    estimates: z.array(nonEmptyTrimmedStringSchema),
+    unknowns: z.array(nonEmptyTrimmedStringSchema),
+  }).strict().optional(),
+  completeness: z.object({
+    status: z.enum(['complete', 'partial']),
+    missingSections: z.array(z.enum(REVERSE_ANALYSIS_CHAPTERS)),
+    invalidSections: z.array(z.enum(REVERSE_ANALYSIS_CHAPTERS)),
+  }).strict().optional(),
+  partialSections: z.array(z.object({ section: z.enum(REVERSE_ANALYSIS_CHAPTERS), content: z.string().max(24000) }).strict()).max(15).optional(),
 }).strict();
 
 export type ReversePromptPersona = z.infer<typeof reversePromptPersonaSchema>;

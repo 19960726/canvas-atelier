@@ -542,6 +542,58 @@ describe('listAgentChatProfiles', () => {
     ]);
   });
 
+  it('fails closed for explicit media-output families mislabeled as chat-only', () => {
+    const mediaOutputModelIds = [
+      'gemini-3-pro-image-4k',
+      'gemini-3.1-flash-image-4k',
+      'gpt-4-dalle',
+      'gpt-4o-image-vip',
+      'qwen-image-edit-max',
+      'qwen-image-edit-plus',
+      'qwen-image-max',
+      'qwen-image-plus-2026-01-09',
+      'qwen-mt-image',
+      'seedream-3.0',
+      'volcv-dalle',
+      'grok-imagine-video-1.5',
+      'hailuo-video',
+      'kling-advanced-lip-sync',
+      'kling-meta-human',
+      'pixverse-video-v1',
+      'sora-2-pro',
+      'veo3.1-fast-4K',
+      'veo3.1-components',
+      'video-style-transform',
+      'videoretalk',
+    ] as const;
+    const profiles = [
+      ...mediaOutputModelIds.map((modelId) => ({
+        provider: 'comfly' as const,
+        modelRoute: `comfly-${modelId.replace(/\./gu, '-')}`,
+        displayName: modelId,
+        modelId,
+        capabilities: ['chat' as const],
+      })),
+      { provider: 'comfly' as const, modelRoute: 'comfly-gemini-3-1-flash-lite', displayName: 'Gemini 3.1 Flash Lite', modelId: 'gemini-3.1-flash-lite', capabilities: ['chat' as const, 'vision' as const] },
+      { provider: 'comfly' as const, modelRoute: 'comfly-gpt-4o', displayName: 'GPT-4o', modelId: 'gpt-4o', capabilities: ['chat' as const, 'vision' as const] },
+      { provider: 'comfly' as const, modelRoute: 'comfly-qwen-vl-max', displayName: 'Qwen VL Max', modelId: 'qwen-vl-max', capabilities: ['chat' as const, 'vision' as const] },
+      { provider: 'comfly' as const, modelRoute: 'comfly-chat-fast-video', displayName: 'Chat Fast Video', modelId: 'chat_fast_video', capabilities: ['chat' as const] },
+    ];
+
+    expect(listAgentChatProfiles(profiles).map((profile) => profile.modelId)).toEqual([
+      'gemini-3.1-flash-lite',
+      'gpt-4o',
+      'qwen-vl-max',
+      'chat_fast_video',
+    ]);
+    expect(buildCanvasProviderRouteSets(profiles).storyboard.map((profile) => profile.modelId)).toEqual([
+      'chat_fast_video',
+      'gemini-3.1-flash-lite',
+      'gpt-4o',
+      'qwen-vl-max',
+    ]);
+  });
+
   it('shows one Agent chat option when providers expose the same visible model name', () => {
     const profiles = [
       { provider: 'comfly' as const, modelRoute: 'comfly/gemini-3.1-pro', displayName: 'Gemini 3.1 Pro', capabilities: ['chat' as const, 'vision' as const] },

@@ -355,7 +355,7 @@ describe('ComflyClient', () => {
     expect((error as Error).message).not.toContain('E:\\private\\scene.png');
   });
 
-  it('gives image generation a 180 second timeout while connection checks stay short', async () => {
+  it('gives synchronous image generation a 300 second timeout while connection checks stay short', async () => {
     vi.useFakeTimers();
     const fetch: ComflyFetch = (_url: string, init?: { signal?: AbortSignal }) => new Promise((_, reject) => {
       init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
@@ -371,9 +371,9 @@ describe('ComflyClient', () => {
     const outcome = pending.then(() => 'resolved', (error: Error) => error.message);
     await vi.advanceTimersByTimeAsync(50);
     await expect(Promise.race([outcome, Promise.resolve('still-running')])).resolves.toBe('still-running');
-    await vi.advanceTimersByTimeAsync(179_950);
+    await vi.advanceTimersByTimeAsync(299_950);
 
-    await expect(outcome).resolves.toContain('timed out after 180000ms');
+    await expect(outcome).resolves.toContain('timed out after 300000ms');
   });
 
   it('redacts provider error bodies before surfacing API failures', async () => {

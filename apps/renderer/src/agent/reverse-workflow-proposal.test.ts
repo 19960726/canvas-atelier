@@ -57,6 +57,7 @@ describe('reverse workflow proposal', () => {
       persistenceGeneration: 7,
       modelRoute: 'chat/vision',
       modelRouteDisplayName: 'Vision chat',
+      generation: { kind: 'image', modelRoute: 'image/chosen', modelRouteDisplayName: 'Chosen image', parameters: { aspectRatio: '4:5' } },
       references: [
         { assetId: 'a'.repeat(16), mention: '@图片1', label: '产品' },
         { assetId: 'b'.repeat(16), mention: '@图片2', label: '场景' },
@@ -68,6 +69,7 @@ describe('reverse workflow proposal', () => {
     expect(plan.state).toBe('waiting_for_confirmation');
     expect(plan.requestedCapabilities).toEqual(['model_execution']);
     expect(plan.jobCount).toBe(3);
+    expect(plan.modelRoute).toBe('image/chosen');
     const createdNodes = plan.transaction.operations.flatMap((operation) => operation.kind === 'create_node' ? [operation.node] : []);
     expect(createdNodes.filter((node) => node.type === 'module').map((node) => node.type === 'module' ? node.data.moduleType : '')).toEqual([
       'image_input',
@@ -99,6 +101,7 @@ describe('reverse workflow proposal', () => {
         : []
     ));
     expect(generationPrompts).toEqual(['A', 'B', 'C']);
+    expect(createdNodes.filter((node) => node.type === 'module' && node.data.moduleType === 'image_generation').every((node) => node.type === 'module' && node.data.config.modelRoute === 'image/chosen')).toBe(true);
     const applied = applyTransaction(project, plan.transaction);
     expect(applied.project.nodes.filter((node) => node.type === 'module' && node.data.moduleType === 'reverse_agent')).toHaveLength(1);
     expect(applied.project.edges.filter((edge) => edge.targetPortId === 'references').map((edge) => edge.order)).toEqual([0, 1]);

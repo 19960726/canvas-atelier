@@ -1,7 +1,10 @@
-import { reversePromptResultSchema, type ReversePromptRun } from '@agent-canvas/domain';
+import { REVERSE_ANALYSIS_CHAPTERS, reversePromptResultSchema, type ReversePromptRun } from '@agent-canvas/domain';
+import { z } from 'zod';
 
 type ReverseRunIdentity = Pick<ReversePromptRun, 'sessionId' | 'nonce'> & {
   readonly knowledgeLease: Pick<ReversePromptRun['knowledgeLease'], 'versionKey'>;
+  readonly videoInput?: ReversePromptRun['videoInput'];
+  readonly orderedMedia?: ReversePromptRun['orderedMedia'];
 };
 
 export function extractGeminiReverseText(parts: readonly unknown[] | undefined): string | undefined {
@@ -37,7 +40,36 @@ export function normalizeReverseProviderResult(input: unknown, run: ReverseRunId
   fillStringList(normalized, 'keywords', candidate.keywords, candidate.keyword);
   fillStringList(normalized, 'negativeConstraints', candidate.negativeConstraints, candidate.negativePrompt, candidate.negative_prompt, candidate.negative_constraints);
   fillStringList(normalized, 'executionChecklist', candidate.executionChecklist, candidate.checklist, candidate.executionSteps, candidate.execution_checklist);
+  const video = run.videoInput !== undefined || run.orderedMedia?.some((item) => item.kind === 'video');
+  const required = REVERSE_ANALYSIS_CHAPTERS.filter((key) => video || (key !== 'videoTimeline' && key !== 'seedance25'));
+  const missingSections = required.filter((key) => candidate[key] === undefined);
+  const invalidSections = REVERSE_ANALYSIS_CHAPTERS.filter((key) => candidate[key] !== undefined && normalized[key] === undefined);
+  // These diagnostics are computed locally; the provider cannot declare its own result complete.
+  normalized.completeness = { status: missingSections.length || invalidSections.length ? 'partial' : 'complete', missingSections, invalidSections };
+  normalized.partialSections = invalidSections.flatMap((section) => {
+    const content = JSON.stringify(preserveKnownFields(candidate[section], reversePromptResultSchema.shape[section]));
+    return content && content.length <= 24000 ? [{ section, content }] : [];
+  });
   return normalized;
+}
+
+function preserveKnownFields(value: unknown, schema: z.ZodTypeAny, depth = 0): unknown {
+  if (depth > 8) return undefined;
+  if (schema instanceof z.ZodOptional || schema instanceof z.ZodNullable || schema instanceof z.ZodDefault) {
+    return preserveKnownFields(value, schema instanceof z.ZodDefault ? schema.removeDefault() : schema.unwrap(), depth);
+  }
+  if (schema instanceof z.ZodObject && asRecord(value)) {
+    const result: Record<string, unknown> = {};
+    for (const [key, field] of Object.entries(schema.shape)) {
+      if ((value as Record<string, unknown>)[key] === undefined) continue;
+      const kept = preserveKnownFields((value as Record<string, unknown>)[key], field as z.ZodTypeAny, depth + 1);
+      if (kept !== undefined) result[key] = kept;
+    }
+    return Object.keys(result).length ? result : undefined;
+  }
+  if (schema instanceof z.ZodArray && Array.isArray(value)) return value.slice(0, 80).map((item) => preserveKnownFields(item, schema.element, depth + 1)).filter((item) => item !== undefined);
+  if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 6000);
+  return undefined;
 }
 
 function unwrapResult(root: Record<string, unknown>): Record<string, unknown> {

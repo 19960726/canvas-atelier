@@ -74,10 +74,11 @@ export function createElectronNetComflyFetch<TSession = unknown>(
   const timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_NETWORK_TIMEOUT_MS;
   return async (url, init = {}) => {
     const parsedUrl = parseHttpsUrl(url);
+    const requestMaxResponseBytes = init.maxResponseBytes ?? maxResponseBytes;
     const requestTimeoutMs = init.timeoutMs ?? timeoutMs;
     if (init.trustedResolvedAddress !== undefined) {
       return requestPinnedHttps(parsedUrl, init, init.trustedResolvedAddress, {
-        maxResponseBytes,
+        maxResponseBytes: requestMaxResponseBytes,
         pinnedHttpsRequest,
         timeoutMs: requestTimeoutMs,
       });
@@ -137,7 +138,7 @@ export function createElectronNetComflyFetch<TSession = unknown>(
         request.setHeader?.(name, value);
       }
       request.on('response', (response) => {
-        consumeResponse(response, request, maxResponseBytes, () => settled, fail, succeed);
+        consumeResponse(response, request, requestMaxResponseBytes, () => settled, fail, succeed);
       });
       request.on('redirect', () => fail('Provider network redirect was blocked'));
       request.on('error', (error) => fail(formatNetworkFailure(error)));

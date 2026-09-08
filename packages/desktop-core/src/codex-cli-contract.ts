@@ -9,17 +9,31 @@ export const CODEX_CLI_CHANNELS = {
   cancel: 'novus-desktop:codex-cli:cancel',
 } as const;
 
-export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export const CODEX_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+export type CodexReasoningEffort = typeof CODEX_REASONING_EFFORTS[number];
+
+const CODEX_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/u;
+const CODEX_MODEL_ROUTE_PATTERN = /^codex\/[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/u;
+
+export function isCodexModelId(value: string): boolean {
+  return CODEX_MODEL_ID_PATTERN.test(value);
+}
+
+export function isCodexModelRoute(value: string): boolean {
+  return CODEX_MODEL_ROUTE_PATTERN.test(value);
+}
 
 export interface CodexCliProfile {
   readonly provider: 'codex';
-  readonly modelRoute: typeof CODEX_ASTRA_MODEL_ROUTE;
-  readonly modelId: typeof CODEX_ASTRA_MODEL_ID;
-  readonly displayName: 'GPT-6 Astra';
+  readonly modelRoute: `codex/${string}`;
+  readonly modelId: string;
+  readonly displayName: string;
   readonly capabilities: readonly ['responses'];
   readonly capabilityStatus: 'complete';
   readonly transport: 'codex-cli';
   readonly availability: 'installed';
+  readonly supportedReasoningEfforts?: readonly CodexReasoningEffort[];
+  readonly defaultReasoningEffort?: CodexReasoningEffort;
 }
 
 export const CODEX_ASTRA_PROFILE: CodexCliProfile = Object.freeze({
@@ -42,23 +56,44 @@ const messageSchema = z.object({
 
 export const CodexCliChatRequestSchema = z.object({
   provider: z.literal('codex'),
-  modelRoute: z.literal(CODEX_ASTRA_MODEL_ROUTE),
+  modelRoute: z.string().regex(CODEX_MODEL_ROUTE_PATTERN),
   sessionId: safeIdSchema,
   requestId: safeIdSchema,
   agentMode: z.literal('codex'),
-  reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().default('medium'),
+  reasoningEffort: z.enum(CODEX_REASONING_EFFORTS).optional().default('medium'),
   messages: z.array(messageSchema).min(1).max(48),
   context: z.object({
     knowledgeBaseIds: z.array(safeIdSchema).max(16),
     projectMemoryIds: z.array(safeIdSchema).max(32),
   }).strict(),
-  // The initial local route is deliberately text/MCP-only. A future image
-  // implementation must add an audited managed-file adapter before widening
-  // either of these arrays.
-  referenceAssetIds: z.array(safeAssetIdSchema).max(0).optional(),
-  referenceMentions: z.array(z.never()).max(0).optional(),
+  // References are opaque project asset ids. The desktop main process resolves
+  // them to short-lived files before invoking the CLI; paths never cross IPC.
+  referenceAssetIds: z.array(safeAssetIdSchema).max(20).optional(),
+  referenceMentions: z.array(z.object({
+    assetId: safeAssetIdSchema,
+    label: z.string().trim().min(1).max(160),
+    mention: z.string().trim().regex(/^@图片[1-9][0-9]{0,2}$/u),
+  }).strict()).max(20).optional(),
   visualAnalysis: z.boolean().optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const referenceAssetIds = value.referenceAssetIds ?? [];
+  if (new Set(referenceAssetIds).size !== referenceAssetIds.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['referenceAssetIds'], message: 'Codex image references must be unique' });
+  }
+  const referenceMentions = value.referenceMentions ?? [];
+  if (referenceMentions.length > 0 && (
+    referenceMentions.length !== referenceAssetIds.length
+    || referenceMentions.some((reference, index) => (
+      reference.assetId !== referenceAssetIds[index]
+    ))
+    || new Set(referenceMentions.map((reference) => reference.mention)).size !== referenceMentions.length
+  )) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['referenceMentions'], message: 'Codex image mentions must match ordered references' });
+  }
+  if (value.visualAnalysis === true && referenceMentions.length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['visualAnalysis'], message: 'Visual analysis requires ordered image mentions' });
+  }
+});
 
 const codexSourceSchema = z.object({
   knowledgeBaseId: safeIdSchema,
@@ -68,7 +103,7 @@ const codexSourceSchema = z.object({
 
 export const CodexCliChatResultSchema = z.object({
   message: z.string().trim().min(1).max(16_000),
-  modelRoute: z.literal(CODEX_ASTRA_MODEL_ROUTE),
+  modelRoute: z.string().regex(CODEX_MODEL_ROUTE_PATTERN),
   sources: z.array(codexSourceSchema).max(16),
 }).strict();
 
@@ -127,15 +162,21 @@ export class CodexCliBridgeException extends Error {
 export function parseCodexCliProfiles(value: unknown): CodexCliProfile[] {
   const profileSchema = z.object({
     provider: z.literal('codex'),
-    modelRoute: z.literal(CODEX_ASTRA_MODEL_ROUTE),
-    modelId: z.literal(CODEX_ASTRA_MODEL_ID),
-    displayName: z.literal('GPT-6 Astra'),
+    modelRoute: z.string().regex(CODEX_MODEL_ROUTE_PATTERN),
+    modelId: z.string().regex(CODEX_MODEL_ID_PATTERN),
+    displayName: z.string().trim().min(1).max(160),
     capabilities: z.tuple([z.literal('responses')]),
     capabilityStatus: z.literal('complete'),
     transport: z.literal('codex-cli'),
     availability: z.literal('installed'),
+    supportedReasoningEfforts: z.array(z.enum(CODEX_REASONING_EFFORTS)).min(1).max(6).optional(),
+    defaultReasoningEffort: z.enum(CODEX_REASONING_EFFORTS).optional(),
   }).strict();
-  return z.array(profileSchema).max(1).parse(value);
+  const parsed = z.array(profileSchema).max(32).parse(value);
+  return parsed.map((profile) => ({
+    ...profile,
+    modelRoute: profile.modelRoute as `codex/${string}`,
+  }));
 }
 
 export function parseCodexCliChatRequest(value: unknown): CodexCliChatRequest {

@@ -14,6 +14,16 @@ test('captures Agent bottom selectors and the Canvas reverse knowledge picker', 
   await expect(page.getByTestId('knowledge-base-trigger')).toBeVisible();
   await expect(page.getByRole('button', { name: '添加素材' })).toBeEnabled();
   await expect(page.getByTestId('agent-model-trigger')).toBeVisible();
+  const [composerFooterBox, generationPreferencesBox, knowledgeBox] = await Promise.all([
+    page.locator('.skill-chat-workbench__composer-footer').boundingBox(),
+    page.getByTestId('agent-generation-preferences').boundingBox(),
+    page.getByTestId('knowledge-base-trigger').boundingBox(),
+  ]);
+  expect(composerFooterBox).not.toBeNull();
+  expect(generationPreferencesBox).not.toBeNull();
+  expect(knowledgeBox).not.toBeNull();
+  expect(generationPreferencesBox!.x + generationPreferencesBox!.width).toBeLessThanOrEqual(knowledgeBox!.x);
+  expect(knowledgeBox!.x + knowledgeBox!.width).toBeLessThanOrEqual(composerFooterBox!.x + composerFooterBox!.width);
   await page.screenshot({ path: artifact('ui-check-agent-bottom-selectors-dark.png'), fullPage: true });
 
   await page.getByTestId('knowledge-base-trigger').click();

@@ -108,7 +108,11 @@ describe('RelayMeClient', () => {
     })).resolves.toMatchObject({ id: 'chat-1' });
     expect(fetch).toHaveBeenCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/chat/completions',
-      expect.objectContaining({ method: 'POST', body: expect.stringContaining('整理提示词') }),
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('整理提示词'),
+        timeoutMs: 30_000,
+      }),
     );
   });
 
@@ -378,6 +382,33 @@ describe('RelayMeClient', () => {
 
     expect((error as Error).message).toContain('timed out');
     expect((error as Error).message).not.toContain('relay-secret');
+    expect(error).toMatchObject({ retryable: true });
+  });
+
+  it('uses a per-call chat timeout override without changing the client default', async () => {
+    vi.useFakeTimers();
+    const fetch: RelayMeFetch = vi.fn((_url: string, init) => new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted relay-secret')));
+    }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch, timeoutMs: 25 });
+
+    const pending = client.chat({
+      model: 'gemini-3.1-flash-lite',
+      messages: [{ role: 'user', content: '分析图片' }],
+    }, 300_000).catch((reason: unknown) => reason);
+    let settled = false;
+    void pending.then(() => { settled = true; });
+
+    await vi.advanceTimersByTimeAsync(25);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://www.ml.relayme.uk/api/ai-tools/v1/chat/completions',
+      expect.objectContaining({ timeoutMs: 300_000 }),
+    );
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(299_975);
+    const error = await pending;
+    expect((error as Error).message).toContain('300000ms');
     expect(error).toMatchObject({ retryable: true });
   });
 });

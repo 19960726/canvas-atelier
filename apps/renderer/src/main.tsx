@@ -5,6 +5,7 @@ import '@xyflow/react/dist/style.css';
 import './styles/tokens.css';
 import './styles/app.css';
 import './styles/canvas-layout.css';
+import './styles/agent-workbench.css';
 import './styles/release-layout-contract.css';
 
 const manualAcceptanceHarness = new URLSearchParams(window.location.search).get('novusHarness') === 'novus-e2e-codex-canvas-layout';

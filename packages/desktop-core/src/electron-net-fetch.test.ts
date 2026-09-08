@@ -87,6 +87,23 @@ describe('Electron provider transport response bounds', () => {
     expect(net.aborted).toBe(true);
   });
 
+  it('honors a per-request response bound for a pinned provider media download', async () => {
+    const declaredBytes = 65 * 1024 * 1024;
+    const net = responseNet({ chunks: [] });
+    const pinned = pinnedHttpsRequest({
+      chunks: [Buffer.from('media')],
+      headers: { 'content-length': [String(declaredBytes)] },
+    });
+    const fetch = createElectronNetComflyFetch(net.adapter, {
+      pinnedHttpsRequest: pinned.adapter,
+    });
+
+    await expect(fetch('https://assets.example/generated.mp4', {
+      trustedResolvedAddress: '93.184.216.34',
+      maxResponseBytes: 512 * 1024 * 1024,
+    })).resolves.toMatchObject({ ok: true, status: 200 });
+  });
+
   it('bounds chunked responses without Content-Length while accumulating', async () => {
     const net = responseNet({ chunks: [Buffer.alloc(5), Buffer.alloc(5)] });
     const fetch = createElectronNetComflyFetch(net.adapter, { maxResponseBytes: 8 });
@@ -226,6 +243,7 @@ function responseNet(options: {
 
 function pinnedHttpsRequest(options: {
   readonly chunks: readonly Buffer[];
+  readonly headers?: Readonly<Record<string, readonly string[]>>;
 }): {
   readonly adapter: NonNullable<Parameters<typeof createElectronNetComflyFetch>[1]>['pinnedHttpsRequest'];
   options: {
@@ -260,8 +278,10 @@ function pinnedHttpsRequest(options: {
     request.end = () => {
       queueMicrotask(() => {
         const response = new EventEmitter() as EventEmitter & {
+          readonly headers?: Readonly<Record<string, readonly string[]>>;
           readonly statusCode: number;
         };
+        Object.defineProperty(response, 'headers', { value: options.headers });
         Object.defineProperty(response, 'statusCode', { value: 200 });
         listener(response);
         for (const chunk of options.chunks) response.emit('data', chunk);

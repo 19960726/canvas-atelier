@@ -77,7 +77,7 @@ describe('provider model catalog', () => {
       capabilities: ['image_generation', 'image_edit'],
       constraints: { image: { outputCounts: [1] } },
     });
-    expect(profiles.find((item) => item.modelId === 'veo3.1-fast')).toMatchObject({ capabilities: ['video_generation', 'async_tasks'], constraints: { video: { resolutions: ['720p', '1080p', '2K', '4K'], duration: { mode: 'options', options: [5, 10, 15] }, outputCounts: [1] } } });
+    expect(profiles.find((item) => item.modelId === 'veo3.1-fast')).toMatchObject({ capabilities: ['async_tasks'], constraints: { video: { resolutions: ['720p', '1080p', '2K', '4K'], duration: { mode: 'options', options: [5, 10, 15] }, outputCounts: [1] } } });
     expect(profiles.find((item) => item.modelId === 'vision-chat')).toMatchObject({ capabilities: ['chat', 'vision', 'reverse_prompt'] });
     expect(profiles.find((item) => item.modelId === 'mystery-video-name')).toMatchObject({ capabilities: [], capabilityStatus: 'incomplete' });
   });
@@ -103,6 +103,97 @@ describe('provider model catalog', () => {
       modelId: 'nano-banana-2',
       capabilities: ['image_generation', 'image_edit', 'chat'],
     });
+  });
+
+  it('advertises video generation only for model ids with a verified Comfly submission contract', () => {
+    const profiles = buildComflyModelProfiles({
+      version: 'verified-video-contracts',
+      models: [
+        { key: 'grok-imagine-video-1.5', name: 'Grok Video', provider: 'Grok', tags: ['视频'], apis: ['POST-/v2/videos/generations-1'], capabilityStatus: 'complete' },
+        { key: 'MiniMax-H3', name: 'MiniMax H3', provider: 'MiniMax', tags: ['视频'], apis: ['POST-/v2/videos/generations-2'], capabilityStatus: 'complete' },
+        { key: 'omni_flash-10s', name: 'Omni Flash', provider: 'Other', tags: ['视频'], apis: ['POST-/v2/videos/generations-3'], capabilityStatus: 'complete' },
+        { key: 'doubao-seedance-2.5', name: 'Seedance 2.5', provider: 'ByteDance', tags: ['视频'], apis: ['POST-/v2/videos/generations-4'], capabilityStatus: 'complete' },
+      ],
+    });
+    const byModelId = new Map(profiles.map((profile) => [profile.modelId, profile.capabilities]));
+
+    expect(byModelId.get('grok-imagine-video-1.5')).not.toContain('video_generation');
+    expect(byModelId.get('MiniMax-H3')).not.toContain('video_generation');
+    expect(byModelId.get('omni_flash-10s')).not.toContain('video_generation');
+    expect(byModelId.get('doubao-seedance-2.5')).toContain('video_generation');
+  });
+
+  it('fails closed when explicit media-output families expose only dialogue transports', () => {
+    const mediaOutputModelIds = [
+      'gemini-3-pro-image-4k',
+      'gemini-3.1-flash-image-4k',
+      'gemini-3.1-flash-lite-image',
+      'gpt-4-dalle',
+      'gpt-4o-image-vip',
+      'qwen-image-edit-max',
+      'qwen-image-edit-plus',
+      'qwen-image-max',
+      'qwen-image-plus-2026-01-09',
+      'qwen-mt-image',
+      'seedream-3.0',
+      'volcv-dalle',
+      'grok-imagine-video-1.5',
+      'hailuo-video',
+      'kling-advanced-lip-sync',
+      'kling-meta-human',
+      'pixverse-video-v1',
+      'sora-2',
+      'sora-2-pro',
+      'veo3.1-fast-4K',
+      'veo3.1-components',
+      'video-style-transform',
+      'videoretalk',
+    ] as const;
+    const profiles = buildComflyModelProfiles({
+      version: 'media-output-dialogue-conflict',
+      models: [
+        ...mediaOutputModelIds.map((key) => ({
+          key,
+          name: key,
+          provider: 'Output provider',
+          tags: ['对话'],
+          apis: ['POST-/v1/chat/completions-1', 'POST-/v1/responses-2'],
+          capabilityStatus: 'complete' as const,
+        })),
+        {
+          key: 'gpt-4o',
+          name: 'GPT-4o',
+          provider: 'OpenAI',
+          tags: ['对话', '识图'],
+          apis: ['POST-/v1/chat/completions-1'],
+          capabilityStatus: 'complete',
+        },
+        {
+          key: 'qwen-vl-max',
+          name: 'Qwen VL Max',
+          provider: 'Qwen',
+          tags: ['对话', '识图'],
+          apis: ['POST-/v1/chat/completions-1'],
+          capabilityStatus: 'complete',
+        },
+        {
+          key: 'chat_fast_video',
+          name: 'Chat Fast Video',
+          provider: 'Other',
+          tags: ['对话'],
+          apis: ['POST-/v1/chat/completions-1'],
+          capabilityStatus: 'complete',
+        },
+      ],
+    });
+    const byModelId = new Map(profiles.map((profile) => [profile.modelId, profile.capabilities]));
+
+    for (const modelId of mediaOutputModelIds) {
+      expect(byModelId.get(modelId)).toEqual([]);
+    }
+    expect(byModelId.get('gpt-4o')).toEqual(['chat', 'vision', 'reverse_prompt']);
+    expect(byModelId.get('qwen-vl-max')).toEqual(['chat', 'vision', 'reverse_prompt']);
+    expect(byModelId.get('chat_fast_video')).toEqual(['chat']);
   });
 
   it('does not expose tag-only Comfly models through unsupported normalized endpoints', () => {
@@ -156,7 +247,7 @@ describe('provider model catalog', () => {
     });
 
     expect(profiles.find((profile) => profile.modelId === 'gemini-3.1-flash-lite-image')?.capabilities)
-      .toEqual(['chat', 'async_tasks']);
+      .toEqual(['async_tasks']);
     expect(profiles.find((profile) => profile.modelId === 'volcv-v1')?.capabilities)
       .toEqual(['async_tasks']);
   });
@@ -190,7 +281,7 @@ describe('provider model catalog', () => {
           capabilityStatus: 'complete',
         },
         {
-          key: 'verified-video-route',
+          key: 'veo3.1',
           name: 'Verified video route',
           provider: 'Other',
           tags: ['视频'],
@@ -204,7 +295,7 @@ describe('provider model catalog', () => {
     expect(byModelId.get('chat-route')).toEqual(['chat']);
     expect(byModelId.get('vision-route')).toEqual(['chat', 'vision', 'reverse_prompt']);
     expect(byModelId.get('action-route')).toEqual([]);
-    expect(byModelId.get('verified-video-route')).toEqual(['video_generation']);
+    expect(byModelId.get('veo3.1')).toEqual(['video_generation']);
   });
 
   it('normalizes the 2026-09-04 Comfly catalog additions into their declared media capabilities', () => {
@@ -297,7 +388,7 @@ describe('provider model catalog', () => {
     }
     for (const modelId of wanModels.map((model) => model.key)) {
       expect(byModelId.get(modelId)?.capabilities)
-        .toEqual(['video_generation', 'async_tasks']);
+        .toEqual(['async_tasks']);
     }
     for (const modelId of reverseModels.map((model) => model.key)) {
       expect(byModelId.get(modelId)?.capabilities)
@@ -410,7 +501,7 @@ describe('provider model catalog', () => {
       }],
     });
 
-    expect(profiles[0]?.capabilities).toEqual(['responses']);
+    expect(profiles[0]?.capabilities).toEqual(['responses', 'vision', 'reverse_prompt']);
   });
   it('maps the documented RelayMe capability field instead of guessing from names or legacy modelType', () => {
     const profiles = buildRelayMeModelProfiles(relayModels);
@@ -420,7 +511,7 @@ describe('provider model catalog', () => {
       constraints: { image: { resolutions: ['1K', '2K', '4K'] } },
     });
     expect(profiles.find((item) => item.modelId === 'gemini-3.1-flash-lite')).toMatchObject({
-      capabilities: ['chat', 'reverse_prompt'], capabilityStatus: 'complete',
+      capabilities: ['chat', 'vision', 'reverse_prompt'], capabilityStatus: 'complete',
     });
     expect(profiles.find((item) => item.modelId === 'kling/kling-v3-video-generation')).toMatchObject({
       capabilities: ['video_generation', 'async_tasks'],
@@ -448,6 +539,16 @@ describe('provider model catalog', () => {
     ]);
   });
 
+  it('does not advertise RelayMe image editing before its reference-image request field is verified', () => {
+    const profiles = buildRelayMeModelProfiles([{
+      name: 'Relay Image Edit', deploymentName: 'relay-image-edit', capability: 'image', modelType: 'IMAGE',
+      supportsImageToImage: true,
+      isDefault: false, offers: [{ id: '34', specialOffer: false }],
+    }]);
+
+    expect(profiles[0]?.capabilities).toEqual(['image_generation', 'async_tasks']);
+  });
+
   it('keeps RelayMe dialogue models runnable for reverse prompting when the catalog omits endpoints', () => {
     const profiles = buildRelayMeModelProfiles([{
       name: 'Gemini 3.1 Flash Lite', deploymentName: 'gemini-3.1-flash-lite', capability: 'text', modelType: 'TEXT',
@@ -457,7 +558,7 @@ describe('provider model catalog', () => {
     expect(profiles).toEqual([
       expect.objectContaining({
         modelId: 'gemini-3.1-flash-lite',
-        capabilities: ['chat', 'reverse_prompt'],
+        capabilities: ['chat', 'vision', 'reverse_prompt'],
         capabilityStatus: 'complete',
       }),
     ]);
@@ -480,12 +581,12 @@ describe('provider model catalog', () => {
     expect(profiles.every((profile) => !profile.modelId?.startsWith('workflow:'))).toBe(true);
   });
 
-  it('exposes RelayMe dialogue routes without relying on model-name heuristics', () => {
+  it('keeps the verified RelayMe reverse fallback scoped to visual dialogue', () => {
     const profiles = buildRelayMeModelProfiles(relayModels);
     const text = profiles.find((item) => item.modelId === 'gemini-3.1-flash-lite');
     const video = profiles.find((item) => item.modelId === 'kling/kling-v3-video-generation');
 
-    expect(text?.capabilities).not.toContain('vision');
+    expect(text?.capabilities).toContain('vision');
     expect(text?.capabilities).toContain('reverse_prompt');
     expect(video?.capabilities).not.toContain('video_understanding');
   });

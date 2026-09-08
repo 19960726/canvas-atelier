@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
-// Renderer persistence has a 15 second hard limit. The native close watchdog
-// must not declare a healthy large-project save unavailable before that limit.
-export const CLOSE_FLUSH_TIMEOUT_MS = 17_000;
+// A close flush can contain one bounded commit and one bounded stable point.
+// Give both 15 second renderer persistence boundaries time to settle while
+// still retaining a native watchdog for a renderer that stops responding.
+export const CLOSE_FLUSH_TIMEOUT_MS = 32_000;
 
 export interface CloseFlushRequest {
   readonly requestId: string;
@@ -46,6 +47,7 @@ const closeFlushAckSchema = z.discriminatedUnion('phase', [
     outcome: z.enum(['saved', 'discarded', 'cancelled', 'failed']),
     phase: z.literal('completed'),
     requestId: requestIdSchema,
+    errorCode: z.string().min(1).max(120).optional(),
   }).strict(),
 ]);
 

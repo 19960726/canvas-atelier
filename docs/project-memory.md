@@ -1,5 +1,45 @@
 # Canvas Atelier project memory
 
+## 2026-09-08 安装版 Photoshop 智能对象安全验收工具
+
+- 原因：旧的临时 Photoshop 验收脚本会读取真实项目并直接使用当前活动文档，无法证明安装版 bridge 的隔离性，也可能把测试图层写入用户文档。新增 `work/qa-installed-photoshop-smart-object.mjs` 后，安装版验收只使用隔离 user-data、离线网络门禁、脚本生成的 320×180 PNG 和唯一命名的 240×240 Photoshop QA 文档；发现任意预先打开的 Photoshop 文档时直接阻断，不创建、不激活、不关闭任何文档。
+- 验收：脚本经公开 `projectImages.importDroppedMedia` 和 `projectImages.importToPhotoshop` bridge 导入素材，随后验证 `LayerKind.SMARTOBJECT`、像素取整容差内的原图比例、完整落在画布内和中心对齐。finally 只按唯一名称定位 QA 文档并调用 `qaDocument.close(SaveOptions.DONOTSAVECHANGES)`；不按活动文档或序号关闭，也不保存、退出 Photoshop。正式运行必须同时提供期望版本、EXE SHA-256 和 app.asar SHA-256。
+- TDD 与当前证据：`node --test work/qa-installed-photoshop-smart-object.test.mjs` 先得到静态安全契约、几何断言、隔离路径和 operationId 的预期 RED，修复后 10/10 通过。对 1.6.114 安装版的零网络阻断冒烟已通过安装指纹、隔离 user-data、离线门禁和受管图片导入；因 Photoshop 当前已有 1 个文档而按设计停止，QA 根已删除且没有创建或关闭 Photoshop 文档。完整智能对象导入 PASS 须在无打开文档时对新正式安装版重跑。
+
+## 2026-09-07 Provider large generated-result downloads
+
+- 根因：Electron `net.request` 适配器虽然接受单请求 `timeoutMs`，但响应体始终使用创建适配器时的 64 MiB 全局上限；Comfly 与 RelayMe 的结果 CDN 下载没有传媒体专用策略，RelayMe 服务和 generation-history sink 也各自保留了 64 MiB 固定限制。大图或常见视频会在供应商已完成、项目素材已写入的不同阶段被误判失败。
+- 修复：两家供应商的 fetch init 增加 `maxResponseBytes`，Electron 的普通与 DNS-pinned 路径都读取单请求覆盖值；Comfly 图片/视频下载分别使用 256 MiB/512 MiB，RelayMe 按结果 kind 使用同样上限，媒体 CDN 下载超时统一为 300000 ms。generation-history sink 同步按图片 256 MiB、视频 512 MiB 校验；普通 API JSON 仍沿用 30 秒与 64 MiB 默认值。
+- TDD 证据：`work/qa-provider-large-result-download-red-20260907.log` 在旧实现得到 6 个预期失败；修复后聚焦 216/216 与相关宽回归 298/298 通过，见 `work/qa-provider-large-result-download-green-final-20260907.log`、`work/qa-provider-large-result-download-wide-20260907.log`。回归覆盖声明 Content-Length 超过 65 MiB 但实际小响应的 Electron 单请求覆盖，以及约 65 MiB 的结构有效 MP4 在 RelayMe 服务与 history sink 的存储路径。
+- 类型检查：provider-comfly、provider-relayme、desktop-core 三个包均通过；本项未修改 UI、模型目录、安装包或本机安装版本，也未提交真实付费生成。
+
+## 2026-09-06 Agent chat breathing layout
+
+- 根因：Agent 面板固定 460px，消息区只有 16px 内边距，composer 固定 160px，底栏按窄控制台排列，导致对话气泡、输入框和工具按钮缺少呼吸间距。
+- 修复：面板扩展到最大 560px；标题区、消息区和输入区增加分层留白；消息间距 18px，用户消息限制为 88% 宽度并使用聊天气泡；编辑区提升到 78–118px；composer 提升到 184px，工具栏保持稳定网格。窄于 620px 时使用 18px 内边距。
+- 回归位置：`tests/e2e/release-agent-layout.spec.ts`。
+
+## 2026-09-06 Codex reasoning slider UI
+
+- 根因：Agent Codex 底栏仍使用普通 select，无法表达参考图的离散滑块、当前模型副标题、恢复默认和 Ultra 独立视觉；固定 136px 输入框高度在长档位标签下会把发送操作挤出圆角边界。
+- 修复：新增 `CodexReasoningPopover`，按模型目录支持的 low/medium/high/xhigh/max/ultra 子集渲染离散 range；五档截图对应轻度/中/高/极高/Ultra，Ultra 使用紫色渐变；支持鼠标/触摸、方向键、Home/End、Escape 回焦、默认复位和模型弹层互斥。底栏改为稳定两行网格并将 Agent 顶部状态改为正常文档流，避免标题错位和状态覆盖任务选择。
+- 回归位置：`apps/renderer/src/agent/CodexReasoningPopover.test.tsx`、`SkillChatWorkbench.test.tsx`、`tests/e2e/codex-reasoning-slider.spec.ts`、`tests/e2e/release-agent-layout.spec.ts`。
+- 新鲜验证：相关 Vitest 146/146 通过；renderer 与 desktop-core TypeScript 检查通过；Codex slider Edge 回归 3/3（浅色、深色、800px）通过，包含截图和 hit-test；旧布局测试契约已更新为新的 160px composer 高度。完整安装包尚未因本次 UI 变更重建，不能用旧安装版证明用户路径。
+
+## 2026-09-06 Codex model cache fallback
+
+- 根因：Codex 服务传入 `models_cache.json` 后只返回缓存中的公开模型；本机缓存短暂缺少 `gpt-6-astra` 时，内置主模型因此从 Agent/Codex 目录消失。
+- 修复：当缓存包含至少一个公开且 API 可用的模型时，服务补回已安装的 `GPT-6 Astra` 主路由；空缓存、不可用缓存和隐藏/API 未开放模型仍不会被伪装成可用模型。
+- 回归位置：`packages/desktop-core/src/codex-cli-service.test.ts` 的 stale-cache 用例。
+- 新鲜验证：聚焦回归在旧实现上先失败，修复后通过；完整 Codex 服务回归与类型检查随后执行。
+
+## 2026-09-05 Codex Agent model picker and media boundary
+
+- 根因：本机 Codex CLI profile、请求 schema、CLI 参数和返回值都把 `gpt-6-astra` 写死，虽然本机 `models_cache.json` 已列出其他公开 API 模型，Agent 选择器仍只显示 Astra；错误提示也固定称 Astra，切换模型后会误导用户。
+- 修复：桌面启动时把本机 Codex 模型缓存路径传给 Codex 服务；服务仅暴露 `visibility=list` 且 `supported_in_api=true` 的安全模型 ID，按 `codex/<model-id>` 校验请求并将同一 ID传给 CLI；隐藏或 API 未开放的模型不会显示。Codex profile 仍明确为文本/MCP 通道，未把图片/视频能力标为支持，媒体提示改为当前 Codex 模型。
+- 回归位置：`packages/desktop-core/src/codex-cli-service.test.ts` 验证多模型切换、缓存过滤和 CLI `-m` 参数；`apps/renderer/src/agent/SkillChatWorkbench.test.tsx` 验证 Codex 媒体提示；`apps/renderer/src/app/provider-profiles.test.ts` 验证 Codex provider 路由过滤。
+- 新鲜验证：Codex/IPC/provider/Agent 聚焦套件 4 文件、164 测试通过；新增模型缓存用例后 Codex 服务 26/26 通过；`npm.cmd exec -- tsc -p packages/desktop-core/tsconfig.json --noEmit` 与 renderer 类型检查通过。
+
 ## 2026-09-05 Agent 已发送图片在消息流中缺少展示
 
 - 根因：`SkillChatWorkbench` 将图片引用保存在用户消息的 `request.references` 中并正常发送给视觉模型，但消息气泡只渲染 `message.content`，没有把引用重新映射到当前项目素材并渲染缩略图，因此模型已收到素材而对话看不到图片。
@@ -680,3 +720,185 @@ Before producing an installer, verify at minimum:
 - 反推不属于 modelJobs；其 `reverseAgentRunId` 仍由 `canvas_get_job_status` 读到 completed，随后 MCP read 验证 `reverseAgentRunState=completed` 与 identity-matched result 已持久化。首次安装版 RED 是 gate 错把通用 `executionState=completed` 套到反推节点；TDD 以 `executionState=idle` 的合法 fixture 复现并改为检查真实 reverse 状态，没有修改生产代码。
 - 最终 1.6.99 gate exit 0/status passed，`networkAttemptCount=0`；PID 58672、47896、34792 均停止，隔离 root `canvasforge-qa-installed-mcp-video-reverse-7fJQpS` 已删除。目标单测 6/6、相关源码 8 文件 408/408、两个 node syntax check 均通过。报告为 `work/qa-installed-mcp-video-reverse-zero-cost.md`。
 - 发布边界：以上只是当前安装版 1.6.99 的受控零付费资格验证，不是 live provider/真实付费结果。最终 1.6.100 安装后必须用 `CANVASFORGE_QA_EXPECTED_VERSION=1.6.100` 重跑同一脚本才能转为正式版本证据。
+
+## 2026-09-05 视频节点、反推缩略图与 Codex 模型选择修复
+
+- 根因：视频生成结果仍渲染自定义中心播放按钮和全屏按钮，旧 CSS 还保留对应定位与指针层；反推 Agent 的媒体标签与路由区在同一控制条中被压扁，最终缩略图行又被旧 pseudo-element/overflow 规则隐藏；Codex profile、请求 schema、CLI 参数和 renderer persistence 曾把 `gpt-6-astra` 写死。
+- 修复：视频结果保留原生 `<video controls>`，移除自定义播放/全屏 DOM 与死 CSS；视频节点控制栏仅在 `data-module-type='video_generation'` 下使用流式 38px 控件布局；反推路由区与媒体区分区排列，媒体槽按 20 个上限显示并横向滚动；Codex 从本机 `models_cache.json` 读取 `visibility=list` 且 `supported_in_api=true` 的公开模型，并将选择的 `codex/<model>` 传到 CLI 和结果。
+- 当前本机 Codex 目录显示 6 个模型：GPT-6 Astra、GPT-5.6 Sol、GPT-5.6 Terra、GPT-5.6 Luna、GPT-5.5、GPT-5.4 Mini。隐藏/API 未开放项继续过滤。当前本机 Codex 通道仍是文本/MCP 契约，图片/视频引用在 contract 中明确拒绝；需要图片粘贴时切换到“对话”模式和视觉模型，界面错误提示已改为通用“当前 Codex 模型”，不再误指 Astra。
+- 右键发送根因：图片结果菜单原先只切换 Agent 折叠状态，没有切换 `CanvasWorkspace` 的 active surface，因此事件可能发出但 Agent 面板仍隐藏。新增幂等的 `novus:open-agent` surface 事件，确保多次发送不会把已打开的 Agent 关闭；随后延迟派发受管图片引用。
+- 视频结果基础节点也清理了自定义全屏按钮、中心播放符号及对应死 CSS，所有可播放结果只保留原生 `<video controls playsInline>`。
+- 新鲜验证：视频 UI Playwright 43/43、反推 UI Playwright 2/2、组合 Agent/媒体/视频 UI Playwright 59/59、完整 Vitest 220 文件 2845/2845（2 个性能测试按设计跳过）、右键/Agent/Canvas 聚焦回归 404/404、全工作区 `npm.cmd run typecheck` 退出 0、生产 `npm.cmd run build` 退出 0、`git diff --check` 退出 0。未打包安装、未提交或发布；旧安装版不会自动包含本轮源码改动。
+
+## 2026-09-05 视频控制栏最终发布规则与安装占用处理
+
+- 根因：`main.tsx` 先导入 `canvas-layout.css`，再导入 `release-layout-contract.css`；后者末尾的同选择器规则把视频展开态控制栏恢复为 `position: relative`，因此源码看似有底部间距，已安装版仍贴边。另一个独立问题是 Codex/MCP 以 `Canvas Atelier.exe ...canvasforge-mcp.cjs` 保留 stdio 子进程，窗口关闭后 NSIS 仍检测到安装目录被占用。
+- 修复：视频展开控制栏固定左右和底部 18px、控件高 38px，提示词与控制栏保留 12px 间隔；窄屏双行控制栏为 84px。最终几何及截图由 `work/diagnose-installed-video-rail.mjs` 验证。NSIS 使用 `customCheckAppRunning`，只停止目标安装目录中命令行精确匹配 bundled MCP bridge 的后台进程；GUI、未知调用和其他安装目录保持运行，GUI 未关闭时提示保存退出。已撤销早期 `customInit/taskkill` 方案，旧候选安装包不可交付。
+- 安装检查证据：`work/installer-process-check.test.ps1` 的 8 项模拟边界测试，以及 `work/qa-installer-process-check.mjs` 编译执行真实 NSIS hook 均通过；覆盖 MCP 停止、未知调用与其他安装保留、可执行文件占用释放。
+
+## 2026-09-05 多图图槽、批量粘贴和连线吸附
+
+- 反推根因：执行层对超过 20 张或重复引用返回校验失败，渲染层把失败转换为空数组，导致整条图槽消失。现在显示层逐连接解析有效素材，超过 20 张仍显示所有有效缩略图并横向滚动；单次反推的 20 张执行上限保持不变，错误提示使用独立可见样式。
+- 图片和视频生成图槽保留前 20 张。连接 25 张时对可见 20 张换位，旧逻辑遗漏另外 5 条边，导致顺序没有持久化；现在补齐未显示的连接后提交完整排列。视频展开态也接回换位回调。三类图槽浏览器测试覆盖 6、7、20、21、25 张、滚动、换位、保存重开以及生成节点展开态。
+- 桌面粘贴根因：`readClipboardMediaFile` 使用 `find` 或循环首次返回，丢掉其余图片。现在读取完整 FileList（items 仅作为后备，避免重复），依次调用现有受管导入、分开摆放；单图仍可替换所选图片节点，多图创建独立节点。导入失败或切换项目时停止余下批次。
+- 原生粘贴证据：`work/qa-packaged-multi-paste.mjs` 在隔离 1.6.103 桌面程序中使用真实 Windows FileDropList 一次复制 25 张 PNG，记录 clipboardFiles/imported/nodes/loaded/positions 均为 25，页面错误 0，测试后恢复原剪贴板。报告为 `work/qa-packaged-multi-paste-final/report.json`。远离视口的节点会按既有策略卸载，检查时通过实际缩小画布查看全部节点，不把视口卸载误报为导入失败。
+- 连线根因：部分新节点的 React Flow `handleBounds` 尚未建立，原内部坐标刷新仅覆盖已有连线端点。小画布现在也刷新新节点；吸附半径按视口缩放换算为屏幕 48px。9 项浏览器测试覆盖四个方向偏离端口 32px、缩小画布后的相同距离以及不兼容/远距离拒绝。
+- 验收边界：上述是实际媒体、桌面剪贴板及受控 MCP/UI 验证，不代表外部供应商付费生成已重测。最终安装包必须在这些修改及回归后重新构建。
+- 最终回归：完整 Vitest 220 文件、2854 项通过，2 项性能测试按设计跳过；完整 Playwright 160/160 通过；全工作区 typecheck 和生产 build 退出 0。最终 unpacked 1.6.103 三类节点均完成真实 PNG 的 6、7、20、21、25 输入检查点，反推显示25张，图片/视频保留20张，最后一张可滚动查看及换位，页面错误均为0；同一构建原生剪贴板再次通过25/25。报告分别位于 `work/qa-packaged-25-images-final`、`work/qa-packaged-25-image_generation-final`、`work/qa-packaged-25-video_generation-final` 和 `work/qa-packaged-multi-paste-final`。
+
+## 2026-09-06 1.6.106 安装版 Agent 图片复制门禁
+
+- 安装根因：静默安装命令 `/D=D:\CanvasAtelier\Canvas Atelier` 在 NSIS 解析时按空格截断，首次把 1.6.106 写到了 `D:\CanvasAtelier\Canvas`；使用带引号的 `/D="D:\CanvasAtelier\Canvas Atelier"` 后，安装注册信息、安装可执行文件和 app.asar 均回到目标目录并报告 1.6.106。
+- 版本边界：候选 unpacked 与安装后的 `resources/app.asar` 均为 1.6.106，SHA-256 均为 `1687621ffe33dc9862ed4dbfa362d025025d3b98460bf3d5863c6e40a9c0826d`。原目录的六个隐藏进程均为精确 bundled MCP bridge 调用，没有 GUI 窗口。
+- QA 根因：`work/qa-installed-agent-image-chat.mjs` 原先写入的手工 2x2 PNG 能在 Chromium 预览和 `novus-asset:` fetch 中工作，但被 Electron `nativeImage` 拒绝，导致复制桥返回 false。改用与 `packages/desktop-core/src/test/png-fixture.ts` 同格式的 1x1 PNG；这只修复验证 fixture，不改变生产剪贴板逻辑。
+- 新鲜安装版验证命令：`$env:CANVASFORGE_QA_EXPECTED_VERSION='1.6.106'; node work/qa-installed-agent-image-chat.mjs 'D:\CanvasAtelier\Canvas Atelier\Canvas Atelier.exe' 'work/qa-installed-agent-image-chat-1.6.106-correct-fixture-20260906'`。结果 status `passed`：隔离网络、模型选择、原生粘贴、`@图片1` 引用、发送缩略图、novus-asset fetch、图片复制反馈和原生剪贴板非空有效 PNG 全部通过（报告记录实际像素尺寸）；pageErrors/consoleMessages 均为空，隔离 root 与原剪贴板均已清理。
+- 交付边界：该门禁证明 1.6.106 已安装并通过 Agent 图片复制链路；尚未证明外部 provider 的真实付费生成、RelayMe 登录保持、Photoshop 导入或完整 MCP 14-tool 生产安装版链路。
+- 模型路由回归：`resolveModelJobProfile` 原先固定筛选 `image_generation`，视频计划会静默使用图片模型。现在从计划 transaction 的模块类型推导 `video_generation` 或 `image_generation` 能力后再筛选；回归测试位于 `apps/renderer/src/app/app-store.test.ts` 的 `agent generation model selection`。
+
+## 2026-09-06 1.6.107 Agent 创作规划与专业反推回归
+
+- 创作 Agent 现在由聊天模型先返回带观察/估计/未知标记的 1 至 3 个方案；用户选择方案后才创建或定位生成节点，确认后才提交图片/视频任务。生成偏好独立保存图片与视频的自动/固定模型和参数，不改变聊天模型路由。
+- 生成任务按实际生成节点绑定自己的提示词、类型、参数和素材引用；不再让多个方案共用旧提示词节点。切换模式、模型、会话会使迟到响应失效，完成任务通过画布节点的实际 job 状态回写 Agent 消息和缩略图。
+- Codex 模型目录读取本地 `models_cache.json` 的可见模型、支持的推理档位和默认档位；不再把目录解析失败或空目录伪装成可用 Astra。反推专业章节保留相机/透视、形态结构、景深、材质、灯光、特效、流体、视频分镜和不确定性；格式不完整时保存部分章节与缺失清单。
+- 验证：`npm.cmd exec vitest -- run` 通过 221 文件 / 2873 项（2 项跳过）；`npm.cmd run typecheck` 通过。安装版 1.6.107 需在新包生成后重跑 `work/qa-installed-agent-image-chat.mjs` 和 `work/qa-installed-creative-plan.mjs`，不能用 1.6.106 证据替代。
+
+## 2026-09-06 1.6.107 安装包与全量回归
+
+- 根目录 `package.json` 曾被错误替换为 desktop-modern 子包，导致 npm workspace 消失；已恢复 workspace manifest，保留 desktop-modern 1.6.107 版本。
+- 生产构建及 NSIS 打包通过。安装包位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.107/CanvasAtelier-Win10-11-x64-1.6.107.exe`，SHA-256 为 `26BF12167EF06C969ABDFF9DEC77425ED73E85E3E667BA642C20676E36A05A4E`，`latest.yml` 版本为 1.6.107。
+- 全量 Vitest 首轮仅发现 3 个旧版本/旧布局契约，更新 1.6.107 与 560px Agent 面板断言后定向回归通过；全量 Playwright 159/163 通过，剩余 4 项同为旧 460px 几何契约，更新后受影响套件 26 项通过。MCP 配置、14 工具 schema、自动化/生图/视频零成本工作流测试 44/44 通过。
+- Playwright 输出有 Chromium `ResizeObserver loop completed with undelivered notifications` 开发服务器告警，但未导致用例失败。未执行新的 RelayMe/Comfly 付费生成，也未覆盖真实外部 provider 成功证据。
+
+## 2026-09-06 1.6.107 Agent 稳定性与引用回归
+
+- 拖动根因：位置提交成功后，旧的 durable source 回写会在提交 finally 阶段覆盖本地拖动位置。`useCanvasDraft` 现在记录已确认位置及提交前位置；源状态仍是旧值时保留本地位置，源状态变为其他新位置时接受 durable source，避免自动归位。
+- 关闭协议：completed ACK schema 现在允许受限的 `errorCode`，因此 `SAVE_TIMEOUT`、`CLOSE_SAVE_EXCEPTION` 等失败原因能安全传到桌面关闭恢复流程。现有保存失败重试、丢弃和关闭超时回归继续通过。
+- Agent 引用：模式切换会清除旧媒体能力错误；Agent 对话作用域补齐引用芯片的内联、换行和缩略图尺寸规则，避免 `@图片` 被挤成独立异常行。聚焦回归为 129/129，renderer、desktop-core、desktop-modern 类型检查通过。
+- 本轮尚未重新生成 1.6.107 安装包；安装版普通生图、视频生图、Agent 自动化工作流和真实外部 provider 仍需在新包完成后重新验证。
+
+## 2026-09-07 提交 ACK 与后台维护解耦
+
+- 根因：桌面 bridge 的 `commit` 在 journal writer 已返回 durable ACK 后，仍在同一个 IPC Promise 中等待自动快照、项目重读和 recent-project 索引更新；大型项目或慢磁盘因此会让 renderer 的保存计时误报 `SAVE_TIMEOUT`。自动维护还与关闭共用队列，关闭时序容易被未完成的 compaction 影响。
+- 修复：journal ACK 现在立即返回；自动快照在 ACK 已预留的同一会话维护尾中继续有序执行，stable point/close 会等待这段维护完成；recent-project 索引改为独立的有序辅助队列，并直接使用已应用事务的项目快照。辅助索引异常不会生成未处理 rejection，也不会阻塞 durable write。
+- 回归位置：`packages/desktop-core/src/bridge-contract.test.ts` 的 `returns the durable commit acknowledgement...` 与 `reserves automatic snapshot maintenance...` 用例，分别覆盖慢快照/索引和提交期间关闭的顺序。
+- 新鲜验证：bridge contract 90/90 通过；新增提交 ACK/关闭顺序用例通过。desktop-core 全套类型检查与更宽套件需由当前发布任务继续执行。
+
+## 2026-09-06 1.6.107 稳定性修复候选包验证
+
+- 重新构建并打包 `1.6.107` 成功。候选安装包 `apps/desktop-modern/dist-builder/desktop-modern-1.6.107/CanvasAtelier-Win10-11-x64-1.6.107.exe` SHA-256 为 `207C45F51E367620F7A6F57E6E58E052DBE11B452D0DEC0BFE0A6D63ED5B79BE`；候选 `app.asar` SHA-256 为 `3E78B7ED0607F46BB01286B726A63F8EF435FDF6E3793573E6DB436B33DFD6B8`。旧 payload 脚本中的历史 app.asar 哈希不适用于本候选包，不能作为失败证据。
+- 安装到隔离目录 `D:\CanvasAtelier\Canvas Atelier-1.6.107-qa` 后，实际版本为 `1.6.107`。安装版 Agent 图片引用门禁通过：原生剪贴板、`@图片1`、发送缩略图、图片复制和 PNG 回读均通过，页面错误为空。
+- 安装版创作 Agent/MCP 工作流通过：聊天规划 1 次、节点提交 1 次、结果缩略图回写，重启后节点 ID、提示词和结果均保持，付费调用为 0，页面错误为空。
+- MCP 配置与 14 工具零成本门禁仍为 `44/44`。真实 RelayMe/Comfly provider、生图和视频付费调用没有在离线 QA 中伪造为成功，仍需独立授权后验证。
+
+## 2026-09-06 1.6.107 Renderer 打包与 Agent 几何复核
+
+- 用户截图复现确认第一处根因：桌面 `build` 不会自动运行 Renderer 的 Vite build，electron-builder 只复制已有 `apps/renderer/dist`；只重建桌面主进程会把旧界面继续放进新安装包。现已显式执行 `npm.cmd run build --workspace @agent-canvas/renderer` 后再打包。
+- 第二处根因：`release-layout-contract.css` 在 `app.css` 之后加载，仍把 Agent header actions 设为旧的 `1fr 34px`、输入区设为 54px/110px，覆盖了前面的修复。已在 release contract 末尾增加最终局部规则：Agent 面板 560px、选择器/加号 42px 同基线、编辑区 96px 至 160px。
+- 新增样式红测先失败后通过；最终安装候选的真实 DOM 几何为：panel 558px、header action grid `428px 42px`、select 42px、plus 42px、composer editor 96px。Agent 样式/引用聚焦回归 `125/125` 通过。
+- 候选 `win-unpacked` 已重新启动并完成 Agent 图片引用/复制门禁；正式目录安装器受 Windows 安装器现有占用/权限流程阻断，未强行杀进程或覆盖用户目录。必须在正式目录安装成功后再做最终用户路径验收。
+
+## 2026-09-06 1.6.107 正式目录写入与复测
+
+- 最新候选包已成功写入正式目录 `D:\\CanvasAtelier\\Canvas Atelier`，安装器退出码为 0；正式目录 `resources\\app.asar` SHA-256 为 `3E78B7ED0607F46BB01286B726A63F8EF435FDF6E3793573E6DB436B33DFD6B8`，与候选包一致。
+- 正式目录实际启动版本为 `1.6.107`。真实 DOM 几何复测：Agent 面板 558px，任务选择器 42px，加号 42px，输入区 96px；不再使用旧的 460px/34px/54px 级联。
+- 正式目录安装版 Agent 图片引用/复制门禁通过，`@图片1` 发送、缩略图加载、系统剪贴板 PNG 回读均通过；创作 Agent/MCP 工作流通过，重启后节点、提示词和结果保持，页面错误为空。
+
+## 2026-09-06 1.6.107 正式目录生图/视频与 Codex 工作流验证
+
+- 正式目录 `1.6.107` 的普通模式零成本图片执行链通过：创建、确认、提交、轮询、结果资源持久化、取消和重启读取均通过；14 个 MCP 工具全部实际调用，页面错误为空。
+- 正式目录 `1.6.107` 的普通模式零成本视频执行链通过：视频提交、轮询、终态确认、托管结果持久化和进程清理通过；反推链同步通过。
+- Codex/MCP 简单图片与视频工作流通过：读取画布、创建/更新/移动/连接节点、确认后执行、结果回写、取消、删除、重启读取均通过；图片和视频结果均持久化，工作流报告无网络请求。
+- 当前环境未配置 RelayMe/Comfly 凭据，未发起真实付费 provider 生图或视频请求；上述结果是隔离零成本执行器验证，不能替代真实供应商成功证据。
+
+## 2026-09-07 RelayMe 四链能力与过期会话修复
+
+- 根因一：RelayMe 画布反推已通过 `/chat/completions` 使用受管图片，但 Agent 对话服务仍无条件拒绝所有 `referenceAssetIds`，两套桌面入口也没有注入 Agent 受管图片读取器；因此同一视觉模型能做画布反推，却不能做对话反推。现在 Agent 只允许 `vision` profile，安全读取受管 PNG/JPEG/WebP/GIF，校验数量、非空字节和 MIME，并只把 data URL 附到最后一条用户消息；modern/legacy 均已接线。
+- 根因二：实际反推 deployment `gemini-3.1-flash-lite` 的目录可能遗漏视觉 metadata，旧 fallback 只给 `reverse_prompt`，没有给 Agent 路由需要的 `vision`。现在仅对这个精确 deployment 补 `chat + vision + reverse_prompt`；`supportsVision:false` 或明确 text-only modalities 仍优先，普通文本模型不会被提升。
+- 根因三：RelayMe 401/403 只翻译成 `CREDENTIALS_LOCKED`，没有设置 IPC 已有清理逻辑识别的 `authenticationExpired`；模型目录又可用缓存吞掉 401。现在过期错误带稳定 marker，目录不会以缓存掩盖鉴权过期，既有 IPC 会清除过期会话和 active RelayMe。
+- 参考图生图边界：已认证的 `/images/generations` 请求只有 `model`、文本 `messages`、比例、采样尺寸、质量和数量；task/list 只有任务身份、类型、状态、时间与错误，没有可验证的参考图片字段。`supportsImageToImage` 只是目录 metadata。旧代码会在该 flag 为 true 时暴露 `image_edit`，随后付费请求却完全丢掉图片。现在 RelayMe 不再宣称 `image_edit`，任何非空参考图都在提交前明确拒绝并说明不会消耗额度。RelayMe 文生图和文生视频仍走直接 generation + task polling；视频素材引用、视频反推和 provider cancel 继续 fail closed。
+- TDD 证据：Agent 引用 RED 3 项失败、过期缓存 RED 1 项失败、verified vision RED 4 项失败、参考图静默丢失 RED 2 项失败；最终 RelayMe 聚焦 10 文件 226/226，设置/反推 UI 5 文件 205/205，RelayMe client typecheck 退出 0。完整记录见 `work/qa-relayme-capability-audit-20260907.md`。
+- 验收边界：本轮未发真实请求、未读取或修改凭据，也没有消耗额度。2026-09-06 保存的 RelayMe 登录已失效；必须重新完成官方网页登录后，分别验证当前目录、一次低成本文生图、一次低成本文生视频、一次图片画布反推和一次图片对话反推，才能把 live provider 行标为通过。并行 Comfly 改动曾导致 modern/legacy typecheck 的 resolution union 临时失败，最终发布任务必须在共享修改收口后重跑全量 typecheck/build/package/installed gates。
+
+## 2026-09-07 E2E 供应商能力 fixture 收敛
+
+- 根因：浏览器 E2E 仍直接加载 2026-08-09 的 Comfly 审计快照，把没有当前生产提交契约的 Grok、MiniMax、Kling 等视频家族标成可运行；RelayMe 视觉对话 fixture 还声明了 `video_understanding`，与生产服务明确拒绝视频反推的边界冲突。因此 UI 测试可以通过一条生产环境必定 fail closed 的路线。
+- 修复：E2E 的 Comfly 视频目录只保留 Seedance、Veo、Wan 各一个已验证代表；RelayMe 反推 fixture 保留图片 `vision + reverse_prompt`，移除视频理解声明。契约测试 `apps/renderer/src/test-mode/e2e-provider-profiles.test.ts` 直接用生产 `hasVerifiedComflyVideoSubmissionContract` 检查所有 E2E Comfly 视频项，并锁定 RelayMe 图片反推边界。
+- 验证：契约 RED 为 2/2 失败，修复后 2/2 通过；生产目录/提交契约宽测 58/58、相关媒体与反推 Playwright 76/76、renderer typecheck、secret/path scan 与相关 diff-check 通过。上述仍是离线 fixture 验证，不代表任何供应商 live 请求成功。
+
+## 2026-09-07 1.6.113 正式发布验收
+
+- 正式版本已安装到唯一日常目录 `D:\CanvasAtelier\Canvas Atelier`。安装包为 `apps/desktop-modern/dist-builder/desktop-modern-1.6.113-formal-20260907/CanvasAtelier-Win10-11-x64-1.6.113.exe`，大小 103258689 字节、SHA-256 `A529EC4820E8B018C8ABCCB5BD94CBFB663658748311BAE5EC95DC7C3EA691AE`；正式 EXE SHA-256 为 `83EBBB815495838C7CA394AB3A122F204F0F19F7ACD5B3A8267BAF7B10E56D4D`，`resources/app.asar` SHA-256 为 `AD41775FF1754784AE80C047779B5EBCB1D23031BD391A85F32D9CDCABFC9E00`。安装器内 12 个应用载荷通过解包比对；安装目录的 EXE、app.asar、renderer 入口、MCP 和 3 个 Photoshop 文件与候选逐项同哈希。安装包与 EXE 的 Authenticode 状态仍为 `NotSigned`。
+- 清理脚本先验证正式 EXE、app.asar、1.6.113 注册项和全部白名单目标，再删除 2 个空壳目录、5 个 1.6.92 至 1.6.96 旧备份、2 个旧用户快捷方式和 3 个旧用户注册项；旧 1.6.109 全机器注册键已由安装器原位更新为 1.6.113。清理前 7 个目录合计 1865448324 字节；清理后 `D:\CanvasAtelier` 只剩 `Canvas Atelier`，注册表只剩 1.6.113，公共桌面和开始菜单快捷方式均指向正式 EXE。
+- CanvasForge 保持独立：`D:\CanvasForge\CanvasForge.exe` 与其 app.asar 前后 SHA-256 分别保持 `7AE6E7B125F892F8DCE446D7F3D7058728BEC00A755457246B3F6EF544DE6548`、`D8B955A89844C914C67DEA21302DBDB5778B7DB8CDDACEC2E1F152391E55DCF9`，进程未停止。真实 Canvas Atelier 项目仍存在；保存恢复门禁使用副本，源项目树 SHA-256 前后同为 `a8c96f45a3d475459fc178b13a96242cb92d22335cd841ddb9202b995571e645`。
+- 多图根因包含两层：renderer 旧路径只取剪贴板首项并让批次导入在项目切换/删除后继续；桌面导入还把自动快照刷新后的同一 writer/session root 误判为“会话已更换”，第二张起可能报 `PROJECT_IMAGE_UNAVAILABLE`。生产逻辑现完整读取 FileList、有序并发校验素材、支持批次取消与 25 节点删除；桌面 bridge 以 session context、writer 和 root 身份判断真正换会话。对应桌面图片/视频 bridge 聚焦回归 44/44 通过。
+- 正式安装版真实 Windows 剪贴板门禁使用 25 张 1600x1200 高熵 JPG、总计 37209274 字节：首节点 120 ms、25 张建节点 994 ms、全部图片解码 5926 ms；25/25 文件、节点、图片和位置通过。粘贴中途取消后仅保留 1 个已提交节点并可立即删除；尾部删除、中部删除、25 张批量清空、保存与重开后不回魂全部通过，系统剪贴板已恢复。
+- 三类多参考图门禁在候选和安装版均通过：Agent 反推显示并解码 25/25；图片生成与视频生成按执行上限显示并解码 20/20；6、7、20、21、25 张检查点、横向滚动、末项重排和持久修订均成功。Agent 图片对话同时通过原生粘贴、`@图片1`、发送缩略图、视觉请求、回复、`novus-asset:` 读取和复制回系统剪贴板。
+- 安装版 MCP 零费用链通过：14/14 工具实际调用，图片任务完成/取消、媒体导入、视频生成、图片反推、结果持久化、正常关闭和重启读取均成功；网络尝试为 0，隔离目录全部清理。明暗主题正式 UI、10 个正式节点、图片/视频控制栏和 Agent 反推布局也通过；真实项目副本的稳定点保存、退出和重开保持 revision 269、31 个节点、25 张图片和 1 个视频。
+- 全量源码证据：最终 Vitest 为 225 个文件通过、2 个按设计跳过，2990 项通过、2 项跳过；全工作区 typecheck、生产 build、NSIS 打包和 164/164 Playwright 通过。供应商隔离工具补齐当前版本/正式路径、JPEG 剪贴板文件和旧版 Comfly 加密配置兼容，相关 Node 回归分别为 20/20 与 12/12。
+- Comfly 当前只读 live 状态为 `configured=true`、`locked=false`、连接 `connected`，返回 866 个 profile，其中生图 32、视频 18、视觉/反推 146；正式 UI 的生图、视频、反推选择器均为非空且只含 Comfly 路由。`doubao-seedance-2.5`、`wan2.2-t2v-plus`、`veo3.1` 均被识别为完整 `video_generation + async_tasks`。本轮没有提交付费任务；历史 2 参考图 Nano Banana 失败为上游 `ERR_CONNECTION_CLOSED`，1.6.113 已将同步等待放宽到 300 秒并禁止超时自动重试，仍需下一次用户主动生成验证供应商最终产物。
+- RelayMe 代码和安装包的文生图、文生视频、图片画布反推、图片对话反推都已通过单元/零费用 fixture 与安装版桥接门禁；参考图生图、视频素材输入、视频反推和远端取消在没有已验证契约时继续提前拒绝。当前只读 live 连接明确返回 `authentication_failed`，profile/task 读取返回 `CREDENTIALS_LOCKED`，因此 live 行保持 BLOCKED；用户重新网页登录后，才能执行并验收四条真实供应商请求。本轮未消耗 RelayMe 或 Comfly 额度。
+
+## 2026-09-08 1.6.114 启动、Agent、供应商与正式安装验收
+
+- 启动卡顿包含两个串行阻塞：最近项目采用前同步等待 recovery 扫描，以及 durable project 采用前等待 25 张受管图片的完整性读取。当前真实项目启动前有 451 个 recovery session、20786 个文件、291723764 字节；旧 1.6.113 的 31 节点画布约 24049 ms 才可用。1.6.114 先采用 durable canvas，把 recovery refresh 和媒体完整性校验移到后台；正常最近项目与孤儿恢复仍保持不同路径，恢复数据不会静默覆盖正式项目。
+- recovery mirror 现在为每个新会话写入 `session.json`，也能通过完整 candidate 记录验证旧版会话；每个 projectId 只保留当前会话和最新两个已验证旧会话。未知、损坏、符号链接或 reparse 数据保持不动，清理失败也不影响已找到的恢复结果。真实正式目录验收中，workspace 665 ms、31 节点且保存态可交互 785 ms、Fit View 响应 915 ms，后台剪枝 27438 ms 完成；451 个会话剪到 3 个，删除 448 个，项目 stable revision 仍为 269，正常关闭后 `cleanClose=true` 且无 project lock。当前项目 recovery 从 291723764 字节降到 5162280 字节。
+- 独立离线启动门禁复制同一 31 节点项目，预置 5 个合法会话和 1 个未知损坏会话：workspace 602 ms、画布采用 687 ms、DOM 可交互 1722 ms、后台剪枝 18322 ms；合法会话最终为 3 个，未知目录保留，源项目树 SHA-256 前后同为 `390757653467269373426b3278e69b63780e77825eb69a2f1330bee4d1c5f8d5`，页面错误为空且隔离目录已清理。报告为 `work/qa-installed-startup-recovery-1.6.114-run2/report.json`。
+- Agent 普通聊天由 provider 在 180 秒主动取消，视觉请求保持 300 秒；renderer 分别在 195 秒和 315 秒显示超时。完全相同的失败请求重试会复用原用户消息并避免向 provider 历史重复追加，编辑后的请求仍建立新回合。Codex CLI 的 MCP 初始化、握手、transport closed 等错误映射为稳定 `CODEX_CLI_MCP_FAILED`，界面不再只显示通用 CLI 失败，底层私有诊断不会泄漏。
+- 正式安装版真实 Windows 剪贴板再次使用 25 张 1600x1200 高熵 JPG、总计 37209274 字节：首节点 119 ms、25 张建节点 1005 ms、全部解码 5961 ms；中途取消残留的 1 个已提交节点可删除，尾部、中部和 23 张批量删除均成功，保存和重开后节点数仍为 0，系统剪贴板已恢复。Agent 图片聊天的原生粘贴、`@图片1`、缩略图、`novus-asset:` fetch、复制反馈和 1x1 PNG 原生剪贴板回读也通过。
+- 当前真实项目副本的保存门禁保持 revision 269、31 节点、37 连线、25 张图片和 1 个视频；显式保存观察到 `saved -> saving -> saved`，两次干净关闭均移除 lock 并写入 clean-close，重开内容一致，正式离线网络守卫两次握手均为 0 次网络尝试，原项目树未被该门禁修改。
+- 安装版零费用执行门禁通过：14/14 bundled MCP 工具实际调用；图片完成与取消、媒体导入、选择删除、确认、保存重启、视频完成和图片反推均通过，结果与任务身份持久化；所有 fixture 的 `networkAttemptCount=0`，没有真实 provider 任务或费用。图片生成、视频生成和反推节点的 25 路连接门禁也通过：反推显示 25 张，图片/视频执行槽保留并解码前 20 张，滚动和重排成功。
+- Comfly 正式安装版只读 live 验收为 `configured=true`、`locked=false`、connection `connected`；目录 866 个 profile，其中生图 32、视频 18、反推 146，三个正式 UI 选择器均有 Comfly 路由。本轮没有提交真实生图、视频、反推或聊天任务，所以不能把目录和 fixture 结果写成付费生成成功。
+- RelayMe 正式安装版只读验收为 `configured=true`、`locked=false`，但 connection 明确返回 `authentication_failed`，`listProfiles` 返回 `PROVIDER_UNAVAILABLE`，正式 UI 因此没有 RelayMe 生图路由。代码、client、bridge、图片对话反推与零费用执行门禁通过；当前剩余阻塞是 2026-09-06 登录会话已经失效。必须由用户重新完成 RelayMe 官方网页登录，再分别提交低成本文生图、文生视频、图片画布反推和图片对话反推，才能把 live 行标为通过。
+- 唯一正式安装已覆盖到 `D:\CanvasAtelier\Canvas Atelier`，注册表只剩 `Canvas Atelier 1.6.114`，公共桌面和开始菜单快捷方式都指向该 EXE；`D:\CanvasAtelier` 只剩 `Canvas Atelier`。首次静默安装的未正确引用 `/D=` 参数曾产生 `D:\CanvasAtelier\Canvas`，后置路径检查立即发现并用带引号参数重装，空壳经白名单和正式身份验证后删除。`D:\CanvasForge` 未停止、未修改、未删除。旧 `desktop-modern-1.6.113-formal-20260907` 构建副本已删除，只保留 1.6.114 正式构建目录。
+- 正式安装包为 `apps/desktop-modern/dist-builder/desktop-modern-1.6.114-formal-20260908/CanvasAtelier-Win10-11-x64-1.6.114.exe`，大小 103260348 字节、SHA-256 `0FA51B19C90CC814CBDE4C77E889EFAF2BB447028E10E4732F52E0A8716C48C2`；EXE SHA-256 `6D0F4FA5E33F5AEE4A5372D3AF72CBD99D93394C6AFEBCCFA1C59525072633DE`，app.asar SHA-256 `DDC5B768E914297A638EDE532E7D2E6EBE1907C9C1730B5B639F4270AB46903A`。安装器解包的 12 个应用载荷通过比对；安装目录的 EXE、app.asar、renderer、MCP 和 3 个 Photoshop 文件与候选逐项同哈希。安装包和 EXE 的 Authenticode 仍为 `NotSigned`。
+- 最终验证：完整 Vitest 225 个文件通过、2 个按设计跳过，2999 项通过、2 项跳过；全工作区 typecheck 和生产 build 退出 0；QA helper Node 回归 66/66、安装占用边界 8/8、cleanup safety contract、NSIS 打包、12 文件 payload 比对及安装后哈希门禁均通过。不要用这些离线与只读结果替代外部供应商真实付费产物证据。
+
+## 2026-09-08 生图结果缺少尺寸导致 durable commit 失败
+
+- 根因：正式生图结果可以只返回 `assetId`；`job-store` 把缺失的 `width`/`height` 作为自有 `undefined` 属性写入正式生图节点的 `resultWidth`/`resultHeight`。模块配置保留这些属性，JournalWriter 在写入 revision 前对完整 commit request 执行 `sha256Canonical`，因此抛出 `canonicalJson only accepts JSON-safe finite values`，renderer 最终只得到 `DURABLE_WRITE_FAILED`，生成素材虽已落盘但节点结果未提交。
+- 修复与保护：正式生图结果仅在对应尺寸为有限正数时写入 `resultWidth`/`resultHeight`；缺失或无效尺寸省略字段，正常的有限正数尺寸仍原样保留。没有修改供应商协议、Photoshop、版本或 JournalWriter。
+- TDD 与验证：`apps/renderer/src/jobs/job-store.test.ts` 新增缺尺寸 materialization 回归，使用 JournalWriter 同形状的 commit request 调用真实 `sha256Canonical`。旧实现聚焦 RED 为 1/1 失败，精确指出 `resultWidth` 不应存在；修复后聚焦 1/1、job-store 43/43、保存链与 canonical/JournalWriter 宽回归 337/337 通过，`npm.cmd exec -- tsc -p apps/renderer/tsconfig.json --noEmit` 退出 0。
+
+## 2026-09-08 MCP 受信任媒体选择器前台与真值修复
+
+- 旧候选的真实根因不是 MCP 请求未送达。安装版隔离 QA 将 Canvas Atelier 原生窗口最小化后，经 bundled stdio MCP 调用 `canvas_import_media`，Playwright 确实捕获了 `filechooser`，工具也返回 `pickerOpened=true`；但事件瞬间窗口仍为 `visible=false`、`minimized=true`、`focused=false`。因此选择器可能藏在后台，旧实现却把 fire-and-forget 的 `input.click()` 无条件报告为已打开。RED 报告为 `work/qa-installed-mcp-trusted-picker-focus-1.6.115-pre-rebuild/report.json`。
+- 修复在桌面 MCP bridge 转发交互请求前恢复、显示并聚焦 Canvas 窗口，异步有界等待可见、非最小化且已聚焦；renderer 再有界等待 `document.visibilityState=visible` 与 `document.hasFocus()` 后发起受信任 file input。workspace adapter 只有在 renderer 确认接收选择器请求时才返回 `pickerOpened=true`，否则分别返回 `MCP_INTERACTION_UNAVAILABLE` 或 `MEDIA_PICKER_NOT_OPENED`。MCP server 指令也明确禁止在错误响应后声称选择器已打开。
+- TDD 与当前源码验证：workspace adapter 与 main-to-renderer bridge 的 RED 共 3 项，分别证明旧实现假成功、未调用前台准备、准备失败仍转发；MCP 指令 RED 证明旧文案会诱导假报告。修复后相关 Vitest 3 文件 33/33 通过，desktop-core、renderer、desktop-modern、desktop-legacy TypeScript 检查均退出 0。新离线 helper `work/qa-installed-mcp-trusted-picker-focus.mjs` 只使用隔离 QA root 和 bundled MCP stdio，取消 filechooser 后要求 revision 与节点 ID 完全不变；生产候选重建后必须复跑该门禁再关闭安装版行。
+
+- 2026-09-08 continuation: the source implementation was recompiled and an isolated Electron-builder unpacked candidate was created at `apps/desktop-modern/dist-builder/desktop-modern-1.6.115-picker-20260908/`. Candidate identity is version `1.6.115`, app.asar SHA-256 `5cd104ab362845d98b876cc3733ed028e815d67cd1b87bef1818ceec65afed4f`, EXE SHA-256 `4bc090e439f29ef6c39c1ac02458fafe01c6757fed618eefa946843ea8d0f487`; `dist/main.cjs` matches the compiled source and contains the foreground preparation/interaction guard. Focused MCP, workspace adapter, server, runtime and packaging tests passed 53/53; QA helper contract passed 3/3; full typecheck and production build passed. The fresh installed Electron focus runner was attempted against this candidate but automatic elevated execution was rejected after the approval usage limit was reached, so the actual minimized-window/filechooser foreground state remains unverified. Existing daily Canvas Atelier processes were left running.
+- 2026-09-08 resumed verification: after the execution policy changed, the same candidate passed `work/qa-installed-mcp-trusted-picker-focus.mjs` with exit code 0. The precondition was `visible=false,minimized=true,focused=false`; when the real filechooser fired, native state was `visible=true,minimized=false,focused=true`, and MCP truthfully returned `pickerOpened=true`. Cancelling preserved revision 0 and the empty node set; requested network calls were 0 and the isolated root was removed. Fresh report: `work/qa-mcp-picker-focus-1.6.115-repacked-20260908/report.json`. This closes the unpacked-candidate picker gate only; it does not establish a fresh NSIS installer or formal installed-directory acceptance.
+- 2026-09-08 formal 1.6.115 continuation: full Vitest passed 225 files / 3039 tests with 2 designed skips; full Playwright initially exposed 2 stale mode assumptions, then the corrected targeted files passed 12/12. The source fixture tests were updated so provider chat scenarios explicitly choose 对话 and Codex scenarios supply the local Codex catalog; no production behavior was weakened. Secret/path scan, diff check, installer process boundary (8/8), candidate MCP 14-tool chain, candidate video/reverse chain, and installed image chat/model/filter gates passed. NSIS installer `apps/desktop-modern/dist-builder/desktop-modern-1.6.115-formal-20260908/CanvasAtelier-Win10-11-x64-1.6.115.exe` is 103263177 bytes with SHA-256 `903cc7faeb1167aa8ef8f07d642b92e34150a4792952db9829768b5a79521cce`; payload verification matched 11 files and installed `app.asar`/EXE identity. Installed picker focus passed with foreground state `visible=true,minimized=false,focused=true`; installed save/reopen preserved revision 272, 31 nodes, 37 edges, 26 images and 1 video, with unchanged source tree hash and zero network attempts. Photoshop installed smart-object QA fail-closed at the initial snapshot because one pre-existing user Photoshop document was open; it did not create, activate, modify, or close that document. The installer handled the two exact bundled MCP background processes through its existing process guard; final inspection found no Canvas Atelier processes remaining and only the 1.6.115 uninstall entry. CanvasForge executable and app.asar hashes remained unchanged. Authenticode remains `NotSigned`; live provider generation and real Photoshop placement remain unverified/blocked.
+
+## 2026-09-08 1.6.116 Agent 创作、保存与在线更新发布
+
+- Codex CLI 支持 ChatGPT 登录和 API Key 两种认证，界面现在直接说明两条路径并把 401/无效凭据映射为重新认证提示。当前机器的缓存 API Key 经最小真实请求返回 401，因此本机 live Codex 行仍需重新登录或更新 Key；未把本地 CLI 已安装误报为真实请求成功。
+- 创作 Agent 固化为方案优先流程：分析后给出方案，选择后显示对勾、深色选中态和 `aria-pressed`，确认卡片滚动到视口中部，主操作写明“确认并新建节点”。每次图片/视频确认都创建独立 `agent-image-*` / `agent-video-*` 节点，不再复用选择节点或画布唯一同类节点。
+- 生图状态使用同节点最新任务；旧失败不会覆盖更新成功。只有 completed 任务确实持有结果资源才宣称结果已回写，否则明确提示结果尚未回写。画布节点创建或启动保存失败会把真实 `saveErrorCode` 传给 Agent。
+- 首个新候选复现了 Windows 原子目标重命名的短暂 `PERMISSION_DENIED`。`writeAtomic` 仅对目标 rename 的 `EPERM`/`EACCES` 做 20/60/140/280 ms 有界重试；其他错误不重试，持续权限拒绝在重试耗尽后仍返回标准错误并保留恢复候选。修复后候选连续三轮和最终轮通过。
+- 最终候选完成方案选择、确认可见、独立节点创建、提交、结果缩略图、保存和重启持久化，页面错误为空，真实项目未触碰，付费调用为 0。聚焦回归 591/591；恢复契约 92/92；完整 Vitest 225 文件通过、2 文件按设计跳过，3047 项通过、2 项跳过；全工作区 typecheck、production build、NSIS 打包和 12 文件 payload 比对通过。
+- v1.6.116 已发布为 GitHub latest：`https://github.com/19960726/canvas-atelier/releases/tag/v1.6.116`。安装包 103264076 字节，SHA-256 `51326f57f087ec452edd1b04b5d076fe50236539148d9a9cb3960f78ae02a094`；blockmap 与 `latest.yml` 线上摘要、大小均匹配本地产物。
+- 带有效 feed 配置的 1.6.114 真实发现并下载 1.6.116。当前正式 1.6.115 首次检查失败的根因是其安装目录缺失 `resources/app-update.yml`；补入与 1.6.116 相同的 136 字节配置后，正式 1.6.115 真实到达 `ready_to_restart`，下载包同 SHA-256。没有调用重启安装，也没有关闭用户现有进程。其他缺少该文件的 1.6.115 用户需从 Release 页面手动安装 1.6.116 一次；1.6.116 包内已包含配置，后续可应用内更新。
+- 仓库仍是大量既有改动混合的受保护工作树；没有批量暂存或提交。Release 标签沿用现有提交，因此自动 Source code 归档不是安装包完整源码快照。安装包仍无 Authenticode 签名，真实外部 provider 付费生成未执行。
+- 用户明确要求正式版后，最终安装包以退出码 0 写入唯一日常目录 `D:\CanvasAtelier\Canvas Atelier`。正式 EXE SHA-256 `9DAC45FBBFCBDEC58ACBBCB32C84D0F68BD302B7284B2287EE9E7BA970FA14E3`，正式 app.asar SHA-256 `C28F8602A471170CAB39B749583BDA845F40F93D862D5184835F4C32EDCE9BCF`，版本 1.6.116；正式目录 12/12 个应用载荷与最终候选同哈希并包含 `resources/app-update.yml`。
+- 正式 EXE 的创作 Agent 全链再次通过：方案选中与确认可见、新建独立 `agent-image-58f99999-8e16-44eb-9466-6b8bd2efd8dc` 节点、一次任务提交、返图缩略图、保存、关闭重启后节点/提示词/结果保持，页面错误为空、真实项目未触碰、付费调用为 0。正式 1.6.116 使用真实 GitHub feed 检查后返回 `No updates are available.`，确认当前正式安装已识别自己为 latest。
+- 正式安装版完整零费用 MCP 门禁通过：14/14 工具实际调用，方案确认、图片任务完成与取消、结果资源持久化、媒体导入、删除、保存、关闭重启读取全部通过；隔离网络尝试为 0，隔离目录已清理。报告为 `work/qa-installed-mcp-zero-cost-full-chain-1.6.116-formal.json`。
+
+## 2026-09-08 1.6.117 创作方案全宽正式版
+
+- 用户在正式 1.6.116 截图中指出创作方案和确认卡只占左侧很小宽度。根因是微信式消息的终端样式把所有消息设为 `width: fit-content` 和 `max-width: 78%`；方案内部即使有卡片样式，也只能继承这块收缩宽度。
+- 创作方案 assistant article 增加专用 `skill-chat-workbench__message--creative-plan` 类。终端 release contract 将该消息、`.creative-plan`、每个 `.creative-plan__option` 和 `.skill-chat-workbench__confirmation` 设为完整可用宽度，确认主按钮随栅格横向扩展。
+- UI 红测先以 2 项失败证明旧 DOM 类与宽度契约缺失，修复后相关 188/188、版本/样式/Agent 聚焦 208/208 通过。完整 Vitest 为 225 文件通过、2 文件按设计跳过，3047 项通过、2 项跳过；全工作区 typecheck、production build、NSIS 打包和 12 文件 payload 比对通过。
+- 候选与正式安装版量化结果一致：messages 492px、creative plan 488px、confirmation 488px。正式 1.6.117 创建独立 `agent-image-554bdd15-6aab-4339-b71c-4d645a15694e` 节点、返图、保存、关闭重启后节点/提示词/结果保持，页面错误为空，真实项目未触碰，付费和 provider 网络调用为 0。
+- 正式安装器退出 0 并写入 `D:\CanvasAtelier\Canvas Atelier`。正式 EXE SHA-256 `1f13baef0468d254518257c4d7a95cc46f4083e6edd10b4eff35cc4dfbd6fcd8`，app.asar SHA-256 `3a2097b52f6b53fc01da7e36a47f51cd6fa6f00ae7d8df56ebab67e76d22639a`，12/12 载荷与最终候选一致。
+- v1.6.117 已发布为 GitHub latest：`https://github.com/19960726/canvas-atelier/releases/tag/v1.6.117`。安装包 103264181 字节，SHA-256 `db9d7a45bdb3ded9b6f272184c9a22e42cecc85d2684318b90e9cfdb883ac211`；blockmap 与 latest.yml 线上摘要和大小匹配。本地旧正式客户端真实发现并下载 1.6.117 到 `ready_to_restart`，下载包同 SHA-256；正式 1.6.117 检查后返回无更新。
+- 正式 1.6.117 的 bundled MCP 零费用门禁再次实际调用 14/14 工具，图片任务完成与取消、结果资产、媒体导入、选择删除、保存和重启读取全部通过；provider 网络尝试为 0，QA 隔离目录已清理。
+- Release 标签仍使用已有远端提交；自动 Source code 归档不是本地混合工作树的完整源码快照。安装包仍未做 Authenticode 签名，真实付费 provider 请求未执行。
+
+## 2026-09-08 1.6.118 Codex API 模式调用画布
+
+- Codex 画布调用保留真实用户的 provider、API Key 和 Base URL 配置，不再使用会覆盖第三方 API 路由的 `--ignore-user-config`；运行时读取已配置 MCP 名称，仅动态禁用其他 MCP，保留 `canvas_atelier`。
+- Codex MCP 调度启用 `code_mode_host` 与 `unified_exec`，画布 MCP 使用官方支持的独立 `default_tools_approval_mode=approve`，同时保持只读 sandbox、`approval_policy=never`，并由画布应用继续控制付费生图、媒体导入和危险操作。
+- Codex 事件解析忽略正常的 `item.started`，仅把完成事件作为结果；一次 `PROJECT_REVISION_CONFLICT` 只有在重新读取画布并成功重试同一工具时才接受，其他失败仍拒绝并不采用后续文本。
+- 最终 1.6.118 候选真实 API 模式验收通过：Codex 0.153.4 实际调用 `canvas_atelier`，新建两个独立节点、更新、移动、连线并最终读取确认，revision 从 0 到 5；没有执行生图、没有触碰用户项目，Codex 配置前后 SHA-256 相同。
+- 最终候选完成 31 节点项目保存、关闭、重启和重新打开，原项目树 SHA-256 未改变；全量 Vitest 225 个文件、3053 项通过，2 项性能测试按配置跳过；全工作区 typecheck、production build、NSIS 打包和 12 文件 payload 比对通过。
+- 本地候选安装器为 `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.118.exe`，103265789 字节，SHA-256 `8349B38F3DE030EA5228DCE3DA84D9A0688C528FC36073A76BE6A705EC8DDB88`，未发布 GitHub，等待用户安装验收后再发布。

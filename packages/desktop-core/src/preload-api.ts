@@ -122,6 +122,11 @@ import type { CacheDirectoryState } from './cache-directory-service.js';
 import type { McpClientId, McpClientStatus } from './mcp-client-config.js';
 import type { UpdateCheckResult, UpdateRestartResult, UpdateState } from './update-client.js';
 import {
+  decodePersistenceIpcResult,
+  unwrapPersistenceIpcResult,
+  type PersistenceIpcFailure,
+} from './persistence-ipc-envelope.js';
+import {
   CODEX_CLI_CHANNELS,
   parseCodexCliCancelRequest,
   parseCodexCliCancelResult,
@@ -237,7 +242,7 @@ export interface DesktopBridgeApi {
   openProject(request: OpenProjectBridgeRequest): Promise<OpenProjectBridgeResult | null>;
   refreshProject(request: RefreshProjectBridgeRequest): Promise<OpenProjectBridgeResult>;
   createProject(request: CreateProjectBridgeRequest): Promise<CreateProjectBridgeResult | null>;
-  commit(request: CommitBridgeRequest): Promise<CommitAck>;
+  commit(request: CommitBridgeRequest): Promise<CommitAck | PersistenceIpcFailure>;
   createStablePoint(request: StablePointBridgeRequest): Promise<StablePointBridgeResult>;
   restore(request: RestoreBridgeRequest): Promise<RestoreBridgeResult>;
   exportPack(request: ExportPackBridgeRequest): Promise<ExportPackBridgeResult | null>;
@@ -474,14 +479,18 @@ export function createPreloadApi(
     refreshProject(request) {
       return invoke<OpenProjectBridgeResult>(BRIDGE_CHANNELS.refreshProject, request);
     },
-    createProject(request) {
-      return invoke<CreateProjectBridgeResult | null>(BRIDGE_CHANNELS.createProject, request);
+    async createProject(request) {
+      return unwrapPersistenceIpcResult<CreateProjectBridgeResult | null>(
+        await invoke<unknown>(BRIDGE_CHANNELS.createProject, request),
+      );
     },
-    commit(request) {
-      return invoke<CommitAck>(BRIDGE_CHANNELS.commit, request);
+    async commit(request) {
+      return decodePersistenceIpcResult<CommitAck>(await invoke<unknown>(BRIDGE_CHANNELS.commit, request));
     },
-    createStablePoint(request) {
-      return invoke<StablePointBridgeResult>(BRIDGE_CHANNELS.createStablePoint, request);
+    async createStablePoint(request) {
+      return unwrapPersistenceIpcResult<StablePointBridgeResult>(
+        await invoke<unknown>(BRIDGE_CHANNELS.createStablePoint, request),
+      );
     },
     restore(request) {
       return invoke<RestoreBridgeResult>(BRIDGE_CHANNELS.restore, request);

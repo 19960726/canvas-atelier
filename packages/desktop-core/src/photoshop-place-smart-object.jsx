@@ -22,15 +22,30 @@
     return decodeURIComponent(escape(output));
   }
 
+  function readPayloadString(raw, key) {
+    var marker = '"' + key + '":"';
+    var start = raw.indexOf(marker);
+    if (start < 0) throw new Error('payload_' + key + '_missing');
+    start += marker.length;
+    var end = raw.indexOf('"', start);
+    if (end < 0) throw new Error('payload_' + key + '_missing');
+    var value = raw.substring(start, end);
+    if (!/^[A-Za-z0-9\+\/\=]+$/.test(value)) throw new Error('payload_' + key + '_invalid');
+    return value;
+  }
+
   function readPayload(payloadPath) {
     var payloadFile = new File(payloadPath);
     if (!payloadFile.exists || !payloadFile.open('r')) throw new Error('payload_unavailable');
     payloadFile.encoding = 'UTF8';
     var raw = payloadFile.read();
     payloadFile.close();
-    var payload = JSON.parse(raw);
-    if (payload.version !== 1) throw new Error('payload_version_unsupported');
-    return payload;
+    if (!/"version"\s*:\s*1(?:\s*[,}])/.test(raw)) throw new Error('payload_version_unsupported');
+    return {
+      version: 1,
+      imagePathBase64: readPayloadString(raw, 'imagePathBase64'),
+      layerNameBase64: readPayloadString(raw, 'layerNameBase64')
+    };
   }
 
   function placeEmbedded(imageFile) {
@@ -46,14 +61,26 @@
       return app.activeDocument.activeLayer;
     } catch (placementError) {
       // Some Photoshop builds reject the embedded-place action descriptor
-      // over COM. Fall back to a normal layer transfer so import still works.
+      // over COM. Transfer the pixels through a temporary source document,
+      // then convert the copied layer before it can be reported as imported.
       var targetDocument = app.activeDocument;
-      var sourceDocument = app.open(imageFile);
-      var sourceLayer = sourceDocument.activeLayer;
-      var copiedLayer = sourceLayer.duplicate(targetDocument);
-      sourceDocument.close(SaveOptions.DONOTSAVECHANGES);
-      app.activeDocument = targetDocument;
-      return copiedLayer;
+      var sourceDocument = null;
+      var copiedLayer = null;
+      try {
+        sourceDocument = app.open(imageFile);
+        copiedLayer = sourceDocument.activeLayer.duplicate(targetDocument);
+      } finally {
+        if (sourceDocument !== null) sourceDocument.close(SaveOptions.DONOTSAVECHANGES);
+        app.activeDocument = targetDocument;
+      }
+      try {
+        targetDocument.activeLayer = copiedLayer;
+        executeAction(stringIDToTypeID('newPlacedLayer'), undefined, DialogModes.NO);
+        return targetDocument.activeLayer;
+      } catch (conversionError) {
+        try { if (copiedLayer !== null) copiedLayer.remove(); } catch (cleanupError) { /* preserve conversion failure */ }
+        throw conversionError;
+      }
     }
   }
 
@@ -84,6 +111,10 @@
     layer = placeEmbedded(imageFile);
   } catch (placeError) {
     throw new Error('place-layer: ' + placeError);
+  }
+  if (layer.kind !== LayerKind.SMARTOBJECT) {
+    try { layer.remove(); } catch (cleanupError) { /* preserve the type failure */ }
+    throw new Error('place-layer: placed_layer_not_smart_object');
   }
   stage = 'rename-layer';
   layer.name = decodeBase64Utf8(payload.layerNameBase64);

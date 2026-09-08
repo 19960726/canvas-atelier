@@ -247,6 +247,7 @@ interface AppState {
   projectImageImportingNodeId: string | null;
   persistenceMode: 'browser' | 'desktop';
   desktopRevision: number;
+  canvasDraftResetKey: number;
   availableSnapshotIds: string[];
   canReloadDurableProject: boolean;
   canRetryProjectCommit: boolean;
@@ -263,6 +264,7 @@ interface AppState {
   confirmedModelJobs: number;
   modelJobs: ModelJob[];
   cancelModelJob: (jobId: string) => Promise<void>;
+  preparePersistenceForClose: () => Promise<boolean>;
   closePersistence: () => Promise<boolean>;
   discardPersistence: () => Promise<boolean>;
   commitProjectTransaction: (transaction: ProjectTransaction, options?: CommitProjectTransactionOptions) => Promise<boolean>;
@@ -278,6 +280,7 @@ interface AppState {
     position: { readonly x: number; readonly y: number },
   ) => Promise<boolean>;
   addModuleNode: (moduleType: CanvasModuleType, position: { x: number; y: number }) => Promise<boolean>;
+  ensureAgentGenerationNode: (nodeId: string, moduleType: 'image_generation' | 'video_generation', referenceAssetIds: readonly string[]) => Promise<boolean>;
   addProjectImageInput: (assetId: string, position: { x: number; y: number }) => Promise<boolean>;
   connectModulePorts: (connection: Connection) => Promise<boolean>;
   commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
@@ -342,6 +345,7 @@ interface AppState {
     modelRoute: string;
     modelRouteDisplayName?: string;
     knowledgeBaseIds?: readonly string[];
+    generation?: import('../agent/reverse-workflow-proposal').ReverseAgentCanvasPlanInput['generation'];
   }) => void;
   confirmAgentPlan: (approvals: AgentPlanApprovalSelection) => Promise<void>;
   cancelAgentPlan: () => void;
@@ -617,9 +621,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const assets = new Map((state.project.assets ?? []).map((asset) => [asset.assetId, asset]));
     if (frameAssetIds.some((assetId) => !assets.get(assetId)?.mediaType.startsWith('image/'))) return false;
     if (sourceVideoAssetId !== undefined && assets.get(sourceVideoAssetId)?.mediaType !== 'video/mp4') return false;
-    const jobReferenceAssetIds = sourceVideoAssetId === undefined
-      ? frameAssetIds
-      : [...frameAssetIds, sourceVideoAssetId];
+    if (profile.provider === 'relayme' && (frameAssetIds.length > 0 || sourceVideoAssetId !== undefined)) {
+      throw createGenerationStartError(
+        'CAPABILITY_UNSUPPORTED',
+        'RelayMe video generation does not support verified media references',
+      );
+    }
+    if (sourceVideoAssetId !== undefined) {
+      throw createGenerationStartError(
+        'CAPABILITY_UNSUPPORTED',
+        'Video-to-video input is not supported by the selected provider route',
+      );
+    }
+    const jobReferenceAssetIds = frameAssetIds;
 
     const { firstFrameAssetId: _previousFirstFrameAssetId, lastFrameAssetId: _previousLastFrameAssetId, sourceVideoAssetId: _previousSourceVideoAssetId, videoResults: _previousVideoResults, mode: _previousMode, ...previousConfig } = node.data.config;
     const nextNode = {
@@ -1003,6 +1017,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
     });
   }),
+  ensureAgentGenerationNode: (nodeId, moduleType, referenceAssetIds) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const project = get().project;
+    if (!/^[A-Za-z0-9_-]{1,160}$/u.test(nodeId) || !['image_generation', 'video_generation'].includes(moduleType) || referenceAssetIds.length > 20) return false;
+    const existing = project.nodes.find((node) => node.id === nodeId);
+    if (existing) return existing.type === 'module' && existing.data.moduleType === moduleType;
+    const assets = referenceAssetIds.map((assetId) => project.assets?.find((asset) => asset.assetId === assetId));
+    if (new Set(referenceAssetIds).size !== referenceAssetIds.length || assets.some((asset) => !asset || !asset.mediaType.startsWith('image/'))) return false;
+    const node = createCanvasModuleNode(nodeId, moduleType, { x: 460, y: 160 + project.nodes.length * 30 });
+    node.data.config = { ...node.data.config, referenceAssetIds: [...referenceAssetIds] };
+    const operations: ProjectTransaction['operations'] = [{ kind: 'canvas', operation: { kind: 'create_node', node } }];
+    assets.forEach((asset, index) => {
+      const source = project.nodes.find((candidate) => candidate.type === 'module' && ['image_input', 'upload_image'].includes(candidate.data.moduleType) && candidate.data.config.assetId === asset!.assetId);
+      const input = source ?? createCanvasModuleNode(`${nodeId}-ref-${index}`, 'image_input', { x: 100, y: 100 + index * 180 });
+      if (!source && input.type === 'module') {
+        input.data.config = { ...input.data.config, assetId: asset!.assetId, label: asset!.label };
+        operations.push({ kind: 'canvas', operation: { kind: 'create_node', node: input } });
+      }
+      operations.push({ kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-${index}`, source: input.id, sourcePortId: 'image', target: nodeId, targetPortId: moduleType === 'video_generation' ? 'media' : 'references', order: index } } });
+    });
+    return commitNow({ id: `agent-create-${nodeId}`, label: 'Create confirmed Agent generation node', operations });
+  }),
   addModuleNode: (moduleType, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const suffix = `${Date.now()}-${planSequence++}`;
     const node = createCanvasModuleNode(`module-${moduleType}-${suffix}`, moduleType, position);
@@ -1276,7 +1311,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelRoute: config.modelRoute ?? '',
       aspectRatio: config.aspectRatio ?? (node.data.moduleType === 'video_generation' ? '16:9' : '1:1'),
       resolution: config.resolution ?? (node.data.moduleType === 'video_generation' ? '1080P' : '2K'),
-      outputCount: normalizeImageOutputCount(config.outputCount) ?? 1,
+      outputCount: normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined) ?? 1,
       ...(node.data.moduleType === 'video_generation' ? {
         keyframe: config.keyframe ?? 'auto',
         durationSeconds: config.durationSeconds ?? 5,
@@ -1381,7 +1416,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     return persistReverseAgentRunPatch(set, get, nodeId, { reverseAgentResult: merged }, 'Update reverse Agent result');
   },
-  closePersistence: async () => {
+  preparePersistenceForClose: async () => {
     let state = get();
     if (state.recoveryRequired) return false;
     if (state.saveStatus !== 'read_only') {
@@ -1396,6 +1431,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!flushed) return false;
       }
     }
+    state = get();
+    return !state.recoveryRequired
+      && (state.saveStatus === 'saved' || state.saveStatus === 'read_only');
+  },
+  closePersistence: async () => {
+    if (!await get().preparePersistenceForClose()) return false;
     invalidateModelJobStoreGeneration();
     modelJobStore?.stop();
     modelJobUnsubscribe?.();
@@ -1405,12 +1446,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       await withProjectPersistenceTimeout(projectPersistenceClient.close());
       return true;
     } catch {
-      // The durable save boundary above has already completed. A timeout while
-      // releasing the desktop session must not be reported as a save failure:
-      // the native close coordinator would otherwise show a recovery dialog
-      // even though there are no pending writes left to protect.
-      return !state.recoveryRequired
-        && (state.saveStatus === 'saved' || state.saveStatus === 'read_only');
+      // A completed save and a released desktop session are separate
+      // boundaries. Report a failed release to the caller so it can keep the
+      // window open and retry instead of silently stranding the project lock.
+      return false;
     }
   },
   discardPersistence: async () => {
@@ -1516,7 +1555,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const hydrationProjectFingerprint = JSON.stringify(hydrationProject);
     const jobStore = getModelJobStore();
     const hydrated = await projectPersistenceClient.hydrate();
-    const imageState = await readProjectImagesForHydration();
+    // Integrity verification reads every managed media byte on a cold start.
+    // Start it immediately, but adopt the durable canvas before waiting for
+    // that disk work so large image/video projects do not leave the UI on the
+    // temporary empty canvas for several seconds.
+    const imageStatePromise = readProjectImagesForHydration();
     const modelJobs = await jobStore.listJobs();
     const currentProject = get().project;
     if (
@@ -1537,12 +1580,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       projectLifecycle: hydrated.lifecycle,
       projectCommitConflictCode: null,
       recoveryRequired: hydrated.recoveryRequired === true,
-      ...imageState,
+      projectImages: [],
+      projectVideos: [],
+      projectImageError: null,
       confirmedModelJobs: countConfirmedModelJobs(modelJobs),
       modelJobs,
       saveErrorCode: hydrated.recoveryRequired === true ? 'RECOVERY_REQUIRED' : null,
       saveStatus: hydrated.saveStatus,
     });
+    const adoptedProjectId = hydrated.project.id;
+    const adoptedPersistenceGeneration = projectPersistenceGeneration;
+    const imageState = await imageStatePromise;
+    if (
+      projectPersistenceGeneration !== adoptedPersistenceGeneration
+      || get().project.id !== adoptedProjectId
+    ) return;
+    set(imageState);
     const interruptedReverseRuns = createInterruptedReverseRunsTransaction(hydrated.project);
     if (interruptedReverseRuns !== null && hydrated.recoveryRequired !== true) {
       await get().commitProjectTransaction(interruptedReverseRuns.transaction, {
@@ -1844,6 +1897,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       knowledgeBaseIds: input.knowledgeBaseIds,
       references: input.references.map((reference) => ({ ...reference })),
       analysis: input.analysis,
+      generation: input.generation,
     });
     set({ agentPlan: plan });
   },
@@ -3214,10 +3268,11 @@ async function executeProjectCommit(
     return applyCommitResult(set, get, result, request);
   } catch (error) {
     if (activeProjectCommitToken === token) {
-      pendingFailedProjectCommit = request;
+      const retryable = readPersistenceRetryable(error);
+      pendingFailedProjectCommit = retryable ? request : null;
       set({
         canReloadDurableProject: false,
-        canRetryProjectCommit: true,
+        canRetryProjectCommit: retryable,
         saveErrorCode: readErrorCode(error),
         saveStatus: 'error',
       });
@@ -3252,16 +3307,17 @@ function applyCommitResult(
     return true;
   }
 
-  pendingFailedProjectCommit = request;
+  const retryable = result.retryable !== false;
+  pendingFailedProjectCommit = retryable ? request : null;
   set({
     availableSnapshotIds,
     canReloadDurableProject: false,
-    canRetryProjectCommit: true,
+    canRetryProjectCommit: retryable,
     desktopRevision: result.revision,
     // The bridge rejected the transaction against its current durable
     // project. Keep the renderer on that acknowledged project instead of
     // repeatedly retrying the same stale edge/node operation.
-    project: request.nextProject,
+    project: retryable ? request.nextProject : result.project,
     projectCommitConflictCode: null,
     saveErrorCode: result.code,
     saveStatus: 'error',
@@ -3328,6 +3384,7 @@ function invalidateProjectPersistenceBoundary(): void {
   projectPersistenceGeneration += 1;
   activeProjectCommitToken = null;
   stableProjectCommitTail = null;
+  useAppStore.setState({ canvasDraftResetKey: projectPersistenceGeneration });
 }
 
 async function readProjectImagesForHydration(): Promise<Pick<AppState, 'projectImages' | 'projectVideos' | 'projectImageError'>> {
@@ -3361,7 +3418,7 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectVideos' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'availableSnapshotIds' | 'canReloadDurableProject' | 'canRetryProjectCommit' | 'projectCommitConflictCode' | 'recoveryRequired' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectVideos' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'canvasDraftResetKey' | 'availableSnapshotIds' | 'canReloadDurableProject' | 'canRetryProjectCommit' | 'projectCommitConflictCode' | 'recoveryRequired' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   return {
     activeTool: 'select',
@@ -3371,6 +3428,7 @@ function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | '
     canReloadDurableProject: false,
     canRetryProjectCommit: false,
     confirmedModelJobs: 0,
+    canvasDraftResetKey: projectPersistenceGeneration,
     desktopRevision: 0,
     knowledgeBases: [],
     knowledgeSyncStatuses: [],
@@ -3694,11 +3752,32 @@ interface ResolvedModelJobProfile {
   modelId?: string;
 }
 
-function buildModelJobRequests(
+export function buildModelJobRequests(
   project: CanvasProject,
   plan: AgentCanvasPlan,
   profile: ResolvedModelJobProfile,
 ): ModelJobRequest[] {
+  const nodeIds = new Set(plan.transaction.operations.flatMap((operation) =>
+    (operation.kind === 'create_node' || operation.kind === 'update_node') && operation.node.type === 'module'
+      && ['image_generation', 'video_generation'].includes(operation.node.data.moduleType) ? [operation.node.id] : []));
+  if (nodeIds.size) return project.nodes.flatMap((node): ModelJobRequest[] => {
+    if (node.type !== 'module' || !nodeIds.has(node.id)) return [];
+    const config = node.data.config;
+    const prompt = typeof config.prompt === 'string' ? config.prompt.trim() : '';
+    if (!prompt || containsProtectedRendererPayload(prompt)) throw new Error('Generation plan has no executable prompt');
+    const kind = node.data.moduleType === 'video_generation' ? 'video' : 'image';
+    const count = normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined) ?? 1;
+    const references = Array.isArray(config.referenceAssetIds) ? config.referenceAssetIds.filter((id): id is string => typeof id === 'string') : [];
+    return Array.from({ length: count }, () => ({
+      id: createModelJobRunId(), kind, promptNodeId: node.id, prompt, provider: profile.provider, modelRoute: profile.modelRoute,
+      displayName: profile.displayName, modelId: profile.modelId ?? profile.modelRoute, referenceAssetIds: references,
+      aspectRatio: normalizeImageAspectRatio(typeof config.aspectRatio === 'string' ? config.aspectRatio : undefined), outputCount: 1,
+      ...(kind === 'video' ? { videoResolution: normalizeVideoResolution(typeof config.resolution === 'string' ? config.resolution : undefined),
+        durationSeconds: typeof config.durationSeconds === 'number' && config.durationSeconds > 0 ? config.durationSeconds : undefined,
+        audioEnabled: typeof config.audioEnabled === 'boolean' ? config.audioEnabled : true }
+        : { resolution: normalizeImageResolution(typeof config.resolution === 'string' ? config.resolution : undefined) }),
+    }));
+  });
   const promptNode = project.nodes.find((node) => node.type === 'prompt');
   const prompt = promptNode?.type === 'prompt' ? promptNode.data.prompt : plan.transaction.label;
   const referenceSnapshot = plan.referenceSnapshot
@@ -3723,13 +3802,13 @@ async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<ResolvedMo
     throw new Error('Provider image model profile is unavailable');
   }
   const profiles = await listRunnableProviderProfiles(bridge);
-  const imageProfiles = filterImageModelProfiles(profiles);
+  const generationProfiles = filterGenerationModelProfiles(profiles, plan);
   const requestedRoute = normalizeLegacyPlanModelRoute(plan.modelRoute);
   const selected = requestedRoute === undefined
-    ? imageProfiles[0]
-    : imageProfiles.find((profile) => profile.modelRoute === requestedRoute || profile.modelId === requestedRoute);
+    ? generationProfiles[0]
+    : generationProfiles.find((profile) => profile.modelRoute === requestedRoute || profile.modelId === requestedRoute);
   if (selected === undefined) {
-    throw new Error('Provider image model profile is unconfigured');
+    throw new Error('Provider generation model profile is unconfigured');
   }
   return {
     provider: selected.provider,
@@ -3739,10 +3818,17 @@ async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<ResolvedMo
   };
 }
 
-function filterImageModelProfiles(profiles: ProviderBridgeProfile[]): ProviderBridgeProfile[] {
-  return profiles.filter((profile) => (
-    profile.capabilities.includes('image_generation')
-  ));
+export function filterGenerationModelProfiles(
+  profiles: ProviderBridgeProfile[],
+  plan: AgentCanvasPlan,
+): ProviderBridgeProfile[] {
+  const moduleTypes = plan.transaction.operations.flatMap((operation) => {
+    if ((operation.kind !== 'create_node' && operation.kind !== 'update_node') || operation.node.type !== 'module') return [];
+    return [operation.node.data.moduleType];
+  });
+  if (moduleTypes.includes('video_generation') && moduleTypes.includes('image_generation')) return [];
+  const capability = moduleTypes.includes('video_generation') ? 'video_generation' : 'image_generation';
+  return profiles.filter((profile) => profile.capabilityStatus !== 'incomplete' && profile.capabilities.includes(capability));
 }
 
 function shouldExecuteModels(plan: AgentCanvasPlan): boolean {
@@ -4054,6 +4140,10 @@ function readErrorCode(error: unknown): string {
     return error.code;
   }
   return 'PROJECT_IMAGE_UNAVAILABLE';
+}
+
+function readPersistenceRetryable(error: unknown): boolean {
+  return !isRecord(error) || typeof error.retryable !== 'boolean' || error.retryable;
 }
 
 function sanitizeSkillPreparationError(error: unknown): string {

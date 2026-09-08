@@ -743,7 +743,7 @@ describe('Comfly provider service', () => {
     });
     await service.configure({ token });
 
-    await expect(service.analyzeReversePrompt?.(imageOnlyRequest)).resolves.toEqual(reversePromptResultFor(imageOnlyRequest.run));
+    await expect(service.analyzeReversePrompt?.(imageOnlyRequest)).resolves.toMatchObject({ ...reversePromptResultFor(imageOnlyRequest.run), completeness: { status: 'partial' } });
     expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/v1\/chat\/completions$/u), expect.objectContaining({ method: 'POST' }));
     const payload = JSON.parse(String((fetch.mock.calls[0] as unknown as readonly [string, { readonly body?: unknown }])[1]?.body)) as {
       messages: Array<{ content: unknown }>;
@@ -836,7 +836,7 @@ describe('Comfly provider service', () => {
         model: 'vision-chat-model',
         choices: [{ message: { role: 'assistant', content: JSON.stringify(reversePromptResultFor(imageOnlyRequest.run)) } }],
       }));
-      await expect(pending).resolves.toEqual(reversePromptResultFor(imageOnlyRequest.run));
+      await expect(pending).resolves.toMatchObject({ ...reversePromptResultFor(imageOnlyRequest.run), completeness: { status: 'partial' } });
     } finally {
       vi.useRealTimers();
       await cleanupTempRoot(appDataRoot);
@@ -880,7 +880,7 @@ describe('Comfly provider service', () => {
       resolveFetch(jsonResponse({
         candidates: [{ content: { parts: [{ text: JSON.stringify(reversePromptResultFor(request.run)) }] } }],
       }));
-      await expect(pending).resolves.toEqual(reversePromptResultFor(request.run));
+      await expect(pending).resolves.toMatchObject({ ...reversePromptResultFor(request.run), completeness: { status: 'partial' } });
     } finally {
       vi.useRealTimers();
       await cleanupTempRoot(appDataRoot);
@@ -907,7 +907,7 @@ describe('Comfly provider service', () => {
     });
     await service.configure({ token });
 
-    await expect(service.analyzeReversePrompt?.(request)).resolves.toEqual(reversePromptResultFor(request.run));
+    await expect(service.analyzeReversePrompt?.(request)).resolves.toMatchObject({ ...reversePromptResultFor(request.run), completeness: { status: 'partial' } });
 
     expect(fetch).toHaveBeenCalledWith(
       expect.stringMatching(/\/v1beta\/models\/gemini-video-provider-id:generateContent$/u),
@@ -983,7 +983,7 @@ describe('Comfly provider service', () => {
     });
     await service.configure({ token });
 
-    await expect(service.analyzeReversePrompt?.(request)).resolves.toEqual(reversePromptResultFor(request.run));
+    await expect(service.analyzeReversePrompt?.(request)).resolves.toMatchObject({ ...reversePromptResultFor(request.run), completeness: { status: 'partial' } });
     expect(readManagedReverseMedia).toHaveBeenCalledWith(request.sessionId, request.media);
     const fetchCall = fetch.mock.calls[0] as unknown as readonly [string, { readonly body?: unknown }];
     const payload = JSON.parse(String(fetchCall[1]?.body)) as { contents: Array<{ parts: Array<{ inlineData?: { mimeType: string; data: string } }> }> };
@@ -1063,7 +1063,7 @@ describe('Comfly provider service', () => {
     });
     await service.configure({ token });
 
-    await expect(service.analyzeReversePrompt?.(request)).resolves.toEqual(reversePromptResultFor(request.run));
+    await expect(service.analyzeReversePrompt?.(request)).resolves.toMatchObject({ ...reversePromptResultFor(request.run), completeness: { status: 'partial', invalidSections: ['camera'] }, partialSections: [{ section: 'camera', content: '"wide-angle"' }] });
 
     await cleanupTempRoot(appDataRoot);
   });
@@ -1773,6 +1773,15 @@ describe('Comfly provider service', () => {
       progress: 1,
       result: { assetId: 'abcdef0123456789', width: 1536, height: 1024 },
     });
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      'https://assets.example/nested-generated.png',
+      expect.objectContaining({
+        maxResponseBytes: 256 * 1024 * 1024,
+        timeoutMs: 300_000,
+        trustedResolvedAddress: '93.184.216.34',
+      }),
+    );
     await cleanupTempRoot(appDataRoot);
   });
 
@@ -1813,7 +1822,7 @@ describe('Comfly provider service', () => {
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
     const service = createComflyProviderService({
       appDataRoot, credentialStore, fetch,
-      profiles: [{ provider: 'comfly', modelRoute: 'veo-video', modelId: 'veo3.1-fast', displayName: 'Veo 3.1 Fast', capabilities: ['video_generation', 'async_tasks'] }],
+      profiles: [{ provider: 'comfly', modelRoute: 'veo-video', modelId: 'veo3.1', displayName: 'Veo 3.1', capabilities: ['video_generation', 'async_tasks'] }],
       resolveResultHost: async () => ['93.184.216.34'],
       storeGeneratedVideo,
       historySink: historySink as never,
@@ -1834,8 +1843,17 @@ describe('Comfly provider service', () => {
       result: { assetId: 'fedcba9876543210', width: 1920, height: 1080, durationSeconds: 8 },
     });
     expect(storeGeneratedVideo).toHaveBeenCalledWith('video-session-1', mp4, 'video/mp4');
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      'https://assets.example/generated.mp4',
+      expect.objectContaining({
+        maxResponseBytes: 512 * 1024 * 1024,
+        timeoutMs: 300_000,
+        trustedResolvedAddress: '93.184.216.34',
+      }),
+    );
     expect(historySink.reserveSubmission).toHaveBeenCalledWith(expect.objectContaining({
-      jobId: 'model-job-v2-video-1', kind: 'video', provider: 'comfly', modelDisplayName: 'Veo 3.1 Fast',
+      jobId: 'model-job-v2-video-1', kind: 'video', provider: 'comfly', modelDisplayName: 'Veo 3.1',
     }));
     const historyId = deriveGenerationHistoryId('model-job-v2-video-1');
     expect(historySink.running).toHaveBeenCalledWith(historyId);
@@ -1843,8 +1861,8 @@ describe('Comfly provider service', () => {
       width: 1920, height: 1080, durationSeconds: 8,
     }));
     expect(JSON.parse(String(submittedBody))).toEqual({
-      model: 'veo3.1-fast', prompt: 'A product rotates on a clean studio table',
-      aspect_ratio: '16:9', resolution: '2k', duration: 8, audio: true,
+      model: 'veo3.1', prompt: 'A product rotates on a clean studio table',
+      aspect_ratio: '16:9',
     });
     await cleanupTempRoot(appDataRoot);
   });

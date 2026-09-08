@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReactFlowProvider } from '@xyflow/react';
 import { createCanvasModuleNode } from '@agent-canvas/domain';
-import { ModuleNodeCard, resolveAutomaticVideoAspectRatio } from './ModuleNodeCard';
+import { ModuleNodeCard, promptContainsImageMention, resolveAutomaticVideoAspectRatio } from './ModuleNodeCard';
 import { resetAppStoreForTests, useAppStore } from '../app/app-store';
 import { createProjectPersistenceClient } from '../app/desktop-persistence';
 
@@ -299,6 +299,37 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Image generation task timing')).not.toHaveTextContent('已取消');
   });
 
+  it('does not show an older failure after a newer image generation completed', () => {
+    const node = createCanvasModuleNode('image-newer-success', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'image-route' };
+    useAppStore.setState({
+      modelJobs: [
+        {
+          id: 'older-failed-image-job',
+          kind: 'image',
+          modelRoute: 'image-route',
+          promptNodeId: node.id,
+          status: 'failed',
+          error: 'Provider authentication failed with status 401',
+          updatedAt: '2026-09-08T06:20:00.000Z',
+        },
+        {
+          id: 'newer-completed-image-job',
+          kind: 'image',
+          modelRoute: 'image-route',
+          promptNodeId: node.id,
+          status: 'completed',
+          resultAssetId: projectImage.assetId,
+          updatedAt: '2026-09-08T06:31:54.000Z',
+        },
+      ],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('restarts image timing at zero as soon as a new generation is requested', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-19T08:00:30.000Z'));
@@ -350,6 +381,31 @@ describe('ModuleNodeCard', () => {
     openVideoGenerationEditor();
 
     expect(screen.getByLabelText('Video generation task timing')).toHaveTextContent('失败 · 8秒');
+    expect(screen.getByRole('alert')).toHaveTextContent('无法连接模型服务');
+  });
+
+  it.each([
+    ['image_generation', 'image', 'Image generation task timing'],
+    ['video_generation', 'video', 'Video generation task timing'],
+  ] as const)('keeps a failed %s provider reason visible while the generation node is collapsed', (moduleType, kind, timingLabel) => {
+    const node = createCanvasModuleNode(`collapsed-${kind}-failure`, moduleType, { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: `${kind}-route` };
+    useAppStore.setState({
+      modelJobs: [{
+        id: `collapsed-${kind}-failed-job`,
+        kind,
+        modelRoute: `${kind}-route`,
+        promptNodeId: node.id,
+        status: 'failed',
+        startedAt: '2026-09-07T06:41:38.000Z',
+        completedAt: '2026-09-07T06:43:42.000Z',
+        error: 'Comfly request failed: Provider network request failed (net::ERR_CONNECTION_CLOSED)',
+      }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+
+    expect(screen.getByLabelText(timingLabel)).toHaveTextContent('失败 · 124秒');
     expect(screen.getByRole('alert')).toHaveTextContent('无法连接模型服务');
   });
 
@@ -1389,7 +1445,7 @@ describe('ModuleNodeCard', () => {
     }));
   });
 
-  it('retries a failed text-only RelayMe route in the same node without silently submitting its unsupported reference', () => {
+  it('blocks RelayMe reference-image generation before queueing instead of silently dropping the reference', () => {
     const image = createCanvasModuleNode('relayme-retry-source', 'image_input', { x: 0, y: 0 });
     image.data.config = { assetId: projectImage.assetId };
     const generation = createCanvasModuleNode('relayme-retry-target', 'image_generation', { x: 420, y: 0 });
@@ -1407,7 +1463,7 @@ describe('ModuleNodeCard', () => {
         modelRoute: 'relayme-gemini-3-pro-image-preview',
         displayName: 'Nano Banana Pro',
         modelId: 'gemini-3-pro-image-preview',
-        capabilities: ['image_generation', 'image_edit'],
+        capabilities: ['image_generation'],
       }],
     } as typeof generation.data;
     useAppStore.setState({
@@ -1417,24 +1473,15 @@ describe('ModuleNodeCard', () => {
         edges: [{ id: 'relayme-retry-edge', source: image.id, sourcePortId: 'image', target: generation.id, targetPortId: 'references', order: 0 }],
       },
       projectImages: [projectImage],
-      modelJobs: [{
-        id: 'relayme-reference-failed',
-        kind: 'image',
-        promptNodeId: generation.id,
-        modelRoute: 'relayme-gemini-3-pro-image-preview',
-        status: 'failed',
-        error: 'RelayMe 模型“Nano Banana Pro”当前只支持文本生图，不支持参考图；任务未提交、不会消耗生成额度',
-      }],
+      modelJobs: [],
     } as never);
 
     render(<ReactFlowProvider><ModuleNodeCard id={generation.id} data={data} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
-    expect(screen.getByRole('button', { name: 'Generate image' })).toHaveTextContent('仅按提示词生成');
-    fireEvent.click(screen.getByRole('button', { name: '仅按提示词重新生成（不使用素材）' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
 
-    expect(runImageGenerationNode).toHaveBeenCalledWith(generation.id, expect.not.objectContaining({
-      referenceAssetIds: expect.anything(),
-    }));
+    expect(runImageGenerationNode).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('RelayMe 当前不支持参考图生图，请选择 Comfly 模型或断开参考图。');
   });
 
   it('keeps the connected video-media slot visible while an upstream upload is still unresolved', () => {
@@ -1593,10 +1640,87 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(item);
     expect(screen.getByLabelText('Image generation prompt')).toHaveValue('@图片1');
     const presentation = screen.getByRole('textbox', { name: /prompt/i });
-    expect(within(presentation).getByText('图片1')).toHaveAttribute('data-media-mention', 'image');
+    expect(within(presentation).getByText('图片1').closest('[data-token="@图片1"]')).toHaveAttribute('data-media-mention', 'image');
     expect(presentation).not.toHaveTextContent('@');
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
     expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({ referenceAssetIds: [projectImage.assetId] }));
+  });
+
+  it('replaces the unresolved image mention at the real caret and preserves another @ plus surrounding prose', () => {
+    const node = createCanvasModuleNode('generator-caret-mention', 'image_generation', { x: 0, y: 0 });
+    const source = createCanvasModuleNode('generator-caret-mention-source', 'image_input', { x: -320, y: 0 });
+    source.data.config = { assetId: projectImage.assetId };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [source, node],
+        edges: [{ id: 'generator-caret-mention-edge', source: source.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 0 }],
+      },
+    } as never);
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'image-gen', displayName: 'Image Gen', modelId: 'image-gen', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    const editor = screen.getByLabelText('Image generation prompt');
+    const input = '开头 @当前候选 保留  @另一个候选  结尾';
+    editor.textContent = input;
+    const caretOffset = '开头 @当前候选'.length;
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(editor.firstChild!, caretOffset);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.input(editor);
+
+    expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+
+    expect(editor).toHaveValue('开头 @图片1 保留  @另一个候选  结尾');
+  });
+
+  it('replaces the whole unresolved token when the caret is inside its query', () => {
+    const node = createCanvasModuleNode('generator-inner-query-caret', 'image_generation', { x: 0, y: 0 });
+    const source = createCanvasModuleNode('generator-inner-query-caret-source', 'image_input', { x: -320, y: 0 });
+    source.data.config = { assetId: projectImage.assetId };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [source, node],
+        edges: [{ id: 'generator-inner-query-edge', source: source.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 0 }],
+      },
+    } as never);
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'image-gen', displayName: 'Image Gen', modelId: 'image-gen', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    const editor = screen.getByLabelText('Image generation prompt');
+    const input = '开头 @当前候选 保留';
+    editor.textContent = input;
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(editor.firstChild!, '开头 @当'.length);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.input(editor);
+    expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+
+    expect(editor).toHaveValue('开头 @图片1 保留');
+  });
+
+  it('recognizes a canonical image token when it touches Chinese prose', () => {
+    expect(promptContainsImageMention('产品@图片1，保持结构', '@图片1')).toBe(true);
+    expect(promptContainsImageMention('保持@图片10结构', '@图片1')).toBe(false);
   });
 
   it('hides the image mention picker when an existing reference leaves no matching candidates', () => {
@@ -1632,6 +1756,40 @@ describe('ModuleNodeCard', () => {
     fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: '@' } });
     expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
     expect(runVideoPreviewNode).not.toHaveBeenCalled();
+  });
+
+  it('inserts a video-node image mention at the current caret without collapsing sentence spacing', () => {
+    const node = createCanvasModuleNode('video-caret-mention', 'video_generation', { x: 0, y: 0 });
+    const source = createCanvasModuleNode('video-caret-mention-source', 'image_input', { x: -320, y: 0 });
+    source.data.config = { assetId: projectImage.assetId };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [source, node],
+        edges: [{ id: 'video-caret-mention-edge', source: source.id, sourcePortId: 'image', target: node.id, targetPortId: 'media', order: 0 }],
+      },
+    } as never);
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [{ provider: 'comfly', modelRoute: 'video-gen', displayName: 'Video Gen', modelId: 'video-gen', capabilities: ['video_generation'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+    const editor = screen.getByLabelText('Video preview prompt');
+    const input = '镜头从  @这里  推进，末尾保留 @另一个';
+    editor.textContent = input;
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(editor.firstChild!, '镜头从  @这里'.length);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.input(editor);
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+
+    expect(editor).toHaveValue('镜头从  @图片1  推进，末尾保留 @另一个');
   });
 
   it('removes an @ image mention from the generation prompt without crashing the renderer', () => {
@@ -2277,10 +2435,61 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Video preview result workspace')).toContainElement(poster);
     expect(poster).toHaveAttribute('src', generatedPoster.displayUrl);
     expect(poster).not.toHaveAttribute('src', projectImage.displayUrl);
-    expect(screen.getByRole('img', { name: 'Play completed video 1' })).toBeVisible();
+    expect(screen.queryByRole('img', { name: 'Play completed video 1' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Expand completed video 1' })).not.toBeInTheDocument();
     const stage = screen.getByLabelText('Completed video result 1');
     expect(stage).toHaveClass('module-node__video-result-stage');
     expect(stage).toHaveAttribute('data-aspect-ratio', '16:9');
+  });
+
+  it.each([6, 7, 20, 21, 25])('keeps %i connected reverse thumbnails visible even above the execution limit', (count) => {
+    const images = Array.from({ length: count }, (_, index) => ({
+      ...projectImage,
+      assetId: `${String(index + 1).padStart(16, '0')}`,
+      label: `Reverse reference ${index + 1}`,
+      displayUrl: `novus-asset://project/session/reverse-${index + 1}`,
+      sha256: `${String(index + 1).padStart(16, '0')}${'a'.repeat(48)}`,
+    }));
+    const imageNodes = images.map((asset, index) => {
+      const image = createCanvasModuleNode(`reverse-twenty-image-${index + 1}`, 'image_input', { x: 0, y: index * 80 });
+      image.data.config = { assetId: asset.assetId };
+      return image;
+    });
+    const reverse = createCanvasModuleNode('reverse-twenty-target', 'reverse_agent', { x: 420, y: 0 });
+    useAppStore.setState({
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [...imageNodes, reverse],
+        edges: imageNodes.map((image, index) => ({
+          id: `reverse-twenty-edge-${index + 1}`,
+          source: image.id,
+          sourcePortId: 'image',
+          target: reverse.id,
+          targetPortId: 'references',
+          order: index,
+        })),
+        assets: images,
+      },
+      projectImages: images,
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={reverse.id} data={reverse.data} selected={false} /></ReactFlowProvider>);
+
+    const tray = screen.getByLabelText('Connected reverse media slots');
+    expect(screen.getByLabelText('Reverse media input')).toHaveTextContent(`${count} / 20`);
+    expect(within(tray).getAllByLabelText(/Agent media slot \d+$/u)).toHaveLength(count);
+    expect(within(tray).getByLabelText(`Agent media slot ${count}`)).toHaveTextContent(String(count));
+    if (count > 10) expect(tray.querySelector('[data-overflow="true"]')).not.toBeNull();
+    if (count > 20) expect(screen.getByText(/Agent 反推最多连接 20/)).toBeVisible();
+  });
+
+  it('keeps video controls in flow and reverse media in a scoped scrollable rail', () => {
+    const css = readFileSync('apps/renderer/src/styles/app.css', 'utf8');
+    const finalContract = css.slice(css.lastIndexOf('FINAL SCOPED MEDIA-NODE CONTRACT'));
+    expect(finalContract).toMatch(/video_generation[\s\S]*?\.module-node__video-control-bar \{[\s\S]*?position: static !important;/u);
+    expect(finalContract).toMatch(/reverse_agent[\s\S]*?\.module-node__agent-media-slot-row \{[\s\S]*?overflow-x: auto !important;/u);
+    expect(finalContract).toContain('.module-node__agent-media-slots::before');
+    expect(finalContract).toContain('content: none !important');
   });
 
   it('keeps video reference slots absent until media is connected', () => {
@@ -2502,6 +2711,28 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('menuitem', { name: '发送到画布' })).toBeEnabled();
     expect(screen.getByRole('menuitem', { name: '复制图片' })).toBeEnabled();
     expect(screen.getByRole('menuitem', { name: '下载图片' })).toBeEnabled();
+  });
+
+  it('opens Agent before sending a generated image reference from the right-click menu', async () => {
+    const node = createCanvasModuleNode('generator-send-agent', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({
+      projectImages: [projectImage],
+      modelJobs: [{ id: 'send-agent-job', promptNodeId: node.id, status: 'completed', resultAssetId: projectImage.assetId }],
+    } as never);
+    const openAgent = vi.fn();
+    const sendToAgent = vi.fn();
+    window.addEventListener('novus:open-agent', openAgent);
+    window.addEventListener('novus:generated-image-to-agent', sendToAgent);
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+
+    openImageGenerationEditor();
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Generated image 1; double click to preview' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '发送到 AI 对话' }));
+
+    expect(openAgent).toHaveBeenCalledOnce();
+    await waitFor(() => expect(sendToAgent).toHaveBeenCalledWith(expect.objectContaining({ detail: { assetId: projectImage.assetId } })));
+    window.removeEventListener('novus:open-agent', openAgent);
+    window.removeEventListener('novus:generated-image-to-agent', sendToAgent);
   });
 
   it('dispatches the managed asset when sending a generated image to canvas', () => {
@@ -2776,6 +3007,35 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('alert')).not.toHaveTextContent('检查模型与 API 配置');
   });
 
+  it('identifies a Comfly route mismatch without blaming RelayMe', () => {
+    const node = createCanvasModuleNode('generator-comfly-route-failure', 'image_generation', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'comfly-image', displayName: 'Comfly Image', modelId: 'comfly-image', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({
+      modelJobs: [{
+        id: 'failed-comfly-route-job',
+        kind: 'image',
+        modelId: 'comfly-image',
+        modelRoute: 'comfly-image',
+        provider: 'comfly',
+        promptNodeId: node.id,
+        status: 'failed',
+        referenceAssetIds: [],
+        retryCount: 0,
+        error: '所选模型不可用或能力不匹配',
+        updatedAt: '2026-09-07T06:00:00.000Z',
+      }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('当前 Comfly 模型路线不可用');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('RelayMe');
+  });
+
   it('shows an actionable local-state reason when the provider task ledger is unavailable', () => {
     const node = createCanvasModuleNode('generator-task-ledger-failure', 'image_generation', { x: 0, y: 0 });
     const data = {
@@ -2869,6 +3129,72 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('视频生成未启动'));
+  });
+
+  it('explains that RelayMe video media references are unsupported before submission', async () => {
+    const node = createCanvasModuleNode('relayme-video-reference-failure', 'video_generation', { x: 0, y: 0 });
+    const runVideoPreviewNode = vi.fn(async () => {
+      throw Object.assign(
+        new Error('RelayMe video generation does not support verified media references'),
+        { code: 'CAPABILITY_UNSUPPORTED' },
+      );
+    });
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [{ provider: 'relayme', modelRoute: 'relayme-video', displayName: 'RelayMe Video', modelId: 'relayme-video', capabilities: ['video_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({ runVideoPreviewNode } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+    fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: 'Animate this image' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('RelayMe 当前视频接口不支持参考图片或视频'));
+  });
+
+  it('explains when a Comfly video model has no verified submission contract', async () => {
+    const node = createCanvasModuleNode('comfly-unverified-video-model', 'video_generation', { x: 0, y: 0 });
+    const runVideoPreviewNode = vi.fn(async () => {
+      throw Object.assign(
+        new Error('The selected Comfly video model has no verified submission contract'),
+        { code: 'CAPABILITY_UNSUPPORTED' },
+      );
+    });
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [{ provider: 'comfly', modelRoute: 'comfly-grok-video', displayName: 'Grok Video', modelId: 'grok-imagine-video-1.5', capabilities: ['video_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({ runVideoPreviewNode } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+    fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: 'Animate this product' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('该 Comfly 视频模型尚未验证提交格式，请选择 Wan、Seedance 或 Veo 模型'));
+  });
+
+  it('explains that a connected source video cannot be submitted as an image reference', async () => {
+    const node = createCanvasModuleNode('source-video-reference-failure', 'video_generation', { x: 0, y: 0 });
+    const runVideoPreviewNode = vi.fn(async () => {
+      throw Object.assign(
+        new Error('Video-to-video input is not supported by the selected provider route'),
+        { code: 'CAPABILITY_UNSUPPORTED' },
+      );
+    });
+    const data = {
+      ...node.data,
+      videoGenerationRoutes: [{ provider: 'comfly', modelRoute: 'comfly-video', displayName: 'Comfly Video', modelId: 'comfly-video', capabilities: ['video_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({ runVideoPreviewNode } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openVideoGenerationEditor();
+    fireEvent.change(screen.getByLabelText('Video preview prompt'), { target: { value: 'Transform this source video' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成视频' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('当前供应商不支持把视频作为生成输入'));
   });
 
   it('turns the image primary action into stop generation for the active node job', () => {
@@ -3570,6 +3896,25 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Agent model route')).toHaveValue('reverse-gemini-3.1-pro');
   });
 
+  it('restores the preferred Agent route when a later empty durable config refresh clears the automatic selection', async () => {
+    const node = createCanvasModuleNode('reverse-route-refresh', 'reverse_agent', { x: 0, y: 0 });
+    const reverseAgentRoutes = [
+      { provider: 'comfly' as const, modelRoute: 'reverse/e2e-gemini-native', displayName: 'E2E Reverse Analysis', modelId: 'e2e-reverse-gemini-native', capabilities: ['reverse_prompt' as const, 'gemini_native' as const] },
+      { provider: 'comfly' as const, modelRoute: 'reverse-gemini-3.1-pro', displayName: 'Gemini 3.1 Pro', modelId: 'gemini-3.1-pro', capabilities: ['reverse_prompt' as const, 'gemini_native' as const] },
+    ];
+    const data = { ...node.data, reverseAgentRoutes } as typeof node.data;
+    const view = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    const route = screen.getByLabelText('Agent model route');
+    await waitFor(() => expect(route).toHaveValue('reverse-gemini-3.1-pro'));
+
+    view.rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={{
+      ...data,
+      config: { ...data.config, modelRoute: '' },
+    }} selected={false} /></ReactFlowProvider>);
+
+    await waitFor(() => expect(route).toHaveValue('reverse-gemini-3.1-pro'));
+  });
+
   it('preserves a valid saved Agent route when other compatible routes are available', async () => {
     const node = createCanvasModuleNode('reverse-saved-route', 'reverse_agent', { x: 0, y: 0 });
     node.data.config = {
@@ -3660,6 +4005,45 @@ describe('ModuleNodeCard', () => {
       fireEvent.input(editor, { target: { textContent: '在已有引用前新增@，后面保留@图片1' } });
       expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
     });
+
+  it('inserts a reverse-node reference at its real caret and leaves later unresolved mentions intact', () => {
+    const image = createCanvasModuleNode('reverse-caret-source', 'image_input', { x: 0, y: 0 });
+    image.data.config = { assetId: projectImage.assetId };
+    const node = createCanvasModuleNode('reverse-caret-target', 'reverse_agent', { x: 420, y: 0 });
+    node.data.config = {
+      modelRoute: 'reverse-gemini',
+      role: 'Commercial visual analyst',
+      task: '',
+      knowledgeBaseIds: [],
+    };
+    useAppStore.setState({
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [image, node],
+        edges: [{ id: 'reverse-caret-edge', source: image.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 0 }],
+      },
+      projectImages: [projectImage],
+    } as never);
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: [{ provider: 'comfly', modelRoute: 'reverse-gemini', displayName: 'Reverse Gemini', modelId: 'reverse-gemini', capabilities: ['reverse_prompt', 'gemini_native'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    const editor = screen.getByLabelText('Analysis task');
+    const input = '先分析@当前，再比较  @后一个  保持结尾';
+    editor.textContent = input;
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(editor.firstChild!, '先分析@当前'.length);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.input(editor);
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+
+    expect(editor).toHaveValue('先分析@图片1，再比较  @后一个  保持结尾');
+  });
   it('deletes ordinary text beside a legacy reverse mention without entering an update loop', async () => {
     const image = createCanvasModuleNode('reverse-legacy-delete-source', 'image_input', { x: 0, y: 0 });
     image.data.config = { assetId: projectImage.assetId };
@@ -3791,7 +4175,7 @@ describe('ModuleNodeCard', () => {
     expect(contract).toContain('opacity: .55 !important');
   });
 
-  it('renders edge-backed reverse media as visual slots above the model controls', () => {
+  it('renders edge-backed reverse media as visual slots below the model controls', () => {
     const image = createCanvasModuleNode('reverse-media-source', 'image_input', { x: 0, y: 0 });
     image.data.config = { assetId: projectImage.assetId };
     const node = createCanvasModuleNode('reverse-media-slots', 'reverse_agent', { x: 420, y: 0 });
@@ -3823,7 +4207,7 @@ describe('ModuleNodeCard', () => {
 
     const media = screen.getByLabelText('Connected reverse media slots');
     expect(media).toContainElement(screen.getByRole('img', { name: projectImage.label }));
-    expect(media.compareDocumentPosition(screen.getByLabelText('Agent model route')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByLabelText('Agent model route').compareDocumentPosition(media) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('starts an already applied Agent reverse task from its own node and renders the returned prompt', async () => {

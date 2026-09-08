@@ -106,7 +106,7 @@ describe('agentCanvas preload compatibility bridge', () => {
       if (Object.values(AGENT_CANVAS_CHANNELS.secrets).includes(channel as never)) {
         return { ok: true, value: { configured: true, locked: false, encryption: 'safeStorage' } };
       }
-      return { channel };
+      return { ok: true, value: undefined };
     }) as DesktopBridgeInvoke & ReturnType<typeof vi.fn>;
     const unsubscribe = vi.fn();
     const subscribe = vi.fn((_channel: string, _listener: (payload: unknown) => void) => unsubscribe);

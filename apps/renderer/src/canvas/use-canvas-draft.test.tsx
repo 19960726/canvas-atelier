@@ -108,7 +108,7 @@ describe('useCanvasDraft', () => {
       { nodeId: 'b', position: { x: 120, y: 130 } },
     ]);
   });
-  it('merges durable source updates around an active drag and rolls back the stopped node after failure', async () => {
+  it('merges durable source updates around an active drag and keeps the stopped node after a save failure', async () => {
     const initialNodes = [draftNode('a', 0, 0), draftNode('b', 100, 100), draftNode('removed', 200, 200)];
     const onCommitPositions = vi.fn(async () => false);
     const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({ nodes, onCommitPositions }), {
@@ -135,7 +135,7 @@ describe('useCanvasDraft', () => {
     expect(onCommitPositions).toHaveBeenCalledWith([{ nodeId: 'b', position: { x: 800, y: 900 } }]);
     expect(result.current.nodes.map((node) => [node.id, node.position])).toEqual([
       ['a', { x: 20, y: 30 }],
-      ['b', { x: 100, y: 100 }],
+      ['b', { x: 800, y: 900 }],
       ['added', { x: 300, y: 300 }],
     ]);
   });
@@ -200,7 +200,7 @@ describe('useCanvasDraft', () => {
     expect(result.current.nodes).toBe(firstResult);
   });
 
-  it('keeps a stopped draft stable while its commit waits behind another commit and reconciles failure', async () => {
+  it('keeps a stopped draft stable while its commit waits behind another commit and after failure', async () => {
     const firstCommit = deferred<boolean>();
     const queuedCommitGate = deferred<void>();
     const secondCommitStarted = deferred<void>();
@@ -245,7 +245,7 @@ describe('useCanvasDraft', () => {
     await act(async () => {
       await secondStop;
     });
-    expect(result.current.nodes.find((node) => node.id === 'b')?.position).toEqual({ x: 100, y: 100 });
+    expect(result.current.nodes.find((node) => node.id === 'b')?.position).toEqual({ x: 800, y: 900 });
   });
 
   it('resynchronizes from a changed durable source and culls using the draft position', async () => {
@@ -273,6 +273,48 @@ describe('useCanvasDraft', () => {
     });
     rerender({ nodes: [draftNode('module-1', 320, 240)] });
     expect(result.current.nodes.find((node) => node.id === 'module-1')?.position).toEqual({ x: 320, y: 240 });
+  });
+
+  it('keeps the committed drag position while the durable source is still stale', async () => {
+    const commit = deferred<boolean>();
+    const initialNodes = [draftNode('a', 100, 100)];
+    const { result, rerender } = renderHook(({ nodes }) => useCanvasDraft({
+      nodes,
+      onCommitPositions: async () => commit.promise,
+    }), { initialProps: { nodes: initialNodes } });
+
+    act(() => {
+      result.current.onNodesChange([{ id: 'a', type: 'position', position: { x: 800, y: 900 }, dragging: true }]);
+    });
+    const stopping = result.current.onNodeDragStop({} as never, result.current.nodes[0]!);
+
+    rerender({ nodes: initialNodes });
+    expect(result.current.nodes[0]?.position).toEqual({ x: 800, y: 900 });
+
+    commit.resolve(true);
+    await act(async () => { await stopping; });
+    expect(result.current.nodes[0]?.position).toEqual({ x: 800, y: 900 });
+
+    rerender({ nodes: [draftNode('a', 800, 900)] });
+    expect(result.current.nodes[0]?.position).toEqual({ x: 800, y: 900 });
+  });
+
+  it('clears optimistic drag state when the same project starts a replacement persistence session', () => {
+    const initialNodes = [draftNode('a', 100, 100)];
+    const { result, rerender } = renderHook(({ nodes, resetKey }) => useCanvasDraft({
+      nodes,
+      resetKey,
+      onCommitPositions: async () => false,
+    }), { initialProps: { nodes: initialNodes, resetKey: 1 } });
+
+    act(() => {
+      result.current.onNodesChange([{ id: 'a', type: 'position', position: { x: 800, y: 900 }, dragging: true }]);
+    });
+    expect(result.current.nodes[0]?.position).toEqual({ x: 800, y: 900 });
+
+    rerender({ nodes: initialNodes, resetKey: 2 });
+
+    expect(result.current.nodes[0]?.position).toEqual({ x: 100, y: 100 });
   });
 });
 

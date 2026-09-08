@@ -283,6 +283,7 @@ export {
   createSafeModePreloadApi,
   redactBridgeDiagnostics,
 } from './preload-api.js';
+export type { PersistenceIpcFailure } from './persistence-ipc-envelope.js';
 export {
   CODEX_ASTRA_MODEL_ID,
   CODEX_ASTRA_MODEL_ROUTE,

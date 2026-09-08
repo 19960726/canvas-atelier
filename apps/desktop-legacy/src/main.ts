@@ -1,4 +1,5 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
@@ -35,6 +36,7 @@ import {
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
   installRendererSecurityHeaders,
+  parseCloseFlushAck,
   createProviderBridgeHandlers,
   isHistoryNetworkPath,
   migrateLegacyUserData,
@@ -57,6 +59,7 @@ import {
   shutdownDesktopServices,
   type ApprovedSnapshotOutboxDrainHandle,
   type BridgeDialogAdapter,
+  type CloseFlushCompletionReason,
   type DesktopBridgeHandlers,
   type RendererCloseFlushCoordinator,
   type McpClientConfigIpcRegistration,
@@ -121,6 +124,7 @@ let closeAllStarted = false;
 let closeCoordinator: RendererCloseFlushCoordinator | null = null;
 let allowCoordinatedClose = false;
 let closeFinalizeTarget: 'window' | 'app' = 'window';
+let closeFlushErrorCode: string | null = null;
 let rendererLoaded = false;
 let updateClient: UpdateClient | null = null;
 let mcpRendererBridge: McpRendererBridge | null = null;
@@ -244,6 +248,7 @@ app.whenReady().then(async () => {
     canRequestRendererFlush: canRequestRendererCloseFlush,
     closeAllProjects: runCoordinatedShutdown,
     finalizeClose: finalizeCoordinatedClose,
+    onCloseBlocked: showCloseRecoveryChoice,
     sendCloseFlushRequest: sendRendererCloseFlushRequest,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
@@ -316,6 +321,7 @@ app.whenReady().then(async () => {
       resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
         .map((entry) => entry.address),
       readManagedReverseMedia: desktopHandlers.readManagedReverseMedia,
+      readManagedSkillChatImages: desktopHandlers.readManagedSkillChatImages,
       storeGeneratedImage: desktopHandlers.storeGeneratedImage,
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
     }),
@@ -325,6 +331,7 @@ app.whenReady().then(async () => {
     ipcMain,
     service: createCodexCliService({
       executablePath: codexCliExecutablePath,
+      modelCatalogPath: join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'models_cache.json'),
       mcpServer: createCanvasMcpLaunchSpec(),
       resolveKnowledge: async (ids) => Promise.all(ids.map(async (knowledgeBaseId) => {
         const active = await knowledgeStore.readActive(knowledgeBaseId);
@@ -345,6 +352,8 @@ app.whenReady().then(async () => {
   });
   ipcMain.on(BRIDGE_CHANNELS.closeFlushAck, (event, payload) => {
     if (mainWindow === null || event.sender !== mainWindow.webContents) return;
+    const ack = parseCloseFlushAck(payload);
+    if (ack?.phase === 'completed') closeFlushErrorCode = ack.errorCode ?? null;
     void closeCoordinator?.handleCloseFlushAck(payload);
   });
 
@@ -386,6 +395,7 @@ async function startMcpRuntime(): Promise<void> {
   let service: McpRuntimeService | null = null;
   const rendererBridge = createMcpRendererBridge({
     ipcMain,
+    prepareInteractiveRequest: () => prepareMainWindowForTrustedPicker(),
     getRenderer: () => {
       const window = mainWindow;
       if (
@@ -440,6 +450,22 @@ async function startMcpRuntime(): Promise<void> {
     mcpRuntimeService = null;
     throw error;
   }
+}
+
+async function prepareMainWindowForTrustedPicker(): Promise<boolean> {
+  const window = mainWindow;
+  if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return false;
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  window.focus();
+  window.webContents.focus();
+  const deadline = Date.now() + 1_000;
+  while (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    if (window.isVisible() && !window.isMinimized() && window.isFocused()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
 }
 
 function isMcpRendererAvailable(): boolean {
@@ -518,6 +544,7 @@ function requestCoordinatedClose(event: { preventDefault(): void }, target: 'win
   if (allowCoordinatedClose || desktopHandlers === null || closeCoordinator === null) {
     return;
   }
+  closeFlushErrorCode = null;
   if (target === 'app') {
     closeFinalizeTarget = 'app';
   }
@@ -539,28 +566,36 @@ function sendRendererCloseFlushRequest(request: { readonly requestId: string }):
   return true;
 }
 
-async function runCoordinatedShutdown(): Promise<void> {
+async function runCoordinatedShutdown(
+  reason: Extract<CloseFlushCompletionReason, 'saved' | 'discarded'>,
+): Promise<void> {
   if (desktopHandlers === null || closeAllStarted) return;
   closeAllStarted = true;
   const handlers = desktopHandlers;
-  await stopMcpRuntime();
-  await shutdownDesktopServices({
-    closeAllProjects: () => handlers.closeAllProjects(),
-    stopApprovedSnapshotDrain: () => approvedSnapshotDrainHandle?.stop() ?? Promise.resolve(),
-    stopApprovedSnapshotPull: () => approvedSnapshotPullCoordinator?.stop() ?? Promise.resolve(),
-    stopKnowledgeRefresh: () => knowledgeRefreshServiceHandle?.stop() ?? Promise.resolve(),
-    unsubscribeKnowledgeState: () => {
-      try {
-        unsubscribeKnowledgeState?.();
-      } finally {
-        approvedSnapshotDrainHandle = null;
-        approvedSnapshotPullCoordinator = null;
-        knowledgeRefreshServiceHandle = null;
-        unsubscribeKnowledgeState = null;
-      }
-    },
-    quit: () => undefined,
-  });
+  try {
+    await handlers.closeAllProjects({ flush: reason !== 'discarded' });
+    await shutdownDesktopServices({
+      closeAllProjects: () => undefined,
+      stopMcpRuntime,
+      stopApprovedSnapshotDrain: () => approvedSnapshotDrainHandle?.stop() ?? Promise.resolve(),
+      stopApprovedSnapshotPull: () => approvedSnapshotPullCoordinator?.stop() ?? Promise.resolve(),
+      stopKnowledgeRefresh: () => knowledgeRefreshServiceHandle?.stop() ?? Promise.resolve(),
+      unsubscribeKnowledgeState: () => {
+        try {
+          unsubscribeKnowledgeState?.();
+        } finally {
+          approvedSnapshotDrainHandle = null;
+          approvedSnapshotPullCoordinator = null;
+          knowledgeRefreshServiceHandle = null;
+          unsubscribeKnowledgeState = null;
+        }
+      },
+      quit: () => undefined,
+    });
+  } catch (error) {
+    closeAllStarted = false;
+    throw error;
+  }
 }
 
 function finalizeCoordinatedClose(): void {
@@ -572,6 +607,30 @@ function finalizeCoordinatedClose(): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     mainWindow.destroy();
   }
+}
+
+async function showCloseRecoveryChoice(
+  reason: 'failed' | 'timeout' | 'unavailable',
+): Promise<'cancel' | 'discard'> {
+  const reasonLabel = reason === 'timeout'
+    ? '保存超时'
+    : reason === 'unavailable'
+      ? '画布暂时无法响应'
+      : '保存失败';
+  const options = {
+    type: 'warning' as const,
+    buttons: ['取消', '放弃未保存更改并退出'],
+    cancelId: 0,
+    defaultId: 0,
+    detail: `${reasonLabel}${closeFlushErrorCode ? `（错误码：${closeFlushErrorCode}）` : ''}。已成功保存的项目不会被删除；如果继续退出，只会放弃本次未保存的更改。`,
+    message: '当前画布无法完成保存',
+    noLink: true,
+    title: '退出 Canvas Atelier',
+  };
+  const result = mainWindow !== null && !mainWindow.isDestroyed()
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  return result.response === 1 ? 'discard' : 'cancel';
 }
 
 function createDesktopWindow(preload: string): BrowserWindow {

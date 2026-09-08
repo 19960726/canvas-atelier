@@ -85,6 +85,9 @@ export type { ProviderCredentialStore, SafeStorageAdapter } from './provider-cre
 const DEFAULT_COMFLY_BASE_URL = 'https://ai.comfly.org'; const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CURRENT_GENERATION_JOB_ID_PREFIX = 'model-job-v2-';
 const REVERSE_PROVIDER_TIMEOUT_MS = 300_000;
+const PROVIDER_RESULT_DOWNLOAD_TIMEOUT_MS = 300_000;
+const PROVIDER_IMAGE_RESULT_MAX_BYTES = 256 * 1024 * 1024;
+const PROVIDER_VIDEO_RESULT_MAX_BYTES = 512 * 1024 * 1024;
 export const DEFAULT_PROVIDER_PROFILES: ProviderBridgeProfile[] = [];
 export type { ProviderBridgeHandlers, ProviderIpcMainLike, ProviderService } from './provider-service-types.js';
 export { registerProviderBridgeHandlers } from './provider-ipc-registration.js';
@@ -162,7 +165,8 @@ export function createComflyProviderService(options: {
         { publicTaskId, rawTaskId, request: 'poll' },
       );
     },
-    downloadResult: async (url) => downloadProviderResult(url),
+    readManagedGenerationImages: options.readManagedGenerationImages,
+    downloadResult: async (url) => downloadProviderResult(url, 'video'),
     historySink: options.historySink,
     storeGeneratedVideo: options.storeGeneratedVideo,
     createPublicTaskId: createPublicProviderTaskId,
@@ -373,7 +377,7 @@ export function createComflyProviderService(options: {
         }
         if (directResult !== undefined) {
           if (options.storeGeneratedImage === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Generated image storage is unavailable');
-          const bytes = directResult.inlineBytes ?? await downloadProviderResult(directResult.resultUrl);
+          const bytes = directResult.inlineBytes ?? await downloadProviderResult(directResult.resultUrl, 'image');
           const mediaType = detectGeneratedImageMediaType(bytes);
           const stored = await options.storeGeneratedImage(validated.sessionId ?? validated.conversationId, bytes, mediaType);
           const publicTaskId = createPublicProviderTaskId();
@@ -542,7 +546,7 @@ export function createComflyProviderService(options: {
       let result = mapped.publicResult;
       if (result.status === 'completed' && options.storeGeneratedImage !== undefined && task.sessionId !== undefined) {
         try {
-          const bytes = mapped.inlineBytes ?? await downloadProviderResult(mapped.resultUrl);
+          const bytes = mapped.inlineBytes ?? await downloadProviderResult(mapped.resultUrl, 'image');
           const stored = await options.storeGeneratedImage(task.sessionId, bytes, detectGeneratedImageMediaType(bytes));
           result = { status: 'completed', progress: 1, result: { assetId: stored.assetId, ...(stored.width === null || stored.width === undefined ? {} : { width: stored.width }), ...(stored.height === null || stored.height === undefined ? {} : { height: stored.height }) } };
           if (task.historyId !== undefined && options.historySink !== undefined) await options.historySink.succeeded(task.historyId, bytes);
@@ -554,7 +558,7 @@ export function createComflyProviderService(options: {
         let effective: GenerationHistoryDurableTerminal | null = null;
         if (result.status === 'completed') {
           try {
-            const bytes = mapped.inlineBytes ?? await downloadProviderResult(mapped.resultUrl);
+            const bytes = mapped.inlineBytes ?? await downloadProviderResult(mapped.resultUrl, 'image');
             effective = await options.historySink.succeeded(task.historyId, bytes);
           } catch {
             effective = await options.historySink.failed(task.historyId, 'invalid_result');
@@ -656,7 +660,7 @@ export function createComflyProviderService(options: {
   function nowIso(): string {
     return new Date(nowMs()).toISOString();
   }
-  async function downloadProviderResult(rawUrl: string | undefined): Promise<Uint8Array> {
+  async function downloadProviderResult(rawUrl: string | undefined, kind: 'image' | 'video'): Promise<Uint8Array> {
     const url = parseSafeProviderResultUrl(rawUrl);
     if (options.resolveResultHost === undefined) {
       throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
@@ -670,7 +674,11 @@ export function createComflyProviderService(options: {
     if (addresses.length === 0 || addresses.some((address) => !isPublicProviderAddress(address))) {
       throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
     }
-    const response = await options.fetch(url.toString(), { trustedResolvedAddress: addresses[0] });
+    const response = await options.fetch(url.toString(), {
+      maxResponseBytes: kind === 'image' ? PROVIDER_IMAGE_RESULT_MAX_BYTES : PROVIDER_VIDEO_RESULT_MAX_BYTES,
+      timeoutMs: PROVIDER_RESULT_DOWNLOAD_TIMEOUT_MS,
+      trustedResolvedAddress: addresses[0],
+    });
     if (!response.ok || response.arrayBuffer === undefined) {
       throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid image result');
     }

@@ -3,6 +3,32 @@ import { describe, expect, it, vi } from 'vitest';
 import { CODEX_CLI_CHANNELS, CODEX_ASTRA_PROFILE, registerCodexCliIpc } from './codex-cli-ipc';
 
 describe('Codex CLI IPC', () => {
+  it('returns a sanitized MCP failure when the runner rejects during transport setup', async () => {
+    const listeners = new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>();
+    const ipcMain = {
+      handle: vi.fn((channel: string, listener: (event: unknown, payload?: unknown) => Promise<unknown>) => listeners.set(channel, listener)),
+      removeHandler: vi.fn(),
+    };
+    const trustedSender = { id: 'renderer' };
+    const service = {
+      listProfiles: vi.fn(async () => [CODEX_ASTRA_PROFILE]),
+      chat: vi.fn(async () => { throw new Error('MCP server canvas_atelier handshake failed at C:\\private\\token.json'); }),
+      cancel: vi.fn(async () => ({ cancelled: false })),
+      dispose: vi.fn(async () => undefined),
+    };
+    registerCodexCliIpc({ ipcMain, service, getTrustedSender: () => trustedSender });
+
+    await expect(listeners.get(CODEX_CLI_CHANNELS.chat)?.({ sender: trustedSender }, { prompt: 'read' }))
+      .resolves.toEqual({
+        ok: false,
+        error: {
+          code: 'CODEX_CLI_MCP_FAILED',
+          message: 'Canvas Atelier MCP 操作未完成，未采用后续成功文本。',
+          retryable: true,
+        },
+      });
+  });
+
   it('keeps the bridge on independent channels and authorizes the renderer', async () => {
     const listeners = new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>();
     const ipcMain = {

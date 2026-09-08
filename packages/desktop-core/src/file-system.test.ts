@@ -4,6 +4,15 @@ import { writeAtomic, type FileHandleLike, type FileStatLike, type FileSystem } 
 import { createPersistenceError } from './persistence-error';
 
 describe('writeAtomic cleanup failures', () => {
+  it('keeps retrying a transient Windows permission error long enough for a busy target to unlock', async () => {
+    const fileSystem = new TransientRenameAtomicFileSystem(6);
+
+    await expect(writeAtomic(fileSystem, 'C:\\Canvas\\project.novus.json', 'next-project')).resolves.toBeUndefined();
+
+    expect(fileSystem.renameAttempts).toBe(7);
+    expect(fileSystem.removedPaths).toEqual([]);
+  });
+
   it('preserves the primary typed failure when best-effort temp cleanup also fails', async () => {
     const targetPath = ['C:', 'private-projects', 'Project.novus-project', 'project.novus.json'].join('\\');
     const primary = createPersistenceError('DISK_FULL', true, 'Atomic project write failed: storage is full');
@@ -39,6 +48,34 @@ describe('writeAtomic cleanup failures', () => {
     expect((failure as Error).message).not.toContain('.tmp-');
   });
 });
+
+class TransientRenameAtomicFileSystem implements FileSystem {
+  renameAttempts = 0;
+  removedPaths: string[] = [];
+
+  constructor(private readonly failuresBeforeSuccess: number) {}
+
+  async mkdir(): Promise<void> { throw new Error('Unexpected mkdir'); }
+  async open(): Promise<FileHandleLike> {
+    return {
+      close: async () => undefined,
+      sync: async () => undefined,
+      writeFile: async () => undefined,
+    };
+  }
+  async readFile(): Promise<string> { throw new Error('Unexpected readFile'); }
+  async readdir(): Promise<string[]> { throw new Error('Unexpected readdir'); }
+  async rename(): Promise<void> {
+    this.renameAttempts += 1;
+    if (this.renameAttempts <= this.failuresBeforeSuccess) {
+      throw Object.assign(new Error('Target is briefly locked'), { code: 'EPERM' });
+    }
+  }
+  async rm(path: string): Promise<void> { this.removedPaths.push(path); }
+  async stat(): Promise<FileStatLike> { throw new Error('Unexpected stat'); }
+  async unlink(): Promise<void> { throw new Error('Unexpected unlink'); }
+  async writeFile(): Promise<void> { throw new Error('Unexpected writeFile'); }
+}
 
 class FailingAtomicFileSystem implements FileSystem {
   removedPath = '';

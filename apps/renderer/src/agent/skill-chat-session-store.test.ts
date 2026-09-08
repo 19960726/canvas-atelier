@@ -91,7 +91,7 @@ describe('skill chat conversation storage', () => {
     expect(readAgentConversationCollection('astra', 901).conversations[0]?.reasoningEffort).toBe('max');
   });
 
-  it('migrates the removed ultra effort to max without discarding the conversation', () => {
+  it('preserves ultra effort and the conversation for catalogs that support it', () => {
     const conversation = { ...createAgentConversation(910), id: 'legacy-ultra', reasoningEffort: 'ultra' };
     window.localStorage.setItem('agent-canvas:skill-chat:v2:astra-migration', JSON.stringify({
       version: 2,
@@ -101,7 +101,7 @@ describe('skill chat conversation storage', () => {
 
     expect(readAgentConversationCollection('astra-migration', 911).conversations[0]).toMatchObject({
       id: 'legacy-ultra',
-      reasoningEffort: 'max',
+      reasoningEffort: 'ultra',
     });
   });
 });

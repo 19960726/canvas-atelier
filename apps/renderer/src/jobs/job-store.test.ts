@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { sha256Canonical } from '@agent-canvas/desktop-core';
 import type { CanvasNode, CanvasProject, ModelJob, ProjectTransaction } from '@agent-canvas/domain';
 import { applyProjectTransaction, createCanvasModuleNode } from '@agent-canvas/domain';
 import { createStarterProject } from '../app/app-store';
@@ -409,6 +410,8 @@ describe('persistent model job store', () => {
         config: expect.objectContaining({
           resultAssetIds: ['0123456789abcdef'],
           resultState: 'fresh',
+          resultWidth: 1408,
+          resultHeight: 768,
         }),
         execution: expect.objectContaining({ state: 'completed' }),
       },
@@ -676,6 +679,65 @@ describe('persistent model job store', () => {
 
     expect(project.nodes.find((node) => node.id === imageNode.id)).toMatchObject({
       data: { config: { prompt: 'new local prompt', resultAssetIds: ['b'.repeat(16)] } },
+    });
+  });
+
+  it('omits unavailable image dimensions before the canonical journal commit', async () => {
+    const imageNode = createCanvasModuleNode('image-node-no-dimensions', 'image_generation', { x: 0, y: 0 });
+    const runningJob = {
+      ...request({ id: 'job-result-no-dimensions', promptNodeId: imageNode.id }),
+      conversationId: 'conversation-result-no-dimensions',
+      confirmedAt,
+      createdAt: confirmedAt,
+      updatedAt: confirmedAt,
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: 'provider-job-result-no-dimensions',
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([runningJob]);
+    let project: CanvasProject = { ...createStarterProject(), nodes: [imageNode], edges: [] };
+    let materializedConfig: Record<string, unknown> | undefined;
+    let canonicalCommitRequest: {
+      readonly projectId: string;
+      readonly baseRevision: number;
+      readonly kind: 'agent';
+      readonly transaction: ProjectTransaction;
+    } | undefined;
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, result: { assetId: 'e'.repeat(16) } })),
+      }),
+      getProject: () => project,
+      commitProjectTransaction: vi.fn(async (build) => {
+        const materialization = build(project);
+        const updatedNode = materialization.transaction.operations[0]?.operation;
+        expect(updatedNode?.kind).toBe('update_node');
+        if (updatedNode?.kind !== 'update_node' || updatedNode.node.type !== 'module') {
+          throw new Error('Expected an inline module update');
+        }
+        materializedConfig = updatedNode.node.data.config;
+        canonicalCommitRequest = {
+          projectId: project.id,
+          baseRevision: 271,
+          kind: 'agent',
+          transaction: materialization.transaction,
+        };
+        project = applyProjectTransaction(project, materialization.transaction);
+        return { committed: true, resultNodeId: materialization.resultNodeId };
+      }),
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.pollActiveJobs();
+
+    expect(materializedConfig).not.toHaveProperty('resultWidth');
+    expect(materializedConfig).not.toHaveProperty('resultHeight');
+    expect(() => sha256Canonical(canonicalCommitRequest)).not.toThrow();
+    expect(await storage.get(runningJob.id)).toMatchObject({
+      status: 'completed',
+      resultAssetId: 'e'.repeat(16),
     });
   });
 

@@ -1,5 +1,7 @@
 # Codex Agent 对话工作台设计
 
+> 2026-09-06 更新：本任务最新截图与模型补充以 `docs/superpowers/specs/2026-09-06-agent-codex-ui-models-design.md` 为准；旧九图槽、固定三档与早期 Codex 媒体契约不用于覆盖当前实现边界。
+
 ## 目标
 
 在 Canvas Atelier 右侧 Agent 面板中实现与用户参考图一致的对话信息架构，并保持 Canvas Atelier 自己的浅色、青绿色、圆角和间距体系。对话任务按项目画布隔离保存，模型选择来自当前完整供应商目录，画布操作继续通过现有工作区 API、确认边界和 CanvasForge MCP 执行。

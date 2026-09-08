@@ -165,7 +165,11 @@ describe('provider generation history production sink', () => {
       providerTaskId: succeededHandle.providerTaskId,
     });
     expect(resolveResultHost).toHaveBeenCalledWith('assets.example');
-    expect(fetch).toHaveBeenCalledWith(resultUrl, { trustedResolvedAddress: '93.184.216.34' });
+    expect(fetch).toHaveBeenCalledWith(resultUrl, expect.objectContaining({
+      maxResponseBytes: 256 * 1024 * 1024,
+      timeoutMs: 300_000,
+      trustedResolvedAddress: '93.184.216.34',
+    }));
     expect(completedPoll).toMatchObject({ status: 'completed' });
 
     const failedHandle = await service.submitImageJob({
@@ -309,6 +313,31 @@ describe('provider generation history production sink', () => {
       'originals',
       `${record.output!.historyAssetId}.mp4`,
     ))).toEqual(mp4);
+  });
+
+  it('persists a video larger than the obsolete 64 MiB history limit', async () => {
+    const { sink, store } = await createHistorySink();
+    const mp4 = createLargeMinimalMp4();
+    const reservation = await sink.reserveSubmission({
+      jobId: 'job-large-video-history',
+      kind: 'video',
+      modelDisplayName: 'Large Video',
+      provider: 'comfly',
+    });
+    await sink.running(reservation.historyId);
+
+    await expect(sink.succeeded(reservation.historyId, mp4, {
+      durationSeconds: 8,
+      height: 1080,
+      width: 1920,
+    })).resolves.toMatchObject({ status: 'succeeded', height: 1080, width: 1920 });
+
+    const record = (await store.list({ filters: { kind: 'video', trashState: 'all' } })).records[0]!;
+    expect(record).toMatchObject({
+      status: 'succeeded',
+      output: { byteSize: mp4.byteLength, mediaType: 'video/mp4' },
+    });
+    expect(mp4.byteLength).toBeGreaterThan(64 * 1024 * 1024);
   });
 
   it('derives RelayMe video history metadata from the MP4 when the task response omits it', async () => {
@@ -983,6 +1012,20 @@ function createMinimalMp4(): Buffer {
     mp4Box('moov', mp4Box('trak', Buffer.from([0, 0, 0, 0]))),
     mp4Box('mdat', Buffer.from([1, 2, 3, 4])),
   ]);
+}
+
+function createLargeMinimalMp4(): Buffer {
+  const byteLength = 64 * 1024 * 1024 + 1_024;
+  const bytes = Buffer.alloc(byteLength);
+  bytes.writeUInt32BE(16, 0);
+  bytes.write('ftyp', 4, 4, 'ascii');
+  bytes.write('isom', 8, 4, 'ascii');
+  bytes.writeUInt32BE(12, 16);
+  bytes.write('moov', 20, 4, 'ascii');
+  bytes.writeUInt32BE(byteLength - 28, 28);
+  bytes.write('mdat', 32, 4, 'ascii');
+  bytes[byteLength - 1] = 1;
+  return bytes;
 }
 
 function createMetadataMp4(width: number, height: number, durationSeconds: number): Buffer {

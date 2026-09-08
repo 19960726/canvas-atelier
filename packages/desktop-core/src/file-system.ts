@@ -3,6 +3,12 @@ import { link, lstat, open, readFile, readdir, realpath, rename, rm, stat, trunc
 import { basename, dirname, join } from 'node:path';
 import { normalizePersistenceError } from './persistence-error.js';
 
+// Windows Defender, thumbnail providers, and cloud sync clients can hold the
+// target for several seconds after the previous write closes. Keep the write
+// atomic while giving those transient handles time to release before exposing
+// PERMISSION_DENIED to the user.
+const ATOMIC_RENAME_RETRY_DELAYS_MS = [20, 60, 140, 280, 600, 1_200, 2_400] as const;
+
 export interface FileHandleLike {
   close(): Promise<void>;
   sync(): Promise<void>;
@@ -113,7 +119,7 @@ export async function writeAtomic(
     await handle.sync();
     await handle.close();
     closed = true;
-    await fileSystem.rename(tempPath, targetPath);
+    await renameAtomicTargetWithRetry(fileSystem, tempPath, targetPath);
   } catch (error) {
     const primaryError = normalizePersistenceError(error, 'Atomic project write failed');
     if (handle !== null && !closed) {
@@ -131,4 +137,25 @@ export async function writeAtomic(
     }
     throw primaryError;
   }
+}
+
+async function renameAtomicTargetWithRetry(
+  fileSystem: FileSystem,
+  tempPath: string,
+  targetPath: string,
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fileSystem.rename(tempPath, targetPath);
+      return;
+    } catch (error) {
+      if (!isTransientAtomicRenameError(error) || attempt >= ATOMIC_RENAME_RETRY_DELAYS_MS.length) throw error;
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, ATOMIC_RENAME_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
+function isTransientAtomicRenameError(error: unknown): boolean {
+  if (error === null || typeof error !== 'object' || !('code' in error)) return false;
+  return error.code === 'EPERM' || error.code === 'EACCES';
 }

@@ -8,6 +8,7 @@ import type {
   ProjectImageImportTarget,
   ProjectVideoAssetSummary,
   ProviderBridgeProfile,
+  PersistenceIpcFailure,
 } from '@agent-canvas/desktop-core';
 import type { CanvasProject, ProjectTransaction, ReversePromptResult, ReversePromptRun } from '@agent-canvas/domain';
 import { applyProjectTransaction, createCanvasModuleNode } from '@agent-canvas/domain';
@@ -100,6 +101,7 @@ export type ProjectCommitResult =
     code: ProjectCommitErrorCode;
     ok: false;
     project: CanvasProject;
+    retryable?: boolean;
     revision: number;
   };
 
@@ -226,6 +228,7 @@ export function createBrowserPersistenceClient(storage = getStorage()): ProjectP
           code: 'BROWSER_PERSIST_FAILED',
           ok: false,
           project: currentProject ?? request.previousProject,
+          retryable: true,
           revision,
         };
       }
@@ -402,7 +405,18 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   let recoveryCandidateIds = new Map<string, string>();
   let clientGeneration = 0;
   let startupRestoreAttempted = false;
-  let pendingWritableSession: Promise<string | null> | null = null;
+  type WritableSessionResolution = {
+    readonly sessionId: string;
+    /** The project that was already materialized by createProject, if any. */
+    readonly materializedProject: CanvasProject | null;
+  };
+  let pendingWritableSession: Promise<WritableSessionResolution | null> | null = null;
+  let pendingRecoveryRefresh: Promise<void> | null = null;
+  let queuedRecoveryRefresh: {
+    readonly sessionId: string;
+    readonly generation: number;
+    readonly revision: number;
+  } | null = null;
   const activeCodexRequestIds = new Set<string>();
   const cancelledCodexRequestIds = new Set<string>();
 
@@ -455,6 +469,9 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       }
     },
     async chatSkill(input) {
+      if (input.agentMode === 'codex' && input.provider !== 'codex') {
+        throw createImportError('INVALID_REQUEST');
+      }
       if (input.provider === 'codex') {
         if (input.requestId === undefined) throw createImportError('INVALID_REQUEST');
         const localRequestId = input.requestId;
@@ -463,15 +480,9 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
           const writableSessionId = await ensureWritableSession();
           if (writableSessionId === null) throw createImportError('INVALID_REQUEST');
           if (cancelledCodexRequestIds.has(localRequestId)) throw createCodexCancellationError();
-          if ((input.referenceAssetIds?.length ?? 0) > 0 || (input.referenceMentions?.length ?? 0) > 0) {
-            const unsupported = new Error('Codex CLI managed images are unavailable') as Error & { code?: string; retryable?: boolean };
-            unsupported.code = 'CODEX_CLI_INVALID_REQUEST';
-            unsupported.retryable = false;
-            throw unsupported;
-          }
           return await bridge.codexCli.chat({
             provider: 'codex',
-            modelRoute: 'codex/gpt-6-astra',
+            modelRoute: input.modelRoute,
             agentMode: 'codex',
             reasoningEffort: input.reasoningEffort ?? 'medium',
             messages: input.messages.map((message) => ({ ...message })),
@@ -481,6 +492,8 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
             },
             sessionId: writableSessionId,
             requestId: localRequestId,
+            referenceAssetIds: [...(input.referenceAssetIds ?? [])],
+            referenceMentions: [...(input.referenceMentions ?? [])],
             ...(input.visualAnalysis === undefined ? {} : { visualAnalysis: input.visualAnalysis }),
           });
         } catch (error) {
@@ -555,7 +568,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
               recentProjectId: latestAvailableProject.recentProjectId,
               mode: 'write',
             });
-            if (selected !== null) return adoptSelectedSession(selected);
+            if (selected !== null) return adoptSelectedSession(selected, { deferRecoveryRefresh: true });
           }
           const recoveryPreview = await bridge.openLatestRecoveryPreview?.() ?? null;
           if (recoveryPreview !== null) return adoptSelectedSession(recoveryPreview);
@@ -564,7 +577,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
               recentProjectId: latestAvailableProject.recentProjectId,
               mode: 'write',
             });
-            if (selected !== null) return adoptSelectedSession(selected);
+            if (selected !== null) return adoptSelectedSession(selected, { deferRecoveryRefresh: true });
           }
         } catch {
           // Startup recovery is best-effort. A missing or stale recent project must not block a clean canvas.
@@ -616,7 +629,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         || selected.mode !== 'write'
         || selected.recoveryRequired === true
       ) return null;
-      return adoptSelectedSession(selected);
+      return adoptSelectedSession(selected, { deferRecoveryRefresh: true });
     },
     async importProjectImage(target, file) {
       const writableSessionId = await ensureWritableSession();
@@ -794,7 +807,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         revision = currentProject === previousProject && result.project !== previousProject
           ? previousRevision
           : result.restoredRevision;
-        availableSnapshotIds = await readDesktopRecoverySnapshotIds();
+        availableSnapshotIds = await readDesktopRecoverySnapshotIds(undefined, clientGeneration, revision);
         recoveryRequired = false;
       }
       return {
@@ -814,9 +827,21 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
           return { availableSnapshotIds: [], lifecycle: 'untitled', project: currentProject, revision };
         }
       } else if (mode === 'write') {
-        const result = await bridge.createStablePoint({ sessionId });
-        revision = result.revision;
-        availableSnapshotIds = await readDesktopRecoverySnapshotIds();
+        const stableSessionId = sessionId;
+        const stableGeneration = clientGeneration;
+        const result = await bridge.createStablePoint({ sessionId: stableSessionId });
+        // Stable-point acknowledgement is the durability boundary. Recovery
+        // scanning can inspect dozens of snapshots and must never hold the
+        // save timeout open. Refresh the opaque candidate map in the
+        // background and apply it only if this session/revision is still live.
+        if (
+          sessionId === stableSessionId
+          && clientGeneration === stableGeneration
+          && result.revision >= revision
+        ) {
+          revision = result.revision;
+          scheduleRecoveryRefresh(stableSessionId, stableGeneration, result.revision);
+        }
       }
       return {
         availableSnapshotIds,
@@ -828,18 +853,30 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
   };
 
   async function ensureWritableSession(): Promise<string | null> {
+    const resolution = await ensureWritableSessionResolution();
+    return resolution?.sessionId ?? null;
+  }
+
+  async function ensureWritableSessionResolution(): Promise<WritableSessionResolution | null> {
     if (recoveryRequired) throw createImportError('RECOVERY_REQUIRED');
-    if (sessionId !== null) return mode === 'write' ? sessionId : null;
+    if (sessionId !== null) {
+      return mode === 'write' ? { sessionId, materializedProject: null } : null;
+    }
     if (pendingWritableSession !== null) return pendingWritableSession;
     const createGeneration = clientGeneration;
+    const projectForCreation = currentProject;
     const createRequest = (async () => {
-      const created = await bridge.createProject({ project: currentProject });
+      const created = await bridge.createProject({ project: projectForCreation });
       if (created === null) return null;
       if (clientGeneration !== createGeneration || sessionId !== null) {
-        return sessionId !== null && mode === 'write' ? sessionId : null;
+        return sessionId !== null && mode === 'write'
+          ? { sessionId, materializedProject: null }
+          : null;
       }
-      await adoptSelectedSession(created);
-      return mode === 'write' ? sessionId : null;
+      await adoptSelectedSession(created, { deferRecoveryRefresh: true });
+      return mode === 'write' && sessionId !== null
+        ? { sessionId, materializedProject: projectForCreation }
+        : null;
     })();
     const trackedRequest = createRequest.finally(() => {
       if (pendingWritableSession === trackedRequest) pendingWritableSession = null;
@@ -850,6 +887,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
 
   async function adoptSelectedSession(
     selected: NonNullable<Awaited<ReturnType<DesktopBridgeApi['openProject']>>>,
+    options: { readonly deferRecoveryRefresh?: boolean } = {},
   ): Promise<ProjectHydrationResult> {
     clientGeneration += 1;
     sessionId = selected.sessionId;
@@ -860,7 +898,11 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     recoveryRequired = selected.recoveryRequired === true;
     availableSnapshotIds = [];
     recoveryCandidateIds = new Map();
-    availableSnapshotIds = await readDesktopRecoverySnapshotIds(selected.sessionId);
+    if (options.deferRecoveryRefresh === true) {
+      scheduleRecoveryRefresh(selected.sessionId, clientGeneration, revision);
+    } else {
+      availableSnapshotIds = await readDesktopRecoverySnapshotIds(selected.sessionId, clientGeneration, revision);
+    }
     return {
       availableSnapshotIds,
       lifecycle: 'durable',
@@ -876,6 +918,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     request: ProjectCommitRequest,
     allowRevisionRefresh = true,
   ): Promise<ProjectCommitResult> {
+    let materializedProject: CanvasProject | null = null;
     if (sessionId === null || projectId === null) {
       // The first autosave establishes the current canvas on disk. Keeping
       // this session open makes every later autosave overwrite the same
@@ -884,9 +927,16 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (typeof bridge.createProject !== 'function') {
         return { ok: true, project: currentProject, revision };
       }
-      const writableSessionId = await ensureWritableSession();
-      if (writableSessionId === null || sessionId === null || projectId === null) {
-        return { code: 'DURABLE_WRITE_FAILED', ok: false, project: currentProject, revision };
+      const writableSession = await ensureWritableSessionResolution();
+      if (writableSession === null || sessionId === null || projectId === null) {
+        return { code: 'DURABLE_WRITE_FAILED', ok: false, project: currentProject, retryable: true, revision };
+      }
+      materializedProject = writableSession.materializedProject;
+      // createProject writes the complete canvas as revision 0. Replaying the
+      // same transaction against that snapshot would duplicate create/delete
+      // operations and make the first save fail with INVALID_REQUEST.
+      if (materializedProject === request.nextProject) {
+        return { ok: true, project: currentProject, revision };
       }
     }
     if (mode === 'read_only') {
@@ -894,6 +944,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         code: 'CONCURRENT_WRITER',
         ok: false,
         project: currentProject,
+        retryable: true,
         revision,
       };
     }
@@ -902,6 +953,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         code: 'RECOVERY_REQUIRED',
         ok: false,
         project: currentProject,
+        retryable: false,
         revision,
       };
     }
@@ -916,6 +968,9 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         sessionId: commitSessionId,
         transaction: request.transaction,
       });
+      if (isPersistenceCommitFailure(ack)) {
+        throw createDesktopPersistenceError(ack.error.code, ack.error.retryable);
+      }
       const acknowledgedProject = validateRecoveredProject(
         request.nextProject,
         clientGeneration === commitGeneration ? currentProject : request.previousProject,
@@ -935,6 +990,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       };
     } catch (error) {
       const code = readErrorCode(error);
+      const retryable = readErrorRetryable(error, code);
       if (
         code === 'REVISION_CONFLICT'
         && allowRevisionRefresh
@@ -948,7 +1004,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
             && refreshed.projectId === commitProjectId
             && refreshed.mode === 'write'
           ) {
-            await adoptSelectedSession(refreshed);
+            await adoptSelectedSession(refreshed, { deferRecoveryRefresh: true });
             const rebasedProject = applyProjectTransaction(currentProject, request.transaction);
             return desktopCommit({
               ...request,
@@ -971,7 +1027,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
           const refreshed = await bridge.refreshProject({ sessionId: commitSessionId });
           if (refreshed.sessionId === commitSessionId && refreshed.projectId === commitProjectId && refreshed.mode === 'write') {
             await adoptSelectedSession(refreshed);
-            return { code: 'REVISION_CONFLICT', ok: false, project: currentProject, revision };
+            return { code: 'REVISION_CONFLICT', ok: false, project: currentProject, retryable: false, revision };
           }
         } catch {
           // Preserve the original typed error when the refresh itself fails.
@@ -981,24 +1037,79 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         code,
         ok: false,
         project: currentProject,
+        retryable,
         revision,
       };
     }
   }
 
-  async function readDesktopRecoverySnapshotIds(requestedSessionId = sessionId): Promise<string[]> {
-    if (requestedSessionId === null) return availableSnapshotIds;
+  async function fetchDesktopRecoverySnapshot(
+    requestedSessionId: string,
+  ): Promise<{ readonly snapshotIds: string[]; readonly candidateIds: Map<string, string> }> {
     try {
       const plan = await bridge.getRecoveryPlan({ sessionId: requestedSessionId });
-      if (sessionId !== requestedSessionId) return availableSnapshotIds;
       const completeCandidates = plan.candidates.filter((candidate) => candidate.tailStatus === 'complete');
-      recoveryCandidateIds = new Map(completeCandidates.map((candidate) => [candidate.snapshotId, candidate.candidateId]));
-      return completeCandidates.map((candidate) => candidate.snapshotId);
+      return {
+        candidateIds: new Map(completeCandidates.map((candidate) => [candidate.snapshotId, candidate.candidateId])),
+        snapshotIds: completeCandidates.map((candidate) => candidate.snapshotId),
+      };
     } catch {
-      if (sessionId !== requestedSessionId) return availableSnapshotIds;
-      recoveryCandidateIds = new Map();
-      return [];
+      return { candidateIds: new Map(), snapshotIds: [] };
     }
+  }
+
+  async function readDesktopRecoverySnapshotIds(
+    requestedSessionId = sessionId,
+    expectedGeneration = clientGeneration,
+    expectedRevision = revision,
+  ): Promise<string[]> {
+    if (requestedSessionId === null) return availableSnapshotIds;
+    const next = await fetchDesktopRecoverySnapshot(requestedSessionId);
+    if (
+      sessionId !== requestedSessionId
+      || clientGeneration !== expectedGeneration
+      || revision !== expectedRevision
+    ) return availableSnapshotIds;
+    recoveryCandidateIds = next.candidateIds;
+    return next.snapshotIds;
+  }
+
+  function scheduleRecoveryRefresh(
+    requestedSessionId: string,
+    expectedGeneration: number,
+    expectedRevision: number,
+  ): void {
+    queuedRecoveryRefresh = { sessionId: requestedSessionId, generation: expectedGeneration, revision: expectedRevision };
+    if (pendingRecoveryRefresh !== null) return;
+    const refresh = (async () => {
+      while (queuedRecoveryRefresh !== null) {
+        const request = queuedRecoveryRefresh;
+        queuedRecoveryRefresh = null;
+        const next = await fetchDesktopRecoverySnapshot(request.sessionId);
+        if (
+          sessionId === request.sessionId
+          && clientGeneration === request.generation
+          && revision === request.revision
+        ) {
+          availableSnapshotIds = next.snapshotIds;
+          recoveryCandidateIds = next.candidateIds;
+        }
+      }
+    })();
+    const tracked = refresh.finally(() => {
+      if (pendingRecoveryRefresh !== tracked) return;
+      pendingRecoveryRefresh = null;
+      // A request can arrive in the same turn that the previous worker exits.
+      // Start another worker after clearing the marker so that queued work is
+      // never left without a consumer.
+      if (queuedRecoveryRefresh !== null) scheduleRecoveryRefresh(
+        queuedRecoveryRefresh.sessionId,
+        queuedRecoveryRefresh.generation,
+        queuedRecoveryRefresh.revision,
+      );
+    });
+    pendingRecoveryRefresh = tracked;
+    void tracked.catch(() => undefined);
   }
 
   function readDesktopSaveStatus(): Extract<ProjectSaveStatus, 'error' | 'read_only' | 'saved'> {
@@ -1118,6 +1229,38 @@ function normalizeLegacyProject(project: CanvasProject, targetProjectId: string)
 function readErrorCode(error: unknown): ProjectCommitErrorCode {
   const code = typeof error === 'object' && error !== null && 'code' in error ? (error as { code?: unknown }).code : undefined;
   return typeof code === 'string' ? code as ProjectCommitErrorCode : 'INVALID_REQUEST';
+}
+
+function readErrorRetryable(error: unknown, code: ProjectCommitErrorCode): boolean {
+  if (typeof error === 'object' && error !== null && 'retryable' in error
+    && typeof (error as { retryable?: unknown }).retryable === 'boolean') {
+    return (error as { retryable: boolean }).retryable;
+  }
+  return code === 'DISK_FULL'
+    || code === 'DURABLE_WRITE_FAILED'
+    || code === 'PERMISSION_DENIED'
+    || code === 'REVISION_CONFLICT'
+    || code === 'CONCURRENT_WRITER'
+    || code === 'BROWSER_PERSIST_FAILED';
+}
+
+function createDesktopPersistenceError(
+  code: ProjectCommitErrorCode,
+  retryable: boolean,
+): Error & { code: ProjectCommitErrorCode; retryable: boolean } {
+  return Object.assign(new Error(`Desktop persistence operation failed with ${code}`), { code, retryable });
+}
+
+function isPersistenceCommitFailure(value: unknown): value is PersistenceIpcFailure {
+  return typeof value === 'object'
+    && value !== null
+    && 'ok' in value
+    && value.ok === false
+    && 'error' in value
+    && typeof value.error === 'object'
+    && value.error !== null
+    && 'code' in value.error
+    && typeof value.error.code === 'string';
 }
 
 function readSnapshotIds(storage = getStorage()): string[] {

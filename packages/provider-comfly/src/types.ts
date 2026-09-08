@@ -22,6 +22,7 @@ export interface ComflyFetchInit {
   readonly headers?: Record<string, string>;
   readonly body?: string;
   readonly signal?: AbortSignal;
+  readonly maxResponseBytes?: number;
   readonly timeoutMs?: number;
   readonly trustedResolvedAddress?: string;
 }
@@ -66,9 +67,12 @@ export interface ComflyVideoGenerationRequest {
   readonly model: string;
   readonly prompt: string;
   readonly aspect_ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16';
-  readonly resolution?: '360p' | '480p' | '512p' | '540p' | '720p' | '768p' | '1080p' | '2k' | '4k';
+  readonly ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16';
+  readonly resolution?: '360p' | '480p' | '512p' | '540p' | '720p' | '768p' | '1080p' | '2k' | '4k' | '480P' | '720P' | '1080P' | '2K' | '4K';
+  readonly size?: string;
   readonly duration?: number;
   readonly audio?: boolean;
+  readonly generate_audio?: boolean;
   readonly images?: readonly string[];
   readonly [key: string]: unknown;
 }

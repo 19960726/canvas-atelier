@@ -466,6 +466,7 @@ declare global {
         label: string;
         mediaType: 'video/mp4';
       }): void;
+      failNextProjectCommit(): void;
       failNextModelJobEnqueue(): void;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;

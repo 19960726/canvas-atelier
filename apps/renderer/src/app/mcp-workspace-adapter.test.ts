@@ -43,7 +43,7 @@ describe('MCP workspace adapter', () => {
       }),
       runNode: vi.fn(async () => ({ started: true, jobIds: ['job-started-1'] })) as unknown as McpWorkspaceSource['runNode'],
       cancelJob: vi.fn(async () => undefined),
-      requestMediaImport: vi.fn(async () => undefined),
+      requestMediaImport: vi.fn(async () => true),
     };
     adapter = createMcpWorkspaceAdapter(source, createMcpConfirmationStore({
       now: () => 10_000,
@@ -250,12 +250,26 @@ describe('MCP workspace adapter', () => {
     });
   });
 
-  it('returns immediately after opening the in-app media picker', async () => {
-    source.requestMediaImport = vi.fn(() => new Promise<void>(() => undefined));
+  it('returns immediately after the in-app media picker confirms it opened', async () => {
+    source.requestMediaImport = vi.fn(async () => true);
 
     await expect(adapter.handle({
       tool: 'canvas_import_media', expectedRevision: 4, mediaKind: 'video', position: { x: 120, y: 240 },
     })).resolves.toMatchObject({ ok: true, result: { pickerOpened: true, mediaKind: 'video' } });
+  });
+
+  it('fails closed instead of claiming that the media picker opened when the UI rejects it', async () => {
+    source.requestMediaImport = vi.fn(async () => false);
+
+    await expect(adapter.handle({
+      tool: 'canvas_import_media', expectedRevision: 4, mediaKind: 'image', position: { x: 120, y: 240 },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: 'MEDIA_PICKER_NOT_OPENED',
+        details: { mediaKind: 'image' },
+      },
+    });
   });
 
   it('does not advertise an execution path for module types without a real runner', async () => {

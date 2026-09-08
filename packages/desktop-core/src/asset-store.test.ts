@@ -7,6 +7,7 @@ import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AssetStore, verifyAssetFile } from './asset-store';
+import type { AssetCatalogMetadata } from './asset-store';
 
 const pngBytes = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -149,6 +150,102 @@ describe('AssetStore', () => {
 
     expect(results).toEqual([await realpath(assetPath), await realpath(assetPath)]);
     expect(inspect).toHaveBeenCalledOnce();
+  });
+
+  it('reuses the streamed verification receipt when the freshly pasted image is first listed for rendering', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const verify = vi.fn(verifyAssetFile);
+    const store = new AssetStore(verify);
+    const asset = await store.stageAndCommit(projectRoot, readableFrom(pngBytes), {
+      originalName: 'clipboard.png',
+    });
+
+    await expect(store.list(projectRoot, [{
+      assetId: asset.id,
+      byteSize: asset.byteSize,
+      extension: asset.extension,
+      height: asset.height,
+      mediaType: asset.mediaType,
+      sha256: asset.sha256,
+      width: asset.width,
+    }])).resolves.toEqual([asset]);
+
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('revalidates the first catalog listing when the committed file changes after staging', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const verify = vi.fn(verifyAssetFile);
+    const store = new AssetStore(verify);
+    const corruptedBytes = Buffer.from(pngBytes);
+    corruptedBytes[corruptedBytes.length - 1] = corruptedBytes[corruptedBytes.length - 1]! ^ 1;
+    const asset = await store.stageAndCommit(projectRoot, readableFrom(pngBytes), {
+      originalName: 'clipboard.png',
+      commitReference: async (storedAsset) => {
+        await writeFile(join(projectRoot, storedAsset.relativePath), corruptedBytes);
+      },
+    });
+
+    await expect(store.list(projectRoot, [{
+      assetId: asset.id,
+      byteSize: asset.byteSize,
+      extension: asset.extension,
+      height: asset.height,
+      mediaType: asset.mediaType,
+      sha256: asset.sha256,
+      width: asset.width,
+    }])).resolves.toEqual([]);
+
+    expect(verify).toHaveBeenCalledOnce();
+  });
+
+  it('starts independent catalog verification concurrently so one large image does not block every thumbnail', async () => {
+    const projectRoot = await createProjectRoot(tempRoots);
+    const firstBytes = Buffer.from(pngBytes);
+    const secondBytes = Buffer.from(pngBytes);
+    secondBytes[32] = secondBytes[32]! ^ 1;
+    const fixtures = [firstBytes, secondBytes].map((bytes) => {
+      const hash = sha256(bytes);
+      return {
+        bytes,
+        expected: {
+          assetId: hash.slice(0, 16),
+          byteSize: bytes.length,
+          extension: 'png' as const,
+          height: 3,
+          mediaType: 'image/png' as const,
+          sha256: hash,
+          width: 2,
+        },
+      };
+    });
+    await Promise.all(fixtures.map(({ bytes, expected }) => (
+      writeFile(join(projectRoot, 'assets', `${expected.assetId}.png`), bytes)
+    )));
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const started: string[] = [];
+    const verify = vi.fn(async (_path: string, expected: AssetCatalogMetadata) => {
+      started.push(expected.assetId);
+      if (expected.assetId === fixtures[0]!.expected.assetId) await firstGate;
+      return {
+        byteSize: expected.byteSize,
+        extension: expected.extension,
+        height: expected.height,
+        id: expected.assetId,
+        mediaType: expected.mediaType,
+        relativePath: `assets/${expected.assetId}.${expected.extension}`,
+        sha256: expected.sha256,
+        width: expected.width,
+      };
+    });
+    const store = new AssetStore(verify);
+
+    const listing = store.list(projectRoot, fixtures.map(({ expected }) => expected));
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    releaseFirst();
+
+    await expect(listing).resolves.toHaveLength(2);
   });
 
   it.each([

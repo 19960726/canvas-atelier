@@ -156,7 +156,7 @@ describe('confined file lock', () => {
     expect(fileSystem.readContents(LOCK_PATH)).toContain('replacement-token');
   });
 
-  it.each(['EPERM', 'EBADF'] as const)(
+  it.each(['EPERM', 'EBADF', 'UNKNOWN'] as const)(
     'retries confinement when Windows realpath reports %s and re-lstat confirms the lock vanished',
     async (errorCode) => {
       const fileSystem = new MemoryLockFileSystem();

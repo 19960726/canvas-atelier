@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
-import { openAgentPanel, openEmptyApp, queueProjectImageImport } from './helpers/app';
+import { e2eState, openAgentPanel, openEmptyApp, queueProjectImageImport } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
 
 const artifact = (name: string) => path.join(process.cwd(), 'artifacts', '2026-08-06-agent-multimedia', name);
@@ -84,7 +84,7 @@ test('pasting an image into Agent chat attaches it directly without opening a pi
   expect(nativeDialogCount).toBe(0);
 });
 
-test('pasting text, image, and video preserves the ordered Agent references', async ({ page }) => {
+test('pasting text, image, and video keeps text and image order while explicitly skipping video from Agent', async ({ page }) => {
   await openEmptyApp(page);
   await openAgentPanel(page);
   const panel = page.getByTestId('agent-panel');
@@ -93,7 +93,7 @@ test('pasting text, image, and video preserves the ordered Agent references', as
   await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
 
   const composer = panel.getByTestId('agent-composer-input');
-  const fixture = makeReferenceImage('ordered-image.png', [36, 132, 116, 255]);
+  const image = makeReferenceImage('ordered-image.png', [36, 132, 116, 255]);
   await composer.evaluate((element, imageBytes) => {
     const transfer = new DataTransfer();
     transfer.items.add(new File([new Uint8Array(imageBytes)], 'ordered-image.png', { type: 'image/png' }));
@@ -104,13 +104,25 @@ test('pasting text, image, and video preserves the ordered Agent references', as
       cancelable: true,
       clipboardData: transfer,
     }));
-  }, Array.from(fixture.buffer));
+  }, Array.from(image.buffer));
 
   await expect.poll(() => composer.evaluate((element) => (
     element as HTMLElement & { value: string }
-  ).value)).toBe('同时分析这两个素材 @图片1 @视频1');
+  ).value)).toBe('同时分析这两个素材 @图片1');
+  await expect(composer.locator('[data-media-mention="image"]')).toHaveCount(1);
   await expect(composer.locator('[data-media-mention="image"]', { hasText: '图片1' })).toBeVisible();
-  await expect(composer.locator('[data-media-mention="video"]', { hasText: '视频1' })).toBeVisible();
+  await expect(composer.locator('[data-media-mention="video"]')).toHaveCount(0);
+  await expect(panel.getByRole('alert')).toContainText('当前对话暂不支持视频引用');
+
+  const imported = await e2eState(page);
+  expect(imported.projectImages.map((asset) => asset.label)).toEqual(['ordered-image']);
+  expect(imported.projectVideos).toEqual([]);
+
+  await composer.press('Enter');
+  await expect(panel.getByText('Mock Skill reply: 同时分析这两个素材 @图片1')).toBeVisible();
+  const sentReferences = panel.getByRole('region', { name: '已发送素材' });
+  await expect(sentReferences.getByRole('img')).toHaveCount(1);
+  await expect(sentReferences.locator('video')).toHaveCount(0);
 });
 
 test('selected Agent message text keeps clipboard events out of the Canvas window boundary', async ({ page }) => {

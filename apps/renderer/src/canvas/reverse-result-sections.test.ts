@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ReversePromptResult } from '@agent-canvas/domain';
-import { buildReverseResultSections } from './reverse-result-sections';
+import { buildReverseResultSections, formatReverseResultDocument } from './reverse-result-sections';
 
 const legacyResult: ReversePromptResult = {
   sessionId: 'session-1',
@@ -14,6 +14,19 @@ const legacyResult: ReversePromptResult = {
 };
 
 describe('buildReverseResultSections', () => {
+  it('shows and copies camera, geometry, timeline and uncertainty without dropping detail', () => {
+    const result: ReversePromptResult = { ...legacyResult,
+      sceneDecomposition: { spatialStructure: '三层空间', spatialDepth: '前后距离估计 2 米', objects: [{ name: '杯体', role: '主角', placement: '居中', scaleAndProportion: '高宽比约 2:1', depthLayer: 'midground', occlusionAndZOrder: '位于台面之前' }] },
+      camera: { estimatedFocalLength: '估计 85 mm，依据透视压缩', shotSize: '特写', positionAndAngle: '低机位', perspectiveAndVanishingPoints: '消失点在右上', distortion: '轻微', confidence: '低置信度' },
+      videoTimeline: [{ timeRange: '0–3 秒', shotType: '特写', estimatedFocalLength: '85 mm 估计', cameraMovement: '推进', speedCurveAndStabilization: '缓入缓出', subjectAction: '三个零件依次向上分离', lightingAndSweep: '左侧扫光', effects: ['薄雾'], transition: '切镜', keyframes: ['0 秒闭合', '3 秒分离'], productAdaptation: '保持零件数量' }],
+      uncertainties: ['真实焦距未知'],
+    };
+    const sections = buildReverseResultSections(result);
+    expect(sections.map((section) => section.id)).toEqual(expect.arrayContaining(['scene-decomposition', 'camera', 'video-timeline', 'uncertainties']));
+    const copied = formatReverseResultDocument(result);
+    for (const detail of ['前后距离估计 2 米', '高宽比约 2:1', '消失点在右上', '三个零件依次向上分离', '3 秒分离', '真实焦距未知']) expect(copied).toContain(detail);
+    expect(sections.find((section) => section.id === 'video-timeline')?.sendTarget).toBe('video_generation');
+  });
   it('builds selectable image and Seedance prompt sections from a detailed result', () => {
     const result: ReversePromptResult = {
       ...legacyResult,

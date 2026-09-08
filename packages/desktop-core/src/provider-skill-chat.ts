@@ -13,6 +13,10 @@ import {
   type ProviderBridgeProfile,
 } from './provider-contracts.js';
 import { buildSkillChatSystemInstructions } from './skill-chat-visual-analysis.js';
+import { isMediaOutputModelIdentity } from './provider-model-catalog.js';
+
+const SKILL_CHAT_TIMEOUT_MS = 180_000;
+const VISUAL_SKILL_CHAT_TIMEOUT_MS = 300_000;
 
 export interface ProjectMemoryContextResolver {
   resolveSelectedProjectMemory(memoryIds: readonly string[], sessionId?: string): Promise<readonly ProjectMemoryContextSnapshot[]>;
@@ -45,6 +49,10 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
     item.provider === validated.provider
     && item.modelRoute === validated.modelRoute
     && (item.capabilities.includes('chat') || item.capabilities.includes('responses'))
+    && !item.capabilities.includes('image_generation')
+    && !item.capabilities.includes('image_edit')
+    && !item.capabilities.includes('video_generation')
+    && !isMediaOutputModelIdentity(item.modelRoute, item.modelId, item.displayName)
   ));
   if (profile === undefined) {
     throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested Skill chat model profile is unavailable');
@@ -96,17 +104,22 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
   const codexReasoningEffort = validated.agentMode === 'codex'
     ? validated.reasoningEffort
     : undefined;
+  const requestTimeoutMs = images.length > 0 || validated.visualAnalysis === true
+    ? VISUAL_SKILL_CHAT_TIMEOUT_MS
+    : SKILL_CHAT_TIMEOUT_MS;
+  const chatRequest = {
+    model: profile.modelId ?? profile.modelRoute,
+    messages,
+    ...(codexReasoningEffort === undefined ? {} : { reasoning_effort: codexReasoningEffort }),
+  };
+  const responsesRequest = {
+    model: profile.modelId ?? profile.modelRoute,
+    input: toResponsesInput(messages),
+    ...(codexReasoningEffort === undefined ? {} : { reasoning: { effort: codexReasoningEffort } }),
+  };
   const message = profile.capabilities.includes('chat')
-    ? (await client.chat({
-      model: profile.modelId ?? profile.modelRoute,
-      messages,
-      ...(codexReasoningEffort === undefined ? {} : { reasoning_effort: codexReasoningEffort }),
-    })).choices[0]?.message?.content
-    : extractResponsesText((await client.responses({
-      model: profile.modelId ?? profile.modelRoute,
-      input: messages,
-      ...(codexReasoningEffort === undefined ? {} : { reasoning: { effort: codexReasoningEffort } }),
-    })).output);
+    ? (await client.chat(chatRequest, requestTimeoutMs)).choices[0]?.message?.content
+    : extractResponsesText((await client.responses(responsesRequest, requestTimeoutMs)).output);
   if (typeof message !== 'string' || message.trim().length === 0) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid Skill chat response');
   }
@@ -119,13 +132,31 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
 
 function supportsManagedSkillChatImages(
   profile: ProviderBridgeProfile,
-  agentMode: ChatSkillBridgeRequest['agentMode'],
+  _agentMode: ChatSkillBridgeRequest['agentMode'],
 ): boolean {
-  if (profile.capabilities.includes('vision')) return true;
-  return agentMode === 'codex' && (
-    profile.capabilities.includes('chat')
-    || profile.capabilities.includes('responses')
-  );
+  return profile.capabilities.includes('vision');
+}
+
+function toResponsesInput(
+  messages: readonly { readonly role: 'system' | 'user' | 'assistant'; readonly content: string | readonly unknown[] }[],
+): Array<{ readonly role: 'system' | 'user' | 'assistant'; readonly content: readonly unknown[] }> {
+  return messages.map((message) => ({
+    role: message.role,
+    content: typeof message.content === 'string'
+      ? [{ type: 'input_text', text: message.content }]
+      : message.content.flatMap<unknown>((part) => {
+          if (!isRecord(part)) return [];
+          if (part.type === 'text' && typeof part.text === 'string') {
+            return [{ type: 'input_text', text: part.text }];
+          }
+          if (part.type === 'image_url'
+            && isRecord(part.image_url)
+            && typeof part.image_url.url === 'string') {
+            return [{ type: 'input_image', image_url: part.image_url.url }];
+          }
+          return [];
+        }),
+  }));
 }
 
 function extractResponsesText(output: readonly unknown[]): string | undefined {

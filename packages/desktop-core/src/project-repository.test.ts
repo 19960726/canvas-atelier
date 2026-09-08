@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, normalize } from 'node:path';
 import type { CanvasProject } from '@agent-canvas/domain';
@@ -194,6 +194,131 @@ describe('ProjectRepository', () => {
     const activeLock = await readJson<TestProjectLock>(join(projectRoot, 'recovery', 'project.lock'));
     expect(activeLock.processId).toBe(6101);
     expect(activeLock.sessionId).not.toBe('stale-session');
+  });
+
+  it('reclaims an abandoned operation guard when its owner is stale and definitely dead', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'AbandonedGuard.novus-project');
+    const repository = createRepository({ processId: 5103 });
+
+    const created = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-abandoned-guard',
+      projectName: 'AbandonedGuard',
+    });
+    await repository.close(created);
+
+    const staleCreatedAt = new Date(baseNow.getTime() - (STALE_LOCK_MS + 1_000)).toISOString();
+    await writeProjectLock(projectRoot, {
+      channel: 'modern',
+      deviceId: 'device-under-test',
+      heartbeatAt: staleCreatedAt,
+      openedAt: staleCreatedAt,
+      processId: 9192,
+      projectId: created.manifest.projectId,
+      schemaVersion: 1,
+      sessionId: 'stale-session',
+    });
+    await writeFile(
+      join(projectRoot, 'recovery', 'project.lock.guard'),
+      `${JSON.stringify({
+        createdAt: staleCreatedAt,
+        processId: 9192,
+        schemaVersion: 1,
+        token: 'stale-guard-token',
+      })}\n`,
+      'utf8',
+    );
+
+    const reopened = await createRepository({
+      isLocalProcessAlive: () => false,
+      processId: 6103,
+    }).open(projectRoot, { mode: 'write' });
+
+    expect(reopened.mode).toBe('write');
+    await expect(access(join(projectRoot, 'recovery', 'project.lock.guard'))).rejects.toThrow();
+    expect((await readJson<TestProjectLock>(join(projectRoot, 'recovery', 'project.lock'))).processId).toBe(6103);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['truncated', '{"schemaVersion":1'],
+  ])('reclaims a sufficiently stale %s operation guard', async (_kind, malformedGuard) => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, `StaleMalformedGuard-${_kind}.novus-project`);
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
+    const repository = createRepository({ processId: 5104 });
+
+    const created = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: `project-stale-malformed-guard-${_kind}`,
+      projectName: `StaleMalformedGuard-${_kind}`,
+    });
+    await repository.close(created);
+
+    await writeFile(guardPath, malformedGuard, 'utf8');
+    const staleMtime = new Date(baseNow.getTime() - (STALE_LOCK_MS + 1_000));
+    await utimes(guardPath, staleMtime, staleMtime);
+
+    const reopened = await createRepository({ processId: 6104 }).open(projectRoot, { mode: 'write' });
+
+    expect(reopened.mode).toBe('write');
+    await expect(access(guardPath)).rejects.toThrow();
+    expect((await readJson<TestProjectLock>(join(projectRoot, 'recovery', 'project.lock'))).processId).toBe(6104);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['truncated', '{"schemaVersion":1'],
+  ])('keeps a newly-created %s operation guard fail-closed', async (_kind, malformedGuard) => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, `FreshMalformedGuard-${_kind}.novus-project`);
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
+    const repository = createRepository({ processId: 5105 });
+
+    const created = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: `project-fresh-malformed-guard-${_kind}`,
+      projectName: `FreshMalformedGuard-${_kind}`,
+    });
+    await repository.close(created);
+
+    await writeFile(guardPath, malformedGuard, 'utf8');
+    await utimes(guardPath, baseNow, baseNow);
+
+    const reopened = await createRepository({ processId: 6105 }).open(projectRoot, { mode: 'write' });
+
+    expect(reopened.mode).toBe('read_only');
+    await expect(readFile(guardPath, 'utf8')).resolves.toBe(malformedGuard);
+    await expect(access(join(projectRoot, 'recovery', 'project.lock'))).rejects.toThrow();
+  });
+
+  it('does not delete a malformed operation guard whose fingerprint changes before reclaim', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'ChangedMalformedGuard.novus-project');
+    const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
+    const repository = createRepository({ processId: 5106 });
+
+    const created = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-changed-malformed-guard',
+      projectName: 'ChangedMalformedGuard',
+    });
+    await repository.close(created);
+
+    await writeFile(guardPath, '{"schemaVersion":1', 'utf8');
+    const staleMtime = new Date(baseNow.getTime() - (STALE_LOCK_MS + 1_000));
+    await utimes(guardPath, staleMtime, staleMtime);
+
+    const replacement = '{"replacement":"active-operation"';
+    const reopened = await createRepository({
+      fileSystem: new ReplaceGuardBeforeRevalidationFileSystem(guardPath, replacement),
+      processId: 6106,
+    }).open(projectRoot, { mode: 'write' });
+
+    expect(reopened.mode).toBe('read_only');
+    await expect(readFile(guardPath, 'utf8')).resolves.toBe(replacement);
+    await expect(access(join(projectRoot, 'recovery', 'project.lock'))).rejects.toThrow();
   });
 
   it('keeps a third opener read-only while stale reclaim is in progress', async () => {
@@ -508,7 +633,7 @@ describe('ProjectRepository', () => {
     expect((await readValidJournal(join(projectRoot, 'journal', 'active.ndjson'))).records).toHaveLength(1);
   });
 
-  it('invalidates journal writers when close cannot acquire its guard', async () => {
+  it('keeps the session retryable when close cannot acquire its operation guard', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'GuardUnavailableClose.novus-project');
     const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
@@ -525,18 +650,27 @@ describe('ProjectRepository', () => {
     );
 
     await writeFile(guardPath, '{"token":"existing"}\n', 'utf8');
-    await repository.close(session);
+    await utimes(guardPath, baseNow, baseNow);
+    await expect(repository.close(session)).rejects.toMatchObject({
+      code: 'CONCURRENT_WRITER',
+      message: expect.stringMatching(/operation guard/i),
+      retryable: true,
+    });
 
-    await expect(
-      writer.commit(
-        makeCreatePromptCommitRequest(session.manifest.projectId, 'tx-guard-unavailable-close-stale', 1, 'prompt-guard-unavailable-close-stale'),
-      ),
-    ).rejects.toMatchObject({
+    await expect(writer.commit(
+      makeCreatePromptCommitRequest(session.manifest.projectId, 'tx-guard-unavailable-close-retry', 1, 'prompt-guard-unavailable-close-retry'),
+    )).resolves.toMatchObject({ revision: 2, sequence: 2 });
+    expect((await readValidJournal(join(projectRoot, 'journal', 'active.ndjson'))).records).toHaveLength(2);
+
+    await rm(guardPath, { force: true });
+    await expect(repository.close(session)).resolves.toBeUndefined();
+    await expect(access(join(projectRoot, 'recovery', 'project.lock'))).rejects.toThrow();
+    await expect(writer.commit(
+      makeCreatePromptCommitRequest(session.manifest.projectId, 'tx-guard-unavailable-close-stale', 2, 'prompt-guard-unavailable-close-stale'),
+    )).rejects.toMatchObject({
       code: 'CONCURRENT_WRITER',
       retryable: false,
     });
-
-    expect((await readValidJournal(join(projectRoot, 'journal', 'active.ndjson'))).records).toHaveLength(1);
   });
 
   it('returns read-only under an existing operation guard without changing a stale canonical lock', async () => {
@@ -565,6 +699,7 @@ describe('ProjectRepository', () => {
     };
     await writeProjectLock(projectRoot, staleLock);
     await writeFile(guardPath, '{"token":"existing"}\n', 'utf8');
+    await utimes(guardPath, baseNow, baseNow);
 
     const guarded = await createRepository({
       isLocalProcessAlive: () => false,
@@ -577,7 +712,7 @@ describe('ProjectRepository', () => {
     );
   });
 
-  it('leaves an owned canonical lock in place when close cannot acquire the operation guard', async () => {
+  it('reports a retryable typed error and leaves its owned lock in place when close is guarded', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'ExistingGuardClose.novus-project');
     const guardPath = join(projectRoot, 'recovery', 'project.lock.guard');
@@ -589,12 +724,21 @@ describe('ProjectRepository', () => {
       projectName: 'ExistingGuardClose',
     });
     await writeFile(guardPath, '{"token":"existing"}\n', 'utf8');
+    await utimes(guardPath, baseNow, baseNow);
 
-    await repository.close(session);
+    await expect(repository.close(session)).rejects.toMatchObject({
+      code: 'CONCURRENT_WRITER',
+      name: 'PersistenceError',
+      message: expect.stringMatching(/operation guard/i),
+      retryable: true,
+    });
 
     expect(await readJson<TestProjectLock>(join(projectRoot, 'recovery', 'project.lock'))).toEqual(
       session.lock,
     );
+
+    await rm(guardPath, { force: true });
+    await expect(repository.close(session)).resolves.toBeUndefined();
   });
 
   it('rejects saveAs when the stable snapshot path escapes snapshots and leaves no destination', async () => {
@@ -1397,6 +1541,30 @@ class FailOpenFileSystem extends DelegatingFileSystem {
     }
 
     return super.open(path, flags);
+  }
+}
+
+class ReplaceGuardBeforeRevalidationFileSystem extends DelegatingFileSystem {
+  private targetReads = 0;
+  private readonly staleMtime = new Date(baseNow.getTime() - (STALE_LOCK_MS + 1_000));
+
+  constructor(
+    private readonly guardPath: string,
+    private readonly replacement: string,
+  ) {
+    super();
+  }
+
+  override async readFile(path: string, encoding: BufferEncoding): Promise<string> {
+    if (samePath(path, this.guardPath)) {
+      this.targetReads += 1;
+      if (this.targetReads === 3) {
+        await super.writeFile(path, this.replacement, 'utf8');
+        await utimes(path, this.staleMtime, this.staleMtime);
+      }
+    }
+
+    return super.readFile(path, encoding);
   }
 }
 

@@ -673,8 +673,12 @@ function createResultMaterialization(
           ...resultAssetIds(result),
         ].slice(-4),
         resultState: 'fresh',
-        resultWidth: result.width,
-        resultHeight: result.height,
+        ...(typeof result.width === 'number' && Number.isFinite(result.width) && result.width > 0
+          ? { resultWidth: result.width }
+          : {}),
+        ...(typeof result.height === 'number' && Number.isFinite(result.height) && result.height > 0
+          ? { resultHeight: result.height }
+          : {}),
         lastResultJobId: job.id,
       };
     const nextNode: CanvasNode = {

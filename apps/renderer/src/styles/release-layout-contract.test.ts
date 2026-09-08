@@ -52,8 +52,37 @@ describe('release layout contract', () => {
     expect(contract).toContain('flex: 0 0 auto !important');
   });
 
+  it('keeps the Codex header task selector and new-chat button aligned', () => {
+    const appCss = readFileSync(resolve('apps/renderer/src/styles/app.css'), 'utf8');
+    const finalCss = readFileSync(resolve('apps/renderer/src/styles/release-layout-contract.css'), 'utf8');
+    expect(appCss).toContain('grid-template-columns: minmax(0, 1fr) 42px 42px !important');
+    expect(finalCss).toContain('grid-template-columns: minmax(0, 1fr) 42px !important');
+    expect(appCss).toContain('.skill-chat-workbench__new-chat');
+    expect(appCss).toContain('height: 42px !important');
+  });
+
+  it('allocates separate Agent footer tracks for generation, knowledge, and send actions', () => {
+    const contract = css.slice(css.lastIndexOf('/* FINAL FLEXIBLE AGENT COMPOSER CONTRACT'));
+
+    expect(contract).toContain("grid-template-columns: 34px minmax(0, 1fr) 92px 34px 74px !important;");
+    expect(contract).toContain("grid-template-columns: 34px minmax(0, 1fr) 34px 74px !important;");
+    expect(contract).toContain('grid-template-columns: 34px 34px !important;');
+    expect(contract).toContain('width: 74px !important;');
+    expect(contract).toContain('overflow: visible !important;');
+    expect(contract).toContain("button[aria-label='新建对话']");
+  });
+
+  it('keeps the Agent composer input area tall enough for comfortable editing', () => {
+    const contract = css.slice(css.lastIndexOf('/* FINAL FLEXIBLE AGENT COMPOSER CONTRACT'));
+    expect(contract).toContain('height: auto !important;');
+    expect(contract).toContain('min-height: 104px !important;');
+    expect(contract).toContain('max-height: 168px !important;');
+    expect(contract).toContain('grid-template-rows: auto auto auto !important;');
+    expect(contract).not.toContain('height: 184px !important;');
+  });
+
   it('applies one content-sized capsule contract to every mention editor surface', () => {
-    const contract = css.slice(css.lastIndexOf('/* FINAL INLINE REFERENCE CAPSULE CONTRACT'));
+    const contract = css.slice(css.indexOf('/* FINAL INLINE REFERENCE CAPSULE CONTRACT\n'));
 
     expect(contract).toContain(".module-node[data-module-type='image_generation']");
     expect(contract).toContain(".module-node[data-module-type='video_generation']");
@@ -66,6 +95,36 @@ describe('release layout contract', () => {
     expect(contract).toContain('flex: 0 0 16px !important');
   });
 
+  it('defines the v2 reference capsule sizes at the terminal cascade owner', () => {
+    const contract = css.slice(css.lastIndexOf('/* FINAL INLINE REFERENCE CAPSULE CONTRACT V2'));
+
+    expect(contract).toContain('--mention-capsule-height: 24px;');
+    expect(contract).toContain('--mention-capsule-thumb: 16px;');
+    expect(contract).toContain('--reference-rail-item-size: 36px;');
+    expect(contract).toContain('white-space: pre-wrap !important;');
+    expect(contract).toContain('display: inline-flex !important;');
+    expect(contract).toContain('width: max-content !important;');
+    expect(contract).toContain("data-mention-context='video'");
+    expect(contract).toContain('object-fit: contain !important;');
+    expect(contract).toContain('height: var(--mention-capsule-height) !important;');
+    expect(contract).toContain('flex: 0 0 var(--reference-rail-item-size) !important;');
+  });
+
+  it('loads the terminal capsule contract after Agent-specific overrides', () => {
+    const source = readFileSync(resolve(process.cwd(), 'apps/renderer/src/main.tsx'), 'utf8').replace(/\r\n/gu, '\n');
+    const agentImport = source.indexOf("import './styles/agent-workbench.css';");
+    const releaseImport = source.indexOf("import './styles/release-layout-contract.css';");
+
+    expect(agentImport).toBeGreaterThanOrEqual(0);
+    expect(releaseImport).toBeGreaterThan(agentImport);
+  });
+
+  it('does not promote mention capsules to block-level prompt headings', () => {
+    expect(hybridCss).toContain('.module-node__prompt-workspace > span');
+    expect(hybridCss).toContain('.module-node__video-prompt-header > span');
+    expect(hybridCss).not.toContain('.module-node__prompt-workspace :is(span, .module-node__video-prompt-header span)');
+  });
+
   it('keeps video controls in one anchored horizontal rail', () => {
     const contract = css.slice(css.lastIndexOf('/* FINAL RELEASE VIDEO RAIL CONTRACT (true EOF).'));
 
@@ -75,6 +134,15 @@ describe('release layout contract', () => {
     expect(contract).toContain('overflow: visible !important');
     expect(contract).not.toContain('grid-column: 6 !important;');
     expect(contract).not.toContain('.module-node__video-utility-actions');
+  });
+
+  it('keeps the video prompt above the anchored rail with matching 18px insets', () => {
+    const contract = css.slice(css.lastIndexOf('/* FINAL VIDEO PROMPT AND CONTROL INSET CONTRACT'));
+
+    expect(contract).toContain('--video-control-rail-height: 38px;');
+    expect(contract).toMatch(/\.module-node__prompt-workspace\s*\{[\s\S]*?inset:\s*auto 18px calc\(18px \+ var\(--video-control-rail-height\) \+ 12px\) 18px\s*!important;/iu);
+    expect(contract).toMatch(/\.module-node__video-control-bar\s*\{[\s\S]*?inset:\s*auto 18px 18px\s*!important;/iu);
+    expect(contract).toMatch(/@media \(max-width:\s*720px\)[\s\S]*?--video-control-rail-height:\s*84px;/iu);
   });
 
   it('uses one terminal 38px media control contract and excludes video fallback selects', () => {
@@ -117,12 +185,15 @@ describe('release layout contract', () => {
   it('places the reverse language-model control in one full-width row below media', () => {
     const terminal = css.slice(css.lastIndexOf('/* FINAL REVERSE MODEL ROW CONTRACT'));
 
-    expect(terminal).toContain(".module-node[data-module-type='reverse_agent'] .module-node__agent-control-strip");
+    expect(terminal).toContain(".module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-control-strip");
     expect(terminal).toContain('grid-template-columns: minmax(0, 1fr) !important;');
-    expect(terminal).toContain(".module-node[data-module-type='reverse_agent'] .module-node__agent-route-region");
+    expect(terminal).toContain(".module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-route-region");
     expect(terminal).toContain('width: 100% !important;');
     expect(terminal).toContain('max-width: none !important;');
-    expect(terminal).toContain(".module-node[data-module-type='reverse_agent'] .module-node__agent-route");
+    expect(terminal).toContain(".module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-route");
+    expect(terminal).toMatch(/\.module-node--reverse\[data-module-type='reverse_agent'\]\s+\.module-node__agent-control-strip\s*\{[\s\S]*?display:\s*grid\s*!important;/iu);
+    expect(terminal).toMatch(/\.module-node--reverse\[data-module-type='reverse_agent'\]\s+:is\(\s*\.module-node__agent-media-region,\s*\.module-node__agent-media-empty-hint\s*\)\s*\{[\s\S]*?grid-row:\s*1\s*!important;[\s\S]*?order:\s*1\s*!important;/iu);
+    expect(terminal).toMatch(/\.module-node--reverse\[data-module-type='reverse_agent'\]\s+\.module-node__agent-route-region\s*\{[\s\S]*?grid-row:\s*2\s*!important;[\s\S]*?order:\s*2\s*!important;/iu);
   });
 
   it('uses the node theme surface for the video settings popover', () => {

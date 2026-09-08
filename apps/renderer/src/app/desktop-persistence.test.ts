@@ -200,13 +200,48 @@ describe('desktop persistence', () => {
       provider: 'codex', modelRoute: 'codex/gpt-6-astra', requestId: 'request-astra-1', agentMode: 'codex', reasoningEffort: 'max',
       messages: [{ role: 'user', content: '读取画布节点' }],
       context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      referenceAssetIds: ['a'.repeat(16)],
+      referenceMentions: [{ assetId: 'a'.repeat(16), label: '产品主图', mention: '@图片1' }],
+      visualAnalysis: true,
     });
 
     expect(codexChat).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'codex', modelRoute: 'codex/gpt-6-astra', requestId: 'request-astra-1', sessionId: 'desktop-session', reasoningEffort: 'max',
+      referenceAssetIds: ['a'.repeat(16)],
+      referenceMentions: [{ assetId: 'a'.repeat(16), label: '产品主图', mention: '@图片1' }],
+      visualAnalysis: true,
     }));
     expect(providerChat).not.toHaveBeenCalled();
   });
+
+  it.each(['comfly', 'relayme'] as const)(
+    'rejects a stale %s provider profile that claims Codex mode before either chat bridge runs',
+    async (provider) => {
+      const project = createStarterProject();
+      const providerChat = vi.fn(async () => ({ message: 'provider reply', modelRoute: 'legacy-codex-route', sources: [] }));
+      const codexChat = vi.fn(async () => ({ message: 'local reply', modelRoute: 'codex/gpt-6-astra', sources: [] }));
+      const bridge = {
+        closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+        getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)), restore: vi.fn(),
+        provider: { chat: providerChat },
+        codexCli: { chat: codexChat, cancel: vi.fn(), listProfiles: vi.fn() },
+        projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+      };
+      const client = createDesktopPersistenceClient(bridge as never);
+      await client.openProject?.();
+
+      await expect(client.chatSkill?.({
+        provider,
+        modelRoute: provider === 'comfly' ? 'chat/gpt-5.3-codex-high' : 'relayme/codex-chat',
+        requestId: 'stale-provider-codex-request',
+        agentMode: 'codex',
+        messages: [{ role: 'user', content: '读取画布' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+      expect(providerChat).not.toHaveBeenCalled();
+      expect(codexChat).not.toHaveBeenCalled();
+    },
+  );
 
   it('cancels an in-flight local Codex request before closing its project session', async () => {
     const project = createStarterProject();
@@ -502,6 +537,54 @@ describe('desktop persistence', () => {
     });
   });
 
+  it('hydrates a meaningful recent project without waiting for recovery scanning', async () => {
+    const meaningfulProject = {
+      ...createStarterProject(),
+      id: 'recent-project-with-slow-recovery-scan',
+      name: 'Large existing canvas',
+      nodes: [createCanvasModuleNode('existing-image', 'image_input', { x: 200, y: 100 })],
+      edges: [],
+    };
+    const getRecoveryPlan = vi.fn(() => new Promise<never>(() => undefined));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createProject: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan,
+      openLatestRecoveryPreview: vi.fn(),
+      openProject: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+      recentProjects: {
+        list: vi.fn(async () => [{
+          availability: 'available' as const,
+          imageCount: 1,
+          nodeCount: 1,
+          recentProjectId: 'recent-slow-recovery',
+          videoCount: 0,
+        }]),
+        open: vi.fn(async () => createDesktopSession(meaningfulProject, 'slow-recovery-session', 269)),
+      },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    const outcome = await Promise.race([
+      client.hydrate().then((hydrated) => ({ kind: 'hydrated' as const, hydrated })),
+      new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 100)),
+    ]);
+
+    expect(outcome).toMatchObject({
+      kind: 'hydrated',
+      hydrated: {
+        project: { id: meaningfulProject.id, nodes: [{ id: 'existing-image' }] },
+        revision: 269,
+        saveStatus: 'saved',
+      },
+    });
+    expect(getRecoveryPlan).toHaveBeenCalledOnce();
+  });
+
   it('imports a browser image file into an existing image input node', async () => {
     const client = createBrowserPersistenceClient();
     const hydrated = await client.hydrate();
@@ -639,7 +722,9 @@ describe('desktop persistence', () => {
 
     const client = createDesktopPersistenceClient(bridge as never);
     const hydrated = await client.hydrate();
-    await client.hydrate();
+    await vi.waitFor(async () => {
+      expect((await client.hydrate()).availableSnapshotIds).toEqual(['stable-7']);
+    });
 
     expect(openProject).not.toHaveBeenCalled();
     expect(bridge.recentProjects.list).toHaveBeenCalledOnce();
@@ -649,7 +734,7 @@ describe('desktop persistence', () => {
       mode: 'write',
     });
     expect(hydrated.project).toMatchObject({ name: 'Recent desktop project' });
-    expect(hydrated.availableSnapshotIds).toEqual(['stable-7']);
+    expect(hydrated.availableSnapshotIds).toEqual([]);
     expect(hydrated.lifecycle).toBe('durable');
     expect(hydrated.revision).toBe(7);
     expect(hydrated.saveStatus).toBe('saved');
@@ -1093,11 +1178,12 @@ describe('desktop persistence', () => {
     expect(restore).not.toHaveBeenCalled();
 
     await expect(client.stablePoint()).resolves.toMatchObject({
-      availableSnapshotIds: ['second-after'],
+      availableSnapshotIds: [],
       project: { id: secondProject.id },
       revision: 8,
     });
-    await client.restore('second-after');
+    expect(getRecoveryPlan).toHaveBeenCalledTimes(3);
+    await expect(client.restore('second-after')).resolves.toMatchObject({ revision: 8 });
     expect(restore).toHaveBeenCalledWith({ candidateId: 'candidate-second', sessionId: 'second-session' });
   });
 
@@ -1285,7 +1371,10 @@ describe('desktop persistence', () => {
     };
     const rebasedProject = applyProjectTransaction(refreshedProject, transaction);
     const commit = vi.fn()
-      .mockRejectedValueOnce(Object.assign(new Error('Base revision is stale'), { code: 'REVISION_CONFLICT' }))
+      .mockResolvedValueOnce({
+        error: { code: 'REVISION_CONFLICT', retryable: true },
+        ok: false,
+      })
       .mockResolvedValueOnce({
         committedAt: '2026-08-26T12:00:00.000Z',
         projectId: durableProject.id,
@@ -1341,6 +1430,195 @@ describe('desktop persistence', () => {
       projectId: durableProject.id,
       sessionId: 'desktop-session',
     }));
+  });
+
+  it('retries an out-of-band revision conflict without waiting for recovery scanning', async () => {
+    const durableProject = createStarterProject();
+    const generatedNode = createCanvasModuleNode('generated-result-after-drift', 'image_generation', { x: 360, y: 0 });
+    const editedProject = { ...durableProject, nodes: [...durableProject.nodes, generatedNode] };
+    const refreshedProject = { ...durableProject, name: 'Generated asset already stored' };
+    const transaction = {
+      id: 'tx-generated-result-after-drift',
+      label: 'Attach generated result',
+      operations: [{ kind: 'replace_canvas_state' as const, nodes: editedProject.nodes, edges: editedProject.edges }],
+    };
+    const rebasedProject = applyProjectTransaction(refreshedProject, transaction);
+    const commit = vi.fn()
+      .mockResolvedValueOnce({
+        error: { code: 'REVISION_CONFLICT', retryable: true },
+        ok: false,
+      })
+      .mockResolvedValueOnce({
+        committedAt: '2026-09-08T01:00:00.000Z',
+        projectId: durableProject.id,
+        revision: 5,
+        sequence: 5,
+        transactionId: transaction.id,
+      });
+    const getRecoveryPlan = vi.fn()
+      .mockResolvedValueOnce(createRecoveryPlan(durableProject.id, 'stable-3', 'candidate-3', 3))
+      .mockImplementationOnce(() => new Promise<never>(() => undefined));
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit,
+      createStablePoint: vi.fn(),
+      getRecoveryPlan,
+      openProject: vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 3)),
+      refreshProject: vi.fn(async () => createDesktopSession(refreshedProject, 'desktop-session', 4)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const outcome = await Promise.race([
+      client.commit({
+        baseRevision: 3,
+        kind: 'system',
+        nextProject: editedProject,
+        previousProject: durableProject,
+        projectId: durableProject.id,
+        transaction,
+      }).then((result) => ({ kind: 'saved' as const, result })),
+      new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 100)),
+    ]);
+
+    expect(outcome).toMatchObject({ kind: 'saved', result: { ok: true, project: rebasedProject, revision: 5 } });
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(getRecoveryPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads a durable project without waiting for recovery scanning', async () => {
+    const durableProject = createStarterProject();
+    const refreshedProject = { ...durableProject, name: 'Durable generated asset refresh' };
+    const getRecoveryPlan = vi.fn()
+      .mockResolvedValueOnce(createRecoveryPlan(durableProject.id, 'stable-3', 'candidate-3', 3))
+      .mockImplementationOnce(() => new Promise<never>(() => undefined));
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan,
+      openProject: vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 3)),
+      refreshProject: vi.fn(async () => createDesktopSession(refreshedProject, 'desktop-session', 4)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const outcome = await Promise.race([
+      client.reloadDurableProject!().then((result) => ({ kind: 'reloaded' as const, result })),
+      new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 100)),
+    ]);
+
+    expect(outcome).toMatchObject({ kind: 'reloaded', result: { project: refreshedProject, revision: 4 } });
+    expect(getRecoveryPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('completes a stable point without waiting for a second full recovery scan', async () => {
+    const durableProject = createStarterProject();
+    let resolveUnexpectedScan!: (value: ReturnType<typeof createRecoveryPlan>) => void;
+    const getRecoveryPlan = vi.fn()
+      .mockResolvedValueOnce(createRecoveryPlan(durableProject.id, 'stable-3', 'candidate-3', 3))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveUnexpectedScan = resolve;
+      }));
+    const createStablePoint = vi.fn(async () => ({
+      path: 'redacted-path',
+      reason: 'stable_point' as const,
+      revision: 4,
+      snapshotId: 'stable-4',
+    }));
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(),
+      createStablePoint,
+      getRecoveryPlan,
+      openProject: vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 3)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const outcome = await Promise.race([
+      client.stablePoint().then((result) => ({ kind: 'saved' as const, result })),
+      new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 100)),
+    ]);
+
+    if (outcome.kind === 'timeout') {
+      resolveUnexpectedScan(createRecoveryPlan(durableProject.id, 'stable-4', 'candidate-4', 4));
+    }
+    expect(outcome).toMatchObject({
+      kind: 'saved',
+      result: { availableSnapshotIds: ['stable-3'], revision: 4 },
+    });
+    expect(getRecoveryPlan).toHaveBeenCalledTimes(2);
+    expect(createStablePoint).toHaveBeenCalledWith({ sessionId: 'desktop-session' });
+  });
+
+  it('does not apply a late stable-point acknowledgement to a replacement project', async () => {
+    const firstProject = createStarterProject();
+    const secondProject = { ...createStarterProject(), id: 'second-stable-project', name: 'Replacement project' };
+    let releaseStablePoint!: (value: { path: string; reason: 'stable_point'; revision: number; snapshotId: string }) => void;
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit: vi.fn(),
+      createStablePoint: vi.fn(() => new Promise((resolve) => { releaseStablePoint = resolve; })),
+      getRecoveryPlan: vi.fn(async ({ sessionId }: { sessionId: string }) => sessionId === 'first-stable-session'
+        ? createRecoveryPlan(firstProject.id, 'first-stable-3', 'first-candidate-3', 3)
+        : createRecoveryPlan(secondProject.id, 'second-stable-7', 'second-candidate-7', 7)),
+      openProject: vi.fn()
+        .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-stable-session', 3))
+        .mockResolvedValueOnce(createDesktopSession(secondProject, 'second-stable-session', 7)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const saving = client.stablePoint();
+    await client.openProject?.();
+
+    releaseStablePoint({ path: 'redacted-path', reason: 'stable_point', revision: 4, snapshotId: 'first-stable-4' });
+    await saving;
+
+    expect(await client.hydrate()).toMatchObject({ project: secondProject, revision: 7, availableSnapshotIds: ['second-stable-7'] });
+    expect(bridge.getRecoveryPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('queues the newest recovery refresh while an older stable-point scan is still running', async () => {
+    const durableProject = createStarterProject();
+    let resolveRevisionFourPlan!: (value: ReturnType<typeof createRecoveryPlan>) => void;
+    const revisionFourPlan = new Promise<ReturnType<typeof createRecoveryPlan>>((resolve) => {
+      resolveRevisionFourPlan = resolve;
+    });
+    const getRecoveryPlan = vi.fn()
+      .mockResolvedValueOnce(createRecoveryPlan(durableProject.id, 'stable-3', 'candidate-3', 3))
+      .mockReturnValueOnce(revisionFourPlan)
+      .mockResolvedValue(createRecoveryPlan(durableProject.id, 'stable-5', 'candidate-5', 5));
+    const createStablePoint = vi.fn()
+      .mockResolvedValueOnce({ path: 'redacted-path', reason: 'stable_point' as const, revision: 4, snapshotId: 'stable-4' })
+      .mockResolvedValueOnce({ path: 'redacted-path', reason: 'stable_point' as const, revision: 5, snapshotId: 'stable-5' });
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(),
+      createStablePoint,
+      getRecoveryPlan,
+      openProject: vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 3)),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    await client.stablePoint();
+    await client.stablePoint();
+    expect(getRecoveryPlan).toHaveBeenCalledTimes(2);
+
+    resolveRevisionFourPlan(createRecoveryPlan(durableProject.id, 'stable-4', 'candidate-4', 4));
+    await vi.waitFor(() => expect(getRecoveryPlan).toHaveBeenCalledTimes(3));
+    await vi.waitFor(async () => expect((await client.hydrate()).availableSnapshotIds).toEqual(['stable-5']));
   });
 
   it('uses the bridge current revision instead of the stable snapshot revision after hydrate', async () => {
@@ -1727,11 +2005,14 @@ describe('desktop persistence', () => {
     });
   });
   it('creates a durable desktop project the first time an untitled canvas is saved', async () => {
-    const project = { ...createStarterProject(), name: '首次保存画布' };
+    const initialProject = createStarterProject();
+    const promptNode = createCanvasModuleNode('first-save-prompt', 'reverse_agent', { x: 120, y: 80 });
+    const project = { ...initialProject, name: '首次保存画布', nodes: [promptNode] };
     const createProject = vi.fn(async (request: { project: typeof project }) => createDesktopSession(request.project, 'created-session', 0));
+    const commit = vi.fn();
     const bridge = {
       closeProject: vi.fn(async () => undefined),
-      commit: vi.fn(),
+      commit,
       createProject,
       createStablePoint: vi.fn(async () => ({ path: 'snapshot-0', reason: 'stable_point' as const, revision: 0, snapshotId: 'stable-0' })),
       getRecoveryPlan: vi.fn(async () => createRecoveryPlan(project.id, 'stable-0', 'candidate-0', 0)),
@@ -1740,20 +2021,65 @@ describe('desktop persistence', () => {
       restore: vi.fn(),
     };
     const client = createDesktopPersistenceClient(bridge as never);
-    await client.commit({
+    const firstSave = await client.commit({
       baseRevision: 0,
       kind: 'system',
       nextProject: project,
-      previousProject: project,
+      previousProject: initialProject,
       projectId: project.id,
-      transaction: { id: 'save-untitled', label: 'Save untitled', operations: [] },
+      transaction: {
+        id: 'save-untitled',
+        label: 'Save untitled',
+        operations: [{ kind: 'canvas', operation: { kind: 'create_node', node: promptNode } }],
+      },
     });
 
     const saved = await client.stablePoint();
 
     expect(createProject).toHaveBeenCalledWith({ project });
-    expect(saved).toMatchObject({ lifecycle: 'durable', revision: 0, availableSnapshotIds: ['stable-0'] });
+    expect(commit).not.toHaveBeenCalled();
+    expect(firstSave).toMatchObject({ ok: true, project, revision: 0 });
+    expect(saved).toMatchObject({ lifecycle: 'durable', revision: 0 });
     expect((await client.hydrate()).saveStatus).toBe('saved');
+  });
+
+  it('does not wait for recovery scanning when the first desktop save creates its durable session', async () => {
+    const initialProject = createStarterProject();
+    const promptNode = createCanvasModuleNode('first-save-with-slow-recovery', 'reverse_agent', { x: 200, y: 120 });
+    const project = { ...initialProject, nodes: [promptNode] };
+    const getRecoveryPlan = vi.fn(() => new Promise<never>(() => undefined));
+    const commit = vi.fn();
+    const bridge = {
+      closeProject: vi.fn(async () => undefined),
+      commit,
+      createProject: vi.fn(async () => createDesktopSession(project, 'created-session', 0)),
+      createStablePoint: vi.fn(),
+      getRecoveryPlan,
+      openProject: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+
+    const outcome = await Promise.race([
+      client.commit({
+        baseRevision: 0,
+        kind: 'canvas',
+        nextProject: project,
+        previousProject: initialProject,
+        projectId: project.id,
+        transaction: {
+          id: 'first-save-with-slow-recovery',
+          label: 'First save with slow recovery scan',
+          operations: [{ kind: 'canvas', operation: { kind: 'create_node', node: promptNode } }],
+        },
+      }).then((result) => ({ kind: 'saved' as const, result })),
+      new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), 100)),
+    ]);
+
+    expect(outcome).toMatchObject({ kind: 'saved', result: { ok: true, project, revision: 0 } });
+    expect(getRecoveryPlan).toHaveBeenCalledOnce();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it('creates only one desktop project when first-save boundaries overlap', async () => {

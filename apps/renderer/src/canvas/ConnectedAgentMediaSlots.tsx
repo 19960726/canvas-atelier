@@ -23,6 +23,7 @@ interface ConnectedAgentMediaSlotsProps {
   readonly emptySlotAriaLabel?: string;
   readonly showAddPlaceholder?: boolean;
   readonly addAriaLabel?: string;
+  readonly preserveOverflow?: boolean;
 }
 
 export function ConnectedAgentMediaSlots({
@@ -37,12 +38,23 @@ export function ConnectedAgentMediaSlots({
   emptySlotAriaLabel = 'Media reference slot pending',
   showAddPlaceholder = false,
   addAriaLabel = '添加素材',
+  preserveOverflow = false,
 }: ConnectedAgentMediaSlotsProps) {
   const mediaSignature = media.map((item) => `${item.edgeId ?? ''}:${item.kind}:${item.assetId}`).join('|');
-  const [orderedMedia, setOrderedMedia] = useState(() => media.slice(0, MAX_GENERATION_REFERENCES));
+  const mediaPresentationSignature = JSON.stringify(media.map((item) => [item.edgeId, item.kind, item.assetId, item.label, item.previewUrl]));
+  const [orderedMedia, setOrderedMedia] = useState(() => preserveOverflow ? [...media] : media.slice(0, MAX_GENERATION_REFERENCES));
+  const previousExternalMediaSignature = useRef(mediaSignature);
+  const previousPreserveOverflow = useRef(preserveOverflow);
   useEffect(() => {
-    setOrderedMedia(media.slice(0, MAX_GENERATION_REFERENCES));
-  }, [mediaSignature]);
+    const nextMedia = preserveOverflow ? [...media] : media.slice(0, MAX_GENERATION_REFERENCES);
+    const externalOrderChanged = previousExternalMediaSignature.current !== mediaSignature
+      || previousPreserveOverflow.current !== preserveOverflow;
+    previousExternalMediaSignature.current = mediaSignature;
+    previousPreserveOverflow.current = preserveOverflow;
+    setOrderedMedia((current) => externalOrderChanged
+      ? nextMedia
+      : hydrateMediaPresentation(current, nextMedia));
+  }, [mediaSignature, mediaPresentationSignature, preserveOverflow]);
   const visibleMedia = orderedMedia;
   const hasOverflow = visibleMedia.length > 10;
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
@@ -151,4 +163,22 @@ export function ConnectedAgentMediaSlots({
 
 function mediaItemId(item: ConnectedAgentMediaSlotItem, index: number): string {
   return item.edgeId ?? `${item.kind}:${item.assetId}:${index}`;
+}
+
+function hydrateMediaPresentation(
+  current: readonly ConnectedAgentMediaSlotItem[],
+  incoming: readonly ConnectedAgentMediaSlotItem[],
+): ConnectedAgentMediaSlotItem[] {
+  const incomingByIdentity = new Map<string, ConnectedAgentMediaSlotItem[]>();
+  for (const item of incoming) {
+    const identity = item.edgeId ?? `${item.kind}:${item.assetId}`;
+    const matches = incomingByIdentity.get(identity) ?? [];
+    matches.push(item);
+    incomingByIdentity.set(identity, matches);
+  }
+  return current.map((item) => {
+    const identity = item.edgeId ?? `${item.kind}:${item.assetId}`;
+    const matches = incomingByIdentity.get(identity);
+    return matches?.shift() ?? item;
+  });
 }

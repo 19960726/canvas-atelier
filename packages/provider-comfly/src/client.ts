@@ -14,7 +14,7 @@ import type {
 } from './types';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_GENERATION_TIMEOUT_MS = 180_000;
+const DEFAULT_GENERATION_TIMEOUT_MS = 300_000;
 
 const jsonRecordSchema = z.record(z.string(), z.unknown());
 const nonEmptyStringSchema = z.string().min(1);
@@ -300,12 +300,13 @@ export class ComflyClient {
     });
   }
 
-  async responses(input: ComflyResponsesRequest) {
+  async responses(input: ComflyResponsesRequest, timeoutMs = this.timeoutMs) {
     return this.request('/v1/responses', {
       method: 'POST',
       body: input,
       model: input.model,
       schema: responsesResponseSchema,
+      timeoutMs,
     });
   }
 

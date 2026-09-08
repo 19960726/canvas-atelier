@@ -30,6 +30,7 @@ test('managed canvas images can be mentioned in a vision Skill chat without chan
 
   await openAgentPanel(page);
   const panel = page.getByTestId('agent-panel');
+  await panel.getByRole('tab', { name: '对话', exact: true }).click();
   await panel.getByTestId('agent-model-trigger').click();
   const modelOption = panel.getByRole('listitem').first().getByRole('button');
   await expect(modelOption).toBeVisible();

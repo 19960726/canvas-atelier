@@ -836,9 +836,12 @@ textarea:focus-visible {
 .skill-chat-workbench__sent-references { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
 .skill-chat-workbench__sent-reference { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 180px; padding: 3px 6px 3px 3px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
 .skill-chat-workbench__sent-reference img, .skill-chat-workbench__sent-reference video { width: 34px; height: 34px; flex: 0 0 34px; object-fit: cover; border-radius: 4px; }
-.skill-chat-workbench__sent-reference span { display: grid; gap: 1px; min-width: 0; }
+.skill-chat-workbench__sent-reference span { display: grid; flex: 1 1 auto; gap: 1px; min-width: 0; }
 .skill-chat-workbench__sent-reference b { overflow: hidden; color: var(--text-secondary); font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .skill-chat-workbench__sent-reference small { color: var(--muted); font-size: 8px; }
+.skill-chat-workbench__sent-reference-copy { width: 24px; height: 24px; display: grid; flex: 0 0 24px; place-items: center; padding: 0; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+.skill-chat-workbench__sent-reference-copy:hover { color: var(--text); background: var(--surface-muted); border-color: var(--border); }
+.skill-chat-workbench__sent-reference-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .skill-chat-workbench__reverse-entry { background: var(--accent-soft); border-color: var(--accent-soft-border); }
 .skill-chat-workbench__reverse-entry strong { color: var(--text); font-size: 10px; }
 .skill-chat-workbench__status { margin: 0; color: var(--muted); font-size: 10px; }
@@ -5659,36 +5662,6 @@ textarea:focus-visible {
   height: 100%;
   object-fit: cover;
 }
-.workspace--canvas-layout .module-node--workbench[data-module-type='video_generation'] .module-node__video-preview-play {
-  position: absolute;
-  inset: 50% auto auto 50%;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  color: var(--on-accent);
-  background: color-mix(in srgb, var(--accent) 88%, transparent);
-  border: 1px solid var(--accent-soft-border);
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-}
-.workspace--canvas-layout .module-node--workbench[data-module-type='video_generation'] .module-node__video-preview-expand,
-.workspace--canvas-layout .module-node__video-output-expand {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  z-index: 3;
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  color: var(--on-accent);
-  background: color-mix(in srgb, var(--surface-elevated) 86%, transparent);
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  cursor: pointer;
-}
 .workspace--canvas-layout .module-node--workbench[data-module-type='reverse_agent'] .module-node__reverse-output {
   display: grid;
   gap: 8px;
@@ -6096,21 +6069,6 @@ textarea:focus-visible {
   height: 100%;
   object-fit: cover;
 }
-.workspace--canvas-layout .module-node__video-output-play {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  color: var(--on-accent);
-  background: color-mix(in srgb, var(--accent) 90%, transparent);
-  border: 1px solid var(--accent);
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-}
-.workspace--canvas-layout .module-node__video-output-stage:has(video) .module-node__video-output-play { display: none; }
 .workspace--canvas-layout .module-node__video-output-status {
   display: flex;
   align-items: center;
@@ -7712,7 +7670,8 @@ textarea:focus-visible {
 }
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions {
   display: grid !important;
-  grid-template-columns: minmax(0, 1fr) 32px 32px !important;
+  grid-template-columns: minmax(0, 1fr) 42px 42px !important;
+  align-items: center !important;
   min-width: 0 !important;
   gap: 6px !important;
 }
@@ -7721,6 +7680,18 @@ textarea:focus-visible {
   min-width: 0 !important;
   height: 32px !important;
   border-radius: 8px !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions .skill-chat-workbench__new-chat,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions .skill-chat-workbench__close {
+  width: 42px !important;
+  min-width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  display: grid !important;
+  place-items: center !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
 }
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__context { display: none !important; }
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__stream {
@@ -8285,3 +8256,127 @@ textarea:focus-visible {
 }
 .workspace--canvas-layout .module-node[data-module-type='image_generation'] .module-node__video-model-menu > button:hover,
 .workspace--canvas-layout .module-node[data-module-type='image_generation'] .module-node__video-model-menu > button.is-selected { background: var(--gate-accent-soft, var(--surface-muted)) !important; }
+
+/* FINAL SCOPED MEDIA-NODE CONTRACT.
+   Video controls stay in the composer flow so their baseline matches the
+   image-generation rail. Reverse media is a real tray above the model route;
+   every connected item remains visible through the horizontal scrollbar. */
+.workspace--canvas-layout .module-node--workbench[data-module-type='video_generation'] .module-node__video-composer {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  overflow: visible !important;
+}
+.workspace--canvas-layout .module-node--workbench[data-module-type='video_generation'] .module-node__video-composer > .module-node__prompt-workspace {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+}
+.workspace--canvas-layout .module-node--workbench[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar {
+  position: static !important;
+  inset: auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 2fr) 116px !important;
+  grid-template-rows: 38px !important;
+  align-items: stretch !important;
+  width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 8px !important;
+}
+.workspace--canvas-layout .module-node--workbench[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar > :is(.module-node__video-model-picker, .module-node__video-mode-picker, .generation-parameter-popover) {
+  position: relative !important;
+  inset: auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  margin: 0 !important;
+}
+.workspace--canvas-layout .module-node--workbench[data-module-type='video_generation'] .module-node__video-composer .module-node__video-control-bar > .module-node__run-generation {
+  position: static !important;
+  inset: auto !important;
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  justify-self: stretch !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  margin: 0 !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-control-strip {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-route-region {
+  order: 2 !important;
+  display: block !important;
+  width: 100% !important;
+  min-height: 58px !important;
+  height: auto !important;
+  padding: 8px 10px !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-media-region,
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-media-empty-hint {
+  order: 1 !important;
+  display: block !important;
+  width: 100% !important;
+  min-height: 72px !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 7px 8px !important;
+  overflow: visible !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-media-label {
+  display: block !important;
+  margin: 0 2px 5px !important;
+  color: var(--text-secondary) !important;
+  font-size: 10px !important;
+  line-height: 14px !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-media-slots {
+  display: block !important;
+  min-height: 44px !important;
+  height: auto !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-media-slots > header {
+  display: none !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-media-slots > .module-node__agent-media-slot-row {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  gap: 7px !important;
+  padding: 0 0 5px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin !important;
+  pointer-events: auto !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .connected-agent-media-slots__item {
+  display: grid !important;
+  flex: 0 0 40px !important;
+  width: 40px !important;
+  min-width: 40px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  pointer-events: auto !important;
+}
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-media-slots::before {
+  content: none !important;
+}

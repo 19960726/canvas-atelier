@@ -805,6 +805,7 @@ describe('public domain API', () => {
       'MAX_GENERATION_REFERENCES',
       'MAX_REVERSE_PROMPT_MP4_BYTES',
       'REVERSE_PROMPT_PERSONAS',
+      'REVERSE_ANALYSIS_CHAPTERS',
       'RUNTIME_PROFILES',
       'UNCONFIGURED_KNOWLEDGE_VERSION_KEY',
       'adaptGenerationParameters',

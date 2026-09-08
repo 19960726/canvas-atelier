@@ -39,6 +39,7 @@ export type AssetMediaType = 'image/gif' | 'image/jpeg' | 'image/png' | 'image/w
 
 const DEFAULT_MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024;
 export const MAX_MANAGED_MP4_BYTES = 4 * 1024 * 1024 * 1024;
+const ASSET_CATALOG_VERIFICATION_CONCURRENCY = 8;
 const ASSET_EXTENSIONS: readonly AssetExtension[] = ['gif', 'jpg', 'mp4', 'png', 'webp'];
 const MEDIA_BY_EXTENSION: Record<AssetExtension, AssetMediaType> = {
   gif: 'image/gif',
@@ -62,20 +63,22 @@ export class AssetStore {
     catalog?: readonly AssetCatalogMetadata[],
   ): Promise<AssetMetadata[]> {
     if (catalog !== undefined) {
-      const assets: AssetMetadata[] = [];
-      for (const expected of catalog) {
-        const resolvedPath = await this.resolvePath(
-          projectRoot,
-          expected.assetId,
-          expected.extension,
-          undefined,
-          expected.byteSize,
-        );
-        if (resolvedPath === null) continue;
-        const verified = await this.verifyCatalogAsset(resolvedPath, expected).catch(() => null);
-        if (verified !== null) assets.push(verified);
-      }
-      return assets;
+      const verifiedAssets = await mapConcurrentOrdered(
+        catalog,
+        ASSET_CATALOG_VERIFICATION_CONCURRENCY,
+        async (expected) => {
+          const resolvedPath = await this.resolvePath(
+            projectRoot,
+            expected.assetId,
+            expected.extension,
+            undefined,
+            expected.byteSize,
+          );
+          if (resolvedPath === null) return null;
+          return this.verifyCatalogAsset(resolvedPath, expected).catch(() => null);
+        },
+      );
+      return verifiedAssets.filter((asset): asset is AssetMetadata => asset !== null);
     }
 
     const assetsRoot = await resolveConfinedProjectDirectory(projectRoot, ['assets'], false);
@@ -280,6 +283,9 @@ export class AssetStore {
         await rm(tempPath, { force: true });
       }
 
+      const stagedPath = await realpath(resolvedAsset.finalPath).catch(() => null);
+      const stagedIdentity = stagedPath === null ? null : await readVerifiedFileIdentity(stagedPath);
+
       try {
         await options.commitReference?.(asset);
       } catch (error) {
@@ -293,6 +299,25 @@ export class AssetStore {
       }
 
       await access(resolvedAsset.finalPath, constants.R_OK);
+      // The staging stream already computed the complete digest and inspected
+      // the media header. Remember that verified receipt against the final
+      // filesystem identity so the first thumbnail request after a paste does
+      // not immediately read and hash the same large image again. Any later
+      // replacement changes the identity and invalidates this receipt.
+      const verifiedPath = await realpath(resolvedAsset.finalPath).catch(() => null);
+      const verifiedIdentity = verifiedPath === null ? null : await readVerifiedFileIdentity(verifiedPath);
+      if (
+        stagedPath !== null
+        && stagedIdentity !== null
+        && verifiedPath === stagedPath
+        && verifiedIdentity !== null
+        && sameVerifiedFileIdentity(stagedIdentity, verifiedIdentity)
+      ) {
+        this.rememberVerification(
+          verificationCacheKey(verifiedPath, asset.extension, asset.sha256, asset.byteSize),
+          { asset, identity: verifiedIdentity },
+        );
+      }
       return asset;
     } catch (error) {
       if (!closed) {
@@ -302,6 +327,24 @@ export class AssetStore {
       throw normalizePersistenceError(error, 'Managed project asset write failed');
     }
   }
+}
+
+async function mapConcurrentOrdered<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  mapValue: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(values.length, Math.max(1, Math.floor(concurrency)));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapValue(values[index]!, index);
+    }
+  }));
+  return results;
 }
 
 interface VerifiedFileIdentity {

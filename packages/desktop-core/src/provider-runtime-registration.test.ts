@@ -11,6 +11,7 @@ for (const entry of ['apps/desktop-modern/src/main.ts', 'apps/desktop-legacy/src
       expect(source).toMatch(/provider:\s*'comfly'/u);
       expect(source).toMatch(/provider:\s*'relayme'/u);
       expect(source).toMatch(/relayme:\s*createRelayMeProviderService\(\{[\s\S]*?readManagedReverseMedia:\s*desktopHandlers\.readManagedReverseMedia/u);
+      expect(source).toMatch(/relayme:\s*createRelayMeProviderService\(\{[\s\S]*?readManagedSkillChatImages:\s*desktopHandlers\.readManagedSkillChatImages/u);
     });
   });
 }

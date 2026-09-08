@@ -89,4 +89,52 @@ describe('MCP main-to-renderer bridge', () => {
     await expect(bridge.forwardRequest('request-3', { tool: 'canvas_read_workflow' })).rejects.toThrow('MCP_RENDERER_UNAVAILABLE');
     bridge.dispose();
   });
+
+  it('prepares the desktop foreground before forwarding a trusted media picker request', async () => {
+    const harness = createIpcHarness();
+    const trustedSender = {};
+    const renderer = { isDestroyed: () => false, send: vi.fn() };
+    const prepareInteractiveRequest = vi.fn(async () => true);
+    const bridge = createMcpRendererBridge({
+      ipcMain: harness.ipcMain,
+      getRenderer: () => ({ sender: trustedSender, ...renderer }),
+      getStatus: () => ({ state: 'running', rendererConnected: true, serverVersion: '1.0.0', toolCount: 14, lastError: null }),
+      prepareInteractiveRequest,
+      requestTimeoutMs: 100,
+    });
+
+    const responsePromise = bridge.forwardRequest('request-picker', {
+      tool: 'canvas_import_media', expectedRevision: 4, mediaKind: 'image', position: { x: 12, y: 34 },
+    });
+    await vi.waitFor(() => expect(prepareInteractiveRequest).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(renderer.send).toHaveBeenCalledOnce());
+
+    harness.listeners.get(BRIDGE_CHANNELS.mcpRuntime.response)?.(
+      { sender: trustedSender },
+      { requestId: 'request-picker', response: { ok: true, result: { pickerOpened: true } } },
+    );
+    await expect(responsePromise).resolves.toMatchObject({ ok: true });
+    bridge.dispose();
+  });
+
+  it('fails closed without sending to the renderer when the desktop cannot foreground the picker', async () => {
+    const harness = createIpcHarness();
+    const trustedSender = {};
+    const renderer = { isDestroyed: () => false, send: vi.fn() };
+    const bridge = createMcpRendererBridge({
+      ipcMain: harness.ipcMain,
+      getRenderer: () => ({ sender: trustedSender, ...renderer }),
+      getStatus: () => ({ state: 'running', rendererConnected: true, serverVersion: '1.0.0', toolCount: 14, lastError: null }),
+      prepareInteractiveRequest: async () => false,
+    });
+
+    await expect(bridge.forwardRequest('request-picker-blocked', {
+      tool: 'canvas_import_media', expectedRevision: 4, mediaKind: 'image', position: { x: 12, y: 34 },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MCP_INTERACTION_UNAVAILABLE' },
+    });
+    expect(renderer.send).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
 });

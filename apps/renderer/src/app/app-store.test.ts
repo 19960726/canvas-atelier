@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommitAck, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { buildProjectMemoryContext, createAgentKnowledgeLease, createCanvasModuleNode, createSkillPromotionCandidateFingerprint, parseCanvasProject } from '@agent-canvas/domain';
-import type { CanvasNode, CanvasProject, ModelJob, OrderedReference, ProjectTransaction, ReversePromptResult, SkillPromotionCandidate } from '@agent-canvas/domain';
+import type { AgentCanvasPlan, CanvasNode, CanvasProject, ModelJob, OrderedReference, ProjectTransaction, ReversePromptResult, SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   createStarterProject,
+  filterGenerationModelProfiles,
+  buildModelJobRequests,
   replaceKnowledgeClientForTests,
   replaceModelJobExecutorForTests,
   replaceModelJobStorageForTests,
@@ -1019,6 +1021,44 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().projectImageError).toBeNull();
   });
 
+  it('adopts the durable canvas before managed media integrity verification finishes', async () => {
+    const mediaVerification = deferred<Awaited<ReturnType<ProjectPersistenceClient['listProjectImages']>>>();
+    const durableProject = {
+      ...createStarterProject(),
+      id: 'startup-before-media-verification',
+      name: 'Large media canvas',
+      nodes: [createCanvasModuleNode('startup-existing-image', 'image_input', { x: 120, y: 80 })],
+      edges: [],
+    };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: durableProject,
+        revision: 269,
+        saveStatus: 'saved' as const,
+      })),
+      listProjectImages: vi.fn(() => mediaVerification.promise),
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    const hydration = useAppStore.getState().hydratePersistence();
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState()).toMatchObject({
+        desktopRevision: 269,
+        project: { id: durableProject.id, nodes: [{ id: 'startup-existing-image' }] },
+        projectLifecycle: 'durable',
+        saveStatus: 'saved',
+      });
+    });
+    expect(useAppStore.getState().projectImages).toEqual([]);
+
+    mediaVerification.resolve([]);
+    await hydration;
+  });
+
   it('does not let delayed startup hydration overwrite edits made while the app is opening', async () => {
     const hydration = deferred<Awaited<ReturnType<ProjectPersistenceClient['hydrate']>>>();
     replaceProjectPersistenceClientForTests(createMockClient({ hydrate: vi.fn(() => hydration.promise) }));
@@ -1134,11 +1174,10 @@ describe('project optimization memory', () => {
         }],
       },
     });
-
     await expect(useAppStore.getState().runVideoPreviewNode(preview.id, {
       prompt: 'A product rotates slowly',
       modelRoute: 'relayme-video-pro',
-      referenceAssetIds: ['0123456789abcdef'],
+      referenceAssetIds: [],
       aspectRatio: '16:9',
       keyframe: 'auto',
       durationSeconds: 8,
@@ -1158,7 +1197,7 @@ describe('project optimization memory', () => {
         durationSeconds: 8,
         audioEnabled: true,
         outputCount: 1,
-        referenceAssetIds: ['0123456789abcdef'],
+        referenceAssetIds: [],
       }),
     ]));
     const saved = useAppStore.getState().project.nodes[0] as typeof preview;
@@ -1166,7 +1205,7 @@ describe('project optimization memory', () => {
       execution: { state: 'queued' },
       config: {
         modelRoute: 'relayme-video-pro',
-        referenceAssetIds: ['0123456789abcdef'],
+        referenceAssetIds: [],
         outputCount: 4,
         resultState: 'pending',
       },
@@ -1219,7 +1258,13 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().modelJobs).toEqual([]);
   });
   it('uses the managed image connected to the video media port when running a preview', async () => {
-    installVideoProviderForModelJobTests();
+    installVideoProviderForModelJobTests({
+      provider: 'comfly',
+      modelRoute: 'comfly-doubao-seedance-2-5',
+      displayName: 'Seedance 2.5',
+      modelId: 'doubao-seedance-2.5',
+      capabilities: ['video_generation', 'async_tasks'],
+    });
     const image = createCanvasModuleNode('video-connected-image', 'image_input', { x: 20, y: 20 });
     image.data.config = { assetId: '0123456789abcdef' };
     const preview = createCanvasModuleNode('video-connected-preview', 'video_generation', { x: 420, y: 20 });
@@ -1266,8 +1311,76 @@ describe('project optimization memory', () => {
     });
   });
 
-  it('records a managed video connected to the video media port without treating it as an image frame', async () => {
-    installVideoProviderForModelJobTests();
+  it('rejects RelayMe video references before committing or enqueueing a provider job', async () => {
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme',
+      modelRoute: 'relayme-video-pro',
+      displayName: 'Relay Video Pro',
+      modelId: 'video-pro',
+      capabilities: ['video_generation', 'async_tasks'],
+    }]);
+    resetAppStoreForTests();
+    const image = createCanvasModuleNode('relayme-video-reference', 'image_input', { x: 20, y: 20 });
+    image.data.config = { assetId: '0123456789abcdef' };
+    const preview = createCanvasModuleNode('relayme-video-target', 'video_generation', { x: 420, y: 20 });
+    useAppStore.setState({
+      project: {
+        ...createStarterProject(),
+        nodes: [image, preview],
+        edges: [{
+          id: 'relayme-image-to-video',
+          source: image.id,
+          sourcePortId: 'image',
+          target: preview.id,
+          targetPortId: 'media',
+          order: 0,
+        }],
+        assets: [{
+          assetId: '0123456789abcdef',
+          sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          byteSize: 1024,
+          extension: 'png',
+          height: 720,
+          label: 'RelayMe unsupported frame',
+          mediaType: 'image/png',
+          origin: 'imported',
+          width: 1280,
+        }],
+      },
+    });
+    const projectBeforeRun = useAppStore.getState().project;
+
+    await expect(useAppStore.getState().runVideoPreviewNode(preview.id, {
+      prompt: 'Do not submit a silently dropped RelayMe reference',
+      referenceAssetIds: [],
+      modelRoute: 'relayme-video-pro',
+      aspectRatio: '16:9',
+      keyframe: 'first-frame',
+      durationSeconds: 5,
+      resolution: '720p',
+      outputCount: 1,
+      audioEnabled: false,
+    })).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().project).toBe(projectBeforeRun);
+  });
+
+  it('rejects a connected video source before it can enter the image-only provider reference queue', async () => {
+    installVideoProviderForModelJobTests({
+      provider: 'comfly',
+      modelRoute: 'comfly-doubao-seedance-2-5',
+      displayName: 'Seedance 2.5',
+      modelId: 'doubao-seedance-2.5',
+      capabilities: ['video_generation', 'async_tasks'],
+    });
     const video = createCanvasModuleNode('video-connected-source', 'video_input', { x: 20, y: 20 });
     video.data.config = { assetId: 'fedcba9876543210' };
     const preview = createCanvasModuleNode('video-connected-preview', 'video_generation', { x: 420, y: 20 });
@@ -1297,8 +1410,9 @@ describe('project optimization memory', () => {
         }],
       },
     });
+    const projectBeforeRun = useAppStore.getState().project;
 
-    expect(await useAppStore.getState().runVideoPreviewNode(preview.id, {
+    await expect(useAppStore.getState().runVideoPreviewNode(preview.id, {
       prompt: 'A product rotates slowly',
       referenceAssetIds: [],
       aspectRatio: '16:9',
@@ -1307,12 +1421,10 @@ describe('project optimization memory', () => {
       resolution: '720p',
       outputCount: 1,
       audioEnabled: true,
-    })).toBe(true);
+    })).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
 
-    expect((useAppStore.getState().project.nodes[1] as typeof preview).data.config).toMatchObject({
-      referenceAssetIds: [],
-      sourceVideoAssetId: 'fedcba9876543210',
-    });
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().project).toBe(projectBeforeRun);
   });
 
   it('snapshots only managed images connected to a storyboard before calling the bridge', async () => {
@@ -1431,6 +1543,41 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().saveStatus).toBe('saved');
   });
 
+  it('does not lock later canvas operations behind a non-retryable commit failure', async () => {
+    const durableProject = createStarterProject();
+    const commit = vi.fn()
+      .mockImplementationOnce(async (): Promise<ProjectCommitResult> => ({
+        code: 'READ_ONLY_VOLUME',
+        ok: false,
+        project: durableProject,
+        retryable: false,
+        revision: 0,
+      }))
+      .mockImplementationOnce(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: request.nextProject,
+        revision: 1,
+      }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests();
+
+    await expect(useAppStore.getState().addModuleNode('text_prompt', { x: 120, y: 120 })).resolves.toBe(false);
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: false,
+      project: durableProject,
+      saveErrorCode: 'READ_ONLY_VOLUME',
+      saveStatus: 'error',
+    });
+
+    await expect(useAppStore.getState().addModuleNode('openpose', { x: 420, y: 120 })).resolves.toBe(true);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: false,
+      saveErrorCode: null,
+      saveStatus: 'saved',
+    });
+  });
+
   it('keeps local work dirty on REVISION_CONFLICT until explicit durable reload', async () => {
     const durableAsset = {
       assetId: '0123456789abcdef',
@@ -1500,8 +1647,10 @@ describe('project optimization memory', () => {
     expect(await useAppStore.getState().addModuleNode('text_prompt', { x: 20, y: 20 })).toBe(false);
     expect(commit).toHaveBeenCalledOnce();
 
+    const canvasDraftResetKeyBeforeReload = useAppStore.getState().canvasDraftResetKey;
     expect(await useAppStore.getState().reloadDurableProject()).toBe(true);
     expect(reloadDurableProject).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().canvasDraftResetKey).toBeGreaterThan(canvasDraftResetKeyBeforeReload);
     expect(useAppStore.getState()).toMatchObject({
       canReloadDurableProject: false,
       desktopRevision: 3,
@@ -1939,7 +2088,23 @@ describe('project optimization memory', () => {
     expect(stablePoint).not.toHaveBeenCalled();
   });
 
-  it('does not report a close-handle timeout as a save failure after a saved session', async () => {
+  it('prepares a writable session for native close without closing the renderer session', async () => {
+    const close = vi.fn(async () => undefined);
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      project: createStarterProject(),
+      revision: 3,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ close, stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ saveStatus: 'saved', projectLifecycle: 'durable' });
+
+    await expect(useAppStore.getState().preparePersistenceForClose()).resolves.toBe(true);
+    expect(close).not.toHaveBeenCalled();
+    expect(stablePoint).not.toHaveBeenCalled();
+  });
+
+  it('reports a close-handle timeout as an unsuccessful session release after a saved session', async () => {
     const close = vi.fn(async () => { throw new Error('desktop close timed out'); });
     const stablePoint = vi.fn(async () => ({
       availableSnapshotIds: [],
@@ -1950,7 +2115,7 @@ describe('project optimization memory', () => {
     resetAppStoreForTests({ project: 'empty' });
     useAppStore.setState({ saveStatus: 'saved', projectLifecycle: 'durable' });
 
-    await expect(useAppStore.getState().closePersistence()).resolves.toBe(true);
+    await expect(useAppStore.getState().closePersistence()).resolves.toBe(false);
     expect(close).toHaveBeenCalledOnce();
     expect(stablePoint).not.toHaveBeenCalled();
   });
@@ -6777,19 +6942,19 @@ function installProviderProfilesForModelJobTests(profiles: ProviderBridgeProfile
   } as unknown as typeof window.novusDesktop;
 }
 
-function installVideoProviderForModelJobTests(): void {
+function installVideoProviderForModelJobTests(profile: ProviderBridgeProfile = {
+  provider: 'relayme',
+  modelRoute: 'relayme-video-pro',
+  displayName: 'Relay Video Pro',
+  modelId: 'video-pro',
+  capabilities: ['video_generation', 'async_tasks'],
+}): void {
   replaceModelJobExecutorForTests({
     submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
     poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
     cancel: vi.fn(async () => {}),
   });
-  installProviderProfilesForModelJobTests([{
-    provider: 'relayme',
-    modelRoute: 'relayme-video-pro',
-    displayName: 'Relay Video Pro',
-    modelId: 'video-pro',
-    capabilities: ['video_generation', 'async_tasks'],
-  }]);
+  installProviderProfilesForModelJobTests([profile]);
   resetAppStoreForTests();
 }
 function createDesktopProviderBridgeForCancel(options: {
@@ -7082,6 +7247,37 @@ describe('explicit project save', () => {
     });
   });
 
+  it('starts a fresh explicit save boundary when the user retries after a stable-point timeout', async () => {
+    vi.useFakeTimers();
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const stablePoint = vi.fn()
+      .mockImplementationOnce(() => new Promise<never>(() => {}))
+      .mockImplementationOnce(async () => ({
+        availableSnapshotIds: ['manual-save-retry'],
+        lifecycle: 'durable' as const,
+        project,
+        revision: 4,
+      }));
+    replaceProjectPersistenceClientForTests(createMockClient({ stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'untitled', saveStatus: 'pending' });
+
+    const firstSave = useAppStore.getState().saveProjectExplicitly();
+    await vi.advanceTimersByTimeAsync(15_001);
+    await expect(firstSave).resolves.toBe(false);
+
+    await expect(useAppStore.getState().saveProjectExplicitly()).resolves.toBe(true);
+    expect(stablePoint).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState()).toMatchObject({
+      availableSnapshotIds: ['manual-save-retry'],
+      desktopRevision: 4,
+      project,
+      projectLifecycle: 'durable',
+      saveErrorCode: null,
+      saveStatus: 'saved',
+    });
+  });
+
   it('does not leave an idle autosave stuck in saving when commit never settles', async () => {
     vi.useFakeTimers();
     const project = { ...createStarterProject(), nodes: [], edges: [] };
@@ -7099,6 +7295,43 @@ describe('explicit project save', () => {
     expect(useAppStore.getState()).toMatchObject({
       saveErrorCode: 'SAVE_TIMEOUT',
       saveStatus: 'error',
+    });
+  });
+
+  it('retries the exact autosave draft after a commit timeout without clearing the canvas', async () => {
+    vi.useFakeTimers();
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const commit = vi.fn()
+      .mockImplementationOnce(() => new Promise<never>(() => {}))
+      .mockImplementationOnce(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+        ok: true,
+        project: request.nextProject,
+        revision: 2,
+      }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'durable', saveStatus: 'saved' });
+    const editedProject = { ...project, name: '自动保存超时后重试仍保留画布' };
+
+    useAppStore.getState().setProject(editedProject);
+    await vi.advanceTimersByTimeAsync(750);
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: true,
+      project: editedProject,
+      saveErrorCode: 'SAVE_TIMEOUT',
+      saveStatus: 'error',
+    });
+
+    await expect(useAppStore.getState().saveProjectExplicitly()).resolves.toBe(true);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]?.[0].nextProject).toEqual(editedProject);
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: false,
+      desktopRevision: 2,
+      project: editedProject,
+      saveErrorCode: null,
+      saveStatus: 'saved',
     });
   });
 
@@ -7122,5 +7355,47 @@ describe('explicit project save', () => {
       saveErrorCode: 'DURABLE_WRITE_FAILED',
       saveStatus: 'error',
     });
+  });
+});
+
+describe('agent generation model selection', () => {
+  it('binds each module generation request to its own prompt and node', () => {
+    const nodes = ['A', 'B'].map((prompt) => {
+      const node = createCanvasModuleNode(`variant-${prompt}`, 'image_generation', { x: 0, y: 0 });
+      node.data.config = { prompt, referenceAssetIds: [], aspectRatio: '3:4' };
+      return node;
+    });
+    const plan = { id: 'variants', jobCount: 2, transaction: { label: 'variants', operations: nodes.map((node) => ({ kind: 'create_node', node })) } } as AgentCanvasPlan;
+    const requests = buildModelJobRequests({ ...createStarterProject(), nodes }, plan, { provider: 'comfly', modelRoute: 'image/chosen', displayName: 'Chosen' });
+    expect(requests.map((request) => [request.promptNodeId, request.prompt, request.kind])).toEqual([['variant-A', 'A', 'image'], ['variant-B', 'B', 'image']]);
+    expect(requests.every((request) => request.aspectRatio === '3:4')).toBe(true);
+  });
+  it('creates the chosen generation node durably and idempotently without submitting jobs', async () => {
+    delete window.novusDesktop;
+    localStorage.clear();
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
+    replaceModelJobStorageForTests(createTestModelJobStorage());
+    resetAppStoreForTests();
+    const state = useAppStore.getState();
+    expect(await state.ensureAgentGenerationNode('chosen-video', 'video_generation', [])).toBe(true);
+    expect(await state.ensureAgentGenerationNode('chosen-video', 'video_generation', [])).toBe(true);
+    expect(useAppStore.getState().project.nodes.filter((node) => node.id === 'chosen-video')).toHaveLength(1);
+    expect(useAppStore.getState().modelJobs).toHaveLength(0);
+    expect(await state.ensureAgentGenerationNode('chosen-video', 'image_generation', [])).toBe(false);
+  });
+  it('selects video profiles for video plans instead of silently falling back to image profiles', () => {
+    const plan = {
+      transaction: {
+        operations: [{
+          kind: 'create_node',
+          node: createCanvasModuleNode('video-plan-node', 'video_generation', { x: 0, y: 0 }),
+        }],
+      },
+    } as unknown as AgentCanvasPlan;
+    const profiles = [
+      { provider: 'comfly', modelRoute: 'image/route', displayName: 'Image', modelId: 'image', capabilities: ['image_generation'] },
+      { provider: 'comfly', modelRoute: 'video/route', displayName: 'Video', modelId: 'video', capabilities: ['video_generation'] },
+    ] as unknown as ProviderBridgeProfile[];
+    expect(filterGenerationModelProfiles(profiles, plan).map((profile) => profile.modelRoute)).toEqual(['video/route']);
   });
 });

@@ -89,7 +89,9 @@ export function listAgentChatProfiles(
   const chatProfiles = profiles.filter((profile) => (
     (profile.capabilities.includes('chat') || profile.capabilities.includes('responses'))
     && !profile.capabilities.includes('image_generation')
+    && !profile.capabilities.includes('image_edit')
     && !profile.capabilities.includes('video_generation')
+    && !isMediaOutputProfile(profile)
   ));
   // Codex exposes model families/variants under distinct routes (for example
   // low/medium/high reasoning). Do not collapse those into one visible name;
@@ -300,6 +302,30 @@ function popularImageFamily(profile: ProviderBridgeProfile): 'gpt-image-2' | 'na
 
 function isGoogleImageIdentity(identity: string): boolean {
   return /(?:^|[-_/])(nano[-_]?banana|gemini|imagen)(?:$|[-_/])/u.test(identity);
+}
+
+const MEDIA_OUTPUT_IDENTITY_PATTERNS = [
+  /(?:^|-)gemini-\d+(?:-\d+)?-(?:[a-z0-9]+-)*image(?:-|$)/u,
+  /(?:^|-)gpt-4o-image(?:-|$)/u,
+  /(?:^|-)qwen-(?:image(?:-edit)?|mt-image)(?:-|$)/u,
+  /(?:^|-)seedream-\d+(?:-\d+)?(?:-|$)/u,
+  /(?:^|-)dall(?:e|-e)(?:-|$)/u,
+  /(?:^|-)grok-imagine-video(?:-|$)/u,
+  /(?:^|-)hailuo-video(?:-|$)/u,
+  /(?:^|-)kling-(?:advanced-lip-sync|meta-human)(?:-|$)/u,
+  /(?:^|-)pixverse-video(?:-|$)/u,
+  /(?:^|-)sora-2(?:-|$)/u,
+  /(?:^|-)veo3(?:-\d+)?-(?:fast-4k|components)(?:-|$)/u,
+  /(?:^|-)video-style-transform(?:-|$)/u,
+  /(?:^|-)videoretalk(?:-|$)/u,
+] as const;
+
+function isMediaOutputProfile(profile: ProviderBridgeProfile): boolean {
+  return [profile.modelRoute, profile.modelId, profile.displayName].some((identity) => {
+    if (identity === undefined) return false;
+    const normalized = identity.trim().toLocaleLowerCase().replace(/[._/\s]+/gu, '-');
+    return MEDIA_OUTPUT_IDENTITY_PATTERNS.some((pattern) => pattern.test(normalized));
+  });
 }
 
 function providerProfilePreference(profile: ProviderBridgeProfile, configuredProviders: ReadonlySet<ProviderBridgeProfile['provider']>): number {

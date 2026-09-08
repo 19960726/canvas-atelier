@@ -116,7 +116,7 @@ for (const theme of ['dark', 'light'] as const) {
     expect(analysisTaskBox).not.toBeNull();
     expect(reverseChipBox!.width, 'Reference capsules must size to their content, not become a full-width bar').toBeLessThan(240);
     expect(reverseChipBox!.width).toBeLessThan(analysisTaskBox!.width);
-    expect(reverseChipBox!.height).toBeLessThanOrEqual(36);
+    expect(reverseChipBox!.height).toBe(24);
     expect(reverseChipBox!.x).toBeGreaterThanOrEqual(analysisTaskBox!.x);
     expect(reverseChipBox!.x + reverseChipBox!.width).toBeLessThanOrEqual(analysisTaskBox!.x + analysisTaskBox!.width);
     const knowledgeTrigger = reverse.getByLabel('Reverse knowledge context').getByRole('button');
@@ -139,7 +139,7 @@ for (const theme of ['dark', 'light'] as const) {
     expect(routeBox!.width, 'The language-model select must occupy the full 390px content row').toBe(390);
     expect(routeRegionBox!.x, 'The language-model row must align with the media workspace').toBe(mediaBox!.x);
     expect(routeBox!.x, 'The language-model select must align with the media workspace').toBe(mediaBox!.x);
-    expect(routeRegionBox!.y, 'The language-model row must sit below the media workspace').toBeGreaterThanOrEqual(mediaBox!.y + mediaBox!.height);
+    expect(routeRegionBox!.y, 'The language-model row must follow the reference rail').toBeGreaterThanOrEqual(mediaBox!.y + mediaBox!.height);
     await testInfo.attach('reverse-agent-layout.json', {
       body: JSON.stringify({
         media: mediaBox!.y - reverseBox!.y,
@@ -271,14 +271,15 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
   const toolrailBounds = await page.getByTestId('toolrail').boundingBox();
   expect(agentPanelBounds).not.toBeNull();
   expect(toolrailBounds).not.toBeNull();
-  expect(agentPanelBounds).toMatchObject({ x: 980, y: 0, width: 460, height: 900 });
+  expect(agentPanelBounds).toMatchObject({ x: 880, y: 0, width: 560, height: 900 });
   expect(toolrailBounds).toMatchObject({ x: 52, y: 142, width: 60, height: 390 });
   const newChatBounds = await page.getByTestId('agent-new-chat').boundingBox();
   const darkAgentTitleBounds = await page.getByTestId('agent-panel').locator('.skill-chat-workbench__header h2').boundingBox();
   const darkAgentCloseBounds = await page.getByRole('button', { name: '关闭 Codex Agent' }).boundingBox();
+  await page.getByTestId('agent-panel').getByRole('tab', { name: '对话', exact: true }).click();
   const welcomeBounds = await page.locator('.skill-chat-workbench__intro--codex').boundingBox();
   const composerBounds = await page.locator('.skill-chat-workbench__composer').boundingBox();
-  expect(newChatBounds).toMatchObject({ width: 34, height: 34 });
+  expect(newChatBounds).toMatchObject({ width: 42, height: 42 });
   expect(darkAgentTitleBounds!.x).toBeGreaterThanOrEqual(agentPanelBounds!.x + 16);
   expect(darkAgentCloseBounds).toMatchObject({ width: 30, height: 30 });
   expect(agentPanelBounds!.x + agentPanelBounds!.width - (darkAgentCloseBounds!.x + darkAgentCloseBounds!.width)).toBeLessThanOrEqual(11);
@@ -299,8 +300,8 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
   expect(await page.getByTestId('knowledge-base-trigger').boundingBox()).toMatchObject({ width: 30, height: 30 });
   const hiddenSubmit = page.locator('.skill-chat-workbench__composer-footer button[type="submit"]');
   expect(await hiddenSubmit.boundingBox()).toMatchObject({ width: 30, height: 30 });
-  await expect(hiddenSubmit).toHaveCSS('opacity', '0');
-  await expect(hiddenSubmit).toHaveCSS('pointer-events', 'none');
+  await expect(hiddenSubmit).toHaveCSS('opacity', '1');
+  await expect(hiddenSubmit).toHaveCSS('pointer-events', 'auto');
   await expect(page.getByTestId('agent-image-reference-affordance')).toHaveCount(0);
   await captureSurface(page, testInfo, '03-agent-dark');
 
@@ -407,12 +408,12 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
   await openAgentPanel(page);
   // The docked Agent geometry remains identical across themes; only tokens change.
   expect(await page.getByTestId('agent-panel').boundingBox()).toMatchObject({
-    x: 980,
+    x: 880,
     y: 0,
-    width: 460,
+    width: 560,
     height: 900,
   });
-  expect(await page.getByTestId('agent-new-chat').boundingBox()).toMatchObject({ width: 34, height: 34 });
+  expect(await page.getByTestId('agent-new-chat').boundingBox()).toMatchObject({ width: 42, height: 42 });
   expect(await page.getByRole('button', { name: '关闭 Codex Agent' }).boundingBox()).toMatchObject({ width: 30, height: 30 });
   await expect(page.getByTestId('knowledge-base-trigger')).toBeVisible();
   await expect(page.getByTestId('agent-model-trigger')).toBeVisible();

@@ -25,7 +25,7 @@ export type {
   KnowledgeSnapshotPin,
   OrderedReference,
 } from './knowledge-context';
-export { DEFAULT_REVERSE_PROMPT_PERSONA, MAX_REVERSE_PROMPT_MP4_BYTES, REVERSE_PROMPT_PERSONAS, createReversePromptRun, managedMp4InputSnapshotSchema, normalizeReverseRolePreference, orderedAgentMediaItemSchema, parseReversePromptResult, reverseAgentNodeConfigSchema, reversePromptResultSchema, reversePromptRunSchema } from './reverse-prompt-agent';
+export { REVERSE_ANALYSIS_CHAPTERS, DEFAULT_REVERSE_PROMPT_PERSONA, MAX_REVERSE_PROMPT_MP4_BYTES, REVERSE_PROMPT_PERSONAS, createReversePromptRun, managedMp4InputSnapshotSchema, normalizeReverseRolePreference, orderedAgentMediaItemSchema, parseReversePromptResult, reverseAgentNodeConfigSchema, reversePromptResultSchema, reversePromptRunSchema } from './reverse-prompt-agent';
 export type { ApprovedMemorySnapshot, ManagedMp4InputSnapshot, OrderedAgentMediaItem, ReverseAgentNodeConfig, ReversePromptPersona, ReversePromptResult, ReversePromptRun } from './reverse-prompt-agent';
 export { MAX_GENERATION_REFERENCES, parseGenerationRequest } from './generation-request';
 export type { GenerationReference, GenerationRequest } from './generation-request';

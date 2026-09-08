@@ -104,6 +104,9 @@ for (const theme of ['light', 'dark'] as const) {
         await page.mouse.up();
       });
       await expect(page.locator('.react-flow__connection')).toHaveCount(0);
+      // Escape belongs to the active connector gesture. It must not also
+      // collapse the Agent surface and force the whole workspace to rerender.
+      await expect(page.getByTestId('agent-panel')).toBeVisible();
       expect((await e2eState(page)).commitCount).toBe(commitCount);
 
 
@@ -113,6 +116,11 @@ for (const theme of ['light', 'dark'] as const) {
         theme,
         viewport: viewport.name,
       });
+      await testInfo.attach(`stress-evidence-${viewport.name}-${theme}.json`, {
+        body: JSON.stringify(evidence, null, 2),
+        contentType: 'application/json',
+      });
+      console.log(`STRESS_EVIDENCE ${JSON.stringify(evidence)}`);
       expect(evidence).toHaveLength(5);
       for (const sample of evidence) {
         expect(sample.measurementSupported, `${sample.operation} observer support`).toBe(true);
@@ -121,11 +129,6 @@ for (const theme of ['light', 'dark'] as const) {
         expect(sample.zeroSample, `${sample.operation} zero-sample identity`).toBe(sample.sampleCount === 0);
         expect(sample.maxStallMs, `${sample.operation} max stall`).toBeLessThan(250);
       }
-      await testInfo.attach(`stress-evidence-${viewport.name}-${theme}.json`, {
-        body: JSON.stringify(evidence, null, 2),
-        contentType: 'application/json',
-      });
-      console.log(`STRESS_EVIDENCE ${JSON.stringify(evidence)}`);
       await captureLayoutScreenshot(page, testInfo, `durable-canvas-stress-${viewport.name}-${theme}`);
     });
   }

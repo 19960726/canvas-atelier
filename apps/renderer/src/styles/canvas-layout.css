@@ -564,7 +564,6 @@
   border: 0;
 }
 .workspace--canvas-layout .module-node--foundation[data-module-type='video_result'] .module-node__video-output-stage { box-sizing: border-box; width: 352px; min-width: 352px; height: 198px; min-height: 198px; border-radius: 10px; }
-.workspace--canvas-layout .module-node--foundation[data-module-type='video_result'] .module-node__video-output-play { width: 62px; height: 62px; border: 0; border-radius: 14px; }
 .workspace--canvas-layout .module-node--foundation[data-module-type='video_result'] .module-node__video-output-status > i { width: 315px; height: 4px; }
 .workspace--canvas-layout .module-node--foundation[data-module-type='reverse_result'] .module-node__output-preview { box-sizing: border-box; align-items: stretch; justify-content: flex-start; min-height: 648px; height: 648px; padding: 24px; text-align: left; }
 .workspace--canvas-layout .module-node--foundation[data-module-type='reverse_result'] .module-node__reverse-result-preview > header { flex: 0 0 20px; }
@@ -2050,7 +2049,7 @@
      the edge of the card so source/target drags remain reliable. */
   pointer-events: none;
 }
-.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-result-workspace > :is(.module-node__video-result-stage, .module-node__video-preview-play, .module-node__connected-video-media) {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-result-workspace > :is(.module-node__video-result-stage, .module-node__connected-video-media) {
   pointer-events: auto;
 }
 .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-result-stage {
@@ -2063,7 +2062,7 @@
      starts or ends on the left/right module sockets. */
   pointer-events: none;
 }
-.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-result-stage > :is(.module-node__video-preview-play, .module-node__connected-video-media) {
+.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-result-stage > .module-node__connected-video-media {
   pointer-events: auto;
 }
 .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-result-stage > svg {
@@ -2085,7 +2084,6 @@
 .workspace--canvas-layout .module-node[data-module-type='video_generation'] > .module-node__ports,
 .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__ports .react-flow__handle,
 .workspace--canvas-layout .module-node[data-module-type='video_generation'] :is(
-  .module-node__video-preview-play,
   .module-node__connected-video-media,
   .module-node__video-reference-tools,
   .module-node__video-composer,
@@ -2100,27 +2098,6 @@
 .workspace--canvas-layout .react-flow__node.canvas-flow-node--module-video_generation .module-node__workbench-header,
 .workspace--canvas-layout .react-flow__node.canvas-flow-node--module-video_generation :is(button, input, textarea, select, [contenteditable='true']) {
   pointer-events: auto;
-}
-.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-preview-play {
-  position: absolute;
-  inset: 50% auto auto 50%;
-  z-index: 2;
-  display: grid;
-  width: 62px;
-  height: 62px;
-  min-width: 62px;
-  min-height: 62px;
-  place-items: center;
-  box-sizing: border-box;
-  color: var(--gate-ink);
-  background: var(--gate-accent);
-  border: 0;
-  border-radius: 14px;
-  transform: translate(-50%, -50%);
-}
-.workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-preview-play > svg {
-  width: 24px;
-  height: 24px;
 }
 .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-result-stage > img {
   position: absolute;
@@ -3392,18 +3369,6 @@
 }
 .workspace--canvas-layout .module-node__generation-collapsed-title { top: 12px !important; }
 .workspace--canvas-layout .module-node__generation-collapsed-status { bottom: 12px !important; color: var(--gate-muted) !important; }
-.workspace--canvas-layout .module-node__generation-collapsed-play {
-  position: absolute !important;
-  z-index: 1 !important;
-  display: grid !important;
-  width: 56px !important;
-  height: 56px !important;
-  place-items: center !important;
-  color: var(--on-accent) !important;
-  background: var(--accent) !important;
-  border-radius: 14px !important;
-}
-
 /* A compact video card has one port on each horizontal side.  Its media tray
    exists only after a real incoming edge, so an empty card never pretends it
    already contains an asset.  Expanded cards retain the Canvas preview rail. */
@@ -5026,7 +4991,11 @@
 .workspace--canvas-layout :is(
   .module-node[data-module-type='image_generation'],
   .module-node[data-module-type='video_generation']
-) .module-node__prompt-workspace :is(span, .module-node__video-prompt-header span) {
+) .module-node__prompt-workspace > span,
+.workspace--canvas-layout :is(
+  .module-node[data-module-type='image_generation'],
+  .module-node[data-module-type='video_generation']
+) .module-node__video-prompt-header > span {
   display: block !important;
   color: var(--gate-muted) !important;
   font-size: 12px !important;
@@ -5925,21 +5894,6 @@
   object-fit: contain !important;
 }
 
-.workspace--canvas-layout .module-node__generation-preview-play {
-  position: absolute !important;
-  left: 50% !important;
-  top: 50% !important;
-  display: grid !important;
-  width: 34px !important;
-  height: 34px !important;
-  place-items: center !important;
-  color: #fff !important;
-  background: rgba(15, 23, 42, .78) !important;
-  border: 1px solid rgba(255, 255, 255, .26) !important;
-  border-radius: 999px !important;
-  transform: translate(-50%, -50%) !important;
-}
-
 .workspace--canvas-layout .module-node__generation-preview-item--placeholder {
   color: var(--gate-muted) !important;
   background:
@@ -5965,28 +5919,6 @@
   border-radius: 999px !important;
   font-size: 12px !important;
   font-weight: 650 !important;
-}
-
-.workspace--canvas-layout .module-node__generation-collapsed-preview:has(.module-node__generation-preview-gallery--collapsed) > .module-node__generation-collapsed-play {
-  display: none !important;
-}
-
-.workspace--canvas-layout .module-node__generation-preview-item > .module-node__generation-preview-play {
-  position: absolute !important;
-  left: 50% !important;
-  top: 50% !important;
-  display: grid !important;
-  width: 34px !important;
-  height: 34px !important;
-  min-width: 34px !important;
-  min-height: 34px !important;
-  padding: 0 !important;
-  place-items: center !important;
-  color: #fff !important;
-  background: rgba(15, 23, 42, .78) !important;
-  border: 1px solid rgba(255, 255, 255, .26) !important;
-  border-radius: 999px !important;
-  transform: translate(-50%, -50%) !important;
 }
 
 .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__prompt-workspace,
@@ -9596,6 +9528,42 @@
   outline-offset: 0 !important;
 }
 
+/* Terminal canvas contracts: these rules must remain after the legacy rail
+   declarations above so the visible video controls keep their bottom inset
+   and reverse media keeps all twenty connected thumbnails scrollable. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  position: absolute !important;
+  top: auto !important;
+  right: 18px !important;
+  bottom: 18px !important;
+  left: 18px !important;
+  inset-block-start: auto !important;
+  inset-block-end: 18px !important;
+  margin: 0 !important;
+  transform: none !important;
+}
+
+.workspace--canvas-layout .module-node .module-node__unified-media-slots,
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-media-slots {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: visible !important;
+}
+.workspace--canvas-layout .module-node .module-node__unified-media-slots .module-node__agent-media-slot-row,
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-media-slot-row {
+  box-sizing: border-box !important;
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  justify-content: flex-start !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: auto !important;
+  scrollbar-color: var(--gate-accent, var(--accent)) var(--gate-card-muted, var(--surface-muted)) !important;
+  overscroll-behavior-inline: contain;
+}
+
 @media (max-width: 720px) {
   .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
     grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
@@ -10881,4 +10849,20 @@
 .workspace--canvas-layout .react-flow__node:focus-visible > .module-node.is-selected {
   outline: none !important;
   outline-offset: 0 !important;
+}
+
+/* Absolute terminal override: this file contains several historical rail
+   contracts, so the bottom inset must be declared after every one of them. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  position: absolute !important;
+  top: auto !important;
+  right: 18px !important;
+  bottom: 18px !important;
+  left: 18px !important;
+  width: auto !important;
+  max-width: none !important;
+  inset-block-start: auto !important;
+  inset-block-end: 18px !important;
+  margin: 0 !important;
+  transform: none !important;
 }

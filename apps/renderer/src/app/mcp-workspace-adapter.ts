@@ -56,7 +56,7 @@ export interface McpWorkspaceSource {
   commitProjectTransaction(transaction: ProjectTransaction): Promise<boolean>;
   runNode(nodeId: string): Promise<McpWorkspaceRunResult>;
   cancelJob(jobId: string): Promise<void>;
-  requestMediaImport(kind: 'image' | 'video', position: { readonly x: number; readonly y: number }): Promise<void>;
+  requestMediaImport(kind: 'image' | 'video', position: { readonly x: number; readonly y: number }): boolean | Promise<boolean>;
 }
 
 export interface McpWorkspaceAdapterOptions {
@@ -260,7 +260,14 @@ export function createMcpWorkspaceAdapter(
           const denied = permissionDeniedFor(request.tool, ['externalFileAccess', 'editCanvas']);
           if (denied !== null) return denied;
           if (request.expectedRevision !== source.getRevision()) return revisionConflict(source.getRevision());
-          void Promise.resolve(source.requestMediaImport(request.mediaKind, request.position)).catch(() => undefined);
+          const pickerOpened = await source.requestMediaImport(request.mediaKind, request.position);
+          if (!pickerOpened) {
+            return error(
+              'MEDIA_PICKER_NOT_OPENED',
+              'Canvas Atelier could not open the trusted media picker.',
+              { mediaKind: request.mediaKind },
+            );
+          }
           return success({ pickerOpened: true, mediaKind: request.mediaKind, position: request.position });
         }
       }

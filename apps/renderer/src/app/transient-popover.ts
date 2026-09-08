@@ -1,6 +1,8 @@
 ﻿export type TransientPopoverId =
   | 'knowledge'
   | 'model'
+  | 'generation'
+  | 'reasoning'
   | 'reference'
   | 'quick-insert'
   | 'project-menu';

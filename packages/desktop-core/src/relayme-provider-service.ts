@@ -14,7 +14,11 @@ import { buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, cloneProv
 import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
 import { readPinnedReverseKnowledge } from './provider-reverse-knowledge.js';
-import { type ProjectMemoryContextResolver } from './provider-skill-chat.js';
+import {
+  type ManagedSkillChatImageContent,
+  type ManagedSkillChatImageResolver,
+  type ProjectMemoryContextResolver,
+} from './provider-skill-chat.js';
 import { buildSkillChatSystemInstructions } from './skill-chat-visual-analysis.js';
 import type { ProviderService } from './provider-service-types.js';
 import { createProviderTaskMappingStore, type ProviderTaskMappingRecord } from './provider-task-ledger.js';
@@ -54,6 +58,12 @@ import {
 
 const DEFAULT_RELAYME_BASE_URL = 'https://www.ml.relayme.uk/api/ai-tools/v1';
 const RELAYME_LOGIN_BASE_URL = DEFAULT_RELAYME_BASE_URL;
+const RELAYME_VISUAL_TIMEOUT_MS = 300_000;
+const RELAYME_RESULT_DOWNLOAD_TIMEOUT_MS = 300_000;
+const RELAYME_RESULT_MAX_BYTES = {
+  image: 256 * 1024 * 1024,
+  video: 512 * 1024 * 1024,
+} as const;
 
 type RelayTask =
   | { readonly historyId?: string; readonly kind: 'image'; readonly rawTaskId: string; readonly sessionId: string; state: 'running' | 'completed' | 'failed' | 'cancelled'; result?: ProviderImageJobResult; error?: ReturnType<typeof normalizeProviderBridgeError> }
@@ -76,6 +86,7 @@ export interface RelayMeProviderServiceOptions {
   readonly timeoutMs?: number;
   readonly resolveResultHost?: (hostname: string) => Promise<readonly string[]>;
   readonly readManagedReverseMedia?: (sessionId: string, media: AnalyzeReversePromptBridgeRequest['media']) => Promise<readonly { readonly bytes: Uint8Array; readonly mediaType: string }[]>;
+  readonly readManagedSkillChatImages?: ManagedSkillChatImageResolver['readManagedSkillChatImages'];
   readonly storeGeneratedImage?: (sessionId: string, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
   readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
   readonly loginAccount?: (request: LoginRelayMeBridgeRequest & { readonly baseUrl: string }) => Promise<string>;
@@ -263,7 +274,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
               })),
             ] },
           ],
-        })),
+        }, RELAYME_VISUAL_TIMEOUT_MS)),
         'RelayMe 反推请求失败',
       );
       const choice = response.choices[0];
@@ -273,10 +284,16 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
     },    async chat(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.chat, request) as ChatSkillBridgeRequest;
       assertRelayMeProvider(validated.provider);
-      if ((validated.referenceAssetIds?.length ?? 0) > 0) {
-        throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'RelayMe 当前聊天接口尚未公开可验证的图片或视频引用字段');
-      }
       const profile = await selectProfile(validated.modelRoute, 'chat');
+      const referenceAssetIds = validated.referenceAssetIds ?? [];
+      if (referenceAssetIds.length > 0 && !profile.capabilities.includes('vision')) {
+        throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', '所选 RelayMe 对话模型不支持图片引用');
+      }
+      const images = await resolveRelayMeSkillChatImages(
+        validated.sessionId,
+        referenceAssetIds,
+        options.readManagedSkillChatImages,
+      );
       const knowledge = await Promise.all(validated.context.knowledgeBaseIds.map(async (knowledgeBaseId) => {
         const active = await managedKnowledgeStore.readActive(knowledgeBaseId);
         if (active === null) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Selected Skill chat knowledge is unavailable');
@@ -307,16 +324,24 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
             projectMemory,
           }),
         },
-        ...validated.messages,
+        ...attachRelayMeImagesToLatestUserMessage(validated.messages, images),
       ];
+      const visualTimeoutMs = images.length > 0 || validated.visualAnalysis === true
+        ? RELAYME_VISUAL_TIMEOUT_MS
+        : undefined;
       const response = await translateRelayMeCall(
-        () => createClientFromCredentials().then((client) => client.chat({
-          model: profile.modelId ?? profile.modelRoute,
-          messages,
-          ...(validated.agentMode === 'codex' && validated.reasoningEffort !== undefined
-            ? { reasoning_effort: validated.reasoningEffort }
-            : {}),
-        })),
+        () => createClientFromCredentials().then((client) => {
+          const chatRequest = {
+            model: profile.modelId ?? profile.modelRoute,
+            messages,
+            ...(validated.agentMode === 'codex' && validated.reasoningEffort !== undefined
+              ? { reasoning_effort: validated.reasoningEffort }
+              : {}),
+          };
+          return visualTimeoutMs === undefined
+            ? client.chat(chatRequest)
+            : client.chat(chatRequest, visualTimeoutMs);
+        }),
         'RelayMe 对话请求失败',
       );
       const content = response.choices[0]?.message?.content;
@@ -332,10 +357,10 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;
       assertRelayMeProvider(validated.provider);
       const profile = await selectProfile(validated.modelRoute, 'image_generation');
-      if (validated.referenceAssetIds.length > 0 && !profile.capabilities.includes('image_edit')) {
+      if (validated.referenceAssetIds.length > 0) {
         throw createProviderBridgeError(
           'CAPABILITY_UNSUPPORTED',
-          `RelayMe 模型“${profile.displayName}”当前只支持文本生图，不支持参考图；任务未提交、不会消耗生成额度`,
+          `RelayMe 模型“${profile.displayName}”当前只支持文本生图，不支持参考图；RelayMe 已认证生成与任务接口没有可验证的参考图字段，任务未提交、不会消耗生成额度`,
         );
       }
       const historyId = options.historySink === undefined
@@ -485,6 +510,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
           'RelayMe 模型目录读取失败',
         ));
       } catch (error) {
+        if (isRelayMeAuthenticationExpired(error)) throw error;
         if (configured.length === 0) throw error;
         discoveredProfiles = configured.map(cloneProfile);
         return discoveredProfiles.map(cloneProfile);
@@ -672,7 +698,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
     resultItem: Record<string, unknown>,
   ): Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }> {
     if (sessionId.length === 0) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '当前项目会话不可用');
-    const bytes = await readRelayMeResultBytes(content, options.fetch, options.resolveResultHost);
+    const bytes = await readRelayMeResultBytes(content, kind, options.fetch, options.resolveResultHost);
     const mediaType = detectRelayMeGeneratedMediaType(bytes);
     if (kind === 'image') {
       if (!mediaType.startsWith('image/')) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回的生图结果不是受支持的图片');
@@ -729,6 +755,51 @@ function relayTaskFromMapping(record: ProviderTaskMappingRecord): RelayTask {
   return record.kind === 'video'
     ? { ...shared, kind: 'video' } as RelayTask
     : { ...shared, kind: 'image' } as RelayTask;
+}
+
+async function resolveRelayMeSkillChatImages(
+  sessionId: string | undefined,
+  referenceAssetIds: readonly string[],
+  resolver: ManagedSkillChatImageResolver['readManagedSkillChatImages'] | undefined,
+): Promise<readonly ManagedSkillChatImageContent[]> {
+  if (referenceAssetIds.length === 0) return [];
+  if (sessionId === undefined || resolver === undefined) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '受管对话图片不可用');
+  }
+  try {
+    const images = await resolver(sessionId, referenceAssetIds);
+    if (images.length !== referenceAssetIds.length || images.some((image) => (
+      !(image.bytes instanceof Uint8Array)
+      || image.bytes.byteLength === 0
+      || !['image/gif', 'image/jpeg', 'image/png', 'image/webp'].includes(image.mediaType)
+    ))) throw new Error('Managed RelayMe chat images are unavailable');
+    return images;
+  } catch {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '受管对话图片不可用');
+  }
+}
+
+function attachRelayMeImagesToLatestUserMessage(
+  messages: ChatSkillBridgeRequest['messages'],
+  images: readonly ManagedSkillChatImageContent[],
+): Array<{ readonly role: 'user' | 'assistant'; readonly content: string | readonly unknown[] }> {
+  if (images.length === 0) return messages.map((message) => ({ ...message }));
+  const latestUserMessageIndex = messages.map((message) => message.role).lastIndexOf('user');
+  if (latestUserMessageIndex < 0) {
+    throw createProviderBridgeError('INVALID_REQUEST', '受管对话图片需要用户消息');
+  }
+  return messages.map((message, index) => index !== latestUserMessageIndex
+    ? { ...message }
+    : {
+        role: message.role,
+        content: [
+          { type: 'text', text: message.content },
+          ...images.map((image) => ({
+            type: 'image_url',
+            image_url: { url: `data:${image.mediaType};base64,${Buffer.from(image.bytes).toString('base64')}` },
+          })),
+        ],
+      });
 }
 
 function isRetiredRelayMeBaseUrl(value: string): boolean {
@@ -895,19 +966,19 @@ function isFinitePositive(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
-const MAX_RELAYME_RESULT_BYTES = 64 * 1024 * 1024;
 const relayMeResultAddressBlockList = createRelayMeResultAddressBlockList();
 
 type RelayMeGeneratedMediaType = 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp' | 'video/mp4';
 
 async function readRelayMeResultBytes(
   content: string,
+  kind: RelayTask['kind'],
   fetch: RelayMeFetch,
   resolveResultHost: ((hostname: string) => Promise<readonly string[]>) | undefined,
 ): Promise<Uint8Array> {
-  if (content.startsWith('data:')) return decodeRelayMeDataUrl(content);
+  if (content.startsWith('data:')) return decodeRelayMeDataUrl(content, kind);
   if (/^[A-Za-z0-9+/]+={0,2}$/u.test(content) && content.length % 4 === 0) {
-    return validateRelayMeResultBytes(Buffer.from(content, 'base64'));
+    return validateRelayMeResultBytes(Buffer.from(content, 'base64'), kind);
   }
   const url = parseSafeRelayMeResultUrl(content);
   if (resolveResultHost === undefined) throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成结果地址无法安全验证');
@@ -924,7 +995,12 @@ async function readRelayMeResultBytes(
   }
   let response: Awaited<ReturnType<RelayMeFetch>>;
   try {
-    response = await fetch(url.toString(), { method: 'GET', trustedResolvedAddress: addresses[0] });
+    response = await fetch(url.toString(), {
+      method: 'GET',
+      maxResponseBytes: RELAYME_RESULT_MAX_BYTES[kind],
+      timeoutMs: RELAYME_RESULT_DOWNLOAD_TIMEOUT_MS,
+      trustedResolvedAddress: addresses[0],
+    });
   } catch (error) {
     throw translateRelayMeResultDownloadError(error);
   }
@@ -943,7 +1019,7 @@ async function readRelayMeResultBytes(
   } catch (error) {
     throw translateRelayMeResultDownloadError(error);
   }
-  return validateRelayMeResultBytes(bytes);
+  return validateRelayMeResultBytes(bytes, kind);
 }
 
 function translateRelayMeResultDownloadError(error: unknown): ProviderBridgeException {
@@ -957,16 +1033,16 @@ function translateRelayMeResultDownloadError(error: unknown): ProviderBridgeExce
   return createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成结果下载失败');
 }
 
-function decodeRelayMeDataUrl(content: string): Uint8Array {
+function decodeRelayMeDataUrl(content: string, kind: RelayTask['kind']): Uint8Array {
   const match = /^data:(?:image\/(?:gif|jpeg|png|webp)|video\/mp4);base64,([A-Za-z0-9+/]+={0,2})$/u.exec(content);
   if (match === null || match[1]!.length % 4 !== 0) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回了无效的内联生成结果');
   }
-  return validateRelayMeResultBytes(Buffer.from(match[1]!, 'base64'));
+  return validateRelayMeResultBytes(Buffer.from(match[1]!, 'base64'), kind);
 }
 
-function validateRelayMeResultBytes(bytes: Uint8Array): Uint8Array {
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_RELAYME_RESULT_BYTES) {
+function validateRelayMeResultBytes(bytes: Uint8Array, kind: RelayTask['kind']): Uint8Array {
+  if (bytes.byteLength === 0 || bytes.byteLength > RELAYME_RESULT_MAX_BYTES[kind]) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 生成结果大小无效');
   }
   return bytes;
@@ -1132,7 +1208,10 @@ function translateRelayMeError(error: unknown, fallback: string): ProviderBridge
   const status = isRecord(error) && typeof error.status === 'number' ? error.status : undefined;
   const retryable = isRecord(error) && error.retryable === true;
   if (status === 401 || status === 403 || /\b(?:401|403)\b/u.test(message)) {
-    return createProviderBridgeError('CREDENTIALS_LOCKED', 'RelayMe 登录已失效，请重新登录', true);
+    return Object.assign(
+      createProviderBridgeError('CREDENTIALS_LOCKED', 'RelayMe 登录已失效，请重新登录', true),
+      { authenticationExpired: true as const },
+    );
   }
   if (status === 429 || /quota|额度|余额|rate[ -]?limit|too many requests|\b429\b/iu.test(message)) {
     return createProviderBridgeError('PROVIDER_ERROR', 'RelayMe 当前额度或请求频率受限，请稍后重试', true);
@@ -1149,6 +1228,10 @@ function translateRelayMeError(error: unknown, fallback: string): ProviderBridge
   }
   if (/timed out|timeout|network|fetch/iu.test(message)) return createProviderBridgeError('PROVIDER_ERROR', `${fallback}，请检查网络后重试`, true);
   return createProviderBridgeError('PROVIDER_ERROR', fallback, false);
+}
+
+function isRelayMeAuthenticationExpired(error: unknown): boolean {
+  return isRecord(error) && error.authenticationExpired === true;
 }
 
 function sanitizeProfiles(profiles: readonly ProviderBridgeProfile[]) {

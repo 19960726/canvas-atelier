@@ -18,7 +18,8 @@ describe('Canvas Atelier stdio MCP server contract', () => {
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('jobIds');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('canvas_get_job_status');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('canvas_delete_selection returns a workflow plan');
-    expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('canvas_import_media opens');
+    expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('pickerOpened is true');
+    expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('do not claim that a picker opened');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('Canvas Atelier');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).not.toContain('CanvasForge');
   });

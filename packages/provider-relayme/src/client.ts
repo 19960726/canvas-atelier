@@ -247,8 +247,13 @@ export class RelayMeClient {
     return this.request(`/workflow-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', body: reason === undefined ? {} : { reason }, schema: z.unknown() });
   }
 
-  async chat(input: RelayMeChatRequest) {
-    return this.request('/chat/completions', { method: 'POST', body: input, schema: chatResponseSchema });
+  async chat(input: RelayMeChatRequest, timeoutMs = this.timeoutMs) {
+    return this.request('/chat/completions', {
+      method: 'POST',
+      body: input,
+      schema: chatResponseSchema,
+      timeoutMs,
+    });
   }
 
   async generateImage(input: RelayMeImageGenerationRequest) {
@@ -286,10 +291,14 @@ export class RelayMeClient {
       readonly headers?: Record<string, string>;
       readonly allowEmptyAccepted?: boolean;
       readonly schema: z.ZodType<T, z.ZodTypeDef, unknown>;
+      readonly timeoutMs?: number;
     },
   ): Promise<T> {
+    const requestTimeoutMs = options.timeoutMs ?? this.timeoutMs;
     const controller = new AbortController();
-    const timer = this.timeoutMs > 0 ? globalThis.setTimeout(() => controller.abort(), this.timeoutMs) : null;
+    const timer = requestTimeoutMs > 0
+      ? globalThis.setTimeout(() => controller.abort(), requestTimeoutMs)
+      : null;
     let response: RelayMeFetchResponse;
     try {
       const token = await this.tokenSupplier();
@@ -302,10 +311,11 @@ export class RelayMeClient {
         },
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         signal: controller.signal,
+        timeoutMs: requestTimeoutMs,
       });
     } catch (error) {
       if (controller.signal.aborted) {
-        throw retryableRelayMeTransportError(`RelayMe 请求在 ${this.timeoutMs}ms 后 timed out: ${path}`);
+        throw retryableRelayMeTransportError(`RelayMe 请求在 ${requestTimeoutMs}ms 后 timed out: ${path}`);
       }
       if (isRelayMeError(error)) throw error;
       throw retryableRelayMeTransportError(`RelayMe 请求失败: ${path}: ${sanitizeRelayMeMessage(error)}`);

@@ -1,6 +1,31 @@
 import type { ComflyAccessibleModelCatalog, ComflyCatalogModel } from '@agent-canvas/provider-comfly';
 import type { RelayMeModel, RelayMeWorkflow } from '@agent-canvas/provider-relayme';
 import { ProviderBridgeProfileSchema, type ProviderBridgeProfile } from './provider-contracts.js';
+import { hasVerifiedComflyVideoSubmissionContract } from './comfly-video-jobs.js';
+
+const MEDIA_OUTPUT_IDENTITY_PATTERNS = [
+  /(?:^|-)gemini-\d+(?:-\d+)?-(?:[a-z0-9]+-)*image(?:-|$)/u,
+  /(?:^|-)gpt-4o-image(?:-|$)/u,
+  /(?:^|-)qwen-(?:image(?:-edit)?|mt-image)(?:-|$)/u,
+  /(?:^|-)seedream-\d+(?:-\d+)?(?:-|$)/u,
+  /(?:^|-)dall(?:e|-e)(?:-|$)/u,
+  /(?:^|-)grok-imagine-video(?:-|$)/u,
+  /(?:^|-)hailuo-video(?:-|$)/u,
+  /(?:^|-)kling-(?:advanced-lip-sync|meta-human)(?:-|$)/u,
+  /(?:^|-)pixverse-video(?:-|$)/u,
+  /(?:^|-)sora-2(?:-|$)/u,
+  /(?:^|-)veo3(?:-\d+)?-(?:fast-4k|components)(?:-|$)/u,
+  /(?:^|-)video-style-transform(?:-|$)/u,
+  /(?:^|-)videoretalk(?:-|$)/u,
+] as const;
+
+export function isMediaOutputModelIdentity(...identities: (string | undefined)[]): boolean {
+  return identities.some((identity) => {
+    if (identity === undefined) return false;
+    const normalized = identity.trim().toLocaleLowerCase().replace(/[._/\s]+/gu, '-');
+    return MEDIA_OUTPUT_IDENTITY_PATTERNS.some((pattern) => pattern.test(normalized));
+  });
+}
 
 export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog): ProviderBridgeProfile[] {
   const seenModelKeys = new Set<string>();
@@ -125,6 +150,7 @@ function cloneProviderConstraints(
 function capabilitiesForComflyModel(model: ComflyCatalogModel): ProviderBridgeProfile['capabilities'] {
   const tags = new Set(model.tags);
   const capabilities: ProviderBridgeProfile['capabilities'] = [];
+  const isMediaOutputModel = isMediaOutputModelIdentity(model.key, model.name);
   const hasExplicitVideoTag = tags.has('视频');
   const hasImageGeneration = hasComflyApi(model, '/v1/images/generations');
   const hasImageEdit = hasComflyApi(model, '/v1/images/edits');
@@ -132,18 +158,22 @@ function capabilitiesForComflyModel(model: ComflyCatalogModel): ProviderBridgePr
   // non-video models. Require positive model-level video evidence as well as
   // the executable endpoint so chat, vision, and action routes stay out of the
   // video generator.
-  const hasVideoGeneration = hasExplicitVideoTag && hasComflyApi(model, '/v2/videos/generations');
-  const hasChat = hasComflyApi(model, '/v1/chat/completions');
+  const hasVideoGeneration = hasExplicitVideoTag
+    && hasComflyApi(model, '/v2/videos/generations')
+    && hasVerifiedComflyVideoSubmissionContract(model.key);
+  const hasChat = !isMediaOutputModel && hasComflyApi(model, '/v1/chat/completions');
+  const hasResponses = !isMediaOutputModel && hasComflyApi(model, '/v1/responses');
   const hasVisionTag = tags.has('识图') || tags.has('图生文') || tags.has('多模态');
-  const hasVision = hasChat && hasVisionTag;
+  const hasVision = (hasChat || hasResponses) && hasVisionTag;
   const hasVideoUnderstanding = hasChat && (tags.has('视频分析') || tags.has('视频理解'));
   if (hasImageGeneration) capabilities.push('image_generation');
   if (hasImageEdit) capabilities.push('image_edit');
   if (hasVideoGeneration) capabilities.push('video_generation');
   if (hasChat) capabilities.push('chat');
-  if (hasVision) capabilities.push('vision', 'reverse_prompt');
+  if (hasVision && hasChat) capabilities.push('vision', 'reverse_prompt');
   if (hasVideoUnderstanding) capabilities.push('video_understanding');
-  if (hasComflyApi(model, '/v1/responses')) capabilities.push('responses');
+  if (hasResponses) capabilities.push('responses');
+  if (hasVision && !hasChat) capabilities.push('vision', 'reverse_prompt');
   if (tags.has('异步任务')) capabilities.push('async_tasks');
   return capabilities;
 }
@@ -334,19 +364,19 @@ function parseOutputCount(value: string): 1 | 2 | 3 | 4 | undefined {
   if (model.capability === 'image') capabilities.push('image_generation', 'async_tasks');
   if (model.capability === 'video') capabilities.push('video_generation', 'async_tasks');
   if (model.capability === 'text') capabilities.push('chat');
-  if (model.capability === 'image' && model.supportsImageToImage === true) capabilities.push('image_edit');
   const explicitlyRejectsImageInput = model.supportsVision === false
     || (model.inputModalities !== undefined && !model.inputModalities.includes('image'));
   const hasImageInput = !explicitlyRejectsImageInput
     && (model.supportsVision === true || model.inputModalities?.includes('image') === true);
   const hasVideoInput = model.inputModalities?.includes('video') === true;
-  if (hasImageInput) capabilities.push('vision');
   // RelayMe's public directory can omit image-input metadata for this exact
   // reverse-analysis deployment. Keep the compatibility fallback narrow, and
   // never override explicit text-only or supportsVision=false metadata.
   const isVerifiedReverseFallback = model.deploymentName.trim().toLocaleLowerCase() === 'gemini-3.1-flash-lite';
-  if (model.capability === 'text'
-    && (hasImageInput || (isVerifiedReverseFallback && !explicitlyRejectsImageInput))) {
+  const hasVerifiedImageInput = hasImageInput
+    || (isVerifiedReverseFallback && !explicitlyRejectsImageInput);
+  if (hasVerifiedImageInput) capabilities.push('vision');
+  if (model.capability === 'text' && hasVerifiedImageInput) {
     capabilities.push('reverse_prompt');
   }
   if (hasVideoInput) capabilities.push('video_understanding');

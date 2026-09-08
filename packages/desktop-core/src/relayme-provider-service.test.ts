@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RelayMeFetch } from '@agent-canvas/provider-relayme';
+import { RelayMeClient, type RelayMeFetch } from '@agent-canvas/provider-relayme';
 import { createAgentKnowledgeLease, createReversePromptRun } from '@agent-canvas/domain';
 import { createRelayMeProviderService } from './relayme-provider-service';
 import { NodeFileSystem } from './file-system';
@@ -23,6 +23,8 @@ if (false) {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
@@ -153,6 +155,29 @@ describe('RelayMe provider service', () => {
     })).rejects.toMatchObject({
       code: 'CAPABILITY_UNSUPPORTED',
       message: expect.stringMatching(/Relay Image.*只支持文本生图.*不会消耗生成额度/u),
+    });
+    expect(fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining('/images/generations'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('blocks RelayMe reference images even when the catalog advertises image-to-image support until the request field is verified', async () => {
+    const { service, fetch } = await createService([
+      jsonResponse({ success: true, data: { models: [{
+        id: '4', name: 'Relay Image Edit', model: 'relay-image-edit', capability: 'image', modelType: 'IMAGE',
+        supportsImageToImage: true,
+      }] } }),
+      jsonResponse({ taskId: 'must-not-submit-reference-task', status: 'QUEUED' }),
+    ]);
+
+    await expect(service.submitImageJob({
+      jobId: 'reference-advertised-job', provider: 'relayme', modelRoute: 'relayme-relay-image-edit',
+      prompt: '保持人物和产品一致', conversationId: 'reference-advertised-conversation', sessionId: 'reference-advertised-session',
+      referenceAssetIds: ['1234567890abcdef'],
+    })).rejects.toMatchObject({
+      code: 'CAPABILITY_UNSUPPORTED',
+      message: expect.stringMatching(/参考图.*不会消耗生成额度/u),
     });
     expect(fetch).not.toHaveBeenCalledWith(
       expect.stringContaining('/images/generations'),
@@ -670,6 +695,23 @@ describe('RelayMe provider service', () => {
     ]));
   });
 
+  it('does not hide an expired RelayMe login behind the cached model catalog', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-expired-catalog-'));
+    roots.push(appDataRoot);
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      profiles: relayMeConfiguration('https://www.ml.relayme.uk/api/ai-tools/v1', 'cached-image').profiles,
+      fetch: vi.fn(async () => jsonResponse({ message: 'session expired' }, { ok: false, status: 401 })),
+    });
+
+    await expect(service.listProfiles()).rejects.toMatchObject({
+      code: 'CREDENTIALS_LOCKED',
+      retryable: true,
+      authenticationExpired: true,
+    });
+  });
+
   it('reports connected when the model probe is invalid but the authenticated task list is reachable', async () => {
     const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-connection-fallback-'));
     roots.push(appDataRoot);
@@ -696,6 +738,7 @@ describe('RelayMe provider service', () => {
   });
 
   it('uses the live RelayMe model catalog and routes Agent chat to chat completions', async () => {
+    const chatSpy = vi.spyOn(RelayMeClient.prototype, 'chat');
     const { service, fetch } = await createService([
       jsonResponse({ success: true, data: { models: [
         { id: '1', name: 'Relay Image', model: 'gpt-image-2', capability: 'image', modelType: 'IMAGE', endpoints: ['/api/ai-tools/v1/images/generations'], pricing: { image1k: '1', image2k: '2' } },
@@ -706,7 +749,7 @@ describe('RelayMe provider service', () => {
 
     await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({ provider: 'relayme', modelId: 'gpt-image-2', capabilities: ['image_generation', 'async_tasks'] }),
-      expect.objectContaining({ provider: 'relayme', modelId: 'gemini-3.1-flash-lite', capabilities: ['chat', 'reverse_prompt'] }),
+      expect.objectContaining({ provider: 'relayme', modelId: 'gemini-3.1-flash-lite', capabilities: ['chat', 'vision', 'reverse_prompt'] }),
     ]));
     await expect(service.chat?.({
       provider: 'relayme', modelRoute: 'relayme-gemini-3-1-flash-lite',
@@ -715,8 +758,14 @@ describe('RelayMe provider service', () => {
     })).resolves.toEqual({ message: '已整理提示词', modelRoute: 'relayme-gemini-3-1-flash-lite', sources: [] });
     expect(fetch).toHaveBeenLastCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/chat/completions',
-      expect.objectContaining({ method: 'POST', body: expect.stringContaining('帮我整理提示词') }),
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('帮我整理提示词'),
+        timeoutMs: 30_000,
+      }),
     );
+    expect(chatSpy).toHaveBeenCalledOnce();
+    expect(chatSpy.mock.calls[0]).toHaveLength(1);
   });
 
   it('accepts RelayMe Gemini structured chat content instead of rejecting a valid reply', async () => {
@@ -738,6 +787,49 @@ describe('RelayMe provider service', () => {
     })).resolves.toEqual({
       message: 'RelayMe Agent 正常', modelRoute: 'relayme-gemini-3-1-flash-lite', sources: [],
     });
+  });
+
+  it('sends managed image references through the verified RelayMe reverse chat route for Agent visual analysis', async () => {
+    const chatSpy = vi.spyOn(RelayMeClient.prototype, 'chat');
+    const assetId = 'a'.repeat(16);
+    const readManagedSkillChatImages = vi.fn(async () => [{
+      bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
+      mediaType: 'image/png' as const,
+    }]);
+    const { service, fetch } = await createService([
+      jsonResponse({ success: true, data: { models: [{
+        id: '2', name: 'RENAF', model: 'gemini-3.1-flash-lite', capability: 'text', modelType: 'TEXT',
+        endpoints: ['/api/ai-tools/v1/chat/completions'],
+      }] } }),
+      jsonResponse({
+        id: 'chat-visual', model: 'gemini-3.1-flash-lite',
+        choices: [{ message: { role: 'assistant', content: '主体为一只白色咖啡杯。' } }],
+      }),
+    ], { readManagedSkillChatImages });
+
+    await expect(service.chat?.({
+      provider: 'relayme', modelRoute: 'relayme-gemini-3-1-flash-lite', sessionId: 'desktop-session-visual',
+      referenceAssetIds: [assetId],
+      referenceMentions: [{ assetId, label: '产品图', mention: '@图片1' }],
+      visualAnalysis: true,
+      messages: [{ role: 'user', content: '请反推这张图片' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    })).resolves.toMatchObject({ message: '主体为一只白色咖啡杯。' });
+
+    expect(readManagedSkillChatImages).toHaveBeenCalledWith('desktop-session-visual', [assetId]);
+    const chatCall = (fetch as unknown as {
+      readonly mock: { readonly calls: readonly (readonly [string, { readonly body?: unknown; readonly timeoutMs?: number } | undefined])[] };
+    }).mock.calls.find(([url]) => url.endsWith('/chat/completions'));
+    const body = JSON.parse(String(chatCall?.[1]?.body));
+    expect(chatCall?.[1]?.timeoutMs).toBe(300_000);
+    expect(body.messages.at(-1)).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: '请反推这张图片' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw==' } },
+      ],
+    });
+    expect(chatSpy).toHaveBeenCalledWith(expect.any(Object), 300_000);
   });
 
   it('sends selected project memory and Codex reasoning strength to the RelayMe chat request', async () => {
@@ -809,6 +901,7 @@ describe('RelayMe provider service', () => {
   });
 
   it('runs image reverse prompting through an explicitly declared RelayMe vision chat model', async () => {
+    const chatSpy = vi.spyOn(RelayMeClient.prototype, 'chat');
     const imageAssetId = 'b'.repeat(16);
     const imageSha256 = 'b'.repeat(64);
     const references = [{ assetId: imageAssetId, label: 'Product', position: 0, role: 'product_identity' as const }];
@@ -854,15 +947,17 @@ describe('RelayMe provider service', () => {
     await expect(service.analyzeReversePrompt?.({
       sessionId: 'desktop-session-1', provider: 'relayme', run,
       media: [{ kind: 'image', assetId: imageAssetId, sha256: imageSha256, byteSize: 4, mediaType: 'image/png' }],
-    })).resolves.toEqual(expected);
+    })).resolves.toMatchObject({ ...expected, completeness: { status: 'partial' } });
     expect(readManagedReverseMedia).toHaveBeenCalledOnce();
     expect(fetch).toHaveBeenLastCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/chat/completions',
       expect.objectContaining({
         method: 'POST',
         body: expect.stringMatching(/seedance-2-5-reverse[\s\S]*2026-08-21\.1[\s\S]*@图片1[\s\S]*data:image\/png;base64,iVBORw==/u),
+        timeoutMs: 300_000,
       }),
     );
+    expect(chatSpy).toHaveBeenCalledWith(expect.any(Object), 300_000);
   });
 
   it('reports a retryable truncation when RelayMe reverse chat finishes because of length', async () => {
@@ -955,7 +1050,12 @@ describe('RelayMe provider service', () => {
     expect(fetch).toHaveBeenNthCalledWith(
       5,
       'https://cdn.example/result.png',
-      expect.objectContaining({ trustedResolvedAddress: '8.8.8.8' }),
+      expect.objectContaining({
+        maxResponseBytes: 256 * 1024 * 1024,
+        method: 'GET',
+        timeoutMs: 300_000,
+        trustedResolvedAddress: '8.8.8.8',
+      }),
     );
   });
 
@@ -1403,12 +1503,15 @@ describe('RelayMe provider service', () => {
   });
 
   it('submits and polls video jobs without manufacturing four preview results', async () => {
-    const storedVideo = vi.fn(async () => ({ assetId: 'fedcba9876543210', width: null, height: null }));
+    const storedVideo = vi.fn(async (_sessionId: string, _bytes: Uint8Array, _mediaType: string) => (
+      { assetId: 'fedcba9876543210', width: null, height: null }
+    ));
+    const largeMp4 = largeMp4Bytes();
     const { service, fetch } = await createService([
       modelsResponse(),
       jsonResponse({ taskId: 'relay-raw-video-91', status: 'queued' }),
       jsonResponse({ status: 'COMPLETED', videoContent: 'https://cdn.example/result.mp4', width: 1920, height: 1080, durationSeconds: 8 }),
-      binaryResponse(mp4HeaderBytes()),
+      binaryResponse(largeMp4),
     ], { storeGeneratedVideo: storedVideo });
     const submitted = await service.submitVideoJob?.({
       jobId: 'model-job-v2-relay-video', provider: 'relayme', modelRoute: 'relayme-kling-kling-v3-video-generation',
@@ -1421,6 +1524,8 @@ describe('RelayMe provider service', () => {
       result: { assetId: 'fedcba9876543210', width: 1920, height: 1080, durationSeconds: 8 },
     });
     expect(storedVideo).toHaveBeenCalledWith('desktop-session-1', expect.any(Uint8Array), 'video/mp4');
+    expect(storedVideo.mock.calls[0]?.[1].byteLength).toBe(largeMp4.byteLength);
+    expect(largeMp4.byteLength).toBeGreaterThan(64 * 1024 * 1024);
     expect(fetch).toHaveBeenCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/videos/generations',
       expect.objectContaining({
@@ -1435,7 +1540,12 @@ describe('RelayMe provider service', () => {
     expect(fetch).toHaveBeenNthCalledWith(
       5,
       'https://cdn.example/result.mp4',
-      expect.objectContaining({ method: 'GET', trustedResolvedAddress: '8.8.8.8' }),
+      expect.objectContaining({
+        maxResponseBytes: 512 * 1024 * 1024,
+        method: 'GET',
+        timeoutMs: 300_000,
+        trustedResolvedAddress: '8.8.8.8',
+      }),
     );
   });
 
@@ -1590,6 +1700,7 @@ async function createService(
     readonly readManagedReverseMedia?: (sessionId: string, media: readonly unknown[]) => Promise<readonly { readonly bytes: Uint8Array; readonly mediaType: string }[]>;
     readonly storeGeneratedImage?: (sessionId: string, bytes: Uint8Array, mediaType: string) => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
     readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
+    readonly readManagedSkillChatImages?: (sessionId: string, referenceAssetIds: readonly string[]) => Promise<readonly { readonly bytes: Uint8Array; readonly mediaType: 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp' }[]>;
     readonly projectMemoryContextResolver?: Parameters<typeof createRelayMeProviderService>[0]['projectMemoryContextResolver'];
   } = {},
 ) {
@@ -1698,4 +1809,18 @@ function pngHeaderBytes(): Uint8Array {
 
 function mp4HeaderBytes(): Uint8Array {
   return Uint8Array.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+}
+
+function largeMp4Bytes(): Uint8Array {
+  const byteLength = 64 * 1024 * 1024 + 1_024;
+  const bytes = Buffer.alloc(byteLength);
+  bytes.writeUInt32BE(16, 0);
+  bytes.write('ftyp', 4, 4, 'ascii');
+  bytes.write('isom', 8, 4, 'ascii');
+  bytes.writeUInt32BE(12, 16);
+  bytes.write('moov', 20, 4, 'ascii');
+  bytes.writeUInt32BE(byteLength - 28, 28);
+  bytes.write('mdat', 32, 4, 'ascii');
+  bytes[byteLength - 1] = 1;
+  return bytes;
 }

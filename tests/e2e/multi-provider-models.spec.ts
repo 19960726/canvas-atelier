@@ -34,8 +34,11 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(settings.getByRole('region', { name: '生图模型' })).toContainText('GPT Image 2');
     await expect(settings.getByRole('region', { name: '生图模型' })).toContainText('Seedream 5 Pro');
     await capabilityTabs.getByRole('tab', { name: /视频模型/u }).click();
-    await expect(settings.getByRole('region', { name: '视频模型' })).toContainText('Veo 3.1 Fast');
-    await expect(settings.getByRole('region', { name: '视频模型' })).toContainText('Kling 3');
+    const comflyVideoModels = settings.getByRole('region', { name: '视频模型' });
+    await expect(comflyVideoModels).toContainText('doubao-seedance-2.5');
+    await expect(comflyVideoModels).toContainText('veo3.1');
+    await expect(comflyVideoModels).toContainText('wan2.2-t2v-plus');
+    await expect(comflyVideoModels).not.toContainText(/Grok|MiniMax|Kling/u);
     await capabilityTabs.getByRole('tab', { name: /反推模型/u }).click();
     await expect(settings.getByRole('region', { name: '反推模型' })).toContainText('Gemini 3.1 Pro');
 

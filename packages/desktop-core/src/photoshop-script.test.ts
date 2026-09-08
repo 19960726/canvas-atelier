@@ -29,6 +29,29 @@ describe('Photoshop placement script contract', () => {
     expect(scriptSource).not.toMatch(/(?:app\.activeDocument|documentRef)\.(?:save|close)\s*\(/u);
   });
 
+  it('keeps every Photoshop placement path as a proportional embedded Smart Object', async () => {
+    const scriptPath = fileURLToPath(new URL('./photoshop-place-smart-object.jsx', import.meta.url));
+    const runnerPath = fileURLToPath(new URL('./photoshop-windows-runner.js', import.meta.url));
+    const [scriptSource, runnerSource] = await Promise.all([
+      readFile(scriptPath, 'utf8'),
+      readFile(runnerPath, 'utf8'),
+    ]);
+
+    // The ExtendScript fallback and the Windows COM fallback both used to
+    // report a copied pixel layer as success when Place was unavailable.
+    expect(scriptSource).toContain("stringIDToTypeID('newPlacedLayer')");
+    expect(scriptSource).toContain('LayerKind.SMARTOBJECT');
+    expect(scriptSource).not.toContain('JSON.parse(raw)');
+    expect(scriptSource).toContain("readPayloadString(raw, 'imagePathBase64')");
+    expect(runnerSource).toContain('newPlacedLayer');
+    expect(runnerSource).toContain('LayerKind.SMARTOBJECT');
+    expect(runnerSource).toContain('Math.min(1, canvasWidth / layerWidth, canvasHeight / layerHeight)');
+    expect(runnerSource).toContain('canvasCenterX - layerCenterX');
+    expect(runnerSource).toContain('return resolvedLayerName');
+    expect(runnerSource).not.toContain('return copiedLayer.name');
+    expect(runnerSource).not.toContain('successful duplication is already a valid import');
+  });
+
   it('keeps the Windows Script Host runner compatible with legacy JScript syntax', async () => {
     const runnerPath = fileURLToPath(new URL('./photoshop-windows-runner.js', import.meta.url));
     const runnerSource = await readFile(runnerPath, 'utf8');

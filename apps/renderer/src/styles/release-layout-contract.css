@@ -72,7 +72,9 @@
 }
 
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex > div:first-child {
-  display: block !important;
+  display: grid !important;
+  gap: 4px !important;
+  padding-right: 30px !important;
   min-width: 0 !important;
   align-items: center !important;
   position: relative !important;
@@ -84,27 +86,31 @@
 }
 
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex h2 {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
   min-width: 0 !important;
-  font-size: 14px !important;
+  font-size: 18px !important;
+  line-height: 26px !important;
   white-space: nowrap !important;
 }
 
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header--codex p {
-  position: absolute !important;
-  top: 47px !important;
-  left: 0 !important;
-  font-size: 10px !important;
+  position: static !important;
+  font-size: 11px !important;
+  line-height: 17px !important;
+  white-space: normal !important;
 }
 
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions {
   box-sizing: border-box !important;
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) var(--agent-compact-control-size) !important;
-  width: calc(100% - 64px) !important;
+  width: 100% !important;
   min-width: 0 !important;
   align-items: center !important;
   gap: 6px !important;
-  margin-left: 64px !important;
+  margin-left: 0 !important;
 }
 
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__close {
@@ -184,9 +190,9 @@
   width: auto !important;
   max-width: calc(100% - 32px) !important;
   min-width: 0 !important;
-  height: 136px !important;
-  min-height: 136px !important;
-  max-height: 136px !important;
+  height: 160px !important;
+  min-height: 160px !important;
+  max-height: 160px !important;
   grid-template-rows: minmax(54px, 1fr) auto !important;
   gap: 6px !important;
   margin: 10px 16px 4px !important;
@@ -545,7 +551,7 @@
 
 .topbar-agent-entry {
   box-sizing: border-box !important;
-  display: inline-flex !important;
+  display: flex !important;
   width: auto !important;
   min-width: 88px !important;
   height: 38px !important;
@@ -666,8 +672,8 @@
 
   .workspace--canvas-layout .topbar__canvas-actions {
     justify-self: start !important;
-  }
-}
+   }
+ }
 
 /* MODULE NODE CONTROL SIZE CONTRACT
    Historical node selectors use several incompatible heights. This final
@@ -1709,18 +1715,6 @@
   font-size: 12px !important;
 }
 
-/* The decorative play glyph must never sit above the native video controls. */
-.workspace--canvas-layout .module-node__video-output-play,
-.workspace--canvas-layout .module-node__video-preview-play,
-.workspace--canvas-layout .module-node__generation-preview-play {
-  pointer-events: none !important;
-}
-.workspace--canvas-layout .module-node__video-preview-play {
-  pointer-events: auto !important;
-  z-index: 30 !important;
-  cursor: pointer !important;
-}
-
 /* The expanded composer spans the full video node only for positioning its
    controls. Its transparent box must not sit above the native <video>
    controls; opt only the real editor regions back into pointer handling. */
@@ -2487,6 +2481,63 @@
   }
 }
 
+/* FINAL AGENT PANEL GEOMETRY CONTRACT
+   Keep the user-facing Agent panel wide enough for readable conversation and
+   keep the header controls on one shared baseline. This terminal rule wins
+   over legacy compact prototype values above. */
+.workspace--canvas-layout .agent-panel--skill-chat {
+  width: min(560px, 100vw) !important;
+  max-width: min(560px, 100vw) !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions {
+  grid-template-columns: minmax(0, 1fr) 42px !important;
+  align-items: center !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions select {
+  height: 42px !important;
+  min-height: 42px !important;
+  max-height: 42px !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions .skill-chat-workbench__new-chat {
+  width: 42px !important;
+  min-width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  display: grid !important;
+  place-items: center !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer {
+  height: 184px !important;
+  min-height: 184px !important;
+  max-height: 184px !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer .media-mention-textarea__editor {
+  min-height: 96px !important;
+  max-height: 160px !important;
+  padding: 18px 20px !important;
+  font-size: 14px !important;
+  line-height: 1.55 !important;
+}
+
+/* Release stylesheet is loaded after canvas-layout.css. Keep the expanded
+   video rail inset from being replaced by the legacy relative positioning. */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar {
+  position: absolute !important;
+  top: auto !important;
+  right: 18px !important;
+  bottom: 18px !important;
+  left: 18px !important;
+  inset-block-start: auto !important;
+  inset-block-end: 18px !important;
+  width: auto !important;
+  max-width: none !important;
+  margin: 0 !important;
+  transform: none !important;
+}
+
 /* FINAL GENERIC VIDEO VISIBLE RAIL CONTRACT (release terminal).
    This is intentionally the last release-layer rule. Keep compatibility
    fields semantic but out of the visible four-control rail, and make the
@@ -2640,7 +2691,7 @@
   }
 }
 
-/* FINAL RELEASE VIDEO RAIL CONTRACT (true EOF).
+/* FINAL RELEASE VIDEO RAIL CONTRACT (primary cascade owner).
    Keep this terminal block after every historical compatibility rule. The
    live component exposes only model, mode, settings and run controls; all
    native/select fallbacks are semantic compatibility fields and never take
@@ -3270,10 +3321,11 @@
    The reverse model route follows the material tray as a full-width row. The
    former two-column control strip added 14px padding on both sides, shrinking
    the route to 362px and visually detaching it from the 390px form fields. */
-.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-control-strip {
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-control-strip {
   box-sizing: border-box !important;
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: auto auto !important;
   align-items: stretch !important;
   gap: 8px !important;
   width: 100% !important;
@@ -3286,7 +3338,7 @@
   border: 0 !important;
 }
 
-.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] :is(
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] :is(
   .module-node__agent-media-label,
   .module-node__agent-media-region,
   .module-node__agent-media-empty-hint,
@@ -3300,9 +3352,22 @@
   margin-inline: 0 !important;
 }
 
-.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-route-region,
-.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-route,
-.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-route > label {
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] :is(
+  .module-node__agent-media-region,
+  .module-node__agent-media-empty-hint
+) {
+  grid-row: 1 !important;
+  order: 1 !important;
+}
+
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-route-region {
+  grid-row: 2 !important;
+  order: 2 !important;
+}
+
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-route-region,
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-route,
+.workspace--canvas-layout .module-node--reverse[data-module-type='reverse_agent'] .module-node__agent-route > label {
   box-sizing: border-box !important;
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) !important;
@@ -3317,6 +3382,17 @@
 /* FINAL VIDEO SETTINGS THEME CONTRACT
    The settings popover belongs to the video node. Reuse its theme tokens so
    the menu does not switch to the retired neutral palette. */
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-media-error {
+  display: block;
+  position: static;
+  min-width: 0;
+  margin: 0;
+  color: var(--gate-text);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
 .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-settings-menu {
   color: var(--gate-text) !important;
   background: var(--gate-card) !important;
@@ -3562,4 +3638,930 @@
     grid-column: 3 !important;
     grid-row: 2 !important;
   }
+}
+
+/* FINAL VIDEO PROMPT AND CONTROL INSET CONTRACT
+   The rail is anchored to the composer edge. Anchor the prompt from the same
+   edge and reserve a real 12px gap so historical grid rules cannot overlap it. */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer {
+  --video-control-rail-height: 38px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer > .module-node__prompt-workspace {
+  position: absolute !important;
+  inset: auto 18px calc(18px + var(--video-control-rail-height) + 12px) 18px !important;
+  box-sizing: border-box !important;
+  width: auto !important;
+  max-width: none !important;
+  height: 190px !important;
+  margin: 0 !important;
+  align-self: auto !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer > .module-node__video-control-bar {
+  position: absolute !important;
+  inset: auto 18px 18px !important;
+  width: auto !important;
+  max-width: none !important;
+}
+
+@media (max-width: 720px) {
+  html body .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer {
+    --video-control-rail-height: 84px;
+  }
+}
+
+
+/* FINAL INLINE REFERENCE CAPSULE CONTRACT V2
+   Reference tokens are direct inline siblings of the user's text. This
+   terminal owner keeps their dimensions stable after all legacy rules. */
+.workspace--canvas-layout {
+  --mention-capsule-height: 24px;
+  --mention-capsule-thumb: 16px;
+  --mention-capsule-agent-height: 24px;
+  --mention-capsule-medium-height: 24px;
+  --mention-capsule-agent-thumb: 16px;
+  --mention-capsule-medium-thumb: 16px;
+  --mention-capsule-agent-max-width: 220px;
+  --mention-capsule-medium-max-width: 220px;
+  --mention-capsule-reverse-max-width: 220px;
+  --reference-rail-item-size: 36px;
+}
+
+html body .workspace--canvas-layout :is(
+  .media-mention-textarea__editor[data-mention-context='agent'],
+  .media-mention-textarea__editor[data-mention-context='image'],
+  .media-mention-textarea__editor[data-mention-context='video'],
+  .media-mention-textarea__editor[data-mention-context='reverse']
+) {
+  display: block !important;
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  white-space: pre-wrap !important;
+}
+
+html body .workspace--canvas-layout .media-mention-textarea__editor[data-mention-context='agent'] {
+  min-height: 104px !important;
+  max-height: 168px !important;
+  height: auto !important;
+  padding: 16px 18px !important;
+  line-height: 1.55 !important;
+}
+
+html body .workspace--canvas-layout :is(
+  .media-mention-textarea__editor[data-mention-context='image'],
+  .media-mention-textarea__editor[data-mention-context='video'],
+  .media-mention-textarea__editor[data-mention-context='reverse']
+) {
+  width: 100% !important;
+  padding: 10px 12px !important;
+}
+
+html body .workspace--canvas-layout .media-mention-textarea__editor[data-mention-context='agent'] > .media-mention-textarea__chip,
+html body .workspace--canvas-layout :is(
+  .media-mention-textarea__editor[data-mention-context='image'],
+  .media-mention-textarea__editor[data-mention-context='video'],
+  .media-mention-textarea__editor[data-mention-context='reverse']
+) > .media-mention-textarea__chip {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  box-sizing: border-box !important;
+  align-items: center !important;
+  width: max-content !important;
+  height: var(--mention-capsule-height) !important;
+  min-height: var(--mention-capsule-height) !important;
+  max-height: var(--mention-capsule-height) !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  border-radius: 999px !important;
+  vertical-align: middle !important;
+  white-space: nowrap !important;
+}
+
+html body .workspace--canvas-layout .media-mention-textarea__editor[data-mention-context='agent'] > .media-mention-textarea__chip {
+  max-width: min(var(--mention-capsule-agent-max-width), 100%) !important;
+  height: var(--mention-capsule-height) !important;
+  min-height: var(--mention-capsule-height) !important;
+  max-height: var(--mention-capsule-height) !important;
+  margin: 1px 3px 1px 0 !important;
+  padding: 2px 7px 2px 4px !important;
+  gap: 4px !important;
+}
+
+html body .workspace--canvas-layout :is(
+  .media-mention-textarea__editor[data-mention-context='image'],
+  .media-mention-textarea__editor[data-mention-context='video'],
+  .media-mention-textarea__editor[data-mention-context='reverse']
+) > .media-mention-textarea__chip {
+  max-width: min(var(--mention-capsule-medium-max-width), 100%) !important;
+  height: var(--mention-capsule-height) !important;
+  min-height: var(--mention-capsule-height) !important;
+  max-height: var(--mention-capsule-height) !important;
+  margin: 1px 3px 2px 0 !important;
+  padding: 2px 7px 2px 4px !important;
+  gap: 4px !important;
+}
+
+html body .workspace--canvas-layout .media-mention-textarea__editor[data-mention-context='reverse'] > .media-mention-textarea__chip {
+  max-width: min(var(--mention-capsule-reverse-max-width), 100%) !important;
+}
+
+html body .workspace--canvas-layout .media-mention-textarea__editor[data-mention-context='agent'] > .media-mention-textarea__chip :is(img, video) {
+  width: var(--mention-capsule-agent-thumb) !important;
+  height: var(--mention-capsule-agent-thumb) !important;
+  min-width: var(--mention-capsule-agent-thumb) !important;
+  min-height: var(--mention-capsule-agent-thumb) !important;
+  flex: 0 0 var(--mention-capsule-agent-thumb) !important;
+  object-fit: contain !important;
+  border-radius: 5px !important;
+}
+
+html body .workspace--canvas-layout :is(
+  .media-mention-textarea__editor[data-mention-context='image'],
+  .media-mention-textarea__editor[data-mention-context='video'],
+  .media-mention-textarea__editor[data-mention-context='reverse']
+) > .media-mention-textarea__chip :is(img, video) {
+  width: var(--mention-capsule-medium-thumb) !important;
+  height: var(--mention-capsule-medium-thumb) !important;
+  min-width: var(--mention-capsule-medium-thumb) !important;
+  min-height: var(--mention-capsule-medium-thumb) !important;
+  flex: 0 0 var(--mention-capsule-medium-thumb) !important;
+  object-fit: contain !important;
+  border-radius: 6px !important;
+}
+
+html body .workspace--canvas-layout :is(
+  .media-mention-textarea__editor[data-mention-context='agent'],
+  .media-mention-textarea__editor[data-mention-context='image'],
+  .media-mention-textarea__editor[data-mention-context='video'],
+  .media-mention-textarea__editor[data-mention-context='reverse']
+) > .media-mention-textarea__chip > :last-child {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags {
+  display: flex !important;
+  flex-flow: row nowrap !important;
+  align-items: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-height: 44px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button :is(img, video) {
+  object-fit: contain !important;
+}
+
+/* FINAL AGENT FOOTER HIT-TARGET CONTRACT (true EOF)
+   Keep the mode tabs on their own row and give every footer action a real
+   grid track.  The previous compatibility cascade left the action group in
+   a 30px track while its flex basis stayed 66px; the knowledge button then
+   overflowed underneath the generation-preferences button. */
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: 30px minmax(0, 1fr) 30px 66px !important;
+  grid-template-rows: 30px 32px !important;
+  align-items: center !important;
+  column-gap: 5px !important;
+  row-gap: 5px !important;
+  width: calc(100% - 20px) !important;
+  max-width: calc(100% - 20px) !important;
+  min-width: 0 !important;
+  min-height: 67px !important;
+  overflow: visible !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] {
+  grid-template-columns: 30px minmax(0, 1fr) 82px 30px 66px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs {
+  grid-column: 1 / -1 !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool {
+  grid-column: 1 !important;
+  grid-row: 2 !important;
+  box-sizing: border-box !important;
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] > .skill-chat-workbench__model-pill,
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not([data-agent-mode='codex']) > .skill-chat-workbench__model-pill {
+  grid-column: 2 !important;
+  grid-row: 2 !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] > .codex-reasoning {
+  grid-column: 3 !important;
+  grid-row: 2 !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] > .skill-chat-workbench__generation-trigger {
+  grid-column: 4 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not([data-agent-mode='codex']) > .skill-chat-workbench__generation-trigger {
+  grid-column: 3 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__generation-trigger {
+  grid-row: 2 !important;
+  box-sizing: border-box !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] > .skill-chat-workbench__composer-actions {
+  grid-column: 5 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not([data-agent-mode='codex']) > .skill-chat-workbench__composer-actions {
+  grid-column: 4 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+  grid-row: 2 !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: 30px 30px !important;
+  align-items: center !important;
+  justify-content: end !important;
+  gap: 6px !important;
+  width: 66px !important;
+  min-width: 66px !important;
+  max-width: 66px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  margin: 0 !important;
+  overflow: visible !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions > :is(button, select) {
+  box-sizing: border-box !important;
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Override the older duplicated-panel compact lock with the same specificity
+   so the action group keeps both knowledge and send targets inside its 66px
+   track. */
+html body .workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+  display: grid !important;
+  grid-template-columns: 30px 30px !important;
+  width: 66px !important;
+  min-width: 66px !important;
+  max-width: 66px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  gap: 6px !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  justify-self: end !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions > :is(button, select) {
+  box-sizing: border-box !important;
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions > button[aria-label='新建对话'] {
+  display: none !important;
+}
+
+/* FINAL FLEXIBLE AGENT COMPOSER CONTRACT
+   The Agent composer is a content surface, not a fixed-height toolbar. Keep
+   the editor, optional reference rail, and footer in separate rows so adding
+   references or a second paragraph never pushes controls outside the panel. */
+html body .workspace--canvas-layout .agent-panel--skill-chat {
+  --agent-composer-editor-min-height: 104px;
+  --agent-composer-editor-max-height: 168px;
+  --agent-composer-control-size: 34px;
+  --agent-reference-rail-size: var(--reference-rail-item-size);
+  --agent-reference-rail-height: 44px;
+  --agent-composer-action-group-width: 74px;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 42px !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions > select {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  max-height: 42px !important;
+  margin: 0 !important;
+  padding-block: 0 !important;
+  align-self: center !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__header-actions > .skill-chat-workbench__new-chat {
+  box-sizing: border-box !important;
+  display: grid !important;
+  place-items: center !important;
+  width: 42px !important;
+  min-width: 42px !important;
+  max-width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  max-height: 42px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  align-self: center !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-rows: auto auto auto !important;
+  grid-auto-rows: auto !important;
+  align-content: start !important;
+  gap: 10px !important;
+  width: auto !important;
+  max-width: calc(100% - 32px) !important;
+  min-width: 0 !important;
+  height: auto !important;
+  min-height: 216px !important;
+  max-height: none !important;
+  margin: 16px 16px 18px !important;
+  padding: 14px !important;
+  overflow: visible !important;
+  border-radius: 22px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer > label {
+  grid-row: 1 !important;
+  display: block !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: var(--agent-composer-editor-min-height) !important;
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer > label > .media-mention-textarea,
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer > label > .media-mention-textarea > .media-mention-textarea__editor {
+  box-sizing: border-box !important;
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer > label > .media-mention-textarea > .media-mention-textarea__editor {
+  height: auto !important;
+  min-height: 104px !important;
+  max-height: 168px !important;
+  padding: 16px 18px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overflow-wrap: anywhere !important;
+  white-space: pre-wrap !important;
+  line-height: 1.55 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags {
+  grid-row: 2 !important;
+  display: flex !important;
+  flex-flow: row nowrap !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: var(--agent-reference-rail-height) !important;
+  max-height: var(--agent-reference-rail-height) !important;
+  margin: 0 !important;
+  padding: 4px 0 !important;
+  gap: 6px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button {
+  position: relative !important;
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+  width: max-content !important;
+  min-width: 0 !important;
+  max-width: min(220px, 100%) !important;
+  height: var(--mention-capsule-height) !important;
+  min-height: var(--mention-capsule-height) !important;
+  max-height: var(--mention-capsule-height) !important;
+  margin: 0 !important;
+  padding: 2px 7px 2px 4px !important;
+  gap: 4px !important;
+  overflow: hidden !important;
+  border-radius: 999px !important;
+  white-space: nowrap !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button :is(img, video) {
+  width: var(--mention-capsule-thumb) !important;
+  min-width: var(--mention-capsule-thumb) !important;
+  max-width: var(--mention-capsule-thumb) !important;
+  height: var(--mention-capsule-thumb) !important;
+  min-height: var(--mention-capsule-thumb) !important;
+  max-height: var(--mention-capsule-thumb) !important;
+  flex: 0 0 var(--mention-capsule-thumb) !important;
+  object-fit: contain !important;
+  border-radius: 4px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__image-tags > button > span {
+  display: inline-flex !important;
+  align-items: center !important;
+  min-width: 0 !important;
+  max-width: calc(100% - 20px) !important;
+  gap: 4px !important;
+  overflow: hidden !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+  grid-row: 3 !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: 34px minmax(0, 1fr) 34px 74px !important;
+  grid-template-rows: 30px 34px !important;
+  align-items: center !important;
+  align-content: start !important;
+  column-gap: 8px !important;
+  row-gap: 8px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  min-height: 72px !important;
+  height: auto !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+/* Preserve the high-specificity owner used by hydrated Agent panels while
+   keeping its height content-driven. */
+html body .workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer {
+  height: auto !important;
+  max-height: none !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] {
+  grid-template-columns: 34px minmax(0, 1fr) 92px 34px 74px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs {
+  grid-column: 1 / -1 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__mode-tabs > button {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding: 0 6px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool,
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill,
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .codex-reasoning,
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__generation-trigger,
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+  grid-row: 2 !important;
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__tool {
+  grid-column: 1 !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  padding: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__model-pill {
+  grid-column: 2 !important;
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  padding: 0 10px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] > .codex-reasoning {
+  grid-column: 3 !important;
+  width: 92px !important;
+  min-width: 92px !important;
+  max-width: 92px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] > .codex-reasoning .codex-reasoning__trigger {
+  box-sizing: border-box !important;
+  width: 92px !important;
+  min-width: 92px !important;
+  max-width: 92px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not([data-agent-mode='codex']) > .skill-chat-workbench__generation-trigger {
+  grid-column: 3 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] > .skill-chat-workbench__generation-trigger {
+  grid-column: 4 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__generation-trigger {
+  display: inline-grid !important;
+  place-items: center !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  padding: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not([data-agent-mode='codex']) > .skill-chat-workbench__composer-actions {
+  grid-column: 4 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer[data-agent-mode='codex'] > .skill-chat-workbench__composer-actions {
+  grid-column: 5 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+  display: grid !important;
+  grid-template-columns: 34px 34px !important;
+  align-items: center !important;
+  justify-content: end !important;
+  gap: 6px !important;
+  width: 74px !important;
+  min-width: 74px !important;
+  max-width: 74px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  overflow: visible !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions > :is(button, select) {
+  box-sizing: border-box !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions > button[aria-label='新建对话'] {
+  display: none !important;
+}
+
+/* Shared node media rail. Its slots stay square and independently scrollable;
+   the compact 24px chips above remain reserved for text editors. */
+html body .workspace--canvas-layout .module-node :is(
+  .connected-agent-media-slots__row,
+  .module-node__agent-media-slot-row
+) {
+  display: flex !important;
+  flex-flow: row nowrap !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 44px !important;
+  height: auto !important;
+  max-height: none !important;
+  padding: 4px 0 !important;
+  gap: 6px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+html body .workspace--canvas-layout .module-node :is(
+  .connected-agent-media-slots__item,
+  .module-node__agent-media-slot,
+  .module-node__agent-media-add
+) {
+  position: relative !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  place-items: center !important;
+  flex: 0 0 var(--reference-rail-item-size) !important;
+  width: var(--reference-rail-item-size) !important;
+  min-width: var(--reference-rail-item-size) !important;
+  max-width: var(--reference-rail-item-size) !important;
+  height: var(--reference-rail-item-size) !important;
+  min-height: var(--reference-rail-item-size) !important;
+  max-height: var(--reference-rail-item-size) !important;
+  overflow: hidden !important;
+  border-radius: 8px !important;
+}
+
+html body .workspace--canvas-layout .module-node :is(
+  .connected-agent-media-slots__item,
+  .module-node__agent-media-slot
+) > :is(img, video) {
+  display: block !important;
+  width: 100% !important;
+  min-width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  object-fit: contain !important;
+  border-radius: inherit !important;
+}
+
+/* Node editors had older module-type selectors with greater specificity than
+   the shared V2 contract. Repeat the live module identity here so image,
+   video, and reverse mentions resolve to the same compact inline geometry. */
+html body .workspace--canvas-layout :is(
+  .module-node.module-node[data-module-type='image_generation'],
+  .module-node.module-node[data-module-type='video_generation'],
+  .module-node.module-node[data-module-type='reverse_agent']
+) .media-mention-textarea__editor > .media-mention-textarea__chip {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  box-sizing: border-box !important;
+  align-items: center !important;
+  width: max-content !important;
+  min-width: 0 !important;
+  max-width: min(220px, 100%) !important;
+  height: var(--mention-capsule-height) !important;
+  min-height: var(--mention-capsule-height) !important;
+  max-height: var(--mention-capsule-height) !important;
+  margin: 1px 3px 1px 0 !important;
+  padding: 2px 7px 2px 4px !important;
+  gap: 4px !important;
+  overflow: hidden !important;
+  border-radius: 999px !important;
+  vertical-align: middle !important;
+  white-space: nowrap !important;
+}
+
+html body .workspace--canvas-layout :is(
+  .module-node.module-node[data-module-type='image_generation'],
+  .module-node.module-node[data-module-type='video_generation'],
+  .module-node.module-node[data-module-type='reverse_agent']
+) .media-mention-textarea__editor > .media-mention-textarea__chip :is(img, video) {
+  display: block !important;
+  width: var(--mention-capsule-thumb) !important;
+  min-width: var(--mention-capsule-thumb) !important;
+  max-width: var(--mention-capsule-thumb) !important;
+  height: var(--mention-capsule-thumb) !important;
+  min-height: var(--mention-capsule-thumb) !important;
+  max-height: var(--mention-capsule-thumb) !important;
+  flex: 0 0 var(--mention-capsule-thumb) !important;
+  object-fit: contain !important;
+  border-radius: 4px !important;
+}
+
+/* FINAL AGENT CREATIVE ACTION CONTRACT
+   Keep scheme selection and execution confirmation visibly interactive in the
+   narrow Agent panel. This terminal block intentionally wins older workbench
+   button rules. */
+html body .workspace--canvas-layout .agent-panel--skill-chat .creative-plan__option {
+  box-sizing: border-box !important;
+  margin-top: 2px !important;
+  padding: 14px !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 14px !important;
+  background: color-mix(in srgb, var(--surface-muted) 72%, var(--surface)) !important;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--text) 5%, transparent) !important;
+}
+
+/* Creative proposals and their confirmation occupy the same readable width
+   as the conversation column. Older bubble rules use fit-content, which
+   makes a short option card look like a floating badge in a wide panel. */
+html body .workspace--canvas-layout .agent-panel--skill-chat :is(
+  .skill-chat-workbench__message--creative-plan,
+  .skill-chat-workbench__confirmation
+) {
+  align-self: stretch !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--creative-plan .creative-plan {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--creative-plan .creative-plan__option {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .creative-plan__select {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 128px !important;
+  width: max-content !important;
+  max-width: 100% !important;
+  min-height: 38px !important;
+  margin: 10px auto 0 !important;
+  padding: 0 16px !important;
+  color: var(--accent) !important;
+  font: inherit !important;
+  font-weight: 650 !important;
+  border: 1px solid var(--accent-soft-border) !important;
+  border-radius: 10px !important;
+  background: var(--accent-soft) !important;
+  cursor: pointer !important;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease, transform 140ms ease !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .creative-plan__select:hover:not(:disabled) {
+  color: var(--on-accent) !important;
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  transform: translateY(-1px) !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .creative-plan__select.is-selected {
+  color: var(--on-accent) !important;
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-focus-soft) !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation {
+  padding: 14px !important;
+  scroll-margin-block: 24px 160px !important;
+  border: 1px solid var(--accent-soft-border) !important;
+  border-radius: 16px !important;
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface)) !important;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--text) 8%, transparent) !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation-card {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation-actions {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  gap: 8px !important;
+  margin-top: 12px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation-actions > button {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 38px !important;
+  padding: 0 15px !important;
+  font: inherit !important;
+  font-weight: 650 !important;
+  border-radius: 10px !important;
+  cursor: pointer !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation-actions .is-primary {
+  color: var(--on-accent) !important;
+  border: 1px solid var(--accent) !important;
+  background: var(--accent) !important;
+  box-shadow: 0 7px 16px color-mix(in srgb, var(--accent) 22%, transparent) !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation-actions .is-primary:hover:not(:disabled) {
+  border-color: var(--accent-hover) !important;
+  background: var(--accent-hover) !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation-actions .is-secondary {
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface) !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation-actions .is-secondary:hover:not(:disabled) {
+  color: var(--text) !important;
+  border-color: var(--border-strong) !important;
+  background: var(--surface-muted) !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat :is(.creative-plan__select, .skill-chat-workbench__confirmation-actions > button):focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat :is(.creative-plan__select, .skill-chat-workbench__confirmation-actions > button):disabled {
+  opacity: .55 !important;
+  cursor: wait !important;
+  transform: none !important;
 }

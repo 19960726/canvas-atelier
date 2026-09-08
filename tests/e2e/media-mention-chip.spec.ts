@@ -3,7 +3,7 @@ import { openAgentPanel, openEmptyApp, queueProjectImageImport, queueProjectVide
 import { makeReferenceImage } from './helpers/fixtures';
 
 for (const theme of ['light', 'dark'] as const) {
-  test(`managed image and video references render as previewable chips without @ in ${theme}`, async ({ page }, testInfo) => {
+  test(`managed images render as previewable Agent chips while project videos stay unavailable in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1680, height: 1050 });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
@@ -27,7 +27,11 @@ for (const theme of ['light', 'dark'] as const) {
 
     const input = panel.getByTestId('agent-composer-input');
     await input.fill('@');
-    await panel.getByRole('menuitem', { name: 'Mention Chip product' }).click();
+    const menu = panel.getByRole('menu', { name: 'Reference images' });
+    await expect(menu.getByRole('menuitem', { name: 'Mention Chip product' })).toBeVisible();
+    await expect(menu.getByRole('menuitem', { name: 'Mention Chip motion' })).toHaveCount(0);
+    await expect(menu).not.toContainText('Chip motion');
+    await menu.getByRole('menuitem', { name: 'Mention Chip product' }).click();
     await expect(input).toContainText('图片1');
     await expect(input).not.toContainText('@');
 
@@ -39,21 +43,30 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(imagePreview).toContainText('Chip product');
     await expect(imagePreview.getByRole('img', { name: 'Chip product' })).toBeVisible();
 
-    await input.focus();
-    await input.press('End');
-    await input.pressSequentially(' @');
-    await panel.getByRole('menuitem', { name: 'Mention Chip motion' }).click();
-    await expect(input).toContainText('图片1 视频1');
-    await expect(input).not.toContainText('@');
-
-    const videoChip = input.locator('[data-media-mention="video"]', { hasText: '视频1' });
-    await expect(videoChip).toBeVisible();
-    await expect(videoChip.locator('video')).toBeVisible();
-    await videoChip.hover();
-    const videoPreview = panel.getByRole('tooltip', { name: '视频1 素材预览' });
-    await expect(videoPreview).toContainText('Chip motion');
-    await expect(videoPreview.locator('video')).toBeVisible();
-
+    await expect(input.locator('[data-media-mention="video"]')).toHaveCount(0);
+    const geometry = await input.evaluate((element) => ({
+      editorWhiteSpace: getComputedStyle(element).whiteSpace,
+      chips: [...element.querySelectorAll<HTMLElement>('.media-mention-textarea__chip')].map((chip) => {
+        const box = chip.getBoundingClientRect();
+        const media = chip.querySelector<HTMLElement>('img, video')?.getBoundingClientRect();
+        return {
+          display: getComputedStyle(chip).display,
+          height: box.height,
+          width: box.width,
+          mediaHeight: media?.height ?? 0,
+          mediaWidth: media?.width ?? 0,
+        };
+      }),
+    }));
+    expect(geometry.editorWhiteSpace).toBe('pre-wrap');
+    expect(geometry.chips).toHaveLength(1);
+    for (const chip of geometry.chips) {
+      expect(chip.display).toBe('inline-flex');
+      expect(chip.height).toBe(24);
+      expect(chip.width).toBeLessThan(220);
+      expect(chip.mediaWidth).toBe(16);
+      expect(chip.mediaHeight).toBe(16);
+    }
     await page.screenshot({ path: testInfo.outputPath(`media-mention-chip-${theme}.png`), fullPage: true });
   });
 }

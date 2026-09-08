@@ -1,5 +1,6 @@
 import type { AgentCanvasPlan, CanvasProject, CanvasOperation } from '@agent-canvas/domain';
 import { createCanvasModuleNode } from '@agent-canvas/domain';
+import type { GenerationParameters } from './generation-preferences';
 import type { ReverseAnalysisResult, ReverseWorkflowProposal } from './reverse-workflow-contract';
 
 export interface ReverseWorkflowProposalInput {
@@ -56,6 +57,7 @@ export interface ReverseAgentCanvasPlanInput {
   modelRoute: string;
   modelRouteDisplayName?: string;
   knowledgeBaseIds?: readonly string[];
+  generation?: { kind: 'image' | 'video'; modelRoute?: string; modelRouteDisplayName?: string; parameters?: GenerationParameters };
   references: Array<{ assetId: string; mention: string; label: string }>;
   analysis: ReverseAnalysisResult;
 }
@@ -73,7 +75,7 @@ export function buildReverseAgentCanvasPlan(input: ReverseAgentCanvasPlanInput):
     references: input.references,
     analysis: input.analysis,
   });
-  const suffix = proposal.id;
+  const suffix = proposal.id + (input.generation ? ":" + stableHash(JSON.stringify(input.generation)) : "");
   const operations: CanvasOperation[] = [];
   const existingIds = new Set(input.project.nodes.map((node) => node.id));
   const referenceNodeIds = input.references.map((reference, index) => {
@@ -130,13 +132,14 @@ export function buildReverseAgentCanvasPlan(input: ReverseAgentCanvasPlanInput):
     };
     operations.push({ kind: 'create_node', node: promptNode });
     const nodeId = `${suffix}:generation:${variant.id}`;
-    const generationNode = createCanvasModuleNode(nodeId, 'image_generation', { x: 1180, y: 80 + index * 220 });
+    const generationNode = createCanvasModuleNode(nodeId, input.generation?.kind === 'video' ? 'video_generation' : 'image_generation', { x: 1180, y: 80 + index * 220 });
     generationNode.data.config = {
       ...generationNode.data.config,
       prompt: variant.prompt,
       negativePrompt: input.analysis.prompts.negative.join('\n'),
-      modelRoute: input.modelRoute,
-      routeDisplayName: input.modelRouteDisplayName,
+      modelRoute: input.generation?.modelRoute,
+      routeDisplayName: input.generation?.modelRouteDisplayName,
+      ...input.generation?.parameters,
       variantId: variant.id,
       variantName: variant.name,
       referenceAssetIds: input.references.map((reference) => reference.assetId),
@@ -160,8 +163,8 @@ export function buildReverseAgentCanvasPlan(input: ReverseAgentCanvasPlanInput):
     requestedCapabilities: ['model_execution'],
     confirmations: {},
     conflicts: input.references.length === 0 ? ['至少需要一张有序参考图'] : [],
-    modelRoute: input.modelRoute,
-    modelRouteDisplayName: input.modelRouteDisplayName,
+    modelRoute: input.generation?.modelRoute,
+    modelRouteDisplayName: input.generation?.modelRouteDisplayName,
     jobCount: input.analysis.variants.length,
   };
 }

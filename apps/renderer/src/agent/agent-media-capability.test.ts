@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { supportsAgentMediaReferences } from './agent-media-capability';
 
 describe('supportsAgentMediaReferences', () => {
-  it('allows Codex response routes to attach managed images even when discovery omitted the vision flag', () => {
-    expect(supportsAgentMediaReferences({ capabilities: ['responses'] }, 'codex')).toBe(true);
+  it('requires an explicit vision capability before Codex routes can attach managed images', () => {
+    expect(supportsAgentMediaReferences({ capabilities: ['responses'] }, 'codex')).toBe(false);
+    expect(supportsAgentMediaReferences({ capabilities: ['chat'] }, 'codex')).toBe(false);
+    expect(supportsAgentMediaReferences({ capabilities: ['responses', 'vision'] }, 'codex')).toBe(true);
   });
 
   it('still blocks ordinary non-visual chat routes from sending media', () => {

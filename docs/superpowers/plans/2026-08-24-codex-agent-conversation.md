@@ -1,5 +1,7 @@
 # Codex Agent Conversation Implementation Plan
 
+> 2026-09-06 更新：本任务的 Astra/Sol 模型补全、逐模型思考滑动条、20 图槽、@ 内联、节点拖动及 MCP 安装验收统一执行 `docs/superpowers/plans/2026-09-06-agent-codex-ui-models.md`。下文保留历史设计；固定三档、九图槽和旧样式落点不再作为当前验收要求。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a per-canvas multi-conversation Codex Agent panel with the reference layout, Canvas Atelier styling, complete model routing, and unobstructed media-slot reordering.

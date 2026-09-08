@@ -11,6 +11,8 @@ export interface RelayMeFetchInit {
   readonly headers?: Record<string, string>;
   readonly body?: string;
   readonly signal?: AbortSignal;
+  readonly maxResponseBytes?: number;
+  readonly timeoutMs?: number;
   readonly trustedResolvedAddress?: string;
 }
 

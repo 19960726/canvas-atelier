@@ -332,7 +332,8 @@ async function didVanishDuringWindowsRealpath(
   fileSystem: FileSystem,
   error: unknown,
 ): Promise<boolean> {
-  if ((!isErrno(error, 'EPERM') && !isErrno(error, 'EBADF')) || fileSystem.lstat === undefined) return false;
+  if ((!isErrno(error, 'EPERM') && !isErrno(error, 'EBADF') && !isErrno(error, 'UNKNOWN'))
+    || fileSystem.lstat === undefined) return false;
   try {
     await fileSystem.lstat(path);
     return false;

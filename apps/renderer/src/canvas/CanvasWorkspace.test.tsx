@@ -110,6 +110,20 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('workspace')).toHaveAttribute('data-agent-collapsed', 'false');
   });
 
+  it('opens the Agent surface when a generated-image action requests the chat panel', async () => {
+    render(<CanvasWorkspace />);
+
+    expect(screen.getByTestId('agent-panel')).not.toBeVisible();
+    window.dispatchEvent(new CustomEvent('novus:open-agent'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-panel')).toBeVisible();
+      expect(screen.getByTestId('workspace')).toHaveAttribute('data-agent-collapsed', 'false');
+    });
+    window.dispatchEvent(new CustomEvent('novus:open-agent'));
+    expect(screen.getByTestId('agent-panel')).toBeVisible();
+  });
+
   it('keeps the Agent panel geometry token-neutral across themes', () => {
     expect(canvasHybridStyles).not.toContain(":root[data-theme='light'] .workspace--canvas-layout .agent-panel--skill-chat {");
   });
@@ -182,6 +196,9 @@ describe('CanvasWorkspace', () => {
     workspace.className = 'workspace workspace--canvas-layout';
     const stage = document.createElement('section');
     stage.className = 'canvas-stage';
+    const reactFlow = document.createElement('div');
+    reactFlow.className = 'react-flow';
+    stage.append(reactFlow);
     workspace.append(stage);
 
     setConnectorPreviewQuality(stage, true, 300);
@@ -413,6 +430,7 @@ describe('CanvasWorkspace', () => {
     ['DURABLE_WRITE_FAILED', '本地写入失败，请检查磁盘空间或目录权限后重试'],
     ['PROJECT_WRITE_FAILED', '本地写入失败，请检查磁盘空间或目录权限后重试'],
     ['DISK_FULL', '本地写入失败，请检查磁盘空间或目录权限后重试'],
+    ['PERMISSION_DENIED', '保存文件被系统短暂占用，请重试；持续失败请检查项目目录权限'],
     ['CONCURRENT_WRITER', '项目正在由另一窗口写入，请关闭另一窗口后重新载入'],
   ])('shows an actionable save status for %s', (saveErrorCode, expected) => {
     useAppStore.setState({ saveErrorCode, saveStatus: 'error' });
@@ -648,6 +666,107 @@ describe('CanvasWorkspace', () => {
 
     await waitFor(() => expect(importImageForModule).toHaveBeenCalledWith(target.id, replacement));
     expect(importDroppedMedia).not.toHaveBeenCalled();
+  });
+
+  it.each(['files', 'items'])('imports all 25 clipboard images from %s once in sequence at separate positions', async (source) => {
+    const files = Array.from({ length: 25 }, (_, index) => new File([String(index)], `image-${index}.png`, { type: 'image/png' }));
+    let active = 0;
+    const importDroppedMedia = vi.fn(async () => {
+      expect(active).toBe(0);
+      active++;
+      await Promise.resolve();
+      active--;
+      return true;
+    });
+    const pasteClipboardMedia = vi.fn(async () => true);
+    useAppStore.setState({ importDroppedMedia, pasteClipboardMedia } as never);
+    render(<CanvasWorkspace />);
+    fireEvent.paste(window, { clipboardData: {
+      types: ['Files'],
+      files: source === 'files' ? files : [],
+      items: files.map(file => ({ type: file.type, getAsFile: () => file })),
+    } });
+    await waitFor(() => expect(importDroppedMedia).toHaveBeenCalledTimes(25));
+    expect(importDroppedMedia.mock.calls.map(call => (call as unknown as [File])[0])).toEqual(files);
+    expect(new Set(importDroppedMedia.mock.calls.map(call => JSON.stringify((call as unknown as [File, object])[1]))).size).toBe(25);
+    expect(pasteClipboardMedia).not.toHaveBeenCalled();
+  });
+
+  it.each(['Delete', 'Backspace'])('stops the remaining clipboard image imports when %s is pressed during a batch', async (key) => {
+    const files = Array.from({ length: 25 }, (_, index) => new File([String(index)], `image-${index}.png`, { type: 'image/png' }));
+    const pastedNode = createCanvasModuleNode('already-pasted-image', 'image_input', { x: 120, y: 120 });
+    let resolveFirstImport!: (imported: boolean) => void;
+    const firstImport = new Promise<boolean>((resolve) => {
+      resolveFirstImport = resolve;
+    });
+    const importDroppedMedia = vi.fn()
+      .mockImplementationOnce(() => firstImport)
+      .mockResolvedValue(true);
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState((state) => ({
+      importDroppedMedia,
+      project: { ...state.project, nodes: [pastedNode] },
+    } as never));
+    render(<CanvasWorkspace />);
+
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(flowNode).not.toBeNull();
+    fireEvent.click(flowNode!);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+    fireEvent.paste(window, { clipboardData: { types: ['Files'], files } });
+    await waitFor(() => expect(importDroppedMedia).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(window, { key });
+    await act(async () => {
+      resolveFirstImport(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(importDroppedMedia).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+  });
+
+  it('stops the remaining clipboard image imports as soon as a project switch starts', async () => {
+    const files = Array.from({ length: 25 }, (_, index) => new File([String(index)], `image-${index}.png`, { type: 'image/png' }));
+    let resolveFirstImport!: (imported: boolean) => void;
+    let resolveNewWorkflow!: () => void;
+    const firstImport = new Promise<boolean>((resolve) => {
+      resolveFirstImport = resolve;
+    });
+    const newWorkflow = vi.fn(() => new Promise<void>((resolve) => {
+      resolveNewWorkflow = resolve;
+    }));
+    const importDroppedMedia = vi.fn()
+      .mockImplementationOnce(() => firstImport)
+      .mockResolvedValue(true);
+    useAppStore.setState({ importDroppedMedia, newWorkflow, saveStatus: 'saved' } as never);
+    render(<CanvasWorkspace />);
+
+    fireEvent.paste(window, { clipboardData: { types: ['Files'], files } });
+    await waitFor(() => expect(importDroppedMedia).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
+    await waitFor(() => expect(newWorkflow).toHaveBeenCalledOnce());
+    await act(async () => {
+      resolveFirstImport(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(importDroppedMedia).toHaveBeenCalledTimes(1);
+    resolveNewWorkflow();
+  });
+
+  it('creates separate nodes for multiple pasted images even with an image node selected', async () => {
+    const target = createCanvasModuleNode('paste-multiple-selected', 'image_input', { x: 120, y: 120 });
+    const importImageForModule = vi.fn(async () => true);
+    const importDroppedMedia = vi.fn(async () => true);
+    useAppStore.setState(state => ({ project: { ...state.project, nodes: [target] }, importImageForModule, importDroppedMedia } as never));
+    render(<CanvasWorkspace />);
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node')!;
+    fireEvent.click(flowNode);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+    const files = ['a.png', 'b.png'].map(name => new File([name], name, { type: 'image/png' }));
+    fireEvent.paste(window, { clipboardData: { types: ['Files'], files } });
+    await waitFor(() => expect(importDroppedMedia).toHaveBeenCalledTimes(2));
+    expect(importImageForModule).not.toHaveBeenCalled();
   });
 
   it('does not replace a selected image node when Ctrl+V supplies text only', async () => {
@@ -1514,6 +1633,64 @@ describe('CanvasWorkspace', () => {
     fireEvent.keyDown(window, { key: 'Delete' });
 
     await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+  });
+
+  it('deletes twenty-five pasted image nodes in one durable canvas command', async () => {
+    const pastedNodes = Array.from({ length: 25 }, (_, index) => {
+      const node = createCanvasModuleNode(`pasted-image-${index + 1}`, 'image_input', {
+        x: (index % 5) * 320,
+        y: Math.floor(index / 5) * 380,
+      });
+      node.data.config = { ...node.data.config, assetId: 'aaaaaaaaaaaaaaaa' };
+      return node;
+    });
+    resetAppStoreForTests({ project: 'empty' });
+    const deleteCanvasNodes = vi.fn(useAppStore.getState().deleteCanvasNodes);
+    useAppStore.setState((state) => ({
+      deleteCanvasNodes,
+      project: {
+        ...state.project,
+        assets: [{
+          assetId: 'aaaaaaaaaaaaaaaa',
+          byteSize: 45,
+          extension: 'png',
+          height: 32,
+          label: 'Pasted image',
+          mediaType: 'image/png',
+          origin: 'imported',
+          sha256: 'a'.repeat(64),
+          width: 32,
+        }],
+        nodes: pastedNodes,
+      },
+      projectImages: [{
+        assetId: 'aaaaaaaaaaaaaaaa',
+        byteSize: 45,
+        displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa',
+        extension: 'png',
+        height: 32,
+        label: 'Pasted image',
+        mediaType: 'image/png',
+        origin: 'imported',
+        sha256: 'a'.repeat(64),
+        usageCount: 25,
+        width: 32,
+      }],
+    }));
+    render(<CanvasWorkspace />);
+    const flowNodes = [...document.querySelectorAll<HTMLElement>('.react-flow__node')];
+    expect(flowNodes).toHaveLength(25);
+
+    fireEvent.keyDown(window, { code: 'ShiftLeft', key: 'Shift' });
+    for (const node of flowNodes) fireEvent.click(node, { shiftKey: true });
+    fireEvent.keyUp(window, { code: 'ShiftLeft', key: 'Shift' });
+    expect(document.querySelectorAll('.react-flow__node.selected')).toHaveLength(25);
+    fireEvent.keyDown(window, { key: 'Delete' });
+
+    await waitFor(() => expect(deleteCanvasNodes).toHaveBeenCalled());
+    expect(deleteCanvasNodes.mock.calls[0]?.[0]).toHaveLength(25);
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+    expect(useAppStore.getState().saveStatus).not.toBe('error');
   });
 
   it('deletes a position-locked node with Delete after selecting it on the canvas', async () => {
@@ -2771,6 +2948,7 @@ describe('CanvasWorkspace', () => {
     const edgesBefore = useAppStore.getState().project.edges;
     render(<CanvasWorkspace />);
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: 'Suggest a headline.' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -3017,6 +3195,7 @@ describe('CanvasWorkspace', () => {
     const nodesBefore = useAppStore.getState().project.nodes;
     render(<CanvasWorkspace />);
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: 'Review this canvas.' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -3110,8 +3289,12 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByRole('button', { name: '使用 GPT-5.4 thinking high' })).toBeVisible();
   });
 
-  it('executes the sole image generation node after Agent command confirmation', async () => {
-    installSkillChatBridgeForTests();
+  it('creates and executes a new image generation node after Agent command confirmation', async () => {
+    const chat = installSkillChatBridgeForTests([
+      { provider: 'comfly', modelRoute: 'chat/creative', displayName: 'Creative chat', modelId: 'codex-creative-chat', capabilities: ['chat'] },
+      { provider: 'comfly', modelRoute: 'image/creative', displayName: 'Creative image', modelId: 'image-creative', capabilities: ['image_generation'] },
+    ]);
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'image/creative' }] }), modelRoute: 'chat/creative', sources: [] });
     const imageNode = createCanvasModuleNode('agent-image-node', 'image_generation', { x: 120, y: 120 });
     imageNode.data.config = { modelRoute: 'image/creative' };
     const runImageGenerationNode = vi.fn(async () => true);
@@ -3123,21 +3306,80 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成一张产品主图' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：棚拍' }));
     fireEvent.click(await screen.findByRole('button', { name: '确认执行生图' }));
 
-    await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith('agent-image-node', expect.objectContaining({
+    await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith(expect.stringMatching(/^agent-image-/u), expect.objectContaining({
       modelRoute: 'image/creative',
       prompt: '生成一张产品主图',
     })));
+    const createdNodeId = (runImageGenerationNode.mock.calls as unknown as Array<[string]>)[0]![0];
+    expect(createdNodeId).not.toBe('agent-image-node');
+    expect(useAppStore.getState().project.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'agent-image-node' }),
+      expect.objectContaining({ id: createdNodeId, data: expect.objectContaining({ moduleType: 'image_generation' }) }),
+    ]));
+  });
+
+  it('reports the project save error when an Agent generation node cannot be created', async () => {
+    const chat = installSkillChatBridgeForTests([
+      { provider: 'comfly', modelRoute: 'chat/creative', displayName: 'Creative chat', modelId: 'codex-creative-chat', capabilities: ['chat'] },
+      { provider: 'comfly', modelRoute: 'image/creative', displayName: 'Creative image', modelId: 'image-creative', capabilities: ['image_generation'] },
+    ]);
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'image/creative' }] }), modelRoute: 'chat/creative', sources: [] });
+    const ensureAgentGenerationNode = vi.fn(async () => {
+      useAppStore.setState({ saveErrorCode: 'PERMISSION_DENIED' });
+      return false;
+    });
+    const runImageGenerationNode = vi.fn(async () => true);
+    useAppStore.setState({ agentPanelCollapsed: true, ensureAgentGenerationNode, runImageGenerationNode } as never);
+
+    render(<CanvasWorkspace />);
+    openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
+    fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成一张产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：棚拍' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('本地保存权限不足，生成节点未能保存或启动。请检查项目目录权限后重试。');
+    expect(runImageGenerationNode).not.toHaveBeenCalled();
+  });
+
+  it('reports the underlying save permission error when the new Agent node cannot enter the generation queue', async () => {
+    const chat = installSkillChatBridgeForTests([
+      { provider: 'comfly', modelRoute: 'chat/creative', displayName: 'Creative chat', modelId: 'codex-creative-chat', capabilities: ['chat'] },
+      { provider: 'comfly', modelRoute: 'image/creative', displayName: 'Creative image', modelId: 'image-creative', capabilities: ['image_generation'] },
+    ]);
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'image/creative' }] }), modelRoute: 'chat/creative', sources: [] });
+    const runImageGenerationNode = vi.fn(async () => {
+      useAppStore.setState({ saveErrorCode: 'PERMISSION_DENIED' });
+      throw Object.assign(new Error('Project must be saved before image generation starts'), { code: 'PROJECT_COMMIT_FAILED' });
+    });
+    useAppStore.setState({ agentPanelCollapsed: true, runImageGenerationNode } as never);
+
+    render(<CanvasWorkspace />);
+    openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
+    fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成一张产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：棚拍' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('本地保存权限不足，生成节点未能保存或启动。请检查项目目录权限后重试。');
   });
 
   it('leaves the canvas plan empty after sending Skill chat', async () => {
     const chat = installSkillChatBridgeForTests();
     render(<CanvasWorkspace />);
     openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
     fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: 'Only analyze this canvas.' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));

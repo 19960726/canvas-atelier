@@ -153,6 +153,7 @@ import {
   type SnapshotReason,
 } from './snapshot-scheduler.js';
 import { BRIDGE_CHANNELS } from './preload-api.js';
+import { capturePersistenceIpcResult } from './persistence-ipc-envelope.js';
 import { createProjectAssetDisplayUrl, parseProjectAssetDisplayUrl } from './project-asset-url.js';
 import { parseGenerationHistoryAssetUrl } from './generation-history-asset-url.js';
 import { parsePhotoshopImportRequest } from './photoshop-contract.js';
@@ -326,7 +327,7 @@ export interface DesktopBridgeHandlerDependencies {
 }
 
 export interface DesktopBridgeHandlers {
-  closeAllProjects(): Promise<void>;
+  closeAllProjects(options?: { readonly flush?: boolean }): Promise<void>;
   closeProject(event: unknown, request: unknown): Promise<void>;
   createProject(event: unknown, request: unknown): Promise<CreateProjectBridgeResult | null>;
   commit(event: unknown, request: unknown): Promise<CommitAck>;
@@ -497,6 +498,9 @@ export function createDesktopBridgeHandlers(
     store: historyStore,
   });
   const sessions = new Map<string, BridgeSessionContext>();
+  // Recent-project metadata is auxiliary. Keep its writes ordered per session
+  // without putting them on the durable journal/snapshot maintenance tail.
+  const recentProjectTails = new Map<string, Promise<void>>();
   const photoshopAssetResolver: PhotoshopManagedAssetResolver = {
     async resolve(request) {
       const session = requireSession(sessions, request.sessionId);
@@ -779,7 +783,7 @@ export function createDesktopBridgeHandlers(
     }
     const session = requireWritableSession(sessions, validated.sessionId);
     assertPublicBridgePayload(validated.transaction);
-    return enqueueSessionMaintenance(session, async () => {
+    return enqueueSessionAcknowledgedMaintenance(session, async () => {
       if (session.writer === null) {
         throw createPersistenceError(
           'CONCURRENT_WRITER',
@@ -788,8 +792,9 @@ export function createDesktopBridgeHandlers(
         );
       }
       const currentProject = await repository.readCurrentProject(session.session);
+      let committedProject: CanvasProject;
       try {
-        applyProjectTransaction(currentProject, validated.transaction);
+        committedProject = applyProjectTransaction(currentProject, validated.transaction);
       } catch {
         throw invalidRequest('Commit transaction is invalid for the current project');
       }
@@ -800,14 +805,13 @@ export function createDesktopBridgeHandlers(
         projectId: validated.projectId,
         transaction: validated.transaction,
       });
-      await flushScheduledSnapshotAfterCommit(session, ack, validated.kind);
-      const savedProject = await repository.readCurrentProject(session.session);
-      await recordRecentProject({
-        ...await summarizeSession(repository, session.sessionId, session.session),
-        project: savedProject,
-      }, session.session.root, session.openedAt, now());
+      // The journal writer has acknowledged a durable commit. Automatic
+      // snapshotting has already reserved the next maintenance slot so later
+      // stable-point and close operations cannot overtake compaction. Neither
+      // that maintenance nor the auxiliary recent index extends the commit IPC.
+      scheduleRecentProjectUpdate(session, committedProject);
       return ack;
-    });
+    }, (ack) => flushScheduledSnapshotAfterCommit(session, ack, validated.kind));
   }
 
   async function createStablePoint(
@@ -1003,7 +1007,8 @@ export function createDesktopBridgeHandlers(
     if (session.imageImportInFlight) {
       throw invalidRequest('A project image import is already in progress');
     }
-    const openedSession = session.session;
+    const openedWriter = session.writer;
+    const openedRoot = session.session.root;
     const targetNodeId = validated.target.kind === 'module' ? validated.target.nodeId : null;
     session.imageImportInFlight = true;
     try {
@@ -1011,7 +1016,7 @@ export function createDesktopBridgeHandlers(
       if (sourcePath === null) return null;
       return enqueueSessionMaintenance(session, async () => {
         const currentSession = requireWritableSession(sessions, validated.sessionId);
-        if (currentSession !== session || currentSession.session !== openedSession) {
+        if (currentSession !== session || currentSession.writer !== openedWriter || currentSession.session.root !== openedRoot) {
           throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before image import');
         }
         if (currentSession.writer === null) {
@@ -1165,12 +1170,13 @@ export function createDesktopBridgeHandlers(
       throw createPersistenceError('CONCURRENT_WRITER', true, 'Dropped media import requires a writable desktop session');
     }
     if (session.imageImportInFlight) throw invalidRequest('A project asset import is already in progress');
-    const openedSession = session.session;
+    const openedWriter = session.writer;
+    const openedRoot = session.session.root;
     session.imageImportInFlight = true;
     try {
       return await enqueueSessionMaintenance(session, async () => {
         const currentSession = requireWritableSession(sessions, request.sessionId);
-        if (currentSession !== session || currentSession.session !== openedSession || currentSession.writer === null) {
+        if (currentSession !== session || currentSession.writer !== openedWriter || currentSession.session.root !== openedRoot || currentSession.writer === null) {
           throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before dropped media import');
         }
         const videoSource = await openVideoSource(sourcePath);
@@ -1284,7 +1290,8 @@ export function createDesktopBridgeHandlers(
       throw createPersistenceError('CONCURRENT_WRITER', true, 'Video import requires a writable desktop session');
     }
     if (session.imageImportInFlight) throw invalidRequest('A project asset import is already in progress');
-    const openedSession = session.session;
+    const openedWriter = session.writer;
+    const openedRoot = session.session.root;
     const targetNodeId = validated.target.kind === 'module' ? validated.target.nodeId : null;
     session.imageImportInFlight = true;
     try {
@@ -1292,7 +1299,7 @@ export function createDesktopBridgeHandlers(
       if (sourcePath === null) return null;
       return enqueueSessionMaintenance(session, async () => {
         const currentSession = requireWritableSession(sessions, validated.sessionId);
-        if (currentSession !== session || currentSession.session !== openedSession || currentSession.writer === null) {
+        if (currentSession !== session || currentSession.writer !== openedWriter || currentSession.session.root !== openedRoot || currentSession.writer === null) {
           throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before video import');
         }
         const currentProject = await repository.readCurrentProject(currentSession.session);
@@ -2062,14 +2069,28 @@ export function createDesktopBridgeHandlers(
     }
   }
 
-  async function closeAllProjects(): Promise<void> {
+  async function closeAllProjects(options: { readonly flush?: boolean } = {}): Promise<void> {
     const activeSessions = [...sessions.values()];
-    sessions.clear();
+    let firstError: unknown = null;
     for (const session of activeSessions) {
+      if (sessions.get(session.sessionId) !== session) continue;
       session.closeState = 'closing';
-      await enqueueSessionMaintenance(session, () => closeBridgeSession(session));
+      try {
+        await enqueueSessionMaintenance(
+          session,
+          () => closeBridgeSession(session, { flush: options.flush !== false }),
+        );
+        if (sessions.get(session.sessionId) === session) sessions.delete(session.sessionId);
+      } catch (error) {
+        // Keep a failed session registered so a later close/retry can release
+        // its repository lock. Continue closing independent projects instead
+        // of abandoning the remaining sessions after the first failure.
+        session.closeState = 'retry_only';
+        firstError ??= error;
+      }
     }
     await knowledgeRefreshService.stop();
+    if (firstError !== null) throw firstError;
   }
 
   async function resolveProjectMemoryContext(
@@ -2159,7 +2180,7 @@ export function createDesktopBridgeHandlers(
     }
   }
   async function recordRecentProject(
-    summary: BridgeSessionSummary,
+    summary: Pick<BridgeSessionSummary, 'project' | 'projectId' | 'projectName'>,
     root: string,
     lastOpenedAt: string,
     lastSavedAt: string,
@@ -2181,6 +2202,38 @@ export function createDesktopBridgeHandlers(
       // unavailable index must never prevent the user's project from opening or saving.
     }
   }
+
+  function scheduleRecentProjectUpdate(
+    session: BridgeSessionContext,
+    project: CanvasProject,
+  ): void {
+    const summary = {
+      project,
+      projectId: project.id,
+      projectName: project.name,
+    };
+    const root = session.session.root;
+    const lastOpenedAt = session.openedAt;
+    const lastSavedAt = now();
+    const writeRecentProject = () => recordRecentProject(
+      summary,
+      root,
+      lastOpenedAt,
+      lastSavedAt,
+    );
+    const previous = recentProjectTails.get(session.sessionId) ?? Promise.resolve();
+    const next = previous.then(writeRecentProject, writeRecentProject);
+    const tracked = next.finally(() => {
+      if (recentProjectTails.get(session.sessionId) === tracked) {
+        recentProjectTails.delete(session.sessionId);
+      }
+    });
+    recentProjectTails.set(session.sessionId, tracked);
+    // recordRecentProject currently absorbs index failures, but retain this
+    // catch so a future auxiliary implementation cannot create an unhandled
+    // rejection during app shutdown.
+    void tracked.catch(() => undefined);
+  }
   async function closeBridgeSession(
     session: BridgeSessionContext,
     options: { flush?: boolean } = {},
@@ -2201,6 +2254,21 @@ export function createDesktopBridgeHandlers(
   ): Promise<T> {
     const result = session.maintenanceTail.then(operation);
     session.maintenanceTail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  function enqueueSessionAcknowledgedMaintenance<T>(
+    session: BridgeSessionContext,
+    operation: () => Promise<T>,
+    maintenance: (value: T) => Promise<void>,
+  ): Promise<T> {
+    const result = session.maintenanceTail.then(operation);
+    const maintained = result.then(maintenance);
+    session.maintenanceTail = maintained.then(() => undefined, () => undefined);
+    // Automatic maintenance cannot invalidate an already durable result. Keep
+    // its rejection handled here; a later stable point or close retries the
+    // same required maintenance and exposes a persistent failure.
+    void maintained.catch(() => undefined);
     return result;
   }
 
@@ -2706,9 +2774,15 @@ export function registerDesktopBridgeHandlers(
   ipcMain.handle(BRIDGE_CHANNELS.recentProjects.open, handlers.openRecentProject);
   ipcMain.handle(BRIDGE_CHANNELS.recentProjects.remove, handlers.removeRecentProject);
   ipcMain.handle(BRIDGE_CHANNELS.recentProjects.relocate, handlers.relocateRecentProject);
-  ipcMain.handle(BRIDGE_CHANNELS.createProject, handlers.createProject);
-  ipcMain.handle(BRIDGE_CHANNELS.commit, handlers.commit);
-  ipcMain.handle(BRIDGE_CHANNELS.createStablePoint, handlers.createStablePoint);
+  ipcMain.handle(BRIDGE_CHANNELS.createProject, (event, request) => capturePersistenceIpcResult(
+    () => handlers.createProject(event, request),
+  ));
+  ipcMain.handle(BRIDGE_CHANNELS.commit, (event, request) => capturePersistenceIpcResult(
+    () => handlers.commit(event, request),
+  ));
+  ipcMain.handle(BRIDGE_CHANNELS.createStablePoint, (event, request) => capturePersistenceIpcResult(
+    () => handlers.createStablePoint(event, request),
+  ));
   ipcMain.handle(BRIDGE_CHANNELS.restore, handlers.restore);
   ipcMain.handle(BRIDGE_CHANNELS.exportPack, handlers.exportPack);
   ipcMain.handle(BRIDGE_CHANNELS.importPack, handlers.importPack);

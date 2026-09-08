@@ -1,8 +1,8 @@
-version: 1.6.100
+version: 1.6.118
 files:
-  - url: CanvasAtelier-Win10-11-x64-1.6.100.exe
-    sha512: gMx9wKX0LYSMGdDmsDYH6B71E4z3fn/YpvWHnW45gM+ifSi5mz6FnymjDTnekrE/ZahUjC8BNui/Q5KApNP7iQ==
-    size: 103239067
-path: CanvasAtelier-Win10-11-x64-1.6.100.exe
-sha512: gMx9wKX0LYSMGdDmsDYH6B71E4z3fn/YpvWHnW45gM+ifSi5mz6FnymjDTnekrE/ZahUjC8BNui/Q5KApNP7iQ==
-releaseDate: '2026-09-05T06:41:54.315Z'
+  - url: CanvasAtelier-Win10-11-x64-1.6.118.exe
+    sha512: BNsxlwZfQS+oJdfca0dzDMa4jXaxp8KC6ldoG0bcJr+Mf/lbyPh3ZiOi30LlBhr3AWjCAQuAR7b0MEaRUVPkpg==
+    size: 103265789
+path: CanvasAtelier-Win10-11-x64-1.6.118.exe
+sha512: BNsxlwZfQS+oJdfca0dzDMa4jXaxp8KC6ldoG0bcJr+Mf/lbyPh3ZiOi30LlBhr3AWjCAQuAR7b0MEaRUVPkpg==
+releaseDate: '2026-09-08T12:31:22.911Z'

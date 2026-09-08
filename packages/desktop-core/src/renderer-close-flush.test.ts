@@ -45,6 +45,67 @@ describe('renderer close-flush coordinator', () => {
     expect(harness.calls).toEqual(['send:close-request-1', 'closeAllProjects', 'finalize:saved']);
   });
 
+  it('keeps the window open and permits retry when project-session close fails after a successful save', async () => {
+    const closeAllProjects = vi.fn()
+      .mockRejectedValueOnce(new Error('session close failed'))
+      .mockResolvedValueOnce(undefined);
+    const finalizeClose = vi.fn();
+    const onCloseBlocked = vi.fn(async () => 'cancel' as const);
+    const requestIds = ['close-after-save-fails', 'close-after-save-retry'];
+    let coordinator: ReturnType<typeof createRendererCloseFlushCoordinator>;
+    coordinator = createRendererCloseFlushCoordinator({
+      closeAllProjects,
+      createRequestId: () => requestIds.shift()!,
+      finalizeClose,
+      onCloseBlocked,
+      sendCloseFlushRequest: (request) => {
+        void coordinator.handleCloseFlushAck({ requestId: request.requestId, phase: 'completed', outcome: 'saved' });
+        return true;
+      },
+    });
+
+    await coordinator.requestClose({ preventDefault: vi.fn() });
+    expect(onCloseBlocked).toHaveBeenCalledWith('failed');
+    expect(finalizeClose).not.toHaveBeenCalled();
+
+    await coordinator.requestClose({ preventDefault: vi.fn() });
+    expect(closeAllProjects).toHaveBeenCalledTimes(2);
+    expect(finalizeClose).toHaveBeenCalledWith('saved');
+  });
+
+  it('restarts the watchdog when renderer saving begins', async () => {
+    const timeoutHandles: object[] = [];
+    const cleared: unknown[] = [];
+    const coordinator = createRendererCloseFlushCoordinator({
+      clearTimeout: (handle) => { cleared.push(handle); },
+      closeAllProjects: vi.fn(),
+      createRequestId: () => 'close-request-watchdog-reset',
+      finalizeClose: vi.fn(),
+      sendCloseFlushRequest: () => true,
+      setTimeout: () => {
+        const handle = {};
+        timeoutHandles.push(handle);
+        return handle;
+      },
+    });
+
+    const closing = coordinator.requestClose({ preventDefault: vi.fn() });
+    expect(timeoutHandles).toHaveLength(1);
+    await expect(coordinator.handleCloseFlushAck({
+      requestId: 'close-request-watchdog-reset',
+      phase: 'save_started',
+    })).resolves.toBe(true);
+    expect(cleared).toEqual([timeoutHandles[0]]);
+    expect(timeoutHandles).toHaveLength(2);
+
+    await coordinator.handleCloseFlushAck({
+      requestId: 'close-request-watchdog-reset',
+      phase: 'completed',
+      outcome: 'saved',
+    });
+    await closing;
+  });
+
   it('starts the timeout as soon as the renderer close request is sent so a missing renderer ACK cannot deadlock the window', async () => {
     const failed = createHarness({ requestIds: ['close-request-failed', 'close-request-retry'] });
     const failedClosing = failed.coordinator.requestClose(failed.closeEvent);
@@ -102,6 +163,7 @@ describe('renderer close-flush coordinator', () => {
 
     expect(onCloseBlocked).toHaveBeenCalledWith('failed');
     expect(closeAllProjects).toHaveBeenCalledOnce();
+    expect(closeAllProjects).toHaveBeenCalledWith('discarded');
     expect(finalizeClose).toHaveBeenCalledWith('discarded');
   });
 
@@ -179,6 +241,12 @@ describe('renderer close-flush coordinator', () => {
       outcome: 'cancelled',
       phase: 'completed',
       requestId: 'close-request-123456',
+    });
+    expect(parseCloseFlushAck({ requestId: 'close-request-123456', phase: 'completed', outcome: 'failed', errorCode: 'SAVE_TIMEOUT' })).toEqual({
+      outcome: 'failed',
+      phase: 'completed',
+      requestId: 'close-request-123456',
+      errorCode: 'SAVE_TIMEOUT',
     });
     expect(parseCloseFlushRequest({ requestId: 'close-request-123456', path: 'C:\\Users\\Private\\draft.json' })).toBeNull();
     expect(parseCloseFlushAck({ requestId: 'close-request-123456', phase: 'completed', outcome: 'saved', Authorization: 'Bearer secret' })).toBeNull();

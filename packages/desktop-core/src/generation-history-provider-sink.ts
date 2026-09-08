@@ -12,7 +12,10 @@ import { GenerationHistoryStore } from './generation-history-store.js';
 
 const HISTORY_PROMPT_SUMMARIES = { image: 'Image generation request', video: 'Video generation request' } as const;
 const HISTORY_CAPABILITY_REVISIONS = { image: 'image-generation-v1', video: 'video-generation-v1' } as const;
-const MAX_PROVIDER_HISTORY_ASSET_BYTES = 64 * 1024 * 1024;
+const MAX_PROVIDER_HISTORY_ASSET_BYTES = {
+  image: 256 * 1024 * 1024,
+  video: 512 * 1024 * 1024,
+} as const;
 const MAX_DECODED_IMAGE_BYTES = 256 * 1024 * 1024;
 
 export type GenerationHistoryFailureCode =
@@ -216,7 +219,7 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
     const prior = terminalFromRecord(existing);
     if (prior !== null) return prior;
     const bytes = Buffer.from(rawBytes);
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_PROVIDER_HISTORY_ASSET_BYTES) {
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_PROVIDER_HISTORY_ASSET_BYTES[existing.kind]) {
       throw new Error('Generated result was invalid');
     }
     const timestamp = this.nowIso();

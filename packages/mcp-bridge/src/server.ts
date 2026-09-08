@@ -13,7 +13,7 @@ export const CANVAS_ATELIER_MCP_INSTRUCTIONS = [
   'canvas_delete_selection returns a workflow plan for the current UI selection; apply it through the same confirmation and canvas_apply_workflow flow.',
   'Paid job confirmation: first call canvas_run_node without confirmationToken. Wait for the user to confirm inside Canvas Atelier, retry the same canvas_run_node request without confirmationToken, read approvalCode, then call canvas_run_node again with confirmationToken set to approvalCode.',
   'A successful canvas_run_node returns jobIds. Poll each id with canvas_get_job_status until completed, failed, or cancelled, then call canvas_read_workflow to read persisted managed result ids.',
-  'canvas_import_media opens the trusted Canvas Atelier picker and returns immediately; ask the user to finish choosing a file inside the app, then read the workflow again.',
+  'canvas_import_media brings Canvas Atelier to the foreground and returns immediately only when pickerOpened is true; then ask the user to finish choosing a file inside the app and read the workflow again. If the tool returns an error, do not claim that a picker opened.',
   'Approval codes are one-time, request-specific, project-specific, and must never be reused after a project switch or revision change.',
 ].join(' ');
 export interface CanvasAtelierRuntimeClient {

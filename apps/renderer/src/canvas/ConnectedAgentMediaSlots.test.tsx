@@ -24,6 +24,48 @@ describe('ConnectedAgentMediaSlots', () => {
     expect(screen.getByLabelText('Agent media slot 4')).toHaveTextContent('4');
   });
 
+  it('hydrates thumbnail metadata when a restored slot keeps the same durable identity', () => {
+    const restoredWithoutSummary: ConnectedAgentMediaSlotItem[] = [{
+      edgeId: 'edge-restored-image',
+      kind: 'image',
+      assetId: 'restored-image',
+      label: 'restored-image',
+    }];
+    const { rerender } = render(
+      <ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={restoredWithoutSummary} />,
+    );
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+
+    rerender(<ConnectedAgentMediaSlots
+      ariaLabel="Agent media slots"
+      media={[{
+        ...restoredWithoutSummary[0]!,
+        label: 'Restored image',
+        previewUrl: 'data:image/png;base64,RESTORED',
+      }]}
+    />);
+
+    expect(screen.getByRole('img', { name: 'Restored image' })).toHaveAttribute(
+      'src',
+      'data:image/png;base64,RESTORED',
+    );
+  });
+
+  it('keeps a pending local reorder while thumbnail metadata hydrates', () => {
+    const withoutPreviews = media.map(({ previewUrl: _previewUrl, ...item }) => item);
+    const onReorder = vi.fn();
+    const { rerender } = render(
+      <ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={withoutPreviews} onReorder={onReorder} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Move Video B left' }));
+    expect(screen.getByLabelText('Agent media slot 3')).toHaveAttribute('title', '3. Video B');
+
+    rerender(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} onReorder={onReorder} />);
+
+    expect(screen.getByLabelText('Agent media slot 3')).toHaveAttribute('title', '3. Video B');
+    expect(screen.getByLabelText('Video B 视频封面')).toHaveAttribute('src', 'blob:video-b');
+  });
+
   it('renders only connected media instead of inventing empty slot thumbnails', () => {
     render(<ConnectedAgentMediaSlots ariaLabel="Agent media slots" media={media} />);
 

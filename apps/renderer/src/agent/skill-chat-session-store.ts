@@ -1,5 +1,5 @@
 export type AgentConversationMode = 'chat' | 'original' | 'codex';
-export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type StoredAgentRequestStatus = 'sending' | 'completed' | 'error';
 
 export interface StoredAgentMessageSource {
@@ -252,9 +252,8 @@ function parseMode(value: unknown): AgentConversationMode | null {
 }
 
 function parseReasoningEffort(value: unknown): AgentReasoningEffort | null {
-  if (value === 'ultra') return 'max';
   return value === 'low' || value === 'medium' || value === 'high'
-    || value === 'xhigh' || value === 'max'
+    || value === 'xhigh' || value === 'max' || value === 'ultra'
     ? value
     : null;
 }

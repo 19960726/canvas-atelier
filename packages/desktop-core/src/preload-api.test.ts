@@ -16,6 +16,26 @@ const summary = {
 };
 
 describe('recent project preload API', () => {
+  it('rethrows typed persistence envelopes for project creation and stable points', async () => {
+    const invoke = async <TResponse>(channel: string): Promise<TResponse> => {
+      const code = channel === BRIDGE_CHANNELS.createProject ? 'DISK_FULL' : 'READ_ONLY_VOLUME';
+      return {
+        error: { code, retryable: code === 'DISK_FULL' },
+        ok: false,
+      } as TResponse;
+    };
+    const api = createPreloadApi(invoke);
+
+    await expect(api.createProject({ project: {} as never })).rejects.toMatchObject({
+      code: 'DISK_FULL',
+      retryable: true,
+    });
+    await expect(api.createStablePoint({ sessionId: 'session-1' })).rejects.toMatchObject({
+      code: 'READ_ONLY_VOLUME',
+      retryable: false,
+    });
+  });
+
   it('subscribes to only the narrow update-state channel and returns the unsubscribe handle', () => {
     let eventListener: ((payload: unknown) => void) | undefined;
     const unsubscribe = () => undefined;

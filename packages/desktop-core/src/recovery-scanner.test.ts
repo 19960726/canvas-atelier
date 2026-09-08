@@ -2,7 +2,7 @@ import { gzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import type { CanvasProject, ProjectTransaction } from '@agent-canvas/domain';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -108,6 +108,56 @@ describe('RecoveryScanner', () => {
     await expect(stat(result.candidates[0]!.path)).resolves.toMatchObject({ size: expect.any(Number) });
     expect(await readFile(activeJournal, 'utf8')).toBe(originalActive);
     expect(resolve(result.candidates[0]!.path).startsWith(`${resolve(appDataRoot, 'recovery')}${sep}`)).toBe(true);
+  });
+
+  it('retains only three verified derived scan sessions while preserving unknown recovery data', async () => {
+    const { appDataRoot, projectRoot } = await createProject(tempRoots, 'project-bounded-recovery-mirrors');
+    let recoveryProjectRoot = '';
+    let latestSessionName = '';
+
+    for (let scanIndex = 1; scanIndex <= 4; scanIndex += 1) {
+      const result = await new RecoveryScanner({
+        appDataRoot,
+        createId: () => `bounded-scan-${scanIndex}`,
+        now: () => new Date(baseNow.getTime() + scanIndex * 1000),
+      }).scan(projectRoot);
+      expect(result.candidates.length).toBeGreaterThan(0);
+      recoveryProjectRoot = dirname(dirname(result.candidates[0]!.path));
+      latestSessionName = basename(dirname(result.candidates[0]!.path));
+      if (scanIndex === 1) {
+        const unknownSession = join(recoveryProjectRoot, 'session-unknown-user-data');
+        await mkdir(unknownSession, { recursive: true });
+        await writeFile(join(unknownSession, 'candidate-unknown.json'), 'not-json', 'utf8');
+      }
+    }
+
+    const sessions = (await readdir(recoveryProjectRoot)).filter((name) => name.startsWith('session-'));
+    expect(sessions).toContain('session-unknown-user-data');
+    expect(sessions).toContain(latestSessionName);
+    expect(sessions.filter((name) => name !== 'session-unknown-user-data')).toHaveLength(3);
+  });
+
+  it('keeps a successful recovery result when best-effort session pruning fails', async () => {
+    const { appDataRoot, projectRoot } = await createProject(tempRoots, 'project-prune-failure');
+    for (let scanIndex = 1; scanIndex <= 3; scanIndex += 1) {
+      await new RecoveryScanner({
+        appDataRoot,
+        createId: () => `pre-prune-scan-${scanIndex}`,
+        now: () => new Date(baseNow.getTime() + scanIndex * 1000),
+      }).scan(projectRoot);
+    }
+    const fileSystem = new FailRecoverySessionPruneFileSystem(appDataRoot);
+
+    const result = await new RecoveryScanner({
+      appDataRoot,
+      createId: () => 'scan-with-prune-failure',
+      fileSystem,
+      now: () => new Date(baseNow.getTime() + 4000),
+    }).scan(projectRoot);
+
+    expect(result.action).toBe('auto_recover');
+    expect(result.candidates.length).toBeGreaterThan(0);
+    expect(fileSystem.pruneAttempts).toBeGreaterThan(0);
   });
 
   it('requires a choice for corruption before the tail and keeps damaged originals untouched', async () => {
@@ -546,6 +596,27 @@ function makePromptNode(id: string) {
 
 async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf8')) as T;
+}
+
+class FailRecoverySessionPruneFileSystem extends NodeFileSystem {
+  readonly appDataRoot: string;
+  pruneAttempts = 0;
+
+  constructor(appDataRoot: string) {
+    super();
+    this.appDataRoot = resolve(appDataRoot);
+  }
+
+  override async rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void> {
+    if (
+      options?.recursive === true
+      && resolve(path).startsWith(`${resolve(this.appDataRoot, 'recovery')}${sep}`)
+    ) {
+      this.pruneAttempts += 1;
+      throw new Error('injected recovery session prune failure');
+    }
+    await super.rm(path, options);
+  }
 }
 
 class FailRecoveryMirrorFileSystem implements FileSystem {

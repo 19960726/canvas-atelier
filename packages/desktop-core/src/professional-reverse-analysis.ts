@@ -71,7 +71,6 @@ const REQUIRED_OUTPUT = {
   analysis: '完整中文结论摘要，必须覆盖空间、比例、材质、灯光、镜头、特效和产品适配',
   keywords: ['具体且可执行的中英文视觉关键词'],
   mediaResponsibilities: [{
-    mention: '@图片N or @视频N',
     sourceId: 'source asset id',
     label: 'source label',
     role: 'product_identity | composition | material_texture | lighting | model_pose | food_scale | camera_motion | effects',
@@ -83,7 +82,7 @@ const REQUIRED_OUTPUT = {
   sceneDecomposition: {
     spatialStructure: '场景结构、前景/中景/背景、纵深层次、遮挡关系、空间连接和场景空间感',
     spatialDepth: '机位高度、透视线、镜头压缩感、前后景距离、景深衰减及空间感来源',
-    objects: [{ name: '对象', role: '职责', placement: '归一化位置', scaleAndProportion: '占比和比例', depthLayer: 'foreground | midground | background', occlusionAndZOrder: '遮挡与层级' }],
+    objects: [{ name: '对象', role: '职责', placement: '归一化位置', scaleAndProportion: '占比和比例', depthLayer: 'foreground | midground | background', occlusionAndZOrder: '遮挡与层级', shapeAndGeometry: '可见几何形态、曲面和轮廓', modelAndStructure: '外观结构与部件，无法看见的内部构造标为未知' }],
   },
   composition: { visualCenter: '视觉中心与主体占比', whitespaceAndSafeArea: '留白与安全区', guidingLinesAndBalance: '水平线、引导线和平衡', cropAndAspectRatio: '裁切方式和画幅比例' },
   camera: { estimatedFocalLength: '估计焦距范围', shotSize: '景别', positionAndAngle: '高度/俯仰/方位', perspectiveAndVanishingPoints: '透视与消失点', distortion: '畸变', confidence: '依据和置信度' },
@@ -94,7 +93,7 @@ const REQUIRED_OUTPUT = {
   fluids: [{ type: '流体类型', purpose: '用途', physicalBehavior: '黏度/表面张力/方向', productionMethod: ['模拟或二维替代步骤'], shadingAndTexture: '网格与着色', productInteraction: '与产品交互', safetyConstraints: ['安全约束'] }],
   whiteBackgroundAdaptation: { silhouetteProtection: ['轮廓保护'], grounding: ['接触阴影与反射锚定'], contaminationPrevention: ['防止白底和产品颜色污染'], doNotCopy: ['不可照搬元素'] },
   subjectScaleAndPlacement: [{ subject: '模特/产品/食物/道具', relativeScale: '相对比例', placement: '位置', constraints: ['约束'] }],
-  videoTimeline: [{ timeRange: '00:00.000-00:02.000', shotType: '景别', estimatedFocalLength: '焦距', cameraMovement: '运镜', speedCurveAndStabilization: '速度曲线和稳定方式', subjectAction: '主体动作', lightingAndSweep: '灯光与扫光', effects: ['特效'], transition: '转场', keyframes: ['关键帧'], productAdaptation: '白底产品适配' }],
+  videoTimeline: [{ timeRange: '00:00.000-00:02.000', shotType: '景别', estimatedFocalLength: '焦距', cameraMovement: '运镜', speedCurveAndStabilization: '速度曲线和稳定方式', subjectAction: '主体动作', lightingAndSweep: '灯光与扫光', effects: ['特效'], transition: '转场', keyframes: ['关键帧'], productAdaptation: '白底产品适配', explodedViewMotion: '逐部件拆分方向、次序、位移、释放及复位；无分解动作则明确不适用', fluidMotionAndFunction: '流体流向、速度、与产品作用及叙事功能；不可见则注明' }],
   promptLogic: {
     subject: '主体身份、外观、比例和保护约束',
     action: '主体动作或事件',
@@ -113,6 +112,7 @@ const REQUIRED_OUTPUT = {
   negativeConstraints: ['具体负面约束'],
   executionChecklist: ['按制作顺序排列的检查清单'],
   uncertainties: ['不可见或只能估计的内容'],
+  evidence: { observations: ['来自素材与时间点的可见事实'], estimates: ['合理估计、可见依据与置信度'], unknowns: ['无法确认的参数或内部结构'] },
 };
 
 export function buildProfessionalReverseRequest(

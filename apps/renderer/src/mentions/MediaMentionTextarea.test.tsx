@@ -73,13 +73,35 @@ describe('MediaMentionTextarea', () => {
     const editor = screen.getByRole('textbox', { name: 'Prompt' });
     expect(editor).toHaveTextContent('参考 图片1 后继续');
     expect(editor).not.toHaveTextContent('@图片1');
-    const chip = screen.getByText('图片1');
+    const chip = screen.getByText('图片1').closest<HTMLElement>('[data-token="@图片1"]');
+    expect(chip).not.toBeNull();
     expect(chip).toHaveAttribute('contenteditable', 'false');
     expect(chip).toHaveAttribute('data-token', '@图片1');
     expect(chip).toHaveAttribute('data-media-mention', 'image');
-    expect(chip.querySelector('svg')).not.toBeNull();
+    expect(chip?.querySelector('svg')).not.toBeNull();
     expect(container.querySelector('textarea')).toBeNull();
     expect(container.querySelector('.media-mention-textarea__presentation')).toBeNull();
+  });
+
+  it('keeps text and a media capsule as direct inline-flow siblings', () => {
+    render(<MediaMentionTextarea
+      aria-label="Prompt"
+      value="前文 @图片1 后文"
+      mentions={[{ token: '@图片1', assetId: 'image-1', label: '主图', kind: 'image', displayUrl: 'novus-project://asset/image-1' }]}
+      onChange={vi.fn()}
+    />);
+
+    const editor = screen.getByRole('textbox', { name: 'Prompt' });
+    const chip = editor.querySelector('[data-token="@图片1"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.parentElement).toBe(editor);
+    expect(editor.childNodes[0]?.nodeType).toBe(Node.TEXT_NODE);
+    expect(editor.childNodes[2]?.nodeType).toBe(Node.TEXT_NODE);
+    expect(chip).toHaveClass('media-mention-textarea__chip');
+    const label = chip?.querySelector('.media-mention-textarea__chip-label');
+    expect(label).not.toBeNull();
+    expect(chip?.lastElementChild).toBe(label);
+    expect(label).toHaveTextContent('图片1');
   });
 
   it('uses one contenteditable multiline textbox surface', () => {
@@ -177,8 +199,9 @@ describe('MediaMentionTextarea', () => {
       onChange={onChange}
     />);
     const editor = screen.getByRole('textbox', { name: 'Prompt' });
-    const chip = screen.getByText('图片1');
-    const index = Array.from(editor.childNodes).indexOf(chip);
+    const chip = screen.getByText('图片1').closest<HTMLElement>('[data-token="@图片1"]');
+    expect(chip).not.toBeNull();
+    const index = Array.from(editor.childNodes).indexOf(chip!);
     const caretOffset = index < 0 ? 0 : side === 'after' ? index + 1 : index;
     setCaret(editor, caretOffset);
 
@@ -233,12 +256,67 @@ describe('MediaMentionTextarea', () => {
       onChange={vi.fn()}
     />);
 
-    const chip = screen.getByText('图片20');
-    expect(chip.querySelector('img')).toHaveAttribute('src', 'novus-project://asset/image-20');
-    expect(chip.querySelector('img')).toHaveAttribute('alt', '');
-    fireEvent.mouseEnter(chip);
+    const chip = screen.getByText('图片20').closest<HTMLElement>('[data-token="@图片20"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.querySelector('img')).toHaveAttribute('src', 'novus-project://asset/image-20');
+    expect(chip!.querySelector('img')).toHaveAttribute('alt', '');
+    fireEvent.mouseEnter(chip!);
 
     expect(screen.getByRole('tooltip', { name: '图片20 素材预览' })).toHaveTextContent('商品背面.png');
     expect(screen.getByRole('img', { name: '商品背面.png' })).toHaveAttribute('src', 'novus-project://asset/image-20');
+  });
+
+  it('refreshes a chip when its preview arrives asynchronously without changing the canonical value', () => {
+    const { rerender } = render(<MediaMentionTextarea
+      aria-label="Prompt"
+      value="前文@图片1后文"
+      mentions={[{ token: '@图片1', assetId: 'image-1', label: '等待素材', kind: 'image' }]}
+      onChange={vi.fn()}
+    />);
+
+    const initialChip = screen.getByText('图片1').closest<HTMLElement>('[data-token="@图片1"]');
+    expect(initialChip).not.toBeNull();
+    expect(initialChip?.querySelector('img')).toBeNull();
+
+    rerender(<MediaMentionTextarea
+      aria-label="Prompt"
+      value="前文@图片1后文"
+      mentions={[{
+        token: '@图片1',
+        assetId: 'image-1',
+        label: '异步载入的商品图',
+        kind: 'image',
+        displayUrl: 'novus-project://asset/image-1',
+      }]}
+      onChange={vi.fn()}
+    />);
+
+    const refreshedChip = screen.getByText('图片1').closest<HTMLElement>('[data-token="@图片1"]');
+    expect(refreshedChip?.querySelector('img')).toHaveAttribute('src', 'novus-project://asset/image-1');
+    expect(refreshedChip).toHaveAttribute('aria-label', expect.stringContaining('异步载入的商品图'));
+  });
+
+  it.each(['Backspace', 'Delete'] as const)('lets keyboard users focus a chip and remove it with %s', (key) => {
+    const onChange = vi.fn();
+    render(<MediaMentionTextarea
+      aria-label="Prompt"
+      value="前文 @图片1 后文"
+      mentions={[{ token: '@图片1', assetId: 'image-1', label: '商品主图', kind: 'image' }]}
+      onChange={onChange}
+    />);
+
+    const chip = screen.getByText('图片1').closest<HTMLElement>('[data-token="@图片1"]');
+    expect(chip).not.toBeNull();
+    expect(chip).toHaveAttribute('tabindex', '0');
+    expect(chip).toHaveAttribute('aria-keyshortcuts', 'Backspace Delete');
+    expect(chip).toHaveAccessibleName('图片1，商品主图，图片引用。按退格键或删除键移除');
+
+    chip!.focus();
+    expect(chip).toHaveFocus();
+    fireEvent.keyDown(chip!, { key });
+
+    expect(eventValue(onChange)).toBe('前文  后文');
+    expect(screen.queryByText('图片1')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveFocus();
   });
 });

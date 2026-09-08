@@ -36,6 +36,46 @@ describe('legacy desktop close coordinator', () => {
     expect(calls).toEqual(['send:legacy-close-request-1', 'closeAllProjects', 'finalize:saved']);
   });
 
+  it('keeps the window open after a project-close failure and permits a later retry', async () => {
+    const closeAllProjects = vi.fn()
+      .mockRejectedValueOnce(new Error('project close failed'))
+      .mockResolvedValueOnce(undefined);
+    const finalizeClose = vi.fn();
+    const onCloseBlocked = vi.fn(async () => 'cancel' as const);
+    const requestIds = ['legacy-close-request-failed', 'legacy-close-request-retry'];
+    const coordinator = createRendererCloseFlushCoordinator({
+      closeAllProjects,
+      createRequestId: () => requestIds.shift() ?? 'legacy-close-request-fallback',
+      finalizeClose,
+      onCloseBlocked,
+      sendCloseFlushRequest: () => true,
+    });
+
+    const failedClose = coordinator.requestClose({ preventDefault: vi.fn() });
+    await coordinator.handleCloseFlushAck({
+      requestId: 'legacy-close-request-failed',
+      phase: 'completed',
+      outcome: 'saved',
+    });
+    await failedClose;
+
+    expect(closeAllProjects).toHaveBeenCalledOnce();
+    expect(finalizeClose).not.toHaveBeenCalled();
+    expect(onCloseBlocked).toHaveBeenCalledWith('failed');
+
+    const retriedClose = coordinator.requestClose({ preventDefault: vi.fn() });
+    await coordinator.handleCloseFlushAck({
+      requestId: 'legacy-close-request-retry',
+      phase: 'completed',
+      outcome: 'saved',
+    });
+    await retriedClose;
+
+    expect(closeAllProjects).toHaveBeenCalledTimes(2);
+    expect(finalizeClose).toHaveBeenCalledOnce();
+    expect(finalizeClose).toHaveBeenCalledWith('saved');
+  });
+
   it('wires main window close and before-quit through the renderer close-flush request/ack channels', async () => {
     const source = await readFile(join(process.cwd(), 'apps/desktop-legacy/src/main.ts'), 'utf8');
 
@@ -45,11 +85,23 @@ describe('legacy desktop close coordinator', () => {
     expect(source).toContain("window.on('close'");
     expect(source).toContain("app.on('before-quit'");
     expect(source).toContain('requestCoordinatedClose');
-    expect(source).not.toContain('showCloseRecoveryChoice');
-    expect(source).not.toContain('放弃更改并关闭');
+    expect(source).toContain('onCloseBlocked: showCloseRecoveryChoice');
+    expect(source).toContain('放弃未保存更改并退出');
     expect(source).not.toContain('关闭未命名工作流');
     expect(source).not.toContain("buttons: ['保存', '不保存', '取消']");
     expect(source).toContain("return 'save';");
+  });
+
+  it('awaits the durable project close before best-effort service shutdown and resets the retry latch on failure', async () => {
+    const source = await readFile(join(process.cwd(), 'apps/desktop-legacy/src/main.ts'), 'utf8');
+    const shutdownFunction = source.match(/async function runCoordinatedShutdown[\s\S]*?\n\}\n\nfunction finalizeCoordinatedClose/u)?.[0];
+
+    expect(shutdownFunction).toBeDefined();
+    expect(shutdownFunction).toMatch(/try\s*\{[\s\S]*await handlers\.closeAllProjects\(\{ flush: reason !== 'discarded' \}\);[\s\S]*await shutdownDesktopServices/u);
+    expect(shutdownFunction).toContain('closeAllProjects: () => undefined');
+    expect(shutdownFunction).toContain('stopMcpRuntime,');
+    expect(shutdownFunction).toMatch(/catch \(error\)\s*\{\s*closeAllStarted = false;\s*throw error;/u);
+    expect(shutdownFunction).not.toContain('closeAllProjects: () => handlers.closeAllProjects()');
   });
 
   it('keeps project image selection and asset resolution in the main process', async () => {

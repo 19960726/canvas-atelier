@@ -26,7 +26,7 @@ function isPathInside(parentPath: string, candidatePath: string): boolean {
 }
 
 describe('desktop packaging boundary', () => {
-  it('keeps the 1.6.100 modern installer in its own builder output and excludes legacy output', async () => {
+  it('keeps the 1.6.118 modern installer in its own builder output and excludes legacy output', async () => {
     const modernRoot = join(process.cwd(), 'apps', 'desktop-modern');
     const packageJson = JSON.parse(await readFile(
       join(modernRoot, 'package.json'),
@@ -37,7 +37,7 @@ describe('desktop packaging boundary', () => {
       'utf8',
     )) as BuilderConfig;
 
-    expect(packageJson.version).toBe('1.6.100');
+    expect(packageJson.version).toBe('1.6.118');
     expect(builderConfig.directories?.output).toBe('dist-builder/desktop-modern');
     expect(builderConfig.artifactName).toBe('CanvasAtelier-Win10-11-x64-${version}.exe');
 
@@ -53,7 +53,7 @@ describe('desktop packaging boundary', () => {
       modernRoot,
       'dist-builder',
       'desktop-modern',
-      'CanvasAtelier-Win10-11-x64-1.6.100.exe',
+      'CanvasAtelier-Win10-11-x64-1.6.118.exe',
     ));
     expect(isPathInside(modernOutputRoot, installerPath)).toBe(true);
     expect(isPathInside(legacyOutputRoot, installerPath)).toBe(false);
@@ -89,7 +89,7 @@ describe('desktop packaging boundary', () => {
     expect(rendererConfig).toContain('sourcemap: false');
   });
 
-  it('removes legacy CanvasForge shortcuts during install so users cannot launch the old UI', async () => {
+  it('preserves the independently installed CanvasForge shortcuts during Canvas Atelier install', async () => {
     const builderConfig = await readFile(
       join(process.cwd(), 'apps', 'desktop-modern', 'electron-builder.yml'),
       'utf8',
@@ -100,9 +100,15 @@ describe('desktop packaging boundary', () => {
     );
 
     expect(builderConfig).toContain('include: build/installer.nsh');
-    expect(installerScript).toContain('$DESKTOP\\CanvasForge.lnk');
-    expect(installerScript).toContain('$SMPROGRAMS\\CanvasForge.lnk');
-    expect(installerScript).toContain('$SMPROGRAMS\\CanvasForge\\CanvasForge.lnk');
+    expect(installerScript).not.toContain('taskkill');
+    expect(installerScript).not.toContain('!macro customInit');
+    expect(installerScript).toContain('!macro customCheckAppRunning');
+    expect(installerScript).toContain('installer-process-check.ps1');
+    expect(installerScript).toContain('-InstallDirectory "$INSTDIR"');
+    expect(installerScript).toContain('SetErrorLevel 2');
+    expect(installerScript).not.toContain('$DESKTOP\\CanvasForge.lnk');
+    expect(installerScript).not.toContain('$SMPROGRAMS\\CanvasForge.lnk');
+    expect(installerScript).not.toContain('$SMPROGRAMS\\CanvasForge\\CanvasForge.lnk');
     expect(installerScript).not.toContain('provider-credentials');
     expect(installerScript).not.toContain('AppData');
   });
@@ -115,6 +121,23 @@ describe('desktop packaging boundary', () => {
 
     expect(rendererHtml).toContain('<title>Canvas Atelier</title>');
     expect(rendererHtml).not.toContain('<title>Novus Atelier</title>');
+  });
+
+  it('lets copy actions read managed image bytes without opening external network access', async () => {
+    const rendererHtml = await readFile(
+      join(process.cwd(), 'apps', 'renderer', 'index.html'),
+      'utf8',
+    );
+    const desktopMain = await readFile(
+      join(process.cwd(), 'apps', 'desktop-modern', 'src', 'main.ts'),
+      'utf8',
+    );
+    const policy = rendererHtml.match(/http-equiv="Content-Security-Policy"[\s\S]*?content="([^"]+)"/u)?.[1];
+
+    expect(policy).toBeDefined();
+    expect(policy).toMatch(/(?:^|;)\s*connect-src\s+'self'\s+novus-asset:\s*(?:;|$)/u);
+    expect(policy).not.toMatch(/connect-src[^;]*(?:https?:|file:)/u);
+    expect(desktopMain).toMatch(/scheme:\s*'novus-asset',[\s\S]*?privileges:\s*\{[^}]*corsEnabled:\s*true[^}]*\}/u);
   });
 
   it('hides the native Electron menu bar while retaining the compact window title bar', async () => {

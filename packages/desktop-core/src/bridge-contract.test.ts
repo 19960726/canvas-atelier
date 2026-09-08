@@ -2533,6 +2533,33 @@ describe('desktop bridge contract', () => {
     ]));
   });
 
+  it('serializes typed failures for every write boundary registered over Electron IPC', async () => {
+    const registered = new Map<string, (event: unknown, request: unknown) => unknown>();
+    const ipcMain = {
+      handle: vi.fn((channel: string, handler: (event: unknown, request: unknown) => unknown) => {
+        registered.set(channel, handler);
+      }),
+    };
+    const failure = Object.assign(new Error('private path must not cross IPC'), {
+      code: 'DISK_FULL',
+      retryable: true,
+    });
+    const handlers = {
+      createProject: vi.fn(async () => { throw failure; }),
+      commit: vi.fn(async () => { throw failure; }),
+      createStablePoint: vi.fn(async () => { throw failure; }),
+    };
+
+    registerDesktopBridgeHandlers(ipcMain, handlers as never);
+
+    for (const channel of [BRIDGE_CHANNELS.createProject, BRIDGE_CHANNELS.commit, BRIDGE_CHANNELS.createStablePoint]) {
+      await expect(registered.get(channel)?.({}, {})).resolves.toEqual({
+        error: { code: 'DISK_FULL', retryable: true },
+        ok: false,
+      });
+    }
+  });
+
   it('returns the active journal head revision when reopening newer-than-stable projects', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-head-'));
     const projectRoot = join(tempRoot, 'HeadRevision.novus-project');
@@ -2614,6 +2641,10 @@ describe('desktop bridge contract', () => {
         kind: 'agent',
         sessionId: opened!.sessionId,
       });
+      // The durable commit acknowledgement intentionally precedes automatic
+      // compaction. A stable point drains that ordered maintenance before it
+      // performs its own explicit flush.
+      await handlers.createStablePoint({}, { sessionId: opened!.sessionId });
 
       expect(consider).toHaveBeenCalledWith(
         expect.objectContaining({ root: session.root }),
@@ -2625,6 +2656,210 @@ describe('desktop bridge contract', () => {
       );
       expect(flush).toHaveBeenCalledWith(expect.objectContaining({ root: session.root }), { reason: 'agent_transaction' });
     } finally {
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('returns the durable commit acknowledgement before automatic snapshot and recent-index maintenance settle', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-commit-ack-'));
+    const projectRoot = join(tempRoot, 'CommitAck.novus-project');
+    await mkdir(join(projectRoot, 'journal'), { recursive: true });
+    const session = createOpenedSession(projectRoot);
+    await writeFile(join(projectRoot, 'journal', 'active.ndjson'), '', 'utf8');
+    await writeFile(join(projectRoot, 'project.novus.json'), `${JSON.stringify(session.manifest)}\n`, 'utf8');
+
+    let releaseSnapshot!: () => void;
+    let enterSnapshot!: () => void;
+    const snapshotEntered = new Promise<void>((resolve) => {
+      enterSnapshot = resolve;
+    });
+    const snapshotGate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    let releaseRecent!: () => void;
+    let enterRecent!: () => void;
+    const recentEntered = new Promise<void>((resolve) => {
+      enterRecent = resolve;
+    });
+    const recentGate = new Promise<void>((resolve) => {
+      releaseRecent = resolve;
+    });
+    let recentWriteCount = 0;
+    const upsert = vi.fn(async () => {
+      recentWriteCount += 1;
+      if (recentWriteCount > 1) {
+        enterRecent();
+        await recentGate;
+      }
+      return [];
+    });
+    let flushCount = 0;
+    const flush = vi.fn(async (_session: OpenedProjectSession, request: { reason: 'agent_transaction' | 'stable_point' }) => {
+      flushCount += 1;
+      if (flushCount === 1) {
+        enterSnapshot();
+        await snapshotGate;
+      }
+      return {
+        path: `snapshots/s-3-${request.reason}.json.gz`,
+        reason: request.reason,
+        revision: 3,
+        snapshotId: `s-3-${request.reason}`,
+      };
+    });
+    const commit = vi.fn(async () => ({
+      committedAt: '2026-07-14T00:00:00.000Z',
+      projectId: starterProject.id,
+      revision: 3,
+      sequence: 3,
+      transactionId: 'tx-fast-durable-ack',
+    }));
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('commit-ack'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      recentProjectStore: {
+        list: vi.fn(async () => []),
+        relocate: vi.fn(async () => null),
+        remove: vi.fn(async () => []),
+        resolvePreviewPath: vi.fn(async () => null),
+        resolveRoot: vi.fn(async () => null),
+        upsert,
+      },
+      repository: {
+        close: vi.fn(async () => undefined),
+        open: vi.fn(async () => session),
+        openJournalWriter: vi.fn(async () => ({ commit })),
+        readCurrentProject: vi.fn(async () => structuredClone(starterProject)),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => ({ reason: 'agent_transaction' as const })),
+        flush,
+      },
+    });
+
+    let commitPromise: Promise<unknown> | null = null;
+    let stablePointPromise: Promise<unknown> | null = null;
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      commitPromise = handlers.commit({}, {
+        ...makeCreatePromptRequest(starterProject.id, 'tx-fast-durable-ack', 2, 'prompt-fast-durable-ack'),
+        kind: 'agent',
+        sessionId: opened!.sessionId,
+      });
+      await snapshotEntered;
+
+      await expect(Promise.race([
+        commitPromise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30)),
+      ])).resolves.toBe(true);
+
+      stablePointPromise = handlers.createStablePoint({}, { sessionId: opened!.sessionId });
+      await expect(Promise.race([
+        stablePointPromise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30)),
+      ])).resolves.toBe(false);
+
+      releaseSnapshot();
+      await recentEntered;
+      expect(upsert).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ nodeCount: starterProject.nodes.length + 1 }),
+      );
+      await expect(Promise.race([
+        stablePointPromise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30)),
+      ])).resolves.toBe(true);
+      expect(flush).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ root: projectRoot }),
+        { reason: 'stable_point' },
+      );
+    } finally {
+      releaseSnapshot();
+      releaseRecent();
+      await Promise.allSettled([
+        ...(commitPromise === null ? [] : [commitPromise]),
+        ...(stablePointPromise === null ? [] : [stablePointPromise]),
+      ]);
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('reserves automatic snapshot maintenance ahead of a close requested during the journal write', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-commit-close-order-'));
+    const projectRoot = join(tempRoot, 'CommitCloseOrder.novus-project');
+    await mkdir(join(projectRoot, 'journal'), { recursive: true });
+    const session = createOpenedSession(projectRoot);
+    await writeFile(join(projectRoot, 'journal', 'active.ndjson'), '', 'utf8');
+    await writeFile(join(projectRoot, 'project.novus.json'), `${JSON.stringify(session.manifest)}\n`, 'utf8');
+    const events: string[] = [];
+    let enterWriter!: () => void;
+    let releaseWriter!: () => void;
+    const writerEntered = new Promise<void>((resolve) => {
+      enterWriter = resolve;
+    });
+    const writerGate = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    let enterSnapshot!: () => void;
+    const snapshotEntered = new Promise<void>((resolve) => {
+      enterSnapshot = resolve;
+    });
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('commit-close-order'),
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      repository: {
+        close: vi.fn(async () => {
+          events.push('close');
+        }),
+        open: vi.fn(async () => session),
+        openJournalWriter: vi.fn(async () => ({
+          commit: vi.fn(async () => {
+            events.push('writer');
+            enterWriter();
+            await writerGate;
+            events.push('writer-ack');
+            return {
+              committedAt: '2026-07-14T00:00:00.000Z',
+              projectId: starterProject.id,
+              revision: 3,
+              sequence: 3,
+              transactionId: 'tx-commit-close-order',
+            };
+          }),
+        })),
+        readCurrentProject: vi.fn(async () => structuredClone(starterProject)),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => ({ reason: 'agent_transaction' as const })),
+        flush: vi.fn(async () => {
+          events.push('snapshot');
+          enterSnapshot();
+          return {
+            path: 'snapshots/s-3-agent.json.gz',
+            reason: 'agent_transaction' as const,
+            revision: 3,
+            snapshotId: 's-3-agent',
+          };
+        }),
+      },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const committing = handlers.commit({}, {
+        ...makeCreatePromptRequest(starterProject.id, 'tx-commit-close-order', 2, 'prompt-commit-close-order'),
+        kind: 'agent',
+        sessionId: opened!.sessionId,
+      });
+      await writerEntered;
+      const closing = handlers.closeProject({}, { flush: false, sessionId: opened!.sessionId });
+      releaseWriter();
+
+      await Promise.all([committing, closing, snapshotEntered]);
+      expect(events).toEqual(['writer', 'writer-ack', 'snapshot', 'close']);
+    } finally {
+      releaseWriter();
       await rm(tempRoot, { force: true, recursive: true });
     }
   });
@@ -2893,6 +3128,74 @@ describe('desktop bridge contract', () => {
     expect(close).toHaveBeenCalledTimes(2);
     await expect(handlers.closeProject({}, { sessionId: first!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
     await expect(handlers.closeProject({}, { sessionId: second!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+  });
+
+  it('releases all active sessions without snapshot flush after an explicit discard', async () => {
+    const close = vi.fn(async () => undefined);
+    const flush = vi.fn();
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('discard-session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn()
+          .mockResolvedValueOnce('C:\\redacted\\DiscardOne.novus-project')
+          .mockResolvedValueOnce('C:\\redacted\\DiscardTwo.novus-project'),
+      },
+      repository: {
+        close,
+        open: vi.fn()
+          .mockResolvedValueOnce(createOpenedSession('C:\\redacted\\DiscardOne.novus-project'))
+          .mockResolvedValueOnce(createOpenedSession('C:\\redacted\\DiscardTwo.novus-project')),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => starterProject),
+      },
+      snapshotScheduler: {
+        consider: vi.fn(() => ({ reason: 'close' as const })),
+        flush,
+      } as unknown as SnapshotScheduler,
+    });
+
+    await handlers.openProject({}, { mode: 'write' });
+    await handlers.openProject({}, { mode: 'write' });
+    await handlers.closeAllProjects({ flush: false });
+
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('continues closing other sessions and retains a failed session for retry', async () => {
+    const firstSession = createOpenedSession('C:\\redacted\\BatchFailureOne.novus-project');
+    const secondSession = createOpenedSession('C:\\redacted\\BatchFailureTwo.novus-project');
+    let failFirst = true;
+    const close = vi.fn(async (session: OpenedProjectSession) => {
+      if (session === firstSession && failFirst) {
+        failFirst = false;
+        throw Object.assign(new Error('temporary close failure'), { code: 'DURABLE_WRITE_FAILED', retryable: true });
+      }
+    });
+    const handlers = createDesktopBridgeHandlers({
+      createId: createSequentialId('batch-session'),
+      dialogs: {
+        chooseProjectRoot: vi.fn()
+          .mockResolvedValueOnce(firstSession.root)
+          .mockResolvedValueOnce(secondSession.root),
+      },
+      repository: {
+        close,
+        open: vi.fn().mockResolvedValueOnce(firstSession).mockResolvedValueOnce(secondSession),
+        openJournalWriter: vi.fn(async () => ({ commit: vi.fn() })),
+        readCurrentProject: vi.fn(async () => starterProject),
+      },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() } as unknown as SnapshotScheduler,
+    });
+
+    const first = await handlers.openProject({}, { mode: 'write' });
+    const second = await handlers.openProject({}, { mode: 'write' });
+    await expect(handlers.closeAllProjects()).rejects.toMatchObject({ code: 'DURABLE_WRITE_FAILED' });
+
+    expect(close).toHaveBeenCalledTimes(2);
+    await expect(handlers.closeProject({}, { sessionId: second!.sessionId })).rejects.toMatchObject({ code: 'INVALID_SESSION' });
+    await expect(handlers.closeProject({}, { sessionId: first!.sessionId })).resolves.toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(3);
   });
 
   it('replaces a stale same-process session when a renderer reopens the same project', async () => {
@@ -3259,7 +3562,7 @@ describe('desktop bridge contract', () => {
         .mockResolvedValue({ commit: vi.fn() })
       : vi.fn(async () => ({ commit: vi.fn() }));
     const fileSystem = failureStage === 'snapshot' || failureStage === 'journal' || failureStage === 'manifest'
-      ? new FailRestoreRenameOnceFileSystem(failureStage, errno!)
+      ? new FailRestoreRenameFileSystem(failureStage, errno!)
       : new NodeFileSystem();
     let id = 0;
     const handlers = createDesktopBridgeHandlers({
@@ -3455,14 +3758,15 @@ function createOpenedSession(root = 'C:\\redacted\\Demo.novus-project'): OpenedP
   };
 }
 
-class FailRestoreRenameOnceFileSystem extends NodeFileSystem {
-  private failed = false;
+class FailRestoreRenameFileSystem extends NodeFileSystem {
+  private failuresRemaining: number;
 
   constructor(
     private readonly stage: 'snapshot' | 'journal' | 'manifest',
     private readonly errno: string,
   ) {
     super();
+    this.failuresRemaining = errno === 'EACCES' || errno === 'EPERM' ? 8 : 1;
   }
 
   override async rename(source: string, destination: string): Promise<void> {
@@ -3472,8 +3776,8 @@ class FailRestoreRenameOnceFileSystem extends NodeFileSystem {
       : this.stage === 'journal'
         ? normalized.endsWith('/journal/active.ndjson')
         : normalized.endsWith('/project.novus.json');
-    if (!this.failed && matches) {
-      this.failed = true;
+    if (this.failuresRemaining > 0 && matches) {
+      this.failuresRemaining -= 1;
       throw Object.assign(new Error(`Injected ${this.errno} failure at ${destination}`), { code: this.errno });
     }
     await super.rename(source, destination);

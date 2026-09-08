@@ -45,19 +45,25 @@ export function App() {
 
     closeFlushUnsubscribe = lifecycle.subscribeCloseFlushRequest(async (request) => {
       try {
+        // A native close request must be acknowledged before waiting for
+        // hydration. This pauses the native delivery watchdog while the
+        // renderer swaps its temporary project for the durable one.
+        lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'decision_requested' });
         // A close request can arrive while the initial durable-project
         // hydration is still replacing the temporary untitled/read-only
         // state. Waiting here prevents that transient state from being
         // mistaken for a failed save and avoids a spurious recovery dialog.
         await hydrationReady;
+        lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'save_started' });
         const state = useAppStore.getState();
         if (isPristineUntitledProject(state)) {
-          lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'save_started' });
           lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'completed', outcome: 'saved' });
           return;
         }
-        lifecycle.ackCloseFlush({ requestId: request.requestId, phase: 'save_started' });
-        const saved = await state.closePersistence();
+        // The main process owns the final session release. Renderer-side
+        // preparation only flushes durable state, so a successful ACK cannot
+        // race with a second close call or strand an open project session.
+        const saved = await state.preparePersistenceForClose();
         const completedState = useAppStore.getState();
         lifecycle.ackCloseFlush({
           requestId: request.requestId,
@@ -334,18 +340,36 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function requestMcpMediaImport(kind: 'image' | 'video', position: { readonly x: number; readonly y: number }): Promise<void> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = kind === 'image' ? 'image/*' : 'video/*';
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file === undefined) { resolve(); return; }
-      void useAppStore.getState().importDroppedMedia(file, position).finally(resolve);
-    };
+async function requestMcpMediaImport(kind: 'image' | 'video', position: { readonly x: number; readonly y: number }): Promise<boolean> {
+  if (!await waitForInteractiveDocument(750)) return false;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = kind === 'image' ? 'image/*' : 'video/*';
+  input.hidden = true;
+  const removeInput = () => input.remove();
+  input.onchange = () => {
+    const file = input.files?.[0];
+    if (file === undefined) { removeInput(); return; }
+    void useAppStore.getState().importDroppedMedia(file, position).finally(removeInput);
+  };
+  input.addEventListener('cancel', removeInput, { once: true });
+  document.body.append(input);
+  try {
     input.click();
-  });
+    return true;
+  } catch {
+    removeInput();
+    return false;
+  }
+}
+
+async function waitForInteractiveDocument(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (document.visibilityState !== 'visible' || !document.hasFocus()) {
+    if (Date.now() >= deadline) return false;
+    await delay(25);
+  }
+  return true;
 }
 
 function readConfigString(config: Readonly<Record<string, unknown>>, key: string): string {

@@ -16,21 +16,25 @@ import { parseCanonicalMentions, type ConnectedMentionItem } from './media-menti
 
 export type MediaMentionPreview = Omit<ConnectedMentionItem, 'assetId'> & { readonly assetId?: string };
 
-export interface MediaMentionTextareaProps extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'value'> {
-  readonly value: string;
-  readonly mentions?: readonly MediaMentionPreview[];
-}
-
-type CanonicalSelection = {
+export type MediaMentionSelection = {
   readonly start: number;
   readonly end: number;
 };
+
+export interface MediaMentionTextareaProps extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'value'> {
+  readonly value: string;
+  readonly mentions?: readonly MediaMentionPreview[];
+  readonly onCanonicalSelectionChange?: (selection: MediaMentionSelection) => void;
+}
+
+type CanonicalSelection = MediaMentionSelection;
 
 const BLOCK_ELEMENTS = new Set(['ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DIV', 'FOOTER', 'HEADER', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'MAIN', 'NAV', 'P', 'PRE', 'SECTION']);
 
 export function MediaMentionTextarea({
   value,
   mentions = [],
+  onCanonicalSelectionChange,
   className,
   onChange,
   onInput,
@@ -53,12 +57,23 @@ export function MediaMentionTextarea({
   const onChangeRef = useRef(onChange);
   const disabledRef = useRef(disabled);
   const readOnlyRef = useRef(readOnly);
+  const onCanonicalSelectionChangeRef = useRef(onCanonicalSelectionChange);
+  const lastCanonicalSelectionRef = useRef<CanonicalSelection | null>(null);
+  const renderedPreviewSignatureRef = useRef<string | null>(null);
   onChangeRef.current = onChange;
   disabledRef.current = disabled;
   readOnlyRef.current = readOnly;
+  onCanonicalSelectionChangeRef.current = onCanonicalSelectionChange;
   const [activeToken, setActiveToken] = useState<string | null>(null);
   const segments = useMemo(() => parseCanonicalMentions(value), [value]);
   const previews = useMemo(() => new Map(mentions.map((mention) => [mention.token, mention])), [mentions]);
+  const previewSignature = useMemo(() => JSON.stringify(mentions.map((mention) => [
+    mention.token,
+    mention.kind,
+    mention.assetId ?? null,
+    mention.label,
+    mention.displayUrl ?? null,
+  ])), [mentions]);
   const previewsRef = useRef(previews);
   previewsRef.current = previews;
   const activePreview = activeToken === null ? undefined : previews.get(activeToken);
@@ -68,16 +83,28 @@ export function MediaMentionTextarea({
     '--media-mention-rows': String(rows),
   } as CSSProperties;
   const compatibleAttributes = textareaAttributes as unknown as React.HTMLAttributes<HTMLDivElement>;
+  const publishCanonicalSelection = (editor: HTMLDivElement) => {
+    const selection = captureCanonicalSelection(editor);
+    if (selection === null) return;
+    lastCanonicalSelectionRef.current = selection;
+    onCanonicalSelectionChangeRef.current?.(selection);
+  };
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
     if (lastEmittedValueRef.current !== value) undoStackRef.current = [];
     lastEmittedValueRef.current = value;
-    if (editor === null || composingRef.current || serializeEditor(editor) === value) return;
-    const selection = captureCanonicalSelection(editor);
+    if (editor === null || composingRef.current) return;
+    const previewChanged = renderedPreviewSignatureRef.current !== previewSignature;
+    if (serializeEditor(editor) === value && !previewChanged) return;
+    const selection = captureCanonicalSelection(editor) ?? lastCanonicalSelectionRef.current;
+    const focusedToken = mentionChip(document.activeElement)?.dataset.token;
     rebuildEditor(editor, value, previews, setActiveToken);
+    renderedPreviewSignatureRef.current = previewSignature;
     if (selection !== null) restoreCanonicalSelection(editor, selection);
-  }, [value]);
+    if (focusedToken !== undefined) findMentionChip(editor, focusedToken)?.focus();
+    publishCanonicalSelection(editor);
+  }, [previewSignature, value]);
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
@@ -86,9 +113,11 @@ export function MediaMentionTextarea({
       if (disabledRef.current || readOnlyRef.current || composingRef.current) return;
       const nextValue = serializeEditor(editor);
       if (nextValue === lastEmittedValueRef.current) return;
+      publishCanonicalSelection(editor);
       lastEmittedValueRef.current = nextValue;
       emitTextareaChange(onChangeRef.current, nextValue);
     };
+    const handleSelectionChange = () => publishCanonicalSelection(editor);
     Object.defineProperty(editor, 'value', {
       configurable: true,
       get: () => serializeEditor(editor),
@@ -101,8 +130,10 @@ export function MediaMentionTextarea({
       },
     });
     editor.addEventListener('change', handleChange);
+    document.addEventListener('selectionchange', handleSelectionChange);
     return () => {
       editor.removeEventListener('change', handleChange);
+      document.removeEventListener('selectionchange', handleSelectionChange);
       delete (editor as HTMLDivElement & { value?: string }).value;
     };
   }, []);
@@ -122,6 +153,7 @@ export function MediaMentionTextarea({
   const handleInput = (event: FormEvent<HTMLDivElement>) => {
     onInput?.(event as unknown as ReactInputEvent<HTMLTextAreaElement>);
     if (disabled || readOnly || composingRef.current) return;
+    publishCanonicalSelection(event.currentTarget);
     emitValue(event.currentTarget);
   };
 
@@ -130,6 +162,7 @@ export function MediaMentionTextarea({
     if (event.defaultPrevented || disabled || readOnly) return;
     event.preventDefault();
     insertPlainText(event.currentTarget, event.clipboardData.getData('text/plain'));
+    publishCanonicalSelection(event.currentTarget);
     emitValue(event.currentTarget);
   };
 
@@ -146,10 +179,12 @@ export function MediaMentionTextarea({
       return;
     }
     if (event.key !== 'Backspace' && event.key !== 'Delete') return;
-    const chip = adjacentChip(event.currentTarget, event.key === 'Backspace' ? 'before' : 'after');
+    const focusedChip = event.target instanceof Node ? mentionChip(event.target) : null;
+    const chip = focusedChip ?? adjacentChip(event.currentTarget, event.key === 'Backspace' ? 'before' : 'after');
     if (chip === null) return;
     event.preventDefault();
     removeChip(event.currentTarget, chip);
+    publishCanonicalSelection(event.currentTarget);
     emitValue(event.currentTarget);
   };
 
@@ -161,7 +196,10 @@ export function MediaMentionTextarea({
   const handleCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
     composingRef.current = false;
     onCompositionEnd?.(event as unknown as CompositionEvent<HTMLTextAreaElement>);
-    if (!disabled && !readOnly) emitValue(event.currentTarget);
+    if (!disabled && !readOnly) {
+      publishCanonicalSelection(event.currentTarget);
+      emitValue(event.currentTarget);
+    }
   };
 
   return <div className="media-mention-textarea" onMouseLeave={() => setActiveToken(null)}>
@@ -215,10 +253,15 @@ function rebuildEditor(
     const chip = document.createElement('span');
     chip.className = 'media-mention-textarea__chip';
     chip.setAttribute('contenteditable', 'false');
+    chip.setAttribute('role', 'button');
+    chip.setAttribute('tabindex', '0');
+    chip.setAttribute('aria-keyshortcuts', 'Backspace Delete');
     chip.dataset.token = segment.token;
     chip.dataset.mediaMention = segment.kind;
     chip.append(createPinIcon());
     const preview = previews.get(segment.token);
+    const mediaKindLabel = segment.kind === 'video' ? '视频' : '图片';
+    chip.setAttribute('aria-label', `${segment.text}，${preview?.label ?? segment.text}，${mediaKindLabel}引用。按退格键或删除键移除`);
     if (preview?.displayUrl !== undefined) {
       const media = segment.kind === 'video'
         ? document.createElement('video')
@@ -233,7 +276,10 @@ function rebuildEditor(
       }
       chip.append(media);
     }
-    chip.append(document.createTextNode(segment.text));
+    const label = document.createElement('span');
+    label.className = 'media-mention-textarea__chip-label';
+    label.textContent = segment.text;
+    chip.append(label);
     chip.addEventListener('mouseenter', () => setActiveToken(segment.token));
     chip.addEventListener('pointerdown', (event) => {
       event.preventDefault();
@@ -340,6 +386,12 @@ function directChildOf(editor: HTMLElement, node: Node): Node | null {
 
 function mentionChip(node: Node | undefined | null): HTMLElement | null {
   return node instanceof HTMLElement && node.dataset.token !== undefined ? node : null;
+}
+
+function findMentionChip(editor: HTMLElement, token: string): HTMLElement | null {
+  return Array.from(editor.children).find((child): child is HTMLElement => (
+    child instanceof HTMLElement && child.dataset.token === token
+  )) ?? null;
 }
 
 function removeChip(editor: HTMLDivElement, chip: HTMLElement): void {

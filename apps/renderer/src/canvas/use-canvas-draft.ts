@@ -4,6 +4,8 @@ import type { Node, NodeChange, XYPosition } from '@xyflow/react';
 
 export interface CanvasDraftOptions<TNode extends Node = Node> {
   nodes: readonly TNode[];
+  /** Changes when the durable project/session boundary changes. */
+  resetKey?: string | number;
   onCommitPositions: (
     updates: readonly { readonly nodeId: string; readonly position: XYPosition }[],
   ) => Promise<boolean>;
@@ -11,6 +13,7 @@ export interface CanvasDraftOptions<TNode extends Node = Node> {
 
 export function useCanvasDraft<TNode extends Node = Node>({
   nodes: sourceNodes,
+  resetKey,
   onCommitPositions,
 }: CanvasDraftOptions<TNode>) {
   const [nodes, setNodes] = useState<TNode[]>(() => [...sourceNodes]);
@@ -21,20 +24,41 @@ export function useCanvasDraft<TNode extends Node = Node>({
   const sourceNodesRef = useRef(sourceNodes);
   const activeDraggedNodeIdsRef = useRef(new Set<string>());
   const pendingCommitRef = useRef(new Map<string, { position: XYPosition; token: number }>());
+  const acknowledgedPositionRef = useRef(new Map<string, { position: XYPosition; previousPosition: XYPosition }>());
   const commitTokenRef = useRef(0);
+  const resetKeyRef = useRef(resetKey);
 
   useEffect(() => {
+    if (resetKeyRef.current !== resetKey) {
+      resetKeyRef.current = resetKey;
+      activeDraggedNodeIdsRef.current.clear();
+      pendingCommitRef.current.clear();
+      acknowledgedPositionRef.current.clear();
+      commitTokenRef.current += 1;
+      sourceNodesRef.current = sourceNodes;
+      draftNodesRef.current = [...sourceNodes];
+      setNodes([...sourceNodes]);
+      return;
+    }
     if (sourceNodesRef.current === sourceNodes) return;
     sourceNodesRef.current = sourceNodes;
     const activeDraggedNodeIds = activeDraggedNodeIdsRef.current;
     const pendingCommitNodeIds = new Set(pendingCommitRef.current.keys());
+    for (const [nodeId, acknowledged] of acknowledgedPositionRef.current) {
+      const sourceNode = sourceNodes.find((candidate) => candidate.id === nodeId);
+      if (sourceNode?.position.x === acknowledged.position.x && sourceNode.position.y === acknowledged.position.y) {
+        acknowledgedPositionRef.current.delete(nodeId);
+      } else if (sourceNode && (sourceNode.position.x !== acknowledged.previousPosition.x || sourceNode.position.y !== acknowledged.previousPosition.y)) {
+        acknowledgedPositionRef.current.delete(nodeId);
+      }
+    }
     setNodes((current) => {
-      const next = mergeDurableNodes(current, sourceNodes, activeDraggedNodeIds, pendingCommitNodeIds);
+      const next = mergeDurableNodes(current, sourceNodes, activeDraggedNodeIds, pendingCommitNodeIds, acknowledgedPositionRef.current);
       if (sameDraftNodeList(current, next)) return current;
       draftNodesRef.current = next;
       return next;
     });
-  }, [sourceNodes]);
+  }, [resetKey, sourceNodes]);
 
   const onNodesChange = useCallback((changes: NodeChange<TNode>[]) => {
     // Durable deletion is performed by CanvasWorkspace. React Flow's remove
@@ -71,14 +95,27 @@ export function useCanvasDraft<TNode extends Node = Node>({
     const token = commitTokenRef.current + 1;
     commitTokenRef.current = token;
     for (const update of updates) pendingCommitRef.current.set(update.nodeId, { position: update.position, token });
+    let committed = false;
     try {
-      return await onCommitPositions(updates);
+      committed = await onCommitPositions(updates);
+      return committed;
     } finally {
       const reconciledNodeIds = new Set<string>();
       for (const update of updates) {
         const pendingCommit = pendingCommitRef.current.get(update.nodeId);
         if (pendingCommit?.token !== token) continue;
         pendingCommitRef.current.delete(update.nodeId);
+        const durableNode = latestSourceNodesRef.current.find((candidate) => candidate.id === update.nodeId);
+        // Keep the user's final pointer position after both a successful ACK
+        // and a retryable save failure. A failed persistence boundary keeps the
+        // optimistic project in the store, so snapping the React Flow draft
+        // back to the previous durable source hides the unsaved edit and makes
+        // the node appear to move by itself. A genuinely newer durable source
+        // still clears this guard in the source reconciliation effect above.
+        acknowledgedPositionRef.current.set(update.nodeId, {
+          position: update.position,
+          previousPosition: durableNode?.position ?? update.position,
+        });
         reconciledNodeIds.add(update.nodeId);
       }
       if (reconciledNodeIds.size > 0) {
@@ -87,7 +124,11 @@ export function useCanvasDraft<TNode extends Node = Node>({
           const next = current.flatMap((currentNode) => {
             if (!reconciledNodeIds.has(currentNode.id)) return [currentNode];
             const durableNode = durableNodesById.get(currentNode.id);
-            return durableNode === undefined ? [] : [preserveReactFlowState(durableNode, currentNode)];
+            return durableNode === undefined ? [] : [preserveReactFlowState(
+              durableNode,
+              currentNode,
+              updates.find((update) => update.nodeId === currentNode.id)?.position,
+            )];
           });
           draftNodesRef.current = next;
           return next;
@@ -99,9 +140,10 @@ export function useCanvasDraft<TNode extends Node = Node>({
   return { nodes, onNodesChange, onNodeDragStop };
 }
 
-function preserveReactFlowState<TNode extends Node>(durableNode: TNode, currentNode: TNode): TNode {
+function preserveReactFlowState<TNode extends Node>(durableNode: TNode, currentNode: TNode, committedPosition?: XYPosition): TNode {
   return {
     ...durableNode,
+    ...(committedPosition ? { position: committedPosition } : {}),
     ...(durableNode.width === undefined && currentNode.width !== undefined ? { width: currentNode.width } : {}),
     ...(durableNode.height === undefined && currentNode.height !== undefined ? { height: currentNode.height } : {}),
     ...(durableNode.measured === undefined && currentNode.measured !== undefined ? { measured: currentNode.measured } : {}),
@@ -140,12 +182,16 @@ function mergeDurableNodes<TNode extends Node>(
   source: readonly TNode[],
   activeDraggedNodeIds: ReadonlySet<string>,
   pendingCommitNodeIds: ReadonlySet<string>,
+  acknowledgedPositions: ReadonlyMap<string, { position: XYPosition; previousPosition: XYPosition }>,
 ): TNode[] {
   const currentById = new Map(current.map((node) => [node.id, node]));
   return source.map((sourceNode) => {
     const draftNode = currentById.get(sourceNode.id);
     if (!draftNode) return sourceNode;
-    const keepsPosition = activeDraggedNodeIds.has(sourceNode.id) || pendingCommitNodeIds.has(sourceNode.id);
+    const keepsPosition = activeDraggedNodeIds.has(sourceNode.id)
+      || pendingCommitNodeIds.has(sourceNode.id)
+      || (acknowledgedPositions.get(sourceNode.id)?.previousPosition.x === sourceNode.position.x
+        && acknowledgedPositions.get(sourceNode.id)?.previousPosition.y === sourceNode.position.y);
     const keepsMeasurement = (sourceNode.width === undefined && draftNode.width !== undefined)
       || (sourceNode.height === undefined && draftNode.height !== undefined)
       || (sourceNode.measured === undefined && draftNode.measured !== undefined);

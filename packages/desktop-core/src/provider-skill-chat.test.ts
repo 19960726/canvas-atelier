@@ -4,6 +4,113 @@ import type { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 import { executeSkillChat } from './provider-skill-chat.js';
 
 describe('executeSkillChat', () => {
+  it.each([
+    'gemini-3-pro-image-4k',
+    'gemini-3.1-flash-image-4k',
+    'gemini-3.1-flash-lite-image',
+    'gpt-4-dalle',
+    'gpt-4o-image-vip',
+    'qwen-image-edit-max',
+    'qwen-image-edit-plus',
+    'qwen-image-max',
+    'qwen-image-plus-2026-01-09',
+    'qwen-mt-image',
+    'seedream-3.0',
+    'volcv-dalle',
+    'grok-imagine-video-1.5',
+    'hailuo-video',
+    'kling-advanced-lip-sync',
+    'kling-meta-human',
+    'pixverse-video-v1',
+    'sora-2-pro',
+    'veo3.1-fast-4K',
+    'veo3.1-components',
+    'video-style-transform',
+    'videoretalk',
+  ])('rejects a chat-only media-output route before calling the provider: %s', async (modelId) => {
+    const chat = vi.fn(async () => ({
+      id: 'unexpected-image-chat',
+      model: modelId,
+      choices: [{ message: { role: 'assistant', content: 'must not be accepted' } }],
+    }));
+
+    await expect(executeSkillChat({
+      request: {
+        provider: 'comfly',
+        modelRoute: `comfly-${modelId.replace(/\./gu, '-')}`,
+        messages: [{ role: 'user', content: 'Plan an image.' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly' as const,
+        modelRoute: `comfly-${modelId.replace(/\./gu, '-')}`,
+        modelId,
+        displayName: modelId,
+        capabilities: ['chat' as const],
+      }] }),
+      createClient: () => ({ chat, responses: vi.fn() }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'gpt-4o',
+    'qwen-vl-max',
+    'chat_fast_video',
+  ])('keeps a non-output dialogue model routable when its name contains related words: %s', async (modelId) => {
+    const chat = vi.fn(async () => ({
+      id: 'expected-chat',
+      model: modelId,
+      choices: [{ message: { role: 'assistant', content: 'accepted' } }],
+    }));
+
+    await expect(executeSkillChat({
+      request: {
+        provider: 'comfly',
+        modelRoute: `comfly-${modelId.replace(/[._]/gu, '-')}`,
+        messages: [{ role: 'user', content: 'Discuss a plan.' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly' as const,
+        modelRoute: `comfly-${modelId.replace(/[._]/gu, '-')}`,
+        modelId,
+        displayName: modelId,
+        capabilities: ['chat' as const],
+      }] }),
+      createClient: () => ({ chat, responses: vi.fn() }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+    })).resolves.toMatchObject({ message: 'accepted' });
+
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a generation profile that is also broadly tagged as chat', async () => {
+    const chat = vi.fn();
+
+    await expect(executeSkillChat({
+      request: {
+        provider: 'comfly',
+        modelRoute: 'comfly-image-chat',
+        messages: [{ role: 'user', content: 'Plan an image.' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly' as const,
+        modelRoute: 'comfly-image-chat',
+        modelId: 'image-chat',
+        displayName: 'Image chat',
+        capabilities: ['chat' as const, 'image_generation' as const],
+      }] }),
+      createClient: () => ({ chat, responses: vi.fn() }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+    expect(chat).not.toHaveBeenCalled();
+  });
+
   it('passes the ordered structured visual-analysis contract to the provider system message', async () => {
     const chat = vi.fn(async (request: ComflyChatRequest) => ({
       id: 'chat-visual-analysis-1',
@@ -42,6 +149,7 @@ describe('executeSkillChat', () => {
     expect(String(system)).toContain('@图片1（产品参考）');
     expect(String(system)).toContain('@图片2（场景参考）');
     expect(String(system)).toContain('中文提示词、英文提示词、负面约束、执行清单');
+    expect(chat).toHaveBeenCalledWith(expect.any(Object), 300_000);
   });
 
   it('uses the real responses endpoint for a responses-only profile', async () => {
@@ -71,7 +179,7 @@ describe('executeSkillChat', () => {
     });
 
     expect(result.message).toBe('Use a tighter crop.');
-    expect(responses).toHaveBeenCalledTimes(1);
+    expect(responses).toHaveBeenCalledWith(expect.any(Object), 180_000);
     expect(chat).not.toHaveBeenCalled();
   });
 
@@ -106,7 +214,7 @@ describe('executeSkillChat', () => {
     expect(chat).toHaveBeenCalledWith(expect.objectContaining({
       model: 'gpt-5.6-sol',
       reasoning_effort: 'high',
-    }));
+    }), 180_000);
   });
 
   it('passes the selected Codex reasoning effort to a Responses API request', async () => {
@@ -138,10 +246,10 @@ describe('executeSkillChat', () => {
     expect(responses).toHaveBeenCalledWith(expect.objectContaining({
       model: 'gpt-5.6-sol',
       reasoning: { effort: 'high' },
-    }));
+    }), 180_000);
   });
 
-  it('sends managed image references through a Codex responses route when discovery omits vision', async () => {
+  it('sends managed image references through an explicitly visual Responses route using Responses content parts', async () => {
     const responses = vi.fn(async () => ({
       id: 'response-codex-image-1',
       output: [{ type: 'message', content: [{ type: 'output_text', text: 'Image understood.' }] }],
@@ -162,7 +270,7 @@ describe('executeSkillChat', () => {
         modelRoute: 'responses/codex',
         modelId: 'codex-responses',
         displayName: 'Codex responses',
-        capabilities: ['responses'],
+        capabilities: ['responses', 'vision'],
       }] }),
       createClient: () => ({ chat: vi.fn(), responses }),
       managedKnowledgeStore: {} as ManagedKnowledgeStore,
@@ -176,12 +284,43 @@ describe('executeSkillChat', () => {
         expect.objectContaining({
           content: expect.arrayContaining([
             expect.objectContaining({
-              type: 'image_url',
-              image_url: { url: 'data:image/png;base64,AQID' },
+              type: 'input_image',
+              image_url: 'data:image/png;base64,AQID',
             }),
+            expect.objectContaining({ type: 'input_text', text: 'Inspect @图片1.' }),
           ]),
         }),
       ]),
-    }));
+    }), 300_000);
+  });
+
+  it('rejects managed images for a Codex Responses route without an explicit vision capability', async () => {
+    const responses = vi.fn();
+    const readManagedSkillChatImages = vi.fn();
+
+    await expect(executeSkillChat({
+      request: {
+        provider: 'comfly',
+        modelRoute: 'responses/text-only',
+        sessionId: 'desktop-session-text-only',
+        agentMode: 'codex',
+        referenceAssetIds: ['a'.repeat(16)],
+        messages: [{ role: 'user', content: 'Inspect @图片1.' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly',
+        modelRoute: 'responses/text-only',
+        modelId: 'responses-text-only',
+        displayName: 'Responses text only',
+        capabilities: ['responses'],
+      }] }),
+      createClient: () => ({ chat: vi.fn(), responses }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+      managedSkillChatImageResolver: { readManagedSkillChatImages },
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+
+    expect(readManagedSkillChatImages).not.toHaveBeenCalled();
+    expect(responses).not.toHaveBeenCalled();
   });
 });

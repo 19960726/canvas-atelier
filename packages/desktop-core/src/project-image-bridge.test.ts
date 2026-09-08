@@ -143,6 +143,79 @@ describe('project image bridge', () => {
     }
   });
 
+  it('keeps a dropped image import valid when automatic snapshot maintenance refreshes the session manifest first', async () => {
+    const tempRoot = await createTempRoot(tempRoots, 'project-dropped-after-snapshot-');
+    const projectRoot = join(tempRoot, 'Dropped after snapshot.novus-project');
+    const firstSourcePath = join(tempRoot, 'first.png');
+    const secondSourcePath = join(tempRoot, 'second.png');
+    await writeFile(firstSourcePath, createSolidPng(2, 2, [20, 80, 140, 255]));
+    await writeFile(secondSourcePath, createSolidPng(2, 2, [180, 60, 30, 255]));
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 6174 });
+    const created = await repository.create(projectRoot, {
+      project: imageProject(), projectId: 'image-project', projectName: 'Image Project',
+    });
+    await repository.close(created);
+    const snapshotEntered = deferred<void>();
+    const releaseSnapshot = deferred<void>();
+    let consideration = 0;
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: {
+        consider: vi.fn(() => (++consideration === 2 ? { reason: 'agent_transaction' as const } : null)),
+        flush: vi.fn(async () => {
+          snapshotEntered.resolve();
+          await releaseSnapshot.promise;
+          return { path: 'snapshots/automatic.json.gz', reason: 'agent_transaction' as const, revision: 2, snapshotId: 'automatic' };
+        }),
+      },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const first = await handlers.importDroppedProjectMedia({}, {
+        request: {
+          sessionId: opened!.sessionId,
+          target: { kind: 'new_media_input', operationId: 'dropped_media_first', position: { x: 10, y: 20 } },
+        },
+        sourcePath: firstSourcePath,
+      });
+      expect(first?.currentRevision).toBe(1);
+
+      const betweenImports = createCanvasModuleNode('between-imports', 'text_prompt', { x: 300, y: 400 });
+      const acknowledged = await handlers.commit({}, {
+        baseRevision: 1,
+        kind: 'canvas',
+        projectId: 'image-project',
+        sessionId: opened!.sessionId,
+        transaction: {
+          id: 'between-dropped-imports',
+          label: 'Commit between dropped imports',
+          operations: [{ kind: 'canvas', operation: { kind: 'create_node', node: betweenImports } }],
+        },
+      });
+      expect(acknowledged.revision).toBe(2);
+      await snapshotEntered.promise;
+
+      const importing = handlers.importDroppedProjectMedia({}, {
+        request: {
+          sessionId: opened!.sessionId,
+          target: { kind: 'new_media_input', operationId: 'dropped_media_second', position: { x: 30, y: 40 } },
+        },
+        sourcePath: secondSourcePath,
+      });
+      releaseSnapshot.resolve();
+      const second = await importing;
+
+      expect(second).toMatchObject({ currentRevision: 3, project: { id: 'image-project' } });
+      expect(second!.project.nodes.filter((node) => node.type === 'module' && node.data.moduleType === 'image_input')).toHaveLength(3);
+      expect(second!.project.assets).toHaveLength(2);
+    } finally {
+      releaseSnapshot.resolve();
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');
+    }
+  });
+
   it('stores a generated image in the active project asset catalog without exposing bytes', async () => {
     const tempRoot = await createTempRoot(tempRoots, 'generated-image-asset-');
     const projectRoot = join(tempRoot, 'Generated.novus-project');

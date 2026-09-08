@@ -1,4 +1,5 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
@@ -63,6 +64,7 @@ import {
   shutdownDesktopServices,
   type ApprovedSnapshotOutboxDrainHandle,
   type BridgeDialogAdapter,
+  type CloseFlushCompletionReason,
   type DesktopBridgeHandlers,
   type RendererCloseFlushCoordinator,
   type McpClientConfigIpcRegistration,
@@ -119,7 +121,7 @@ if (protocol !== undefined) {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: 'novus-asset',
-      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
+      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true, corsEnabled: true },
     },
     {
       scheme: 'novus-history',
@@ -372,6 +374,7 @@ app.whenReady().then(async () => {
       resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
         .map((entry) => entry.address),
       readManagedReverseMedia: desktopHandlers.readManagedReverseMedia,
+      readManagedSkillChatImages: desktopHandlers.readManagedSkillChatImages,
       storeGeneratedImage: desktopHandlers.storeGeneratedImage,
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
     }),
@@ -381,7 +384,9 @@ app.whenReady().then(async () => {
     ipcMain,
     service: createCodexCliService({
       executablePath: codexCliExecutablePath,
+      modelCatalogPath: join(process.env.CODEX_HOME ?? homedir() + '\\.codex', 'models_cache.json'),
       mcpServer: createCanvasMcpLaunchSpec(),
+      resolveImages: desktopHandlers.readManagedSkillChatImages,
       resolveKnowledge: async (ids) => Promise.all(ids.map(async (knowledgeBaseId) => {
         const active = await knowledgeStore.readActive(knowledgeBaseId);
         if (active === null) throw new Error('Selected Codex knowledge is unavailable');
@@ -443,6 +448,7 @@ async function startMcpRuntime(): Promise<void> {
   let service: McpRuntimeService | null = null;
   const rendererBridge = createMcpRendererBridge({
     ipcMain,
+    prepareInteractiveRequest: () => prepareMainWindowForTrustedPicker(),
     getRenderer: () => {
       const window = mainWindow;
       if (
@@ -497,6 +503,22 @@ async function startMcpRuntime(): Promise<void> {
     mcpRuntimeService = null;
     throw error;
   }
+}
+
+async function prepareMainWindowForTrustedPicker(): Promise<boolean> {
+  const window = mainWindow;
+  if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return false;
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  window.focus();
+  window.webContents.focus();
+  const deadline = Date.now() + 1_000;
+  while (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    if (window.isVisible() && !window.isMinimized() && window.isFocused()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
 }
 
 function isMcpRendererAvailable(): boolean {
@@ -597,28 +619,38 @@ function sendRendererCloseFlushRequest(request: { readonly requestId: string }):
   return true;
 }
 
-async function runCoordinatedShutdown(): Promise<void> {
+async function runCoordinatedShutdown(
+  reason: Extract<CloseFlushCompletionReason, 'saved' | 'discarded'>,
+): Promise<void> {
   if (desktopHandlers === null || closeAllStarted) return;
   closeAllStarted = true;
   const handlers = desktopHandlers;
-  await shutdownDesktopServices({
-    closeAllProjects: () => handlers.closeAllProjects(),
-    stopMcpRuntime,
-    stopApprovedSnapshotDrain: () => approvedSnapshotDrainHandle?.stop() ?? Promise.resolve(),
-    stopApprovedSnapshotPull: () => approvedSnapshotPullCoordinator?.stop() ?? Promise.resolve(),
-    stopKnowledgeRefresh: () => knowledgeRefreshServiceHandle?.stop() ?? Promise.resolve(),
-    unsubscribeKnowledgeState: () => {
-      try {
-        unsubscribeKnowledgeState?.();
-      } finally {
-        approvedSnapshotDrainHandle = null;
-        approvedSnapshotPullCoordinator = null;
-        knowledgeRefreshServiceHandle = null;
-        unsubscribeKnowledgeState = null;
-      }
-    },
-    quit: () => undefined,
-  });
+  try {
+    // Project sessions are the durable boundary. Do not let the generic
+    // best-effort service shutdown swallow a failed repository close.
+    await handlers.closeAllProjects({ flush: reason !== 'discarded' });
+    await shutdownDesktopServices({
+      closeAllProjects: () => undefined,
+      stopMcpRuntime,
+      stopApprovedSnapshotDrain: () => approvedSnapshotDrainHandle?.stop() ?? Promise.resolve(),
+      stopApprovedSnapshotPull: () => approvedSnapshotPullCoordinator?.stop() ?? Promise.resolve(),
+      stopKnowledgeRefresh: () => knowledgeRefreshServiceHandle?.stop() ?? Promise.resolve(),
+      unsubscribeKnowledgeState: () => {
+        try {
+          unsubscribeKnowledgeState?.();
+        } finally {
+          approvedSnapshotDrainHandle = null;
+          approvedSnapshotPullCoordinator = null;
+          knowledgeRefreshServiceHandle = null;
+          unsubscribeKnowledgeState = null;
+        }
+      },
+      quit: () => undefined,
+    });
+  } catch (error) {
+    closeAllStarted = false;
+    throw error;
+  }
 }
 
 function finalizeCoordinatedClose(): void {

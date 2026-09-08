@@ -1,13 +1,24 @@
 import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
-import { openAgentPanel, openEmptyApp } from './helpers/app';
+import { openAgentPanel, openEmptyApp, queueProjectImageImport } from './helpers/app';
+import { makeReferenceImage } from './helpers/fixtures';
 
 const artifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.55-agent-layout', 'agent-layout.png');
 const composerArtifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.55-agent-layout', 'agent-composer-compact.png');
 
-test('keeps every Codex Agent control inside the panel on one unified compact geometry', async ({ page }) => {
+test('keeps the Agent header aligned and lets a referenced long-form composer grow without overflow', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await openEmptyApp(page);
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.createModule('image_input', { x: 100, y: 120 });
+    await window.__NOVUS_E2E__!.createModule('image_input', { x: 340, y: 120 });
+    await window.__NOVUS_E2E__!.createModule('image_input', { x: 580, y: 120 });
+  });
+  const imageNodes = page.locator('[data-module-type="image_input"]');
+  for (const [index, name] of ['Layout product.png', 'Layout scene.png', 'Layout detail.png'].entries()) {
+    await queueProjectImageImport(page, makeReferenceImage(name, [24 + index * 24, 120, 110, 255]));
+    await imageNodes.nth(index).getByRole('button', { name: '导入图像 / Import image' }).click();
+  }
   await openAgentPanel(page);
 
   const panel = page.getByTestId('agent-panel');
@@ -15,9 +26,11 @@ test('keeps every Codex Agent control inside the panel on one unified compact ge
   await expect(panel.getByRole('button', { name: '新建任务' })).toBeVisible();
   await expect(panel.getByRole('button', { name: '关闭 Codex Agent' })).toBeVisible();
 
-  const metrics = await panel.evaluate((element) => {
+  const initialMetrics = await panel.evaluate((element) => {
     const footer = element.querySelector('.skill-chat-workbench__composer-footer');
     const composer = element.querySelector('.skill-chat-workbench__composer');
+    const taskSelect = element.querySelector<HTMLElement>('.skill-chat-workbench__header-actions select');
+    const newTask = element.querySelector<HTMLElement>('.skill-chat-workbench__new-chat');
     const visible = (control: HTMLElement) => getComputedStyle(control).display !== 'none';
     const controls = footer === null ? [] : [...footer.querySelectorAll<HTMLElement>('button, select')]
       .filter(visible)
@@ -44,30 +57,97 @@ test('keeps every Codex Agent control inside the panel on one unified compact ge
       composerLeft: composerRect?.left ?? 0,
       composerRight: composerRect?.right ?? 0,
       composerHeight: composerRect?.height ?? 0,
+      composerCssHeight: composer instanceof HTMLElement ? getComputedStyle(composer).height : '',
       footerLeft: footerRect?.left ?? 0,
       footerRight: footerRect?.right ?? 0,
+      taskSelect: taskSelect?.getBoundingClientRect().toJSON() ?? null,
+      newTask: newTask?.getBoundingClientRect().toJSON() ?? null,
       controls,
     };
   });
 
-  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
-  expect(metrics.panelWidth).toBeGreaterThanOrEqual(399);
-  expect(metrics.panelWidth).toBeLessThanOrEqual(461);
-  expect(metrics.panelTop).toBeLessThanOrEqual(1);
-  expect(metrics.panelRight).toBeGreaterThanOrEqual(1279);
-  expect(metrics.panelBottom).toBeGreaterThanOrEqual(799);
-  expect(metrics.composerHeight).toBeGreaterThanOrEqual(126);
-  expect(metrics.composerHeight).toBeLessThanOrEqual(146);
-  expect(metrics.footerLeft).toBeGreaterThanOrEqual(metrics.composerLeft);
-  expect(metrics.footerRight, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.composerRight + 1);
-  expect(metrics.controls.length).toBeGreaterThanOrEqual(8);
-  for (const control of metrics.controls) {
-    expect(control.height).toBeGreaterThanOrEqual(29);
-    expect(control.height).toBeLessThanOrEqual(34);
-    expect(control.left).toBeGreaterThanOrEqual(metrics.panelLeft);
-    expect(control.right).toBeLessThanOrEqual(metrics.panelRight);
-    expect(control.right).toBeLessThanOrEqual(metrics.composerRight + 1);
+  expect(initialMetrics.scrollWidth).toBeLessThanOrEqual(initialMetrics.clientWidth + 1);
+  expect(initialMetrics.panelWidth).toBeGreaterThanOrEqual(520);
+  expect(initialMetrics.panelWidth).toBeLessThanOrEqual(561);
+  expect(initialMetrics.panelTop).toBeLessThanOrEqual(1);
+  expect(initialMetrics.panelRight).toBeGreaterThanOrEqual(1279);
+  expect(initialMetrics.panelBottom).toBeGreaterThanOrEqual(799);
+  expect(initialMetrics.composerHeight).toBeGreaterThanOrEqual(216);
+  expect(initialMetrics.composerCssHeight).not.toBe('184px');
+  expect(initialMetrics.taskSelect).not.toBeNull();
+  expect(initialMetrics.newTask).not.toBeNull();
+  expect(initialMetrics.taskSelect!.height).toBe(42);
+  expect(initialMetrics.newTask!.height).toBe(42);
+  expect(initialMetrics.taskSelect!.width).toBeGreaterThan(42);
+  expect(initialMetrics.newTask!.width).toBe(42);
+  expect(Math.abs(initialMetrics.taskSelect!.y - initialMetrics.newTask!.y)).toBeLessThanOrEqual(0.5);
+  expect(initialMetrics.footerLeft).toBeGreaterThanOrEqual(initialMetrics.composerLeft);
+  expect(initialMetrics.footerRight, JSON.stringify(initialMetrics)).toBeLessThanOrEqual(initialMetrics.composerRight + 1);
+  expect(initialMetrics.controls.length).toBeGreaterThanOrEqual(8);
+  for (const control of initialMetrics.controls) {
+    // Mode tabs use the compact 30px text row; action controls use 34px.
+    expect(control.height).toBeGreaterThanOrEqual(30);
+    expect(control.height).toBeLessThanOrEqual(42);
+    expect(control.left).toBeGreaterThanOrEqual(initialMetrics.panelLeft);
+    expect(control.right).toBeLessThanOrEqual(initialMetrics.panelRight);
+    expect(control.right).toBeLessThanOrEqual(initialMetrics.composerRight + 1);
   }
+
+  await panel.getByRole('tab', { name: '对话' }).click();
+  await panel.getByTestId('agent-model-trigger').click();
+  await panel.getByRole('button', { name: '使用 gpt-5.6-sol' }).first().click();
+  const input = panel.getByTestId('agent-composer-input');
+  await input.fill('请保持产品比例、材质和场景透视，并基于这些参考素材给出完整的构图、光线、镜头与动作说明。');
+  for (const label of ['Layout product', 'Layout scene', 'Layout detail']) {
+    await input.focus();
+    await input.press('End');
+    await input.pressSequentially(' @');
+    await panel.getByRole('menuitem', { name: `Mention ${label}` }).click();
+  }
+  await input.focus();
+  await input.press('End');
+  await input.press('Shift+Enter');
+  await input.pressSequentially('第二段需要保留足够的编辑空间，并确保引用胶囊始终位于文字流中，底部模式、模型、设置和发送按钮全部留在圆角边界内。');
+
+  const expandedMetrics = await panel.evaluate((element) => {
+    const composer = element.querySelector<HTMLElement>('.skill-chat-workbench__composer')!;
+    const editor = element.querySelector<HTMLElement>('[data-testid="agent-composer-input"]')!;
+    const rail = element.querySelector<HTMLElement>('.skill-chat-workbench__image-tags')!;
+    const footer = element.querySelector<HTMLElement>('.skill-chat-workbench__composer-footer')!;
+    const box = (target: HTMLElement) => target.getBoundingClientRect().toJSON();
+    return {
+      composer: box(composer),
+      editor: box(editor),
+      rail: box(rail),
+      footer: box(footer),
+      railItems: [...rail.querySelectorAll<HTMLElement>(':scope > button')].map(box),
+      chips: [...editor.querySelectorAll<HTMLElement>('.media-mention-textarea__chip')].map((chip) => ({
+        ...box(chip),
+        display: getComputedStyle(chip).display,
+      })),
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    };
+  });
+  expect(expandedMetrics.composer.height).toBeGreaterThan(initialMetrics.composerHeight + 32);
+  expect(expandedMetrics.editor.height).toBeGreaterThanOrEqual(104);
+  expect(expandedMetrics.editor.height).toBeLessThanOrEqual(168);
+  expect(expandedMetrics.rail.height).toBeGreaterThanOrEqual(36);
+  expect(expandedMetrics.rail.height).toBeLessThanOrEqual(44);
+  expect(expandedMetrics.railItems).toHaveLength(3);
+  expect(expandedMetrics.chips).toHaveLength(3);
+  for (const item of expandedMetrics.railItems) {
+    expect(item.width).toBeLessThan(220);
+    expect(item.height).toBe(24);
+  }
+  for (const chip of expandedMetrics.chips) {
+    expect(chip.display).toBe('inline-flex');
+    expect(chip.height).toBe(24);
+    expect(chip.width).toBeLessThan(expandedMetrics.editor.width);
+  }
+  expect(expandedMetrics.footer.y).toBeGreaterThanOrEqual(expandedMetrics.rail.y + expandedMetrics.rail.height);
+  expect(expandedMetrics.footer.y + expandedMetrics.footer.height).toBeLessThanOrEqual(expandedMetrics.composer.y + expandedMetrics.composer.height + 1);
+  expect(expandedMetrics.scrollWidth).toBeLessThanOrEqual(expandedMetrics.clientWidth + 1);
 
   await page.screenshot({ path: artifact, fullPage: true });
   await panel.locator('.skill-chat-workbench__composer').screenshot({ path: composerArtifact });

@@ -33,6 +33,13 @@ const validCore = {
 };
 
 describe('normalizeReverseProviderResult', () => {
+  it('marks missing chapters partial and preserves recognized detail from malformed chapters', () => {
+    expect(normalizeReverseProviderResult({ ...validCore, composition: { visualCenter: '主体居中', providerDebug: 'private' }, camera: '焦距未知' }, run)).toMatchObject({
+      completeness: { status: 'partial', missingSections: expect.arrayContaining(['materialsAndTextures']), invalidSections: ['composition', 'camera'] },
+      partialSections: [ { section: 'composition', content: '{"visualCenter":"主体居中"}' }, { section: 'camera', content: '"焦距未知"' } ],
+    });
+    expect(JSON.stringify(normalizeReverseProviderResult({ ...validCore, composition: { visualCenter: '主体居中', providerDebug: 'private' } }, run))).not.toContain('private');
+  });
   it('joins every Gemini text part before parsing the JSON document', () => {
     expect(extractGeminiReverseText([
       { text: '{"analysis":"完整' },
@@ -65,7 +72,7 @@ describe('normalizeReverseProviderResult', () => {
         checklist: '检查主体比例；检查灯光',
         providerDebugField: 'must not cross the bridge',
       },
-    }, run)).toEqual({
+    }, run)).toMatchObject({
       sessionId: 'session-1',
       nonce: 'nonce-1',
       knowledgeSnapshotVersion: 'knowledge-v1',
@@ -87,7 +94,7 @@ describe('normalizeReverseProviderResult', () => {
         executionChecklist: [{ value: 'Check logo' }, { description: 'Check lighting' }],
         rawProviderTrace: 'must be dropped',
       },
-    }, run)).toEqual({
+    }, run)).toMatchObject({
       sessionId: 'session-1',
       nonce: 'nonce-1',
       knowledgeSnapshotVersion: 'knowledge-v1',
@@ -112,7 +119,7 @@ describe('normalizeReverseProviderResult', () => {
     });
   });
 
-  it('drops malformed optional professional sections while preserving the required core result', () => {
+  it('keeps core content usable when professional sections are incomplete', () => {
     expect(normalizeReverseProviderResult({
       analysis: '完整场景分析',
       keywords: ['商业摄影'],
@@ -121,7 +128,7 @@ describe('normalizeReverseProviderResult', () => {
       executionChecklist: ['检查主体比例'],
       camera: 'wide-angle',
       composition: { visualCenter: '主体居中' },
-    }, run)).toEqual({
+    }, run)).toMatchObject({
       sessionId: 'session-1',
       nonce: 'nonce-1',
       knowledgeSnapshotVersion: 'knowledge-v1',

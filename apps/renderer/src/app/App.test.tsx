@@ -183,11 +183,12 @@ describe('App persistence hydration', () => {
 
     await listeners[listeners.length - 1]?.({ requestId: 'close-request-strict-1' });
 
-    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(3));
     expect(commit).toHaveBeenCalledTimes(1);
     expect(stablePoint).toHaveBeenCalledTimes(1);
-    expect(close).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
     expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-strict-1', phase: 'decision_requested' }],
       [{ requestId: 'close-request-strict-1', phase: 'save_started' }],
       [{ requestId: 'close-request-strict-1', phase: 'completed', outcome: 'saved' }],
     ]);
@@ -230,12 +231,13 @@ describe('App persistence hydration', () => {
 
     await listeners[listeners.length - 1]?.({ requestId: 'close-request-failed-1' });
 
-    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(ackCloseFlush).toHaveBeenCalledTimes(3));
     expect(commit).toHaveBeenCalledTimes(1);
     expect(stablePoint).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
     expect(useAppStore.getState().saveErrorCode).toBe('INVALID_REQUEST');
     expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-failed-1', phase: 'decision_requested' }],
       [{ requestId: 'close-request-failed-1', phase: 'save_started' }],
       [{ requestId: 'close-request-failed-1', phase: 'completed', outcome: 'failed', errorCode: 'INVALID_REQUEST' }],
     ]);
@@ -274,6 +276,11 @@ describe('App persistence hydration', () => {
 
     expect(chooseCloseDecision).not.toHaveBeenCalled();
     expect(ackCloseFlush).toHaveBeenLastCalledWith({ requestId: 'close-request-durable-name', phase: 'completed', outcome: 'saved' });
+    expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-durable-name', phase: 'decision_requested' }],
+      [{ requestId: 'close-request-durable-name', phase: 'save_started' }],
+      [{ requestId: 'close-request-durable-name', phase: 'completed', outcome: 'saved' }],
+    ]);
   });
 
   it('automatically saves a renamed untitled project on close without opening a decision dialog', async () => {
@@ -317,8 +324,9 @@ describe('App persistence hydration', () => {
 
     expect(chooseCloseDecision).not.toHaveBeenCalled();
     expect(stablePoint).toHaveBeenCalledOnce();
-    expect(close).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
     expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-renamed-untitled', phase: 'decision_requested' }],
       [{ requestId: 'close-request-renamed-untitled', phase: 'save_started' }],
       [{ requestId: 'close-request-renamed-untitled', phase: 'completed', outcome: 'saved' }],
     ]);
@@ -358,6 +366,7 @@ describe('App persistence hydration', () => {
     expect(chooseCloseDecision).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
     expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-clean-untitled', phase: 'decision_requested' }],
       [{ requestId: 'close-request-clean-untitled', phase: 'save_started' }],
       [{ requestId: 'close-request-clean-untitled', phase: 'completed', outcome: 'saved' }],
     ]);
@@ -410,8 +419,9 @@ describe('App persistence hydration', () => {
 
     expect(chooseCloseDecision).not.toHaveBeenCalled();
     expect(stablePoint).toHaveBeenCalledOnce();
-    expect(close).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
     expect(ackCloseFlush.mock.calls).toEqual([
+      [{ requestId: 'close-request-cancel-1', phase: 'decision_requested' }],
       [{ requestId: 'close-request-cancel-1', phase: 'save_started' }],
       [{ requestId: 'close-request-cancel-1', phase: 'completed', outcome: 'saved' }],
     ]);

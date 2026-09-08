@@ -29,6 +29,7 @@ export interface McpRendererBridgeOptions {
   readonly ipcMain: McpIpcMainLike;
   readonly getRenderer: () => McpRendererEndpoint | null;
   readonly getStatus: () => McpRuntimePublicStatus;
+  readonly prepareInteractiveRequest?: (request: CanvasMcpRequest) => boolean | Promise<boolean>;
   readonly requestTimeoutMs?: number;
 }
 
@@ -45,6 +46,7 @@ interface PendingRequest {
 
 export function createMcpRendererBridge(options: McpRendererBridgeOptions): McpRendererBridge {
   const pending = new Map<string, PendingRequest>();
+  const preparing = new Set<string>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
 
   const handleResponse = (event: McpIpcEventLike, payload: unknown): void => {
@@ -65,17 +67,54 @@ export function createMcpRendererBridge(options: McpRendererBridgeOptions): McpR
   function forwardRequest(requestId: string, request: CanvasMcpRequest): Promise<CanvasMcpResponse> {
     const renderer = options.getRenderer();
     if (renderer === null || renderer.isDestroyed()) return Promise.reject(new Error('MCP_RENDERER_UNAVAILABLE'));
-    if (!isRequestId(requestId) || pending.has(requestId)) return Promise.reject(new Error('MCP_DUPLICATE_REQUEST_ID'));
+    if (!isRequestId(requestId) || pending.has(requestId) || preparing.has(requestId)) return Promise.reject(new Error('MCP_DUPLICATE_REQUEST_ID'));
     const parsedRequest = CanvasMcpRequestSchema.safeParse(request);
     if (!parsedRequest.success) return Promise.reject(new Error('MCP_INVALID_REQUEST'));
+    if (parsedRequest.data.tool === 'canvas_import_media') {
+      return prepareAndForward(requestId, parsedRequest.data, renderer);
+    }
+    return forwardToRenderer(requestId, parsedRequest.data, renderer);
+  }
 
+  async function prepareAndForward(
+    requestId: string,
+    request: CanvasMcpRequest,
+    renderer: McpRendererEndpoint,
+  ): Promise<CanvasMcpResponse> {
+    preparing.add(requestId);
+    let prepared = false;
+    try {
+      prepared = await options.prepareInteractiveRequest?.(request) === true;
+    } catch {
+      prepared = false;
+    } finally {
+      preparing.delete(requestId);
+    }
+    if (!prepared) {
+      return {
+        ok: false,
+        error: {
+          code: 'MCP_INTERACTION_UNAVAILABLE',
+          message: 'Canvas Atelier could not bring the trusted media picker to the foreground.',
+        },
+      };
+    }
+    if (renderer.isDestroyed()) throw new Error('MCP_RENDERER_UNAVAILABLE');
+    return forwardToRenderer(requestId, request, renderer);
+  }
+
+  function forwardToRenderer(
+    requestId: string,
+    request: CanvasMcpRequest,
+    renderer: McpRendererEndpoint,
+  ): Promise<CanvasMcpResponse> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         pending.delete(requestId);
         reject(new Error('MCP_RENDERER_TIMEOUT'));
       }, requestTimeoutMs);
       pending.set(requestId, { resolve, reject, timeout });
-      renderer.send(BRIDGE_CHANNELS.mcpRuntime.request, { requestId, request: parsedRequest.data });
+      renderer.send(BRIDGE_CHANNELS.mcpRuntime.request, { requestId, request });
     });
   }
 
@@ -87,6 +126,7 @@ export function createMcpRendererBridge(options: McpRendererBridgeOptions): McpR
       request.reject(new Error('MCP_RENDERER_UNAVAILABLE'));
     }
     pending.clear();
+    preparing.clear();
   }
 
   return { forwardRequest, dispose };

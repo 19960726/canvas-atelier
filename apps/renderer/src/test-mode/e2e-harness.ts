@@ -64,6 +64,11 @@ import { auditedComflyCanvasProfiles } from './comfly-audited-models';
 const installedFlag = '__NOVUS_E2E_INSTALLED__';
 const fixedNow = '2026-07-16T09:00:00.000Z';
 const e2eNonce = import.meta.env.VITE_NOVUS_E2E_NONCE ?? 'novus-e2e-local';
+const e2eVerifiedComflyVideoModelIds = new Set([
+  'doubao-seedance-2.5',
+  'veo3.1',
+  'wan2.2-t2v-plus',
+]);
 
 interface RuntimeState {
   activeProvider: ProviderBridgeProfile['provider'] | null;
@@ -72,6 +77,7 @@ interface RuntimeState {
   cacheDirectoryIsDefault: boolean;
   commitLog: ProjectTransaction[];
   currentProject: CanvasProject;
+  failNextProjectCommit: boolean;
   failNextModelJobEnqueue: boolean;
   knowledgeListeners: Set<(states: KnowledgeBaseStateSummary[]) => void>;
   knowledgeStates: KnowledgeBaseStateSummary[];
@@ -129,6 +135,7 @@ export function installRendererE2EHarness(): void {
       runtime.cacheDirectoryIsDefault = true;
       runtime.revision = 0;
       runtime.commitLog = [];
+      runtime.failNextProjectCommit = false;
       runtime.failNextModelJobEnqueue = false;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
@@ -156,6 +163,7 @@ export function installRendererE2EHarness(): void {
       runtime.cacheDirectoryIsDefault = true;
       runtime.revision = 0;
       runtime.commitLog = [];
+      runtime.failNextProjectCommit = false;
       runtime.failNextModelJobEnqueue = false;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
@@ -191,6 +199,9 @@ export function installRendererE2EHarness(): void {
     },
     failNextModelJobEnqueue() {
       runtime.failNextModelJobEnqueue = true;
+    },
+    failNextProjectCommit() {
+      runtime.failNextProjectCommit = true;
     },
     setModelCancellationMode(mode) {
       runtime.modelCancellationMode = mode;
@@ -356,6 +367,7 @@ function createRuntimeState(): RuntimeState {
     cacheDirectoryIsDefault: true,
     commitLog: [],
     currentProject: createStarterProject(),
+    failNextProjectCommit: false,
     failNextModelJobEnqueue: false,
     knowledgeListeners: new Set(),
     knowledgeStates: [],
@@ -868,7 +880,7 @@ function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesk
   } as unknown as typeof window.novusDesktop;
 }
 
-function createE2EProviderProfiles(): ProviderBridgeProfile[] {
+export function createE2EProviderProfiles(): ProviderBridgeProfile[] {
   const imageConstraints = {
     image: {
       aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'],
@@ -885,8 +897,11 @@ function createE2EProviderProfiles(): ProviderBridgeProfile[] {
     },
   } satisfies NonNullable<ProviderBridgeProfile['constraints']>;
   return [
-    ...auditedComflyCanvasProfiles,
-    { provider: 'relayme', modelRoute: 'relay/chat/gemini-vision', displayName: 'Gemini Vision', modelId: 'relay-gemini-vision', capabilities: ['chat', 'vision', 'reverse_prompt', 'video_understanding'] },
+    ...auditedComflyCanvasProfiles.filter((profile) => (
+      !profile.capabilities.includes('video_generation')
+      || (profile.modelId !== undefined && e2eVerifiedComflyVideoModelIds.has(profile.modelId.toLocaleLowerCase()))
+    )),
+    { provider: 'relayme', modelRoute: 'relay/chat/gemini-vision', displayName: 'Gemini Vision', modelId: 'relay-gemini-vision', capabilities: ['chat', 'vision', 'reverse_prompt'] },
     { provider: 'relayme', modelRoute: 'relay/chat/gpt-vision', displayName: 'GPT Vision', modelId: 'relay-gpt-vision', capabilities: ['chat', 'vision', 'reverse_prompt'] },
     { provider: 'relayme', modelRoute: 'relay/image/gpt-image-2', displayName: 'GPT Image 2', modelId: 'relay-gpt-image-2', capabilities: ['image_generation', 'async_tasks'], constraints: imageConstraints },
     { provider: 'relayme', modelRoute: 'relay/image/gemini', displayName: 'Gemini Image', modelId: 'relay-gemini-image', capabilities: ['image_generation', 'async_tasks'], constraints: imageConstraints },
@@ -952,6 +967,15 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
     },
     async close() {},
     async commit(request: ProjectCommitRequest): Promise<ProjectCommitResult> {
+      if (runtime.failNextProjectCommit) {
+        runtime.failNextProjectCommit = false;
+        return {
+          code: 'DURABLE_WRITE_FAILED',
+          ok: false,
+          project: runtime.currentProject,
+          revision: runtime.revision,
+        };
+      }
       runtime.currentProject = request.nextProject;
       runtime.revision += 1;
       runtime.commitLog.push(request.transaction);
@@ -1422,6 +1446,7 @@ declare global {
         updateRestartCount: number;
       };
       failNextModelJobEnqueue(): void;
+      failNextProjectCommit(): void;
       setModelCancellationMode(mode: 'complete' | 'hang'): void;
       publishUpdateState(state: UpdateState): void;
       nonce: string;

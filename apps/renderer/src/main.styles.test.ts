@@ -38,12 +38,14 @@ describe('renderer stylesheet precedence', () => {
     expect(release).toContain("button[data-testid='agent-model-trigger']::after");
     expect(release).toContain('content: none !important;');
     expect(release).toContain('--agent-compact-control-size: 34px;');
-    expect(release).toContain('width: 460px !important;');
+    expect(release).toContain('width: 520px !important;');
     expect(release).toMatch(/\.workspace--canvas-layout \.agent-panel--skill-chat \{[\s\S]*?top: 0 !important;[\s\S]*?right: 0 !important;[\s\S]*?bottom: 0 !important;/);
     expect(release).toMatch(/\.agent-panel--skill-chat \.sr-only \{[\s\S]*?position: absolute !important;[\s\S]*?clip-path: inset\(50%\) !important;/);
     expect(release).toMatch(/\.skill-chat-workbench__composer-footer \{[\s\S]*?gap: 6px !important;/);
     expect(release).toMatch(/\.skill-chat-workbench__composer-footer :is\([\s\S]*?height: var\(--agent-compact-control-size\) !important;/);
-    expect(release).toMatch(/\.skill-chat-workbench__composer \{[\s\S]*?height: 136px !important;[\s\S]*?border-radius: 26px !important;/);
+    const composerContract = release.slice(release.lastIndexOf('FINAL FLEXIBLE AGENT COMPOSER CONTRACT'));
+    expect(composerContract).toMatch(/\.skill-chat-workbench__composer \{[\s\S]*?height: auto !important;[\s\S]*?min-height: 216px !important;[\s\S]*?border-radius: 22px !important;/);
+    expect(composerContract).not.toContain('height: 184px !important;');
     expect(release).toMatch(/\.skill-chat-workbench__mode-tabs \{[\s\S]*?border-radius: 17px !important;/);
     expect(release).toMatch(/\.skill-chat-workbench__model-pill \{[\s\S]*?border-radius: 17px !important;/);
   });
@@ -232,7 +234,7 @@ describe('renderer stylesheet precedence', () => {
   it('does not make the formal video card or its React Flow wrapper click-through', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/canvas-layout.css'));
     const videoInteractionStart = hybrid.indexOf('The released video node is a normal interactive React Flow surface');
-    const videoInteraction = hybrid.slice(videoInteractionStart, hybrid.indexOf(".workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-preview-play", videoInteractionStart));
+    const videoInteraction = hybrid.slice(videoInteractionStart);
 
     expect(videoInteraction).toContain(".module-node[data-module-type='video_generation'] {\n  pointer-events: auto;");
     expect(videoInteraction).not.toContain('.react-flow__node.canvas-flow-node--module-video_generation {\n  pointer-events: none;');
@@ -276,16 +278,17 @@ describe('renderer stylesheet precedence', () => {
     expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\] \.module-node__connected-video-media-source,[\s\S]*?\.module-node\[data-module-type='video_generation'\] \.module-node__reference-slots--inline \{\n  display: none !important;/);
   });
 
-  it('matches Canvas 332:2 for the formal video preview control', () => {
+  it('keeps the formal video preview free of a decorative play overlay', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/canvas-layout.css'));
 
     expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\] \.module-node__video-result-stage > svg \{\n  display: none;\n\}/);
-    expect(hybrid).toMatch(/\.module-node\[data-module-type='video_generation'\] \.module-node__video-preview-play \{[\s\S]*?width: 62px;[\s\S]*?height: 62px;[\s\S]*?background: var\(--gate-accent\);[\s\S]*?border-radius: 14px;/);
+    expect(hybrid).not.toContain('module-node__video-preview-play');
   });
 
-  it('does not let the decorative video play glyph intercept native video controls', () => {
+  it('keeps native video controls as the only playback affordance', () => {
     const stylesheet = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/app.css'));
-    expect(stylesheet).toMatch(/\.module-node--workbench\[data-module-type='video_generation'\] \.module-node__video-preview-play \{[\s\S]*?transform: translate\(-50%, -50%\);[\s\S]*?pointer-events: none;/);
+    expect(stylesheet).not.toContain('module-node__video-preview-play');
+    expect(stylesheet).not.toContain('module-node__video-preview-expand');
   });
 
   it('uses the fixed Canvas video parameter rail with a readable primary action', () => {
@@ -569,12 +572,12 @@ describe('renderer stylesheet precedence', () => {
 
   it('locks the live Agent composer controls to the same compact baseline', () => {
     const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
-    const terminal = release.slice(release.lastIndexOf('FINAL AGENT BUTTON SIZE LOCK'));
+    const terminal = release.slice(release.lastIndexOf('FINAL FLEXIBLE AGENT COMPOSER CONTRACT'));
 
     expect(terminal).toContain('.agent-panel--skill-chat.agent-panel--skill-chat');
     expect(terminal).toContain('.skill-chat-workbench__composer-footer');
-    expect(terminal).toContain('height: 30px !important;');
-    expect(terminal).toContain('max-height: 30px !important;');
+    expect(terminal).toContain('height: 34px !important;');
+    expect(terminal).toContain('max-height: 34px !important;');
   });
 
   it('centers the compact Agent reasoning chevron inside its icon-only select', () => {
@@ -608,5 +611,21 @@ describe('renderer stylesheet precedence', () => {
     expect(terminal).toMatch(/align-items: center !important;[\s\S]*?gap: 8px !important;/);
     expect(terminal).not.toMatch(/\.module-node__lock[\s\S]*?height: 38px !important;/);
     expect(hybrid.lastIndexOf('END-OF-FILE CONTROL CONTRACT')).toBeGreaterThan(hybrid.lastIndexOf('Final terminal generation geometry'));
+  });
+
+  it('gives creative plan selection and confirmation actions explicit interactive states', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL AGENT CREATIVE ACTION CONTRACT'));
+
+    expect(terminal).toContain('.creative-plan__select');
+    expect(terminal).toContain('.creative-plan__select.is-selected');
+    expect(terminal).toContain('.skill-chat-workbench__message--creative-plan');
+    expect(terminal).toMatch(/:is\(\s*\.skill-chat-workbench__message--creative-plan,\s*\.skill-chat-workbench__confirmation\s*\)[\s\S]*?width: 100% !important;[\s\S]*?max-width: 100% !important;/);
+    expect(terminal).toMatch(/\.creative-plan__[\s\S]*?width: 100% !important;/);
+    expect(terminal).toMatch(/\.creative-plan__select \{[\s\S]*?margin: 10px auto 0 !important;/);
+    expect(terminal).toContain('.skill-chat-workbench__confirmation-actions .is-primary');
+    expect(terminal).toContain('.skill-chat-workbench__confirmation-actions .is-secondary');
+    expect(terminal).toContain(':focus-visible');
+    expect(terminal).toContain('min-height: 38px !important;');
   });
 });

@@ -56,17 +56,26 @@ interface JournalSegment {
   readonly path: string;
 }
 
+interface RecoverySessionSummary {
+  readonly createdAt: number;
+  readonly name: string;
+  readonly path: string;
+}
+
 class RecoveryMirrorWriteFailure extends Error {}
 
 const ACTIVE_JOURNAL_SEGMENT = 'journal/active.ndjson';
 const LOCK_GUARD_SEGMENT = 'recovery/project.lock.guard';
 const MANIFEST_PATH = 'project.novus.json';
+const RECOVERY_SESSION_METADATA = 'session.json';
+const RECOVERY_SESSION_RETENTION = 3;
 
 export class RecoveryScanner {
   private readonly appDataRoot: string;
   private readonly createId: () => string;
   private readonly fileSystem: FileSystem;
   private readonly now: () => Date;
+  private readonly initializedRecoverySessionRoots = new Set<string>();
 
   constructor(options: RecoveryScannerOptions) {
     this.appDataRoot = options.appDataRoot;
@@ -196,6 +205,10 @@ export class RecoveryScanner {
       ? 'choose_recovery'
       : 'auto_recover';
 
+    if (candidates.length > 0) {
+      await this.pruneDerivedRecoverySessions(manifest.projectId, sessionId).catch(() => undefined);
+    }
+
     return {
       action,
       candidates,
@@ -311,6 +324,14 @@ export class RecoveryScanner {
       safePathComponent('session', sessionId),
     );
     await this.fileSystem.mkdir(recoveryRoot, { recursive: true });
+    if (!this.initializedRecoverySessionRoots.has(recoveryRoot)) {
+      await writeAtomic(this.fileSystem, confinedJoin(recoveryRoot, RECOVERY_SESSION_METADATA), `${canonicalJson({
+        createdAt: this.now().toISOString(),
+        projectId,
+        schemaVersion: 1,
+      })}\n`);
+      this.initializedRecoverySessionRoots.add(recoveryRoot);
+    }
     const candidatePath = confinedJoin(
       recoveryRoot,
       `${safePathComponent(
@@ -326,6 +347,76 @@ export class RecoveryScanner {
       snapshotId,
     })}\n`);
     return candidatePath;
+  }
+
+  private async pruneDerivedRecoverySessions(projectId: string, currentSessionId: string): Promise<void> {
+    const recoveryBase = resolve(this.appDataRoot, 'recovery');
+    const projectRecoveryRoot = confinedJoin(recoveryBase, safePathComponent('project', projectId));
+    const currentSessionName = safePathComponent('session', currentSessionId);
+    const sessions: RecoverySessionSummary[] = [];
+
+    for (const name of await this.readDirectoryNames(projectRecoveryRoot)) {
+      if (!name.startsWith('session-')) continue;
+      const sessionRoot = confinedJoin(projectRecoveryRoot, name);
+      const summary = await this.readVerifiedRecoverySessionSummary(sessionRoot, name, projectId);
+      if (summary !== null) sessions.push(summary);
+    }
+
+    const previousSessions = sessions
+      .filter((session) => session.name !== currentSessionName)
+      .sort((left, right) => right.createdAt - left.createdAt || left.name.localeCompare(right.name));
+    const retained = new Set([
+      currentSessionName,
+      ...previousSessions.slice(0, Math.max(0, RECOVERY_SESSION_RETENTION - 1)).map((session) => session.name),
+    ]);
+    for (const session of previousSessions) {
+      if (retained.has(session.name)) continue;
+      await this.fileSystem.rm(session.path, { force: true, recursive: true }).catch(() => undefined);
+    }
+  }
+
+  private async readVerifiedRecoverySessionSummary(
+    sessionRoot: string,
+    name: string,
+    projectId: string,
+  ): Promise<RecoverySessionSummary | null> {
+    if (this.fileSystem.lstat === undefined) return null;
+    try {
+      const sessionStat = await this.fileSystem.lstat(sessionRoot);
+      if (
+        !sessionStat.isDirectory()
+        || sessionStat.isSymbolicLink?.() === true
+        || sessionStat.isReparsePoint?.() === true
+      ) return null;
+    } catch {
+      return null;
+    }
+
+    try {
+      const metadata = JSON.parse(await this.fileSystem.readFile(
+        confinedJoin(sessionRoot, RECOVERY_SESSION_METADATA),
+        'utf8',
+      )) as unknown;
+      if (isRecoverySessionMetadata(metadata, projectId)) {
+        return { createdAt: Date.parse(metadata.createdAt), name, path: sessionRoot };
+      }
+    } catch {
+      // Older releases did not write session metadata; validate one full candidate below.
+    }
+
+    for (const candidateName of await this.readDirectoryNames(sessionRoot)) {
+      if (!candidateName.startsWith('candidate-') || !candidateName.endsWith('.json')) continue;
+      const candidatePath = confinedJoin(sessionRoot, candidateName);
+      try {
+        const record = JSON.parse(await this.fileSystem.readFile(candidatePath, 'utf8')) as unknown;
+        const candidate = parseOrphanRecoveryMirror(record, candidatePath);
+        if (candidate.projectId !== projectId) continue;
+        return { createdAt: Date.parse(candidate.createdAt), name, path: sessionRoot };
+      } catch {
+        // Unknown or damaged recovery data is preserved rather than guessed safe to delete.
+      }
+    }
+    return null;
   }
 
   private async readSnapshots(
@@ -523,6 +614,18 @@ function parseOrphanRecoveryMirror(value: unknown, path: string): OrphanRecovery
     snapshotId,
     tailStatus: 'complete',
   };
+}
+
+function isRecoverySessionMetadata(
+  value: unknown,
+  expectedProjectId: string,
+): value is { readonly createdAt: string; readonly projectId: string; readonly schemaVersion: 1 } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.schemaVersion === 1
+    && record.projectId === expectedProjectId
+    && typeof record.createdAt === 'string'
+    && Number.isFinite(Date.parse(record.createdAt));
 }
 
 function archiveRangeFromName(name: string): { firstSequence: number; lastSequence: number } | null {

@@ -29,7 +29,7 @@ export interface RendererCloseFlushCoordinator {
 export interface RendererCloseFlushCoordinatorOptions {
   readonly canRequestRendererFlush?: () => boolean;
   readonly clearTimeout?: (handle: unknown) => void;
-  readonly closeAllProjects: () => void | Promise<void>;
+  readonly closeAllProjects: (reason: Extract<CloseFlushCompletionReason, 'saved' | 'discarded'>) => void | Promise<void>;
   readonly createRequestId?: () => string;
   readonly finalizeClose: (reason: CloseFlushCompletionReason) => void | Promise<void>;
   readonly onCloseBlocked?: (reason: Exclude<CloseFlushCompletionReason, 'saved' | 'discarded' | 'cancel'>) => 'cancel' | 'discard' | Promise<'cancel' | 'discard'>;
@@ -89,13 +89,17 @@ export function createRendererCloseFlushCoordinator({
     return true;
   };
 
-  const finishClose = async (reason: CloseFlushCompletionReason): Promise<void> => {
+  const finishClose = async (
+    reason: Extract<CloseFlushCompletionReason, 'saved' | 'discarded'>,
+  ): Promise<boolean> => {
     try {
-      await Promise.resolve(closeAllProjects());
-    } catch {
-      // Main-process close must continue to the final window/app boundary.
-    } finally {
+      await Promise.resolve(closeAllProjects(reason));
       await Promise.resolve(finalizeClose(reason));
+      return true;
+    } catch {
+      // A failed session close keeps the window open so the user can retry
+      // without abandoning the durable project boundary.
+      return false;
     }
   };
 
@@ -125,8 +129,8 @@ export function createRendererCloseFlushCoordinator({
       }
     }
     if (reason === 'saved' || reason === 'discarded') {
-      await finishClose(reason);
-      return;
+      if (await finishClose(reason)) return;
+      reason = 'failed';
     }
     if (reason === 'cancel' || onCloseBlocked === undefined) return;
     try {
@@ -153,6 +157,7 @@ export function createRendererCloseFlushCoordinator({
       }
       if (ack.phase === 'save_started') {
         if (pendingRequest.phase === 'save_started') return false;
+        pausePendingTimeout();
         pendingRequest.phase = 'save_started';
         startPendingTimeout();
         return true;

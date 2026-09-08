@@ -22,6 +22,65 @@ import {
 
 const CURRENT_GENERATION_JOB_ID_PREFIX = 'model-job-v2-';
 
+const WAN_TEXT_TO_VIDEO_MODELS = new Set([
+  'wan2.2-t2v-plus',
+  'wanx2.1-t2v-turbo',
+  'wanx2.1-t2v-plus',
+]);
+const WAN_IMAGE_TO_VIDEO_MODELS = new Set([
+  'wan2.2-i2v-plus',
+  'wan2.2-i2v-flash',
+  'wanx2.1-i2v-turbo',
+  'wanx2.1-i2v-plus',
+]);
+const WAN_KEYFRAME_VIDEO_MODELS = new Set(['wanx2.1-kf2v-plus']);
+
+const SEEDANCE_VIDEO_MODELS = new Set([
+  'doubao-seedance-2.5',
+  'doubao-seedance-2-0-260128',
+  'doubao-seedance-2-0-fast-260128',
+  'doubao-seedance-2.0-mini',
+  'doubao-seedance-1-0-pro-250528',
+  'doubao-seedance-1-0-lite-t2v-250428',
+  'doubao-seedance-1-0-lite-i2v-250428',
+]);
+const SEEDANCE_KEYFRAME_VIDEO_MODELS = new Set([
+  'doubao-seedance-2.5',
+  'doubao-seedance-2-0-260128',
+  'doubao-seedance-2-0-fast-260128',
+  'doubao-seedance-2.0-mini',
+  'doubao-seedance-1-0-lite-i2v-250428',
+]);
+
+const VEO_TEXT_TO_VIDEO_MODELS = new Set([
+  'veo3',
+  'veo3-fast',
+  'veo3-pro',
+  'veo3-pro-frames',
+  'veo2',
+  'veo2-fast',
+  'veo2-fast-frames',
+  'veo2-fast-components',
+  'veo2-pro',
+  'veo3-fast-frames',
+  'veo3.1',
+  'veo3.1-pro',
+]);
+const VEO_IMAGE_TO_VIDEO_MODELS = new Set([
+  'veo3-pro-frames',
+  'veo3-fast-frames',
+  'veo2-fast-frames',
+  'veo2-fast-components',
+  'veo3.1',
+  'veo3.1-pro',
+  'veo3.1-components',
+]);
+const VEO_DOCUMENTED_IMAGE_LIMITS = new Map<string, number>([
+  ['veo3-pro-frames', 1],
+  ['veo2-fast-frames', 2],
+  ['veo2-fast-components', 3],
+]);
+
 export interface ComflyVideoTaskState {
   readonly taskId: string;
   readonly status: string;
@@ -30,11 +89,20 @@ export interface ComflyVideoTaskState {
   readonly data?: { readonly output?: string; readonly duration?: number };
 }
 
+interface ManagedComflyVideoImage {
+  readonly bytes: Uint8Array;
+  readonly mediaType: 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp';
+}
+
 export function createComflyVideoJobHandlers(options: {
   readonly mappings: ProviderTaskMappingStore;
   readonly listProfiles: () => Promise<readonly ProviderBridgeProfile[]>;
   readonly submitProvider: (input: ComflyVideoGenerationRequest) => Promise<{ readonly taskId: string }>;
   readonly pollProvider: (rawTaskId: string, publicTaskId: string) => Promise<ComflyVideoTaskState>;
+  readonly readManagedGenerationImages?: (
+    sessionId: string,
+    referenceAssetIds: readonly string[],
+  ) => Promise<readonly ManagedComflyVideoImage[]>;
   readonly downloadResult: (url: string) => Promise<Uint8Array>;
   readonly historySink?: GenerationHistoryProviderSinkContract;
   readonly storeGeneratedVideo?: (sessionId: string, bytes: Uint8Array, mediaType: 'video/mp4') => Promise<{ readonly assetId: string; readonly width?: number | null; readonly height?: number | null }>;
@@ -49,8 +117,9 @@ export function createComflyVideoJobHandlers(options: {
         && item.modelRoute === validated.modelRoute
         && item.capabilities.includes('video_generation'));
       if (profile === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested video model profile is unavailable');
-      if (validated.referenceAssetIds.length > 0) throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'Comfly managed video references require a verified upload bridge');
       if ((validated.outputCount ?? 1) !== 1) throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'Comfly video jobs must be submitted one result at a time');
+      assertComflyVideoInputMode(profile.modelId ?? profile.modelRoute, validated.referenceAssetIds.length);
+      const references = await resolveManagedVideoImages(validated, options.readManagedGenerationImages);
       const historyId = deriveGenerationHistoryId(validated.jobId);
       const created = await options.mappings.reserveSubmission({ currentIdentity: validated.jobId.startsWith(CURRENT_GENERATION_JOB_ID_PREFIX), historyId });
       if (!created) {
@@ -68,14 +137,7 @@ export function createComflyVideoJobHandlers(options: {
         if (reservation !== undefined && reservation.historyId !== historyId) {
           throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generation history reservation identity is invalid');
         }
-        const response = await options.submitProvider({
-          model: profile.modelId ?? profile.modelRoute,
-          prompt: validated.prompt,
-          ...(validated.aspectRatio === undefined ? {} : { aspect_ratio: validated.aspectRatio }),
-          ...(validated.resolution === undefined ? {} : { resolution: validated.resolution === '4K' ? '4k' : validated.resolution === '2K' ? '2k' : validated.resolution }),
-          ...(validated.durationSeconds === undefined ? {} : { duration: validated.durationSeconds }),
-          ...(validated.audioEnabled === undefined ? {} : { audio: validated.audioEnabled }),
-        });
+        const response = await options.submitProvider(mapVideoGenerationRequest(validated, profile, references));
         const publicTaskId = options.createPublicTaskId();
         const timestamp = options.nowIso();
         await options.mappings.set({
@@ -157,10 +219,16 @@ type MappedVideoTaskState =
   | { readonly status: 'provider_completed'; readonly resultUrl: string; readonly durationSeconds?: number };
 
 function mapTaskState(value: ComflyVideoTaskState): MappedVideoTaskState {
-  const status = value.status.toUpperCase();
+  const status = value.status.trim().toUpperCase();
   const progress = value.progress === undefined ? undefined : Math.max(0, Math.min(1, value.progress > 1 ? value.progress / 100 : value.progress));
   if (status === 'NOT_START' || status === 'IN_PROGRESS') return { status: 'running', progress };
-  if (status === 'FAILURE') return { status: 'failed', error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_ERROR', 'Provider video task failed', true)) };
+  if (status === 'FAILURE') {
+    const reason = value.failReason?.trim();
+    const message = reason === undefined || reason.length === 0
+      ? 'Provider video task failed'
+      : `Provider video task failed: ${reason}`;
+    return { status: 'failed', error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_ERROR', message, true)) };
+  }
   if (status !== 'SUCCESS' || typeof value.data?.output !== 'string') throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid video task response');
   return { status: 'provider_completed', resultUrl: value.data.output, ...(typeof value.data.duration === 'number' && value.data.duration > 0 ? { durationSeconds: value.data.duration } : {}) };
 }
@@ -184,4 +252,174 @@ function assertMp4(bytes: Uint8Array): void {
 
 function assertComfly(provider: string): asserts provider is 'comfly' {
   if (provider !== 'comfly') throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider is unavailable');
+}
+
+export function hasVerifiedComflyVideoSubmissionContract(model: string): boolean {
+  const normalizedModel = model.trim().toLocaleLowerCase();
+  return WAN_TEXT_TO_VIDEO_MODELS.has(normalizedModel)
+    || WAN_IMAGE_TO_VIDEO_MODELS.has(normalizedModel)
+    || WAN_KEYFRAME_VIDEO_MODELS.has(normalizedModel)
+    || SEEDANCE_VIDEO_MODELS.has(normalizedModel)
+    || VEO_TEXT_TO_VIDEO_MODELS.has(normalizedModel)
+    || VEO_IMAGE_TO_VIDEO_MODELS.has(normalizedModel);
+}
+
+function assertComflyVideoInputMode(model: string, referenceCount: number): void {
+  const normalizedModel = model.trim().toLocaleLowerCase();
+  if (normalizedModel.startsWith('wan')) {
+    if (WAN_TEXT_TO_VIDEO_MODELS.has(normalizedModel) && referenceCount === 0) return;
+    if (WAN_IMAGE_TO_VIDEO_MODELS.has(normalizedModel) && referenceCount === 1) return;
+    if (WAN_KEYFRAME_VIDEO_MODELS.has(normalizedModel) && referenceCount === 2) return;
+    throw createProviderBridgeError(
+      'CAPABILITY_UNSUPPORTED',
+      'The selected Comfly Wan model does not support this reference-image mode',
+    );
+  }
+  if (normalizedModel.includes('seedance')) {
+    if (!SEEDANCE_VIDEO_MODELS.has(normalizedModel)) {
+      throw createProviderBridgeError(
+        'CAPABILITY_UNSUPPORTED',
+        'The selected Comfly Seedance model has no verified video submission contract',
+      );
+    }
+    if (referenceCount === 0 || referenceCount === 1) return;
+    if (referenceCount === 2 && SEEDANCE_KEYFRAME_VIDEO_MODELS.has(normalizedModel)) return;
+    throw createProviderBridgeError(
+      'CAPABILITY_UNSUPPORTED',
+      'The selected Comfly Seedance model does not support this reference-image mode',
+    );
+  }
+  if (normalizedModel.startsWith('veo')) {
+    if (referenceCount === 0) {
+      if (VEO_TEXT_TO_VIDEO_MODELS.has(normalizedModel)) return;
+      throw createProviderBridgeError(
+        'CAPABILITY_UNSUPPORTED',
+        'The selected Comfly Veo model requires a verified reference image',
+      );
+    }
+    if (!VEO_IMAGE_TO_VIDEO_MODELS.has(normalizedModel)) {
+      throw createProviderBridgeError(
+        'CAPABILITY_UNSUPPORTED',
+        'The selected Comfly Veo model does not support reference images',
+      );
+    }
+    const documentedLimit = VEO_DOCUMENTED_IMAGE_LIMITS.get(normalizedModel) ?? 1;
+    if (referenceCount <= documentedLimit) return;
+    throw createProviderBridgeError(
+      'CAPABILITY_UNSUPPORTED',
+      'The selected Comfly Veo model does not support this many reference images',
+    );
+  }
+  throw createProviderBridgeError(
+    'CAPABILITY_UNSUPPORTED',
+    'The selected Comfly video model has no verified submission contract',
+  );
+}
+
+async function resolveManagedVideoImages(
+  request: SubmitVideoJobBridgeRequest,
+  reader: ((sessionId: string, referenceAssetIds: readonly string[]) => Promise<readonly ManagedComflyVideoImage[]>) | undefined,
+): Promise<readonly ManagedComflyVideoImage[]> {
+  if (request.referenceAssetIds.length === 0) return [];
+  if (request.sessionId === undefined) {
+    throw createProviderBridgeError('INVALID_REQUEST', 'Reference video generation requires an open desktop project');
+  }
+  if (reader === undefined) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Managed video reference images are unavailable');
+  }
+  let images: readonly ManagedComflyVideoImage[];
+  try {
+    images = await reader(request.sessionId, request.referenceAssetIds);
+  } catch {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Managed video reference images are unavailable');
+  }
+  if (
+    images.length !== request.referenceAssetIds.length
+    || images.some((image) => image.bytes.byteLength === 0)
+  ) {
+    throw createProviderBridgeError('INVALID_REQUEST', 'Managed video reference images are unavailable');
+  }
+  return images;
+}
+
+function mapVideoGenerationRequest(
+  request: SubmitVideoJobBridgeRequest,
+  profile: ProviderBridgeProfile,
+  references: readonly ManagedComflyVideoImage[],
+): ComflyVideoGenerationRequest {
+  const model = profile.modelId ?? profile.modelRoute;
+  const images = references.map((image) =>
+    `data:${image.mediaType};base64,${Buffer.from(image.bytes).toString('base64')}`);
+  const normalizedModel = model.toLocaleLowerCase();
+  if (normalizedModel.includes('seedance')) {
+    return {
+      model,
+      prompt: request.prompt,
+      ...(images.length === 0 ? {} : { images }),
+      ...(request.aspectRatio === undefined ? {} : { ratio: request.aspectRatio }),
+      ...(request.resolution === undefined ? {} : { resolution: normalizeVideoResolution(request.resolution) }),
+      ...(request.durationSeconds === undefined ? {} : { duration: request.durationSeconds }),
+      ...(request.audioEnabled === undefined ? {} : { generate_audio: request.audioEnabled }),
+    };
+  }
+  if (normalizedModel.startsWith('wan')) {
+    if (images.length > 0) {
+      return {
+        model,
+        prompt: request.prompt,
+        images,
+        ...(request.resolution === undefined ? {} : { resolution: normalizeWanImageResolution(request.resolution) }),
+        ...(request.durationSeconds === undefined ? {} : { duration: request.durationSeconds }),
+      };
+    }
+    const size = mapWanTextVideoSize(request.resolution, request.aspectRatio);
+    return {
+      model,
+      prompt: request.prompt,
+      ...(size === undefined ? {} : { size }),
+      ...(request.durationSeconds === undefined ? {} : { duration: request.durationSeconds }),
+    };
+  }
+  if (normalizedModel.startsWith('veo') || normalizedModel.startsWith('omni_')) {
+    return {
+      model,
+      prompt: request.prompt,
+      ...(images.length === 0 ? {} : { images }),
+      ...(request.aspectRatio === undefined ? {} : { aspect_ratio: request.aspectRatio }),
+    };
+  }
+  return {
+    model,
+    prompt: request.prompt,
+    ...(images.length === 0 ? {} : { images }),
+    ...(request.aspectRatio === undefined ? {} : { aspect_ratio: request.aspectRatio }),
+    ...(request.resolution === undefined ? {} : { resolution: normalizeVideoResolution(request.resolution) }),
+    ...(request.durationSeconds === undefined ? {} : { duration: request.durationSeconds }),
+    ...(request.audioEnabled === undefined ? {} : { audio: request.audioEnabled }),
+  };
+}
+
+function normalizeVideoResolution(value: NonNullable<SubmitVideoJobBridgeRequest['resolution']>) {
+  return value === '4K' ? '4k' : value === '2K' ? '2k' : value;
+}
+
+function normalizeWanImageResolution(
+  value: NonNullable<SubmitVideoJobBridgeRequest['resolution']>,
+): ComflyVideoGenerationRequest['resolution'] {
+  if (value === '2K' || value === '4K') return value;
+  if (value === '480p' || value === '720p' || value === '1080p') return value.toUpperCase() as '480P' | '720P' | '1080P';
+  return undefined;
+}
+
+function mapWanTextVideoSize(
+  resolution: SubmitVideoJobBridgeRequest['resolution'],
+  aspectRatio: SubmitVideoJobBridgeRequest['aspectRatio'],
+): string | undefined {
+  if (resolution === undefined || resolution === '2K' || resolution === '4K') return undefined;
+  const sizes: Readonly<Record<string, Readonly<Partial<Record<NonNullable<SubmitVideoJobBridgeRequest['aspectRatio']>, string>>>>> = {
+    '480p': { '16:9': '832x480', '9:16': '480x832', '1:1': '624x624' },
+    '720p': { '16:9': '1280x720', '9:16': '720x1280', '1:1': '960x960', '4:3': '1088x832', '3:4': '832x1088' },
+    '1080p': { '16:9': '1920x1080', '9:16': '1080x1920', '1:1': '1440x1440', '4:3': '1632x1248', '3:4': '1248x1632' },
+  };
+  return sizes[resolution]?.[aspectRatio ?? '16:9'];
 }

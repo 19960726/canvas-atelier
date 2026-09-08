@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path';
 
 import { parseCanvasProject, type CanvasProject } from '@agent-canvas/domain';
@@ -76,6 +77,12 @@ interface LockDecision {
 interface LockGuard {
   readonly path: string;
   readonly token: string;
+}
+
+interface OperationGuardFingerprint {
+  readonly contentHash: string;
+  readonly mtimeMs: number;
+  readonly size: number;
 }
 
 type CanonicalLockRead =
@@ -233,32 +240,44 @@ export class ProjectRepository {
     }
 
     const activeJournalPath = this.resolveActiveJournalPath(session.root, session.manifest);
+    let operationGuardAcquired = false;
 
     try {
       const guard = await this.tryAcquireOperationGuard(session.root);
-      if (guard !== null) {
-        const closedAt = this.nowIso();
-        const manifest = {
-          ...session.manifest,
-          cleanClose: true,
-        };
+      if (guard === null) {
+        throw createPersistenceError(
+          'CONCURRENT_WRITER',
+          true,
+          'Project close is blocked by an operation guard; retry close',
+        );
+      }
+      operationGuardAcquired = true;
 
-        try {
-          const currentLock = await this.readCanonicalLock(session.root, session.lock.projectId);
-          if (currentLock.kind === 'valid' && currentLock.lock.sessionId === session.lock.sessionId) {
-            await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
-            await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
-            await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
-              clean: true,
-              closedAt,
-            } satisfies CleanCloseMarker);
-          }
-        } finally {
-          await this.releaseOperationGuard(guard);
+      const closedAt = this.nowIso();
+      const manifest = {
+        ...session.manifest,
+        cleanClose: true,
+      };
+
+      try {
+        const currentLock = await this.readCanonicalLock(session.root, session.lock.projectId);
+        if (currentLock.kind === 'valid' && currentLock.lock.sessionId === session.lock.sessionId) {
+          await this.fileSystem.rm(join(session.root, ...LOCK_PATH.split('/')), { force: true });
+          await writeJsonAtomic(this.fileSystem, join(session.root, PROJECT_MANIFEST_PATH), manifest);
+          await writeJsonAtomic(this.fileSystem, join(session.root, ...CLEAN_CLOSE_PATH.split('/')), {
+            clean: true,
+            closedAt,
+          } satisfies CleanCloseMarker);
         }
+      } finally {
+        await this.releaseOperationGuard(guard);
       }
     } finally {
-      releaseJournalState(activeJournalPath, session.manifest.projectId);
+      // Keep the journal registry active when another operation owns the guard;
+      // the caller can retry close with the same writable session.
+      if (operationGuardAcquired) {
+        releaseJournalState(activeJournalPath, session.manifest.projectId);
+      }
     }
   }
 
@@ -592,42 +611,131 @@ export class ProjectRepository {
   private async tryAcquireOperationGuard(root: string): Promise<LockGuard | null> {
     const guardPath = join(root, ...LOCK_GUARD_PATH.split('/'));
     const token = `${this.processId}-${this.createId()}`;
-    let handle = null as Awaited<ReturnType<FileSystem['open']>> | null;
-    let closed = false;
-    let created = false;
+    const acquire = async (): Promise<LockGuard | null> => {
+      let handle = null as Awaited<ReturnType<FileSystem['open']>> | null;
+      let closed = false;
+      let created = false;
+
+      try {
+        handle = await this.fileSystem.open(guardPath, 'wx');
+        created = true;
+        await handle.writeFile(
+          `${canonicalJson({
+            schemaVersion: LOCK_GUARD_SCHEMA_VERSION,
+            token,
+            processId: this.processId,
+            createdAt: this.nowIso(),
+          })}\n`,
+        );
+        await handle.sync();
+        await handle.close();
+        closed = true;
+        return { path: guardPath, token };
+      } catch {
+        if (handle !== null && !closed) {
+          try {
+            await handle.close();
+          } catch {
+            // Preserve the restore failure.
+          }
+        }
+
+        if (created) {
+          try {
+            await this.fileSystem.rm(guardPath, { force: true });
+          } catch {
+            // An abandoned guard is handled by the next acquisition attempt.
+          }
+        }
+
+        return null;
+      }
+    };
+
+    const acquired = await acquire();
+    if (acquired !== null) return acquired;
+
+    // A crashed writer can leave the operation guard behind even after its
+    // canonical project lock is stale. Reclaim it only when the guard itself
+    // is old and its owning process is definitely gone. Active or unverifiable
+    // processes remain fail-closed so a live writer cannot be interrupted.
+    if (!await this.reclaimAbandonedOperationGuard(root)) return null;
+    return acquire();
+  }
+
+  private async reclaimAbandonedOperationGuard(root: string): Promise<boolean> {
+    const guardPath = join(root, ...LOCK_GUARD_PATH.split('/'));
+    let raw: string;
+    try {
+      raw = await this.fileSystem.readFile(guardPath, 'utf8');
+    } catch {
+      return false;
+    }
+
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      // Empty or truncated guard files can be left by a process that crashed
+      // while publishing its owner record. Their filesystem fingerprint is
+      // the only trustworthy age/identity signal available.
+    }
+    if (isValidOperationGuard(parsed) && Number.isFinite(Date.parse(parsed.createdAt))) {
+      const createdAtMs = Date.parse(parsed.createdAt);
+      if (this.now().getTime() - createdAtMs < STALE_LOCK_MS) {
+        return false;
+      }
+      if (await this.isLocalProcessAlive(parsed.processId) !== false) return false;
+
+      // Re-read immediately before unlinking so a guard replaced while the
+      // liveness check was running is never removed by this recovery path.
+      try {
+        const current = JSON.parse(await this.fileSystem.readFile(guardPath, 'utf8')) as unknown;
+        if (!isValidOperationGuard(current) || current.token !== parsed.token) return false;
+        await this.fileSystem.unlink(guardPath);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    const firstFingerprint = await this.readOperationGuardFingerprint(guardPath);
+    if (firstFingerprint === null || this.now().getTime() - firstFingerprint.mtimeMs < STALE_LOCK_MS) {
+      return false;
+    }
+
+    // Malformed guards have no reliable owner PID. Re-read their complete
+    // fingerprint immediately before unlinking and only remove an unchanged
+    // stale file.
+    const secondFingerprint = await this.readOperationGuardFingerprint(guardPath);
+    if (secondFingerprint === null || !sameOperationGuardFingerprint(firstFingerprint, secondFingerprint)) {
+      return false;
+    }
 
     try {
-      handle = await this.fileSystem.open(guardPath, 'wx');
-      created = true;
-      await handle.writeFile(
-        `${canonicalJson({
-          schemaVersion: LOCK_GUARD_SCHEMA_VERSION,
-          token,
-          processId: this.processId,
-          createdAt: this.nowIso(),
-        })}\n`,
-      );
-      await handle.sync();
-      await handle.close();
-      closed = true;
-      return { path: guardPath, token };
+      await this.fileSystem.unlink(guardPath);
+      return true;
     } catch {
-      if (handle !== null && !closed) {
-        try {
-          await handle.close();
-        } catch {
-          // Preserve the restore failure.
-        }
-      }
+      return false;
+    }
+  }
 
-      if (created) {
-        try {
-          await this.fileSystem.rm(guardPath, { force: true });
-        } catch {
-          // An abandoned guard conservatively forces later operations read-only.
-        }
-      }
-
+  private async readOperationGuardFingerprint(path: string): Promise<OperationGuardFingerprint | null> {
+    try {
+      const fileStat = this.fileSystem.lstat !== undefined
+        ? await this.fileSystem.lstat(path)
+        : await this.fileSystem.stat(path);
+      if (!fileStat.isFile() || fileStat.isSymbolicLink?.()) return null;
+      if (typeof fileStat.mtimeMs !== 'number' || !Number.isFinite(fileStat.mtimeMs)) return null;
+      const raw = await this.fileSystem.readFile(path, 'utf8');
+      return {
+        contentHash: createHash('sha256').update(raw, 'utf8').digest('hex'),
+        mtimeMs: fileStat.mtimeMs,
+        size: typeof fileStat.size === 'number' && Number.isFinite(fileStat.size)
+          ? fileStat.size
+          : Buffer.byteLength(raw),
+      };
+    } catch {
       return null;
     }
   }
@@ -868,6 +976,31 @@ function isOwnedOperationGuard(value: unknown, token: string): boolean {
     typeof value.processId === 'number' &&
     typeof value.createdAt === 'string'
   );
+}
+
+function isValidOperationGuard(value: unknown): value is {
+  readonly schemaVersion: typeof LOCK_GUARD_SCHEMA_VERSION;
+  readonly token: string;
+  readonly processId: number;
+  readonly createdAt: string;
+} {
+  if (!isPlainRecord(value)) return false;
+  return value.schemaVersion === LOCK_GUARD_SCHEMA_VERSION
+    && typeof value.token === 'string'
+    && value.token.length > 0
+    && typeof value.processId === 'number'
+    && Number.isSafeInteger(value.processId)
+    && value.processId > 0
+    && typeof value.createdAt === 'string';
+}
+
+function sameOperationGuardFingerprint(
+  left: OperationGuardFingerprint,
+  right: OperationGuardFingerprint,
+): boolean {
+  return left.contentHash === right.contentHash
+    && left.mtimeMs === right.mtimeMs
+    && left.size === right.size;
 }
 
 function isPersistenceError(error: unknown): error is Error & { code: unknown; retryable: unknown } {

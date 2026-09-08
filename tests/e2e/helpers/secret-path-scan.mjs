@@ -98,6 +98,8 @@ const privatePathFixtureFiles = new Set([
   'packages/domain/src/codex-workflow-contract.test.ts',
   'packages/domain/src/mcp-workflow.test.ts',
   'packages/desktop-core/src/bridge-contract.test.ts',
+  'packages/desktop-core/src/codex-cli-ipc.test.ts',
+  'packages/desktop-core/src/codex-cli-service.test.ts',
   'packages/desktop-core/src/mcp-client-config.test.ts',
   'packages/desktop-core/src/mcp-client-ipc.test.ts',
   'packages/desktop-core/src/mcp-integration-preload.test.ts',
@@ -113,7 +115,7 @@ const allowedFindings = [
   {
     file: "tests/e2e/helpers/secret-path-scan.mjs",
     name: "scanner implementation hash",
-    hash: "553f7d5e58720508e6b743ad505636967a0a98c901ca0e79cd1443d935a1a650",
+    hash: "5c38d17120ce7ce15b802d8143bb6618c75c21f1d34ea6db8422ce5fbe4226d4",
   },
   {
     file: 'apps/renderer/src/agent/SkillChatWorkbench.test.tsx',
