@@ -84,6 +84,30 @@ test('a collapsed image generation node can be dragged directly from its preview
   await page.screenshot({ path: artifact('collapsed-node-direct-drag-light.png'), fullPage: true });
 });
 
+test('a collapsed missing-result warning keeps both editor and reload actions clickable without resubmitting', async ({ page }) => {
+  await openEmptyApp(page);
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.createModule('image_generation', { x: 420, y: 140 });
+    await window.__NOVUS_E2E__!.configureModule('image_generation', {
+      config: { resultState: 'fresh' },
+      execution: { state: 'completed' },
+    });
+  });
+
+  const generation = page.locator('[data-module-type="image_generation"]');
+  const warning = generation.getByRole('alert').filter({ hasText: '返图记录缺失' });
+  await expect(warning).toBeVisible();
+  await generation.getByRole('button', { name: 'Open image generation editor' }).click();
+  await expect(generation.getByLabel('Image generation prompt workspace')).toBeVisible();
+
+  await generation.getByRole('button', { name: '折叠图片生成节点' }).click();
+  await expect(warning).toBeVisible();
+  const submissionsBeforeReload = (await e2eState(page)).modelSubmissions.length;
+  await warning.getByRole('button', { name: '重新加载返图' }).click();
+  await expect(warning).toBeVisible();
+  expect((await e2eState(page)).modelSubmissions).toHaveLength(submissionsBeforeReload);
+});
+
 test('Stop image generation finishes even when provider cancellation never responds', async ({ page }) => {
   await openEmptyApp(page);
   await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_generation', { x: 420, y: 140 }));
@@ -104,6 +128,7 @@ test('Stop image generation finishes even when provider cancellation never respo
 });
 
 test('a completed formal image remains inside its source node after reload without an external result node', async ({ page }) => {
+  const savedModelRoute = 'comfly-gemini-3-1-flash-image-preview-4k';
   await openEmptyApp(page);
   await page.evaluate(async () => {
     await window.__NOVUS_E2E__!.createModule('image_input', { x: 40, y: 140 });
@@ -116,15 +141,25 @@ test('a completed formal image remains inside its source node after reload witho
   expect(imageAsset).toBeDefined();
   await page.evaluate(async (assetId) => {
     await window.__NOVUS_E2E__!.configureModule('image_generation', {
-      config: { resultState: 'fresh', resultAssetIds: [assetId] },
+      config: {
+        modelRoute: 'comfly-gemini-3-1-flash-image-preview-4k',
+        modelDisplayName: 'Nano Banana 2',
+        resultState: 'fresh',
+        resultAssetIds: [assetId],
+      },
       execution: { state: 'completed' },
     });
   }, imageAsset!.assetId);
 
   const imageNode = page.locator('[data-module-type="image_generation"]');
   await imageNode.getByRole('button', { name: 'Open image generation editor' }).click();
+  const imageRouteSelect = imageNode.getByRole('combobox', { name: 'Image generation model route' });
+  await expect(imageRouteSelect.locator(`option[value="${savedModelRoute}"]`)).toHaveCount(1);
+  await expect(imageRouteSelect).toHaveValue(savedModelRoute);
   await expect(imageNode.getByRole('button', { name: 'Generated image 1; double click to preview' }).locator('img'))
     .toHaveAttribute('src', imageAsset!.displayUrl);
+  await page.evaluate(() => window.dispatchEvent(new Event('novus:provider-catalog-changed')));
+  await expect(imageRouteSelect).toHaveValue(savedModelRoute);
   expect((await e2eState(page)).projectAssetIds).toContain(imageAsset!.assetId);
   await expect(page.locator('[data-module-type="image_result"]')).toHaveCount(0);
 
@@ -132,5 +167,9 @@ test('a completed formal image remains inside its source node after reload witho
   await expect(page.locator('[data-module-type="image_generation"]')
     .getByRole('button', { name: 'Generated image 1; double click to preview' }).locator('img'))
     .toHaveAttribute('src', imageAsset!.displayUrl);
+  const reopenedImageNode = page.locator('[data-module-type="image_generation"]');
+  const reopenedEditorButton = reopenedImageNode.getByRole('button', { name: 'Open image generation editor' });
+  if (await reopenedEditorButton.count() > 0) await reopenedEditorButton.click();
+  await expect(reopenedImageNode.getByRole('combobox', { name: 'Image generation model route' })).toHaveValue(savedModelRoute);
   await expect(page.locator('[data-module-type="image_result"]')).toHaveCount(0);
 });

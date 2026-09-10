@@ -8,7 +8,7 @@ import {
   createAgentCanvasApi,
   createDesktopPreloadApis,
 } from './preload.js';
-import type { DesktopBridgeInvoke } from '@agent-canvas/desktop-core/preload-api';
+import { BRIDGE_CHANNELS, type DesktopBridgeInvoke } from '@agent-canvas/desktop-core/preload-api';
 import { AGENT_CANVAS_CHANNELS } from './channels.js';
 
 describe('agentCanvas preload compatibility bridge', () => {
@@ -85,11 +85,47 @@ describe('agentCanvas preload compatibility bridge', () => {
       'ackCloseFlush',
       'chooseCloseDecision',
       'requestClose',
+      'subscribeCloseFlushAborted',
       'subscribeCloseFlushRequest',
     ]);
     expect(agentCanvas).not.toHaveProperty('lifecycle');
     expect(novusDesktop.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', phase: 'save_started' })).toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('strictly filters close-flush aborted events and returns the channel unsubscribe', () => {
+    const channelListeners = new Map<string, (payload: unknown) => void>();
+    const unsubscribe = vi.fn();
+    const subscribe = vi.fn((channel: string, listener: (payload: unknown) => void) => {
+      channelListeners.set(channel, listener);
+      return unsubscribe;
+    });
+    const { novusDesktop } = createDesktopPreloadApis(
+      vi.fn(async () => undefined) as DesktopBridgeInvoke,
+      subscribe,
+      vi.fn(),
+    );
+    const listener = vi.fn();
+
+    const dispose = novusDesktop.lifecycle.subscribeCloseFlushAborted(listener);
+    channelListeners.get(BRIDGE_CHANNELS.closeFlushAborted)?.({
+      requestId: 'close-request-aborted-1',
+      reason: 'failed',
+    });
+    channelListeners.get(BRIDGE_CHANNELS.closeFlushAborted)?.({
+      requestId: 'close-request-aborted-1',
+      reason: 'saved',
+    });
+    channelListeners.get(BRIDGE_CHANNELS.closeFlushAborted)?.({
+      requestId: 'close-request-aborted-1',
+      reason: 'failed',
+      token: 'secret',
+    });
+    dispose();
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({ requestId: 'close-request-aborted-1', reason: 'failed' });
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
   it('maps modern namespaces to the same invoke and subscribe channels as novusDesktop', async () => {

@@ -24,11 +24,37 @@ describe('MCP confirmation store', () => {
 
   it('uses a separate two-minute one-time grant for paid jobs', () => {
     const store = createMcpConfirmationStore({ now: () => 5_000, createToken: () => 'paid-grant-1' });
-    const grant = store.issuePaidJob({ nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image', modelRoute: 'image-default', requestHash: 'request-hash' });
+    const grant = store.issuePaidJob({ nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image', outputCount: 2, modelRoute: 'image-default', requestHash: 'request-hash' });
 
     expect(grant.expiresAt).toBe(125_000);
-    expect(store.consumePaidJob({ token: grant.token, nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image', modelRoute: 'image-default', requestHash: 'request-hash' })).toEqual({ ok: true });
-    expect(store.consumePaidJob({ token: grant.token, nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image', modelRoute: 'image-default', requestHash: 'request-hash' })).toEqual({ ok: false, code: 'CONFIRMATION_REPLAYED' });
+    expect(store.consumePaidJob({ token: grant.token, nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image', outputCount: 2, modelRoute: 'image-default', requestHash: 'request-hash' })).toEqual({ ok: true });
+    expect(store.consumePaidJob({ token: grant.token, nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image', outputCount: 2, modelRoute: 'image-default', requestHash: 'request-hash' })).toEqual({ ok: false, code: 'CONFIRMATION_REPLAYED' });
+  });
+
+  it('rejects a paid grant when the approved output quantity changes', () => {
+    const store = createMcpConfirmationStore({ now: () => 5_000, createToken: () => 'paid-output-count-grant' });
+    const grant = store.issuePaidJob({
+      nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image', outputCount: 2,
+      provider: '4dai', modelRoute: 'shared-route', requestHash: 'request-hash',
+    });
+
+    expect(store.consumePaidJob({
+      token: grant.token, nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image', outputCount: 3,
+      provider: '4dai', modelRoute: 'shared-route', requestHash: 'request-hash',
+    })).toEqual({ ok: false, code: 'CONFIRMATION_MISMATCH' });
+  });
+
+  it('rejects a paid grant when the provider changes under the same model route', () => {
+    const store = createMcpConfirmationStore({ now: () => 5_000, createToken: () => 'paid-provider-grant' });
+    const grant = store.issuePaidJob({
+      nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image',
+      outputCount: 1, provider: '4dai', modelRoute: 'shared-route', requestHash: 'request-hash',
+    });
+
+    expect(store.consumePaidJob({
+      token: grant.token, nodeId: 'image-1', projectId: 'project-1', expectedRevision: 8, jobKind: 'image',
+      outputCount: 1, provider: 'comfly', modelRoute: 'shared-route', requestHash: 'request-hash',
+    })).toEqual({ ok: false, code: 'CONFIRMATION_MISMATCH' });
   });
 
   it('invalidates every pending grant when the project changes', () => {

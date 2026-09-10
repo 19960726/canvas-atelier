@@ -253,6 +253,103 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('请先在设置中配置图片生成模型');
   });
 
+  it('shows and forwards a persisted quality choice only for a fixed GPT image model', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const gptImage: ProviderBridgeProfile = {
+      provider: 'comfly',
+      modelRoute: 'image/gpt-1.5',
+      modelId: 'gpt-image-1.5',
+      displayName: 'GPT Image 1.5',
+      capabilities: ['image_generation'],
+    };
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        summary: 'GPT 生图方案',
+        observations: [],
+        estimates: [],
+        unknowns: [],
+        options: [{ id: 'gpt', title: 'GPT 高质量', reason: '保留细节', kind: 'image', prompt: '高细节产品主图', modelRoute: gptImage.modelRoute }],
+      }),
+      modelRoute: 'chat/creative',
+      sources: [],
+    }));
+    renderWorkbench({ profiles: [...profiles, gptImage], executeCanvasAction, chat });
+
+    fireEvent.click(screen.getByRole('button', { name: '生成偏好' }));
+    fireEvent.change(screen.getByLabelText('生成模型选择方式'), { target: { value: 'fixed' } });
+    expect(screen.queryByLabelText('固定 GPT 图片质量')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('固定生成模型'), { target: { value: gptImage.modelRoute } });
+    const quality = screen.getByLabelText('固定 GPT 图片质量');
+    expect(quality).toHaveValue('medium');
+    fireEvent.change(quality, { target: { value: 'high' } });
+    fireEvent.click(screen.getByRole('button', { name: '关闭生成偏好' }));
+
+    expect(JSON.parse(window.localStorage.getItem('agent-canvas:generation-preferences:v1:project-a') ?? '{}'))
+      .toMatchObject({ image: { parameters: { imageQuality: 'high' } } });
+
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成 GPT 产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：GPT 高质量' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith(expect.objectContaining({
+      modelRoute: gptImage.modelRoute,
+      parameters: expect.objectContaining({ imageQuality: 'high' }),
+    })));
+  });
+
+  it('delivers assets that arrive after a completed action was first observed without assets', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({ summary: '迟到返图', options: [{ id: 'late', title: '迟到返图', reason: '验证回写竞态', kind: 'image', prompt: '产品主图', modelRoute: 'image/only' }] }),
+      modelRoute: 'chat/creative',
+      sources: [],
+    }));
+    const view = renderWorkbench({ chat, executeCanvasAction });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：迟到返图' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledOnce());
+    const nodeId = (executeCanvasAction.mock.calls as unknown as Array<[SkillCanvasActionRequest]>)[0]![0].nodeId;
+
+    view.rerender(workbench({ chat, executeCanvasAction, canvasActionResults: [{ nodeId, status: 'completed', assetIds: [] }] }));
+    expect(await screen.findByText('任务结束，但未收到可展示的结果。')).toBeVisible();
+    view.rerender(workbench({ chat, executeCanvasAction, canvasActionResults: [{ nodeId, status: 'completed', assetIds: ['late-result'] }] }));
+
+    expect(await screen.findByText('生成已完成，1 个结果已回写画布节点。')).toBeVisible();
+    expect(screen.getAllByText('生成已完成，1 个结果已回写画布节点。')).toHaveLength(1);
+  });
+
+  it.each(['failed', 'cancelled'] as const)('reports a successful retry of the same node after %s without duplicating stale terminal messages', async (terminalStatus) => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({ summary: '同节点重试', options: [{ id: 'retry', title: '同节点重试', reason: '验证终态通知', kind: 'image', prompt: '产品主图', modelRoute: 'image/only' }] }),
+      modelRoute: 'chat/creative',
+      sources: [],
+    }));
+    const view = renderWorkbench({ chat, executeCanvasAction });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：同节点重试' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledOnce());
+    const nodeId = (executeCanvasAction.mock.calls as unknown as Array<[SkillCanvasActionRequest]>)[0]![0].nodeId;
+    const staleText = terminalStatus === 'failed' ? '生成失败，请查看画布节点中的错误信息。' : '生成已取消。';
+
+    view.rerender(workbench({ chat, executeCanvasAction, canvasActionResults: [{ nodeId, status: terminalStatus, assetIds: [] }] }));
+    expect(await screen.findByText(staleText)).toBeVisible();
+    view.rerender(workbench({ chat, executeCanvasAction, canvasActionResults: [{ nodeId, status: terminalStatus, assetIds: [] }] }));
+    expect(screen.getAllByText(staleText)).toHaveLength(1);
+    view.rerender(workbench({ chat, executeCanvasAction, canvasActionResults: [{ nodeId, status: 'completed', assetIds: ['retry-result'] }] }));
+
+    expect(await screen.findByText('生成已完成，1 个结果已回写画布节点。')).toBeVisible();
+    expect(screen.getAllByText(staleText)).toHaveLength(1);
+  });
+
   it('auto-switches an incompatible fixed image preference for references and keeps compatible routes selectable', async () => {
     window.localStorage.setItem('agent-canvas:generation-preferences:v1:project-a', JSON.stringify({
       kind: 'image',

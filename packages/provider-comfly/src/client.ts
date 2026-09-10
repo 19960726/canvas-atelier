@@ -70,6 +70,96 @@ const publicCatalogSchema = z.object({
     models: z.array(publicCatalogModelSchema),
   }).passthrough(),
 }).passthrough().transform((value) => value.data);
+const publicPricingModelSchema = z.object({
+  model_name: nonEmptyStringSchema,
+  description: z.string().nullish().transform((value) => value ?? undefined),
+  tags: z.union([z.string(), z.array(z.string())]).nullish().transform((value) => {
+    if (Array.isArray(value)) return value.map((item) => item.trim()).filter(Boolean);
+    return typeof value === 'string' ? value.split(/[,，]/u).map((item) => item.trim()).filter(Boolean) : [];
+  }),
+  supported_endpoint_types: z.array(nonEmptyStringSchema).nullish().transform((value) => value ?? []),
+  apis: z.array(nonEmptyStringSchema).nullish().transform((value) => value ?? []),
+  other_info: z.object({
+    ratios: publicCatalogParameterTableSchema.optional(),
+  }).passthrough().nullish().transform((value) => value ?? undefined),
+}).passthrough().transform((value) => ({
+  key: value.model_name,
+  name: value.model_name,
+  provider: 'Comfly',
+  tags: value.tags,
+  apis: verifiedImageApisFromPricing(value.supported_endpoint_types, value.apis),
+  ...(value.description === undefined ? {} : { desc: value.description }),
+  ...(value.other_info?.ratios === undefined ? {} : { ratios: value.other_info.ratios }),
+}));
+const publicPricingSchema = z.object({
+  data: z.array(publicPricingModelSchema).max(10_000),
+}).passthrough().transform((value) => value.data);
+
+type PublicCatalogMetadata = {
+  readonly key: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly tags: readonly string[];
+  readonly apis: readonly string[];
+  readonly desc?: string;
+  readonly ratios?: { readonly headers: readonly string[]; readonly rows: readonly (readonly string[])[] };
+};
+
+const IMAGE_GENERATION_ENDPOINT = '/v1/images/generations';
+const IMAGE_EDIT_ENDPOINT = '/v1/images/edits';
+
+function verifiedImageApisFromPricing(endpointTypes: readonly string[], apis: readonly string[]): string[] {
+  const verified: string[] = [];
+  if (endpointTypes.some((endpoint) => endpoint.trim().toLocaleLowerCase() === 'image-generation')) {
+    verified.push(IMAGE_GENERATION_ENDPOINT);
+  }
+  for (const endpoint of [IMAGE_GENERATION_ENDPOINT, IMAGE_EDIT_ENDPOINT]) {
+    if (apis.some((api) => declaresExactApi(api, endpoint)) && !verified.includes(endpoint)) verified.push(endpoint);
+  }
+  return verified;
+}
+
+function hasVerifiedImageApi(apis: readonly string[]): boolean {
+  return apis.some((api) => declaresExactApi(api, IMAGE_GENERATION_ENDPOINT) || declaresExactApi(api, IMAGE_EDIT_ENDPOINT));
+}
+
+function declaresExactApi(api: string, endpoint: string): boolean {
+  const normalizedApi = api.trim().toLocaleLowerCase();
+  const normalizedEndpoint = endpoint.toLocaleLowerCase();
+  if (normalizedApi === normalizedEndpoint) return true;
+  const separator = normalizedApi.indexOf('-');
+  if (separator < 0) return false;
+  return normalizedApi.slice(separator + 1).replace(/-\d+$/u, '') === normalizedEndpoint;
+}
+
+function mergePublicCatalogModels(
+  legacyModels: readonly PublicCatalogMetadata[],
+  pricingModels: readonly PublicCatalogMetadata[],
+): Map<string, PublicCatalogMetadata> {
+  const merged = new Map<string, PublicCatalogMetadata>();
+  for (const model of [...legacyModels, ...pricingModels]) {
+    const current = merged.get(model.key);
+    if (current === undefined) {
+      merged.set(model.key, {
+        ...model,
+        tags: [...model.tags],
+        apis: [...model.apis],
+        ...(model.ratios === undefined ? {} : { ratios: { headers: [...model.ratios.headers], rows: model.ratios.rows.map((row) => [...row]) } }),
+      });
+      continue;
+    }
+    merged.set(model.key, {
+      ...current,
+      tags: [...new Set([...current.tags, ...model.tags])],
+      apis: [...new Set([...current.apis, ...model.apis])],
+      ...(current.desc !== undefined || model.desc === undefined ? {} : { desc: model.desc }),
+      ...(current.ratios !== undefined || model.ratios === undefined
+        ? {}
+        : { ratios: { headers: [...model.ratios.headers], rows: model.ratios.rows.map((row) => [...row]) } }),
+    });
+  }
+  return merged;
+}
 
 const videoTaskSubmissionSchema = z.object({
   task_id: nonEmptyStringSchema,
@@ -99,13 +189,33 @@ const imageTaskEnvelopeSchema = z.object({
   data: z.unknown().optional(),
 }).passthrough().refine((value) => value.taskId !== undefined || value.task_id !== undefined, {
   message: 'image task id is required',
-}).transform((value) => ({
-  ...value,
-  taskId: value.taskId ?? value.task_id!,
+}).transform(({ taskId, task_id: taskIdSnakeCase, status, data, ...rest }) => ({
+  ...rest,
+  taskId: taskId ?? taskIdSnakeCase!,
+  status,
+  ...(data === undefined ? {} : { data }),
 }));
 const imageTaskSchema = z.union([
   imageTaskEnvelopeSchema,
   z.object({ data: imageTaskEnvelopeSchema }).passthrough().transform((value) => value.data),
+]);
+
+const imageTaskSubmissionEnvelopeSchema = z.object({
+  taskId: nonEmptyStringSchema.optional(),
+  task_id: nonEmptyStringSchema.optional(),
+  status: nonEmptyStringSchema.optional(),
+  data: z.unknown().optional(),
+}).passthrough().refine((value) => value.taskId !== undefined || value.task_id !== undefined, {
+  message: 'image task id is required',
+}).transform(({ taskId, task_id: taskIdSnakeCase, status, data, ...rest }) => ({
+  ...rest,
+  taskId: taskId ?? taskIdSnakeCase!,
+  status: status ?? 'queued',
+  ...(data === undefined ? {} : { data }),
+}));
+const imageTaskSubmissionSchema = z.union([
+  imageTaskSubmissionEnvelopeSchema,
+  z.object({ data: imageTaskSubmissionEnvelopeSchema }).passthrough().transform((value) => value.data),
 ]);
 
 const imageResultSchema = z.union([
@@ -114,6 +224,13 @@ const imageResultSchema = z.union([
     data: z.array(imageDatumSchema).min(1),
   }).passthrough(),
   imageTaskSchema,
+]);
+const imageGenerationResultSchema = z.union([
+  z.object({
+    created: z.number().int().optional(),
+    data: z.array(imageDatumSchema).min(1),
+  }).passthrough(),
+  imageTaskSubmissionSchema,
 ]);
 
 const geminiResponseSchema = z.object({
@@ -208,14 +325,56 @@ export function mapComflyImageResolutionTier(
   return aspectRatio === '3:4' || aspectRatio === '9:16' ? '1024x1536' : '1536x1024';
 }
 
+function roundTo16(value: number): number {
+  return Math.max(16, Math.round(value / 16) * 16);
+}
+
+function floorTo16(value: number): number {
+  return Math.max(16, Math.floor(value / 16) * 16);
+}
+
+export function mapComflyGptImageExactSize(
+  tier: ComflyImageResolutionTier,
+  aspectRatio: ComflyImageAspectRatio = '1:1',
+): string {
+  if (aspectRatio === '1:1') return tier === '1K' ? '1024x1024' : tier === '2K' ? '2048x2048' : '2880x2880';
+  if (tier === '2K') {
+    const [rw, rh] = aspectRatio.split(':').map(Number) as [number, number];
+    const shortEdge = roundTo16(2048 * Math.min(rw, rh) / Math.max(rw, rh));
+    return rw > rh ? `2048x${shortEdge}` : `${shortEdge}x2048`;
+  }
+  if (tier === '4K' && aspectRatio === '16:9') return '3840x2160';
+  if (tier === '4K' && aspectRatio === '9:16') return '2160x3840';
+
+  const [rw, rh] = aspectRatio.split(':').map(Number) as [number, number];
+  const targetArea = tier === '1K' ? 1_048_576 : 8_294_400;
+  let width = roundTo16(Math.sqrt(targetArea * rw / rh));
+  let height = roundTo16(width * rh / rw);
+  while (width > 3840 || height > 3840 || width * height > 8_294_400) {
+    const scale = Math.min(3840 / width, 3840 / height, Math.sqrt(8_294_400 / (width * height)));
+    width = floorTo16(width * scale);
+    height = floorTo16(height * scale);
+  }
+  return `${width}x${height}`;
+}
+
 function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Record<string, unknown> {
-  if (input.size !== '1K' && input.size !== '2K' && input.size !== '4K') return input;
+  const { async: _async, ...request } = input;
+  if (input.size !== '1K' && input.size !== '2K' && input.size !== '4K') return request;
   if (isNanoBananaImageModel(input.model)) {
-    const { size, ...rest } = input;
+    const { size, ...rest } = request;
     return { ...rest, image_size: size };
   }
-  if (input.model.toLocaleLowerCase() === 'gpt-image-2') return input;
-  return { ...input, size: mapComflyImageResolutionTier(input.size, input.aspect_ratio) };
+  if (isGptImageExactSizeModel(input.model)) {
+    const { aspect_ratio: _aspectRatio, ...rest } = request;
+    return { ...rest, size: mapComflyGptImageExactSize(input.size, input.aspect_ratio) };
+  }
+  return { ...request, size: mapComflyImageResolutionTier(input.size, input.aspect_ratio) };
+}
+
+function isGptImageExactSizeModel(model: string): boolean {
+  return /^gpt-image-2(?:-(?:all|2k|4k|vip)|\.5-(?:flare|sunburst)(?:-(?:2k|4k))?)?$/u
+    .test(model.trim().toLocaleLowerCase());
 }
 
 function isNanoBananaImageModel(model: string): boolean {
@@ -259,11 +418,12 @@ export class ComflyClient {
   }
 
   async listAccessibleModelCatalog(): Promise<ComflyAccessibleModelCatalog> {
-    const [visibleModelIds, catalog] = await Promise.all([
+    const [visibleModelIds, catalog, pricingModels] = await Promise.all([
       this.listModelIds(),
       this.publicRequest('/api/models/price', publicCatalogSchema),
+      this.publicRequest('/api/pricing', publicPricingSchema).catch(() => undefined),
     ]);
-    const catalogByKey = new Map(catalog.models.map((model) => [model.key, model]));
+    const catalogByKey = mergePublicCatalogModels(catalog.models, pricingModels ?? []);
     const models: ComflyCatalogModel[] = visibleModelIds.map((modelId) => {
       const metadata = catalogByKey.get(modelId);
       if (metadata === undefined) {
@@ -284,11 +444,10 @@ export class ComflyClient {
         apis: [...metadata.apis],
         ...(metadata.desc === undefined ? {} : { description: metadata.desc }),
         ...(metadata.ratios === undefined ? {} : { parameterTable: metadata.ratios }),
-        // The public API list can be provider-wide (for example Midjourney
-        // exposes describe/video endpoints on every operation entry). It is
-        // not sufficient evidence that this particular model has that
-        // capability; only an explicit model tag makes the profile complete.
-        capabilityStatus: metadata.tags.length > 0 ? 'complete' : 'incomplete',
+        // Generic provider-wide API lists are not enough to make a model
+        // runnable. Exact image generation/edit paths are model-level positive
+        // evidence, including for newer pricing entries whose tags are empty.
+        capabilityStatus: metadata.tags.length > 0 || hasVerifiedImageApi(metadata.apis) ? 'complete' : 'incomplete',
       };
     });
     return { version: catalog.version, models };
@@ -335,7 +494,7 @@ export class ComflyClient {
       method: 'POST',
       body: mapComflyImageGenerationInput(input),
       model: input.model,
-      schema: imageResultSchema,
+      schema: imageGenerationResultSchema,
       timeoutMs: this.generationTimeoutMs,
     });
   }

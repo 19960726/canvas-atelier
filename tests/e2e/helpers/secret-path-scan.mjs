@@ -81,6 +81,7 @@ const redactionImplementationFiles = new Set([
   'packages/desktop-core/src/knowledge-refresh-service.ts',
   'packages/desktop-core/src/managed-knowledge-store.ts',
   'packages/desktop-core/src/novus-pack.ts',
+  'packages/desktop-core/src/newapi-client.ts',
   'packages/desktop-core/src/preload-api.ts',
   'packages/desktop-core/src/provider-bridge.ts',
   'packages/desktop-core/src/provider-contracts.ts',
@@ -115,7 +116,7 @@ const allowedFindings = [
   {
     file: "tests/e2e/helpers/secret-path-scan.mjs",
     name: "scanner implementation hash",
-    hash: "5c38d17120ce7ce15b802d8143bb6618c75c21f1d34ea6db8422ce5fbe4226d4",
+    hash: "d921f807311bb751ab0733818d1faca35d6b022f0cb02c01ce23cd20aa99517c",
   },
   {
     file: 'apps/renderer/src/agent/SkillChatWorkbench.test.tsx',
@@ -164,6 +165,14 @@ const allowedFindings = [
       String.raw`C:\\Users\\private\\brief.md`,
       String.raw`C:\\private\\source.png`,
       String.raw`C:\\|https?:\/\//i);`,
+    ],
+  },
+  {
+    file: 'packages/desktop-core/src/newapi-client.test.ts',
+    name: 'Authorization header',
+    evidence: [
+      "authorization: 'Bearer",
+      'authorization: expect.anything()',
     ],
   },
   {

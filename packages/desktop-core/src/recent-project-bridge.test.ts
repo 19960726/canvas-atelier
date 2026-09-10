@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,6 +41,33 @@ const summary = {
 };
 
 describe('recent project desktop bridge', () => {
+  it('keeps implicit bridge state out of the working directory and isolated per handler', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'novus-bridge-implicit-root-'));
+    tempRoots.push(tempRoot);
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(tempRoot);
+    let nextId = 0;
+    const first = createDesktopBridgeHandlers({
+      createId: () => `implicit-first-${++nextId}`,
+    });
+    const second = createDesktopBridgeHandlers({
+      createId: () => `implicit-second-${++nextId}`,
+    });
+
+    try {
+      await expect(first.createProject({}, {
+        project: { ...project, id: 'project-implicit-first', name: 'Implicit first' },
+      })).resolves.toMatchObject({ projectId: 'project-implicit-first' });
+      await first.closeAllProjects();
+
+      await expect(second.listRecentProjects({})).resolves.toEqual([]);
+      await expect(access(join(tempRoot, 'recent-projects.index.json')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      cwd.mockRestore();
+      await Promise.allSettled([first.closeAllProjects(), second.closeAllProjects()]);
+    }
+  });
+
   it('registers all recent-project IPC channels', () => {
     const channels: string[] = [];
     const handlers = createDesktopBridgeHandlers({

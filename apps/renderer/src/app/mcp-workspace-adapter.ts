@@ -17,6 +17,7 @@ import {
   type CanvasWorkflowMutation,
   type ProjectTransaction,
   type McpPermissionFlags,
+  type ModelJobProvider,
 } from '@agent-canvas/domain';
 
 import {
@@ -48,13 +49,24 @@ export interface McpWorkspaceRunResult {
   readonly jobIds: readonly string[];
 }
 
+export interface McpPaidJobRoute {
+  readonly provider: ModelJobProvider;
+  readonly modelRoute: string;
+}
+
+export interface McpPaidJobExecutionRoute extends McpPaidJobRoute {
+  readonly projectId: string;
+  readonly expectedRevision: number;
+}
+
 export interface McpWorkspaceSource {
   getProject(): CanvasProject;
   getRevision(): number;
   getSelection(): { readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] };
   getJobs(): readonly McpWorkspaceJobSummary[];
   commitProjectTransaction(transaction: ProjectTransaction): Promise<boolean>;
-  runNode(nodeId: string): Promise<McpWorkspaceRunResult>;
+  resolvePaidJobRoute?(node: CanvasModuleNode): Promise<McpPaidJobRoute | undefined>;
+  runNode(nodeId: string, executionRoute?: McpPaidJobExecutionRoute): Promise<McpWorkspaceRunResult>;
   cancelJob(jobId: string): Promise<void>;
   requestMediaImport(kind: 'image' | 'video', position: { readonly x: number; readonly y: number }): boolean | Promise<boolean>;
 }
@@ -76,6 +88,7 @@ export interface McpWorkspaceAdapter {
 type PendingPlan = {
   readonly planId: string;
   readonly projectId: string;
+  readonly projectHash: string;
   readonly expectedRevision: number;
   readonly intent: string;
   readonly mutations: readonly CanvasWorkflowMutation[];
@@ -235,7 +248,7 @@ export function createMcpWorkspaceAdapter(
         case 'canvas_run_node': {
           const denied = permissionDenied(request.tool, 'executeAiGeneration');
           if (denied !== null) return denied;
-          return runNode(request.expectedRevision, request.nodeId, request.confirmationToken);
+          return await runNode(request.expectedRevision, request.nodeId, request.confirmationToken);
         }
         case 'canvas_cancel_job': {
           const denied = permissionDenied(request.tool, 'executeAiGeneration');
@@ -284,9 +297,11 @@ function planWorkflow(
     const currentRevision = source.getRevision();
     if (expectedRevision !== currentRevision) return revisionConflict(currentRevision);
     const project = source.getProject();
+    const projectHash = hashPublicProjectExecutionState(project);
     const mutationHash = hashMcpValue(mutations);
     const existing = [...pendingPlans.values()].find((plan) => (
       plan.projectId === project.id
+      && plan.projectHash === projectHash
       && plan.expectedRevision === expectedRevision
       && plan.intent === intent
       && plan.mutationHash === mutationHash
@@ -303,6 +318,7 @@ function planWorkflow(
     const plan: PendingPlan = {
       planId,
       projectId: project.id,
+      projectHash,
       expectedRevision,
       intent,
       mutations: cloneJson(mutations),
@@ -348,7 +364,12 @@ function planWorkflow(
     const currentRevision = source.getRevision();
     if (expectedRevision !== currentRevision) return revisionConflict(currentRevision);
     const plan = pendingPlans.get(planId);
-    if (!plan || plan.projectId !== source.getProject().id) return error('PLAN_NOT_FOUND', 'Pending workflow plan was not found.');
+    const currentProject = source.getProject();
+    if (!plan || plan.projectId !== currentProject.id) return error('PLAN_NOT_FOUND', 'Pending workflow plan was not found.');
+    if (plan.expectedRevision !== expectedRevision) return revisionConflict(currentRevision);
+    if (plan.projectHash !== hashPublicProjectExecutionState(currentProject)) {
+      return revisionConflict(source.getRevision());
+    }
     const consumed = confirmations.consumeWorkflow({
       token: confirmationToken,
       planId: plan.planId,
@@ -383,19 +404,61 @@ function planWorkflow(
   }
 
   async function runNode(expectedRevision: number, nodeId: string, token: string | undefined): Promise<CanvasMcpResponse> {
+    const project = source.getProject();
+    const expectedProjectId = project.id;
+    const expectedProjectHash = hashPublicProjectExecutionState(project);
     const currentRevision = source.getRevision();
     if (expectedRevision !== currentRevision) return revisionConflict(currentRevision);
-    const node = source.getProject().nodes.find((candidate): candidate is CanvasModuleNode => candidate.id === nodeId && candidate.type === 'module');
+    const node = project.nodes.find((candidate): candidate is CanvasModuleNode => candidate.id === nodeId && candidate.type === 'module');
     if (!node) return error('NODE_NOT_FOUND', 'Canvas module node was not found.');
     const jobKind = paidJobKind(node.data.moduleType);
     if (!jobKind) return error('NODE_NOT_EXECUTABLE', 'This canvas node has no paid execution route.');
-    const modelRoute = typeof node.data.config.modelRoute === 'string' ? node.data.config.modelRoute : `${jobKind}-default`;
-    const requestHash = hashMcpValue({ nodeId, jobKind, modelRoute, config: publicConfig(node.data.config) });
-    let pending = [...pendingPaidJobs.values()].find((candidate) => candidate.nodeId === nodeId && candidate.expectedRevision === expectedRevision && candidate.requestHash === requestHash);
+    const outputCount = paidJobOutputCount(jobKind, node.data.config.outputCount);
+    let resolvedRoute: McpPaidJobRoute | undefined;
+    try {
+      resolvedRoute = await source.resolvePaidJobRoute?.(node);
+    } catch (cause) {
+      return error('MODEL_ROUTE_UNAVAILABLE', stableMessage(cause));
+    }
+    const currentProject = source.getProject();
+    if (currentProject.id !== expectedProjectId
+      || source.getRevision() !== expectedRevision
+      || hashPublicProjectExecutionState(currentProject) !== expectedProjectHash) {
+      return revisionConflict(source.getRevision());
+    }
+    if (source.resolvePaidJobRoute !== undefined && resolvedRoute === undefined) {
+      return error('MODEL_ROUTE_UNAVAILABLE', 'No runnable provider route is available for this paid model job.');
+    }
+    const provider = resolvedRoute?.provider;
+    const modelRoute = resolvedRoute?.modelRoute
+      ?? (typeof node.data.config.modelRoute === 'string' ? node.data.config.modelRoute : `${jobKind}-default`);
+    if (modelRoute.trim().length === 0 || (provider !== undefined && provider.trim().length === 0)) {
+      return error('MODEL_ROUTE_UNAVAILABLE', 'The resolved provider route is invalid.');
+    }
+    const requestHash = hashMcpValue({ projectId: expectedProjectId, projectHash: expectedProjectHash, nodeId, jobKind, outputCount, provider, modelRoute, config: publicConfig(node.data.config) });
+    for (const [requestId, candidate] of pendingPaidJobs) {
+      if (candidate.nodeId !== nodeId || candidate.expectedRevision !== expectedRevision || candidate.requestHash === requestHash) continue;
+      pendingPaidJobs.delete(requestId);
+      mcpUiConfirmationStore.dismiss(requestId);
+    }
+    let pending = [...pendingPaidJobs.values()].find((candidate) => candidate.projectId === expectedProjectId
+      && candidate.nodeId === nodeId
+      && candidate.expectedRevision === expectedRevision
+      && candidate.requestHash === requestHash);
     if (!token) {
       if (!pending) {
         const requestId = createId('mcp-paid');
-        pending = { requestId, nodeId, projectId: source.getProject().id, expectedRevision, jobKind, modelRoute, requestHash };
+        pending = {
+          requestId,
+          nodeId,
+          projectId: expectedProjectId,
+          expectedRevision,
+          jobKind,
+          outputCount,
+          ...(provider === undefined ? {} : { provider }),
+          modelRoute,
+          requestHash,
+        };
         pendingPaidJobs.set(requestId, pending);
         mcpUiConfirmationStore.publish({
           id: requestId,
@@ -405,6 +468,8 @@ function planWorkflow(
           expectedRevision,
           nodeId,
           jobKind,
+          outputCount,
+          ...(provider === undefined ? {} : { provider }),
           modelRoute,
         }, {
           confirm: () => confirmPaidJob(requestId),
@@ -415,6 +480,8 @@ function planWorkflow(
         requestId: pending.requestId,
         nodeId,
         jobKind,
+        outputCount,
+        ...(provider === undefined ? {} : { provider }),
         modelRoute,
         confirmationRequired: pending.confirmationGrant === undefined,
         ...(pending.confirmationGrant === undefined ? {} : {
@@ -423,14 +490,58 @@ function planWorkflow(
         }),
       });
     }
-    if (!pending) return error('PAID_CONFIRMATION_REQUIRED', 'No matching paid confirmation request is pending.');
-    const consumed = confirmations.consumePaidJob({ token, nodeId, projectId: pending.projectId, expectedRevision, jobKind, modelRoute, requestHash });
-    if (!consumed.ok) return error('PAID_CONFIRMATION_REQUIRED', 'Confirm this exact paid model job inside Canvas Atelier.', { reason: consumed.code });
-    const run = await source.runNode(nodeId);
-    if (!run.started || run.jobIds.length === 0) return error('JOB_START_FAILED', 'Canvas Atelier could not start a trackable managed model job.');
+    if (!pending) return error('PAID_CONFIRMATION_REQUIRED', 'No matching paid confirmation request is pending.', {
+      nodeId,
+      jobKind,
+      outputCount,
+      ...(provider === undefined ? {} : { provider }),
+      modelRoute,
+    });
+    const consumed = confirmations.consumePaidJob({
+      token,
+      nodeId,
+      projectId: pending.projectId,
+      expectedRevision,
+      jobKind,
+      outputCount,
+      ...(provider === undefined ? {} : { provider }),
+      modelRoute,
+      requestHash,
+    });
+    if (!consumed.ok) return error('PAID_CONFIRMATION_REQUIRED', 'Confirm this exact paid model job inside Canvas Atelier.', {
+      nodeId,
+      jobKind,
+      outputCount,
+      ...(provider === undefined ? {} : { provider }),
+      modelRoute,
+      reason: consumed.code,
+    });
     pendingPaidJobs.delete(pending.requestId);
     mcpUiConfirmationStore.dismiss(pending.requestId);
-    return success({ started: true, nodeId, jobKind, jobIds: [...run.jobIds] });
+    const run = resolvedRoute === undefined
+      ? await source.runNode(nodeId)
+      : await source.runNode(nodeId, {
+        projectId: pending.projectId,
+        expectedRevision,
+        provider: resolvedRoute.provider,
+        modelRoute: resolvedRoute.modelRoute,
+      });
+    if (!run.started || run.jobIds.length === 0) return error('JOB_START_FAILED', 'Canvas Atelier could not start a trackable managed model job.', {
+      nodeId,
+      jobKind,
+      outputCount,
+      ...(provider === undefined ? {} : { provider }),
+      modelRoute,
+    });
+    return success({
+      started: true,
+      nodeId,
+      jobKind,
+      outputCount,
+      ...(provider === undefined ? {} : { provider }),
+      modelRoute,
+      jobIds: [...run.jobIds],
+    });
   }
 
 function confirmPlan(planId: string): McpConfirmationGrant {
@@ -537,6 +648,28 @@ function publicConfig(config: Readonly<Record<string, unknown>>): Record<string,
       return [];
     }
   }));
+}
+
+function hashPublicProjectExecutionState(project: CanvasProject): string {
+  return hashMcpValue({
+    projectId: project.id,
+    version: project.version,
+    graphVersion: project.graphVersion,
+    assets: (project.assets ?? []).map((asset) => publicConfig(asset as unknown as Record<string, unknown>)),
+    nodes: project.nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      position: cloneJson(node.position),
+      ...(node.locked === undefined ? {} : { locked: node.locked }),
+      data: node.type === 'module'
+        ? {
+            ...publicConfig(node.data as unknown as Record<string, unknown>),
+            config: publicConfig(node.data.config),
+          }
+        : publicConfig(node.data as unknown as Record<string, unknown>),
+    })),
+    edges: project.edges.map((edge) => publicConfig(edge as unknown as Record<string, unknown>)),
+  });
 }
 
 function managedResultIds(node: CanvasModuleNode): string[] {
@@ -660,6 +793,16 @@ function paidJobKind(moduleType: string): 'image' | 'video' | 'reverse' | null {
   if (moduleType === 'video_generation') return 'video';
   if (moduleType === 'reverse_agent') return 'reverse';
   return null;
+}
+
+function paidJobOutputCount(
+  jobKind: PaidJobConfirmationSubject['jobKind'],
+  value: unknown,
+): PaidJobConfirmationSubject['outputCount'] {
+  if (jobKind === 'reverse') return 1;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4
+    ? value as PaidJobConfirmationSubject['outputCount']
+    : 1;
 }
 
 function revisionConflict(currentRevision: number): CanvasMcpResponse {

@@ -56,6 +56,34 @@ describe('ProviderCredentialStore.clear', () => {
   });
 });
 
+describe('provider credential roots', () => {
+  it('keeps all four provider credentials in independent stores while preserving the Comfly legacy root', async () => {
+    const appDataRoot = await createTemporaryRoot();
+    const providers = ['comfly', 'relayme', 'julun', '4dai'] as const;
+    const stores = providers.map((provider) => createSecureProviderCredentialStore({
+      appDataRoot,
+      provider,
+      safeStorage: fakeSafeStorage,
+    }));
+
+    await Promise.all(stores.map((store, index) => store.configure({ token: `${providers[index]}-secret` })));
+
+    await Promise.all(stores.map((store, index) => expect(store.getToken()).resolves.toBe(`${providers[index]}-secret`)));
+    await expect(access(join(appDataRoot, 'provider-credentials.json'))).resolves.toBeUndefined();
+    await expect(access(join(appDataRoot, 'providers', 'relayme', 'provider-credentials.json'))).resolves.toBeUndefined();
+    await expect(access(join(appDataRoot, 'providers', 'julun', 'provider-credentials.json'))).resolves.toBeUndefined();
+    await expect(access(join(appDataRoot, 'providers', '4dai', 'provider-credentials.json'))).resolves.toBeUndefined();
+  });
+
+  it('rejects an unregistered provider before deriving a credential path', () => {
+    expect(() => createSecureProviderCredentialStore({
+      appDataRoot: 'credential-test-root',
+      provider: '../unknown' as 'comfly',
+      safeStorage: fakeSafeStorage,
+    })).toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }));
+  });
+});
+
 const fakeSafeStorage: SafeStorageAdapter = {
   isEncryptionAvailable: () => true,
   encryptString: (value) => Buffer.from(value, 'utf8'),

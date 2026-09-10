@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 
@@ -447,14 +449,21 @@ const PROJECT_IMAGE_REFERENCE_LAYOUT: Record<
   material_lighting: { x: 0.08, y: 0.7, w: 0.2, h: 0.2, zIndex: 10, semanticLayer: 'midground' },
 };
 
+function createEphemeralBridgeAppDataRoot(): string {
+  // Electron entrypoints always supply app.getPath('userData').  Keep the
+  // dependency-light bridge constructor useful in tests without letting two
+  // handler instances share state through the repository working directory.
+  return join(tmpdir(), 'novus-desktop-bridge', `${process.pid}-${randomUUID()}`);
+}
+
 export function createDesktopBridgeHandlers(
   dependencies: DesktopBridgeHandlerDependencies = {},
 ): DesktopBridgeHandlers {
   const fileSystem = dependencies.fileSystem ?? new NodeFileSystem();
-  const appDataRoot = dependencies.appDataRoot ?? process.cwd();
+  const appDataRoot = dependencies.appDataRoot ?? createEphemeralBridgeAppDataRoot();
   const now = dependencies.now ?? (() => new Date().toISOString());
   const recentProjectStore = dependencies.recentProjectStore ?? new RecentProjectStore({
-    appDataRoot: dependencies.appDataRoot ?? process.cwd(),
+    appDataRoot,
     fileSystem,
   });
   const assetStore = dependencies.assetStore ?? new AssetStore();
@@ -469,7 +478,7 @@ export function createDesktopBridgeHandlers(
   });
   const snapshotScheduler = dependencies.snapshotScheduler ?? new SnapshotScheduler({ fileSystem });
   const recoveryScanner = dependencies.recoveryScanner ?? new RecoveryScanner({
-    appDataRoot: dependencies.appDataRoot ?? process.cwd(),
+    appDataRoot,
     createId,
     fileSystem,
   });
@@ -478,7 +487,7 @@ export function createDesktopBridgeHandlers(
     isolationRoot: dependencies.importerIsolationRoot,
   });
   const knowledgeStore = dependencies.knowledgeStore ?? new ManagedKnowledgeStore({
-    appDataRoot: dependencies.appDataRoot ?? process.cwd(),
+    appDataRoot,
     fileSystem,
   });
   const approvedSnapshotOutbox = dependencies.approvedSnapshotOutbox ?? null;
@@ -489,8 +498,8 @@ export function createDesktopBridgeHandlers(
     store: knowledgeStore as ManagedKnowledgeStore,
   });
   const historyStore = dependencies.historyStore ?? new GenerationHistoryStore({
-    historyRoot: join(dependencies.appDataRoot ?? process.cwd(), 'generation-history'),
-    ownedRoot: dependencies.appDataRoot ?? process.cwd(),
+    historyRoot: join(appDataRoot, 'generation-history'),
+    ownedRoot: appDataRoot,
     fileSystem,
     isNetworkPath: dependencies.historyIsNetworkPath,
   });

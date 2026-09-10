@@ -36,9 +36,12 @@ export const PROVIDER_BRIDGE_CHANNELS = {
 export type ProviderBridgeChannel = typeof PROVIDER_BRIDGE_CHANNELS[keyof typeof PROVIDER_BRIDGE_CHANNELS];
 
 const nonEmptyStringSchema = z.string().min(1);
-const safeModelIdSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9._:/-]+$/u, 'Model id is invalid');
+const safeModelIdSchema = z.string().min(1).max(200).refine((value) => (
+  value === value.trim()
+  && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)
+), 'Model id is invalid');
 const secretStringSchema = z.string().min(1);
-export const ProviderIdSchema = z.enum(['comfly', 'relayme']);
+export const ProviderIdSchema = z.enum(['comfly', 'relayme', 'julun', '4dai']);
 const providerSchema = ProviderIdSchema;
 const capabilitySchema = z.enum([
   'chat',
@@ -130,6 +133,7 @@ export const ProviderBridgeProfileSchema = z.object({
   modelId: nonEmptyStringSchema.optional(),
   capabilities: z.array(capabilitySchema),
   capabilityStatus: z.enum(['complete', 'incomplete']).optional(),
+  enabled: z.boolean().optional(),
   constraints: providerParameterConstraintsSchema.optional(),
 }).strict().superRefine((value, context) => {
   addProtectedPayloadIssues(value, context, 'Provider bridge payload contains protected payload');
@@ -139,7 +143,10 @@ export const ProviderConfigurationStatusSchema = z.object({
   configured: z.boolean(),
   locked: z.boolean(),
   encryption: z.enum(['safeStorage', 'passphrase', 'unavailable']),
-}).strict();
+  baseUrl: nonEmptyStringSchema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.baseUrl !== undefined) addUnsafeBaseUrlIssues(value.baseUrl, context);
+});
 
 export const ProviderActiveStateSchema = z.object({
   activeProvider: ProviderIdSchema.nullable(),
@@ -243,6 +250,7 @@ export const SubmitImageJobBridgeRequestSchema = z.object({
   referenceAssetIds: z.array(nonEmptyStringSchema),
   aspectRatio: imageAspectRatioSchema.optional(),
   resolution: imageResolutionSchema.optional(),
+  quality: z.enum(['low', 'medium', 'high']).optional(),
   outputCount: imageOutputCountSchema.optional(),
 }).strict().superRefine((value, context) => {
   addProtectedPayloadIssues(value, context, 'Provider bridge payload contains protected payload');

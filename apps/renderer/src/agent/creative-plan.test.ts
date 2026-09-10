@@ -61,6 +61,20 @@ describe('separate generation preferences', () => {
     expect(generationProfiles(routes, 'video', 1).map((profile) => profile.modelRoute)).toEqual(['wan/i2v', 'veo/one', 'veo/two']);
     expect(generationProfiles(routes, 'video', 2).map((profile) => profile.modelRoute)).toEqual(['wan/kf2v', 'veo/two']);
   });
+  it('keeps Julun video profiles available for their supported text and single-image modes', () => {
+    const julun: ProviderBridgeProfile = {
+      provider: 'julun',
+      modelRoute: 'julun-seedance-2-0-deal',
+      modelId: 'seedance-2.0-deal',
+      displayName: 'Seedance 2.0 Deal',
+      capabilities: ['video_generation', 'async_tasks'],
+      capabilityStatus: 'complete',
+    };
+
+    expect(generationProfiles([julun], 'video', 0)).toEqual([julun]);
+    expect(generationProfiles([julun], 'video', 1)).toEqual([julun]);
+    expect(generationProfiles([julun], 'video', 2)).toEqual([]);
+  });
   it('blocks missing fixed model and unsupported parameters instead of silently changing either', () => {
     const prefs = defaultGenerationPreferences();
     prefs.video = { mode: 'fixed', modelRoute: 'gone', parameters: {} };
@@ -91,6 +105,7 @@ describe('separate generation preferences', () => {
   });
   it('persists image and video preferences independently for each project', () => {
     const prefs = defaultGenerationPreferences();
+    prefs.image = { mode: 'fixed', modelRoute: 'image', parameters: { imageQuality: 'high' } };
     prefs.video = { mode: 'fixed', modelRoute: 'video', parameters: { durationSeconds: 8 } };
     writeGenerationPreferences('prefs-a', prefs);
     expect(readGenerationPreferences('prefs-a')).toEqual(prefs);

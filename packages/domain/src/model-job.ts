@@ -3,15 +3,17 @@ import { z } from 'zod';
 import { containsProtectedPublicText } from './protected-public-text';
 
 const idSchema = z.string().min(1);
-export const modelJobProviderSchema = z.enum(['comfly', 'relayme']);
+export const modelJobProviderSchema = z.enum(['comfly', 'relayme', 'julun', '4dai']);
 export type ModelJobProvider = z.infer<typeof modelJobProviderSchema>;
 export const modelJobKindSchema = z.enum(['image', 'video']);
 export type ModelJobKind = z.infer<typeof modelJobKindSchema>;
 export const imageAspectRatioSchema = z.enum(['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16']);
 export const imageResolutionTierSchema = z.enum(['1K', '2K', '4K']);
+export const imageQualitySchema = z.enum(['low', 'medium', 'high']);
 export const videoResolutionTierSchema = z.enum(['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K']);
 export type ImageAspectRatio = z.infer<typeof imageAspectRatioSchema>;
 export type ImageResolutionTier = z.infer<typeof imageResolutionTierSchema>;
+export type ImageQuality = z.infer<typeof imageQualitySchema>;
 export type VideoResolutionTier = z.infer<typeof videoResolutionTierSchema>;
 
 export function normalizeImageResolutionTier(value: unknown): ImageResolutionTier {
@@ -79,12 +81,14 @@ export const modelJobSchema = z.object({
   modelRoute: z.string().min(1).optional(),
   displayName: z.string().min(1).optional(),
   conversationId: z.string().min(1).optional(),
+  projectId: idSchema.optional(),
   projectSessionId: z.string().min(1).optional(),
   referenceAssetIds: z.array(idSchema).default([]),
   referenceSnapshotRevision: z.number().int().nonnegative().optional(),
   referenceSnapshotFingerprint: z.string().regex(/^[a-f0-9]{16}$/u).optional(),
   aspectRatio: imageAspectRatioSchema.optional(),
   resolution: hydratedImageResolutionTierSchema,
+  imageQuality: imageQualitySchema.optional(),
   videoResolution: videoResolutionTierSchema.optional(),
   durationSeconds: z.number().int().min(1).max(60).optional(),
   audioEnabled: z.boolean().optional(),
@@ -117,12 +121,14 @@ export interface ConfirmedModelJobInput {
   displayName: string;
   modelId: string;
   conversationId: string;
+  projectId?: string;
   projectSessionId?: string;
   referenceAssetIds: string[];
   referenceSnapshotRevision?: number;
   referenceSnapshotFingerprint?: string;
   aspectRatio?: ImageAspectRatio;
   resolution?: ImageResolutionTier;
+  imageQuality?: ImageQuality;
   videoResolution?: VideoResolutionTier;
   durationSeconds?: number;
   audioEnabled?: boolean;

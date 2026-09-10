@@ -42,15 +42,26 @@ describe('modern desktop close coordinator', () => {
     expect(source).toContain('createRendererCloseFlushCoordinator');
     expect(source).toContain('BRIDGE_CHANNELS.closeFlushRequest');
     expect(source).toContain('BRIDGE_CHANNELS.closeFlushAck');
+    expect(source).toContain('BRIDGE_CHANNELS.closeFlushAborted');
     expect(source).toContain("window.on('close'");
     expect(source).toContain("app.on('before-quit'");
     expect(source).toContain('requestCoordinatedClose');
     expect(source).toContain('onCloseBlocked: showCloseRecoveryChoice');
+    expect(source).toContain('onCloseAttemptAborted: resetAbortedCloseAttempt');
+    expect(source).toContain('onCloseFlushAckAccepted: recordAcceptedCloseFlushAck');
+    expect(source).toContain('onCloseFlushAborted: sendRendererCloseFlushAborted');
+    expect(source).toContain('selectCloseFinalizeTarget');
+    expect(source).toMatch(/function prepareCoordinatedClose[\s\S]*?hasPendingCloseAttempt\(\)[\s\S]*?selectCloseFinalizeTarget/u);
+    expect(source.match(/prepareCoordinatedClose\('window'\)/gu)).toHaveLength(1);
+    expect(source).toContain('prepareCoordinatedClose(target);');
+    expect(source).toMatch(/function resetAbortedCloseAttempt[\s\S]*?closeFinalizeTarget = 'window';[\s\S]*?closeFlushErrorCode = null;/u);
+    expect(source).toMatch(/function sendRendererCloseFlushAborted[\s\S]*?BRIDGE_CHANNELS\.closeFlushAborted/u);
     expect(source).toContain('放弃未保存更改并退出');
     expect(source).toContain("handlers.closeAllProjects({ flush: reason !== 'discarded' })");
     expect(source).not.toContain('关闭未命名工作流');
     expect(source).not.toContain("buttons: ['保存', '不保存', '取消']");
     expect(source).toContain("return 'save';");
+    expect(source).not.toContain('const ack = parseCloseFlushAck(payload)');
   });
 
   it('keeps project image selection and asset resolution in the main process', async () => {

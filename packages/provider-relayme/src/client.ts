@@ -56,7 +56,9 @@ const modelEntrySchema = z.object({
   endpoints: z.array(nonEmptyStringSchema).optional(),
   inputModalities: z.array(z.enum(['text', 'image', 'video', 'audio'])).optional(),
   supportsVision: z.boolean().optional(),
+  visionInputSupported: z.boolean().optional(),
   supportsImageToImage: z.boolean().optional(),
+  imageReferenceLimit: z.number().int().nonnegative().optional(),
   description: z.string().optional(),
   isDefault: z.boolean().optional().default(false),
   isSpecialOffer: z.boolean().optional().default(false),
@@ -390,9 +392,18 @@ function mergeModelOffers(entries: readonly z.infer<typeof modelEntrySchema>[]):
     };
     const current = merged.get(deploymentName);
     if (current !== undefined) {
-      merged.set(deploymentName, { ...current, offers: [...current.offers, offer] });
+      const supportsVision = mergeCapabilityFlag(current.supportsVision, resolveSupportsVision(entry));
+      const supportsImageToImage = mergeCapabilityFlag(current.supportsImageToImage, resolveSupportsImageToImage(entry));
+      merged.set(deploymentName, {
+        ...current,
+        ...(supportsVision === undefined ? {} : { supportsVision }),
+        ...(supportsImageToImage === undefined ? {} : { supportsImageToImage }),
+        offers: [...current.offers, offer],
+      });
       continue;
     }
+    const supportsVision = resolveSupportsVision(entry);
+    const supportsImageToImage = resolveSupportsImageToImage(entry);
     merged.set(deploymentName, {
       name: entry.name,
       deploymentName,
@@ -401,8 +412,8 @@ function mergeModelOffers(entries: readonly z.infer<typeof modelEntrySchema>[]):
       modelType,
       ...(entry.endpoints === undefined ? {} : { endpoints: [...entry.endpoints] }),
       ...(entry.inputModalities === undefined ? {} : { inputModalities: [...entry.inputModalities] }),
-      ...(entry.supportsVision === undefined ? {} : { supportsVision: entry.supportsVision }),
-      ...(entry.supportsImageToImage === undefined ? {} : { supportsImageToImage: entry.supportsImageToImage }),
+      ...(supportsVision === undefined ? {} : { supportsVision }),
+      ...(supportsImageToImage === undefined ? {} : { supportsImageToImage }),
       ...(entry.description === undefined ? {} : { description: entry.description }),
       isDefault: entry.isDefault,
       offers: [offer],
@@ -410,6 +421,21 @@ function mergeModelOffers(entries: readonly z.infer<typeof modelEntrySchema>[]):
     });
   }
   return [...merged.values()];
+}
+
+function resolveSupportsVision(entry: z.infer<typeof modelEntrySchema>): boolean | undefined {
+  return entry.supportsVision ?? entry.visionInputSupported;
+}
+
+function resolveSupportsImageToImage(entry: z.infer<typeof modelEntrySchema>): boolean | undefined {
+  return entry.supportsImageToImage
+    ?? (entry.imageReferenceLimit === undefined ? undefined : entry.imageReferenceLimit > 0);
+}
+
+function mergeCapabilityFlag(current: boolean | undefined, incoming: boolean | undefined): boolean | undefined {
+  if (current === false || incoming === false) return false;
+  if (current === true || incoming === true) return true;
+  return undefined;
 }
 
 function capabilityToModelType(capability: 'text' | 'image' | 'video' | undefined): RelayMeModel['modelType'] | undefined {

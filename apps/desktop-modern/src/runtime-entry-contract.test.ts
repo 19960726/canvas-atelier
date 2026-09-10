@@ -327,12 +327,31 @@ function spawnArtifactLoad(entryPath: string) {
 }
 
 describe('desktop runtime entry contract', () => {
-  it('modern 1.6.119 resolves only the modern renderer entry', async () => {
+  it('registers isolated Julun video and 4D image services in both desktop entry points', async () => {
+    for (const shell of desktopShells) {
+      const mainSource = await readFile(join(workspaceRoot, shell.appDir, 'src', 'main.ts'), 'utf8');
+      expect(mainSource).toContain('createNewApiProviderService');
+      expect(mainSource).toContain('createProviderConfigurationStore');
+      expect(mainSource).toContain("provider: 'julun'");
+      expect(mainSource).toContain("provider: '4dai'");
+      expect(mainSource.match(/createNewApiProviderService\(/gu)).toHaveLength(2);
+      expect(mainSource.match(/createSecureProviderCredentialStore\(/gu)?.length ?? 0).toBeGreaterThanOrEqual(4);
+      expect(mainSource.match(
+        /resolveReverseKnowledge:\s*\(request\)\s*=>\s*readPinnedReverseKnowledge\(knowledgeStore,\s*request\.run\.knowledgeLease\.snapshots\)/gu,
+      )).toHaveLength(1);
+      expect(mainSource).toContain("appDataRoot: join(appDataRoot, 'providers', 'julun')");
+      expect(mainSource).toContain("appDataRoot: join(appDataRoot, 'providers', '4dai')");
+      expect(mainSource).toContain("from '@agent-canvas/desktop-core';");
+      expect(mainSource).not.toMatch(/from ['"][^'"]*(?:packages\/desktop-core|desktop-core\/src)\//u);
+    }
+  });
+
+  it('modern 1.6.127 resolves only the modern renderer entry', async () => {
     const shell = desktopShells[0]!;
     const packageJson = await readPackageJson(shell);
     const rendererEntry = resolveRendererHtmlPath(join(workspaceRoot, shell.appDir, 'dist'));
 
-    expect(packageJson.version).toBe('1.6.119');
+    expect(packageJson.version).toBe('1.6.127');
     expect(rendererEntry).toBe(resolve(workspaceRoot, 'apps', 'renderer', 'dist', 'index.html'));
     expect(rendererEntry).not.toContain('desktop-legacy');
   });

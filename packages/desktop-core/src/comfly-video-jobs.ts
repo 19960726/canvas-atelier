@@ -60,6 +60,8 @@ export function createComflyVideoJobHandlers(options: {
       assertComfly(validated.provider);
       const profile = (await options.listProfiles()).find((item) => item.provider === 'comfly'
         && item.modelRoute === validated.modelRoute
+        && item.enabled !== false
+        && item.capabilityStatus !== 'incomplete'
         && item.capabilities.includes('video_generation'));
       if (profile === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested video model profile is unavailable');
       if ((validated.outputCount ?? 1) !== 1) throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'Comfly video jobs must be submitted one result at a time');

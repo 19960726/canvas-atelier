@@ -202,11 +202,15 @@ export {
   CLOSE_FLUSH_TIMEOUT_MS,
   createCloseFlushRequestId,
   createRendererCloseFlushCoordinator,
+  parseCloseFlushAbort,
   parseCloseFlushAck,
   parseCloseFlushRequest,
+  selectCloseFinalizeTarget,
 } from './renderer-close-flush.js';
 export type {
   CloseAttemptEvent,
+  CloseFinalizeTarget,
+  CloseFlushAbort,
   CloseFlushAck,
   CloseFlushCompletionReason,
   CloseFlushRequest,
@@ -214,6 +218,7 @@ export type {
   RendererCloseFlushCoordinatorOptions,
 } from './renderer-close-flush.js';
 export { ManagedKnowledgeStore } from './managed-knowledge-store.js';
+export { readPinnedReverseKnowledge } from './provider-reverse-knowledge.js';
 export type {
   ConfigureKnowledgeRoot,
   ConfiguredKnowledgeBase,
@@ -336,6 +341,18 @@ export {
   parseProviderBridgeResponse,
   registerProviderBridgeHandlers,
 } from './provider-bridge.js';
+export { createProviderConfigurationStore } from './provider-configuration-store.js';
+export type {
+  PersistedProviderConfigurationState,
+  ProviderConfigurationSnapshot,
+  ProviderConfigurationStore,
+} from './provider-configuration-store.js';
+export { createProviderTaskMappingStore } from './provider-task-ledger.js';
+export type {
+  ProviderTaskMappingRecord,
+  ProviderTaskMappingState,
+  ProviderTaskMappingStore,
+} from './provider-task-ledger.js';
 export { supportsVerifiedComflyVideoInputMode } from './comfly-video-jobs.js';
 export type {
   AckImageJobTerminalBridgeRequest,
@@ -455,3 +472,34 @@ export {
   resolveLegacyUserDataRoots,
   resolveStableUserDataRoot,
 } from './user-data-migration.js';
+
+export { createNewApiClient } from './newapi-client.js';
+export type {
+  NewApiClient,
+  NewApiFetch,
+  NewApiFetchInit,
+  NewApiGeneratedImage,
+  NewApiVideoTask,
+} from './newapi-client.js';
+export {
+  buildAuthenticatedNewApiCatalog,
+  parseNewApiPricing,
+} from './newapi-model-catalog.js';
+export type {
+  NewApiModelProfile,
+  NewApiPricingEntry,
+  NewApiProviderId,
+} from './newapi-model-catalog.js';
+export { NEW_API_PROVIDER_SEEDS } from './newapi-provider-seeds.js';
+export {
+  createNewApiProviderService,
+  mapGptImage2ExactSize,
+  mapNewApiVideoSize,
+  select4daiGptImageModel,
+} from './newapi-provider-service.js';
+export type {
+  NewApiProviderService,
+  ProviderCompatibleNewApiService,
+  NewApiServiceConfigurationStore,
+  NewApiServiceTaskStore,
+} from './newapi-provider-service.js';

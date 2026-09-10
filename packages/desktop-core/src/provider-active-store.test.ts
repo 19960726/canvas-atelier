@@ -20,7 +20,7 @@ describe('ProviderActiveStore', () => {
     await expect(store.getActiveProvider()).resolves.toEqual({ activeProvider: null });
   });
 
-  it.each(['comfly', 'relayme', null] as const)(
+  it.each(['comfly', 'relayme', 'julun', '4dai', null] as const)(
     'persists and reloads the legal active provider value %s',
     async (activeProvider) => {
       const root = await createRoot();

@@ -1,16 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import {
   CLOSE_FLUSH_TIMEOUT_MS,
+  parseCloseFlushAbort,
   parseCloseFlushAck,
   parseCloseFlushRequest,
+  type CloseFlushAbort,
+  type CloseFlushAck,
   type CloseFlushCompletionReason,
   type CloseFlushRequest,
 } from './renderer-close-flush-contract.js';
 
 export {
   CLOSE_FLUSH_TIMEOUT_MS,
+  parseCloseFlushAbort,
   parseCloseFlushAck,
   parseCloseFlushRequest,
+  type CloseFlushAbort,
   type CloseFlushAck,
   type CloseFlushCompletionReason,
   type CloseFlushRequest,
@@ -22,6 +27,7 @@ export interface CloseAttemptEvent {
 
 export interface RendererCloseFlushCoordinator {
   handleCloseFlushAck(payload: unknown): Promise<boolean>;
+  hasPendingCloseAttempt(): boolean;
   rendererUnavailable(): Promise<boolean>;
   requestClose(event?: CloseAttemptEvent): Promise<void>;
 }
@@ -32,7 +38,10 @@ export interface RendererCloseFlushCoordinatorOptions {
   readonly closeAllProjects: (reason: Extract<CloseFlushCompletionReason, 'saved' | 'discarded'>) => void | Promise<void>;
   readonly createRequestId?: () => string;
   readonly finalizeClose: (reason: CloseFlushCompletionReason) => void | Promise<void>;
+  readonly onCloseAttemptAborted?: () => void;
   readonly onCloseBlocked?: (reason: Exclude<CloseFlushCompletionReason, 'saved' | 'discarded' | 'cancel'>) => 'cancel' | 'discard' | Promise<'cancel' | 'discard'>;
+  readonly onCloseFlushAckAccepted?: (ack: CloseFlushAck) => void;
+  readonly onCloseFlushAborted?: (event: CloseFlushAbort) => void;
   readonly sendCloseFlushRequest: (request: CloseFlushRequest) => boolean | void;
   readonly setTimeout?: (listener: () => void, delayMs: number) => unknown;
   readonly timeoutMs?: number;
@@ -42,18 +51,33 @@ export function createCloseFlushRequestId(): string {
   return `close-${randomUUID().replace(/-/gu, '')}`;
 }
 
+export type CloseFinalizeTarget = 'window' | 'app';
+
+export function selectCloseFinalizeTarget(
+  current: CloseFinalizeTarget,
+  requested: CloseFinalizeTarget,
+  closeAttemptPending: boolean,
+): CloseFinalizeTarget {
+  if (!closeAttemptPending) return requested;
+  return current === 'app' || requested === 'app' ? 'app' : 'window';
+}
+
 export function createRendererCloseFlushCoordinator({
   canRequestRendererFlush = () => true,
   clearTimeout: clearTimeoutFn = (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   closeAllProjects,
   createRequestId = createCloseFlushRequestId,
   finalizeClose,
+  onCloseAttemptAborted,
   onCloseBlocked,
+  onCloseFlushAckAccepted,
+  onCloseFlushAborted,
   sendCloseFlushRequest,
   setTimeout: setTimeoutFn = (listener, delayMs) => setTimeout(listener, delayMs),
   timeoutMs = CLOSE_FLUSH_TIMEOUT_MS,
 }: RendererCloseFlushCoordinatorOptions): RendererCloseFlushCoordinator {
   let closePromise: Promise<void> | null = null;
+  let sessionCloseAttempted = false;
   let pendingRequest: {
     readonly requestId: string;
     readonly resolve: (reason: CloseFlushCompletionReason) => void;
@@ -68,6 +92,14 @@ export function createRendererCloseFlushCoordinator({
     if (pending.timeoutHandle !== null) clearTimeoutFn(pending.timeoutHandle);
     pending.resolve(reason);
     return true;
+  };
+
+  const notifyAcceptedAck = (ack: CloseFlushAck): void => {
+    try {
+      onCloseFlushAckAccepted?.(ack);
+    } catch {
+      // Observing an accepted acknowledgement must not alter close safety.
+    }
   };
 
   const waitForRenderer = (requestId: string): Promise<CloseFlushCompletionReason> => new Promise((resolve) => {
@@ -92,6 +124,7 @@ export function createRendererCloseFlushCoordinator({
   const finishClose = async (
     reason: Extract<CloseFlushCompletionReason, 'saved' | 'discarded'>,
   ): Promise<boolean> => {
+    sessionCloseAttempted = true;
     try {
       await Promise.resolve(closeAllProjects(reason));
       await Promise.resolve(finalizeClose(reason));
@@ -103,8 +136,24 @@ export function createRendererCloseFlushCoordinator({
     }
   };
 
-  const runClose = async (): Promise<void> => {
+  const runClose = async (): Promise<{
+    readonly closeFlushAbort: CloseFlushAbort | null;
+    readonly safelyAborted: boolean;
+  }> => {
     let reason: CloseFlushCompletionReason = 'unavailable';
+    let deliveredRequest: CloseFlushRequest | null = null;
+    const abortedEvent = (): CloseFlushAbort | null => (
+      !sessionCloseAttempted
+      && deliveredRequest !== null
+      && reason !== 'saved'
+      && reason !== 'discarded'
+        ? { requestId: deliveredRequest.requestId, reason }
+        : null
+    );
+    const abortedResult = () => ({
+      closeFlushAbort: abortedEvent(),
+      safelyAborted: !sessionCloseAttempted,
+    });
     const request = parseCloseFlushRequest({ requestId: createRequestId() });
     if (request !== null && canRequestRendererFlush()) {
       try {
@@ -118,6 +167,7 @@ export function createRendererCloseFlushCoordinator({
         startPendingTimeout();
         const sent = sendCloseFlushRequest(request);
         if (sent !== false) {
+          deliveredRequest = request;
           reason = await rendererCompletion;
         } else {
           completePending('unavailable');
@@ -129,18 +179,24 @@ export function createRendererCloseFlushCoordinator({
       }
     }
     if (reason === 'saved' || reason === 'discarded') {
-      if (await finishClose(reason)) return;
+      if (await finishClose(reason)) {
+        return { closeFlushAbort: null, safelyAborted: false };
+      }
       reason = 'failed';
     }
-    if (reason === 'cancel' || onCloseBlocked === undefined) return;
+    if (reason === 'cancel' || onCloseBlocked === undefined) return abortedResult();
     try {
       if (await onCloseBlocked(reason) === 'discard') {
-        await finishClose('discarded');
+        if (await finishClose('discarded')) {
+          return { closeFlushAbort: null, safelyAborted: false };
+        }
+        reason = 'failed';
       }
     } catch {
       // Keeping the window open is the safe outcome if the main-process
       // recovery dialog itself cannot be shown.
     }
+    return abortedResult();
   };
 
   return {
@@ -153,6 +209,7 @@ export function createRendererCloseFlushCoordinator({
         if (pendingRequest.phase !== 'delivery') return false;
         pausePendingTimeout();
         pendingRequest.phase = 'decision_requested';
+        notifyAcceptedAck(ack);
         return true;
       }
       if (ack.phase === 'save_started') {
@@ -160,12 +217,17 @@ export function createRendererCloseFlushCoordinator({
         pausePendingTimeout();
         pendingRequest.phase = 'save_started';
         startPendingTimeout();
+        notifyAcceptedAck(ack);
         return true;
       }
       const reason: CloseFlushCompletionReason = ack.outcome === 'cancelled'
         ? 'cancel'
         : ack.outcome;
+      notifyAcceptedAck(ack);
       return completePending(reason);
+    },
+    hasPendingCloseAttempt() {
+      return closePromise !== null;
     },
     async rendererUnavailable() {
       return completePending('unavailable');
@@ -174,13 +236,26 @@ export function createRendererCloseFlushCoordinator({
       event?.preventDefault();
       if (closePromise !== null) return closePromise;
       const running = runClose();
-      closePromise = running;
-      void running.then(() => {
-        if (closePromise === running) closePromise = null;
+      const requestPromise = running.then((result) => {
+        if (closePromise === requestPromise) closePromise = null;
+        if (!result.safelyAborted) return;
+        try {
+          onCloseAttemptAborted?.();
+        } catch {
+          // State-reset observers cannot turn a safely aborted attempt into a close.
+        }
+        if (result.closeFlushAbort === null) return;
+        try {
+          onCloseFlushAborted?.(result.closeFlushAbort);
+        } catch {
+          // The close attempt is already safely aborted. A renderer that has
+          // disappeared cannot be notified and must not turn that into a close.
+        }
       }, () => {
-        if (closePromise === running) closePromise = null;
+        if (closePromise === requestPromise) closePromise = null;
       });
-      return running;
+      closePromise = requestPromise;
+      return requestPromise;
     },
   };
 }

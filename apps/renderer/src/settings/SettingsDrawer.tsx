@@ -8,8 +8,9 @@ import type {
   ProviderConfigurationStatus,
   UpdateState,
 } from '@agent-canvas/desktop-core';
-import { ProviderModelCatalog, createProviderProfileKey, type CatalogCapability } from './ProviderModelCatalog';
+import { ProviderModelCatalog, createProviderProfileKey, isProviderProfileCatalogRunnable, type CatalogCapability } from './ProviderModelCatalog';
 import { ProviderOperationTimeoutError, withProviderOperationTimeout } from './provider-operation-timeout';
+import { readProviderModelDefaults, writeProviderModelDefaults, type ProviderModelDefaultRoutes } from './provider-model-defaults';
 import { filterProviderCatalogProfiles, listActiveProviderProfiles, selectFirstProfileForCapability } from '../app/provider-profiles';
 import { readMcpPermissions, subscribeMcpPermissions, updateMcpPermissions } from './mcp-permissions';
 
@@ -143,6 +144,18 @@ const MCP_PERMISSION_ITEMS: readonly {
   { key: 'dangerousOperations', label: '危险操作', description: '允许请求删除当前选中内容；仍需一次性确认，不提供覆盖文件或恢复快照。', tone: 'danger' },
 ]);
 
+const PROVIDER_OPTIONS = [
+  { id: 'comfly', badge: 'CO', name: 'Comfly', purpose: '综合模型' },
+  { id: 'relayme', badge: 'RM', name: 'RelayMe', purpose: '综合模型' },
+  { id: 'julun', badge: 'JL', name: '巨轮 API', purpose: '视频专用' },
+  { id: '4dai', badge: '4D', name: '4D AI', purpose: '生图 · 视觉反推 · 对话' },
+] as const satisfies readonly {
+  readonly id: ProviderBridgeProvider;
+  readonly badge: string;
+  readonly name: string;
+  readonly purpose: string;
+}[];
+
 export function SettingsDrawer({
   providerStatus,
   knowledgeBases = EMPTY_KNOWLEDGE_BASES,
@@ -167,6 +180,7 @@ export function SettingsDrawer({
   const [capacity, setCapacity] = useState<GenerationHistoryCapacityBridgeResult | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<ProviderBridgeProvider>('comfly');
   const [activeProvider, setActiveProvider] = useState<ProviderBridgeProvider | null>(null);
+  const [endpointDirty, setEndpointDirty] = useState(false);
   const [loadingActiveProvider, setLoadingActiveProvider] = useState(false);
   const [relayMeLoginOpen, setRelayMeLoginOpen] = useState(false);
   const [relayMeUsername, setRelayMeUsername] = useState('');
@@ -176,6 +190,8 @@ export function SettingsDrawer({
   const [providerStatuses, setProviderStatuses] = useState<Record<ProviderBridgeProvider, ProviderConfigurationStatus | null>>({
     comfly: providerStatus,
     relayme: null,
+    julun: null,
+    '4dai': null,
   });
   const [providerProfiles, setProviderProfiles] = useState<ProviderBridgeProfile[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -212,11 +228,13 @@ export function SettingsDrawer({
   const selectedProviderStatus = providerStatuses[selectedProvider] ?? (selectedProvider === 'comfly' ? providerStatus : null);
   const modelRefreshRequest = useRef(0);
   const hasActiveProviderApi = Boolean(provider?.getActiveProvider && provider?.setActiveProvider);
-  const effectiveActiveProvider = hasActiveProviderApi ? activeProvider : selectedProvider;
-  const catalogProvider = effectiveActiveProvider;
+  const effectiveActiveProvider = provider?.getActiveProvider ? activeProvider : 'comfly';
+  // The selected card controls only which site's settings and catalog are
+  // being edited. Jobs retain their own provider identity and may run across
+  // several configured sites in the same canvas.
+  const catalogProvider = selectedProvider;
   const relayMeNeedsVerification = selectedProvider === 'relayme'
     && selectedProviderStatus?.configured === true
-    && effectiveActiveProvider === 'relayme'
     && !loadingModels
     && providerProfiles.length === 0;
 
@@ -229,8 +247,8 @@ export function SettingsDrawer({
       if (requestId !== modelRefreshRequest.current || providerId !== catalogProvider) return { ok: false };
       const scoped = filterProviderCatalogProfiles(listActiveProviderProfiles(profiles, catalogProvider));
       setProviderProfiles(scoped);
-      setEnabledProfileKeys(scoped.map(createProviderProfileKey));
-      setDefaultProfileKeys(createDefaultProfileSelection(scoped));
+      setEnabledProfileKeys(enabledProviderProfileKeys(scoped));
+      setDefaultProfileKeys(createDefaultProfileSelection(scoped, readProviderModelDefaults(providerId)));
       return { ok: true, count: scoped.length, reverseCount: scoped.filter(isRunnableReverseProfile).length };
     } catch {
       if (requestId !== modelRefreshRequest.current || providerId !== catalogProvider) return { ok: false };
@@ -244,15 +262,18 @@ export function SettingsDrawer({
   };
   const saveDefaultModels = async () => {
     if (!provider?.updateProfiles || savingDefaults) return;
-    const enabled = providerProfiles.filter((profile) => enabledProfileKeys.includes(createProviderProfileKey(profile)));
+    const enabled = providerProfiles.filter((profile) => isProviderProfileCatalogRunnable(profile)
+      && enabledProfileKeys.includes(createProviderProfileKey(profile)));
     if (!enabled.length) return;
     const providerId = catalogProvider ?? selectedProvider;
     setSavingDefaults(true);
     try {
       const status = await provider.updateProfiles({ provider: providerId, profiles: enabled });
+      writeProviderModelDefaults(providerId, createPersistedDefaultRoutes(enabled, defaultProfileKeys));
       setProviderStatuses((current) => ({ ...current, [providerId]: status }));
       onProviderStatusChange(status);
       setMessage(`已保存 ${enabled.length} 个 ${formatProviderName(providerId)} 模型`);
+      globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed', { detail: { provider: providerId } }));
     } catch {
       setMessage('模型选择保存失败，请检查当前供应商连接状态');
     } finally {
@@ -384,7 +405,7 @@ export function SettingsDrawer({
   useEffect(() => {
     if (!provider?.getStatus) return;
     let cancelled = false;
-    void Promise.all((['comfly', 'relayme'] as const).map(async (providerId) => {
+    void Promise.all(PROVIDER_OPTIONS.map(async ({ id: providerId }) => {
       try {
         const status = await provider.getStatus({ provider: providerId });
         if (!cancelled) setProviderStatuses((current) => ({ ...current, [providerId]: status }));
@@ -397,7 +418,6 @@ export function SettingsDrawer({
 
   useEffect(() => {
     setConnectionState('idle');
-    setBaseUrl(providerBaseUrlPlaceholder(selectedProvider));
     setHiddenKeysOpen(false);
     setProviderToken('');
     setCredentialRevealed(false);
@@ -419,8 +439,8 @@ export function SettingsDrawer({
         if (cancelled) return;
         const scoped = filterProviderCatalogProfiles(listActiveProviderProfiles(profiles, catalogProvider));
         setProviderProfiles(scoped);
-        setEnabledProfileKeys(scoped.map(createProviderProfileKey));
-        setDefaultProfileKeys(createDefaultProfileSelection(scoped));
+        setEnabledProfileKeys(enabledProviderProfileKeys(scoped));
+        setDefaultProfileKeys(createDefaultProfileSelection(scoped, readProviderModelDefaults(catalogProvider)));
       })
       .catch(() => {
         // Keep the newly selected provider empty instead of showing another
@@ -429,6 +449,16 @@ export function SettingsDrawer({
       .finally(() => { if (!cancelled) setLoadingModels(false); });
     return () => { cancelled = true; };
   }, [provider?.listProfiles, catalogProvider]);
+
+  useEffect(() => {
+    setEndpointDirty(false);
+    setBaseUrl(providerStatuses[selectedProvider]?.baseUrl ?? providerBaseUrlPlaceholder(selectedProvider));
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    if (endpointDirty || selectedProviderStatus?.baseUrl === undefined) return;
+    setBaseUrl(selectedProviderStatus.baseUrl);
+  }, [endpointDirty, selectedProvider, selectedProviderStatus?.baseUrl]);
 
   useEffect(() => () => {
     credentialRevealRequest.current += 1;
@@ -455,7 +485,7 @@ export function SettingsDrawer({
       const configuredStatus = await withProviderOperationTimeout(provider.configure({
         provider: providerId,
         token: normalizedToken,
-        ...(baseUrl.trim().length > 0 ? { baseUrl: baseUrl.trim() } : {}),
+        ...(endpointDirty && baseUrl.trim().length > 0 ? { baseUrl: baseUrl.trim() } : {}),
         ...(passphrase.length > 0 ? { passphrase } : {}),
       }), 12_000);
       const persistedStatus = provider.getStatus
@@ -470,6 +500,8 @@ export function SettingsDrawer({
       setPassphrase('');
       setHiddenKeysOpen(false);
       setProviderStatuses((current) => ({ ...current, [providerId]: persistedStatus }));
+      setEndpointDirty(false);
+      if (persistedStatus.baseUrl !== undefined) setBaseUrl(persistedStatus.baseUrl);
       onProviderStatusChange(persistedStatus);
       globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed', { detail: { provider: providerId } }));
 
@@ -554,11 +586,13 @@ export function SettingsDrawer({
     setRelayMeLoginError(null);
     setRelayMeLoginOpen(true);
   };
-  const selectActiveProvider = async (providerId: ProviderBridgeProvider) => {
+  const selectProviderForEditing = (providerId: ProviderBridgeProvider) => {
     providerSelectionRequest.current += 1;
     setMessage(null);
     setSelectedProvider(providerId);
-    setBaseUrl(providerBaseUrlPlaceholder(providerId));
+  };
+  const setSelectedProviderAsActive = async () => {
+    const providerId = selectedProvider;
     if (!hasActiveProviderApi || !provider?.setActiveProvider) return;
     if (providerId === 'relayme' && !providerStatuses.relayme?.configured) {
       openRelayMeLogin();
@@ -568,8 +602,7 @@ export function SettingsDrawer({
     try {
       const state = await provider.setActiveProvider({ activeProvider: providerId });
       setActiveProvider(state.activeProvider);
-      setSelectedProvider(state.activeProvider ?? providerId);
-      setMessage(`${formatProviderName(providerId)} 已切换为当前活动供应商`);
+      setMessage(`${formatProviderName(providerId)} 已设为当前优先供应商`);
       // CanvasWorkspace owns the live node route catalog. Notify it after the
       // durable provider switch so generation and Reverse Agent controls do
       // not keep rendering the previously active provider's models.
@@ -602,8 +635,8 @@ export function SettingsDrawer({
       const profiles = await provider.listProfiles({ provider: 'relayme' });
       const scoped = filterProviderCatalogProfiles(listActiveProviderProfiles(profiles, 'relayme'));
       setProviderProfiles(scoped);
-      setEnabledProfileKeys(scoped.map(createProviderProfileKey));
-      setDefaultProfileKeys(createDefaultProfileSelection(scoped));
+      setEnabledProfileKeys(enabledProviderProfileKeys(scoped));
+      setDefaultProfileKeys(createDefaultProfileSelection(scoped, readProviderModelDefaults('relayme')));
       modelCount = scoped.length;
     }
     let connectionStatus: ConnectionStatus = 'connected';
@@ -731,6 +764,8 @@ export function SettingsDrawer({
     try {
       const status = await provider.configure({ provider: selectedProvider, baseUrl: baseUrl.trim() });
       setProviderStatuses((current) => ({ ...current, [selectedProvider]: status }));
+      setEndpointDirty(false);
+      setBaseUrl(status.baseUrl ?? baseUrl.trim());
       onProviderStatusChange(status);
       setMessage(`${formatProviderName(selectedProvider)} API 接口地址已保存`);
     } catch {
@@ -997,10 +1032,10 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
         <section className="settings-section settings-provider-overview settings-layer" aria-labelledby="provider-settings-title" data-testid="settings-api-status-layer">
           <header>
             <span><KeyRound size={16} /></span>
-            <div><strong id="provider-settings-title">API 与模型</strong><small>Comfly + RelayMe provider routing</small></div>
-            <b data-provider-state={selectedProviderStatus?.configured ? 'configured' : 'missing'}>{selectedProviderStatus?.configured ? `${formatProviderName(selectedProvider)} 已启用` : `${formatProviderName(selectedProvider)} 未配置`}</b>
+            <div><strong id="provider-settings-title">API 与模型</strong><small>四站独立凭据 · 按任务路由</small></div>
+            <b data-provider-state={effectiveActiveProvider === null ? 'missing' : 'configured'}>{effectiveActiveProvider === null ? '尚未设置优先供应商' : `当前优先：${formatProviderName(effectiveActiveProvider)}`}</b>
           </header>
-          <p>Comfly 使用 API 密钥；RelayMe 使用账号登录令牌。连接检测、模型目录与实际生成能力会分别验证。</p>
+          <p>Comfly、RelayMe、巨轮 API 与 4D AI 各自保存连接和模型目录。巨轮只提供视频路由；连接检测不会执行付费生成。</p>
         </section>
 
         <section className="settings-section settings-provider-panel settings-layer" aria-label="供应商设置" data-testid="settings-provider-layer">
@@ -1008,27 +1043,42 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
             <div><strong>供应商设置</strong><small>选择供应商后，只编辑当前供应商的连接、密钥和模型。</small></div>
           </header>
           <div className="settings-provider-grid" role="list" aria-label="模型供应商">
-            {(['comfly', 'relayme'] as const).map((providerId) => {
-              const active = effectiveActiveProvider === providerId;
-              const count = active ? providerProfiles.length : null;
+            {PROVIDER_OPTIONS.map(({ id: providerId, badge, name, purpose }) => {
+              const selected = selectedProvider === providerId;
+              const count = selected ? providerProfiles.length : null;
               const status = providerStatuses[providerId];
-              const summary = active && providerId === 'relayme' && status?.configured && !loadingModels && count === 0
+              const summary = selected && providerId === 'relayme' && status?.configured && !loadingModels && count === 0
                 ? '凭据待重新验证'
                 : count === null ? (status?.configured ? '已配置' : '未配置') : `${count} 个模型`;
               return <button
                 key={providerId}
                 type="button"
                 role="listitem"
-                aria-label={`${formatProviderName(providerId)} · ${summary}`}
-                aria-pressed={active}
-                className={active ? 'is-active' : undefined}
+                aria-label={`${name} · ${summary}`}
+                aria-pressed={selected}
+                className={selected ? 'is-active' : undefined}
                 disabled={loadingActiveProvider && activeProvider !== null}
-                onClick={() => { void selectActiveProvider(providerId); }}
+                onClick={() => selectProviderForEditing(providerId)}
               >
-                <i>{providerId === 'comfly' ? 'CO' : 'RM'}</i>
-                <span><strong>{formatProviderName(providerId)}</strong><small>{summary}</small></span>
+                <i>{badge}</i>
+                <span><strong>{name}</strong><small>{purpose}</small><em>{summary}</em></span>
               </button>;
             })}
+          </div>
+          <div className="settings-provider-priority-action">
+            <small>优先供应商只影响新任务的默认模型排序；切换卡片只会编辑对应站点。</small>
+            <button
+              className="settings-section__secondary"
+              type="button"
+              disabled={!hasActiveProviderApi || loadingActiveProvider || effectiveActiveProvider === selectedProvider}
+              onClick={() => { void setSelectedProviderAsActive(); }}
+            >
+              {loadingActiveProvider
+                ? '正在设置优先供应商…'
+                : effectiveActiveProvider === selectedProvider
+                  ? '当前优先供应商'
+                  : '设为优先供应商'}
+            </button>
           </div>
           <div className="settings-key-heading">
             <div><strong>{formatProviderName(selectedProvider)} {selectedProvider === 'relayme' ? '账号连接' : '密钥管理'}</strong><small>{selectedProvider === 'relayme' ? '登录令牌仅进入桌面安全凭据库，不接受独立 API 密钥。' : '密钥仅进入桌面安全凭据库，不写入渲染端或项目文件。'}</small></div>
@@ -1041,9 +1091,9 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           </div>
           <label className="settings-provider-endpoint">
             <span>API 服务地址（Base URL）</span>
-            <input type="url" autoComplete="url" aria-label="API 服务地址（Base URL）" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
-            <small>用于读取模型目录并发送对话、生图和视频请求；通常无需修改。</small>
-            <button type="button" className="settings-endpoint-reset" onClick={() => setBaseUrl(providerBaseUrlPlaceholder(selectedProvider))}>恢复默认地址</button>
+            <input type="url" autoComplete="url" aria-label="API 服务地址（Base URL）" value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); setEndpointDirty(true); }} />
+            <small>{providerEndpointDescription(selectedProvider)}</small>
+            <button type="button" className="settings-endpoint-reset" onClick={() => { setBaseUrl(providerBaseUrlPlaceholder(selectedProvider)); setEndpointDirty(true); }}>恢复默认地址</button>
           </label>
           <div className="settings-credential-summary" aria-label={`${formatProviderName(selectedProvider)} 凭据摘要`}>
             <div><span>凭据状态</span><strong>{relayMeNeedsVerification ? '凭据待重新验证' : selectedProviderStatus?.configured ? '已配置' : '未配置'}</strong></div>
@@ -1051,15 +1101,20 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
           </div>
           <div className="settings-key-actions">
             <div>
-              <strong>{selectedProvider === 'relayme' ? '账号登录，统一调用 RelayMe 模型' : '一把密钥，统一调用全部模型'}</strong>
-              <small>{selectedProvider === 'relayme' ? '画布只使用 RelayMe 账号登录令牌，不接受独立 API 密钥。' : 'Agent 对话、语言反推、生图和视频共用当前供应商密钥。'}</small>
+              <strong>{providerCredentialHeading(selectedProvider)}</strong>
+              <small>{providerCredentialDescription(selectedProvider)}</small>
               <small className="settings-chat-adaptation">对话模型适配：画布会按“对话模型”默认项路由到当前供应商。</small>
               {selectedProvider === 'relayme' && <small className="settings-capability-note">连接检测只验证账号与模型目录；请在模型目录确认“生图”能力后再生成。</small>}
+              {selectedProvider === 'julun' && <small className="settings-capability-note">巨轮目录只接入声明为 openai-video 的视频模型。</small>}
+              {selectedProvider === '4dai' && <small className="settings-capability-note">只有端点能力已验证的生图和视觉反推模型可以在画布中运行。</small>}
             </div>
             <div>
+              {selectedProvider === 'comfly' && <a className="settings-provider-key-link" href="https://gpt-best.apifox.cn/" target="_blank" rel="noreferrer">打开 Comfly API 文档</a>}
               {selectedProvider === 'relayme' && <a className="settings-provider-key-link" href="https://www.ml.relayme.uk/" target="_blank" rel="noreferrer">打开 RelayMe 网站</a>}
+              {selectedProvider === 'julun' && <a className="settings-provider-key-link" href="https://julun.cc" target="_blank" rel="noreferrer">打开巨轮网站</a>}
+              {selectedProvider === '4dai' && <a className="settings-provider-key-link" href="https://api.4dai.cc" target="_blank" rel="noreferrer">打开 4D AI 网站</a>}
               {selectedProvider === 'relayme' && (provider?.loginRelayMeWeb || provider?.loginRelayMe) && <button className="settings-section__primary" type="button" onClick={openRelayMeLogin} disabled={relayMeLoginBusy}>{selectedProviderStatus?.configured ? '重新登录 RelayMe' : '登录 RelayMe'}</button>}
-              {selectedProvider === 'relayme' && provider?.logoutRelayMe && selectedProviderStatus?.configured && effectiveActiveProvider === 'relayme' && <button className="settings-section__secondary" type="button" onClick={() => { void logoutRelayMe(); }} disabled={relayMeLoginBusy}>退出 RelayMe</button>}
+              {selectedProvider === 'relayme' && provider?.logoutRelayMe && selectedProviderStatus?.configured && <button className="settings-section__secondary" type="button" onClick={() => { void logoutRelayMe(); }} disabled={relayMeLoginBusy}>退出 RelayMe</button>}
               {selectedProvider !== 'relayme' && <button className="settings-section__secondary" type="button" onClick={openHiddenKeys}>配置隐藏密钥</button>}
             </div>
           </div>
@@ -1402,14 +1457,36 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
   </>;
 }
 
-function formatProviderName(provider: ProviderBridgeProvider): 'Comfly' | 'RelayMe' {
-  return provider === 'relayme' ? 'RelayMe' : 'Comfly';
+function formatProviderName(provider: ProviderBridgeProvider): string {
+  return PROVIDER_OPTIONS.find((item) => item.id === provider)?.name ?? provider;
 }
 
 function providerBaseUrlPlaceholder(provider: ProviderBridgeProvider): string {
-  return provider === 'relayme'
-    ? 'https://www.ml.relayme.uk/api/ai-tools/v1'
-    : 'https://ai.comfly.org';
+  if (provider === 'relayme') return 'https://www.ml.relayme.uk/api/ai-tools/v1';
+  if (provider === 'julun') return 'https://julun.cc/v1';
+  if (provider === '4dai') return 'https://api.4dai.cc/v1';
+  return 'https://ai.comfly.org';
+}
+
+function providerEndpointDescription(provider: ProviderBridgeProvider): string {
+  if (provider === 'julun') return '只用于读取巨轮视频模型目录并发送视频任务；品牌主机固定为 julun.cc。';
+  if (provider === '4dai') return '用于读取 4D AI 模型目录并发送已验证的生图、对话和视觉反推请求。';
+  if (provider === 'relayme') return '用于读取 RelayMe 模型目录并发送账号已授权的模型请求。';
+  return '用于读取模型目录并发送对话、生图和视频请求；通常无需修改。';
+}
+
+function providerCredentialHeading(provider: ProviderBridgeProvider): string {
+  if (provider === 'relayme') return '账号登录，统一调用 RelayMe 模型';
+  if (provider === 'julun') return '独立密钥，只调用巨轮视频模型';
+  if (provider === '4dai') return '独立密钥，调用 4D AI 生图与反推模型';
+  return '一把密钥，统一调用全部模型';
+}
+
+function providerCredentialDescription(provider: ProviderBridgeProvider): string {
+  if (provider === 'relayme') return '画布只使用 RelayMe 账号登录令牌，不接受独立 API 密钥。';
+  if (provider === 'julun') return '该密钥只进入巨轮 Provider 的桌面安全凭据库，与其他网站完全隔离。';
+  if (provider === '4dai') return '该密钥只进入 4D AI Provider 的桌面安全凭据库，与其他网站完全隔离。';
+  return 'Agent 对话、语言反推、生图和视频共用当前供应商密钥。';
 }
 
 function normalizeProviderToken(value: string): string {
@@ -1423,15 +1500,42 @@ function isRunnableReverseProfile(profile: ProviderBridgeProfile): boolean {
   );
 }
 
-function createDefaultProfileSelection(profiles: readonly ProviderBridgeProfile[]): Partial<Record<CatalogCapability, string>> {
+function createDefaultProfileSelection(
+  profiles: readonly ProviderBridgeProfile[],
+  persistedDefaults: ProviderModelDefaultRoutes = {},
+): Partial<Record<CatalogCapability, string>> {
   const result: Partial<Record<CatalogCapability, string>> = {};
+  const runnableProfiles = profiles.filter((profile) => isProviderProfileCatalogRunnable(profile) && profile.enabled !== false);
   for (const capability of ['image_generation', 'video_generation', 'chat', 'reverse_prompt', 'vision', 'video_understanding'] as const) {
     const explicitDefaultRoute = `${capability === 'image_generation' ? 'image' : capability === 'video_generation' ? 'video' : capability === 'reverse_prompt' ? 'reverse' : 'chat'}-default`;
-    const selected = profiles.find((profile) => profile.capabilities.includes(capability) && profile.modelRoute === explicitDefaultRoute)
-      ?? selectFirstProfileForCapability(profiles, capability);
+    const selected = runnableProfiles.find((profile) => profile.capabilities.includes(capability) && profile.modelRoute === persistedDefaults[capability])
+      ?? runnableProfiles.find((profile) => profile.capabilities.includes(capability) && profile.modelRoute === explicitDefaultRoute)
+      ?? selectFirstProfileForCapability(runnableProfiles, capability);
     if (selected) result[capability] = createProviderProfileKey(selected);
   }
   return result;
+}
+
+function createPersistedDefaultRoutes(
+  enabledProfiles: readonly ProviderBridgeProfile[],
+  selectedDefaults: Partial<Record<CatalogCapability, string>>,
+): ProviderModelDefaultRoutes {
+  const result: ProviderModelDefaultRoutes = {};
+  for (const capability of ['image_generation', 'video_generation', 'chat', 'reverse_prompt', 'vision', 'video_understanding'] as const) {
+    const selectedKey = selectedDefaults[capability];
+    const selected = enabledProfiles.find((profile) => (
+      profile.capabilities.includes(capability)
+      && createProviderProfileKey(profile) === selectedKey
+    ));
+    if (selected) result[capability] = selected.modelRoute;
+  }
+  return result;
+}
+
+function enabledProviderProfileKeys(profiles: readonly ProviderBridgeProfile[]): string[] {
+  return profiles
+    .filter((profile) => isProviderProfileCatalogRunnable(profile) && profile.enabled !== false)
+    .map(createProviderProfileKey);
 }
 function formatKnowledgeSyncState(baseStatus: string | undefined, syncStatus: 'syncing' | 'updated' | 'offline' | 'conflict' | undefined): string {
   if (syncStatus === 'syncing') return '同步中';

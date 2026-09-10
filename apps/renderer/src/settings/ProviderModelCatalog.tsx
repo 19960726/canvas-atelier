@@ -41,10 +41,14 @@ export function profilesForCapability(
   const visibleProfiles = new Map<string, ProviderBridgeProfile>();
   for (const profile of profiles) {
     if (!profile.capabilities.includes(capability)) continue;
-    const visibleName = profile.displayName.trim().toLocaleLowerCase();
+    const visibleName = `${profile.provider}:${profile.displayName.trim().toLocaleLowerCase()}`;
     if (!visibleProfiles.has(visibleName)) visibleProfiles.set(visibleName, profile);
   }
   return [...visibleProfiles.values()];
+}
+
+export function isProviderProfileCatalogRunnable(profile: ProviderBridgeProfile): boolean {
+  return profile.capabilityStatus !== 'incomplete';
 }
 
 export function ProviderModelCatalog({
@@ -57,7 +61,9 @@ export function ProviderModelCatalog({
   onToggleProfile,
   onDefaultProfileChange,
 }: ProviderModelCatalogProps) {
-  const enabled = new Set(enabledProfileKeys ?? profiles.map(createProviderProfileKey));
+  const enabled = new Set(enabledProfileKeys ?? profiles
+    .filter((profile) => profile.enabled !== false)
+    .map(createProviderProfileKey));
   const populatedGroups = MODEL_GROUPS.map((group) => ({
     ...group,
     profiles: profilesForCapability(profiles, group.capability),
@@ -103,7 +109,8 @@ export function ProviderModelCatalog({
     </nav>
     {populatedGroups.filter((group) => group.capability === activeCapability).map((group) => {
       const groupProfiles = group.profiles;
-      const enabledProfiles = groupProfiles.filter((profile) => enabled.has(createProviderProfileKey(profile)));
+      const enabledProfiles = groupProfiles.filter((profile) => isProviderProfileCatalogRunnable(profile)
+        && enabled.has(createProviderProfileKey(profile)));
       return <section key={group.capability} className="settings-model-group settings-model-group--active" aria-label={group.label} data-capability={group.capability}>
         <header>
           <i aria-hidden="true"><group.Icon size={18} strokeWidth={1.8} /></i>
@@ -112,21 +119,22 @@ export function ProviderModelCatalog({
         <div className="settings-model-list" role="list" aria-label={`${group.label}列表`}>
           {groupProfiles.map((profile) => {
             const key = createProviderProfileKey(profile);
-            const isEnabled = enabled.has(key);
-            const isDefault = defaultProfileKeys?.[group.capability] === key;
-            return <article key={key} role="listitem" className={isEnabled ? 'is-enabled' : undefined}>
+            const runnable = isProviderProfileCatalogRunnable(profile);
+            const isEnabled = runnable && enabled.has(key);
+            const isDefault = runnable && defaultProfileKeys?.[group.capability] === key;
+            return <article key={key} role="listitem" aria-disabled={!runnable} className={runnable ? (isEnabled ? 'is-enabled' : undefined) : 'is-incomplete'}>
               <label className="settings-model-enabled">
                 <input
                   type="checkbox"
                   aria-label={`启用 ${profile.displayName}`}
                   checked={isEnabled}
-                  disabled={onToggleProfile === undefined}
+                  disabled={onToggleProfile === undefined || !runnable}
                   onChange={() => onToggleProfile?.(profile)}
                 />
               </label>
               <span className="settings-model-identity">
                 <strong>{profile.displayName}</strong>
-                <small>{isDefault ? '当前默认模型' : '可用于此画布能力'}</small>
+                <small>{!runnable ? '协议待验证' : isDefault ? '当前默认模型' : '可用于此画布能力'}</small>
               </span>
               {isDefault && <em>默认</em>}
             </article>;

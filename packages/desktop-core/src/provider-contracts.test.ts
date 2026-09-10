@@ -3,12 +3,74 @@ import {
   createProviderBridgeError,
   createProviderBridgeErrorEnvelope,
   PROVIDER_BRIDGE_CHANNELS,
+  ProviderIdSchema,
   parseProviderBridgeEnvelope,
   parseProviderBridgeRequest,
   parseProviderBridgeResponse,
 } from './provider-contracts';
 
 describe('provider profile bridge contract', () => {
+  it('carries provider-owned enabled state without weakening the strict profile schema', () => {
+    expect(parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.listProfiles, [{
+      provider: '4dai',
+      modelRoute: '4dai-gpt-image-2',
+      displayName: 'GPT Image 2',
+      modelId: 'gpt-image-2',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'complete',
+      enabled: false,
+    }])).toEqual([expect.objectContaining({
+      provider: '4dai',
+      modelRoute: '4dai-gpt-image-2',
+      enabled: false,
+    })]);
+    expect(() => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.listProfiles, [{
+      provider: '4dai',
+      modelRoute: '4dai-gpt-image-2',
+      displayName: 'GPT Image 2',
+      capabilities: ['image_generation'],
+      enabled: 'yes',
+    }])).toThrow();
+  });
+
+  it.each(['comfly', 'relayme', 'julun', '4dai'] as const)(
+    'accepts the registered %s provider identity at strict IPC boundaries',
+    (provider) => {
+      expect(ProviderIdSchema.parse(provider)).toBe(provider);
+      expect(parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.getStatus, { provider }))
+        .toEqual({ provider });
+      expect(parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.getActiveProvider, { activeProvider: provider }))
+        .toEqual({ activeProvider: provider });
+    },
+  );
+
+  it('exposes a safe persisted Base URL in provider status without weakening the strict response contract', () => {
+    expect(parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.getStatus, {
+      configured: true,
+      locked: false,
+      encryption: 'safeStorage',
+      baseUrl: 'https://api.4dai.cc/v1',
+    })).toEqual({
+      configured: true,
+      locked: false,
+      encryption: 'safeStorage',
+      baseUrl: 'https://api.4dai.cc/v1',
+    });
+    expect(() => parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.getStatus, {
+      configured: true,
+      locked: false,
+      encryption: 'safeStorage',
+      baseUrl: 'http://127.0.0.1:8080/v1',
+    })).toThrow();
+  });
+
+  it('rejects unregistered provider identities at strict IPC boundaries', () => {
+    expect(() => ProviderIdSchema.parse('unknown-provider')).toThrow();
+    expect(() => parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.getStatus, {
+      provider: 'unknown-provider',
+    })).toThrow();
+  });
+
   it.each(['WEB_LOGIN_CANCELLED', 'WEB_LOGIN_TIMEOUT'] as const)(
     'preserves the sanitized %s web-login error across the IPC envelope',
     (code) => {
@@ -38,6 +100,21 @@ describe('provider profile bridge contract', () => {
       provider: 'comfly',
       profiles,
     })).not.toThrow();
+  });
+
+  it('returns exact New API model ids containing spaces and Unicode while rejecting control characters', () => {
+    expect(parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.listAvailableModelIds, [
+      'minimax-h3 768p',
+      'grok-imagine-video-1.5（按次）',
+    ])).toEqual([
+      'minimax-h3 768p',
+      'grok-imagine-video-1.5（按次）',
+    ]);
+
+    expect(() => parseProviderBridgeResponse(
+      PROVIDER_BRIDGE_CHANNELS.listAvailableModelIds,
+      ['safe-model\nspoofed'],
+    )).toThrow();
   });
 
   it('keeps active-provider and RelayMe account IPC contracts narrow and token-free', () => {

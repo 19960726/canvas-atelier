@@ -83,7 +83,7 @@ interface RuntimeState {
   knowledgeStates: KnowledgeBaseStateSummary[];
   managedRules: Map<string, string>;
   modelCancellationMode: 'complete' | 'hang';
-  modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
+  modelSubmissions: Array<Pick<ModelJob, 'aspectRatio' | 'conversationId' | 'id' | 'imageQuality' | 'modelRoute' | 'provider' | 'resolution' | 'retryCount'>>;
   pendingImageImports: Array<{
     byteSize: number;
     height: number;
@@ -185,6 +185,8 @@ export function installRendererE2EHarness(): void {
       await useAppStore.getState().initializeKnowledge();
     },
     async reopenProject() {
+      replaceModelJobExecutorForTests(createModelExecutor(runtime));
+      replaceModelJobStorageForTests(runtime.storage);
       resetAppStoreForTests();
       await useAppStore.getState().hydratePersistence();
       await useAppStore.getState().initializeKnowledge();
@@ -287,22 +289,36 @@ export function installRendererE2EHarness(): void {
         ...state.project,
         assets: [...(state.project.assets ?? []).filter((candidate) => !generatedAssetIds.has(candidate.assetId)), ...assets],
       };
-      const summaries = assets.map((asset) => createE2EProjectImageSummary(project, asset));
-      runtime.currentProject = project;
+      const modelJobs: ModelJob[] = assets.map((asset, index) => ({
+        id: `photoshop-e2e-job-${index + 1}`,
+        kind: 'image',
+        modelId: 'e2e-image-model',
+        status: 'completed',
+        promptNodeId: generationNode.id,
+        projectId: project.id,
+        retryCount: 0,
+        referenceAssetIds: [],
+        resultAssetId: asset.assetId,
+      }));
+      const anchoredProject = {
+        ...project,
+        nodes: project.nodes.map((node) => node.id === generationNode.id && node.type === 'module'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                config: { ...node.data.config, lastResultJobId: modelJobs[0]?.id },
+              },
+            }
+          : node),
+      };
+      const summaries = assets.map((asset) => createE2EProjectImageSummary(anchoredProject, asset));
+      runtime.currentProject = anchoredProject;
       runtime.projectImages = summaries;
       useAppStore.setState({
-        project,
+        project: anchoredProject,
         projectImages: summaries,
-        modelJobs: assets.map((asset, index) => ({
-          id: `photoshop-e2e-job-${index + 1}`,
-          kind: 'image',
-          modelId: 'e2e-image-model',
-          status: 'completed',
-          promptNodeId: generationNode.id,
-          retryCount: 0,
-          referenceAssetIds: [],
-          resultAssetId: asset.assetId,
-        })),
+        modelJobs,
       });
       return true;
     },
@@ -321,6 +337,10 @@ export function installRendererE2EHarness(): void {
       const state = useAppStore.getState();
       return {
         commitCount: runtime.commitLog.length,
+        durableImageGenerationConfigs: runtime.currentProject.nodes
+          .filter((node): node is CanvasModuleNode => node.type === 'module' && node.data.moduleType === 'image_generation')
+          .map((node) => ({ ...node.data.config })),
+        durableNodeCount: runtime.currentProject.nodes.length,
         edgeCount: state.project.edges.length,
         nodeCount: state.project.nodes.length,
         moduleTypes: state.project.nodes
@@ -909,6 +929,68 @@ export function createE2EProviderProfiles(): ProviderBridgeProfile[] {
     { provider: 'relayme', modelRoute: 'relay/video/veo', displayName: 'Veo', modelId: 'relay-veo', capabilities: ['video_generation', 'async_tasks'], constraints: videoConstraints },
     { provider: 'relayme', modelRoute: 'relay/video/kling', displayName: 'Kling', modelId: 'relay-kling', capabilities: ['video_generation', 'async_tasks'], constraints: videoConstraints },
     { provider: 'relayme', modelRoute: 'relay/video/seedance', displayName: 'Seedance', modelId: 'relay-seedance', capabilities: ['video_generation', 'async_tasks'], constraints: videoConstraints },
+    {
+      provider: 'julun',
+      modelRoute: 'julun-seedance-2-0-fast-deal',
+      displayName: 'seedance-2.0-fast-deal',
+      modelId: 'seedance-2.0-fast-deal',
+      capabilities: ['video_generation', 'async_tasks'],
+      capabilityStatus: 'complete',
+      constraints: videoConstraints,
+    },
+    {
+      provider: '4dai',
+      modelRoute: '4dai-gpt-image-1-5',
+      displayName: 'gpt-image-1.5',
+      modelId: 'gpt-image-1.5',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'complete',
+      constraints: {
+        image: {
+          aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'],
+          resolutions: ['1K'],
+          outputCounts: [1],
+        },
+      },
+    },
+    {
+      provider: '4dai',
+      modelRoute: '4dai-gemini-3-1-flash-image-preview',
+      displayName: 'Nano Banana 2',
+      modelId: 'gemini-3.1-flash-image-preview',
+      capabilities: ['image_generation', 'image_edit'],
+      capabilityStatus: 'complete',
+      constraints: {
+        image: {
+          aspectRatios: ['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16'],
+          resolutions: ['1K', '2K', '4K'],
+          outputCounts: [1],
+        },
+      },
+    },
+    {
+      provider: '4dai',
+      modelRoute: '4dai-gemini-3-pro-image-preview',
+      displayName: 'Nano Banana Pro',
+      modelId: 'gemini-3-pro-image-preview',
+      capabilities: ['image_generation', 'image_edit'],
+      capabilityStatus: 'complete',
+      constraints: {
+        image: {
+          aspectRatios: ['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16'],
+          resolutions: ['1K', '2K', '4K'],
+          outputCounts: [1],
+        },
+      },
+    },
+    {
+      provider: '4dai',
+      modelRoute: '4dai-gpt-6-astra',
+      displayName: 'gpt-6-astra',
+      modelId: 'gpt-6-astra',
+      capabilities: ['chat', 'vision', 'reverse_prompt'],
+      capabilityStatus: 'complete',
+    },
   ];
 }
 function createE2EModelJobStorage(runtime: RuntimeState): ModelJobStorage {
@@ -1207,9 +1289,13 @@ function createModelExecutor(runtime: RuntimeState): ModelJobExecutor {
   return {
     async submit(job) {
       runtime.modelSubmissions.push({
+        aspectRatio: job.aspectRatio,
         conversationId: job.conversationId,
         id: job.id,
+        imageQuality: job.imageQuality,
         modelRoute: job.modelRoute,
+        provider: job.provider,
+        resolution: job.resolution,
         retryCount: job.retryCount,
       });
       return { providerTaskId: `e2e-provider-task-${job.id}-${job.retryCount}` };
@@ -1422,6 +1508,8 @@ declare global {
       seedGeneratedImageResult(outputCount?: 1 | 2 | 3 | 4): Promise<boolean>;
       getState(): {
         commitCount: number;
+        durableImageGenerationConfigs: Array<Record<string, unknown>>;
+        durableNodeCount: number;
         durableProjectContainsTransientImageUrl: boolean;
         edgeCount: number;
         nodeCount: number;
@@ -1432,7 +1520,7 @@ declare global {
           position: { x: number; y: number };
         }>;
         modelJobs: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount' | 'status'>>;
-        modelSubmissions: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount'>>;
+        modelSubmissions: Array<Pick<ModelJob, 'aspectRatio' | 'conversationId' | 'id' | 'imageQuality' | 'modelRoute' | 'provider' | 'resolution' | 'retryCount'>>;
         projectAssetIds: string[];
         projectImages: Array<Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;
         projectVideos: Array<Pick<ProjectVideoAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;

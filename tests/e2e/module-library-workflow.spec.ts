@@ -110,6 +110,7 @@ test('connects an image input to the reverse agent by dragging visible ports', a
   const target = page.locator('[data-module-type="reverse_agent"] [data-port-id="references"].react-flow__handle');
   await expect(source).toBeVisible();
   await expect(target).toBeVisible();
+  await expect(page.getByTestId('connection-handle-readiness')).toHaveAttribute('data-ready', 'true');
   const [sourceBox, targetBox] = await Promise.all([source.boundingBox(), target.boundingBox()]);
   const [imageNodeBox, reverseNodeBox] = await Promise.all([
     page.locator('[data-module-type="image_input"]').boundingBox(),
@@ -123,13 +124,6 @@ test('connects an image input to the reverse agent by dragging visible ports', a
   expect(targetBox!.width).toBeGreaterThanOrEqual(14);
   expect(Math.abs((sourceBox!.x + sourceBox!.width / 2) - (imageNodeBox!.x + imageNodeBox!.width))).toBeLessThanOrEqual(1);
   expect(Math.abs((targetBox!.x + targetBox!.width / 2) - reverseNodeBox!.x)).toBeLessThanOrEqual(1);
-
-  // Module creation and React Flow's internal handle measurement settle on
-  // separate animation frames. A real user cannot begin a drag before those
-  // frames, while Playwright can; wait for the same visible-ready boundary.
-  await page.evaluate(() => new Promise<void>((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  }));
 
   await source.dragTo(target);
 

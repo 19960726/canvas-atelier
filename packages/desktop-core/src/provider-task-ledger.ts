@@ -16,9 +16,11 @@ import {
   createProviderBridgeError,
   isProviderBridgeErrorCode,
   normalizeProviderBridgeError,
+  ProviderIdSchema,
   type PollImageJobBridgeResult,
   type PollVideoJobBridgeResult,
   type ProviderBridgeError,
+  type ProviderBridgeProvider,
   type ProviderImageJobResult,
   type ProviderVideoJobResult,
   type ProviderImageJobTerminalStatus,
@@ -30,7 +32,7 @@ const scrypt = promisify(scryptCallback);
 export type ProviderTaskMappingState = 'running' | ProviderImageJobTerminalStatus;
 
 export interface ProviderTaskMappingRecord {
-  readonly provider: 'comfly' | 'relayme';
+  readonly provider: ProviderBridgeProvider;
   readonly publicTaskId: string;
   readonly rawTaskId: string;
   readonly kind?: 'image' | 'video';
@@ -480,8 +482,9 @@ function parseAssetIds(value: unknown): string[] {
   return value.map((item) => parseNonEmptyString(item, 'assetIds'));
 }
 
-function parseProvider(value: unknown): 'comfly' | 'relayme' {
-  if (value === 'comfly' || value === 'relayme') return value;
+function parseProvider(value: unknown): ProviderBridgeProvider {
+  const parsed = ProviderIdSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
   throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider task mapping is unavailable');
 }
 

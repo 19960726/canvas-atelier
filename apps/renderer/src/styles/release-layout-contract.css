@@ -1767,6 +1767,7 @@
   border: 1px solid var(--gate-accent-border) !important;
   border-radius: 12px !important;
 }
+
 .workspace--canvas-layout .settings-update-dialog__icon { display: grid !important; place-items: center !important; width: 42px !important; height: 42px !important; color: var(--gate-accent) !important; background: var(--gate-card) !important; border: 1px solid var(--gate-accent-border) !important; border-radius: 11px !important; }
 .workspace--canvas-layout .settings-update-dialog__hero > div { display: grid !important; gap: 2px !important; min-width: 0 !important; }
 .workspace--canvas-layout .settings-update-dialog__hero small { color: var(--gate-accent) !important; font-size: 10px !important; font-weight: 750 !important; letter-spacing: .03em !important; }
@@ -3149,6 +3150,9 @@ html body .workspace--canvas-layout .module-node.module-node[data-module-type='v
 }
 .workspace--canvas-layout .module-node[data-module-type='image_generation'] .module-node__generation-control-bar {
   grid-template-columns: minmax(138px, 1.35fr) minmax(78px, .8fr) minmax(72px, .8fr) minmax(68px, .7fr) minmax(86px, .85fr) !important;
+}
+.workspace--canvas-layout .module-node[data-module-type='image_generation'] .module-node__generation-control-bar.has-image-quality {
+  grid-template-columns: minmax(132px, 1.35fr) minmax(68px, .72fr) minmax(64px, .7fr) minmax(60px, .66fr) minmax(62px, .66fr) minmax(82px, .84fr) !important;
 }
 .workspace--canvas-layout .module-node[data-module-type='video_generation'] .module-node__video-control-bar > .module-node__video-fallback-control {
   display: none !important;
@@ -4564,4 +4568,35 @@ html body .workspace--canvas-layout .agent-panel--skill-chat :is(.creative-plan_
   opacity: .55 !important;
   cursor: wait !important;
   transform: none !important;
+}
+
+/* COLLAPSED RESULT REFRESH HIT TARGET */
+.workspace--canvas-layout .module-node__generation-error--collapsed-result-refresh {
+  pointer-events: none !important;
+}
+
+.workspace--canvas-layout .module-node__generation-error--collapsed-result-refresh > button {
+  pointer-events: auto !important;
+}
+
+/* FOUR PROVIDER SETTINGS CARDS */
+.workspace--canvas-layout .settings-provider-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+
+.workspace--canvas-layout .settings-provider-grid > button > span {
+  align-content: center !important;
+}
+
+.workspace--canvas-layout .settings-provider-grid > button em {
+  color: var(--gate-muted) !important;
+  font-size: 8px !important;
+  font-style: normal !important;
+  line-height: 1.2 !important;
+}
+
+@media (max-width: 900px) {
+  .workspace--canvas-layout .settings-provider-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
 }

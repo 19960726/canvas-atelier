@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ComflyClient, decodeGeminiInlineImage, mapComflyImageResolutionTier, normalizeBaseUrl, parseGeminiImageResponse } from './client';
+import {
+  ComflyClient,
+  decodeGeminiInlineImage,
+  mapComflyGptImageExactSize,
+  mapComflyImageResolutionTier,
+  normalizeBaseUrl,
+  parseGeminiImageResponse,
+} from './client';
 import { mergeComflyModelRegistries } from './model-registry';
 import type { ComflyFetch } from './types';
 
@@ -15,6 +22,27 @@ describe('ComflyClient', () => {
     expect(mapComflyImageResolutionTier('2K', '16:9')).toBe('1536x1024');
     expect(mapComflyImageResolutionTier('2K', '9:16')).toBe('1024x1536');
     expect(() => mapComflyImageResolutionTier('4K', '16:9')).toThrow(/native 4K/i);
+  });
+
+  it.each(['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16'] as const)(
+    'maps every GPT Image %s tier to a documented exact-pixel size',
+    (aspectRatio) => {
+      for (const tier of ['1K', '2K', '4K'] as const) {
+        const [width, height] = mapComflyGptImageExactSize(tier, aspectRatio).split('x').map(Number) as [number, number];
+        expect(width % 16).toBe(0);
+        expect(height % 16).toBe(0);
+        expect(width).toBeLessThanOrEqual(3840);
+        expect(height).toBeLessThanOrEqual(3840);
+        expect(width * height).toBeGreaterThanOrEqual(655_360);
+        expect(width * height).toBeLessThanOrEqual(8_294_400);
+        expect(Math.max(width, height) / Math.min(width, height)).toBeLessThanOrEqual(3);
+      }
+    },
+  );
+
+  it('uses the documented common 4K landscape and portrait sizes for GPT Image', () => {
+    expect(mapComflyGptImageExactSize('4K', '16:9')).toBe('3840x2160');
+    expect(mapComflyGptImageExactSize('4K', '9:16')).toBe('2160x3840');
   });
 
   afterEach(() => {
@@ -76,6 +104,10 @@ describe('ComflyClient', () => {
           { key: 'not-in-account', name: 'Hidden Model', provider: 'Other', tags: '绘图', apis: [] },
         ] } });
       }
+      if (url.endsWith('/api/pricing')) {
+        expect(init?.headers ?? {}).not.toHaveProperty('authorization');
+        return jsonResponse({ data: [] });
+      }
       throw new Error(`unexpected URL: ${url}`);
     });
     const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
@@ -86,11 +118,136 @@ describe('ComflyClient', () => {
         expect.objectContaining({ key: 'gpt-image-2', name: 'gpt-image-2', tags: ['绘图', '图像编辑'] }),
         expect.objectContaining({ key: 'veo3.1-fast', name: 'Veo 3.1 Fast', tags: ['视频', '异步任务'], parameterTable: { headers: ['分辨率', '视频时长'], rows: [['720P', '5秒'], ['1080P', '10'], ['2k(720p upscale)', '15秒']] } }),
         expect.objectContaining({ key: 'vision-chat', name: 'Vision Chat', tags: ['对话', '识图', '多模态'] }),
-        expect.objectContaining({ key: 'endpoint-only', capabilityStatus: 'incomplete' }),
+        expect.objectContaining({ key: 'endpoint-only', capabilityStatus: 'complete' }),
         expect.objectContaining({ key: 'unknown-private', name: 'unknown-private', capabilityStatus: 'incomplete' }),
       ],
     });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('merges positive image evidence from both public catalogs before applying the exact authenticated model intersection', async () => {
+    const newlyDiscoveredImageModels = [
+      'dall-e-2',
+      'flux-pro-1.1-ultra',
+      'flux-schnell',
+      'gpt-image-1-2025-04-15',
+      'gpt-image-1-mini',
+      'gpt-image-1-mini-2025-10-06',
+      'gpt-image-2-2k',
+      'gpt-image-2-4k',
+      'gpt-image-2-vip',
+    ];
+    const fetch = vi.fn(async (url: string, init) => {
+      if (url.endsWith('/v1/models')) {
+        return jsonResponse({ data: [
+          ...newlyDiscoveredImageModels.map((id) => ({ id })),
+          { id: 'nano-banana-2' },
+          { id: 'case-sensitive-model' },
+        ] });
+      }
+      if (url.endsWith('/api/models/price')) {
+        expect(init?.headers ?? {}).not.toHaveProperty('authorization');
+        return jsonResponse({ data: { version: 'legacy-v856', models: [
+          { key: 'nano-banana-2', name: 'Nano Banana 2', provider: 'Google', tags: '对话', apis: ['POST-/v1/images/generations-341817446', 'POST-/v1/images/edits-341817449'] },
+          { key: 'flux-pro-1.1-ultra', name: 'Flux Pro 1.1 Ultra', provider: 'Black Forest Labs', tags: '对话', apis: ['POST-/v1/images/edits-303213093'] },
+          { key: 'flux-schnell', name: 'Flux Schnell', provider: 'Black Forest Labs', tags: '对话', apis: ['POST-/v1/images/edits-303213093'] },
+          { key: 'gpt-image-1-mini', name: 'GPT Image 1 Mini', provider: 'OpenAI', tags: '对话', apis: ['POST-/v1/images/edits-339685644'] },
+          { key: 'Case-Sensitive-Model', name: 'Wrong case must not match', provider: 'Other', tags: '绘图', apis: ['POST-/v1/images/generations-1'] },
+        ] } });
+      }
+      if (url.endsWith('/api/pricing')) {
+        expect(init?.headers ?? {}).not.toHaveProperty('authorization');
+        return jsonResponse({ data: [
+          ...[
+            'dall-e-2',
+            'flux-pro-1.1-ultra',
+            'flux-schnell',
+            'gpt-image-1-2025-04-15',
+            'gpt-image-1-mini',
+            'gpt-image-1-mini-2025-10-06',
+          ].map((model_name) => ({
+            model_name,
+            description: null,
+            tags: null,
+            apis: null,
+            supported_endpoint_types: ['image-generation', 'openai'],
+          })),
+          { model_name: 'gpt-image-2-2k', tags: '绘图,图像编辑', supported_endpoint_types: ['openai'], apis: ['POST-/v1/images/generations-302915860'] },
+          { model_name: 'gpt-image-2-4k', tags: '绘图', supported_endpoint_types: ['openai'], apis: ['POST-/v1/images/generations-302915860'] },
+          { model_name: 'gpt-image-2-4k', tags: '图像编辑', supported_endpoint_types: ['openai'], apis: ['POST-/v1/images/generations-302915860'] },
+          { model_name: 'gpt-image-2-vip', tags: '绘图,图像编辑', supported_endpoint_types: ['openai'], apis: ['POST-/v1/images/generations-302915860'] },
+          { model_name: 'hidden-public-image', supported_endpoint_types: ['image-generation'] },
+          { model_name: 'case-sensitive-model', supported_endpoint_types: ['openai'], apis: [] },
+        ] });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    const catalog = await client.listAccessibleModelCatalog();
+    expect(catalog.version).toBe('legacy-v856');
+    expect(catalog.models.map((model) => model.key)).toEqual([...newlyDiscoveredImageModels, 'nano-banana-2', 'case-sensitive-model']);
+    for (const modelId of newlyDiscoveredImageModels) {
+      expect(catalog.models.find((model) => model.key === modelId)).toMatchObject({
+        capabilityStatus: 'complete',
+        apis: expect.arrayContaining(['/v1/images/generations']),
+      });
+    }
+    for (const modelId of ['flux-pro-1.1-ultra', 'flux-schnell', 'gpt-image-1-mini']) {
+      expect(catalog.models.find((model) => model.key === modelId)?.apis).toEqual(expect.arrayContaining([
+        '/v1/images/generations',
+        expect.stringMatching(/^POST-\/v1\/images\/edits-/u),
+      ]));
+    }
+    expect(catalog.models.filter((model) => model.key === 'gpt-image-2-4k')).toHaveLength(1);
+    expect(catalog.models.find((model) => model.key === 'gpt-image-2-4k')?.tags).toEqual(['绘图', '图像编辑']);
+    expect(catalog.models.find((model) => model.key === 'nano-banana-2')).toMatchObject({
+      capabilityStatus: 'complete',
+      apis: expect.arrayContaining(['POST-/v1/images/generations-341817446']),
+    });
+    expect(catalog.models.find((model) => model.key === 'case-sensitive-model')).toMatchObject({
+      name: 'case-sensitive-model', capabilityStatus: 'incomplete',
+    });
+    expect(catalog.models.some((model) => model.key === 'hidden-public-image')).toBe(false);
+  });
+
+  it.each([
+    ['malformed', { data: { models: [] } }],
+    ['failed', { error: { message: 'temporarily unavailable' } }],
+  ])('falls back to the legacy public catalog when the new pricing catalog is %s', async (_case, pricingBody) => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/models')) return jsonResponse({ data: [{ id: 'legacy-image' }] });
+      if (url.endsWith('/api/models/price')) return jsonResponse({ data: { version: 'legacy-v1', models: [
+        { key: 'legacy-image', name: 'Legacy Image', provider: 'Comfly', tags: '绘图', apis: ['POST-/v1/images/generations-1'] },
+      ] } });
+      if (url.endsWith('/api/pricing')) return jsonResponse(pricingBody, { ok: _case !== 'failed', status: _case === 'failed' ? 503 : 200 });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    await expect(client.listAccessibleModelCatalog()).resolves.toEqual({
+      version: 'legacy-v1',
+      models: [expect.objectContaining({ key: 'legacy-image', capabilityStatus: 'complete' })],
+    });
+  });
+
+  it('does not promote fuzzy endpoint names or image-edit tags into generation or edit transports', async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/models')) return jsonResponse({ data: [{ id: 'fuzzy-image' }] });
+      if (url.endsWith('/api/models/price')) return jsonResponse({ data: { version: 'legacy-v1', models: [] } });
+      if (url.endsWith('/api/pricing')) return jsonResponse({ data: [{
+        model_name: 'fuzzy-image', tags: '绘图,图像编辑',
+        supported_endpoint_types: ['image-generation-preview'],
+        apis: ['POST-/v1/images/generations-preview-1', 'POST-/v1/images/edits-extra-2'],
+      }] });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    await expect(client.listAccessibleModelCatalog()).resolves.toEqual({
+      version: 'legacy-v1',
+      models: [expect.objectContaining({ key: 'fuzzy-image', apis: [], capabilityStatus: 'complete' })],
+    });
   });
 
   it('posts OpenAI-compatible chat payloads to /v1/chat/completions with request-time authorization', async () => {
@@ -186,7 +343,16 @@ describe('ComflyClient', () => {
     );
   });
 
-  it('preserves provider-native 4K for GPT Image 2 instead of rejecting or downgrading it', async () => {
+  it('accepts the documented async image submission response without a status field', async () => {
+    const fetch = vi.fn(async () => jsonResponse({ task_id: 'documented-task-1' }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    await expect(client.generateImage({
+      model: 'gpt-image-2', prompt: '产品海报', async: true, size: '1024x1024',
+    })).resolves.toEqual({ taskId: 'documented-task-1', status: 'queued' });
+  });
+
+  it('converts the Canvas 4K tier to the documented exact GPT Image 2 size', async () => {
     let postedBody: string | undefined;
     const fetch: ComflyFetch = vi.fn(async (_url, init) => {
       postedBody = init?.body;
@@ -198,9 +364,33 @@ describe('ComflyClient', () => {
       model: 'gpt-image-2', prompt: 'high resolution product poster', async: true, aspect_ratio: '16:9', size: '4K',
     })).resolves.toMatchObject({ taskId: 'task-gpt-image-2' });
 
-    expect(JSON.parse(String(postedBody))).toMatchObject({
-      model: 'gpt-image-2', aspect_ratio: '16:9', size: '4K',
+    const requestBody = JSON.parse(String(postedBody));
+    expect(requestBody).toMatchObject({ model: 'gpt-image-2', size: '3840x2160' });
+    expect(requestBody).not.toHaveProperty('aspect_ratio');
+    expect(requestBody).not.toHaveProperty('async');
+  });
+
+  it.each([
+    'gpt-image-2-4k',
+    'gpt-image-2-vip',
+    'gpt-image-2.5-flare-4k',
+    'gpt-image-2.5-sunburst-4k',
+  ])('sends documented exact 4K pixels for fixed-resolution GPT image variant %s', async (model) => {
+    let postedBody: string | undefined;
+    const fetch: ComflyFetch = vi.fn(async (_url, init) => {
+      postedBody = typeof init?.body === 'string' ? init.body : undefined;
+      return jsonResponse({ taskId: `task-${model}`, status: 'queued' });
     });
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    await expect(client.generateImage({
+      model, prompt: 'native four-k catalog image', async: true, aspect_ratio: '16:9', size: '4K', quality: 'high',
+    })).resolves.toMatchObject({ taskId: `task-${model}` });
+
+    const requestBody = JSON.parse(String(postedBody));
+    expect(requestBody).toMatchObject({ model, size: '3840x2160', quality: 'high' });
+    expect(requestBody).not.toHaveProperty('aspect_ratio');
+    expect(requestBody).not.toHaveProperty('async');
   });
 
   it('uses the documented image_size tier for Nano Banana image models', async () => {
@@ -277,15 +467,17 @@ describe('ComflyClient', () => {
     expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/images/edits', expect.objectContaining({ method: 'POST' }));
   });
 
-  it('gets async image task state from /v1/images/tasks/{taskId}', async () => {
-    const fetch = vi.fn(async () => jsonResponse({
-      taskId: 'task-77',
-      status: 'completed',
-      data: [{ url: 'https://cdn.example.com/final.png' }],
-    }));
+  it('gets the documented nested async image task state from /v1/images/tasks/{taskId}', async () => {
+    const fetch = vi.fn(async () => jsonResponse({ code: 'success', data: {
+      task_id: 'task-77',
+      status: 'SUCCESS',
+      data: { data: [{ url: 'https://cdn.example.com/final.png' }] },
+    } }));
     const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
 
-    await expect(client.getImageTask('task-77')).resolves.toMatchObject({ status: 'completed' });
+    await expect(client.getImageTask('task-77')).resolves.toEqual({
+      taskId: 'task-77', status: 'SUCCESS', data: { data: [{ url: 'https://cdn.example.com/final.png' }] },
+    });
     expect(fetch).toHaveBeenCalledWith('https://ai.comfly.org/v1/images/tasks/task-77', expect.objectContaining({ method: 'GET' }));
   });
 

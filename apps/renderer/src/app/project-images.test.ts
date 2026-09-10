@@ -287,6 +287,27 @@ describe('project image store actions', () => {
     expect(useAppStore.getState().projectVideos).toEqual([videoSummary]);
   });
 
+  it('drops pending clipboard work owned by another project without calling clipboard IPC', async () => {
+    localStorage.setItem('novus.pending-clipboard-media.v1', JSON.stringify({
+      version: 1,
+      projectId: 'different-project',
+      position: { x: 12, y: 34 },
+      videoOperationId: 'clipboard_video_foreign-project',
+      imageOperationId: 'clipboard_paste_foreign-project',
+      phase: 'video',
+      createdAt: Date.now(),
+    }));
+    const pasteClipboardVideo = vi.fn();
+    const pasteClipboardImage = vi.fn();
+    replaceProjectPersistenceClientForTests(persistenceClient({ pasteClipboardImage, pasteClipboardVideo }));
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(pasteClipboardVideo).not.toHaveBeenCalled();
+    expect(pasteClipboardImage).not.toHaveBeenCalled();
+    expect(localStorage.getItem('novus.pending-clipboard-media.v1')).toBeNull();
+  });
+
   it('does not call clipboard IPC when pending-operation storage cannot be written', async () => {
     const pasteClipboardVideo = vi.fn();
     const pasteClipboardImage = vi.fn();

@@ -10,7 +10,7 @@ import {
   type PersistedProviderConfigurationState,
 } from './provider-configuration-store.js';
 import type { ProviderCredentialStore } from './provider-credential-vault.js';
-import { buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, cloneProviderProfile } from './provider-model-catalog.js';
+import { buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, cloneProviderProfile, markProviderProfileSelections } from './provider-model-catalog.js';
 import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
 import { readPinnedReverseKnowledge } from './provider-reverse-knowledge.js';
@@ -154,7 +154,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       await configurationStore.replace(null);
       await fileSystem.rm(join(options.appDataRoot, 'providers', 'relayme'), { force: true, recursive: true });
     },
-    getStatus: () => options.credentialStore.getStatus(),
+    getStatus: () => readConfigurationStatus(),
     async revealCredential() {
       return { token: await options.credentialStore.getPrimaryToken() };
     },
@@ -202,7 +202,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         configurationCache = cloneConfiguration(next);
         discoveredProfiles = null;
         loginValidatedProfiles = null;
-        return options.credentialStore.getStatus();
+        return configurationStatus(next.baseUrl);
       });
     },
     updateProfiles(request) {
@@ -211,19 +211,33 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         assertRelayMeProvider(validated.provider ?? 'relayme');
         await requireUnlockedCredentials();
         const current = await readConfigurationSnapshot();
-        const next = { ...current, profiles: sanitizeProfiles(validated.profiles) };
+        const requestedProfiles = parseProviderBridgeProfiles(validated.profiles);
+        const verifiedByRoute = new Map((discoveredProfiles ?? current.profiles)
+          .map((profile) => [profile.modelRoute, profile]));
+        const selectedProfiles = requestedProfiles.map((requested) => {
+          const verified = verifiedByRoute.get(requested.modelRoute);
+          if (requested.provider !== 'relayme'
+            || requested.capabilityStatus === 'incomplete'
+            || verified === undefined
+            || verified.provider !== 'relayme'
+            || verified.capabilityStatus === 'incomplete') {
+            throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', '所选 RelayMe 模型协议尚未验证');
+          }
+          return verified;
+        });
+        const next = { ...current, profiles: sanitizeProfiles(selectedProfiles) };
         await configurationStore.write(next);
         configurationCache = cloneConfiguration(next);
         discoveredProfiles = null;
         loginValidatedProfiles = null;
-        return options.credentialStore.getStatus();
+        return configurationStatus(next.baseUrl);
       });
     },
     async unlock(request) {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.unlock, request) as UnlockProviderBridgeRequest;
       assertRelayMeProvider(validated.provider ?? 'relayme');
       await options.credentialStore.unlock(validated);
-      return options.credentialStore.getStatus();
+      return readConfigurationStatus();
     },
     async listAvailableModelIds() {
       return (await listProfiles()).flatMap((profile) => profile.modelId === undefined ? [] : [profile.modelId]);
@@ -252,6 +266,9 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt, request) as AnalyzeReversePromptBridgeRequest;
       assertRelayMeProvider(validated.provider);
       const profile = await selectProfile(validated.run.agentConfig?.modelRoute ?? '', 'reverse_prompt');
+      if (!profile.capabilities.includes('chat')) {
+        throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', '所选 RelayMe 反推模型未验证聊天补全传输');
+      }
       if (validated.run.orderedMedia.some((item) => item.kind === 'video')) {
         throw createProviderBridgeError('CAPABILITY_UNSUPPORTED', 'RelayMe 当前没有公开可验证的视频反推消息格式');
       }
@@ -378,7 +395,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
             messages: [{ role: 'user', content: validated.prompt }],
             ...(validated.aspectRatio === undefined ? {} : { imageAspectRatio: validated.aspectRatio }),
             ...(validated.resolution === undefined ? {} : { imageSampleSize: validated.resolution }),
-            imageQuality: 'medium',
+            imageQuality: validated.quality ?? 'medium',
             ...(validated.outputCount === undefined ? {} : { n: validated.outputCount }),
           })),
           'RelayMe 生图任务提交失败',
@@ -499,8 +516,8 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
 
   async function listProfiles(): Promise<ProviderBridgeProfile[]> {
     await requireUnlockedCredentials();
-    if (discoveredProfiles !== null) return discoveredProfiles.map(cloneProfile);
     const configured = (await captureConfiguration()).profiles;
+    if (discoveredProfiles !== null) return markProviderProfileSelections(discoveredProfiles, configured);
     const client = await createClientFromCredentials();
     let modelProfiles = loginValidatedProfiles;
     if (modelProfiles === null) {
@@ -513,7 +530,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         if (isRelayMeAuthenticationExpired(error)) throw error;
         if (configured.length === 0) throw error;
         discoveredProfiles = configured.map(cloneProfile);
-        return discoveredProfiles.map(cloneProfile);
+        return markProviderProfileSelections(discoveredProfiles, configured);
       }
     }
     const workflowModelProfiles = buildRelayMeWorkflowModelProfiles(await loadWorkflows(client));
@@ -522,7 +539,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       ...modelProfiles,
     ]), configured);
     loginValidatedProfiles = null;
-    return discoveredProfiles.map(cloneProfile);
+    return markProviderProfileSelections(discoveredProfiles, configured);
   }
 
   async function validateAndPersistLoginToken(
@@ -575,7 +592,8 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
 
   async function selectProfile(modelRoute: string, capability: ProviderBridgeProfile['capabilities'][number]) {
     const profile = (await listProfiles()).find((item) => item.modelRoute === modelRoute
-      && (item.capabilityStatus === 'complete' || (capability === 'chat' && item.capabilityStatus === 'incomplete'))
+      && item.enabled !== false
+      && item.capabilityStatus === 'complete'
       && item.capabilities.includes(capability));
     if (profile === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '所选 RelayMe 模型不可用或能力不匹配');
     return profile;
@@ -634,6 +652,14 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       await configurationStore.write(configurationCache);
     }
     return cloneConfiguration(configurationCache);
+  }
+
+  async function configurationStatus(baseUrl: string) {
+    return { ...(await options.credentialStore.getStatus()), baseUrl };
+  }
+
+  async function readConfigurationStatus() {
+    return configurationStatus((await captureConfiguration()).baseUrl);
   }
 
   function enqueueConfigure<T>(operation: () => Promise<T>): Promise<T> {
@@ -943,12 +969,29 @@ function resultContent(value: Record<string, unknown>, kind: RelayTask['kind']):
 
 function assertSafeResultItem(value: Record<string, unknown>, kind: RelayTask['kind']) {
   const contentKey = kind === 'image' ? 'imageContent' : 'videoContent';
+  const urlKey = kind === 'image' ? 'image_url' : 'video_url';
   for (const [key, item] of Object.entries(value)) {
-    if (key === contentKey || key === 'url') continue;
-    if (typeof item === 'string' && (/authorization|bearer|api[_ -]?key|token|secret|password/iu.test(item) || /[A-Za-z]:\\/u.test(item))) {
+    // Signed result URLs commonly carry query parameters named token or
+    // signature. These three top-level fields are the only values consumed as
+    // media, validated by readRelayMeResultBytes, and replaced by local assets.
+    if (key === contentKey || key === 'url' || key === urlKey) continue;
+    assertRelayMePayloadSafe(item);
+  }
+}
+
+function assertRelayMePayloadSafe(value: unknown): void {
+  if (typeof value === 'string') {
+    if (/authorization|bearer|api[_ -]?key|token|secret|password/iu.test(value) || /[A-Za-z]:\\/u.test(value)) {
       throw createProviderBridgeError('PROTECTED_PAYLOAD', 'RelayMe 返回了受保护的生成载荷');
     }
+    return;
   }
+  if (Array.isArray(value)) {
+    for (const item of value) assertRelayMePayloadSafe(item);
+    return;
+  }
+  if (!isPlainRecord(value)) return;
+  for (const item of Object.values(value)) assertRelayMePayloadSafe(item);
 }
 
 function finiteDimensions(

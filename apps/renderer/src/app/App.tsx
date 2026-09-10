@@ -1,19 +1,29 @@
 import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
+import type { CanvasModuleNode } from '@agent-canvas/domain';
+import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
 import { useAppStore } from './app-store';
+import { getActiveProjectSessionId } from './desktop-persistence';
 import { getMcpCanvasSelection, resetMcpCanvasSelection } from './mcp-canvas-selection';
 import {
   createMcpWorkspaceAdapter,
+  type McpPaidJobExecutionRoute,
   type McpWorkspaceAdapter,
   type McpWorkspaceJobSummary,
+  type McpPaidJobRoute,
   type McpWorkspaceRunResult,
 } from './mcp-workspace-adapter';
 import { mcpUiConfirmationStore } from './mcp-ui-confirmation-store';
 import { readMcpPermissions } from '../settings/mcp-permissions';
+import { filterModelJobsForProject } from '../jobs/project-model-jobs';
+import { normalizeImageQuality } from './image-generation-quality';
+import { listRunnableProviderProfiles, selectGenerationProviderProfile, selectReverseProviderProfile } from './provider-profiles';
 
 let hydrationStarted = false;
 let hydrationReady: Promise<void> | null = null;
+let closeFlushAbortedUnsubscribe: (() => void) | null = null;
 let closeFlushUnsubscribe: (() => void) | null = null;
+let nativeCloseFlushRequestId: string | null = null;
 let mcpRuntimeUnsubscribe: (() => void) | null = null;
 let mcpWorkspaceAdapter: McpWorkspaceAdapter | null = null;
 let activeMcpProjectId: string | null = null;
@@ -43,7 +53,13 @@ export function App() {
     const lifecycle = window.novusDesktop?.lifecycle;
     if (lifecycle === undefined) return;
 
+    closeFlushAbortedUnsubscribe = lifecycle.subscribeCloseFlushAborted((event) => {
+      if (nativeCloseFlushRequestId === event.requestId) {
+        nativeCloseFlushRequestId = null;
+      }
+    });
     closeFlushUnsubscribe = lifecycle.subscribeCloseFlushRequest(async (request) => {
+      nativeCloseFlushRequestId = request.requestId;
       try {
         // A native close request must be acknowledged before waiting for
         // hydration. This pauses the native delivery watchdog while the
@@ -105,9 +121,11 @@ export function App() {
       void useAppStore.getState().undo();
     };
     const handleBlur = () => {
+      if (nativeCloseFlushRequestId !== null) return;
       void flushProjectSave('blur');
     };
     const handleClose = () => {
+      if (window.novusDesktop?.lifecycle !== undefined) return;
       void flushProjectSave('close');
     };
     window.addEventListener('blur', handleBlur);
@@ -202,6 +220,9 @@ function sanitizeRendererError(error: unknown): string {
 export function resetAppHydrationForTests(): void {
   hydrationStarted = false;
   hydrationReady = null;
+  nativeCloseFlushRequestId = null;
+  closeFlushAbortedUnsubscribe?.();
+  closeFlushAbortedUnsubscribe = null;
   closeFlushUnsubscribe?.();
   closeFlushUnsubscribe = null;
   mcpRuntimeUnsubscribe?.();
@@ -214,12 +235,14 @@ export function resetAppHydrationForTests(): void {
 
 function getMcpWorkspaceAdapter(): McpWorkspaceAdapter {
   if (mcpWorkspaceAdapter !== null) return mcpWorkspaceAdapter;
+  const providerBridgeAvailable = window.novusDesktop?.provider !== undefined;
   mcpWorkspaceAdapter = createMcpWorkspaceAdapter({
     getProject: () => useAppStore.getState().project,
     getRevision: () => useAppStore.getState().desktopRevision,
     getSelection: getMcpCanvasSelection,
     getJobs: listMcpWorkspaceJobs,
     commitProjectTransaction: (transaction) => useAppStore.getState().commitProjectTransaction(transaction, { kind: 'agent' }),
+    ...(providerBridgeAvailable ? { resolvePaidJobRoute: resolveMcpPaidJobRoute } : {}),
     runNode: runMcpCanvasNode,
     cancelJob: cancelMcpCanvasJob,
     requestMediaImport: requestMcpMediaImport,
@@ -227,9 +250,42 @@ function getMcpWorkspaceAdapter(): McpWorkspaceAdapter {
   return mcpWorkspaceAdapter;
 }
 
+export async function resolveMcpPaidJobRoute(node: CanvasModuleNode): Promise<McpPaidJobRoute | undefined> {
+  const bridge = window.novusDesktop?.provider;
+  if (bridge === undefined) return undefined;
+  const profiles = await listRunnableProviderProfiles(bridge);
+  const provider = readMcpGenerationProvider(node.data.config.providerDisplayName);
+  const modelRoute = readConfigString(node.data.config, 'modelRoute') || undefined;
+  const modelDisplayName = readConfigString(node.data.config, 'modelDisplayName')
+    || readConfigString(node.data.config, 'routeDisplayName')
+    || undefined;
+
+  if (node.data.moduleType === 'image_generation' || node.data.moduleType === 'video_generation') {
+    const profile = selectGenerationProviderProfile(profiles, {
+      provider,
+      modelRoute,
+      modelDisplayName,
+    }, node.data.moduleType);
+    return profile === undefined ? undefined : { provider: profile.provider, modelRoute: profile.modelRoute };
+  }
+  if (node.data.moduleType !== 'reverse_agent') return undefined;
+
+  const profile = selectReverseProviderProfile(profiles, { provider, modelRoute });
+  return profile === undefined ? undefined : { provider: profile.provider, modelRoute: profile.modelRoute };
+}
+
+function readMcpGenerationProvider(value: unknown): ProviderBridgeProfile['provider'] | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLocaleLowerCase();
+  return normalized === 'comfly' || normalized === 'relayme' || normalized === 'julun' || normalized === '4dai'
+    ? normalized
+    : undefined;
+}
+
 export function listMcpWorkspaceJobs(): McpWorkspaceJobSummary[] {
   const state = useAppStore.getState();
-  const modelJobs: McpWorkspaceJobSummary[] = state.modelJobs.map((job) => ({
+  const projectModelJobs = filterModelJobsForProject(state.modelJobs, state.project, getActiveProjectSessionId());
+  const modelJobs: McpWorkspaceJobSummary[] = projectModelJobs.map((job) => ({
     id: job.id,
     nodeId: job.promptNodeId,
     status: job.status,
@@ -262,8 +318,17 @@ export function listMcpWorkspaceJobs(): McpWorkspaceJobSummary[] {
   return [...modelJobs, ...reverseJobs];
 }
 
-export async function runMcpCanvasNode(nodeId: string): Promise<McpWorkspaceRunResult> {
+export async function runMcpCanvasNode(
+  nodeId: string,
+  executionRoute?: McpPaidJobExecutionRoute,
+): Promise<McpWorkspaceRunResult> {
   const state = useAppStore.getState();
+  if (executionRoute !== undefined && (
+    state.project.id !== executionRoute.projectId
+    || state.desktopRevision !== executionRoute.expectedRevision
+  )) {
+    throw new Error('Canvas changed after the paid model route was confirmed');
+  }
   const node = state.project.nodes.find((candidate) => candidate.id === nodeId && candidate.type === 'module');
   if (node?.type !== 'module') return { started: false, jobIds: [] };
   const config = node.data.config;
@@ -273,11 +338,15 @@ export async function runMcpCanvasNode(nodeId: string): Promise<McpWorkspaceRunR
     const before = new Set(state.modelJobs.map((job) => job.id));
     const started = await state.runImageGenerationNode(nodeId, {
       prompt,
-      modelRoute: readConfigString(config, 'modelRoute') || undefined,
+      modelRoute: executionRoute?.modelRoute ?? (readConfigString(config, 'modelRoute') || undefined),
       aspectRatio: readConfigString(config, 'aspectRatio') || undefined,
       resolution: readConfigString(config, 'resolution') || undefined,
+      ...(normalizeImageQuality(config.imageQuality) === undefined
+        ? {}
+        : { imageQuality: normalizeImageQuality(config.imageQuality) }),
       outputCount: readOutputCount(config.outputCount),
       referenceAssetIds: readStringList(config.referenceAssetIds),
+      ...(executionRoute === undefined ? {} : { executionRoute }),
     });
     return started
       ? { started: true, jobIds: newlyCreatedJobIds(nodeId, before) }
@@ -290,25 +359,42 @@ export async function runMcpCanvasNode(nodeId: string): Promise<McpWorkspaceRunR
     const started = await state.runVideoPreviewNode(nodeId, {
       prompt,
       referenceAssetIds: readStringList(config.referenceAssetIds),
-      modelRoute: readConfigString(config, 'modelRoute') || undefined,
+      modelRoute: executionRoute?.modelRoute ?? (readConfigString(config, 'modelRoute') || undefined),
       aspectRatio: readConfigString(config, 'aspectRatio') || '16:9',
       keyframe: readConfigString(config, 'keyframe') || 'first-frame',
       durationSeconds: readPositiveNumber(config.durationSeconds, 5),
       resolution: readConfigString(config, 'resolution') || '1080p',
       outputCount: readOutputCount(config.outputCount) ?? 1,
       audioEnabled: config.audioEnabled === true,
+      ...(executionRoute === undefined ? {} : { executionRoute }),
     });
     return started
       ? { started: true, jobIds: newlyCreatedJobIds(nodeId, before) }
       : { started: false, jobIds: [] };
   }
   if (node.data.moduleType === 'reverse_agent') {
+    const startingProjectId = state.project.id;
+    const previousRunId = readConfigString(config, 'reverseAgentRunId');
     let rejected = false;
-    void state.runReverseAgentNode(nodeId).catch(() => { rejected = true; });
+    void state.runReverseAgentNode(nodeId, undefined, executionRoute).catch(() => { rejected = true; });
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      const current = useAppStore.getState().project.nodes.find((candidate) => candidate.id === nodeId && candidate.type === 'module');
+      const currentState = useAppStore.getState();
+      if (currentState.project.id !== startingProjectId) {
+        return { started: false, jobIds: [] };
+      }
+      const current = currentState.project.nodes.find((candidate) => candidate.id === nodeId && candidate.type === 'module');
       const runId = current?.type === 'module' ? readConfigString(current.data.config, 'reverseAgentRunId') : '';
-      if (runId) return { started: true, jobIds: [runId] };
+      const runState = current?.type === 'module' ? readConfigString(current.data.config, 'reverseAgentRunState') : '';
+      if (current?.type === 'module'
+        && current.data.moduleType === 'reverse_agent'
+        && runId
+        && runId !== previousRunId
+        && (runState === 'running'
+          || runState === 'completed'
+          || runState === 'failed'
+          || runState === 'cancelled')) {
+        return { started: true, jobIds: [runId] };
+      }
       if (rejected) return { started: false, jobIds: [] };
       await delay(25);
     }
@@ -326,6 +412,9 @@ export async function cancelMcpCanvasJob(jobId: string): Promise<void> {
   if (reverseNode?.type === 'module') {
     if (!await useAppStore.getState().cancelReverseAgentNode(reverseNode.id)) throw new Error('Reverse Agent job could not be cancelled.');
     return;
+  }
+  if (!listMcpWorkspaceJobs().some((job) => job.id === jobId && job.kind !== 'reverse')) {
+    throw new Error('Model job not found in the active canvas.');
   }
   await useAppStore.getState().cancelModelJob(jobId);
 }

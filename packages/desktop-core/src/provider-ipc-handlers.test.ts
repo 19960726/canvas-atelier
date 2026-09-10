@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createProviderBridgeHandlers } from './provider-ipc-handlers';
+import type { ProviderBridgeProvider } from './provider-contracts';
 import type { ProviderRegistry } from './provider-registry';
 import type { ProviderService } from './provider-service-types';
 
@@ -9,7 +10,7 @@ describe('active provider IPC handlers', () => {
     const relayme = fakeService();
     const activeStore = {
       getActiveProvider: vi.fn(async () => ({ activeProvider: null })),
-      setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+      setActiveProvider: vi.fn(async (activeProvider: ProviderBridgeProvider | null) => ({ activeProvider })),
     };
     relayme.loginRelayMeWeb = vi.fn(async () => {
       expect(activeStore.setActiveProvider).not.toHaveBeenCalled();
@@ -25,23 +26,31 @@ describe('active provider IPC handlers', () => {
     expect(comfly.loginRelayMeWeb).toBeUndefined();
   });
 
-  it('uses the persisted active provider as the main-process execution authority', async () => {
+  it('routes each task to its owning provider without using the active provider preference as execution authority', async () => {
     const comfly = fakeService();
     const relayme = fakeService();
-    const registry: ProviderRegistry = { get: (provider) => provider === 'comfly' ? comfly : relayme };
+    const julun = fakeService();
+    const fourdai = fakeService();
+    const services = { comfly, relayme, julun, '4dai': fourdai };
+    const registry: ProviderRegistry = { get: (provider) => services[provider] };
     const activeStore = {
       getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
-      setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+      setActiveProvider: vi.fn(async (activeProvider: ProviderBridgeProvider | null) => ({ activeProvider })),
     };
     const handlers = createHandlers(registry, { activeStore });
 
-    await expect(handlers.submitImageJob({}, imageRequest('relayme'))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
-    await expect(handlers.chat({}, chatRequest('relayme'))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
-    await expect(handlers.submitImageJob({}, imageRequest('comfly'))).resolves.toEqual({ providerTaskId: 'provider-job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
-    expect(relayme.submitImageJob).not.toHaveBeenCalled();
+    await expect(handlers.submitImageJob({}, imageRequest('4dai'))).resolves.toEqual({ providerTaskId: 'provider-job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    await expect(handlers.submitVideoJob({}, videoRequest('julun'))).resolves.toEqual({ providerTaskId: 'provider-job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });
+    await expect(handlers.chat({}, chatRequest('relayme'))).resolves.toMatchObject({ message: 'ok' });
+
+    expect(fourdai.submitImageJob).toHaveBeenCalledOnce();
+    expect(julun.submitVideoJob).toHaveBeenCalledOnce();
+    expect(relayme.chat).toHaveBeenCalledOnce();
+    expect(comfly.submitImageJob).not.toHaveBeenCalled();
+    expect(activeStore.getActiveProvider).not.toHaveBeenCalled();
   });
 
-  it.each(['comfly', 'relayme'] as const)(
+  it.each(['comfly', 'relayme', 'julun', '4dai'] as const)(
     'rejects %s provider chat that claims Codex mode before any provider service runs',
     async (provider) => {
       const comfly = fakeService({ configured: true });
@@ -49,7 +58,7 @@ describe('active provider IPC handlers', () => {
       const registry: ProviderRegistry = { get: (selected) => selected === 'comfly' ? comfly : relayme };
       const activeStore = {
         getActiveProvider: vi.fn(async () => ({ activeProvider: provider === 'comfly' ? 'relayme' as const : 'comfly' as const })),
-        setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+        setActiveProvider: vi.fn(async (activeProvider: ProviderBridgeProvider | null) => ({ activeProvider })),
       };
       const handlers = createHandlers(registry, { activeStore });
 
@@ -65,7 +74,7 @@ describe('active provider IPC handlers', () => {
     const relayme = fakeService({ configured: false });
     const activeStore = {
       getActiveProvider: vi.fn(async () => ({ activeProvider: null })),
-      setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+      setActiveProvider: vi.fn(async (activeProvider: ProviderBridgeProvider | null) => ({ activeProvider })),
     };
     const registry: ProviderRegistry = { get: (provider) => provider === 'comfly' ? comfly : relayme };
     const handlers = createHandlers(registry, { activeStore });
@@ -76,7 +85,7 @@ describe('active provider IPC handlers', () => {
     expect(relayme.revealCredential).not.toHaveBeenCalled();
   });
 
-  it('clears an expired RelayMe session and activity only when RelayMe is currently active', async () => {
+  it('clears an expired RelayMe session and only clears the preference when RelayMe is active', async () => {
     const comfly = fakeService();
     const relayme = fakeService();
     relayme.submitImageJob.mockRejectedValue(Object.assign(new Error('expired'), {
@@ -84,8 +93,8 @@ describe('active provider IPC handlers', () => {
     }));
     relayme.logoutRelayMe = vi.fn(async () => undefined);
     const activeStore = {
-      getActiveProvider: vi.fn(async (): Promise<{ activeProvider: 'comfly' | 'relayme' | null }> => ({ activeProvider: 'relayme' })),
-      setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+      getActiveProvider: vi.fn(async (): Promise<{ activeProvider: ProviderBridgeProvider | null }> => ({ activeProvider: 'relayme' })),
+      setActiveProvider: vi.fn(async (activeProvider: ProviderBridgeProvider | null) => ({ activeProvider })),
     };
     const registry: ProviderRegistry = { get: (provider) => provider === 'comfly' ? comfly : relayme };
     const handlers = createHandlers(registry, { activeStore });
@@ -95,8 +104,8 @@ describe('active provider IPC handlers', () => {
     expect(activeStore.setActiveProvider).toHaveBeenCalledWith(null);
 
     activeStore.getActiveProvider.mockResolvedValue({ activeProvider: 'comfly' });
-    await expect(handlers.submitImageJob({}, imageRequest('relayme'))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
-    expect(relayme.logoutRelayMe).toHaveBeenCalledOnce();
+    await expect(handlers.submitImageJob({}, imageRequest('relayme'))).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+    expect(relayme.logoutRelayMe).toHaveBeenCalledTimes(2);
     expect(activeStore.setActiveProvider).toHaveBeenCalledOnce();
   });
 
@@ -135,14 +144,17 @@ describe('active provider IPC handlers', () => {
 
 const createHandlers = createProviderBridgeHandlers as unknown as (
   registry: ProviderRegistry,
-  options: { activeStore: { getActiveProvider(): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>; setActiveProvider(provider: 'comfly' | 'relayme' | null): Promise<{ activeProvider: 'comfly' | 'relayme' | null }> } },
+  options: { activeStore: { getActiveProvider(): Promise<{ activeProvider: ProviderBridgeProvider | null }>; setActiveProvider(provider: ProviderBridgeProvider | null): Promise<{ activeProvider: ProviderBridgeProvider | null }> } },
 ) => ReturnType<typeof createProviderBridgeHandlers> & {
-  getActiveProvider(event: unknown, request: unknown): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
-  setActiveProvider(event: unknown, request: unknown): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
-  loginRelayMeWeb(event: unknown, request: unknown): Promise<{ activeProvider: 'comfly' | 'relayme' | null }>;
+  getActiveProvider(event: unknown, request: unknown): Promise<{ activeProvider: ProviderBridgeProvider | null }>;
+  setActiveProvider(event: unknown, request: unknown): Promise<{ activeProvider: ProviderBridgeProvider | null }>;
+  loginRelayMeWeb(event: unknown, request: unknown): Promise<{ activeProvider: ProviderBridgeProvider | null }>;
 };
 
-function fakeService(status: { configured: boolean } = { configured: true }): ProviderService & { submitImageJob: ReturnType<typeof vi.fn> } {
+function fakeService(status: { configured: boolean } = { configured: true }): ProviderService & {
+  submitImageJob: ReturnType<typeof vi.fn>;
+  submitVideoJob: ReturnType<typeof vi.fn>;
+} {
   return {
     getStatus: vi.fn(async () => ({ configured: status.configured, locked: false, encryption: 'safeStorage' as const })),
     revealCredential: vi.fn(),
@@ -152,36 +164,37 @@ function fakeService(status: { configured: boolean } = { configured: true }): Pr
     listAvailableModelIds: vi.fn(),
     listProfiles: vi.fn(),
     submitImageJob: vi.fn(async () => ({ providerTaskId: 'provider-job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })),
+    submitVideoJob: vi.fn(async () => ({ providerTaskId: 'provider-job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' })),
     pollImageJob: vi.fn(),
     cancelImageJob: vi.fn(),
     ackImageJobTerminal: vi.fn(),
     chat: vi.fn(async () => ({ message: 'ok', modelRoute: 'chat', sources: [] })),
-  } as unknown as ProviderService & { submitImageJob: ReturnType<typeof vi.fn> };
+  } as unknown as ProviderService & { submitImageJob: ReturnType<typeof vi.fn>; submitVideoJob: ReturnType<typeof vi.fn> };
 }
 
-function imageRequest(provider: 'comfly' | 'relayme') {
+function imageRequest(provider: ProviderBridgeProvider) {
   return { jobId: 'job-1', provider, modelRoute: 'image', prompt: 'Draw a chair', conversationId: 'conversation-1', referenceAssetIds: [] };
 }
 
-function videoRequest(provider: 'comfly' | 'relayme') {
+function videoRequest(provider: ProviderBridgeProvider) {
   return { jobId: 'job-1', provider, modelRoute: 'video', prompt: 'Animate a chair', conversationId: 'conversation-1', referenceAssetIds: [] };
 }
 
-function chatRequest(provider: 'comfly' | 'relayme', agentMode: 'chat' | 'original' | 'codex' = 'chat') {
+function chatRequest(provider: ProviderBridgeProvider, agentMode: 'chat' | 'original' | 'codex' = 'chat') {
   return { provider, modelRoute: 'chat', agentMode, messages: [{ role: 'user' as const, content: 'Hello' }], context: { knowledgeBaseIds: [], projectMemoryIds: [] } };
 }
 
-function taskRequest(provider: 'comfly' | 'relayme') {
+function taskRequest(provider: ProviderBridgeProvider) {
   return { provider, providerTaskId: 'provider-job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
 }
 
-function terminalTaskRequest(provider: 'comfly' | 'relayme') {
+function terminalTaskRequest(provider: ProviderBridgeProvider) {
   return { ...taskRequest(provider), status: 'completed' };
 }
 
 function expiredRelayMeStore() {
   return {
     getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
-    setActiveProvider: vi.fn(async (activeProvider: 'comfly' | 'relayme' | null) => ({ activeProvider })),
+    setActiveProvider: vi.fn(async (activeProvider: ProviderBridgeProvider | null) => ({ activeProvider })),
   };
 }

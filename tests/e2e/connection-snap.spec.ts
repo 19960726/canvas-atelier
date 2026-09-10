@@ -10,6 +10,7 @@ for (const offset of [{x:-32,y:0},{x:32,y:0},{x:0,y:-32},{x:0,y:32}]) {
       await window.__NOVUS_E2E__!.createModule('image_input',{x:100,y:100});
       await window.__NOVUS_E2E__!.createModule('reverse_agent',{x:650,y:100});
     });
+    await expect(page.getByTestId('connection-handle-readiness')).toHaveAttribute('data-ready','true');
     if(zoomOut) {
       await page.mouse.move(500,80);
       await page.mouse.wheel(0,350);
@@ -33,6 +34,7 @@ test('nearby incompatible ports and distant releases do not create edges',async(
     await window.__NOVUS_E2E__!.createModule('image_input',{x:100,y:100});
     await window.__NOVUS_E2E__!.createModule('reverse_agent',{x:650,y:100});
   });
+  await expect(page.getByTestId('connection-handle-readiness')).toHaveAttribute('data-ready','true');
   const source=await page.locator('[data-module-type="image_input"] [data-port-id="image"].react-flow__handle').boundingBox();
   for(const [port,offset] of [['analysis',-32],['references',-90]] as const){
     const target=await page.locator(`[data-module-type="reverse_agent"] [data-port-id="${port}"].react-flow__handle`).boundingBox();

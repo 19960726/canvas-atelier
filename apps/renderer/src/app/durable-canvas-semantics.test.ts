@@ -97,7 +97,11 @@ describe('durable canvas semantics', () => {
 
     useAppStore.getState().draftAgentPlan('freeze the confirmed input order', { modelRoute: 'image-generation' });
     const firstConfirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await vi.waitFor(() => expect(window.novusDesktop!.provider!.listProfiles).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(window.novusDesktop!.provider!.listProfiles).toHaveBeenCalledTimes(4));
+    expect(window.novusDesktop!.provider!.listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(window.novusDesktop!.provider!.listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
+    expect(window.novusDesktop!.provider!.listProfiles).toHaveBeenNthCalledWith(3, { provider: 'julun' });
+    expect(window.novusDesktop!.provider!.listProfiles).toHaveBeenNthCalledWith(4, { provider: '4dai' });
 
     expect(await useAppStore.getState().commitReferenceOrder(['scene', 'product'])).toBe(true);
     profiles.resolve([imageProfile()]);

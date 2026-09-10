@@ -38,6 +38,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   Reflect.deleteProperty(URL, 'createObjectURL');
   Reflect.deleteProperty(URL, 'revokeObjectURL');
 });
@@ -207,6 +208,43 @@ describe('CanvasWorkspace', () => {
     expect(stage).toHaveClass('is-connection-preview');
     setConnectorPreviewQuality(stage, false, 300);
     expect(stage).not.toHaveClass('is-connection-preview');
+  });
+
+  it('exposes connection readiness only after refreshing the rendered port internals', async () => {
+    vi.stubGlobal('DOMMatrixReadOnly', class DOMMatrixReadOnly { readonly m22 = 1; });
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(100);
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(100);
+    const source = createCanvasModuleNode('readiness-image-source', 'image_input', { x: 100, y: 100 });
+    const target = createCanvasModuleNode('readiness-reverse-target', 'reverse_agent', { x: 650, y: 100 });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [source, target], edges: [] },
+    });
+
+    render(<CanvasWorkspace />);
+
+    const readiness = screen.getByTestId('connection-handle-readiness');
+    expect(readiness).toHaveAttribute('data-ready', 'false');
+    await waitFor(() => expect(readiness).toHaveAttribute('data-ready', 'true'));
+  });
+
+  it('refreshes every current endpoint when a rapid node update cancels the pending frame', async () => {
+    vi.stubGlobal('DOMMatrixReadOnly', class DOMMatrixReadOnly { readonly m22 = 1; });
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(100);
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(100);
+    const source = createCanvasModuleNode('rapid-readiness-source', 'image_input', { x: 100, y: 100 });
+    const target = createCanvasModuleNode('rapid-readiness-target', 'reverse_agent', { x: 650, y: 100 });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [source], edges: [] },
+    });
+    render(<CanvasWorkspace />);
+
+    act(() => {
+      useAppStore.setState({
+        project: { ...useAppStore.getState().project, nodes: [source, target], edges: [] },
+      });
+    });
+
+    await waitFor(() => expect(screen.getByTestId('connection-handle-readiness')).toHaveAttribute('data-ready', 'true'));
   });
 
   it('reuses a precomputed graph index while validating connector pointer moves', () => {
@@ -1251,6 +1289,8 @@ describe('CanvasWorkspace', () => {
     render(<CanvasWorkspace />);
     expect(screen.queryByTestId('history-unread-dot')).toBeNull();
 
+    const projectId = useAppStore.getState().project.id;
+
     act(() => {
       useAppStore.setState({
         modelJobs: [{
@@ -1263,6 +1303,7 @@ describe('CanvasWorkspace', () => {
           resultNodeId: 'result-node',
           retryCount: 0,
           status: 'completed',
+          projectId,
         }],
       });
     });
@@ -1271,6 +1312,52 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '打开历史记录' }));
     await waitFor(() => expect(screen.queryByTestId('history-unread-dot')).toBeNull());
     expect(useAppStore.getState().project).toBeDefined();
+  });
+
+  it('ignores a completed job owned by another canvas even when the node id is reused', async () => {
+    const node = createCanvasModuleNode('shared-history-node', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { prompt: 'Current canvas prompt', modelRoute: 'current-route' };
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, id: 'history-current-project', nodes: [node], edges: [] },
+      modelJobs: [],
+    });
+    render(<CanvasWorkspace />);
+    fireEvent.click(within(screen.getByTestId('module-node-card')).getByLabelText('Open image generation editor'));
+    expect(screen.getByLabelText('Image generation prompt workspace')).toBeInTheDocument();
+
+    act(() => {
+      useAppStore.setState({
+        modelJobs: [
+          {
+            id: 'foreign-history-job',
+            kind: 'image',
+            modelId: 'foreign-image-model',
+            promptNodeId: node.id,
+            projectId: 'history-foreign-project',
+            referenceAssetIds: [],
+            resultAssetId: 'foreign-history-asset',
+            retryCount: 0,
+            status: 'completed',
+          },
+          {
+            id: 'foreign-running-job',
+            kind: 'image',
+            modelId: 'foreign-image-model',
+            promptNodeId: node.id,
+            projectId: 'history-foreign-project',
+            referenceAssetIds: [],
+            retryCount: 0,
+            status: 'running',
+          },
+        ],
+      });
+    });
+
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId('history-unread-dot')).toBeNull();
+    expect(screen.getByLabelText('Image generation prompt workspace')).toBeInTheDocument();
+    expect(screen.getByTestId('job-strip')).toHaveAttribute('data-has-active-jobs', 'false');
+    expect(screen.queryByTestId('job-chip')).toBeNull();
   });
 
   it('configures provider credentials through the narrow desktop bridge without persisting the secret', async () => {
@@ -1318,11 +1405,10 @@ describe('CanvasWorkspace', () => {
 
     await waitFor(() => expect(configure).toHaveBeenCalledWith({
       provider: 'comfly',
-      baseUrl: 'https://ai.comfly.org',
       token: 'secret-provider-token',
     }));
 
-    expect(screen.queryByRole('dialog', { name: '配置隐藏密钥' })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '配置隐藏密钥' })).toBeNull());
     expect(screen.getByText('API 密钥已保存到系统安全存储')).toBeVisible();
     expect(useAppStore.getState().project).toBe(project);
     expect(useAppStore.getState().undoStack).toBe(undoStack);
@@ -1365,7 +1451,7 @@ describe('CanvasWorkspace', () => {
     render(<CanvasWorkspace />);
     expect(screen.queryByText('Models locked')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '打开设置' }));
-    await screen.findByText('Comfly 已启用');
+    await screen.findByText('当前优先：Comfly');
     fireEvent.click(screen.getByRole('tab', { name: '同步' }));
     fireEvent.click(screen.getByText('高级故障排查'));
     const unlockButton = await screen.findByRole('button', { name: '解锁模型服务' });
@@ -2557,7 +2643,44 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(restore).toHaveBeenCalledWith('desktop-after'));
   });
 
-  it('shows only the active provider catalog in the canvas and Agent model menus', async () => {
+  it('preserves a completed image variant through catalog refresh and workspace restart', async () => {
+    const node = createCanvasModuleNode('saved-image-variant', 'image_generation', { x: 100, y: 100 });
+    node.data.config = { prompt: 'Saved product image', modelRoute: 'comfly/gemini-3.1-flash-image-preview-4k', modelDisplayName: 'Nano Banana 2', aspectRatio: '1:1', resolution: '4K', outputCount: 1, resultState: 'fresh', resultAssetIds: ['0123456789abcdef'] };
+    const profiles = ['', '-4k'].map((suffix) => ({
+      provider: 'comfly' as const, modelRoute: `comfly/gemini-3.1-flash-image-preview${suffix}`,
+      modelId: `gemini-3.1-flash-image-preview${suffix}`, displayName: 'Nano Banana 2',
+      capabilities: ['image_generation', 'image_edit'] as const, capabilityStatus: 'complete' as const,
+    }));
+    const listProfiles = vi.fn(async (request?: { provider?: string }) => request?.provider === 'comfly' ? [...profiles] : []);
+    window.novusDesktop = { provider: {
+      listProfiles,
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' })),
+      getStatus: vi.fn(async () => ({ configured: true, locked: false })),
+    } } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node], edges: [] } });
+    const expected = JSON.parse(JSON.stringify(node.data.config));
+    const view = render(<CanvasWorkspace />);
+    fireEvent.click(await screen.findByLabelText('Open image generation editor'));
+    await waitFor(() => expect(screen.getByLabelText('打开生图模型列表')).toHaveTextContent('Nano Banana 2'));
+    expect(screen.getByLabelText('Image generation model route')).toHaveValue(expected.modelRoute);
+    expect((useAppStore.getState().project.nodes[0] as typeof node | undefined)?.data.config).toEqual(expected);
+    profiles.reverse();
+    await act(async () => { globalThis.dispatchEvent(new Event('novus:provider-catalog-changed')); });
+    await waitFor(() => expect(listProfiles.mock.calls.length).toBeGreaterThanOrEqual(4));
+    expect(screen.getByLabelText('Image generation model route')).toHaveValue(expected.modelRoute);
+    expect((useAppStore.getState().project.nodes[0] as typeof node | undefined)?.data.config).toEqual(expected);
+    const saved = JSON.parse(JSON.stringify(useAppStore.getState().project));
+    view.unmount();
+    resetAppStoreForTests();
+    useAppStore.setState({ project: saved, agentPanelCollapsed: true });
+    render(<CanvasWorkspace />);
+    fireEvent.click(await screen.findByLabelText('Open image generation editor'));
+    await waitFor(() => expect(screen.getByLabelText('打开生图模型列表')).toHaveTextContent('Nano Banana 2'));
+    expect(screen.getByLabelText('Image generation model route')).toHaveValue(expected.modelRoute);
+    expect((useAppStore.getState().project.nodes[0] as typeof node | undefined)?.data.config).toEqual(expected);
+  });
+
+  it('shows every configured provider route while using the active provider only as the first choice', async () => {
     const comflyProfile = {
       provider: 'comfly' as const,
       modelRoute: 'comfly-chat',
@@ -2591,7 +2714,7 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
     const modelDialog = screen.getByRole('dialog', { name: '选择聊天模型' });
     expect(within(modelDialog).getByText('RelayMe Chat Active')).toBeVisible();
-    expect(within(modelDialog).queryByText('Comfly Chat Hidden')).not.toBeInTheDocument();
+    expect(within(modelDialog).getByText('Comfly Chat Hidden')).toBeVisible();
   });
 
   it('projects only the latest 32 active project memories into Agent context', () => {
@@ -2629,6 +2752,13 @@ describe('CanvasWorkspace', () => {
   });
 
   it('shows RelayMe models even when Comfly itself is unconfigured', async () => {
+    const staleComflyProfile = {
+      provider: 'comfly' as const,
+      modelRoute: 'comfly-stale-chat',
+      displayName: 'Stale Comfly Chat',
+      modelId: 'stale-chat',
+      capabilities: ['chat'] as const,
+    };
     const relayProfile = {
       provider: 'relayme' as const,
       modelRoute: 'relayme-chat-vision',
@@ -2641,7 +2771,7 @@ describe('CanvasWorkspace', () => {
         getStatus: vi.fn(async (request?: { provider?: 'comfly' | 'relayme' }) => request?.provider === 'relayme'
           ? { configured: true, locked: false, encryption: 'safeStorage' as const }
           : { configured: false, locked: false, encryption: 'safeStorage' as const }),
-        listProfiles: vi.fn(async (request?: { provider?: 'comfly' | 'relayme' }) => request?.provider === 'relayme' ? [relayProfile] : []),
+        listProfiles: vi.fn(async (request?: { provider?: 'comfly' | 'relayme' }) => request?.provider === 'relayme' ? [relayProfile] : request?.provider === 'comfly' ? [staleComflyProfile] : []),
       },
     } as unknown as typeof window.novusDesktop;
     resetAppStoreForTests();
@@ -2651,6 +2781,8 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('RelayMe Vision Chat'));
+    fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
+    expect(within(screen.getByRole('dialog', { name: '选择聊天模型' })).queryByText('Stale Comfly Chat')).not.toBeInTheDocument();
   });
   it('refreshes provider models after the settings surface closes', async () => {
     let catalogReady = false;
@@ -3331,6 +3463,37 @@ describe('CanvasWorkspace', () => {
         }),
       }),
     ]));
+  });
+
+  it('forwards the persisted GPT quality preference through Agent node creation into image generation', async () => {
+    const gptRoute = 'qa/gpt-image-1.5';
+    const chat = installSkillChatBridgeForTests([
+      { provider: 'comfly', modelRoute: 'chat/creative', displayName: 'Creative chat', modelId: 'codex-creative-chat', capabilities: ['chat'] },
+      { provider: 'comfly', modelRoute: gptRoute, displayName: 'GPT Image 1.5', modelId: 'gpt-image-1.5', capabilities: ['image_generation'] },
+    ]);
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: 'GPT 主图方案', options: [{ id: 'studio', title: 'GPT 棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张高质量产品主图', modelRoute: gptRoute }] }), modelRoute: 'chat/creative', sources: [] });
+    const projectId = useAppStore.getState().project.id;
+    window.localStorage.setItem(`agent-canvas:generation-preferences:v1:${projectId}`, JSON.stringify({
+      kind: 'image',
+      image: { mode: 'fixed', modelRoute: gptRoute, parameters: { imageQuality: 'high' } },
+      video: { mode: 'auto', parameters: {} },
+    }));
+    const runImageGenerationNode = vi.fn(async () => true);
+    useAppStore.setState({ agentPanelCollapsed: true, runImageGenerationNode } as never);
+
+    render(<CanvasWorkspace />);
+    openAgent();
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Creative chat'));
+    fireEvent.change(screen.getByLabelText('向 Agent 发送消息'), { target: { value: '生成 GPT 产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：GPT 棚拍' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+
+    await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith(expect.stringMatching(/^agent-image-/u), expect.objectContaining({
+      modelRoute: gptRoute,
+      imageQuality: 'high',
+    })));
   });
 
   it('reports the project save error when an Agent generation node cannot be created', async () => {

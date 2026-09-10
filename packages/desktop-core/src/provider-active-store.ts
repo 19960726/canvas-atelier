@@ -7,7 +7,7 @@ import {
   assertConfinedAppDataPathForWrite,
   writeConfinedAtomicUpdate,
 } from './provider-file-confinement.js';
-import { createProviderBridgeError, type ProviderBridgeProvider } from './provider-contracts.js';
+import { createProviderBridgeError, ProviderIdSchema, type ProviderBridgeProvider } from './provider-contracts.js';
 
 const PROVIDER_ACTIVE_FILE = 'provider-active.json';
 const PROVIDER_ACTIVE_LOCK_FILE = `${PROVIDER_ACTIVE_FILE}.lock`;
@@ -112,8 +112,9 @@ export function createProviderActiveStore(options: ProviderActiveStoreOptions): 
 
 function parseActiveProviderState(value: unknown): ProviderActiveState | null {
   if (!isPlainRecord(value) || Object.keys(value).length !== 1) return null;
-  if (value.activeProvider !== null && value.activeProvider !== 'comfly' && value.activeProvider !== 'relayme') return null;
-  return { activeProvider: value.activeProvider };
+  if (value.activeProvider === null) return { activeProvider: null };
+  const parsed = ProviderIdSchema.safeParse(value.activeProvider);
+  return parsed.success ? { activeProvider: parsed.data } : null;
 }
 
 function confinedStatePath(root: string, fileName: string): string {

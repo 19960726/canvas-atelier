@@ -24,6 +24,11 @@ export type CloseFlushAck = {
 
 export type CloseFlushCompletionReason = 'saved' | 'discarded' | 'cancel' | 'failed' | 'timeout' | 'unavailable';
 
+export interface CloseFlushAbort {
+  readonly requestId: string;
+  readonly reason: Exclude<CloseFlushCompletionReason, 'saved' | 'discarded'>;
+}
+
 const requestIdSchema = z.string()
   .min(8)
   .max(96)
@@ -51,6 +56,11 @@ const closeFlushAckSchema = z.discriminatedUnion('phase', [
   }).strict(),
 ]);
 
+const closeFlushAbortSchema = z.object({
+  requestId: requestIdSchema,
+  reason: z.enum(['cancel', 'failed', 'timeout', 'unavailable']),
+}).strict();
+
 export function parseCloseFlushRequest(payload: unknown): CloseFlushRequest | null {
   const parsed = closeFlushRequestSchema.safeParse(payload);
   return parsed.success ? { requestId: parsed.data.requestId } : null;
@@ -58,5 +68,10 @@ export function parseCloseFlushRequest(payload: unknown): CloseFlushRequest | nu
 
 export function parseCloseFlushAck(payload: unknown): CloseFlushAck | null {
   const parsed = closeFlushAckSchema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
+}
+
+export function parseCloseFlushAbort(payload: unknown): CloseFlushAbort | null {
+  const parsed = closeFlushAbortSchema.safeParse(payload);
   return parsed.success ? parsed.data : null;
 }

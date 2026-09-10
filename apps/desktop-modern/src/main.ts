@@ -20,8 +20,11 @@ import {
   MockReleaseFeed,
   createComflyProviderService,
   createCodexCliService,
+  createNewApiProviderService,
   createRelayMeProviderService,
+  createProviderConfigurationStore,
   createProviderRegistry,
+  createProviderTaskMappingStore,
   createMcpClientConfigManager,
   createMcpStdioHealthCheck,
   createMcpRendererBridge,
@@ -37,8 +40,8 @@ import {
   createNodeWindowsPhotoshopSmartObjectAdapter,
   createApprovedSnapshotSyncClientFromEnv,
   createRendererCloseFlushCoordinator,
+  selectCloseFinalizeTarget,
   installRendererSecurityHeaders,
-  parseCloseFlushAck,
   createProviderBridgeHandlers,
   createProviderActiveStore,
   isHistoryNetworkPath,
@@ -56,6 +59,7 @@ import {
   registerCodexCliIpc,
   registerMcpClientConfigIpc,
   registerProviderBridgeHandlers,
+  readPinnedReverseKnowledge,
   resolveLegacyUserDataRoots,
   resolveCodexCliExecutablePath,
   resolveStableUserDataRoot,
@@ -64,6 +68,8 @@ import {
   shutdownDesktopServices,
   type ApprovedSnapshotOutboxDrainHandle,
   type BridgeDialogAdapter,
+  type CloseFlushAbort,
+  type CloseFlushAck,
   type CloseFlushCompletionReason,
   type DesktopBridgeHandlers,
   type RendererCloseFlushCoordinator,
@@ -289,7 +295,10 @@ app.whenReady().then(async () => {
     canRequestRendererFlush: canRequestRendererCloseFlush,
     closeAllProjects: runCoordinatedShutdown,
     finalizeClose: finalizeCoordinatedClose,
+    onCloseAttemptAborted: resetAbortedCloseAttempt,
     onCloseBlocked: showCloseRecoveryChoice,
+    onCloseFlushAckAccepted: recordAcceptedCloseFlushAck,
+    onCloseFlushAborted: sendRendererCloseFlushAborted,
     sendCloseFlushRequest: sendRendererCloseFlushRequest,
   });
   registerDesktopBridgeHandlers(ipcMain, desktopHandlers);
@@ -308,6 +317,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(BRIDGE_CHANNELS.updates.restart, () => updateClient!.restart());
   ipcMain.handle(BRIDGE_CHANNELS.closeRequest, async (event) => {
     if (mainWindow === null || event.sender !== mainWindow.webContents || closeCoordinator === null) return;
+    prepareCoordinatedClose('window');
     await closeCoordinator.requestClose();
   });
   ipcMain.handle(BRIDGE_CHANNELS.closeChoice, async (event, payload) => {
@@ -334,6 +344,57 @@ app.whenReady().then(async () => {
   const generationHistorySink = new GenerationHistoryProviderSink({
     store: generationHistoryStore,
     trustedImageDecoder: createElectronTrustedImageDecoder(nativeImage),
+  });
+  const providerDesktopHandlers = desktopHandlers;
+  if (providerDesktopHandlers === null) throw new Error('Desktop provider storage is unavailable');
+  const readNewApiReferenceImage = async (sessionId: string, assetId: string) => {
+    const [image] = await providerDesktopHandlers.readManagedSkillChatImages(sessionId, [assetId]);
+    if (image === undefined || image.mediaType === 'image/gif') {
+      throw new Error('New API reference image must be PNG, JPEG, or WebP');
+    }
+    return { bytes: image.bytes, mediaType: image.mediaType };
+  };
+  const julunCredentialStore = createSecureProviderCredentialStore({
+    appDataRoot,
+    provider: 'julun',
+    safeStorage,
+  });
+  const fourDAiCredentialStore = createSecureProviderCredentialStore({
+    appDataRoot,
+    provider: '4dai',
+    safeStorage,
+  });
+  const julunProviderService = createNewApiProviderService({
+    provider: 'julun',
+    credentialStore: julunCredentialStore,
+    configurationStore: createProviderConfigurationStore({ appDataRoot, provider: 'julun', fileSystem }),
+    fetch: providerFetch,
+    providerTaskMappings: createProviderTaskMappingStore({
+      appDataRoot: join(appDataRoot, 'providers', 'julun'),
+      fileSystem,
+      secretSupplier: () => julunCredentialStore.getMappingSecrets(),
+    }),
+    historySink: generationHistorySink,
+    readReferenceImage: readNewApiReferenceImage,
+    storeGeneratedVideo: providerDesktopHandlers.storeGeneratedVideo,
+  });
+  const fourDAiProviderService = createNewApiProviderService({
+    provider: '4dai',
+    credentialStore: fourDAiCredentialStore,
+    configurationStore: createProviderConfigurationStore({ appDataRoot, provider: '4dai', fileSystem }),
+    fetch: providerFetch,
+    providerTaskMappings: createProviderTaskMappingStore({
+      appDataRoot: join(appDataRoot, 'providers', '4dai'),
+      fileSystem,
+      secretSupplier: () => fourDAiCredentialStore.getMappingSecrets(),
+    }),
+    historySink: generationHistorySink,
+    readManagedReverseMedia: providerDesktopHandlers.readManagedReverseMedia,
+    readReferenceImage: readNewApiReferenceImage,
+    resolveReverseKnowledge: (request) => readPinnedReverseKnowledge(knowledgeStore, request.run.knowledgeLease.snapshots),
+    resolveResultHost: async (hostname) => (await lookup(hostname, { all: true, verbatim: true }))
+      .map((entry) => entry.address),
+    storeGeneratedImage: providerDesktopHandlers.storeGeneratedImage,
   });
   const providerActiveStore = createProviderActiveStore({ appDataRoot: app.getPath('userData') });
   registerProviderBridgeHandlers(ipcMain, createProviderBridgeHandlers(createProviderRegistry({
@@ -378,6 +439,8 @@ app.whenReady().then(async () => {
       storeGeneratedImage: desktopHandlers.storeGeneratedImage,
       storeGeneratedVideo: desktopHandlers.storeGeneratedVideo,
     }),
+    julun: julunProviderService,
+    '4dai': fourDAiProviderService,
   }), { activeStore: providerActiveStore }), { getTrustedSender: () => mainWindow?.webContents ?? null });
   const codexCliExecutablePath = await resolveCodexCliExecutablePath();
   codexCliRegistration = registerCodexCliIpc({
@@ -406,8 +469,6 @@ app.whenReady().then(async () => {
   });
   ipcMain.on(BRIDGE_CHANNELS.closeFlushAck, (event, payload) => {
     if (mainWindow === null || event.sender !== mainWindow.webContents) return;
-    const ack = parseCloseFlushAck(payload);
-    if (ack?.phase === 'completed') closeFlushErrorCode = ack.errorCode ?? null;
     void closeCoordinator?.handleCloseFlushAck(payload);
   });
   const knowledgeBaseIds = await startConfiguredKnowledgeRefresh(knowledgeStore, knowledgeRefreshService);
@@ -597,11 +658,15 @@ function requestCoordinatedClose(event: { preventDefault(): void }, target: 'win
   if (allowCoordinatedClose || desktopHandlers === null || closeCoordinator === null) {
     return;
   }
-  closeFlushErrorCode = null;
-  if (target === 'app') {
-    closeFinalizeTarget = 'app';
-  }
+  prepareCoordinatedClose(target);
   void closeCoordinator.requestClose(event);
+}
+
+function prepareCoordinatedClose(target: 'window' | 'app'): void {
+  if (closeCoordinator === null) return;
+  const closeAttemptPending = closeCoordinator.hasPendingCloseAttempt();
+  closeFinalizeTarget = selectCloseFinalizeTarget(closeFinalizeTarget, target, closeAttemptPending);
+  if (!closeAttemptPending) closeFlushErrorCode = null;
 }
 
 function canRequestRendererCloseFlush(): boolean {
@@ -617,6 +682,20 @@ function sendRendererCloseFlushRequest(request: { readonly requestId: string }):
   if (!canRequestRendererCloseFlush()) return false;
   mainWindow?.webContents.send(BRIDGE_CHANNELS.closeFlushRequest, request);
   return true;
+}
+
+function sendRendererCloseFlushAborted(event: CloseFlushAbort): void {
+  if (!canRequestRendererCloseFlush()) return;
+  mainWindow?.webContents.send(BRIDGE_CHANNELS.closeFlushAborted, event);
+}
+
+function resetAbortedCloseAttempt(): void {
+  closeFinalizeTarget = 'window';
+  closeFlushErrorCode = null;
+}
+
+function recordAcceptedCloseFlushAck(ack: CloseFlushAck): void {
+  if (ack.phase === 'completed') closeFlushErrorCode = ack.errorCode ?? null;
 }
 
 async function runCoordinatedShutdown(

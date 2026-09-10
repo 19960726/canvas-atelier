@@ -29,6 +29,67 @@ afterEach(async () => {
 });
 
 describe('RelayMe provider service', () => {
+  it('does not promote a protocol-pending route supplied by model selection', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-pending-selection-'));
+    roots.push(appDataRoot);
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      profiles: [{
+        provider: 'relayme', modelRoute: 'relayme-image', modelId: 'relayme-image', displayName: 'Relay Image',
+        capabilities: ['image_generation'], capabilityStatus: 'complete',
+      }],
+      fetch: vi.fn(),
+    });
+
+    await expect(service.updateProfiles!({ provider: 'relayme', profiles: [{
+      provider: 'relayme', modelRoute: 'relayme-pending', modelId: 'relayme-pending', displayName: 'Pending',
+      capabilities: ['image_generation'], capabilityStatus: 'incomplete',
+    }] })).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
+    await expect(service.listProfiles()).resolves.toEqual([
+      expect.objectContaining({ modelRoute: 'relayme-image', capabilityStatus: 'complete' }),
+    ]);
+  });
+
+  it('keeps a disabled RelayMe model visible but outside the executable catalog after refresh', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-disabled-selection-'));
+    roots.push(appDataRoot);
+    const fetchUrls: string[] = [];
+    const fetch: RelayMeFetch = vi.fn(async (url: string) => {
+      fetchUrls.push(url);
+      if (url.endsWith('/models')) return modelsResponse();
+      if (url.endsWith('/workflows')) return jsonResponse({ data: { workflows: [] } });
+      throw new Error(`disabled route reached transport: ${url}`);
+    });
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      fetch,
+      profiles: [{
+        provider: 'relayme', modelRoute: 'relayme-gpt-image-2', modelId: 'gpt-image-2', displayName: 'Relay Image',
+        capabilities: ['image_generation'], capabilityStatus: 'complete',
+      }, {
+        provider: 'relayme', modelRoute: 'relayme-kling-kling-v3-video-generation', modelId: 'kling/kling-v3-video-generation', displayName: 'Kling3',
+        capabilities: ['video_generation'], capabilityStatus: 'complete',
+      }],
+    });
+
+    const initialCatalog = await service.listProfiles();
+    await service.updateProfiles!({ provider: 'relayme', profiles: [
+      initialCatalog.find((profile) => profile.modelRoute === 'relayme-gpt-image-2')!,
+    ] });
+
+    await expect(service.listProfiles()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelRoute: 'relayme-gpt-image-2', enabled: true }),
+      expect.objectContaining({ modelRoute: 'relayme-kling-kling-v3-video-generation', enabled: false }),
+    ]));
+    await expect(service.submitVideoJob!({
+      jobId: 'model-job-v2-disabled-relayme', provider: 'relayme', modelRoute: 'relayme-kling-kling-v3-video-generation',
+      prompt: 'orbit', conversationId: 'conversation-disabled-relayme', sessionId: 'session-disabled-relayme', referenceAssetIds: [], outputCount: 1,
+    })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(fetchUrls.some((url) => url.includes('/videos/generations'))).toBe(false);
+  });
+
   it('promotes cached RelayMe profiles from the old incomplete capability state', async () => {
     const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-stale-profile-'));
     roots.push(appDataRoot);
@@ -590,6 +651,11 @@ describe('RelayMe provider service', () => {
     )) as { baseUrl: string; profiles: Array<{ modelId: string }> };
     expect(persisted.baseUrl).toBe('https://relayme.example.test/api/ai-tools/v1');
     expect(persisted.profiles.map((profile) => profile.modelId)).toContain('gpt-image-2');
+    await expect(service.getStatus()).resolves.toMatchObject({
+      configured: true,
+      locked: false,
+      baseUrl: 'https://relayme.example.test/api/ai-tools/v1',
+    });
   });
 
   it('does not migrate a retired URL when web token acquisition fails', async () => {
@@ -960,6 +1026,49 @@ describe('RelayMe provider service', () => {
     expect(chatSpy).toHaveBeenCalledWith(expect.any(Object), 300_000);
   });
 
+  it('rejects a response-only RelayMe reverse profile before reading media or calling chat completions', async () => {
+    const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-response-only-reverse-'));
+    roots.push(appDataRoot);
+    const fetch: RelayMeFetch = vi.fn(async () => {
+      throw new Error('catalog unavailable');
+    });
+    const readManagedReverseMedia = vi.fn(async () => []);
+    const service = createRelayMeProviderService({
+      appDataRoot,
+      credentialStore: credentialStore({ configured: true, locked: false }),
+      fetch,
+      profiles: [{
+        provider: 'relayme', modelRoute: 'relayme-responses-vision', displayName: 'Responses Vision', modelId: 'responses-vision',
+        capabilities: ['responses', 'vision', 'reverse_prompt'], capabilityStatus: 'complete',
+      }],
+      readManagedReverseMedia,
+    });
+    const imageAssetId = 'd'.repeat(16);
+    const references = [{ assetId: imageAssetId, label: 'Product', position: 0, role: 'product_identity' as const }];
+    const run = createReversePromptRun({
+      projectId: 'project-response-only',
+      skill: { id: 'reverse-prompt', version: 'v1' },
+      agentConfig: { modelRoute: 'relayme-responses-vision', role: 'Analyst', task: 'Analyze.', knowledgeBaseIds: [] },
+      knowledgeLease: createAgentKnowledgeLease({
+        runId: 'reverse-run-response-only', capability: 'reverse_prompt', snapshots: [], references, citations: [],
+      }, { leaseId: 'lease-response-only', createdAt: '2026-08-09T00:00:00.000Z' }),
+      approvedMemorySnapshot: { version: 'approved-response-only', approvedAt: '2026-08-09T00:00:00.000Z', approvedMemoryIds: [] },
+      references,
+    }, { createNonce: () => 'nonce-response-only', now: () => '2026-08-09T00:00:00.000Z' });
+
+    await expect(service.listProfiles()).resolves.toEqual([
+      expect.objectContaining({ modelRoute: 'relayme-responses-vision' }),
+    ]);
+    vi.mocked(fetch).mockClear();
+
+    await expect(service.analyzeReversePrompt?.({
+      sessionId: 'desktop-session-response-only', provider: 'relayme', run,
+      media: [{ kind: 'image', assetId: imageAssetId, sha256: 'd'.repeat(64), byteSize: 4, mediaType: 'image/png' }],
+    })).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
+    expect(readManagedReverseMedia).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('reports a retryable truncation when RelayMe reverse chat finishes because of length', async () => {
     const imageAssetId = 'c'.repeat(16);
     const imageSha256 = 'c'.repeat(64);
@@ -1020,7 +1129,7 @@ describe('RelayMe provider service', () => {
     const submitted = await service.submitImageJob({
       jobId: 'model-job-v2-relay-image', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
       prompt: '产品海报', conversationId: 'conversation-1', sessionId: 'desktop-session-1', referenceAssetIds: [],
-      aspectRatio: '3:4', resolution: '2K', outputCount: 1,
+      aspectRatio: '3:4', resolution: '2K', quality: 'high', outputCount: 1,
     });
 
     const fetchCalls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
@@ -1028,7 +1137,7 @@ describe('RelayMe provider service', () => {
     const imageSubmission = JSON.parse(String((imageCall?.[1] as { body?: unknown } | undefined)?.body)) as Record<string, unknown>;
     expect(imageSubmission).toMatchObject({
       imageAspectRatio: '3:4',
-      imageQuality: 'medium',
+      imageQuality: 'high',
       imageSampleSize: '2K',
     });
     expect(imageSubmission.imageQuality).not.toBe('2K');
@@ -1077,6 +1186,81 @@ describe('RelayMe provider service', () => {
       status: 'completed', progress: 1, result: { assetId: 'fedcba9876543210' },
     });
     expect(storedImage).toHaveBeenCalledWith('desktop-session-image-url', expect.any(Uint8Array), 'image/png');
+  });
+
+  it('accepts a signed image_url result without treating its query token as a leaked provider secret', async () => {
+    const signedUrl = 'https://cdn.example/result-signed.png?token=opaque-media-signature&expires=1900000000';
+    const storedImage = vi.fn(async () => ({ assetId: 'fedcba9876543211', width: 1024, height: 1024 }));
+    const { service, fetch } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-raw-signed-image-url', status: 'queued' }),
+      jsonResponse({ status: 'COMPLETED', data: [{ image_url: signedUrl }] }),
+      binaryResponse(pngHeaderBytes()),
+    ], { storeGeneratedImage: storedImage });
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-signed-image-url', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'signed image', conversationId: 'conversation-signed-image', sessionId: 'desktop-session-signed-image', referenceAssetIds: [],
+      outputCount: 1,
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toEqual({
+      status: 'completed', progress: 1,
+      result: { assetId: 'fedcba9876543211', width: 1024, height: 1024 },
+    });
+    expect(fetch).toHaveBeenCalledWith(signedUrl, expect.objectContaining({ method: 'GET' }));
+    expect(storedImage).toHaveBeenCalledOnce();
+  });
+
+  it('accepts a signed video_url result without exposing the remote URL in the persisted result', async () => {
+    const signedUrl = 'https://cdn.example/result-signed.mp4?token=opaque-video-signature&expires=1900000000';
+    const storedVideo = vi.fn(async () => ({ assetId: 'fedcba9876543212', width: 1920, height: 1080 }));
+    const { service, fetch } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-raw-signed-video-url', status: 'queued' }),
+      jsonResponse({ status: 'COMPLETED', data: [{ video_url: signedUrl, durationSeconds: 8 }] }),
+      binaryResponse(mp4HeaderBytes()),
+    ], { storeGeneratedVideo: storedVideo });
+    const submitted = await service.submitVideoJob!({
+      jobId: 'model-job-v2-relay-signed-video-url', provider: 'relayme', modelRoute: 'relayme-kling-kling-v3-video-generation',
+      prompt: 'signed video', conversationId: 'conversation-signed-video', sessionId: 'desktop-session-signed-video', referenceAssetIds: [],
+      outputCount: 1,
+    });
+
+    const result = await service.pollVideoJob!({ provider: 'relayme', providerTaskId: submitted.providerTaskId });
+    expect(result).toEqual({
+      status: 'completed', progress: 1,
+      result: { assetId: 'fedcba9876543212', width: 1920, height: 1080, durationSeconds: 8 },
+    });
+    expect(JSON.stringify(result)).not.toContain(signedUrl);
+    expect(fetch).toHaveBeenCalledWith(signedUrl, expect.objectContaining({ method: 'GET' }));
+    expect(storedVideo).toHaveBeenCalledOnce();
+  });
+
+  it('still rejects protected text outside the result URL and inside nested result metadata', async () => {
+    for (const [jobSuffix, unsafeFields] of [
+      ['sibling', { diagnostic: 'token=leaked-provider-secret' }],
+      ['nested', { metadata: { diagnostic: 'Bearer leaked-provider-secret' } }],
+    ] as const) {
+      const storedImage = vi.fn();
+      const { service, fetch } = await createService([
+        modelsResponse(),
+        jsonResponse({ taskId: `relay-raw-unsafe-${jobSuffix}`, status: 'queued' }),
+        jsonResponse({
+          status: 'COMPLETED',
+          data: [{ image_url: 'https://cdn.example/safe-result.png?token=valid-media-signature', ...unsafeFields }],
+        }),
+      ], { storeGeneratedImage: storedImage });
+      const submitted = await service.submitImageJob({
+        jobId: `model-job-v2-relay-unsafe-${jobSuffix}`, provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+        prompt: 'unsafe metadata', conversationId: `conversation-unsafe-${jobSuffix}`,
+        sessionId: `desktop-session-unsafe-${jobSuffix}`, referenceAssetIds: [], outputCount: 1,
+      });
+
+      await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId }))
+        .rejects.toMatchObject({ code: 'PROTECTED_PAYLOAD', retryable: false });
+      expect(storedImage).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledTimes(4);
+    }
   });
 
   it('stores every image returned by a RelayMe multi-image task', async () => {

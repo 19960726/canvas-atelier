@@ -7,11 +7,11 @@ import {
   MAX_GENERATION_REFERENCES,
   reversePromptResultSchema,
   sanitizeModelJobError,
-  supportsVerifiedComflyVideoInputMode,
   type CanvasModuleDefinition,
   type CanvasModuleNodeData,
   type CanvasModulePortDefinition,
   type ModelJob,
+  type ImageQuality,
   type ReverseAgentNodeConfig,
   type ReversePromptResult,
 } from '@agent-canvas/domain';
@@ -22,17 +22,21 @@ import { resolveConnectedReverseMedia } from './reverse-agent-media';
 import { ConnectedAgentMediaSlots, type ConnectedAgentMediaSlotItem } from './ConnectedAgentMediaSlots';
 import { useAppStore } from '../app/app-store';
 import { isRenderableManagedImageUrl } from '../app/managed-image-url';
+import { IMAGE_QUALITY_OPTIONS, imageQualityFromLabel, imageQualityLabel, isGptImageQualityIdentity, normalizeImageQuality, supportsGptImageQuality } from '../app/image-generation-quality';
 import { resolveMediaImportMode } from '../app/media-import-capability';
 import { getActiveProjectSessionId } from '../app/desktop-persistence';
+import { filterModelJobsForProject, modelJobMatchesGenerationDraft, type GenerationJobDraftIdentity } from '../jobs/project-model-jobs';
 import {
   getPhotoshopImportAvailability,
   importGeneratedImageToPhotoshop,
   photoshopImportMessage,
 } from '../app/photoshop-import';
 import { readVideoGenerationResults } from './video-generation-results';
+import { supportsGenerationReferences } from '../agent/generation-preferences';
 import { AspectRatioPopover, ClarityPopover } from './GenerationParameterPopover';
 import { buildReverseResultSections, formatReverseResultDocument } from './reverse-result-sections';
 import { MediaMentionTextarea, type MediaMentionPreview, type MediaMentionSelection } from '../mentions/MediaMentionTextarea';
+import { selectSavedProviderModelDefault } from '../settings/provider-model-defaults';
 
 const executionStateLabels: Record<CanvasModuleNodeData['execution']['state'], string> = {
   idle: '空闲',
@@ -112,7 +116,7 @@ interface ModuleNodeCardProps {
     videoGenerationRoutes?: readonly ImageGenerationRouteSummary[];
     reverseAgentRoutes?: readonly ReverseAgentRouteSummary[];
     storyboardRoutes?: readonly ReverseAgentRouteSummary[];
-    onGenerateImage?: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
+    onGenerateImage?: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; imageQuality?: ImageQuality; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
     onReversePrompt?: (nodeId: string) => Promise<{ positivePrompt: string }>;
     onCancelJob?: (jobId: string) => Promise<void>;
     onGenerateStoryboard?: (nodeId: string, input: { modelRoute: string; script: string; shotCount: number; referenceAssetIds: readonly string[] }) => Promise<boolean>;
@@ -146,11 +150,13 @@ interface ImageGenerationRouteSummary {
 }
 
 const IMAGE_ASPECT_RATIO_OPTIONS = ['自由比例', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'] as const;
-const IMAGE_RESOLUTION_OPTIONS = ['2K', '4K'] as const;
+const IMAGE_RESOLUTION_OPTIONS = ['1K', '2K', '4K'] as const;
+const DEFAULT_IMAGE_RESOLUTION_OPTIONS: readonly typeof IMAGE_RESOLUTION_OPTIONS[number][] = ['2K', '4K'];
+const MEDIA_RESULT_REFRESH_RETRY_DELAYS_MS = [0, 250, 750, 1_500] as const;
 
 function normalizeImageResolutionSelection(value: unknown): typeof IMAGE_RESOLUTION_OPTIONS[number] {
   if (value === 'Auto') return '2K';
-  if (value === '1K') return '2K';
+  if (value === '1K') return '1K';
   if (value === '2K' || value === '1536x1024' || value === '1024x1536') return '2K';
   if (value === '4K') return '4K';
   return '2K';
@@ -259,7 +265,23 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const generateStoryboardNode = useAppStore((state) => state.generateStoryboardNode);
   const cancelModelJob = useAppStore((state) => state.cancelModelJob);
   const project = useAppStore((state) => state.project);
+  const persistenceMode = useAppStore((state) => state.persistenceMode);
   const modelJobs = useAppStore((state) => state.modelJobs);
+  const activeProjectSessionId = persistenceMode === 'desktop' ? getActiveProjectSessionId() : null;
+  const generationDraftIdentity = `${persistenceMode}:${project.id}:${activeProjectSessionId ?? 'no-session'}:${id}`;
+  const projectModelJobs = useMemo(
+    () => {
+      const scopedJobs = filterModelJobsForProject(modelJobs, project, activeProjectSessionId);
+      if (project.nodes.some((node) => node.id === id)) return scopedJobs;
+      // Component-level previews used outside a mounted canvas have no source
+      // node to prove legacy ownership. Keep only their sessionless fixtures;
+      // production canvases always take the scoped branch above.
+      return modelJobs.filter((job) => job.promptNodeId === id
+        && job.projectId === undefined
+        && job.projectSessionId === undefined);
+    },
+    [activeProjectSessionId, id, modelJobs, project],
+  );
   const runReverseAgentNode = useAppStore((state) => state.runReverseAgentNode);
   const knowledgeBases = useAppStore((state) => state.knowledgeBases);
   const toggleNodeLock = useAppStore((state) => state.toggleNodeLock);
@@ -315,10 +337,10 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
     : undefined;
   const hasSelectedVideo = data.moduleType === 'video_input' && selectedVideo !== undefined;
   const activeImageGenerationJob = data.moduleType === 'image_generation'
-    ? modelJobs.find((job) => job.promptNodeId === id && ['queued', 'submitting', 'running'].includes(job.status))
+    ? projectModelJobs.find((job) => job.promptNodeId === id && ['queued', 'submitting', 'running'].includes(job.status))
     : undefined;
   const activeVideoGenerationJob = data.moduleType === 'video_generation'
-    ? modelJobs.find((job) => job.promptNodeId === id && ['queued', 'submitting', 'running'].includes(job.status))
+    ? projectModelJobs.find((job) => job.promptNodeId === id && ['queued', 'submitting', 'running'].includes(job.status))
     : undefined;
   const [fallbackGenerationEditorOpen, setFallbackGenerationEditorOpen] = useState(false);
   const generationEditorExpanded = data.generationEditorExpanded ?? fallbackGenerationEditorOpen;
@@ -481,8 +503,10 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
         <ReverseResultPreview result={upstreamReverseResult} />
       ) : data.moduleType === 'image_generation' ? (
         <ImageGenerationSummary
+          key={`image:${generationDraftIdentity}`}
           id={id}
           config={data.config}
+          modelJobs={projectModelJobs}
           projectImages={projectImages}
           projectVideos={projectVideos}
           connectedMedia={connectedImageGenerationMedia}
@@ -499,8 +523,10 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
         />
       ) : data.moduleType === 'video_generation' ? (
         <VideoGenerationSummary
+          key={`video:${generationDraftIdentity}`}
           id={id}
           config={data.config}
+          modelJobs={projectModelJobs}
           projectImages={projectImages}
           projectVideos={projectVideos}
           connectedMedia={connectedVideoMedia}
@@ -517,7 +543,9 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
         />
       ) : data.moduleType === 'reverse_agent' ? (
         <ReverseAgentSummary
+          key={`reverse:${generationDraftIdentity}`}
           id={id}
+          draftOwnerIdentity={generationDraftIdentity}
           label={definition.primaryName}
           config={data.config}
           projectImages={projectImages}
@@ -532,6 +560,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
         />
       ) : data.moduleType === 'storyboard_sheet' ? (
         <StoryboardSheetSummary
+          key={`storyboard:${generationDraftIdentity}`}
           id={id}
           config={data.config}
           routes={data.storyboardRoutes ?? []}
@@ -596,7 +625,7 @@ function StoryboardSheetSummary({
   config: Record<string, unknown>;
   routes: readonly ReverseAgentRouteSummary[];
   onRun: (nodeId: string, input: { readonly modelRoute: string; readonly script: string; readonly shotCount: number; readonly referenceAssetIds: readonly string[] }) => Promise<boolean>;
-  onGenerateImage: (nodeId: string, input: { prompt: string; aspectRatio?: string; resolution?: string; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
+  onGenerateImage: (nodeId: string, input: { prompt: string; aspectRatio?: string; resolution?: string; imageQuality?: ImageQuality; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
 }) {
   const projectNodes = useAppStore((state) => state.project.nodes);
   const projectImages = useAppStore((state) => state.projectImages);
@@ -680,6 +709,7 @@ function StoryboardSheetSummary({
 function VideoGenerationSummary({
   id,
   config,
+  modelJobs,
   projectImages,
   projectVideos,
   connectedMedia,
@@ -696,6 +726,7 @@ function VideoGenerationSummary({
 }: {
   id: string;
   config: Record<string, unknown>;
+  modelJobs: readonly ModelJob[];
   projectImages: readonly ProjectImageAssetSummary[];
   projectVideos: readonly ProjectVideoAssetSummary[];
   connectedMedia: readonly OrderedMediaSummary[];
@@ -720,6 +751,8 @@ function VideoGenerationSummary({
   onRequestExpand: () => void;
   onRequestCollapse: () => void;
 }) {
+  const activeProjectId = useAppStore((state) => state.project.id);
+  const refreshProjectImages = useAppStore((state) => state.refreshProjectImages);
   const collapsedActivation = useDragSafeActivation(onRequestExpand);
   const connectedImages = useMemo(() => connectedMedia
     .filter((item) => item.kind === 'image')
@@ -741,8 +774,9 @@ function VideoGenerationSummary({
   const compatibleRoutes = useMemo(() => {
     if (sourceVideoAssetId !== undefined) return [];
     if (effectiveReferenceAssetIds.length === 0) return videoGenerationRoutes;
-    return videoGenerationRoutes.filter((route) => route.provider === 'comfly'
-      && supportsVerifiedComflyVideoInputMode(route.modelId ?? route.modelRoute, effectiveReferenceAssetIds.length));
+    return videoGenerationRoutes.filter((route) => (
+      supportsGenerationReferences(route, 'video', effectiveReferenceAssetIds.length)
+    ));
   }, [effectiveReferenceAssetIds, sourceVideoAssetId, videoGenerationRoutes]);
   const [modelRoute, setModelRoute] = useExternallyHydratedDraftState(readNonEmptyString(config.modelRoute) ?? compatibleRoutes[0]?.modelRoute ?? '');
   const [aspectRatio, setAspectRatio] = useExternallyHydratedDraftState(readNonEmptyString(config.aspectRatio) ?? '16:9');
@@ -754,19 +788,25 @@ function VideoGenerationSummary({
   const draftGenerationNodeConfig = useAppStore((state) => state.draftGenerationNodeConfig);
   const selectedVideoRoute = compatibleRoutes.find((route) => route.modelRoute === modelRoute);
   const videoConstraints = selectedVideoRoute?.constraints?.video;
+  const isJulunVideoRoute = selectedVideoRoute?.provider === 'julun';
+  const effectiveAudioEnabled = isJulunVideoRoute ? false : audioEnabled;
   const constrainedVideoAspectRatios = videoConstraints?.aspectRatios?.filter((value): value is Exclude<typeof VIDEO_ASPECT_RATIO_OPTIONS[number], 'Auto'> => VIDEO_ASPECT_RATIO_OPTIONS.includes(value as never));
   const videoAspectRatioOptions: (typeof VIDEO_ASPECT_RATIO_OPTIONS[number])[] = constrainedVideoAspectRatios?.length
-    ? ['Auto', ...constrainedVideoAspectRatios]
+    ? (isJulunVideoRoute ? [...constrainedVideoAspectRatios] : ['Auto', ...constrainedVideoAspectRatios])
     : [...VIDEO_ASPECT_RATIO_OPTIONS];
   const constrainedVideoResolutions = videoConstraints?.resolutions?.filter((value): value is typeof VIDEO_RESOLUTION_OPTIONS[number] => VIDEO_RESOLUTION_OPTIONS.includes(value as never));
   const videoResolutionOptions: (typeof VIDEO_RESOLUTION_OPTIONS[number])[] = constrainedVideoResolutions?.length
     ? constrainedVideoResolutions
     : [...VIDEO_RESOLUTION_OPTIONS];
   const videoDurationOptions = durationOptions(videoConstraints?.duration);
+  const videoDurationDefault = videoConstraints?.duration?.defaultValue;
+  const videoDurationFallback = videoDurationDefault !== undefined && videoDurationOptions.includes(videoDurationDefault)
+    ? videoDurationDefault
+    : videoDurationOptions[0] ?? 4;
   const videoOutputCountOptions: (1 | 2 | 3 | 4)[] = videoConstraints?.outputCounts?.length
     ? [...videoConstraints.outputCounts]
     : [...IMAGE_OUTPUT_COUNT_OPTIONS];
-  const videoOptionsKey = [videoAspectRatioOptions.join('|'), videoResolutionOptions.join('|'), videoDurationOptions.join('|'), videoOutputCountOptions.join('|')].join('::');
+  const videoOptionsKey = [videoAspectRatioOptions.join('|'), videoResolutionOptions.join('|'), videoDurationOptions.join('|'), videoDurationFallback, videoOutputCountOptions.join('|')].join('::');
   useEffect(() => {
     const nextReferenceAssetIds = readStringArray(config.referenceAssetIds);
     setMentionedReferenceAssetIds((current) => stringArraysEqual(current, nextReferenceAssetIds) ? current : nextReferenceAssetIds);
@@ -774,7 +814,7 @@ function VideoGenerationSummary({
   useEffect(() => {
     if (!videoAspectRatioOptions.includes(aspectRatio as never)) setAspectRatio(videoAspectRatioOptions[0] ?? 'Auto');
     if (!videoResolutionOptions.includes(resolution as never)) setResolution(videoResolutionOptions[0] ?? '720p');
-    if (!videoDurationOptions.includes(durationSeconds)) setDurationSeconds(videoDurationOptions[0] ?? 4);
+    if (!videoDurationOptions.includes(durationSeconds)) setDurationSeconds(videoDurationFallback);
     if (!videoOutputCountOptions.includes(outputCount)) setOutputCount(videoOutputCountOptions[0] ?? 1);
   }, [modelRoute, videoOptionsKey]);
   useEffect(() => {
@@ -803,10 +843,10 @@ function VideoGenerationSummary({
       durationSeconds,
       resolution,
       outputCount,
-      audioEnabled,
+      audioEnabled: effectiveAudioEnabled,
     };
     void persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, draft));
-  }, [aspectRatio, audioEnabled, draftGenerationNodeConfig, durationSeconds, id, keyframe, modelRoute, outputCount, prompt, resolution]);
+  }, [aspectRatio, draftGenerationNodeConfig, durationSeconds, effectiveAudioEnabled, id, keyframe, modelRoute, outputCount, prompt, resolution]);
   const persistVideoPromptDraft = (nextPrompt: string) => persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, {
     prompt: nextPrompt,
     modelRoute,
@@ -815,12 +855,13 @@ function VideoGenerationSummary({
     durationSeconds,
     resolution,
     outputCount,
-    audioEnabled,
+    audioEnabled: effectiveAudioEnabled,
   }));
-  const modelJobs = useAppStore((state) => state.modelJobs);
-  const latestVideoJob = selectLatestGenerationJob(modelJobs, id, 'video');
+  const videoDraftIdentity: GenerationJobDraftIdentity = {
+    kind: 'video', prompt, modelRoute, aspectRatio, resolution, durationSeconds, audioEnabled: effectiveAudioEnabled,
+  };
   const failedVideoJobError = formatGenerationJobError(
-    latestVideoJob?.status === 'failed' ? latestVideoJob : undefined,
+    selectLatestFailedGenerationJob(modelJobs, id, videoDraftIdentity),
     'video',
   );
   const liveVideoResults = useMemo(() => selectLatestCompletedGenerationJobs(modelJobs, id, 'video')
@@ -833,6 +874,44 @@ function VideoGenerationSummary({
       videoUrl: asset.displayUrl,
     })), [id, modelJobs, projectVideos]);
   const configuredVideoResults = useMemo(() => readVideoGenerationResults(config), [config]);
+  const expectedVideoResultAssetIds = useMemo(
+    () => configuredVideoResults.map((item) => item.assetId),
+    [configuredVideoResults],
+  );
+  const missingVideoResultAssetIds = useMemo(() => expectedVideoResultAssetIds.filter((assetId) => (
+    !projectVideos.some((asset) => asset.assetId === assetId)
+  )), [expectedVideoResultAssetIds, projectVideos]);
+  const videoResultRefreshKey = missingVideoResultAssetIds.join('|');
+  const [videoResultRefreshRetryVersion, setVideoResultRefreshRetryVersion] = useState(0);
+  const [exhaustedVideoResultRefreshKey, setExhaustedVideoResultRefreshKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (videoResultRefreshKey.length === 0) {
+      setExhaustedVideoResultRefreshKey(null);
+      return;
+    }
+    setExhaustedVideoResultRefreshKey(null);
+    let cancelled = false;
+    const targetAssetIds = videoResultRefreshKey.split('|');
+    void (async () => {
+      for (const delayMs of MEDIA_RESULT_REFRESH_RETRY_DELAYS_MS) {
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        try {
+          await refreshProjectImages();
+        } catch {
+          // A later bounded attempt can recover a transient media-bridge failure.
+        }
+        if (cancelled) return;
+        const availableAssetIds = new Set(useAppStore.getState().projectVideos.map((asset) => asset.assetId));
+        if (targetAssetIds.every((assetId) => availableAssetIds.has(assetId))) return;
+      }
+      if (!cancelled) setExhaustedVideoResultRefreshKey(videoResultRefreshKey);
+    })();
+    return () => { cancelled = true; };
+  }, [activeProjectId, refreshProjectImages, videoResultRefreshKey, videoResultRefreshRetryVersion]);
+  const videoResultRefreshFailed = videoResultRefreshKey.length > 0
+    && exhaustedVideoResultRefreshKey === videoResultRefreshKey;
+  const retryVideoResultRefresh = () => setVideoResultRefreshRetryVersion((current) => current + 1);
   const durableVideoResults = useMemo(() => configuredVideoResults.map((item) => {
     const asset = projectVideos.find((candidate) => candidate.assetId === item.assetId);
     return asset === undefined
@@ -853,18 +932,27 @@ function VideoGenerationSummary({
     return isRenderableManagedImageUrl(posterAsset?.displayUrl, posterAsset?.assetId) ? posterAsset.displayUrl : undefined;
   };
   const resolveVideoResultUrl = (item: (typeof completedVideoResults)[number]) => 'videoUrl' in item ? item.videoUrl : undefined;
-  const hasCompletedResult = completedVideoResults.length > 0;
-  const videoTimingJob = selectGenerationTimingJob(modelJobs, id, 'video', durableVideoResults.length > 0);
+  const visibleVideoResults = completedVideoResults.filter((item) => (
+    resolveVideoResultUrl(item) !== undefined || resolveVideoResultPoster(item) !== undefined
+  ));
+  const hasCompletedResult = visibleVideoResults.length > 0;
+  const videoTimingJob = selectGenerationTimingJob(modelJobs, id, 'video', durableVideoResults.length > 0, videoDraftIdentity);
   const videoGenerationError = runError ?? failedVideoJobError;
-  const result = hasCompletedResult ? '视频结果已就绪' : '等待生成';
+  const result = videoResultRefreshFailed
+    ? '返回视频加载失败'
+    : videoResultRefreshKey.length > 0
+      ? '正在加载返回视频'
+      : hasCompletedResult
+        ? '视频结果已就绪'
+        : '等待生成';
   return (
-    <section className="module-node__summary module-node__summary--compact module-node__summary--generation" data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedResult ? 'true' : 'false'} data-result-count={hasCompletedResult ? Math.min(completedVideoResults.length, 4) : undefined} data-result-orientation={hasCompletedResult ? 'landscape' : undefined} aria-label="视频模拟预览">
+    <section className="module-node__summary module-node__summary--compact module-node__summary--generation" data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedResult ? 'true' : 'false'} data-result-count={hasCompletedResult ? Math.min(visibleVideoResults.length, 4) : undefined} data-result-orientation={hasCompletedResult ? 'landscape' : undefined} aria-label="视频模拟预览">
       <TaskTimingBadge ariaLabel="Video generation task timing" job={videoTimingJob} />
       {!expanded && <section className="module-node__generation-collapsed-shell nopan" aria-label="Video generation preview">
         <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nopan" aria-label="Open video generation editor" aria-expanded={expanded} title="点击展开" {...collapsedActivation}>
           <span className="module-node__generation-collapsed-title">视频生成</span>
-          {hasCompletedResult ? <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${completedVideoResults.length} module-node__generation-preview-gallery--collapsed`}>
-            {completedVideoResults.map((item, index) => (
+          {hasCompletedResult ? <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${visibleVideoResults.length} module-node__generation-preview-gallery--collapsed`}>
+            {visibleVideoResults.map((item, index) => (
               <div key={item.assetId} className="module-node__generation-preview-item" aria-label={`Generated video preview ${index + 1}`}>
                   {resolveVideoResultPoster(item)
                     ? <img src={resolveVideoResultPoster(item)} alt={`Generated video preview ${index + 1}`} draggable={false} loading="lazy" decoding="async" />
@@ -877,6 +965,10 @@ function VideoGenerationSummary({
           </div> : <Video aria-hidden="true" size={34} strokeWidth={1.4} />}
         </button>
         {videoGenerationError !== null && <p className="module-node__generation-error" role="alert">{videoGenerationError}</p>}
+        {videoResultRefreshFailed && <div className="module-node__generation-error module-node__generation-error--collapsed-result-refresh nodrag nopan" role="alert" onPointerDown={stopCanvasPointer}>
+          <span>返回视频加载失败，请重新加载；不会重复提交生成任务。</span>
+          <button type="button" aria-label="重新加载返回视频" onClick={(event) => { event.stopPropagation(); retryVideoResultRefresh(); }}>重新加载返回视频</button>
+        </div>}
         {!expanded && !hasCompletedResult && hasConnectedMedia && <ConnectedMediaSlots
           ariaLabel="Connected video media"
           slotRowAriaLabel="Video preview reference slots"
@@ -898,6 +990,10 @@ function VideoGenerationSummary({
         status={result}
         resultBeforeConfiguration={hasCompletedResult}
         configuration={<section className="module-node__video-composer nodrag nopan" aria-label="Video generation composer" onPointerDown={stopCanvasPointer}>
+          {videoResultRefreshFailed && <div className="module-node__generation-error nodrag nopan" role="alert" onPointerDown={stopCanvasPointer}>
+            <span>返回视频加载失败，请重新加载；不会重复提交生成任务。</span>
+            <button type="button" aria-label="重新加载返回视频" onClick={retryVideoResultRefresh}>重新加载返回视频</button>
+          </div>}
           {expanded && hasConnectedMedia && <ConnectedMediaSlots
             ariaLabel="Connected video media editor"
             slotRowAriaLabel="Video editor reference slots"
@@ -974,7 +1070,10 @@ function VideoGenerationSummary({
               onResolutionChange={(value) => setResolution(normalizeVideoResolutionSelection(value))}
               durationSeconds={durationSeconds}
               onDurationChange={setDurationSeconds}
-              audioEnabled={audioEnabled}
+              durationOptions={videoDurationOptions}
+              durationConstrained={videoConstraints?.duration !== undefined}
+              audioEnabled={effectiveAudioEnabled}
+              audioSupported={!isJulunVideoRoute}
               onAudioChange={setAudioEnabled}
               outputCount={outputCount}
               onOutputCountChange={setOutputCount}
@@ -992,10 +1091,10 @@ function VideoGenerationSummary({
             <select className="nodrag nopan module-node__video-duration-fallback module-node__video-fallback-control" aria-label="Video preview duration" value={durationSeconds} onPointerDown={stopCanvasPointer} onChange={(event) => setDurationSeconds(Number(event.target.value))}>
               {videoDurationOptions.map((value) => <option key={value} value={value}>{value === 0 ? '模型默认' : `${value}秒`}</option>)}
             </select>
-            <select className="nodrag nopan module-node__video-fallback-control" aria-label="Video preview audio" value={audioEnabled ? 'on' : 'off'} onPointerDown={stopCanvasPointer} onChange={(event) => setAudioEnabled(event.target.value === 'on')}>
+            {!isJulunVideoRoute && <select className="nodrag nopan module-node__video-fallback-control" aria-label="Video preview audio" value={audioEnabled ? 'on' : 'off'} onPointerDown={stopCanvasPointer} onChange={(event) => setAudioEnabled(event.target.value === 'on')}>
               <option value="on">生成音频：开</option>
               <option value="off">生成音频：关</option>
-            </select>
+            </select>}
             <select className="nodrag nopan module-node__video-fallback-control" aria-label="Video preview quantity" title="生成数量，最多 4 个视频" value={outputCount} onPointerDown={stopCanvasPointer} onChange={(event) => setOutputCount(readSupportedImageCount(Number(event.target.value)))}>
               {videoOutputCountOptions.map((value) => <option key={value} value={value}>{value} 个</option>)}
             </select>
@@ -1021,7 +1120,7 @@ function VideoGenerationSummary({
                   durationSeconds,
                   resolution,
                   outputCount,
-                  audioEnabled,
+                  audioEnabled: effectiveAudioEnabled,
                 }).then((started) => {
                   if (!started) setRunError('视频生成未启动，请检查模型、API 密钥和输入后重试。');
                 }).catch((error) => {
@@ -1035,8 +1134,8 @@ function VideoGenerationSummary({
           {videoGenerationError !== null && <p role="alert">{videoGenerationError}</p>}
         </section>}
         result={hasCompletedResult ? <div className="module-node__result-workspace module-node__video-result-workspace" aria-label="Video preview result workspace">
-          <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${completedVideoResults.length}`} aria-label="Completed video results">
-            {completedVideoResults.map((item, index) => (
+          <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${visibleVideoResults.length}`} aria-label="Completed video results">
+            {visibleVideoResults.map((item, index) => (
               <div key={item.assetId} className="module-node__generation-preview-item module-node__video-result-stage" aria-label={`Completed video result ${index + 1}`} data-aspect-ratio="16:9" onClick={(event) => { const media = event.currentTarget.querySelector('video'); if (media instanceof HTMLVideoElement) { if (media.paused) void media.play(); else media.pause(); } }}>
                   {resolveVideoResultUrl(item)
                     ? <video src={resolveVideoResultUrl(item)} poster={resolveVideoResultPoster(item)} aria-label={`Completed video result ${index + 1} video`} controls playsInline preload="metadata" onClick={(event) => { event.stopPropagation(); const media = event.currentTarget; if (media.paused) void media.play(); else media.pause(); }} />
@@ -1055,6 +1154,7 @@ function VideoGenerationSummary({
 function ImageGenerationSummary({
   id,
   config,
+  modelJobs,
   projectImages,
   projectVideos,
   connectedMedia,
@@ -1071,13 +1171,14 @@ function ImageGenerationSummary({
 }: {
   id: string;
   config: Record<string, unknown>;
+  modelJobs: readonly ModelJob[];
   projectImages: readonly ProjectImageAssetSummary[];
   projectVideos: readonly ProjectVideoAssetSummary[];
   connectedMedia: readonly OrderedMediaSummary[];
   hasConnectedReference: boolean;
   routes: readonly ImageGenerationRouteSummary[];
   executionState: CanvasModuleNodeData['execution']['state'];
-  onRun: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
+  onRun: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; imageQuality?: ImageQuality; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
   activeJobId?: string;
   onCancel: (jobId: string) => Promise<void>;
   onReorderMedia: (edgeIds: string[]) => Promise<boolean>;
@@ -1100,30 +1201,42 @@ function ImageGenerationSummary({
   // Generated results belong to the formal job store.  Reading them here keeps
   // the four-up Canvas preview in sync with real completed jobs, rather than
   // relying on stale presentation metadata saved on the node.
-  const modelJobs = useAppStore((state) => state.modelJobs);
+  const activeProjectId = useAppStore((state) => state.project.id);
+  const refreshProjectImages = useAppStore((state) => state.refreshProjectImages);
+  const refreshModelJobs = useAppStore((state) => state.refreshModelJobs);
   const latestImageJob = selectLatestGenerationJob(modelJobs, id, 'image');
   const hasReferenceInput = connectedReferenceAssetIds.length > 0 || mentionedReferenceAssetIds.length > 0;
   const imageGenerationRoutes = useMemo(
-    () => dedupeVisibleModelRoutes(routes.filter((route) => route.capabilities.includes('image_generation'))),
+    () => routes.filter((route) => route.capabilities.includes('image_generation') && route.capabilityStatus !== 'incomplete'),
     [routes],
   );
-  const compatibleRoutes = useMemo(
+  const compatibleImageRoutes = useMemo(
     () => hasReferenceInput
       ? imageGenerationRoutes.filter((route) => route.capabilities.includes('image_edit') || route.capabilities.includes('gemini_native'))
       : imageGenerationRoutes,
     [hasReferenceInput, imageGenerationRoutes],
   );
   const [localGenerationStartedAt, setLocalGenerationStartedAt] = useState<string | null>(null);
-  const [modelRoute, setModelRoute] = useExternallyHydratedDraftState(
-    readNonEmptyString(config.modelRoute) ?? preferredImageGenerationRoute(compatibleRoutes)?.modelRoute ?? '',
+  const configuredModelRoute = readNonEmptyString(config.modelRoute) ?? '';
+  const configuredModelDisplayName = readNonEmptyString(config.modelDisplayName) ?? readNonEmptyString(config.routeDisplayName) ?? '';
+  const [modelRoute, setModelRoute, hydrateModelRoute] = useExternallyHydratedDraftState(
+    configuredModelRoute || preferredImageGenerationRoute(dedupeVisibleModelRoutes(compatibleImageRoutes))?.modelRoute || '',
+  );
+  const compatibleRoutes = useMemo(
+    () => dedupeVisibleModelRoutes(compatibleImageRoutes, modelRoute),
+    [compatibleImageRoutes, modelRoute],
   );
   const modelRouteRef = useRef(modelRoute);
   modelRouteRef.current = modelRoute;
   const [aspectRatio, setAspectRatio] = useExternallyHydratedDraftState(readSupportedImageString(config.aspectRatio, IMAGE_ASPECT_RATIO_OPTIONS, '1:1'));
   const [resolution, setResolution] = useExternallyHydratedDraftState(normalizeImageResolutionSelection(config.resolution));
+  const [imageQuality, setImageQuality] = useExternallyHydratedDraftState(normalizeImageQuality(config.imageQuality) ?? 'medium');
   const [outputCount, setOutputCount] = useExternallyHydratedDraftState(readSupportedImageCount(config.outputCount));
   const draftGenerationNodeConfig = useAppStore((state) => state.draftGenerationNodeConfig);
   const selectedImageRoute = compatibleRoutes.find((route) => route.modelRoute === modelRoute);
+  const hasGptImageQuality = supportsGptImageQuality(selectedImageRoute)
+    || (selectedImageRoute === undefined && isGptImageQualityIdentity(modelRoute, configuredModelRoute, configuredModelDisplayName));
+  const effectiveImageQuality = hasGptImageQuality ? imageQuality : undefined;
   const imageConstraints = selectedImageRoute?.constraints?.image;
   const imageAspectRatioOptions: (typeof IMAGE_ASPECT_RATIO_OPTIONS[number])[] = imageConstraints?.aspectRatios?.length
     ? ['自由比例', ...imageConstraints.aspectRatios.filter((value): value is Exclude<typeof IMAGE_ASPECT_RATIO_OPTIONS[number], '自由比例'> => IMAGE_ASPECT_RATIO_OPTIONS.includes(value as never))]
@@ -1131,27 +1244,46 @@ function ImageGenerationSummary({
   const constrainedImageResolutions = imageConstraints?.resolutions?.filter((value): value is typeof IMAGE_RESOLUTION_OPTIONS[number] => IMAGE_RESOLUTION_OPTIONS.includes(value as never));
   const imageResolutionOptions: (typeof IMAGE_RESOLUTION_OPTIONS[number])[] = constrainedImageResolutions?.length
     ? constrainedImageResolutions
-    : [...IMAGE_RESOLUTION_OPTIONS];
+    : [...DEFAULT_IMAGE_RESOLUTION_OPTIONS];
   const effectiveImageResolution = imageResolutionOptions.includes(resolution as never) ? resolution : imageResolutionOptions[0] ?? '2K';
-  const imageOutputCountOptions: (1 | 2 | 3 | 4)[] = [...IMAGE_OUTPUT_COUNT_OPTIONS];
+  const constrainedImageOutputCounts = imageConstraints?.outputCounts?.filter((value): value is typeof IMAGE_OUTPUT_COUNT_OPTIONS[number] => (
+    IMAGE_OUTPUT_COUNT_OPTIONS.includes(value as never)
+  ));
+  const imageOutputCountOptions: (1 | 2 | 3 | 4)[] = constrainedImageOutputCounts?.length
+    ? [...constrainedImageOutputCounts]
+    : [...IMAGE_OUTPUT_COUNT_OPTIONS];
   const imageOptionsKey = [imageAspectRatioOptions.join('|'), imageResolutionOptions.join('|'), imageOutputCountOptions.join('|')].join('::');
+  useEffect(() => {
+    if (configuredModelRoute.length === 0) return;
+    hydrateModelRoute((current) => current === configuredModelRoute ? current : configuredModelRoute);
+  }, [configuredModelRoute, hydrateModelRoute]);
   useEffect(() => {
     const nextReferenceAssetIds = readStringArray(config.referenceAssetIds);
     setMentionedReferenceAssetIds((current) => stringArraysEqual(current, nextReferenceAssetIds) ? current : nextReferenceAssetIds);
   }, [config.referenceAssetIds]);
   useEffect(() => {
     if (!imageAspectRatioOptions.includes(aspectRatio as never)) setAspectRatio(imageAspectRatioOptions[0] ?? '1:1');
-    if (!imageResolutionOptions.includes(resolution)) setResolution('2K');
+    if (!imageResolutionOptions.includes(resolution)) setResolution(imageResolutionOptions[0] ?? '2K');
     if (!imageOutputCountOptions.includes(outputCount)) setOutputCount(imageOutputCountOptions[0] ?? 1);
   }, [modelRoute, imageOptionsKey]);
+  useEffect(() => {
+    if (selectedImageRoute !== undefined && !hasGptImageQuality && imageQuality !== 'medium') setImageQuality('medium');
+  }, [hasGptImageQuality, imageQuality, selectedImageRoute, setImageQuality]);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [previewActionMenu, setPreviewActionMenu] = useState<{ index: number; x: number; y: number } | null>(null);
   useEffect(() => {
     if (compatibleRoutes.length === 0) return;
+    // Keep a durable route while the provider catalog is still catching up.
+    // Replacing it with the first visible family variant here would persist
+    // the fallback and make the saved image look like it needs reconfiguration.
+    if (configuredModelRoute.length > 0
+      && configuredModelDisplayName.length > 0
+      && compatibleRoutes.some((route) => route.displayName === configuredModelDisplayName)
+      && !compatibleRoutes.some((route) => route.modelRoute === configuredModelRoute)) return;
     setModelRoute((current) => compatibleRoutes.some((route) => route.modelRoute === current)
       ? current
       : preferredImageGenerationRoute(compatibleRoutes)?.modelRoute ?? '');
-  }, [compatibleRoutes]);
+  }, [compatibleRoutes, configuredModelDisplayName, configuredModelRoute]);
   useEffect(() => {
     if (activeJobId !== undefined) setLocalGenerationStartedAt(null);
   }, [activeJobId]);
@@ -1161,34 +1293,104 @@ function ImageGenerationSummary({
       modelRoute,
       aspectRatio,
       resolution: effectiveImageResolution,
+      imageQuality: effectiveImageQuality,
       outputCount,
     };
     void persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, draft));
-  }, [aspectRatio, draftGenerationNodeConfig, effectiveImageResolution, id, modelRoute, outputCount, prompt]);
+  }, [aspectRatio, draftGenerationNodeConfig, effectiveImageQuality, effectiveImageResolution, id, modelRoute, outputCount, prompt]);
   const persistImagePromptDraft = (nextPrompt: string) => persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, {
     prompt: nextPrompt,
     modelRoute,
     aspectRatio,
     resolution: effectiveImageResolution,
+    imageQuality: effectiveImageQuality,
     outputCount,
   }));
+  const imageDraftIdentity: GenerationJobDraftIdentity = {
+    kind: 'image', prompt, modelRoute, aspectRatio, resolution: effectiveImageResolution, imageQuality: effectiveImageQuality,
+  };
+  const failedJobError = formatGenerationJobError(selectLatestFailedGenerationJob(modelJobs, id, imageDraftIdentity));
+  const completedImageJobs = useMemo(() => selectLatestCompletedGenerationJobs(modelJobs, id, 'image'), [id, modelJobs]);
+  const persistedResultAssetIds = useMemo(() => readStringArray(config.resultAssetIds), [config.resultAssetIds]);
+  const completedJobResultAssetIds = useMemo(() => [...new Set(completedImageJobs.flatMap((job) => (
+    job.resultAssetIds ?? (job.resultAssetId === undefined ? [] : [job.resultAssetId])
+  )))].slice(0, 4), [completedImageJobs]);
+  // A completed job is stored in one queue shared by every canvas. The
+  // durable node config is the project-owned source of truth for which image
+  // summaries this node may fetch after completion.
+  const expectedResultAssetIds = useMemo(() => (
+    persistedResultAssetIds.length > 0
+      ? [...new Set(persistedResultAssetIds)].slice(-4)
+      : completedJobResultAssetIds
+  ), [completedJobResultAssetIds, persistedResultAssetIds]);
+  const reportsCompletedImageResult = executionState === 'completed' || config.resultState === 'fresh';
+  const missingResultRecord = reportsCompletedImageResult && expectedResultAssetIds.length === 0;
+  const missingResultAssetIds = useMemo(() => expectedResultAssetIds.filter((assetId) => (
+    !projectImages.some((asset) => (
+      asset.assetId === assetId && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)
+    ))
+  )), [expectedResultAssetIds, projectImages]);
+  const resultRefreshKey = missingResultAssetIds.join('|');
+  const [resultRefreshRetryVersion, setResultRefreshRetryVersion] = useState(0);
+  const [exhaustedResultRefreshKey, setExhaustedResultRefreshKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (resultRefreshKey.length === 0) {
+      setExhaustedResultRefreshKey(null);
+      return;
+    }
+    setExhaustedResultRefreshKey(null);
+    let cancelled = false;
+    const targetAssetIds = resultRefreshKey.split('|');
+    void (async () => {
+      for (const delayMs of MEDIA_RESULT_REFRESH_RETRY_DELAYS_MS) {
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        try {
+          await refreshProjectImages();
+        } catch {
+          // The next bounded attempt can recover a transient bridge failure.
+        }
+        if (cancelled) return;
+        const refreshedImages = useAppStore.getState().projectImages;
+        if (targetAssetIds.every((assetId) => refreshedImages.some((asset) => (
+          asset.assetId === assetId && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)
+        )))) return;
+      }
+      if (!cancelled) setExhaustedResultRefreshKey(resultRefreshKey);
+    })();
+    return () => { cancelled = true; };
+  }, [activeProjectId, refreshProjectImages, resultRefreshKey, resultRefreshRetryVersion]);
+  const resultRefreshFailed = resultRefreshKey.length > 0 && exhaustedResultRefreshKey === resultRefreshKey;
+  const resultRecoveryFailed = resultRefreshFailed || missingResultRecord;
+  const retryResultRefresh = () => {
+    void (async () => {
+      if (missingResultRecord) {
+        try { await refreshModelJobs(); } catch { /* The media refresh can still recover a durable node result. */ }
+        try { await refreshProjectImages(); } catch { /* Keep the explicit recovery state available for another retry. */ }
+      }
+      setResultRefreshRetryVersion((current) => current + 1);
+    })();
+  };
   const statusLabel = activeJobId !== undefined
     ? '生成中'
-    : executionState === 'completed' || config.resultState === 'fresh'
-      ? '结果已就绪'
-      : compatibleRoutes.length === 0 || prompt.trim().length === 0
-        ? '待配置'
-        : '等待生成';
-  const failedJobError = formatGenerationJobError(selectLatestFailedGenerationJob(modelJobs, id, 'image', modelRoute));
-  const generatedPreviewAssets = useMemo(() => selectLatestCompletedGenerationJobs(modelJobs, id, 'image')
+    : resultRecoveryFailed
+      ? '返图加载失败'
+      : resultRefreshKey.length > 0
+        ? '正在加载返回图片'
+      : executionState === 'completed' || config.resultState === 'fresh'
+        ? '结果已就绪'
+        : compatibleRoutes.length === 0 || !compatibleRoutes.some((route) => route.modelRoute === modelRoute) || prompt.trim().length === 0
+          ? '待配置'
+          : '等待生成';
+  const generatedPreviewAssets = useMemo(() => completedImageJobs
     .map((job) => projectImages.find((asset) => asset.assetId === job.resultAssetId))
-    .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [id, modelJobs, projectImages]);
-  const durablePreviewAssets = useMemo(() => readStringArray(config.resultAssetIds)
+    .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [completedImageJobs, projectImages]);
+  const durablePreviewAssets = useMemo(() => persistedResultAssetIds
     .slice(0, 4)
     .map((assetId) => projectImages.find((asset) => asset.assetId === assetId))
-    .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [config.resultAssetIds, projectImages]);
+    .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [persistedResultAssetIds, projectImages]);
   const previewItems = durablePreviewAssets.length > 0 ? durablePreviewAssets : generatedPreviewAssets;
-  const hasCompletedImageResult = executionState === 'completed' || config.resultState === 'fresh' || generatedPreviewAssets.length > 0;
+  const hasCompletedImageResult = previewItems.length > 0;
   const completedImageOrientation = previewItems.length !== 1
     ? 'grid'
     : (previewItems[0]?.height ?? 1) > (previewItems[0]?.width ?? 1) * 1.08
@@ -1196,7 +1398,7 @@ function ImageGenerationSummary({
       : (previewItems[0]?.width ?? 1) > (previewItems[0]?.height ?? 1) * 1.08
         ? 'landscape'
         : 'square';
-  const imageTimingJob = selectGenerationTimingJob(modelJobs, id, 'image', durablePreviewAssets.length > 0);
+  const imageTimingJob = selectGenerationTimingJob(modelJobs, id, 'image', durablePreviewAssets.length > 0, imageDraftIdentity);
   const activePreviewAsset = previewIndex === null ? undefined : previewItems[previewIndex];
   const actionPreviewAsset = previewActionMenu === null ? undefined : previewItems[previewActionMenu.index];
   useEffect(() => {
@@ -1243,7 +1445,7 @@ function ImageGenerationSummary({
     setLocalGenerationStartedAt(new Date().toISOString());
     if (runnableModelRoute !== modelRoute) setModelRoute(runnableModelRoute);
     const requestedAspectRatio = aspectRatio === '自由比例' ? resolveAutomaticImageAspectRatio(connectedMedia, projectImages) : aspectRatio;
-    void onRun(id, { prompt: prompt.trim(), ...(runnableModelRoute ? { modelRoute: runnableModelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), resolution: effectiveImageResolution, outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
+    void onRun(id, { prompt: prompt.trim(), ...(runnableModelRoute ? { modelRoute: runnableModelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), resolution: effectiveImageResolution, ...(effectiveImageQuality === undefined ? {} : { imageQuality: effectiveImageQuality }), outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
       if (!started) {
         setLocalGenerationStartedAt(null);
         setRunError('生成未启动，请检查当前项目保存状态和模型选择后重试。');
@@ -1286,6 +1488,10 @@ function ImageGenerationSummary({
             ))}
           </div> : <ImageIcon aria-hidden="true" size={34} strokeWidth={1.4} />}        </button>
         {imageGenerationError !== null && <div className="module-node__generation-error" role="alert">{imageGenerationError}</div>}
+        {resultRecoveryFailed && <div className="module-node__generation-error module-node__generation-error--collapsed-result-refresh nodrag nopan" role="alert" onPointerDown={stopCanvasPointer}>
+          <span>{missingResultRecord ? '返图记录缺失，请重新加载；不会重复提交生成任务。' : '返图加载失败，请重新加载；不会重复提交生成任务。'}</span>
+          <button type="button" aria-label="重新加载返图" onClick={(event) => { event.stopPropagation(); retryResultRefresh(); }}>重新加载返图</button>
+        </div>}
         {!expanded && !(hasCompletedImageResult && previewItems.length > 0) && hasConnectedReference && <ConnectedMediaSlots
           ariaLabel="Image generation reference slots"
           media={connectedMedia}
@@ -1336,7 +1542,12 @@ function ImageGenerationSummary({
                 <span aria-hidden="true">{index + 1}</span>
               </button>)}
             </div>
-          </section>}          {hasConnectedReference && (
+          </section>}
+          {resultRecoveryFailed && <div className="module-node__generation-error nodrag nopan" role="alert" onPointerDown={stopCanvasPointer}>
+            <span>{missingResultRecord ? '返图记录缺失，请重新加载；不会重复提交生成任务。' : '返图加载失败，请重新加载；不会重复提交生成任务。'}</span>
+            <button type="button" aria-label="重新加载返图" onClick={retryResultRefresh}>重新加载返图</button>
+          </div>}
+          {hasConnectedReference && (
             <ConnectedMediaSlots
               ariaLabel="Image generation reference slots"
               media={connectedMedia}
@@ -1393,7 +1604,7 @@ function ImageGenerationSummary({
             </div>
           </section>
           {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="note">该账号没有此类模型，请先在设置中切换供应商。</p>}
-          <div className="module-node__generation-control-bar nodrag nopan" aria-label="Image generation control bar" onPointerDown={stopCanvasPointer} onPointerDownCapture={clearBrowserSelection}>
+          <div className={`module-node__generation-control-bar nodrag nopan${hasGptImageQuality ? ' has-image-quality' : ''}`} aria-label="Image generation control bar" onPointerDown={stopCanvasPointer} onPointerDownCapture={clearBrowserSelection}>
             <GenerationModelPicker
               routes={compatibleRoutes}
               value={modelRoute}
@@ -1421,6 +1632,12 @@ function ImageGenerationSummary({
               options={imageResolutionOptions}
               onChange={(value) => setResolution(normalizeImageResolutionSelection(value))}
             />
+            {hasGptImageQuality && <ClarityPopover
+              ariaLabel="Image generation quality"
+              value={imageQualityLabel(imageQuality)}
+              options={IMAGE_QUALITY_OPTIONS.map(imageQualityLabel)}
+              onChange={(value) => setImageQuality(imageQualityFromLabel(value) ?? 'medium')}
+            />}
             <select aria-label="Image generation quantity" value={outputCount} onChange={(event) => setOutputCount(readSupportedImageCount(Number(event.target.value)))}>
               {imageOutputCountOptions.map((value) => <option key={value} value={value}>{value} 张</option>)}
             </select>
@@ -1428,7 +1645,9 @@ function ImageGenerationSummary({
               className={`module-node__run-generation${activeJobId === undefined ? '' : ' is-cancelling'}`}
               type="button"
               aria-label={activeJobId === undefined ? 'Generate image' : '停止生成'}
-              disabled={activeJobId === undefined && (prompt.trim().length === 0 || modelRoute.length === 0)}
+              disabled={activeJobId === undefined && (prompt.trim().length === 0 || (
+                connectedReferenceAssetIds.length === 0 && !compatibleRoutes.some((route) => route.modelRoute === modelRoute)
+              ))}
               onClick={() => {
                 if (activeJobId !== undefined) {
                   void onCancel(activeJobId);
@@ -1978,6 +2197,7 @@ function ExecutableNodeWorkbench({
 
 function ReverseAgentSummary({
   id,
+  draftOwnerIdentity,
   label,
   config,
   projectImages,
@@ -1991,6 +2211,7 @@ function ReverseAgentSummary({
   onReorderMedia,
 }: {
   id: string;
+  draftOwnerIdentity: string;
   label: string;
   config: Record<string, unknown>;
   projectImages: readonly ProjectImageAssetSummary[];
@@ -2085,6 +2306,11 @@ function ReverseAgentSummary({
   latestReverseDraftRef.current = draftConfig;
   const reverseDraftWriteTailRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const lastQueuedReverseDraftKeyRef = useRef<string | null>(null);
+  const draftOwnerActiveRef = useRef(true);
+  useEffect(() => {
+    draftOwnerActiveRef.current = true;
+    return () => { draftOwnerActiveRef.current = false; };
+  }, []);
   const persistReverseDraft = (nextConfig: ReverseAgentNodeConfig) => {
     latestReverseDraftRef.current = nextConfig;
     const draftKey = JSON.stringify(nextConfig);
@@ -2092,7 +2318,13 @@ function ReverseAgentSummary({
     lastQueuedReverseDraftKeyRef.current = draftKey;
     const queuedWrite = reverseDraftWriteTailRef.current
       .catch(() => false)
-      .then(() => persistDraftWithBoundaryRetry(() => draftReverseAgentConfig(id, nextConfig)))
+      .then(() => {
+        const currentState = useAppStore.getState();
+        const currentSessionId = currentState.persistenceMode === 'desktop' ? getActiveProjectSessionId() : null;
+        const currentIdentity = `${currentState.persistenceMode}:${currentState.project.id}:${currentSessionId ?? 'no-session'}:${id}`;
+        if (!draftOwnerActiveRef.current || currentIdentity !== draftOwnerIdentity) return true;
+        return persistDraftWithBoundaryRetry(() => draftReverseAgentConfig(id, nextConfig));
+      })
       .then((saved) => {
         if (!saved && lastQueuedReverseDraftKeyRef.current === draftKey) lastQueuedReverseDraftKeyRef.current = null;
         return saved;
@@ -2629,7 +2861,10 @@ function VideoSettingsPopover({
   onResolutionChange,
   durationSeconds,
   onDurationChange,
+  durationOptions,
+  durationConstrained,
   audioEnabled,
+  audioSupported,
   onAudioChange,
   outputCount,
   onOutputCountChange,
@@ -2645,7 +2880,10 @@ function VideoSettingsPopover({
   readonly onResolutionChange: (value: string) => void;
   readonly durationSeconds: number;
   readonly onDurationChange: (value: number) => void;
+  readonly durationOptions: readonly number[];
+  readonly durationConstrained: boolean;
   readonly audioEnabled: boolean;
+  readonly audioSupported: boolean;
   readonly onAudioChange: (value: boolean) => void;
   readonly outputCount: 1 | 2 | 3 | 4;
   readonly onOutputCountChange: (value: 1 | 2 | 3 | 4) => void;
@@ -2668,7 +2906,7 @@ function VideoSettingsPopover({
   return <div className="module-node__video-settings-picker nodrag nopan" ref={rootRef} onPointerDown={onPointerDown}>
     <button className="module-node__video-settings-trigger" type="button" aria-label="打开视频参数设置" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)}>
       <span className="module-node__video-settings-summary">{normalizedRatio} · {resolution.toUpperCase()} · {durationSeconds}s · {outputCount}个</span>
-      <Volume2 size={15} aria-hidden="true" />
+      {audioSupported && <Volume2 size={15} aria-hidden="true" />}
       <ChevronDown size={14} aria-hidden="true" />
     </button>
     {open && <div className="module-node__video-settings-menu" role="dialog" aria-label="视频生成参数">
@@ -2688,16 +2926,18 @@ function VideoSettingsPopover({
         </div>
       </section>
       <section className="module-node__video-settings-section" aria-label="视频时长">
-        <label htmlFor={`video-duration-${id}`}>视频时长 <output>{Math.min(15, Math.max(1, durationSeconds))}s</output></label>
-        <input id={`video-duration-${id}`} type="range" min={1} max={15} step={1} value={Math.min(15, Math.max(1, durationSeconds))} onChange={(event) => onDurationChange(Number(event.target.value))} />
+        <label htmlFor={durationConstrained ? undefined : `video-duration-${id}`}>视频时长 <output>{Math.min(15, Math.max(1, durationSeconds))}s</output></label>
+        {durationConstrained
+          ? <div className="module-node__video-settings-segmented">{durationOptions.map((option) => <button key={option} type="button" role="menuitemradio" aria-checked={option === durationSeconds} className={option === durationSeconds ? 'is-selected' : undefined} onClick={() => onDurationChange(option)}>{option}秒</button>)}</div>
+          : <input id={`video-duration-${id}`} type="range" min={1} max={15} step={1} value={Math.min(15, Math.max(1, durationSeconds))} onChange={(event) => onDurationChange(Number(event.target.value))} />}
       </section>
-      <section className="module-node__video-settings-section" aria-label="生成音频">
+      {audioSupported && <section className="module-node__video-settings-section" aria-label="生成音频">
         <span>生成音频</span>
         <div className="module-node__video-settings-segmented">
           <button type="button" role="menuitemradio" aria-checked={audioEnabled} className={audioEnabled ? 'is-selected' : undefined} onClick={() => onAudioChange(true)}>开启</button>
           <button type="button" role="menuitemradio" aria-checked={!audioEnabled} className={!audioEnabled ? 'is-selected' : undefined} onClick={() => onAudioChange(false)}>关闭</button>
         </div>
-      </section>
+      </section>}
       <section className="module-node__video-settings-section" aria-label="生成数量">
         <span>生成数量</span>
         <div className="module-node__video-settings-segmented">
@@ -2708,13 +2948,53 @@ function VideoSettingsPopover({
   </div>;
 }
 
-function dedupeVisibleModelRoutes<T extends { readonly displayName: string }>(routes: readonly T[]): T[] {
+function dedupeVisibleModelRoutes<T extends {
+  readonly provider: string;
+  readonly displayName: string;
+  readonly modelRoute: string;
+  readonly capabilities?: readonly string[];
+  readonly constraints?: {
+    readonly image?: {
+      readonly aspectRatios?: readonly string[];
+      readonly resolutions?: readonly string[];
+      readonly outputCounts?: readonly number[];
+    };
+    readonly video?: {
+      readonly aspectRatios?: readonly string[];
+      readonly resolutions?: readonly string[];
+      readonly outputCounts?: readonly number[];
+    };
+  };
+}>(routes: readonly T[], preferredRoute?: string): T[] {
   const unique = new Map<string, T>();
   for (const route of routes) {
-    const key = route.displayName.trim().toLocaleLowerCase().replace(/[\s_-]+/gu, ' ');
-    if (!unique.has(key)) unique.set(key, route);
+    const key = `${route.provider}::${route.displayName.trim().toLocaleLowerCase().replace(/[\s_-]+/gu, ' ')}`;
+    const current = unique.get(key);
+    if (
+      current === undefined
+      || route.modelRoute === preferredRoute
+      || (current.modelRoute !== preferredRoute && modelRouteCatalogBreadth(route) > modelRouteCatalogBreadth(current))
+    ) unique.set(key, route);
   }
   return [...unique.values()];
+}
+
+function modelRouteCatalogBreadth(route: {
+  readonly capabilities?: readonly string[];
+  readonly constraints?: {
+    readonly image?: { readonly aspectRatios?: readonly string[]; readonly resolutions?: readonly string[]; readonly outputCounts?: readonly number[] };
+    readonly video?: { readonly aspectRatios?: readonly string[]; readonly resolutions?: readonly string[]; readonly outputCounts?: readonly number[] };
+  };
+}): number {
+  const image = route.constraints?.image;
+  const video = route.constraints?.video;
+  return (route.capabilities?.length ?? 0)
+    + (image?.aspectRatios?.length ?? 0)
+    + (image?.resolutions?.length ?? 0)
+    + (image?.outputCounts?.length ?? 0)
+    + (video?.aspectRatios?.length ?? 0)
+    + (video?.resolutions?.length ?? 0)
+    + (video?.outputCounts?.length ?? 0);
 }
 
 function selectLatestCompletedGenerationJobs(
@@ -2751,8 +3031,11 @@ function selectGenerationTimingJob(
   nodeId: string,
   kind: 'image' | 'video',
   hasDurableResult: boolean,
+  draft?: GenerationJobDraftIdentity,
 ): ModelJob | undefined {
   const latest = selectLatestGenerationJob(modelJobs, nodeId, kind);
+  if ((latest?.status === 'failed' || latest?.status === 'cancelled')
+    && draft !== undefined && !modelJobMatchesGenerationDraft(latest, draft)) return undefined;
   if (!hasDurableResult || latest?.status !== 'cancelled' || latest.completedAt === undefined) return latest;
   return modelJobs
     .filter((job) => job.promptNodeId === nodeId
@@ -2765,15 +3048,12 @@ function selectGenerationTimingJob(
 function selectLatestFailedGenerationJob(
   modelJobs: readonly ModelJob[],
   nodeId: string,
-  kind: 'image' | 'video',
-  modelRoute?: string,
+  draft: GenerationJobDraftIdentity,
 ): ModelJob | undefined {
-  const latest = modelJobs
-    .filter((job) => job.promptNodeId === nodeId
-      && (job.kind ?? 'image') === kind
-      && (modelRoute === undefined || job.modelRoute === undefined || job.modelRoute === modelRoute))
-    .sort((left, right) => generationJobTimestamp(right).localeCompare(generationJobTimestamp(left)))[0];
-  return latest?.status === 'failed' ? latest : undefined;
+  const latest = selectLatestGenerationJob(modelJobs, nodeId, draft.kind);
+  return latest?.status === 'failed'
+    && modelJobMatchesGenerationDraft(latest, draft)
+    ? latest : undefined;
 }
 
 function generationJobTimestamp(job: ModelJob): string {
@@ -2911,7 +3191,8 @@ function reverseModelRouteOptionLabel(
   return route.displayName;
 }
 function preferredImageGenerationRoute(routes: readonly ImageGenerationRouteSummary[]): ImageGenerationRouteSummary | undefined {
-  return routes.find((route) => {
+  return selectSavedProviderModelDefault(routes, 'image_generation')
+    ?? routes.find((route) => {
     const haystack = `${route.displayName} ${route.modelId ?? ''} ${route.modelRoute}`.toLowerCase();
     return haystack.includes('nano banana pro') || haystack.includes('nano-banana-pro');
   })
@@ -2920,7 +3201,8 @@ function preferredImageGenerationRoute(routes: readonly ImageGenerationRouteSumm
 }
 
 function preferredReverseAgentRoute(routes: readonly ReverseAgentRouteSummary[]): ReverseAgentRouteSummary | undefined {
-  return routes.find((route) => {
+  return selectSavedProviderModelDefault(routes, 'reverse_prompt')
+    ?? routes.find((route) => {
     const haystack = `${route.displayName} ${route.modelId ?? ''} ${route.modelRoute}`.toLowerCase();
     return haystack.includes('gemini 3.1 pro') || haystack.includes('gemini-3.1-pro');
   })
@@ -3246,7 +3528,7 @@ function useExternallyHydratedDraftState<T>(externalValue: T) {
     locallyEdited.current = true;
     setValue(nextValue);
   };
-  return [value, setDraftValue] as const;
+  return [value, setDraftValue, setValue] as const;
 }
 
 async function persistDraftWithBoundaryRetry(write: () => Promise<boolean>): Promise<boolean> {

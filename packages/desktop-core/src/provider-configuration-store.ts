@@ -11,6 +11,7 @@ import {
 import {
   createProviderBridgeError,
   parseProviderConfigurationSnapshot,
+  ProviderIdSchema,
   type ProviderBridgeProfile,
   type ProviderBridgeProvider,
 } from './provider-contracts.js';
@@ -40,7 +41,8 @@ export function createProviderConfigurationStore(options: {
   readonly fileSystem?: FileSystem;
 }): ProviderConfigurationStore {
   const fileSystem = options.fileSystem ?? new NodeFileSystem();
-  const configurationRoot = providerConfigurationRoot(options.appDataRoot, options.provider ?? 'comfly');
+  const provider = parseConfigurationProvider(options.provider ?? 'comfly');
+  const configurationRoot = providerConfigurationRoot(options.appDataRoot, provider);
   const targetPath = confinedProviderConfigurationPath(configurationRoot, PROVIDER_CONFIGURATION_FILE);
   const lockPath = confinedProviderConfigurationPath(configurationRoot, PROVIDER_CONFIGURATION_LOCK_FILE);
 
@@ -61,6 +63,7 @@ export function createProviderConfigurationStore(options: {
       try {
         await assertConfigurationPathForRead(targetPath);
         const parsed = parseProviderConfigurationSnapshot(JSON.parse(await fileSystem.readFile(targetPath, 'utf8')) as unknown);
+        assertProviderProfileOwnership(parsed.profiles, provider);
         return {
           exists: true,
           snapshot: cloneConfiguration(parsed),
@@ -91,6 +94,7 @@ export function createProviderConfigurationStore(options: {
       baseUrl: snapshot.baseUrl,
       profiles: snapshot.profiles,
     });
+    assertProviderProfileOwnership(sanitized.profiles, provider);
     await withConfigurationLock(async () => {
       await fileSystem.mkdir(configurationRoot, { recursive: true });
       await writeConfinedAtomicUpdate(fileSystem, {
@@ -147,8 +151,22 @@ export function createProviderConfigurationStore(options: {
 
 function providerConfigurationRoot(appDataRoot: string, provider: ProviderBridgeProvider): string {
   if (provider === 'comfly') return appDataRoot;
-  if (provider === 'relayme') return join(appDataRoot, 'providers', 'relayme');
-  throw createProviderBridgeError('INVALID_REQUEST', '未知的模型供应商');
+  return join(appDataRoot, 'providers', provider);
+}
+
+function parseConfigurationProvider(value: unknown): ProviderBridgeProvider {
+  const parsed = ProviderIdSchema.safeParse(value);
+  if (!parsed.success) throw createProviderBridgeError('INVALID_REQUEST', '未知的模型供应商');
+  return parsed.data;
+}
+
+function assertProviderProfileOwnership(
+  profiles: readonly ProviderBridgeProfile[],
+  provider: ProviderBridgeProvider,
+): void {
+  if (profiles.some((profile) => profile.provider !== provider)) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Provider configuration contains a foreign model catalog');
+  }
 }
 
 function cloneConfiguration(snapshot: ProviderConfigurationSnapshot): ProviderConfigurationSnapshot {

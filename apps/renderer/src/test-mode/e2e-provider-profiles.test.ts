@@ -4,6 +4,51 @@ import { hasVerifiedComflyVideoSubmissionContract } from '../../../../packages/d
 import { createE2EProviderProfiles } from './e2e-harness';
 
 describe('E2E provider profile contract', () => {
+  it('keeps Comfly, RelayMe, Julun video, and 4D image/vision fixtures isolated', () => {
+    const profiles = createE2EProviderProfiles();
+
+    expect(new Set(profiles.map((profile) => profile.provider))).toEqual(new Set([
+      'comfly',
+      'relayme',
+      'julun',
+      '4dai',
+    ]));
+
+    const julunProfiles = profiles.filter((profile) => profile.provider === 'julun');
+    expect(julunProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        modelRoute: 'julun-seedance-2-0-fast-deal',
+        capabilities: expect.arrayContaining(['video_generation', 'async_tasks']),
+      }),
+    ]));
+    expect(julunProfiles.every((profile) => !profile.capabilities.includes('image_generation'))).toBe(true);
+
+    const fourDProfiles = profiles.filter((profile) => profile.provider === '4dai');
+    expect(fourDProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        modelRoute: '4dai-gpt-image-1-5',
+        capabilities: expect.arrayContaining(['image_generation']),
+      }),
+      expect.objectContaining({
+        modelRoute: '4dai-gemini-3-1-flash-image-preview',
+        modelId: 'gemini-3.1-flash-image-preview',
+        capabilities: expect.arrayContaining(['image_generation', 'image_edit']),
+        constraints: { image: expect.objectContaining({ resolutions: ['1K', '2K', '4K'] }) },
+      }),
+      expect.objectContaining({
+        modelRoute: '4dai-gemini-3-pro-image-preview',
+        modelId: 'gemini-3-pro-image-preview',
+        capabilities: expect.arrayContaining(['image_generation', 'image_edit']),
+        constraints: { image: expect.objectContaining({ resolutions: ['1K', '2K', '4K'] }) },
+      }),
+      expect.objectContaining({
+        modelRoute: '4dai-gpt-6-astra',
+        capabilities: expect.arrayContaining(['vision', 'reverse_prompt']),
+      }),
+    ]));
+    expect(fourDProfiles.every((profile) => !profile.capabilities.includes('video_generation'))).toBe(true);
+  });
+
   it('does not let the audited fixture bypass production reference-image capability rules', () => {
     const comflyProfiles = createE2EProviderProfiles().filter((profile) => profile.provider === 'comfly');
     const liteImage = comflyProfiles.find((profile) => profile.modelId === 'gemini-3.1-flash-lite-image');

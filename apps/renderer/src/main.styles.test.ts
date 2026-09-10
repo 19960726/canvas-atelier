@@ -628,4 +628,12 @@ describe('renderer stylesheet precedence', () => {
     expect(terminal).toContain(':focus-visible');
     expect(terminal).toContain('min-height: 38px !important;');
   });
+
+  it('lets collapsed result-load error text pass pointer input through to the node opener', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('COLLAPSED RESULT REFRESH HIT TARGET'));
+
+    expect(terminal).toMatch(/\.module-node__generation-error--collapsed-result-refresh \{[\s\S]*?pointer-events: none !important;/);
+    expect(terminal).toMatch(/\.module-node__generation-error--collapsed-result-refresh > button \{[\s\S]*?pointer-events: auto !important;/);
+  });
 });

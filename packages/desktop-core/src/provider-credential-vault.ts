@@ -14,6 +14,7 @@ import {
 } from './provider-file-confinement.js';
 import {
   createProviderBridgeError,
+  ProviderIdSchema,
   type ProviderBridgeProvider,
   type ProviderConfigurationStatus,
 } from './provider-contracts.js';
@@ -358,9 +359,10 @@ export function createSecureProviderCredentialStore(options: {
 }
 
 function providerCredentialRoot(appDataRoot: string, provider: ProviderBridgeProvider): string {
-  if (provider === 'comfly') return appDataRoot;
-  if (provider === 'relayme') return join(appDataRoot, 'providers', 'relayme');
-  throw createProviderBridgeError('INVALID_REQUEST', '未知的模型供应商');
+  const parsed = ProviderIdSchema.safeParse(provider);
+  if (!parsed.success) throw createProviderBridgeError('INVALID_REQUEST', '未知的模型供应商');
+  if (parsed.data === 'comfly') return appDataRoot;
+  return join(appDataRoot, 'providers', parsed.data);
 }
 
 function parseCredentialEnvelope(value: unknown): ProviderCredentialEnvelope {

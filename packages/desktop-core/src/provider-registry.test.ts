@@ -16,20 +16,28 @@ describe('provider registry', () => {
   it('routes the same operation to the selected provider service', async () => {
     const comfly = providerService('comfly');
     const relayme = providerService('relayme');
-    const registry = createProviderRegistry({ comfly, relayme });
+    const julun = providerService('julun');
+    const fourdai = providerService('4dai');
+    const registry = createProviderRegistry({ comfly, relayme, julun, '4dai': fourdai });
     const handlers = createProviderBridgeHandlers(registry);
 
     await expect(handlers.getStatus(null, { provider: 'comfly' })).resolves.toMatchObject({ configured: true });
     await expect(handlers.getStatus(null, { provider: 'relayme' })).resolves.toMatchObject({ configured: false });
+    await expect(handlers.getStatus(null, { provider: 'julun' })).resolves.toMatchObject({ configured: false });
+    await expect(handlers.getStatus(null, { provider: '4dai' })).resolves.toMatchObject({ configured: false });
     await handlers.submitImageJob(null, {
-      jobId: 'job-relay', provider: 'relayme', modelRoute: 'image-default', prompt: '测试',
+      jobId: 'job-fourdai', provider: '4dai', modelRoute: 'image-default', prompt: '测试',
       conversationId: 'conversation-1', referenceAssetIds: [],
     });
 
     expect(comfly.getStatus).toHaveBeenCalledTimes(1);
     expect(relayme.getStatus).toHaveBeenCalledTimes(1);
-    expect(relayme.submitImageJob).toHaveBeenCalledTimes(1);
+    expect(julun.getStatus).toHaveBeenCalledTimes(1);
+    expect(fourdai.getStatus).toHaveBeenCalledTimes(1);
+    expect(fourdai.submitImageJob).toHaveBeenCalledTimes(1);
     expect(comfly.submitImageJob).not.toHaveBeenCalled();
+    expect(relayme.submitImageJob).not.toHaveBeenCalled();
+    expect(julun.submitImageJob).not.toHaveBeenCalled();
   });
 
   it('rejects unknown providers before service execution', async () => {
@@ -62,7 +70,7 @@ describe('provider credential isolation', () => {
   });
 });
 
-function providerService(provider: 'comfly' | 'relayme'): ProviderService {
+function providerService(provider: 'comfly' | 'relayme' | 'julun' | '4dai'): ProviderService {
   return {
     getStatus: vi.fn(async () => ({ configured: provider === 'comfly', locked: false, encryption: 'safeStorage' as const })),
     revealCredential: vi.fn(async () => ({ token: `${provider}-secret` })),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Background, BackgroundVariant, ConnectionLineType, ConnectionMode, Controls, MiniMap, ReactFlow, SelectionMode, useUpdateNodeInternals } from '@xyflow/react';
+import { Background, BackgroundVariant, ConnectionLineType, ConnectionMode, Controls, MiniMap, ReactFlow, SelectionMode, useStore, useUpdateNodeInternals } from '@xyflow/react';
 import type { Connection, Edge, Node, OnConnectEnd, OnConnectStart, Viewport } from '@xyflow/react';
 import type { CodexCliProfile, ProviderBridgeProfile, ProviderConfigurationStatus } from '@agent-canvas/desktop-core';
 import type {
@@ -23,16 +23,18 @@ import {
   X,
 } from 'lucide-react';
 import { useAppStore } from '../app/app-store';
+import { getActiveProjectSessionId } from '../app/desktop-persistence';
 import { useReadOnlyWritePromotion } from '../app/use-read-only-write-promotion';
 import { resetMcpCanvasSelection, setMcpCanvasSelection } from '../app/mcp-canvas-selection';
 import { createWorkspaceApi } from '../app/workspace-api';
 import { runtimeProfile } from '../app/runtime-profile';
-import { buildCanvasProviderRouteSets, filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles } from '../app/provider-profiles';
+import { buildCanvasProviderRouteSets, listRunnableProviderProfiles } from '../app/provider-profiles';
 import { PlanPreview } from '../agent/PlanPreview';
 import { McpWorkflowPlanPreview } from '../agent/McpWorkflowPlanPreview';
 import { SkillChatWorkbench, type ReverseTimelineEntry, type SkillCanvasActionRequest } from '../agent/SkillChatWorkbench';
 import { ProjectMemoryTimeline } from '../history/ProjectMemoryTimeline';
 import { JobStrip } from '../jobs/JobStrip';
+import { filterModelJobsForProject, filterModelJobsForTaskStrip } from '../jobs/project-model-jobs';
 import { SettingsDrawer } from '../settings/SettingsDrawer';
 import { GenerationHistoryDrawer } from '../history/GenerationHistoryDrawer';
 import { ModuleLibrary, MODULE_DRAG_MIME } from './ModuleLibrary';
@@ -69,53 +71,52 @@ interface CanvasFlowInstance {
 
 function EdgeEndpointInternalsUpdater({ edges, nodes }: { readonly edges: readonly Edge[]; readonly nodes: readonly Node[] }) {
   const updateNodeInternals = useUpdateNodeInternals();
+  const [refreshedEndpointKey, setRefreshedEndpointKey] = useState<string | null>(null);
   const endpointIds = useMemo(() => [...new Set([
     ...edges.flatMap((edge) => [edge.source, edge.target]),
     ...(nodes.length <= 40 ? nodes.map(node => node.id) : []),
   ])], [edges, nodes]);
   const endpointKey = endpointIds.join('\u0000');
-  const previousEndpointIdsRef = useRef<Set<string> | null>(null);
+  const endpointInternalsReady = useStore(useCallback((state) => endpointIds.every((id) => {
+    const node = state.nodeLookup.get(id);
+    return node !== undefined && node.internals.handleBounds !== undefined;
+  }), [endpointKey]));
 
   useEffect(() => {
+    setRefreshedEndpointKey(null);
     if (typeof window !== 'undefined' && typeof window.DOMMatrixReadOnly !== 'function') {
       return;
     }
-    const previousEndpointIds = previousEndpointIdsRef.current;
-    const currentEndpointIds = new Set(endpointIds);
-    previousEndpointIdsRef.current = currentEndpointIds;
     if (endpointIds.length === 0) return undefined;
     // React Flow measures large graphs incrementally during its own render.
     // Avoid scheduling an additional endpoint measurement on the interaction
     // path once a canvas has more than a small number of connected nodes.
     if (endpointIds.length > 40) return undefined;
-    // Large canvases are initially measured by React Flow itself. Refresh
-    // only the endpoints introduced/removed by a later edge change, avoiding
-    // an O(V) internal measurement pass during stress-canvas startup.
-    if (previousEndpointIds === null) {
-      if (endpointIds.length > 40) return undefined;
-      const refresh = () => updateNodeInternals(endpointIds);
-      if (typeof globalThis.requestAnimationFrame !== 'function') {
-        refresh();
-        return undefined;
-      }
-      const frame = globalThis.requestAnimationFrame(refresh);
-      return () => globalThis.cancelAnimationFrame?.(frame);
-    }
-    const changedEndpointIds = endpointIds.filter((id) => !previousEndpointIds.has(id));
-    for (const id of previousEndpointIds) {
-      if (!currentEndpointIds.has(id)) changedEndpointIds.push(id);
-    }
-    if (changedEndpointIds.length === 0) return undefined;
-    const refresh = () => updateNodeInternals(changedEndpointIds);
+    let readinessFrame: number | null = null;
+    const refresh = () => {
+      updateNodeInternals(endpointIds);
+      readinessFrame = globalThis.requestAnimationFrame(() => setRefreshedEndpointKey(endpointKey));
+    };
     if (typeof globalThis.requestAnimationFrame !== 'function') {
-      refresh();
+      updateNodeInternals(endpointIds);
+      setRefreshedEndpointKey(endpointKey);
       return undefined;
     }
     const frame = globalThis.requestAnimationFrame(refresh);
-    return () => globalThis.cancelAnimationFrame?.(frame);
+    return () => {
+      globalThis.cancelAnimationFrame?.(frame);
+      if (readinessFrame !== null) globalThis.cancelAnimationFrame?.(readinessFrame);
+    };
   }, [endpointKey, updateNodeInternals]);
 
-  return null;
+  return (
+    <span
+      aria-hidden="true"
+      data-ready={endpointIds.length > 0 && endpointInternalsReady && refreshedEndpointKey === endpointKey ? 'true' : 'false'}
+      data-testid="connection-handle-readiness"
+      hidden
+    />
+  );
 }
 
 export interface PendingCanvasConnection {
@@ -647,6 +648,16 @@ export function CanvasWorkspace() {
   const agentPlan = useAppStore((state) => state.agentPlan);
   const undoStack = useAppStore((state) => state.undoStack);
   const modelJobs = useAppStore((state) => state.modelJobs);
+  const persistenceMode = useAppStore((state) => state.persistenceMode);
+  const activeProjectSessionId = persistenceMode === 'desktop' ? getActiveProjectSessionId() : null;
+  const projectModelJobs = useMemo(
+    () => filterModelJobsForProject(modelJobs, project, activeProjectSessionId),
+    [activeProjectSessionId, modelJobs, project],
+  );
+  const taskStripJobs = useMemo(
+    () => filterModelJobsForTaskStrip(modelJobs, project, activeProjectSessionId),
+    [activeProjectSessionId, modelJobs, project],
+  );
   const saveStatus = useAppStore((state) => state.saveStatus);
   const flushProjectSave = useAppStore((state) => state.flushProjectSave);
   const saveProjectExplicitly = useAppStore((state) => state.saveProjectExplicitly);
@@ -756,7 +767,12 @@ export function CanvasWorkspace() {
   });
 
   useEffect(() => {
-    const completedJobs = modelJobs.filter((job) => job.status === 'completed' && job.resultAssetId);
+    seenCompletedHistoryJobsRef.current = null;
+    setHistoryUnread(false);
+  }, [project.id]);
+
+  useEffect(() => {
+    const completedJobs = projectModelJobs.filter((job) => job.status === 'completed' && job.resultAssetId);
     const completed = new Set(completedJobs.map((job) => job.id));
     const previous = seenCompletedHistoryJobsRef.current;
     seenCompletedHistoryJobsRef.current = completed;
@@ -770,7 +786,7 @@ export function CanvasWorkspace() {
       dispatchGenerationEditor({ type: 'generation-completed', nodeId: completedExpandedGeneration.promptNodeId });
     }
     if (activeSurface !== 'history' && newlyCompletedJobs.length > 0) setHistoryUnread(true);
-  }, [activeSurface, generationEditorState.expandedNodeId, modelJobs]);
+  }, [activeSurface, generationEditorState.expandedNodeId, projectModelJobs]);
 
   const changeSurface = useCallback((surface: WorkspaceSurface | null) => {
     setQuickInsert(null);
@@ -887,11 +903,14 @@ export function CanvasWorkspace() {
     return openProject(recentProjectId);
   }, [cancelClipboardImageImportBatch, changeSurface, openProject, prepareForProjectSwitch]);
   const canvasProviderRoutes = useMemo(
-    // Canvas generation and Reverse Agent are both execution surfaces. They
-    // must stay scoped to the active provider; the full catalog remains
-    // available only to the independent Agent chat surface below.
-    () => buildCanvasProviderRouteSets(providerProfiles),
-    [providerProfiles],
+    // Canvas generation and Reverse Agent can use every configured provider.
+    // The active provider affects ordering only; saved node routes keep their
+    // exact provider identity across catalog refreshes and app restarts.
+    () => buildCanvasProviderRouteSets(providerProfiles, providerProfiles, project.nodes.flatMap((node) => (
+      node.type === 'module' && node.data.moduleType === 'image_generation' && typeof node.data.config.modelRoute === 'string'
+        ? [node.data.config.modelRoute] : []
+    ))),
+    [providerProfiles, project.nodes],
   );
   const moduleNodeRuntimeContext = useMemo<ModuleNodeRuntimeContext>(() => ({
     imageGenerationRoutes: canvasProviderRoutes.imageGeneration,
@@ -1114,6 +1133,7 @@ export function CanvasWorkspace() {
           ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
           ...(typeof config.aspectRatio === 'string' ? { aspectRatio: config.aspectRatio } : {}),
           ...(typeof config.resolution === 'string' ? { resolution: config.resolution } : {}),
+          ...(config.imageQuality === 'low' || config.imageQuality === 'medium' || config.imageQuality === 'high' ? { imageQuality: config.imageQuality } : {}),
           ...(typeof config.outputCount === 'number' ? { outputCount: config.outputCount } : {}),
           referenceAssetIds,
         });
@@ -1752,29 +1772,12 @@ export function CanvasWorkspace() {
       const requestSequence = ++refreshSequence;
       void Promise.all([
         provider.getStatus().catch(() => null),
-        listAllProviderProfiles(provider).catch(() => []),
-        provider.getActiveProvider?.().catch(() => ({ activeProvider: null })),
-      ]).then(async ([status, profiles, activeState]) => {
+        listRunnableProviderProfiles(provider).catch(() => []),
+      ]).then(([status, profiles]) => {
         if (cancelled || requestSequence !== refreshSequence) return;
-        // A provider switch can complete while the parallel catalog requests
-        // are still in flight. Re-read the durable selection immediately
-        // before applying results so a late Comfly response cannot overwrite
-        // a newer RelayMe catalog (or the reverse).
-        const latestActiveState = provider.getActiveProvider === undefined
-          ? activeState
-          : await provider.getActiveProvider().catch(() => ({ activeProvider: null }));
-        if (cancelled || requestSequence !== refreshSequence) return;
-        const activeProfiles = latestActiveState === undefined
-          ? profiles
-          : listActiveProviderProfiles(profiles, latestActiveState.activeProvider);
         setProviderStatus(status);
-        // Every embedded Agent route is executed by the same active-provider
-        // bridge as generation nodes. Passing inactive routes here leaves a
-        // persisted Comfly choice visible after switching to RelayMe and the
-        // main process correctly rejects it as PROVIDER_INACTIVE. External
-        // Codex-to-canvas MCP remains a separate, provider-independent path.
-        setAgentProviderProfiles(activeProfiles);
-        setProviderProfiles(filterProviderCatalogProfiles(activeProfiles));
+        setAgentProviderProfiles(profiles);
+        setProviderProfiles(profiles);
       });
     };
     refreshProviderCatalog();
@@ -2321,7 +2324,7 @@ export function CanvasWorkspace() {
               canvasActionTargets={agentCanvasActionTargets}
               canvasActionResults={project.nodes.flatMap((node) => {
                 if (node.type !== 'module' || !['image_generation', 'video_generation'].includes(node.data.moduleType)) return [];
-                const jobs = modelJobs.filter((job) => job.promptNodeId === node.id);
+                const jobs = projectModelJobs.filter((job) => job.promptNodeId === node.id);
                 const latest = jobs[jobs.length - 1];
                 if (!latest) return [];
                 const assetIds = [latest.resultAssetId, ...(Array.isArray(node.data.config.resultAssetIds) ? node.data.config.resultAssetIds : []), node.data.config.resultAssetId].filter((id): id is string => typeof id === 'string');
@@ -2397,7 +2400,7 @@ export function CanvasWorkspace() {
       <JobStrip
         canReloadSave={canReloadDurableProject}
         canRetrySave={canRetryProjectCommit}
-        jobs={modelJobs}
+        jobs={taskStripJobs}
         saveState={saveStatus}
         saveLabel={saveStatusLabel(saveStatus, saveErrorCode)}
         onReloadSave={() => { void reloadDurableProject(); }}

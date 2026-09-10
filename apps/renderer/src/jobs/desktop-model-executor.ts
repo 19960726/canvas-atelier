@@ -1,4 +1,4 @@
-import { sanitizeModelJobError, type ModelJob } from '@agent-canvas/domain';
+import { sanitizeModelJobError, type ModelJob, type ModelJobProvider } from '@agent-canvas/domain';
 import type { ModelJobExecutor, ModelJobPollResult, ModelJobSubmission } from './job-store';
 
 type ProviderPollResult = Awaited<ReturnType<NonNullable<Window['novusDesktop']>['provider']['pollImageJob']>>;
@@ -9,7 +9,6 @@ type ProviderVideoCancelResult = Awaited<ReturnType<NonNullable<Window['novusDes
 export function createDesktopModelJobExecutor(): ModelJobExecutor {
   return {
     async submit(job) {
-      await assertJobProviderIsActive(job);
       return job.kind === 'video'
         ? getProviderBridge().submitVideoJob(toVideoSubmitRequest(job))
         : getProviderBridge().submitImageJob(toImageSubmitRequest(job));
@@ -55,18 +54,6 @@ export function createDesktopModelJobExecutor(): ModelJobExecutor {
   };
 }
 
-async function assertJobProviderIsActive(job: ModelJob): Promise<void> {
-  const bridge = getProviderBridge();
-  if (bridge.getActiveProvider === undefined) return;
-  const requestedProvider = requireProviderField(job.provider);
-  const { activeProvider } = await bridge.getActiveProvider();
-  if (activeProvider === requestedProvider) return;
-  const error = new Error('Selected provider is not active') as Error & { code: string; retryable: boolean };
-  error.code = 'PROVIDER_INACTIVE';
-  error.retryable = false;
-  throw error;
-}
-
 function getProviderBridge() {
   const provider = globalThis.window?.novusDesktop?.provider;
   if (provider === undefined) {
@@ -86,6 +73,7 @@ function toImageSubmitRequest(job: ModelJob) {
     referenceAssetIds: [...job.referenceAssetIds],
     ...(job.aspectRatio === undefined ? {} : { aspectRatio: job.aspectRatio }),
     ...(job.resolution === undefined ? {} : { resolution: job.resolution }),
+    ...(job.imageQuality === undefined ? {} : { quality: job.imageQuality }),
     ...(job.outputCount === undefined ? {} : { outputCount: job.outputCount }),
   };
 }
@@ -150,9 +138,9 @@ function requireJobField(value: string | undefined, fieldName: string): string {
   return value;
 }
 
-function requireProviderField(value: string | undefined): 'comfly' | 'relayme' {
+function requireProviderField(value: string | undefined): ModelJobProvider {
   const provider = requireJobField(value, 'provider');
-  if (provider !== 'comfly' && provider !== 'relayme') {
+  if (provider !== 'comfly' && provider !== 'relayme' && provider !== 'julun' && provider !== '4dai') {
     throw new Error('provider is required for provider job execution');
   }
   return provider;

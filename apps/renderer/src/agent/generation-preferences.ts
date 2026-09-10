@@ -1,10 +1,13 @@
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
-import { supportsVerifiedComflyVideoInputMode } from '@agent-canvas/domain';
+import { supportsVerifiedComflyVideoInputMode, type ImageQuality } from '@agent-canvas/domain';
+import { normalizeImageQuality, supportsGptImageQuality } from '../app/image-generation-quality';
+import { orderProviderProfilesBySavedDefault } from '../settings/provider-model-defaults';
 
 export type GenerationKind = 'image' | 'video';
 export interface GenerationParameters {
   aspectRatio?: string;
   resolution?: string;
+  imageQuality?: ImageQuality;
   outputCount?: number;
   durationSeconds?: number;
 }
@@ -26,28 +29,37 @@ export function generationProfiles(
   kind: GenerationKind,
   referenceCount = 0,
 ): ProviderBridgeProfile[] {
-  return profiles.filter((profile) => profile.capabilityStatus !== 'incomplete'
-    && profile.capabilities.includes(`${kind}_generation`)
-    && supportsGenerationReferences(profile, kind, referenceCount));
+  return orderProviderProfilesBySavedDefault(
+    profiles.filter((profile) => profile.capabilityStatus !== 'incomplete'
+      && profile.capabilities.includes(`${kind}_generation`)
+      && supportsGenerationReferences(profile, kind, referenceCount)),
+    `${kind}_generation`,
+  );
 }
 
 /** Reference images must go through an image-edit/native Gemini route. */
-export function supportsImageReferences(profile: ProviderBridgeProfile): boolean {
+export function supportsImageReferences(profile: { readonly capabilities: readonly string[] }): boolean {
   return profile.capabilities.includes('image_edit') || profile.capabilities.includes('gemini_native');
 }
 
-/** Canvas has a verified reference-image transport for Comfly video jobs.
- * RelayMe's direct video request has no reference field, so it must fail closed. */
-export function supportsGenerationReferences(profile: ProviderBridgeProfile, kind: GenerationKind, referenceCount: number): boolean {
-  if (referenceCount < 1) {
-    return kind === 'image'
-      || profile.provider === 'relayme'
-      || supportsVerifiedComflyVideoInputMode(profile.modelId ?? profile.modelRoute, 0);
-  }
-  return kind === 'image'
-    ? supportsImageReferences(profile)
-    : profile.provider === 'comfly'
-      && supportsVerifiedComflyVideoInputMode(profile.modelId ?? profile.modelRoute, referenceCount);
+/** Keep provider-specific media transports separate.  Julun's OpenAI video
+ * endpoint accepts text or one input image; RelayMe remains text-only. */
+export function supportsGenerationReferences(
+  profile: {
+    readonly provider: string;
+    readonly modelRoute: string;
+    readonly modelId?: string;
+    readonly capabilities: readonly string[];
+  },
+  kind: GenerationKind,
+  referenceCount: number,
+): boolean {
+  if (!Number.isInteger(referenceCount) || referenceCount < 0) return false;
+  if (kind === 'image') return referenceCount === 0 || supportsImageReferences(profile);
+  if (profile.provider === 'relayme') return referenceCount === 0;
+  if (profile.provider === 'julun') return referenceCount <= 1;
+  return profile.provider === 'comfly'
+    && supportsVerifiedComflyVideoInputMode(profile.modelId ?? profile.modelRoute, referenceCount);
 }
 export function resolveGenerationPreference(
   kind: GenerationKind,
@@ -82,6 +94,11 @@ export function resolveGenerationPreference(
   }
   const usedReferenceFallback = preference.mode === 'fixed' && fixedProfile === undefined;
   const parameters = preference.mode === 'fixed' && !usedReferenceFallback ? { ...preference.parameters } : {};
+  if (kind === 'image' && supportsGptImageQuality(profile)) {
+    parameters.imageQuality = normalizeImageQuality(parameters.imageQuality) ?? 'medium';
+  } else if (parameters.imageQuality !== undefined) {
+    throw new Error('固定 GPT 图片质量只适用于 GPT 生图模型，请重新选择。');
+  }
   const constraints = profile.constraints?.[kind];
   for (const [key, values] of [['aspectRatio', constraints?.aspectRatios], ['resolution', constraints?.resolutions], ['outputCount', constraints?.outputCounts]] as const) {
     const value = parameters[key];
@@ -109,6 +126,10 @@ export function readGenerationPreferences(projectId: string): GenerationPreferen
       const parameters: GenerationParameters = {};
       for (const key of ['aspectRatio', 'resolution'] as const) {
         if (typeof value.parameters?.[key] === 'string' && value.parameters[key].length < 40) parameters[key] = value.parameters[key];
+      }
+      if (kind === 'image') {
+        const imageQuality = normalizeImageQuality(value.parameters?.imageQuality);
+        if (imageQuality !== undefined) parameters.imageQuality = imageQuality;
       }
       for (const key of ['outputCount', 'durationSeconds'] as const) {
         if (Number.isFinite(value.parameters?.[key]) && value.parameters[key] > 0 && value.parameters[key] <= 60) parameters[key] = value.parameters[key];

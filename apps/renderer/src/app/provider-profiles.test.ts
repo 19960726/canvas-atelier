@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
-import { buildCanvasProviderRouteSets, filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles, listRunnableProviderProfiles, listAgentChatProfiles, listCodexAgentProfiles, selectFirstProfileForCapability, selectGenerationProviderProfile, selectProviderProfile } from './provider-profiles';
+import { buildCanvasProviderRouteSets, filterProviderCatalogProfiles, listActiveProviderProfiles, listAllProviderProfiles, listRunnableProviderProfiles, listAgentChatProfiles, listCodexAgentProfiles, selectFirstProfileForCapability, selectGenerationProviderProfile, selectProviderProfile, selectReverseProviderProfile } from './provider-profiles';
+import { PROVIDER_MODEL_DEFAULTS_STORAGE_KEY, writeProviderModelDefaults } from '../settings/provider-model-defaults';
+import { defaultGenerationPreferences, resolveGenerationPreference } from '../agent/generation-preferences';
+
+type ProviderId = 'comfly' | 'relayme' | 'julun' | '4dai';
 
 describe('active provider model boundary', () => {
   const profiles = [
@@ -27,6 +31,57 @@ describe('active provider model boundary', () => {
 });
 
 describe('canvas provider route sets', () => {
+  it('uses the saved provider default for Canvas and Agent execution after family sorting', () => {
+    const profiles: ProviderBridgeProfile[] = [{
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-image-2',
+      modelId: 'gpt-image-2',
+      displayName: 'GPT Image 2',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'complete',
+    }, {
+      provider: 'comfly',
+      modelRoute: 'comfly-studio-image',
+      modelId: 'studio-image',
+      displayName: 'Studio Image',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'complete',
+    }];
+    localStorage.removeItem(PROVIDER_MODEL_DEFAULTS_STORAGE_KEY);
+    writeProviderModelDefaults('comfly', { image_generation: 'comfly-studio-image' });
+    try {
+      expect(buildCanvasProviderRouteSets(profiles).imageGeneration[0]?.modelRoute).toBe('comfly-studio-image');
+      expect(selectGenerationProviderProfile(profiles, {}, 'image_generation')?.modelRoute).toBe('comfly-studio-image');
+      expect(resolveGenerationPreference('image', defaultGenerationPreferences(), profiles).profile.modelRoute)
+        .toBe('comfly-studio-image');
+    } finally {
+      localStorage.removeItem(PROVIDER_MODEL_DEFAULTS_STORAGE_KEY);
+    }
+  });
+
+  it('keeps the preferred provider ahead of globally pinned model families', () => {
+    const routes = buildCanvasProviderRouteSets([{
+      provider: '4dai',
+      modelRoute: '4dai-gpt-image-1-5',
+      modelId: 'gpt-image-1.5',
+      displayName: 'GPT Image 1.5',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'complete',
+    }, {
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-image-2',
+      modelId: 'gpt-image-2',
+      displayName: 'GPT Image 2',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'complete',
+    }]);
+
+    expect(routes.imageGeneration.map((profile) => profile.modelRoute)).toEqual([
+      '4dai-gpt-image-1-5',
+      'comfly-gpt-image-2',
+    ]);
+  });
+
   it('keeps visual reverse routes even when a provider also advertises generation capabilities', () => {
     const routes = buildCanvasProviderRouteSets([
       {
@@ -72,6 +127,42 @@ describe('canvas provider route sets', () => {
     }]);
 
     expect(routes.reversePrompt).toEqual([]);
+  });
+
+  it('exposes reverse routes only when the implemented transport can receive the image dialogue', () => {
+    const routes = buildCanvasProviderRouteSets([{
+      provider: 'comfly', modelRoute: 'comfly/responses-vision', modelId: 'responses-vision', displayName: 'Responses Vision',
+      capabilities: ['responses', 'vision', 'reverse_prompt'],
+    }, {
+      provider: '4dai', modelRoute: '4dai/chat-vision', modelId: 'chat-vision', displayName: 'Chat Vision',
+      capabilities: ['chat', 'vision', 'reverse_prompt'],
+    }, {
+      provider: 'comfly', modelRoute: 'comfly/gemini-native', modelId: 'gemini-native', displayName: 'Gemini Native',
+      capabilities: ['gemini_native', 'reverse_prompt'],
+    }]);
+
+    const reverseRoutes = routes.reversePrompt.map((profile) => profile.modelRoute);
+    expect(reverseRoutes).toHaveLength(2);
+    expect(reverseRoutes).toEqual(expect.arrayContaining([
+      '4dai/chat-vision',
+      'comfly/gemini-native',
+    ]));
+    expect(reverseRoutes).not.toContain('comfly/responses-vision');
+  });
+
+  it('does not replace an explicitly selected unsupported reverse route with another model from the same provider', () => {
+    const profiles: ProviderBridgeProfile[] = [{
+      provider: '4dai', modelRoute: '4dai/responses-vision', modelId: 'responses-vision', displayName: 'Responses Vision',
+      capabilities: ['responses', 'vision', 'reverse_prompt'],
+    }, {
+      provider: '4dai', modelRoute: '4dai/chat-vision', modelId: 'chat-vision', displayName: 'Chat Vision',
+      capabilities: ['chat', 'vision', 'reverse_prompt'],
+    }];
+
+    expect(selectReverseProviderProfile(profiles, {
+      provider: '4dai',
+      modelRoute: '4dai/responses-vision',
+    })).toBeUndefined();
   });
 
   it('builds reverse routes from the supplied dialogue catalog', () => {
@@ -150,6 +241,19 @@ describe('canvas provider route sets', () => {
 
     expect(routes.imageGeneration.map((profile) => profile.modelRoute)).toEqual(['relayme-gpt-image-2']);
     expect(routes.reversePrompt).toEqual([]);
+  });
+
+  it('never exposes a provider-disabled profile as a runnable canvas route', () => {
+    const routes = buildCanvasProviderRouteSets([{
+      provider: '4dai',
+      modelRoute: '4dai-disabled-image',
+      displayName: 'Disabled Image',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'complete',
+      enabled: false,
+    }], [], ['4dai-disabled-image']);
+
+    expect(routes.imageGeneration).toEqual([]);
   });
 
   it('reduces the shared catalog before it is passed into every canvas node', () => {
@@ -329,16 +433,47 @@ describe('provider-local generation profile resolution', () => {
 });
 
 describe('listAllProviderProfiles', () => {
-  it('uses only the active provider catalog for runnable canvas routes', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => [{
+  it('keeps every provider catalog runnable and uses the active provider only as an ordering preference', async () => {
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => [{
       provider: provider ?? 'comfly', modelRoute: `${provider}-image`, displayName: `${provider} image`, capabilities: ['image_generation' as const],
     }]);
-    await expect(listRunnableProviderProfiles({
+    const profiles = await listRunnableProviderProfiles({
       listProfiles,
       getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
-    })).resolves.toEqual([expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly-image' })]);
-    expect(listProfiles).toHaveBeenCalledTimes(1);
-    expect(listProfiles).toHaveBeenCalledWith({ provider: 'comfly' });
+    });
+
+    expect(profiles).toHaveLength(4);
+    expect(profiles[0]).toEqual(expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly-image' }));
+    expect(profiles.map((profile) => profile.provider)).toEqual(expect.arrayContaining(['comfly', 'relayme', 'julun', '4dai']));
+    expect(listProfiles).toHaveBeenCalledTimes(4);
+    expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
+    expect(listProfiles).toHaveBeenNthCalledWith(3, { provider: 'julun' });
+    expect(listProfiles).toHaveBeenNthCalledWith(4, { provider: '4dai' });
+  });
+
+  it('keeps configured runnable catalogs when the active-provider preference cannot be read', async () => {
+    const statuses: Record<ProviderId, { configured: boolean; locked: boolean }> = {
+      comfly: { configured: true, locked: false },
+      relayme: { configured: true, locked: false },
+      julun: { configured: true, locked: false },
+      '4dai': { configured: true, locked: false },
+    };
+
+    await expect(listRunnableProviderProfiles({
+      listProfiles: vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => [{
+        provider: provider!,
+        modelRoute: `${provider}/runnable`,
+        displayName: `${provider} runnable`,
+        capabilities: [provider === 'julun' ? 'video_generation' as const : 'image_generation' as const],
+        capabilityStatus: 'complete' as const,
+      }]),
+      getStatus: vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => ({
+        ...statuses[provider!],
+        encryption: 'safeStorage' as const,
+      })),
+      getActiveProvider: vi.fn(async () => { throw new Error('active provider preference unavailable'); }),
+    })).resolves.toHaveLength(4);
   });
 
   it('excludes incomplete provider profiles from runnable canvas routes', async () => {
@@ -363,7 +498,7 @@ describe('listAllProviderProfiles', () => {
       expect.objectContaining({ modelRoute: 'relayme-workflow-image', capabilityStatus: 'complete' }),
     ]);
   });
-  it('keeps an incomplete chat-only route available for Agent conversations', async () => {
+  it('excludes protocol-pending chat routes from Agent execution', async () => {
     await expect(listRunnableProviderProfiles({
       listProfiles: vi.fn(async () => [{
         provider: 'relayme' as const,
@@ -373,25 +508,101 @@ describe('listAllProviderProfiles', () => {
         capabilityStatus: 'incomplete' as const,
       }]),
       getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
-    })).resolves.toEqual([expect.objectContaining({ modelRoute: 'relayme-gemini-chat' })]);
+    })).resolves.toEqual([]);
   });
-  it('queries Comfly and RelayMe explicitly and keeps both provider catalogs', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [
-      { provider: 'relayme' as const, modelRoute: 'video/generate', displayName: 'Relay Video', modelId: 'relay-video', capabilities: ['video_generation' as const] },
-    ] : [
-      { provider: 'comfly' as const, modelRoute: 'image/generate', displayName: 'Comfly Image', modelId: 'comfly-image', capabilities: ['image_generation' as const] },
-    ]);
 
-    await expect(listAllProviderProfiles({ listProfiles })).resolves.toEqual([
-      expect.objectContaining({ provider: 'comfly', modelId: 'comfly-image' }),
-      expect.objectContaining({ provider: 'relayme', modelId: 'relay-video' }),
-    ]);
+  it('admits routes only from configured and unlocked providers', async () => {
+    const statuses: Record<ProviderId, { configured: boolean; locked: boolean }> = {
+      comfly: { configured: true, locked: false },
+      relayme: { configured: false, locked: false },
+      julun: { configured: true, locked: true },
+      '4dai': { configured: true, locked: false },
+    };
+    const profiles = await listRunnableProviderProfiles({
+      listProfiles: vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => [{
+        provider: provider!,
+        modelRoute: `${provider}/model`,
+        displayName: 'Shared Model',
+        capabilities: [provider === 'julun' ? 'video_generation' as const : 'image_generation' as const],
+        capabilityStatus: 'complete' as const,
+      }]),
+      getStatus: vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => ({
+        ...statuses[provider!],
+        encryption: 'safeStorage' as const,
+      })),
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+    });
+
+    expect(profiles.map((profile) => `${profile.provider}:${profile.modelRoute}`)).toHaveLength(2);
+    expect(profiles.map((profile) => `${profile.provider}:${profile.modelRoute}`)).toEqual(expect.arrayContaining([
+      '4dai:4dai/model',
+      'comfly:comfly/model',
+    ]));
+  });
+
+  it('keeps successfully loaded catalogs when a provider status is temporarily unavailable', async () => {
+    const profiles = await listRunnableProviderProfiles({
+      listProfiles: vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => [{
+        provider: provider!,
+        modelRoute: `${provider}/model`,
+        displayName: `${provider} model`,
+        capabilities: [provider === 'julun' ? 'video_generation' as const : 'image_generation' as const],
+        capabilityStatus: 'complete' as const,
+      }]),
+      getStatus: vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => {
+        if (provider === 'relayme') throw new Error('status temporarily unavailable');
+        if (provider === 'julun') return { configured: false, locked: false };
+        if (provider === '4dai') return { configured: true, locked: true };
+        return undefined;
+      }) as never,
+    });
+
+    expect(profiles.map((profile) => profile.provider)).toEqual(['comfly', 'relayme']);
+  });
+
+  it('can include a configured locked catalog when durable Agent jobs must survive until unlock', async () => {
+    const profiles = await listRunnableProviderProfiles({
+      listProfiles: vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => [{
+        provider: provider!,
+        modelRoute: `${provider}/model`,
+        displayName: `${provider} model`,
+        capabilities: ['image_generation' as const],
+        capabilityStatus: 'complete' as const,
+      }]),
+      getStatus: vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => ({
+        configured: provider !== 'relayme',
+        locked: provider === 'julun',
+      })),
+    }, { includeLocked: true });
+
+    expect(profiles.map((profile) => profile.provider)).toEqual(expect.arrayContaining(['comfly', 'julun', '4dai']));
+    expect(profiles.map((profile) => profile.provider)).not.toContain('relayme');
+  });
+  it('queries all four providers explicitly and keeps every available catalog', async () => {
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => [{
+      provider: provider ?? 'comfly',
+      modelRoute: `${provider}/model`,
+      displayName: `${provider} model`,
+      modelId: `${provider}-model`,
+      capabilities: [provider === 'julun' ? 'video_generation' as const : 'image_generation' as const],
+    }]);
+
+    const profiles = await listAllProviderProfiles({ listProfiles });
+    expect(profiles).toHaveLength(4);
+    expect(profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'comfly', modelId: 'comfly-model' }),
+      expect.objectContaining({ provider: 'relayme', modelId: 'relayme-model' }),
+      expect.objectContaining({ provider: 'julun', modelId: 'julun-model' }),
+      expect.objectContaining({ provider: '4dai', modelId: '4dai-model' }),
+    ]));
     expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
     expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
+    expect(listProfiles).toHaveBeenNthCalledWith(3, { provider: 'julun' });
+    expect(listProfiles).toHaveBeenNthCalledWith(4, { provider: '4dai' });
   });
 
   it('shows one route for equal normalized names in the same provider and capability group', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) =>
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) =>
       provider === 'relayme' ? [] : [{
         provider: 'comfly' as const,
         modelRoute: 'comfly-nano-banana-2',
@@ -415,7 +626,7 @@ describe('listAllProviderProfiles', () => {
   });
 
   it('keeps same-name profiles once per provider and resolves a discarded preview route', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme'
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => provider === 'relayme'
       ? [{
         provider: 'relayme' as const,
         modelRoute: 'relayme-nano-banana-2',
@@ -452,8 +663,69 @@ describe('listAllProviderProfiles', () => {
     );
   });
 
+  it('publishes 4D Nano Banana 2 and Pro without leaking same-name routes across providers', () => {
+    const routes = buildCanvasProviderRouteSets([
+      {
+        provider: 'comfly' as const,
+        modelRoute: 'comfly-gemini-3-1-flash-image-preview',
+        modelId: 'gemini-3.1-flash-image-preview',
+        displayName: 'gemini-3.1-flash-image-preview',
+        capabilities: ['image_generation' as const, 'image_edit' as const],
+        capabilityStatus: 'complete' as const,
+      },
+      {
+        provider: '4dai' as const,
+        modelRoute: '4dai-gemini-3-1-flash-image-preview',
+        modelId: 'gemini-3.1-flash-image-preview',
+        displayName: 'gemini-3.1-flash-image-preview',
+        capabilities: ['image_generation' as const, 'image_edit' as const],
+        capabilityStatus: 'complete' as const,
+        constraints: { image: {
+          aspectRatios: ['1:1' as const, '16:9' as const],
+          resolutions: ['1K' as const, '2K' as const, '4K' as const],
+          outputCounts: [1 as const],
+        } },
+      },
+      {
+        provider: '4dai' as const,
+        modelRoute: '4dai-gemini-3-pro-image-preview',
+        modelId: 'gemini-3-pro-image-preview',
+        displayName: 'gemini-3-pro-image-preview',
+        capabilities: ['image_generation' as const, 'image_edit' as const],
+        capabilityStatus: 'complete' as const,
+        constraints: { image: {
+          aspectRatios: ['1:1' as const, '16:9' as const],
+          resolutions: ['1K' as const, '2K' as const, '4K' as const],
+          outputCounts: [1 as const],
+        } },
+      },
+      {
+        provider: '4dai' as const,
+        modelRoute: '4dai-gemini-3-pro-image-preview-4k',
+        modelId: 'gemini-3-pro-image-preview-4k',
+        displayName: 'gemini-3-pro-image-preview-4k',
+        capabilities: ['image_generation' as const],
+        capabilityStatus: 'incomplete' as const,
+      },
+    ]);
+
+    expect(routes.imageGeneration).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: 'comfly', modelRoute: 'comfly-gemini-3-1-flash-image-preview', displayName: 'Nano Banana 2',
+      }),
+      expect.objectContaining({
+        provider: '4dai', modelRoute: '4dai-gemini-3-1-flash-image-preview', displayName: 'Nano Banana 2',
+      }),
+      expect.objectContaining({
+        provider: '4dai', modelRoute: '4dai-gemini-3-pro-image-preview', displayName: 'Nano Banana Pro',
+      }),
+    ]));
+    expect(routes.imageGeneration).toHaveLength(3);
+    expect(routes.imageGeneration.some((profile) => profile.modelRoute.endsWith('preview-4k'))).toBe(false);
+  });
+
   it('isolates aliases by capability group when discarded model ids collide', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [] : [
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => provider === 'relayme' ? [] : [
       { provider: 'comfly' as const, modelRoute: 'image/stable', modelId: 'image-stable', displayName: 'Shared Model', capabilities: ['image_generation' as const] },
       { provider: 'comfly' as const, modelRoute: 'image/preview', modelId: 'legacy-shared', displayName: 'Shared Model', capabilities: ['image_generation' as const] },
       { provider: 'comfly' as const, modelRoute: 'image-chat/stable', modelId: 'image-chat-stable', displayName: 'Shared Model', capabilities: ['image_generation' as const, 'chat' as const] },
@@ -480,7 +752,7 @@ describe('listAllProviderProfiles', () => {
       { provider: 'comfly' as const, modelRoute: 'image-chat/stable', modelId: 'image-chat-stable', displayName: 'Shared Model', capabilities: ['image_generation' as const, 'chat' as const], capabilityStatus: 'complete' as const },
       { provider: 'comfly' as const, modelRoute: 'image-chat/preview', modelId: 'legacy-shared', displayName: 'Shared Model', capabilities: ['image_generation' as const, 'chat' as const], capabilityStatus: 'incomplete' as const },
     ];
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => {
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => {
       if (provider === 'relayme') return [];
       return reverseOrder ? [...profiles].reverse() : profiles;
     });
@@ -501,7 +773,7 @@ describe('listAllProviderProfiles', () => {
   });
 
   it('prefers complete stable routes over preview and minimal variants within a provider', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [] : [
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => provider === 'relayme' ? [] : [
       { provider: 'comfly' as const, modelRoute: 'comfly/model-minimal', displayName: 'Model', capabilities: ['chat' as const], capabilityStatus: 'complete' as const },
       { provider: 'comfly' as const, modelRoute: 'comfly/model-preview', displayName: 'Model', capabilities: ['chat' as const], capabilityStatus: 'complete' as const },
       { provider: 'comfly' as const, modelRoute: 'comfly/model', displayName: 'Model', capabilities: ['chat' as const], capabilityStatus: 'incomplete' as const },
@@ -515,7 +787,7 @@ describe('listAllProviderProfiles', () => {
   });
 
   it('checks preview and minimal priority only in modelRoute', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [] : [
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => provider === 'relayme' ? [] : [
       { provider: 'comfly' as const, modelRoute: 'comfly/model-z', modelId: 'model-preview-minimal', displayName: 'Model preview minimal', capabilities: ['chat' as const], capabilityStatus: 'complete' as const },
       { provider: 'comfly' as const, modelRoute: 'comfly/model-a-preview-minimal', modelId: 'model-z', displayName: 'Model preview minimal', capabilities: ['chat' as const], capabilityStatus: 'complete' as const },
     ]);
@@ -594,13 +866,13 @@ describe('listAgentChatProfiles', () => {
     ]);
   });
 
-  it('shows one Agent chat option when providers expose the same visible model name', () => {
+  it('keeps only the first Agent chat route when visible model names match across providers', () => {
     const profiles = [
       { provider: 'comfly' as const, modelRoute: 'comfly/gemini-3.1-pro', displayName: 'Gemini 3.1 Pro', capabilities: ['chat' as const, 'vision' as const] },
       { provider: 'relayme' as const, modelRoute: 'relayme/gemini-3.1-pro', displayName: 'Gemini 3.1 Pro', capabilities: ['chat' as const, 'vision' as const] },
     ];
 
-    expect(listAgentChatProfiles(profiles)).toHaveLength(1);
+    expect(listAgentChatProfiles(profiles).map((profile) => profile.provider)).toEqual(['comfly']);
   });
 
   it('keeps every Codex route available for Agent chat model switching', () => {
@@ -643,6 +915,76 @@ describe('listAgentChatProfiles', () => {
 });
 
 describe('filterProviderCatalogProfiles', () => {
+  it('keeps GPT Image 2 and audited GPT Image 2.5 routes distinct', () => {
+    const profiles: ProviderBridgeProfile[] = [{
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-image-2-5-flare',
+      displayName: 'gpt-image-2.5-flare',
+      modelId: 'gpt-image-2.5-flare',
+      capabilities: ['image_generation', 'image_edit'],
+      capabilityStatus: 'complete',
+      constraints: { image: { resolutions: ['1K'] } },
+    }, {
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-image-2-5-flare-4k',
+      displayName: 'gpt-image-2.5-flare-4k',
+      modelId: 'gpt-image-2.5-flare-4k',
+      capabilities: ['image_generation', 'image_edit'],
+      capabilityStatus: 'complete',
+      constraints: { image: { resolutions: ['4K'] } },
+    }, {
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-image-2',
+      displayName: 'gpt-image-2',
+      modelId: 'gpt-image-2',
+      capabilities: ['image_generation', 'image_edit'],
+      capabilityStatus: 'complete',
+      constraints: { image: { resolutions: ['2K', '4K'] } },
+    }];
+
+    expect(buildCanvasProviderRouteSets(profiles).imageGeneration).toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelRoute: 'comfly-gpt-image-2', displayName: 'GPT Image 2' }),
+      expect.objectContaining({ modelRoute: 'comfly-gpt-image-2-5-flare', displayName: 'GPT Image 2.5 Flare' }),
+      expect.objectContaining({ modelRoute: 'comfly-gpt-image-2-5-flare-4k', displayName: 'GPT Image 2.5 Flare 4K' }),
+    ]));
+    expect(buildCanvasProviderRouteSets(profiles).imageGeneration).toHaveLength(3);
+  });
+
+  it('does not collapse Comfly GPT Image 2.5 Flare and Sunburst resolution routes', () => {
+    const profiles: ProviderBridgeProfile[] = [
+      ...['', '-2k', '-4k'].map((suffix) => ({
+        provider: 'comfly' as const,
+        modelRoute: `comfly-gpt-image-2-5-flare${suffix}`,
+        displayName: `gpt-image-2.5-flare${suffix}`,
+        modelId: `gpt-image-2.5-flare${suffix}`,
+        capabilities: ['image_generation' as const, 'image_edit' as const],
+        capabilityStatus: 'complete' as const,
+      })),
+      ...['', '-2k', '-4k'].map((suffix) => ({
+        provider: 'comfly' as const,
+        modelRoute: `comfly-gpt-image-2-5-sunburst${suffix}`,
+        displayName: `gpt-image-2.5-sunburst${suffix}`,
+        modelId: `gpt-image-2.5-sunburst${suffix}`,
+        capabilities: ['image_generation' as const, 'image_edit' as const],
+        capabilityStatus: 'complete' as const,
+      })),
+    ];
+
+    const filtered = filterProviderCatalogProfiles(profiles);
+    expect(filtered).toHaveLength(6);
+    expect(filtered.map((profile) => profile.modelRoute)).toEqual(expect.arrayContaining(
+      profiles.map((profile) => profile.modelRoute),
+    ));
+    expect(filtered.map((profile) => profile.displayName)).toEqual(expect.arrayContaining([
+      'GPT Image 2.5 Flare',
+      'GPT Image 2.5 Flare 2K',
+      'GPT Image 2.5 Flare 4K',
+      'GPT Image 2.5 Sunburst',
+      'GPT Image 2.5 Sunburst 2K',
+      'GPT Image 2.5 Sunburst 4K',
+    ]));
+  });
+
   it('keeps supported user-facing models, removes action routes, compresses variants, and pins common generation models', () => {
     const profiles = [
       { provider: 'comfly' as const, modelRoute: 'openai/gpt-image-2', displayName: 'gpt-image-2', modelId: 'gpt-image-2', capabilities: ['image_generation' as const] },
@@ -685,7 +1027,7 @@ describe('filterProviderCatalogProfiles', () => {
 });
 
   it('keeps the available provider catalog when the other provider is unconfigured', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => {
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => {
       if (provider === 'relayme') throw new Error('RelayMe 未配置');
       return [{ provider: 'comfly' as const, modelRoute: 'chat/general', displayName: 'Comfly Chat', modelId: 'comfly-chat', capabilities: ['chat' as const] }];
     });
@@ -708,13 +1050,15 @@ describe('filterProviderCatalogProfiles', () => {
   });
 
   it('keeps same-name models once for Comfly and once for RelayMe', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => [{
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => (
+      provider === 'julun' || provider === '4dai' ? [] : [{
       provider: provider ?? 'comfly',
       modelRoute: provider === 'relayme' ? 'relayme/gpt-image-2' : 'comfly/gpt-image-2',
       displayName: provider === 'relayme' ? 'GPT Image 2' : 'gpt-image-2',
       modelId: 'gpt-image-2',
       capabilities: ['image_generation' as const],
-    }]);
+    }]
+    ));
 
     const profiles = await listAllProviderProfiles({ listProfiles });
 
@@ -726,7 +1070,7 @@ describe('filterProviderCatalogProfiles', () => {
   });
 
   it('keeps matching video and reverse models once per provider when metadata differs', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => provider === 'relayme' ? [
       { provider: 'relayme' as const, modelRoute: 'relay/seedance-2', displayName: 'Seedance 2.0', modelId: 'seedance-2.0', capabilities: ['video_generation' as const, 'async_tasks' as const] },
       { provider: 'relayme' as const, modelRoute: 'relay/reverse-vision', displayName: 'Reverse Vision', modelId: 'reverse-vision', capabilities: ['reverse_prompt' as const, 'vision' as const] },
     ] : [
@@ -742,7 +1086,7 @@ describe('filterProviderCatalogProfiles', () => {
     expect(profiles.filter((profile) => profile.modelId === 'reverse-vision').map((profile) => profile.provider)).toEqual(['comfly', 'relayme']);
   });
   it('keeps only Nano Banana 2 and Nano Banana Pro from Google image models and pins common models first', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme' ? [] : [
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => provider === 'relayme' ? [] : [
       { provider: 'comfly' as const, modelRoute: 'flux/pro', displayName: 'Flux Pro', modelId: 'flux-pro', capabilities: ['image_generation' as const] },
       { provider: 'comfly' as const, modelRoute: 'google/imagen-4', displayName: 'Imagen 4', modelId: 'imagen-4', capabilities: ['image_generation' as const] },
       { provider: 'comfly' as const, modelRoute: 'google/nano-banana', displayName: 'Nano Banana', modelId: 'nano-banana', capabilities: ['image_generation' as const] },
@@ -764,25 +1108,32 @@ describe('filterProviderCatalogProfiles', () => {
     expect(images.map((profile) => profile.displayName)).toContain('Flux Pro');
   });
 
-  it('keeps configured and unconfigured providers when their visible names match', async () => {
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => [{
+  it('merges all four persisted catalogs across configured and locked status combinations', async () => {
+    const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => ([{
       provider: provider ?? 'comfly',
-      modelRoute: provider === 'relayme' ? 'relayme/gpt-image-2' : 'comfly/gpt-image-2',
+      modelRoute: `${provider}/gpt-image-2`,
       displayName: 'GPT Image 2',
       modelId: 'gpt-image-2',
       capabilities: ['image_generation' as const],
-    }]);
-    const getStatus = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => ({
-      configured: provider === 'relayme',
-      locked: false,
+    }]));
+    const getStatus = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => ({
+      configured: provider === 'relayme' || provider === 'julun' || provider === '4dai',
+      locked: provider === 'julun',
       encryption: 'safeStorage' as const,
     }));
 
     const profiles = await listAllProviderProfiles({ listProfiles, getStatus });
 
-    expect(profiles.filter((profile) => profile.modelId === 'gpt-image-2')).toHaveLength(2);
+    expect(profiles.filter((profile) => profile.modelId === 'gpt-image-2')).toHaveLength(4);
     expect(profiles).toEqual(expect.arrayContaining([
       expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly/gpt-image-2' }),
       expect.objectContaining({ provider: 'relayme', modelRoute: 'relayme/gpt-image-2' }),
+      expect.objectContaining({ provider: 'julun', modelRoute: 'julun/gpt-image-2' }),
+      expect.objectContaining({ provider: '4dai', modelRoute: '4dai/gpt-image-2' }),
     ]));
+    expect(getStatus).toHaveBeenCalledTimes(4);
+    expect(getStatus).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
+    expect(getStatus).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
+    expect(getStatus).toHaveBeenNthCalledWith(3, { provider: 'julun' });
+    expect(getStatus).toHaveBeenNthCalledWith(4, { provider: '4dai' });
   });});

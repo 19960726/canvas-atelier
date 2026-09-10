@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildComflyModelProfiles, buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, mergeProviderModelProfiles, repairComflyImageEditCapability } from './provider-model-catalog';
+import { buildComflyModelProfiles, buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, markProviderProfileSelections, mergeProviderModelProfiles, repairComflyImageEditCapability } from './provider-model-catalog';
 import type { ProviderBridgeProfile } from './provider-contracts';
 import type { ComflyAccessibleModelCatalog } from '@agent-canvas/provider-comfly';
 import type { RelayMeModel } from '@agent-canvas/provider-relayme';
@@ -546,7 +546,7 @@ describe('provider model catalog', () => {
       }],
     });
 
-    expect(profiles[0]?.capabilities).toEqual(['responses', 'vision', 'reverse_prompt']);
+    expect(profiles[0]?.capabilities).toEqual(['responses', 'vision']);
   });
   it('maps the documented RelayMe capability field instead of guessing from names or legacy modelType', () => {
     const profiles = buildRelayMeModelProfiles(relayModels);
@@ -700,6 +700,20 @@ describe('provider model catalog', () => {
 
     expect(merged).toHaveLength(2);
     expect(new Set(merged.map((item) => item.provider))).toEqual(new Set(['comfly', 'relayme']));
+  });
+  it('does not re-enable a refreshed catalog when the saved selection no longer intersects it', () => {
+    const profile = (modelRoute: string): ProviderBridgeProfile => ({
+      provider: 'comfly', modelRoute, displayName: modelRoute, modelId: modelRoute,
+      capabilities: ['image_generation'], capabilityStatus: 'complete',
+    });
+
+    expect(markProviderProfileSelections([profile('new-a'), profile('new-b')], [profile('removed-selected')]))
+      .toEqual([
+        expect.objectContaining({ modelRoute: 'new-a', enabled: false }),
+        expect.objectContaining({ modelRoute: 'new-b', enabled: false }),
+      ]);
+    expect(markProviderProfileSelections([profile('new-a')], []))
+      .toEqual([expect.objectContaining({ modelRoute: 'new-a', enabled: true })]);
   });
   it('keeps every model selectable when distinct provider ids normalize to the same route slug', () => {
     const profiles = buildComflyModelProfiles({

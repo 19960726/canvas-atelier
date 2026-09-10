@@ -131,6 +131,7 @@ describe('desktop bridge contract', () => {
       'ackCloseFlush',
       'chooseCloseDecision',
       'requestClose',
+      'subscribeCloseFlushAborted',
       'subscribeCloseFlushRequest',
     ]);
     expect(Object.keys(createPreloadApi(mockInvoke).storage).sort()).toEqual([
@@ -491,6 +492,25 @@ describe('desktop bridge contract', () => {
     expect(api.lifecycle.ackCloseFlush({ requestId: 'close-request-123456', phase: 'completed', outcome: 'saved', token: 'secret' } as never)).toBe(false);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeFlushAck, { requestId: 'close-request-123456', phase: 'save_started' });
+  });
+  it('subscribes to strict close-flush abort events and returns the channel unsubscribe', () => {
+    const unsubscribe = vi.fn();
+    const subscribe = vi.fn((_channel, _listener) => unsubscribe);
+    const api = createPreloadApi(vi.fn(async () => undefined) as DesktopBridgeInvoke, subscribe);
+    const listener = vi.fn();
+
+    const stop = api.lifecycle.subscribeCloseFlushAborted(listener);
+    const eventListener = subscribe.mock.calls[0]?.[1];
+    eventListener?.({ requestId: 'close-request-aborted-123', reason: 'failed' });
+    eventListener?.({ requestId: 'close-request-aborted-123', reason: 'saved' });
+    eventListener?.({ requestId: '../project', reason: 'failed' });
+    eventListener?.({ requestId: 'close-request-aborted-123', reason: 'failed', token: 'secret' });
+    stop();
+
+    expect(subscribe).toHaveBeenCalledWith(BRIDGE_CHANNELS.closeFlushAborted, expect.any(Function));
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({ requestId: 'close-request-aborted-123', reason: 'failed' });
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
   it('invokes the close-choice channel with strict requests and defaults malformed responses to cancel', async () => {
     const invoke = vi.fn(async () => 'discard');

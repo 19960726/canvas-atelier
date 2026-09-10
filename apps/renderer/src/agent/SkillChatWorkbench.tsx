@@ -249,7 +249,7 @@ export function SkillChatWorkbench({
   const [pendingCanvasModelRoute, setPendingCanvasModelRoute] = useState<string | undefined>(undefined);
   const [generationPreferences, setGenerationPreferences] = useState(() => readGenerationPreferences(projectId));
   const [submittedNodeIds, setSubmittedNodeIds] = useState<string[]>([]);
-  const completedNodeIds = useRef(new Set<string>());
+  const deliveredNodeTerminalSignatures = useRef(new Map<string, string>());
   const confirmationCardRef = useRef<HTMLElement>(null);
   const conversationEpoch = useRef(0);
   const actionBusy = useRef(false);
@@ -774,7 +774,7 @@ export function SkillChatWorkbench({
     requestId.current += 1;
     conversationEpoch.current += 1;
     setSubmittedNodeIds([]);
-    completedNodeIds.current.clear();
+    deliveredNodeTerminalSignatures.current.clear();
     setActiveConversationId(conversation.id);
     setModelRoute(conversation.modelRoute ?? chatProfiles.find((profile) => profile.modelRoute === 'chat-default')?.modelRoute ?? chatProfiles[0]?.modelRoute);
     setSelectedKnowledgeBaseIds([...conversation.knowledgeBaseIds]);
@@ -798,7 +798,7 @@ export function SkillChatWorkbench({
     requestId.current += 1;
     conversationEpoch.current += 1;
     setSubmittedNodeIds([]);
-    completedNodeIds.current.clear();
+    deliveredNodeTerminalSignatures.current.clear();
     let now = Date.now();
     while (conversationCollection.conversations.some((conversation) => conversation.id === `conversation-${now}`)) now += 1;
     const created: StoredAgentConversation = {
@@ -958,8 +958,14 @@ export function SkillChatWorkbench({
   useEffect(() => {
     for (const nodeId of submittedNodeIds) {
       const result = canvasActionResults.find((item) => item.nodeId === nodeId);
-      if (!result || completedNodeIds.current.has(nodeId) || !['completed', 'failed', 'cancelled'].includes(result.status)) continue;
-      completedNodeIds.current.add(nodeId);
+      if (!result) continue;
+      if (!['completed', 'failed', 'cancelled'].includes(result.status)) {
+        deliveredNodeTerminalSignatures.current.delete(nodeId);
+        continue;
+      }
+      const terminalSignature = `${result.status}:${result.assetIds.join('\u0000')}`;
+      if (deliveredNodeTerminalSignatures.current.get(nodeId) === terminalSignature) continue;
+      deliveredNodeTerminalSignatures.current.set(nodeId, terminalSignature);
       const content = result.status === 'completed' && result.assetIds.length > 0
         ? `生成已完成，${result.assetIds.length} 个结果已回写画布节点。`
         : result.status === 'cancelled' ? '生成已取消。'
@@ -989,7 +995,6 @@ export function SkillChatWorkbench({
         role: 'assistant',
         content: `${canvasActionLabel(action.kind)}节点已开始运行。`,
       }]);
-      completedNodeIds.current.delete(action.nodeId);
       setSubmittedNodeIds((current) => [...new Set([...current, action.nodeId])]);
       setPendingCanvasAction(null);
       setSelectedCreativeOptionKey(null);

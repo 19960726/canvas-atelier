@@ -5,7 +5,7 @@ export interface ProviderRegistry {
   get(provider: ProviderBridgeProvider): ProviderService;
 }
 
-export function createProviderRegistry(services: Readonly<Record<ProviderBridgeProvider, ProviderService>>): ProviderRegistry {
+export function createProviderRegistry(services: Readonly<Partial<Record<ProviderBridgeProvider, ProviderService>>>): ProviderRegistry {
   return {
     get(provider) {
       const parsed = ProviderIdSchema.safeParse(provider);

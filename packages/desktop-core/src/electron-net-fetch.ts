@@ -4,6 +4,11 @@ import type { ComflyFetch, ComflyFetchResponse } from '@agent-canvas/provider-co
 
 const DEFAULT_PROVIDER_NETWORK_TIMEOUT_MS = 30_000;
 
+export type ElectronProviderFetchInit = Omit<NonNullable<Parameters<ComflyFetch>[1]>, 'body'> & {
+  readonly body?: string | Uint8Array;
+};
+export type ElectronProviderFetch = (url: string, init?: ElectronProviderFetchInit) => Promise<ComflyFetchResponse>;
+
 export interface ElectronNetLike<TSession = unknown> {
   request(options: {
     readonly url: string;
@@ -15,7 +20,7 @@ export interface ElectronNetLike<TSession = unknown> {
 
 export interface ElectronClientRequestLike {
   setHeader?(name: string, value: string): void;
-  write?(chunk: string): void;
+  write?(chunk: string | Uint8Array): void;
   end(): void;
   abort?(): void;
   on(event: 'response', listener: (response: ElectronIncomingMessageLike) => void): this;
@@ -68,7 +73,7 @@ export function createElectronNetComflyFetch<TSession = unknown>(
     readonly requestSession?: TSession;
     readonly timeoutMs?: number;
   } = {},
-): ComflyFetch {
+): ElectronProviderFetch {
   const maxResponseBytes = options.maxResponseBytes ?? 64 * 1024 * 1024;
   const pinnedHttpsRequest = options.pinnedHttpsRequest ?? nodeHttpsRequest as PinnedHttpsRequestLike;
   const timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_NETWORK_TIMEOUT_MS;
@@ -152,7 +157,7 @@ export function createElectronNetComflyFetch<TSession = unknown>(
 
 function requestPinnedHttps(
   url: URL,
-  init: NonNullable<Parameters<ComflyFetch>[1]>,
+  init: ElectronProviderFetchInit,
   trustedResolvedAddress: string,
   options: {
     readonly maxResponseBytes: number;

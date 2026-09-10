@@ -43,6 +43,9 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     MiniMap: () => null,
     Position: { Left: 'left', Right: 'right' },
   SelectionMode: { Partial: 'partial' },
+    useStore: (selector: (state: { nodeLookup: Map<string, { internals: { handleBounds?: unknown } }> }) => unknown) => (
+      selector({ nodeLookup: new Map() })
+    ),
     useUpdateNodeInternals: () => () => undefined,
     ReactFlow: (props: {
       children?: ReactNode;

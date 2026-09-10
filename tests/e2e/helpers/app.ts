@@ -23,6 +23,8 @@ export interface InteractionStallEvidence {
 
 type E2EState = {
   commitCount: number;
+  durableImageGenerationConfigs: Array<Record<string, unknown>>;
+  durableNodeCount: number;
   durableProjectContainsTransientImageUrl: boolean;
   edgeCount: number;
   nodeCount: number;
@@ -40,9 +42,13 @@ type E2EState = {
     status: string;
   }>;
   modelSubmissions: Array<{
+    aspectRatio?: string;
     conversationId: string;
     id: string;
+    imageQuality?: 'low' | 'medium' | 'high';
     modelRoute: string;
+    provider?: 'comfly' | 'relayme' | 'julun' | '4dai';
+    resolution?: '1K' | '2K' | '4K';
     retryCount: number;
   }>;
   projectAssetIds: string[];
@@ -468,6 +474,7 @@ declare global {
       }): void;
       failNextProjectCommit(): void;
       failNextModelJobEnqueue(): void;
+      reopenProject(): Promise<void>;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;
       seedModuleStressGraph(nodeCount: number, edgeCount: number): Promise<boolean>;

@@ -55,14 +55,54 @@ describe('ProviderModelCatalog', () => {
     expect(within(group).getByText('默认')).toBeVisible();
   });
 
-  it('renders a repeated visible model name only once inside each capability group', () => {
+  it('shows incomplete generation routes as protocol-pending and prevents enabling or defaulting them', () => {
+    const verified = {
+      provider: '4dai' as const,
+      modelRoute: 'image/gpt-image-1.5',
+      displayName: 'GPT Image 1.5',
+      modelId: 'gpt-image-1.5',
+      capabilities: ['image_generation' as const],
+      capabilityStatus: 'complete' as const,
+    };
+    const pending = {
+      provider: '4dai' as const,
+      modelRoute: 'openai/gpt-image-2-4k',
+      displayName: 'GPT Image 2 4K',
+      modelId: 'gpt-image-2-4k',
+      capabilities: ['image_generation' as const],
+      capabilityStatus: 'incomplete' as const,
+    };
+    render(<ProviderModelCatalog
+      profiles={[verified, pending]}
+      enabledProfileKeys={[
+        '4dai:image/gpt-image-1.5',
+        '4dai:openai/gpt-image-2-4k',
+      ]}
+      onToggleProfile={() => undefined}
+      onDefaultProfileChange={() => undefined}
+    />);
+
+    const group = screen.getByRole('region', { name: '生图模型' });
+    const pendingRow = within(group).getAllByRole('listitem')
+      .find((row) => within(row).queryByText('GPT Image 2 4K') !== null);
+    expect(pendingRow).not.toBeNull();
+    expect(within(pendingRow!).getByText('协议待验证')).toBeVisible();
+    expect(within(pendingRow!).getByRole('checkbox', { name: '启用 GPT Image 2 4K' })).toBeDisabled();
+    expect(within(group).getByText('2 个可用 · 1 个已启用')).toBeVisible();
+
+    const defaultSelect = within(group).getByRole('combobox', { name: '生图默认模型' });
+    expect(within(defaultSelect).getByRole('option', { name: 'GPT Image 1.5' })).toBeVisible();
+    expect(within(defaultSelect).queryByRole('option', { name: 'GPT Image 2 4K' })).not.toBeInTheDocument();
+  });
+
+  it('keeps equal visible names isolated when profiles from different providers are supplied', () => {
     render(<ProviderModelCatalog profiles={[
       { provider: 'comfly', modelRoute: 'image/stable', displayName: 'Nano Banana 2', capabilities: ['image_generation'] },
       { provider: 'relayme', modelRoute: 'image/alias', displayName: 'Nano Banana 2', capabilities: ['image_generation'] },
     ]} />);
 
     const imageGroup = screen.getByRole('region', { name: '生图模型' });
-    expect(within(imageGroup).getAllByText('Nano Banana 2')).toHaveLength(1);
+    expect(within(imageGroup).getAllByText('Nano Banana 2')).toHaveLength(2);
   });
   it('classifies models from declared capabilities and shows model-only labels', () => {
     render(<ProviderModelCatalog profiles={[

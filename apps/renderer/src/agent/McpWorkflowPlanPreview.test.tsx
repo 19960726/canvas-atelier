@@ -36,11 +36,14 @@ describe('McpWorkflowPlanPreview', () => {
     const reject = vi.fn();
     store.publish({
       id: 'paid-1', kind: 'paid_job', title: 'Run video generation', projectId: 'project-1', expectedRevision: 4,
-      nodeId: 'video-1', jobKind: 'video', modelRoute: 'video-default',
+      nodeId: 'video-1', jobKind: 'video', outputCount: 4, modelRoute: 'video-default',
     }, { confirm: vi.fn(() => ({ token: 'paid-grant', expiresAt: 125_000 })), reject });
 
     render(<McpWorkflowPlanPreview store={store} />);
-    expect(screen.getByRole('dialog', { name: 'MCP 付费任务确认' })).toHaveTextContent('video-default');
+    const dialog = screen.getByRole('dialog', { name: 'MCP 付费任务确认' });
+    expect(dialog).toHaveTextContent('video-default');
+    expect(dialog).toHaveTextContent('输出数量');
+    expect(dialog).toHaveTextContent('4');
     fireEvent.click(screen.getByRole('button', { name: '拒绝 MCP 请求' }));
     expect(reject).toHaveBeenCalledOnce();
   });

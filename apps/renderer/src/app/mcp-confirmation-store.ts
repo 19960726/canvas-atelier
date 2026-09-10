@@ -15,11 +15,15 @@ export interface WorkflowConfirmationSubject {
   readonly mutationHash: string;
 }
 
+export type PaidJobOutputCount = 1 | 2 | 3 | 4;
+
 export interface PaidJobConfirmationSubject {
   readonly nodeId: string;
   readonly projectId: string;
   readonly expectedRevision: number;
   readonly jobKind: 'image' | 'video' | 'reverse';
+  readonly outputCount: PaidJobOutputCount;
+  readonly provider?: string;
   readonly modelRoute: string;
   readonly requestHash: string;
 }

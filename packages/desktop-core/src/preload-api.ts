@@ -67,8 +67,10 @@ import type {
 import { CanvasMcpRequestSchema, CanvasMcpResponseSchema } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
+  parseCloseFlushAbort,
   parseCloseFlushAck,
   parseCloseFlushRequest,
+  type CloseFlushAbort,
   type CloseFlushAck,
   type CloseFlushRequest,
 } from './renderer-close-flush-contract.js';
@@ -147,6 +149,7 @@ export const BRIDGE_CHANNELS = {
   closeChoice: 'novus-desktop:close-choice',
   closeRequest: 'novus-desktop:close-request',
   closeFlushAck: 'novus-desktop:close-flush-ack',
+  closeFlushAborted: 'novus-desktop:close-flush-aborted',
   closeFlushRequest: 'novus-desktop:close-flush-request',
   closeProject: 'novus-desktop:close-project',
   createProject: 'novus-desktop:create-project',
@@ -338,6 +341,7 @@ export interface DesktopLifecycleBridgeApi {
   requestClose(): Promise<void>;
   ackCloseFlush(ack: CloseFlushAck): boolean;
   chooseCloseDecision(request: CloseChoiceRequest): Promise<CloseChoiceDecision>;
+  subscribeCloseFlushAborted(listener: (event: CloseFlushAbort) => void): () => void;
   subscribeCloseFlushRequest(listener: (request: CloseFlushRequest) => void | Promise<void>): () => void;
 }
 
@@ -646,6 +650,13 @@ export function createPreloadApi(
         if (parsedRequest === null) return 'cancel';
         const decision = parseCloseChoiceDecision(await invoke<unknown>(BRIDGE_CHANNELS.closeChoice, parsedRequest));
         return decision ?? 'cancel';
+      },
+      subscribeCloseFlushAborted(listener) {
+        return subscribe(BRIDGE_CHANNELS.closeFlushAborted, (payload) => {
+          const event = parseCloseFlushAbort(payload);
+          if (event === null) return;
+          listener(event);
+        });
       },
       subscribeCloseFlushRequest(listener) {
         return subscribe(BRIDGE_CHANNELS.closeFlushRequest, (payload) => {

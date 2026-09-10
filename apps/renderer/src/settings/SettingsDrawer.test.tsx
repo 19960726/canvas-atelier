@@ -10,6 +10,7 @@ const originalDesktop = window.novusDesktop;
 afterEach(() => {
   cleanup();
   window.novusDesktop = originalDesktop;
+  localStorage.removeItem('novus-atelier:provider-model-defaults:v1');
   vi.useRealTimers();
 });
 
@@ -36,15 +37,32 @@ describe('SettingsDrawer', () => {
     expect(tabsRule).not.toContain('repeat(5');
   });
 
-  it('uses a two-provider final layout and compact capability metadata in both themes', () => {
+  it('uses a four-provider final layout and compact capability metadata in both themes', () => {
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
-    const finalContract = css.slice(css.lastIndexOf('/* Dual-provider settings final contract */'));
+    const finalContract = css.slice(css.lastIndexOf('/* Four-provider settings final contract */'));
 
-    expect(finalContract).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))');
+    expect(finalContract).toContain('grid-template-columns: repeat(4, minmax(0, 1fr))');
     expect(finalContract).toContain('.settings-model-provider');
     expect(finalContract).toContain('.settings-model-constraints');
     expect(finalContract).toContain(":root[data-theme='dark']");
     expect(finalContract).toContain(":root[data-theme='light']");
+  });
+  it('describes the active provider as a routing priority while keeping configured state on provider cards', async () => {
+    window.novusDesktop = {
+      provider: {
+        getActiveProvider: vi.fn(async () => ({ activeProvider: '4dai' as const })),
+        getStatus: vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' | 'julun' | '4dai' } = {}) => ({
+          configured: provider === '4dai' || provider === 'relayme', locked: false, encryption: 'safeStorage' as const,
+        })),
+        listProfiles: vi.fn(async () => []),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+
+    expect(await screen.findByText('当前优先：4D AI')).toBeVisible();
+    expect(screen.queryByText('4D AI 已启用')).not.toBeInTheDocument();
+    expect(screen.getByRole('listitem', { name: 'RelayMe · 已配置' })).toBeVisible();
   });
   it('keeps advanced diagnostics compact instead of inheriting the retired oversized card rules', () => {
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
@@ -125,6 +143,7 @@ describe('SettingsDrawer', () => {
     expect(screen.getByRole('list', { name: '模型供应商' })).toBeVisible();
     expect(screen.getByRole('listitem', { name: /Comfly/i })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('API 服务地址（Base URL）')).toHaveValue('https://ai.comfly.org');
+    expect(screen.getByRole('link', { name: '打开 Comfly API 文档' })).toHaveAttribute('href', 'https://gpt-best.apifox.cn/');
     expect(screen.getByText('用于读取模型目录并发送对话、生图和视频请求；通常无需修改。')).toBeVisible();
     expect(screen.getByRole('button', { name: '配置隐藏密钥' })).toBeVisible();
     expect(screen.getByLabelText('Comfly 凭据摘要')).toHaveTextContent('凭据状态');
@@ -152,6 +171,114 @@ describe('SettingsDrawer', () => {
     expect(screen.getByRole('region', { name: '视觉模型' })).toBeVisible();
     expect(screen.queryByText('CF')).toBeNull();
     expect(screen.queryByText('模型')).not.toBeInTheDocument();
+  });
+
+  it('keeps Comfly, RelayMe, Julun video, and 4D AI credentials and catalogs on four independent provider cards', async () => {
+    const getStatus = vi.fn(async ({ provider }: { provider?: string } = {}) => ({
+      configured: provider === 'julun' || provider === '4dai',
+      locked: false,
+      encryption: 'safeStorage' as const,
+    }));
+    const listProfiles = vi.fn(async ({ provider }: { provider?: string } = {}) => provider === 'julun'
+      ? [{ provider: 'julun', modelRoute: 'julun/seedance-2.0-deal', displayName: 'seedance-2.0-deal', modelId: 'seedance-2.0-deal', capabilities: ['video_generation', 'async_tasks'], capabilityStatus: 'complete' }]
+      : provider === '4dai'
+        ? [
+          { provider: '4dai', modelRoute: '4dai/gpt-image-2', displayName: 'GPT Image 2', modelId: 'gpt-image-2', capabilities: ['image_generation'], capabilityStatus: 'complete' },
+          { provider: '4dai', modelRoute: '4dai/gemini-3.1-flash-image-preview', displayName: 'Nano Banana 2', modelId: 'gemini-3.1-flash-image-preview', capabilities: ['image_generation', 'image_edit'], capabilityStatus: 'complete' },
+          { provider: '4dai', modelRoute: '4dai/gemini-3-pro-image-preview', displayName: 'Nano Banana Pro', modelId: 'gemini-3-pro-image-preview', capabilities: ['image_generation', 'image_edit'], capabilityStatus: 'complete' },
+        ]
+        : []);
+    window.novusDesktop = { provider: { getStatus, listProfiles } } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+
+    expect(await screen.findByRole('listitem', { name: /Comfly/u })).toBeEnabled();
+    expect(screen.getByRole('listitem', { name: /RelayMe/u })).toBeEnabled();
+    const julunCard = screen.getByRole('listitem', { name: /巨轮 API/u });
+    const fourdaiCard = screen.getByRole('listitem', { name: /4D AI/u });
+    expect(julunCard).toHaveTextContent('视频专用');
+    expect(fourdaiCard).toHaveTextContent('生图 · 视觉反推 · 对话');
+
+    fireEvent.click(julunCard);
+    await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'julun' }));
+    expect(screen.getByLabelText('API 服务地址（Base URL）')).toHaveValue('https://julun.cc/v1');
+    expect(screen.getByRole('link', { name: '打开巨轮网站' })).toHaveAttribute('href', 'https://julun.cc');
+    expect((await screen.findAllByText('seedance-2.0-deal')).length).toBeGreaterThanOrEqual(1);
+
+    fireEvent.click(fourdaiCard);
+    await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: '4dai' }));
+    expect(screen.getByLabelText('API 服务地址（Base URL）')).toHaveValue('https://api.4dai.cc/v1');
+    expect(screen.getByRole('link', { name: '打开 4D AI 网站' })).toHaveAttribute('href', 'https://api.4dai.cc');
+    expect((await screen.findAllByText('GPT Image 2')).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByLabelText('启用 Nano Banana 2')).toBeChecked();
+    expect(screen.getByLabelText('启用 Nano Banana Pro')).toBeChecked();
+  });
+
+  it('restores each provider persisted Base URL when switching cards and reopening settings', async () => {
+    const persistedBaseUrls = {
+      comfly: 'https://comfly-gateway.example/v1',
+      relayme: 'https://relayme-gateway.example/api/ai-tools/v1',
+      julun: 'https://julun-gateway.example/v1',
+      '4dai': 'https://4d-gateway.example/v1',
+    } as const;
+    const getStatus = vi.fn(async ({ provider = 'comfly' }: { provider?: keyof typeof persistedBaseUrls } = {}) => ({
+      configured: true,
+      locked: false,
+      encryption: 'safeStorage' as const,
+      baseUrl: persistedBaseUrls[provider],
+    }));
+    window.novusDesktop = {
+      provider: { getStatus, listProfiles: vi.fn(async () => []) },
+    } as unknown as typeof window.novusDesktop;
+
+    const first = render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText('API 服务地址（Base URL）')).toHaveValue(persistedBaseUrls.comfly));
+
+    for (const [cardName, providerId] of [
+      [/RelayMe/u, 'relayme'],
+      [/巨轮 API/u, 'julun'],
+      [/4D AI/u, '4dai'],
+    ] as const) {
+      fireEvent.click(screen.getByRole('listitem', { name: cardName }));
+      await waitFor(() => expect(screen.getByLabelText('API 服务地址（Base URL）')).toHaveValue(persistedBaseUrls[providerId]));
+    }
+
+    first.unmount();
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText('API 服务地址（Base URL）')).toHaveValue(persistedBaseUrls.comfly));
+  });
+
+  it('does not overwrite an unread persisted Base URL when only saving a new credential', async () => {
+    const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
+    window.novusDesktop = { provider: { configure } } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    expect(screen.getByLabelText('API 服务地址（Base URL）')).toHaveValue('https://ai.comfly.org');
+    fireEvent.click(screen.getByRole('button', { name: '配置隐藏密钥' }));
+    fireEvent.change(screen.getByLabelText('Comfly API 密钥'), { target: { value: 'replacement-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存隐藏密钥' }));
+
+    await waitFor(() => expect(configure).toHaveBeenCalledWith({
+      provider: 'comfly',
+      token: 'replacement-secret',
+    }));
+  });
+
+  it('saves an explicitly edited Base URL together with a new credential', async () => {
+    const configure = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
+    window.novusDesktop = { provider: { configure } } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('API 服务地址（Base URL）'), { target: { value: 'https://comfly-custom.example/v1' } });
+    fireEvent.click(screen.getByRole('button', { name: '配置隐藏密钥' }));
+    fireEvent.change(screen.getByLabelText('Comfly API 密钥'), { target: { value: 'replacement-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存隐藏密钥' }));
+
+    await waitFor(() => expect(configure).toHaveBeenCalledWith({
+      provider: 'comfly',
+      token: 'replacement-secret',
+      baseUrl: 'https://comfly-custom.example/v1',
+    }));
   });
 
   it('switches between only Comfly and RelayMe and scopes every provider request', async () => {
@@ -187,13 +314,11 @@ describe('SettingsDrawer', () => {
     await waitFor(() => expect(checkConnection).toHaveBeenCalledWith({ provider: 'relayme' }));
   });
 
-  it('notifies the canvas after switching the durable active provider', async () => {
+  it('keeps provider cards edit-only and changes routing priority only through the explicit action', async () => {
     const getActiveProvider = vi.fn(async () => ({ activeProvider: 'comfly' as const }));
-    const setActiveProvider = vi.fn(async ({ activeProvider }: { activeProvider: 'comfly' | 'relayme' }) => ({ activeProvider }));
+    const setActiveProvider = vi.fn(async ({ activeProvider }: { activeProvider: 'comfly' | 'relayme' | 'julun' | '4dai' }) => ({ activeProvider }));
     const getStatus = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
-    const listProfiles = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => provider === 'relayme'
-      ? [{ provider: 'relayme' as const, modelRoute: 'relayme/vision', displayName: 'Relay Vision', modelId: 'relayme-vision', capabilities: ['chat' as const, 'vision' as const, 'reverse_prompt' as const] }]
-      : [{ provider: 'comfly' as const, modelRoute: 'comfly/vision', displayName: 'Comfly Vision', modelId: 'comfly-vision', capabilities: ['chat' as const, 'vision' as const, 'reverse_prompt' as const] }]);
+    const listProfiles = vi.fn(async () => []);
     const changedProviders: string[] = [];
     const onCatalogChanged = (event: Event) => {
       const provider = (event as CustomEvent<{ provider?: unknown }>).detail?.provider;
@@ -204,10 +329,24 @@ describe('SettingsDrawer', () => {
 
     try {
       render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
-      fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+      expect(await screen.findByText('当前优先：Comfly')).toBeVisible();
 
-      await waitFor(() => expect(setActiveProvider).toHaveBeenCalledWith({ activeProvider: 'relayme' }));
-      expect(changedProviders).toContain('relayme');
+      fireEvent.click(screen.getByRole('listitem', { name: /4D AI/u }));
+      await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: '4dai' }));
+      expect(setActiveProvider).not.toHaveBeenCalled();
+      expect(screen.getByText('当前优先：Comfly')).toBeVisible();
+
+      fireEvent.click(screen.getByRole('button', { name: '设为优先供应商' }));
+      await waitFor(() => expect(setActiveProvider).toHaveBeenCalledWith({ activeProvider: '4dai' }));
+      expect(changedProviders).toContain('4dai');
+
+      fireEvent.click(screen.getByRole('listitem', { name: /巨轮 API/u }));
+      await waitFor(() => expect(listProfiles).toHaveBeenCalledWith({ provider: 'julun' }));
+      expect(setActiveProvider).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole('button', { name: '设为优先供应商' }));
+      await waitFor(() => expect(setActiveProvider).toHaveBeenCalledWith({ activeProvider: 'julun' }));
+      expect(changedProviders).toContain('julun');
     } finally {
       window.removeEventListener('novus:provider-catalog-changed', onCatalogChanged);
     }
@@ -239,6 +378,35 @@ describe('SettingsDrawer', () => {
     } finally {
       window.removeEventListener('novus:provider-catalog-changed', onCatalogChanged);
     }
+  });
+
+  it('allows a configured RelayMe account to log out while another provider remains active', async () => {
+    let relayMeConfigured = true;
+    const getActiveProvider = vi.fn(async () => ({ activeProvider: 'comfly' as const }));
+    const logoutRelayMe = vi.fn(async () => {
+      relayMeConfigured = false;
+      return { activeProvider: 'comfly' as const };
+    });
+    const getStatus = vi.fn(async ({ provider }: { provider?: 'comfly' | 'relayme' } = {}) => ({
+      configured: provider === 'relayme' ? relayMeConfigured : true,
+      locked: false,
+      encryption: 'safeStorage' as const,
+    }));
+    const listProfiles = vi.fn(async () => []);
+    window.novusDesktop = {
+      provider: { getActiveProvider, logoutRelayMe, getStatus, listProfiles },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    expect(await screen.findByText('当前优先：Comfly')).toBeVisible();
+    fireEvent.click(screen.getByRole('listitem', { name: /RelayMe/u }));
+
+    const logoutButton = await screen.findByRole('button', { name: '退出 RelayMe' });
+    fireEvent.click(logoutButton);
+
+    await waitFor(() => expect(logoutRelayMe).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('button', { name: '退出 RelayMe' })).toBeNull());
+    expect(screen.getByText('当前优先：Comfly')).toBeVisible();
   });
 
   it('organizes the API tab as a layered workbench with chat adaptation guidance', async () => {
@@ -326,6 +494,7 @@ describe('SettingsDrawer', () => {
 
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
     const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
@@ -355,6 +524,7 @@ describe('SettingsDrawer', () => {
 
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     fireEvent.click(await screen.findByRole('listitem', { name: /RelayMe/u }));
+    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
     const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
@@ -380,6 +550,7 @@ describe('SettingsDrawer', () => {
     render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
     await vi.advanceTimersByTimeAsync(0);
     fireEvent.click(screen.getByRole('listitem', { name: /RelayMe/u }));
+    fireEvent.click(screen.getByRole('button', { name: '登录 RelayMe' }));
     const dialog = screen.getByRole('dialog', { name: '登录 RelayMe' });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 账号'), { target: { value: 'artist@example.test' } });
     fireEvent.change(within(dialog).getByLabelText('RelayMe 密码'), { target: { value: 'not-a-real-password' } });
@@ -624,7 +795,7 @@ describe('SettingsDrawer', () => {
     fireEvent.change(token, { target: { value: 'comfly-secret' } });
     fireEvent.click(screen.getByRole('button', { name: '保存隐藏密钥' }));
 
-    await waitFor(() => expect(configure).toHaveBeenCalledWith(expect.objectContaining({ provider: 'comfly', token: 'comfly-secret', baseUrl: 'https://ai.comfly.org' })));
+    await waitFor(() => expect(configure).toHaveBeenCalledWith({ provider: 'comfly', token: 'comfly-secret' }));
     expect(screen.queryByRole('dialog', { name: '配置隐藏密钥' })).toBeNull();
     expect(screen.getByText('API 密钥已保存到系统安全存储')).toBeVisible();
   });
@@ -1180,19 +1351,66 @@ it('keeps safe permission defaults and the workflow capability summary below the
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('saves the selected default image route without resubmitting a credential', async () => {
+  it('restores a selected default image route after settings remount with a multi-model catalog', async () => {
+    localStorage.removeItem('novus-atelier:provider-model-defaults:v1');
     const updateProfiles = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
-    window.novusDesktop = { provider: { listProfiles: vi.fn(async () => [{ provider: 'comfly', modelRoute: 'image-default', displayName: 'GPT Image 2', modelId: 'gpt-image-2', capabilities: ['image_generation'] }]), updateProfiles } } as unknown as typeof window.novusDesktop;
+    const profiles = [
+      { provider: 'comfly' as const, modelRoute: 'image/alpha', displayName: 'Alpha Image', modelId: 'alpha-image', capabilities: ['image_generation' as const], capabilityStatus: 'complete' as const },
+      { provider: 'comfly' as const, modelRoute: 'image/beta', displayName: 'Beta Image', modelId: 'beta-image', capabilities: ['image_generation' as const], capabilityStatus: 'complete' as const },
+    ];
+    window.novusDesktop = { provider: { listProfiles: vi.fn(async () => profiles), updateProfiles } } as unknown as typeof window.novusDesktop;
+    const first = render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+
+    await screen.findByLabelText('启用 Beta Image');
+    expect(screen.getByLabelText('生图默认模型')).toHaveValue('comfly:image/alpha');
+    fireEvent.change(screen.getByLabelText('生图默认模型'), { target: { value: 'comfly:image/beta' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存 Comfly 模型选择' }));
+
+    await screen.findByText('已保存 2 个 Comfly 模型');
+    first.unmount();
+
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    expect(await screen.findByLabelText('生图默认模型')).toHaveValue('comfly:image/beta');
+  });
+
+  it('never persists a protocol-pending generation route as enabled or default', async () => {
+    const updateProfiles = vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }));
+    window.novusDesktop = { provider: {
+      listProfiles: vi.fn(async () => [
+        { provider: 'comfly', modelRoute: 'image/gpt-image-1.5', displayName: 'GPT Image 1.5', modelId: 'gpt-image-1.5', capabilities: ['image_generation'], capabilityStatus: 'complete' },
+        { provider: 'comfly', modelRoute: 'openai/gpt-image-2-4k', displayName: 'GPT Image 2 4K', modelId: 'gpt-image-2-4k', capabilities: ['image_generation'], capabilityStatus: 'incomplete' },
+      ]),
+      updateProfiles,
+    } } as unknown as typeof window.novusDesktop;
     render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
 
-    await screen.findByLabelText('启用 GPT Image 2');
-    fireEvent.change(screen.getByLabelText('生图默认模型'), { target: { value: 'comfly:image-default' } });
+    expect(await screen.findByLabelText('启用 GPT Image 2')).toBeDisabled();
+    expect(screen.getByLabelText('生图默认模型')).toHaveValue('comfly:image/gpt-image-1.5');
     fireEvent.click(screen.getByRole('button', { name: '保存 Comfly 模型选择' }));
 
     await waitFor(() => expect(updateProfiles).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'comfly',
-      profiles: [expect.objectContaining({ modelRoute: 'image-default', modelId: 'gpt-image-2', capabilities: ['image_generation'] })],
+      profiles: [expect.objectContaining({ modelRoute: 'image/gpt-image-1.5' })],
     })));
+  });
+
+  it('keeps a provider-disabled model unchecked after a catalog refresh', async () => {
+    const profiles = [
+      { provider: 'comfly' as const, modelRoute: 'image/enabled', displayName: 'Enabled Image', modelId: 'enabled-image', capabilities: ['image_generation' as const], capabilityStatus: 'complete' as const, enabled: true },
+      { provider: 'comfly' as const, modelRoute: 'image/disabled', displayName: 'Disabled Image', modelId: 'disabled-image', capabilities: ['image_generation' as const], capabilityStatus: 'complete' as const, enabled: false },
+    ];
+    const listProfiles = vi.fn(async () => profiles);
+    const checkConnection = vi.fn(async () => ({ checkedAt: '2026-09-10T00:00:00.000Z', status: 'connected' as const }));
+    window.novusDesktop = { provider: { listProfiles, checkConnection } } as unknown as typeof window.novusDesktop;
+    render(<SettingsDrawer providerStatus={{ configured: true, locked: false, encryption: 'safeStorage' }} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+
+    expect(await screen.findByLabelText('启用 Disabled Image')).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: '检测连接' }));
+
+    await waitFor(() => expect(listProfiles).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText('启用 Enabled Image')).toBeChecked();
+    expect(screen.getByLabelText('启用 Disabled Image')).not.toBeChecked();
+    expect(screen.getByLabelText('生图默认模型')).toHaveValue('comfly:image/enabled');
   });
 
   it('restores saved default routes into the matching model selectors', async () => {

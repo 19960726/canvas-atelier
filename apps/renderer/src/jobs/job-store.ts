@@ -1,12 +1,14 @@
 import Dexie, { type Table } from 'dexie';
-import type { CanvasNode, CanvasProject, ImageAspectRatio, ModelJob, ModelJobKind, ModelJobProvider, ProjectTransaction, VideoResolutionTier } from '@agent-canvas/domain';
+import type { CanvasNode, CanvasProject, ImageAspectRatio, ImageQuality, ModelJob, ModelJobKind, ModelJobProvider, ProjectTransaction, VideoResolutionTier } from '@agent-canvas/domain';
 import {
   assertPublicModelJobPayload,
   createConfirmedModelJob,
+  modelJobSchema,
   sanitizeModelJobError,
   transitionModelJob,
 } from '@agent-canvas/domain';
 import { createModelJobRunId } from './model-job-identity';
+import { isExternalProviderJob, isUncertainExternalSubmission, UNCERTAIN_EXTERNAL_SUBMISSION_ERROR } from './model-job-retry-policy';
 
 const DEFAULT_POLL_CONCURRENCY = 4;
 const DEFAULT_MATERIALIZE_CONCURRENCY = 2;
@@ -38,6 +40,7 @@ export interface ModelJobRequest {
   referenceSnapshotFingerprint?: string;
   aspectRatio?: ImageAspectRatio;
   resolution?: '1K' | '2K' | '4K';
+  imageQuality?: ImageQuality;
   videoResolution?: VideoResolutionTier;
   durationSeconds?: number;
   audioEnabled?: boolean;
@@ -46,6 +49,7 @@ export interface ModelJobRequest {
 
 export interface EnqueueConfirmedJobsInput {
   conversationId: string;
+  projectId?: string;
   projectSessionId?: string;
   confirmedAt?: string;
   requests: ModelJobRequest[];
@@ -123,6 +127,8 @@ export interface ModelJobStoreOptions {
     isOwnerRunning: () => Promise<boolean>,
   ) => Promise<boolean>;
   canRecoverRunningJob?: (ownerJob: ModelJob) => Promise<boolean>;
+  isJobInScope?: (ownerJob: ModelJob) => boolean;
+  shouldProcessJob?: (ownerJob: ModelJob) => boolean;
   getProject?: () => CanvasProject;
   pollConcurrency?: number;
   decodeConcurrency?: number;
@@ -132,12 +138,12 @@ export interface ModelJobStoreOptions {
 
 export interface ModelJobStore {
   enqueueConfirmedJobs(input: EnqueueConfirmedJobsInput): Promise<ModelJob[]>;
-  recover(): Promise<void>;
+  recover(options?: { preserveOutOfScopeJobs?: boolean; resumeOwnedJobs?: boolean }): Promise<void>;
   run(): Promise<void>;
   stop(): void;
   processQueue(): Promise<void>;
   pollActiveJobs(): Promise<void>;
-  retryJob(id: string): Promise<void>;
+  retryJob(id: string, overrides?: { id?: string; projectId?: string; projectSessionId?: string }): Promise<ModelJob>;
   cancelQueuedJob(id: string): Promise<void>;
   listJobs(): Promise<ModelJob[]>;
   subscribe(listener: (jobs: ModelJob[]) => void): () => void;
@@ -189,7 +195,9 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
   const submittingJobs = new Set<string>();
   const pollingJobs = new Set<string>();
   const materializingJobs = new Set<string>();
-  const retryingJobs = new Map<string, Promise<void>>();
+  const shouldProcessJob = options.shouldProcessJob ?? (() => true);
+  const isJobInScope = options.isJobInScope ?? shouldProcessJob;
+  const retryingJobs = new Map<string, Promise<ModelJob>>();
   let activeRun: Promise<void> | null = null;
   let stopped = false;
 
@@ -212,13 +220,13 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
     await ackPendingTerminalJobs(storage, putJob, options.executor, now);
 
     if (optionsForRun.submitQueued) {
-      const queued = (await storage.list()).filter((job) => job.status === 'queued');
+      const queued = (await storage.list()).filter((job) => job.status === 'queued' && shouldProcessJob(job));
       await runLimited(queued, queued.length, async (job) => {
-        await submitJob(job.id, storage, putJob, options.executor, providerQueue, now, submittingJobs);
+        await submitJob(job.id, storage, putJob, options.executor, providerQueue, now, submittingJobs, shouldProcessJob);
       });
     }
 
-    const running = (await storage.list()).filter((job) => job.status === 'running');
+    const running = (await storage.list()).filter((job) => job.status === 'running' && shouldProcessJob(job));
     await runLimited(running, running.length, async (job) => {
       await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, resultCommitQueue, now, pollingJobs, materializingJobs);
     });
@@ -230,7 +238,8 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       await runOnce({ poll: 'once', submitQueued: true });
       if (stopped) return;
       const jobs = await storage.list();
-      if (!jobs.some((job) => job.status === 'queued' || job.status === 'submitting' || job.status === 'running')) return;
+      if (!jobs.some((job) => shouldProcessJob(job)
+        && (job.status === 'queued' || job.status === 'submitting' || job.status === 'running'))) return;
       await delay(pollIntervalMs);
     }
   };
@@ -252,6 +261,7 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
         ...request,
         confirmedAt: input.confirmedAt,
         conversationId: input.conversationId,
+        projectId: input.projectId,
         projectSessionId: input.projectSessionId,
         createdAt: now(),
         queueIndex,
@@ -259,26 +269,43 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
       await bulkPutJobs(jobs);
       return jobs.map(cloneRequiredJob);
     },
-    recover: async () => {
+    recover: async (recoveryOptions) => {
       const jobs = await storage.list();
-      const recovered = await Promise.all(jobs.map(async (job) => {
-        if (job.status !== 'queued' && job.status !== 'submitting' && job.status !== 'running') return job;
+      const shouldPreserve = (job: ModelJob) => {
+        if (!isJobInScope(job)) {
+          return job.projectId !== undefined || recoveryOptions?.preserveOutOfScopeJobs === true;
+        }
+        return shouldProcessJob(job)
+          && recoveryOptions?.resumeOwnedJobs === true
+          && (job.status === 'queued' || (job.status === 'submitting' && submittingJobs.has(job.id)));
+      };
+      await Promise.all(jobs.map(async (job) => {
+        if (job.status !== 'queued' && job.status !== 'submitting' && job.status !== 'running') return;
+        // The queue is shared by every canvas. Leave another project's active
+        // record untouched so opening this project neither cancels paid work
+        // nor keeps polling a result that cannot be committed here.
+        if (shouldPreserve(job)) return;
         if (job.status === 'running'
           && options.canRecoverRunningJob !== undefined
-          && isRecoverableRunningJobFresh(job, now())) {
-          if (await options.canRecoverRunningJob(job)) {
-            const latest = await storage.get(job.id);
-            if (isSameRunningJob(latest, job)) return latest;
-          }
+          && (isRecoverableRunningJobFresh(job, now())
+            || (job.providerTaskId !== undefined && isExternalProviderJob(job)))) {
+          if (await options.canRecoverRunningJob(job)) return;
         }
-        return transitionModelJob(job, 'cancelled', {
+        // Recovery may wait for provider ownership while workers advance. Only
+        // migrate the same active run, using its latest data; never bulk-write
+        // unchanged snapshots over concurrent progress or terminal results.
+        const latest = await storage.get(job.id);
+        if (!isSameJobRun(latest, job) || latest.status !== job.status || shouldPreserve(latest)) return;
+        const uncertainExternalSubmission = latest.status === 'submitting'
+          && latest.providerTaskId === undefined
+          && isExternalProviderJob(latest);
+        await putJob(transitionModelJob(latest, 'cancelled', {
           completedAt: now(),
           updatedAt: now(),
-          error: undefined,
-        });
+          error: uncertainExternalSubmission ? UNCERTAIN_EXTERNAL_SUBMISSION_ERROR : undefined,
+        }));
       }));
-      await bulkPutJobs(recovered);
-      await repairCompletedCanvasResults(recovered, options);
+      await repairCompletedCanvasResults(await storage.list(), options);
       await ackPendingTerminalJobs(storage, putJob, options.executor, now);
     },
     run: () => coalescedRun(),
@@ -287,19 +314,19 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
     },
     processQueue: async () => {
       if (activeRun) return activeRun;
-      const queued = (await storage.list()).filter((job) => job.status === 'queued');
+      const queued = (await storage.list()).filter((job) => job.status === 'queued' && shouldProcessJob(job));
       await runLimited(queued, queued.length, async (job) => {
-        await submitJob(job.id, storage, putJob, options.executor, providerQueue, now, submittingJobs);
+        await submitJob(job.id, storage, putJob, options.executor, providerQueue, now, submittingJobs, shouldProcessJob);
       });
     },
     pollActiveJobs: async () => {
       if (activeRun) return activeRun;
-      const running = (await storage.list()).filter((job) => job.status === 'running');
+      const running = (await storage.list()).filter((job) => job.status === 'running' && shouldProcessJob(job));
       await runLimited(running, running.length, async (job) => {
         await pollJob(job.id, storage, putJob, options, providerQueue, resultDecodeQueue, resultCommitQueue, now, pollingJobs, materializingJobs);
       });
     },
-    retryJob: (id) => {
+    retryJob: (id, overrides) => {
       const existing = retryingJobs.get(id);
       if (existing !== undefined) return existing;
       const operation = (async () => {
@@ -307,13 +334,17 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
         if (job.status !== 'failed' && job.status !== 'cancelled') {
           throw new Error(`model job cannot be retried from ${job.status}`);
         }
+        if (isUncertainExternalSubmission(job)) {
+          throw new Error(UNCERTAIN_EXTERNAL_SUBMISSION_ERROR);
+        }
         const timestamp = now();
         const retry = createConfirmedModelJob({
-          id: createModelJobRunId(),
+          id: overrides?.id ?? createModelJobRunId(),
           kind: job.kind,
           confirmedAt: timestamp,
           conversationId: requireRetryField(job.conversationId, 'conversationId'),
-          projectSessionId: job.projectSessionId,
+          projectId: overrides?.projectId ?? job.projectId,
+          projectSessionId: overrides?.projectSessionId ?? job.projectSessionId,
           createdAt: timestamp,
           displayName: requireRetryField(job.displayName, 'displayName'),
           modelId: job.modelId,
@@ -327,15 +358,18 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
           referenceSnapshotRevision: job.referenceSnapshotRevision,
           aspectRatio: job.aspectRatio,
           resolution: job.resolution,
+          imageQuality: job.imageQuality,
           videoResolution: job.videoResolution,
           durationSeconds: job.durationSeconds,
           audioEnabled: job.audioEnabled,
           outputCount: job.outputCount as 1 | 2 | 3 | 4 | undefined,
         });
+        const retryRecord = { ...retry, retryCount: job.retryCount + 1 };
         await bulkPutJobs([
           { ...job, error: job.error === undefined ? undefined : sanitizeModelJobError(job.error) },
-          { ...retry, retryCount: job.retryCount + 1 },
+          retryRecord,
         ]);
+        return cloneRequiredJob(retryRecord);
       })().finally(() => { retryingJobs.delete(id); });
       retryingJobs.set(id, operation);
       return operation;
@@ -395,7 +429,7 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
 }
 
 function requireProviderField(value: ModelJobProvider | undefined): ModelJobProvider {
-  if (value !== 'comfly' && value !== 'relayme') {
+  if (value !== 'comfly' && value !== 'relayme' && value !== 'julun' && value !== '4dai') {
     throw new Error('provider is required to create a new model job run');
   }
   return value;
@@ -451,16 +485,28 @@ async function submitJob(
   providerQueue: AsyncQueue,
   now: () => string,
   submittingJobs: Set<string>,
+  shouldProcessJob: (job: ModelJob) => boolean,
 ): Promise<void> {
   if (submittingJobs.has(id)) return;
   submittingJobs.add(id);
   try {
     const queued = await storage.get(id);
-    if (!queued || queued.status !== 'queued') return;
+    if (!queued || queued.status !== 'queued' || !shouldProcessJob(queued)) return;
     const submitting = transitionModelJob(queued, 'submitting', { updatedAt: now(), error: undefined });
     await putJob(submitting);
     try {
-      const submitted = await providerQueue.run(() => executor.submit(submitting));
+      const submitted = await providerQueue.run(async () => {
+        const latest = await storage.get(id);
+        if (!isSameJobRun(latest, submitting) || latest.status !== 'submitting') return;
+        if (!shouldProcessJob(latest)) {
+          // This worker has not called the provider. Restore a validated queue
+          // record so returning to its project can submit it exactly once.
+          await putJob(modelJobSchema.parse({ ...latest, status: 'queued', updatedAt: now() }));
+          return;
+        }
+        return executor.submit(latest);
+      });
+      if (submitted === undefined) return;
       const latest = await storage.get(id);
       if (!latest || latest.status !== 'submitting' || latest.retryCount !== submitting.retryCount) return;
       await putJob(transitionModelJob(latest, 'running', {
@@ -497,10 +543,14 @@ async function pollJob(
   pollingJobs.add(id);
   try {
     const job = await storage.get(id);
-    if (!job || job.status !== 'running') return;
-    let result: ModelJobPollResult;
+    if (!job || job.status !== 'running' || options.shouldProcessJob?.(job) === false) return;
+    let result: ModelJobPollResult | undefined;
     try {
-      result = await providerQueue.run(() => options.executor.poll(job));
+      result = await providerQueue.run(async () => {
+        const latest = await storage.get(id);
+        if (!isSameRunningJob(latest, job) || options.shouldProcessJob?.(latest) === false) return;
+        return options.executor.poll(latest);
+      });
     } catch (error) {
       const latest = await storage.get(id);
       if (!isSameRunningJob(latest, job)) return;
@@ -515,6 +565,7 @@ async function pollJob(
       }));
       return;
     }
+    if (result === undefined) return;
     try {
       const latest = await storage.get(id);
       if (!isSameRunningJob(latest, job)) return;
@@ -652,6 +703,8 @@ function createResultMaterialization(
   const sourceNode = findFormalGenerationSourceNode(project, job.promptNodeId, job.kind);
   if (sourceNode !== undefined) {
     const previousConfig = sourceNode.data.config;
+    const pendingResultJobIds = readPendingResultJobIds(previousConfig)
+      .filter((jobId) => jobId !== job.id);
     const nextConfig = isVideo
       ? {
         ...previousConfig,
@@ -665,6 +718,7 @@ function createResultMaterialization(
         ].slice(-4),
         resultState: 'fresh',
         lastResultJobId: job.id,
+        pendingResultJobIds,
       }
       : {
         ...previousConfig,
@@ -680,6 +734,7 @@ function createResultMaterialization(
           ? { resultHeight: result.height }
           : {}),
         lastResultJobId: job.id,
+        pendingResultJobIds,
       };
     const nextNode: CanvasNode = {
       ...sourceNode,
@@ -744,6 +799,12 @@ function createResultMaterialization(
       ],
     },
   };
+}
+
+function readPendingResultJobIds(config: Record<string, unknown>): string[] {
+  return Array.isArray(config.pendingResultJobIds)
+    ? [...new Set(config.pendingResultJobIds.filter((value): value is string => typeof value === 'string' && value.length > 0))]
+    : [];
 }
 
 function resultAssetIds(result: ModelJobResult): string[] {
@@ -881,11 +942,19 @@ async function runLimited<T>(
   await Promise.all(workers);
 }
 
-function isSameRunningJob(candidate: ModelJob | undefined, expected: ModelJob): candidate is ModelJob {
+function isSameJobRun(candidate: ModelJob | undefined, expected: ModelJob): candidate is ModelJob {
   return candidate !== undefined
-    && candidate.status === 'running'
+    && candidate.id === expected.id
     && candidate.retryCount === expected.retryCount
-    && candidate.providerTaskId === expected.providerTaskId;
+    && candidate.providerTaskId === expected.providerTaskId
+    && candidate.confirmedAt === expected.confirmedAt
+    && candidate.createdAt === expected.createdAt
+    && candidate.projectId === expected.projectId
+    && candidate.projectSessionId === expected.projectSessionId;
+}
+
+function isSameRunningJob(candidate: ModelJob | undefined, expected: ModelJob): candidate is ModelJob {
+  return isSameJobRun(candidate, expected) && candidate.status === 'running';
 }
 
 function isTerminalJob(job: ModelJob): job is ModelJob & { status: 'completed' | 'failed' | 'cancelled' } {
@@ -905,8 +974,9 @@ function findExistingResult(project: CanvasProject | undefined, job: ModelJob, r
   if (sourceNode !== undefined) {
     const stored = job.kind === 'video'
       ? readStoredVideoResults(sourceNode.data.config.videoResults).some((item) => item.assetId === result.assetId)
-      : readStoredImageResultAssetIds(sourceNode.data.config.resultAssetIds).includes(result.assetId);
-    return stored ? sourceNode : undefined;
+      : resultAssetIds(result).every((assetId) => readStoredImageResultAssetIds(sourceNode.data.config.resultAssetIds).includes(assetId));
+    const settled = !readPendingResultJobIds(sourceNode.data.config).includes(job.id);
+    return stored && settled ? sourceNode : undefined;
   }
   const expectedType = job.kind === 'video' ? 'video_result' : 'image_result';
   const defaultResultId = `${job.kind === 'video' ? 'video' : 'image'}-result-${job.id}`;

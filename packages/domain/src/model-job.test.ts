@@ -3,6 +3,7 @@ import {
   createConfirmedModelJob,
   getLegalModelJobTransitions,
   mapImageResolutionTier,
+  modelJobProviderSchema,
   modelJobSchema,
   normalizeImageResolutionTier,
   sanitizeModelJobError,
@@ -12,6 +13,30 @@ import {
 const confirmedAt = '2026-07-16T08:00:00.000Z';
 
 describe('model job domain contract', () => {
+  it.each(['comfly', 'relayme', 'julun', '4dai'] as const)(
+    'persists the registered %s provider identity on a confirmed job',
+    (provider) => {
+      const job = createConfirmedModelJob({
+        id: `provider-${provider}`,
+        promptNodeId: 'prompt-1',
+        confirmedAt,
+        provider,
+        modelRoute: `${provider}/model`,
+        displayName: `${provider} model`,
+        modelId: `${provider}-model`,
+        conversationId: 'agent-conversation-shared',
+        referenceAssetIds: [],
+      });
+
+      expect(job.provider).toBe(provider);
+      expect(modelJobProviderSchema.safeParse(provider).success).toBe(true);
+    },
+  );
+
+  it('rejects an unregistered model-job provider identity', () => {
+    expect(modelJobProviderSchema.safeParse('unknown-provider').success).toBe(false);
+  });
+
   it.each([
     ['1K', '1K'],
     ['2K', '2K'],
@@ -42,8 +67,8 @@ describe('model job domain contract', () => {
     expect(createConfirmedModelJob({
       id: 'tier-job', promptNodeId: 'prompt-1', confirmedAt, provider: 'comfly', modelRoute: 'gpt-image',
       displayName: 'GPT image', modelId: 'dynamic-gpt-image-id', conversationId: 'agent-conversation-shared',
-      referenceAssetIds: [], resolution: '4K',
-    }).resolution).toBe('4K');
+      referenceAssetIds: [], resolution: '4K', imageQuality: 'high',
+    })).toMatchObject({ resolution: '4K', imageQuality: 'high' });
   });
 
   it('hydrates legacy jobs as image jobs and preserves explicit video controls', () => {
@@ -161,6 +186,30 @@ describe('model job domain contract', () => {
       conversationId: 'agent-conversation-shared',
       referenceAssetIds: [],
     })).toThrow();
+  });
+
+  it('persists stable project ownership while accepting legacy jobs without it', () => {
+    const owned = createConfirmedModelJob({
+      id: 'project-owned-job',
+      promptNodeId: 'prompt-1',
+      confirmedAt,
+      provider: 'comfly',
+      modelRoute: 'route-from-inventory',
+      displayName: 'Inventory display name',
+      modelId: 'inventory-model-id',
+      conversationId: 'agent-conversation-shared',
+      projectId: 'project-a',
+      referenceAssetIds: [],
+    } as Parameters<typeof createConfirmedModelJob>[0] & { projectId: string });
+
+    expect(owned).toMatchObject({ projectId: 'project-a' });
+    expect(modelJobSchema.parse({
+      id: 'legacy-projectless-job',
+      modelId: 'legacy-model',
+      status: 'queued',
+      promptNodeId: 'prompt-1',
+      retryCount: 0,
+    })).not.toHaveProperty('projectId');
   });
 
   it('persists provider terminal ACK state for crash recovery', () => {

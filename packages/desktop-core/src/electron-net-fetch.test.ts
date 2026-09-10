@@ -9,6 +9,16 @@ afterEach(() => {
 });
 
 describe('Electron provider transport response bounds', () => {
+  it('forwards Uint8Array multipart bodies without converting binary bytes to text', async () => {
+    const net = responseNet({ chunks: [Buffer.from('{}')] });
+    const fetch = createElectronNetComflyFetch(net.adapter);
+    const body = Uint8Array.from([0, 255, 13, 10]);
+
+    await fetch('https://api.example/v1/videos', { method: 'POST', body });
+
+    expect(net.writtenBody).toEqual(body);
+  });
+
   it('binds provider requests to an explicit Electron network session', async () => {
     const net = responseNet({ chunks: [Buffer.from('{}')] });
     const requestSession = { id: 'relayme-direct-session' };
@@ -193,6 +203,7 @@ function responseNet(options: {
   readonly headers: Record<string, string>;
   requestUrl: string | null;
   requestSession: unknown;
+  writtenBody: string | Uint8Array | null;
 } {
   const state = {
     adapter: undefined as unknown as ElectronNetLike,
@@ -201,6 +212,7 @@ function responseNet(options: {
     headers: {} as Record<string, string>,
     requestUrl: null as string | null,
     requestSession: undefined as unknown,
+    writtenBody: null as string | Uint8Array | null,
   };
   state.adapter = {
     request(requestOptions) {
@@ -210,9 +222,11 @@ function responseNet(options: {
         abort(): void;
         end(): void;
         setHeader(name: string, value: string): void;
+        write(chunk: string | Uint8Array): void;
       };
       request.abort = () => { state.aborted = true; };
       request.setHeader = (name, value) => { state.headers[name.toLowerCase()] = value; };
+      request.write = (chunk) => { state.writtenBody = chunk; };
       request.end = () => {
         queueMicrotask(() => {
           if (options.redirect === true) {

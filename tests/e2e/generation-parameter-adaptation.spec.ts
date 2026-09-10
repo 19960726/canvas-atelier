@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
-import { e2eState, openEmptyApp } from './helpers/app';
+import { e2eState, openEmptyApp, waitForModelSubmissions } from './helpers/app';
 
 const artifact = (name: string) => path.join(
   process.cwd(),
@@ -8,6 +8,77 @@ const artifact = (name: string) => path.join(
   '2026-08-10-complete-project-release',
   name,
 );
+
+test('GPT image mode persists its dedicated quality choice and submits high quality at 4K', async ({ page }) => {
+  await page.setViewportSize({ width: 1680, height: 1050 });
+  await page.addInitScript(() => localStorage.setItem('novus.theme.mode', 'dark'));
+  await openEmptyApp(page);
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.createModule('image_generation', { x: 500, y: 180 });
+  });
+
+  let imageNode = page.locator('[data-module-type="image_generation"]');
+  await imageNode.getByRole('button', { name: 'Open image generation editor' }).click();
+  const commitsBeforeDraft = (await e2eState(page)).commitCount;
+  const model = imageNode.getByRole('combobox', { name: 'Image generation model route' });
+  await model.selectOption({ label: 'GPT Image 2' });
+  const selectedModelRoute = await model.inputValue();
+  expect(selectedModelRoute).toMatch(/^comfly-gpt-image-2/u);
+  const quality = imageNode.getByRole('button', { name: 'Image generation quality' });
+  await expect(quality).toBeVisible();
+  await expect(imageNode.locator('.module-node__generation-control-bar > *:visible')).toHaveCount(6);
+  await expect(quality).toHaveAttribute('value', '中');
+  await quality.click();
+  await imageNode
+    .getByRole('menu', { name: 'Image generation quality options' })
+    .getByRole('menuitemradio', { name: '高' })
+    .click();
+
+  const resolution = imageNode.getByRole('button', { name: 'Image generation resolution' });
+  await resolution.click();
+  await imageNode
+    .getByRole('menu', { name: 'Image generation resolution options' })
+    .getByRole('menuitemradio', { name: '4K' })
+    .click();
+  await expect(quality).toHaveAttribute('value', '高');
+  await expect(resolution).toHaveAttribute('value', '4K');
+  const controlTops = await imageNode
+    .locator('.module-node__generation-control-bar > *:visible')
+    .evaluateAll((controls) => controls.map((control) => Math.round(control.getBoundingClientRect().top)));
+  expect(Math.max(...controlTops) - Math.min(...controlTops)).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: artifact('10-gpt-quality-high-4k-dark.png'), fullPage: true });
+
+  await expect.poll(async () => {
+    const state = await e2eState(page);
+    return state.durableImageGenerationConfigs[0];
+  }).toMatchObject({
+    modelRoute: selectedModelRoute,
+    imageQuality: 'high',
+    resolution: '4K',
+  });
+  await expect.poll(async () => (await e2eState(page)).commitCount).toBeGreaterThan(commitsBeforeDraft);
+  await page.evaluate(() => window.__NOVUS_E2E__!.reopenProject());
+  const reopenedState = await e2eState(page);
+  expect(reopenedState.durableNodeCount).toBeGreaterThan(0);
+  expect(reopenedState.nodeCount).toBe(reopenedState.durableNodeCount);
+
+  imageNode = page.locator('[data-module-type="image_generation"]');
+  const reopenedEditorButton = imageNode.getByRole('button', { name: 'Open image generation editor' });
+  if (await reopenedEditorButton.isVisible()) await reopenedEditorButton.click();
+  await expect(imageNode.getByRole('combobox', { name: 'Image generation model route' })).toHaveValue(selectedModelRoute);
+  await expect(imageNode.getByRole('button', { name: 'Image generation quality' })).toHaveAttribute('value', '高');
+  await expect(imageNode.getByRole('button', { name: 'Image generation resolution' })).toHaveAttribute('value', '4K');
+
+  await imageNode.getByRole('textbox', { name: 'Image generation prompt' }).fill('Premium studio product shot');
+  await imageNode.getByRole('button', { name: 'Generate image' }).click();
+  const submitted = await waitForModelSubmissions(page, 1);
+  expect(submitted.modelSubmissions[0]).toMatchObject({
+    provider: 'comfly',
+    modelRoute: selectedModelRoute,
+    imageQuality: 'high',
+    resolution: '4K',
+  });
+});
 
 test('image and video generation expose the final ratio and clarity controls without submitting a paid task', async ({ page }) => {
   await page.setViewportSize({ width: 1680, height: 1050 });

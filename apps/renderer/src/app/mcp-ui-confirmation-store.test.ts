@@ -30,9 +30,12 @@ describe('MCP UI confirmation store', () => {
     const store = createMcpUiConfirmationStore();
     store.publish({
       id: 'paid-1', kind: 'paid_job', title: 'Run image generation', projectId: 'project-1', expectedRevision: 4,
-      nodeId: 'image-1', jobKind: 'image', modelRoute: 'image-default',
+      nodeId: 'image-1', jobKind: 'image', outputCount: 3, modelRoute: 'image-default',
     }, { confirm, reject });
 
+    expect(store.getSnapshot()).toEqual([
+      expect.objectContaining({ id: 'paid-1', outputCount: 3 }),
+    ]);
     store.reject('paid-1');
     expect(reject).toHaveBeenCalledOnce();
     expect(confirm).not.toHaveBeenCalled();

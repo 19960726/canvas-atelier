@@ -299,6 +299,108 @@ describe('MCP workspace adapter', () => {
     await expect(adapter.handle({ tool: 'canvas_apply_workflow', expectedRevision: 4, planId, confirmationToken: grant.token })).resolves.toMatchObject({ ok: false, error: { code: 'PROJECT_REVISION_CONFLICT' } });
   });
 
+  it('does not consume or apply an old workflow plan at a newer revision even when the public canvas state is identical', async () => {
+    const confirmations = createMcpConfirmationStore({
+      now: () => 10_000,
+      createToken: () => `mcp-plan-revision-${++tokenSequence}`,
+    });
+    const consumeWorkflow = vi.spyOn(confirmations, 'consumeWorkflow');
+    adapter = createMcpWorkspaceAdapter(source, confirmations, {
+      getPermissions: () => ({ ...DEFAULT_MCP_PERMISSION_FLAGS, dangerousOperations: true, externalFileAccess: true }),
+    });
+    const plan = await adapter.handle({
+      tool: 'canvas_plan_workflow',
+      expectedRevision: 4,
+      workflowIntent: 'Move the image node',
+      mutations: [{ kind: 'move_nodes', positions: [{ nodeId: 'image-1', x: 520, y: 120 }] }],
+    });
+    const planId = readResultString(plan, 'planId');
+    const grant = adapter.confirmPlan(planId);
+    revision = 5;
+
+    await expect(adapter.handle({
+      tool: 'canvas_apply_workflow',
+      expectedRevision: 5,
+      planId,
+      confirmationToken: grant.token,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'PROJECT_REVISION_CONFLICT', details: { currentRevision: 5 } },
+    });
+    expect(source.commitProjectTransaction).not.toHaveBeenCalled();
+    expect(consumeWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'module config',
+      changeProject: (current: CanvasProject) => {
+        const image = current.nodes.find((node) => node.id === 'image-1');
+        if (image?.type !== 'module') throw new Error('image node missing');
+        return parseCanvasProject({
+          ...current,
+          nodes: current.nodes.map((node) => node.id === image.id
+            ? { ...image, data: { ...image.data, config: { ...image.data.config, prompt: 'Unsaved local prompt' } } }
+            : node),
+        });
+      },
+    },
+    {
+      label: 'edge graph',
+      changeProject: (current: CanvasProject) => parseCanvasProject({
+        ...current,
+        edges: current.edges.map((edge) => edge.id === 'edge-1' ? { ...edge, label: 'Unsaved local edge label' } : edge),
+      }),
+    },
+    {
+      label: 'asset catalog',
+      changeProject: (current: CanvasProject) => parseCanvasProject({
+        ...current,
+        assets: [{
+          assetId: 'aaaaaaaaaaaaaaaa',
+          byteSize: 42,
+          extension: 'png',
+          height: 100,
+          label: 'Unsaved local asset',
+          mediaType: 'image/png',
+          origin: 'imported',
+          sha256: 'a'.repeat(64),
+          width: 100,
+        }],
+      }),
+    },
+  ])('does not consume or apply a confirmed workflow after a same-revision $label change', async ({ changeProject }) => {
+    const confirmations = createMcpConfirmationStore({
+      now: () => 10_000,
+      createToken: () => `mcp-plan-race-${++tokenSequence}`,
+    });
+    const consumeWorkflow = vi.spyOn(confirmations, 'consumeWorkflow');
+    adapter = createMcpWorkspaceAdapter(source, confirmations, {
+      getPermissions: () => ({ ...DEFAULT_MCP_PERMISSION_FLAGS, dangerousOperations: true, externalFileAccess: true }),
+    });
+    const plan = await adapter.handle({
+      tool: 'canvas_plan_workflow',
+      expectedRevision: 4,
+      workflowIntent: 'Move the image node',
+      mutations: [{ kind: 'move_nodes', positions: [{ nodeId: 'image-1', x: 520, y: 120 }] }],
+    });
+    const planId = readResultString(plan, 'planId');
+    const grant = adapter.confirmPlan(planId);
+    project = changeProject(project);
+
+    await expect(adapter.handle({
+      tool: 'canvas_apply_workflow',
+      expectedRevision: 4,
+      planId,
+      confirmationToken: grant.token,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'PROJECT_REVISION_CONFLICT', details: { currentRevision: 4 } },
+    });
+    expect(source.commitProjectTransaction).not.toHaveBeenCalled();
+    expect(consumeWorkflow).not.toHaveBeenCalled();
+  });
+
 it('returns the one-time workflow token when the approved plan is retried exactly', async () => {
     const request = {
       tool: 'canvas_plan_workflow' as const,
@@ -329,7 +431,11 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     const first = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
     expect(first).toMatchObject({
       ok: false,
-      error: { code: 'PAID_CONFIRMATION_REQUIRED', message: 'Confirm the paid model job inside Canvas Atelier.' },
+      error: {
+        code: 'PAID_CONFIRMATION_REQUIRED',
+        message: 'Confirm the paid model job inside Canvas Atelier.',
+        details: { outputCount: 1 },
+      },
     });
     const requestId = readErrorDetailString(first, 'requestId');
     const grant = adapter.confirmPaidJob(requestId);
@@ -347,7 +453,7 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     });
 
     expect(mcpUiConfirmationStore.getSnapshot()).toEqual([
-      expect.objectContaining({ id: requestId, kind: 'paid_job', nodeId: 'image-1' }),
+      expect.objectContaining({ id: requestId, kind: 'paid_job', nodeId: 'image-1', outputCount: 1 }),
     ]);
     mcpUiConfirmationStore.confirm(requestId);
 
@@ -367,6 +473,260 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     });
     expect(source.runNode).toHaveBeenCalledOnce();
     expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+  });
+
+  it.each([
+    { moduleType: 'image_generation' as const, jobKind: 'image', configuredOutputCount: 3, outputCount: 3 },
+    { moduleType: 'video_generation' as const, jobKind: 'video', configuredOutputCount: 4, outputCount: 4 },
+    { moduleType: 'reverse_agent' as const, jobKind: 'reverse', configuredOutputCount: 4, outputCount: 1 },
+    { moduleType: 'image_generation' as const, jobKind: 'image', configuredOutputCount: 5, outputCount: 1 },
+    { moduleType: 'video_generation' as const, jobKind: 'video', configuredOutputCount: 2.5, outputCount: 1 },
+  ])('normalizes $moduleType paid output quantity before confirmation', async ({ moduleType, jobKind, configuredOutputCount, outputCount }) => {
+    const paidNode = createCanvasModuleNode('paid-1', moduleType, { x: 320, y: 0 });
+    paidNode.data.config = { modelRoute: 'paid-route', outputCount: configuredOutputCount };
+    project = parseCanvasProject({ ...project, nodes: [paidNode], edges: [] });
+
+    const response = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'paid-1' });
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: 'PAID_CONFIRMATION_REQUIRED',
+        details: { nodeId: 'paid-1', jobKind, outputCount },
+      },
+    });
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([
+      expect.objectContaining({ nodeId: 'paid-1', jobKind, outputCount }),
+    ]);
+  });
+
+  it('rejects a paid approval when the image output quantity changes', async () => {
+    const image = project.nodes.find((node) => node.id === 'image-1');
+    if (image?.type !== 'module') throw new Error('image node missing');
+    image.data.config = { ...image.data.config, outputCount: 2 };
+    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'image-1' };
+    const first = await adapter.handle(request);
+    const requestId = readErrorDetailString(first, 'requestId');
+    const grant = adapter.confirmPaidJob(requestId);
+    image.data.config = { ...image.data.config, outputCount: 3 };
+
+    await expect(adapter.handle({ ...request, confirmationToken: grant.token })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: 'PAID_CONFIRMATION_REQUIRED',
+        details: { outputCount: 3 },
+      },
+    });
+    expect(source.runNode).not.toHaveBeenCalled();
+  });
+
+  it('binds paid confirmation to the provider route that runtime will actually execute', async () => {
+    const image = project.nodes.find((node) => node.id === 'image-1');
+    if (image?.type !== 'module') throw new Error('image node missing');
+    image.data.config = { prompt: 'Studio product image', resolution: '4K' };
+    Object.assign(source, {
+      resolvePaidJobRoute: vi.fn(async () => ({ provider: '4dai', modelRoute: '4dai-gpt-image-1-5' })),
+    });
+
+    const first = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
+    expect(first).toMatchObject({
+      ok: false,
+      error: {
+        code: 'PAID_CONFIRMATION_REQUIRED',
+        details: {
+          provider: '4dai',
+          modelRoute: '4dai-gpt-image-1-5',
+        },
+      },
+    });
+    const requestId = readErrorDetailString(first, 'requestId');
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([
+      expect.objectContaining({
+        id: requestId,
+        kind: 'paid_job',
+        provider: '4dai',
+        modelRoute: '4dai-gpt-image-1-5',
+      }),
+    ]);
+
+    const grant = adapter.confirmPaidJob(requestId);
+    await expect(adapter.handle({
+      tool: 'canvas_run_node',
+      expectedRevision: 4,
+      nodeId: 'image-1',
+      confirmationToken: grant.token,
+    })).resolves.toMatchObject({ ok: true, result: { started: true } });
+    expect(source.runNode).toHaveBeenCalledWith('image-1', {
+      projectId: 'project-1',
+      expectedRevision: 4,
+      provider: '4dai',
+      modelRoute: '4dai-gpt-image-1-5',
+    });
+  });
+
+  it('rechecks the canvas revision after asynchronously resolving the paid route', async () => {
+    Object.assign(source, {
+      resolvePaidJobRoute: vi.fn(async () => {
+        revision = 5;
+        return { provider: '4dai', modelRoute: '4dai-gpt-image-1-5' };
+      }),
+    });
+
+    await expect(adapter.handle({
+      tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'PROJECT_REVISION_CONFLICT', details: { currentRevision: 5 } },
+    });
+    expect(source.runNode).not.toHaveBeenCalled();
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+  });
+
+  it.each([
+    {
+      label: 'public config',
+      changeProject: (current: CanvasProject) => {
+        const image = current.nodes.find((node) => node.id === 'image-1');
+        if (image?.type !== 'module') throw new Error('image node missing');
+        return parseCanvasProject({
+          ...current,
+          nodes: current.nodes.map((node) => node.id === image.id
+            ? { ...image, data: { ...image.data, config: { ...image.data.config, outputCount: 3 } } }
+            : node),
+        });
+      },
+    },
+    {
+      label: 'module type',
+      changeProject: (current: CanvasProject) => {
+        const image = current.nodes.find((node) => node.id === 'image-1');
+        if (image?.type !== 'module') throw new Error('image node missing');
+        const video = createCanvasModuleNode(image.id, 'video_generation', image.position);
+        video.data.config = { prompt: 'Unsaved local video prompt', modelRoute: 'video-route', outputCount: 1 };
+        return parseCanvasProject({
+          ...current,
+          nodes: current.nodes.map((node) => node.id === image.id ? video : node),
+        });
+      },
+    },
+  ])('does not consume or run an approved paid job after a same-revision $label change during route resolution', async ({ changeProject }) => {
+    const route = { provider: '4dai' as const, modelRoute: '4dai-gpt-image-1-5' };
+    let deferRoute = false;
+    let releaseRoute: ((value: typeof route) => void) | undefined;
+    const resolvePaidJobRoute = vi.fn(() => deferRoute
+      ? new Promise<typeof route>((resolve) => { releaseRoute = resolve; })
+      : Promise.resolve(route));
+    Object.assign(source, { resolvePaidJobRoute });
+    const confirmations = createMcpConfirmationStore({
+      now: () => 10_000,
+      createToken: () => `mcp-paid-race-${++tokenSequence}`,
+    });
+    const consumePaidJob = vi.spyOn(confirmations, 'consumePaidJob');
+    adapter = createMcpWorkspaceAdapter(source, confirmations, {
+      getPermissions: () => ({ ...DEFAULT_MCP_PERMISSION_FLAGS, dangerousOperations: true, externalFileAccess: true }),
+    });
+    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'image-1' };
+    const first = await adapter.handle(request);
+    const grant = adapter.confirmPaidJob(readErrorDetailString(first, 'requestId'));
+
+    deferRoute = true;
+    const approvedRetry = adapter.handle({ ...request, confirmationToken: grant.token });
+    expect(resolvePaidJobRoute).toHaveBeenCalledTimes(2);
+    project = changeProject(project);
+    if (releaseRoute === undefined) throw new Error('paid route resolver was not deferred');
+    releaseRoute(route);
+
+    await expect(approvedRetry).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'PROJECT_REVISION_CONFLICT', details: { currentRevision: 4 } },
+    });
+    expect(source.runNode).not.toHaveBeenCalled();
+    expect(consumePaidJob).not.toHaveBeenCalled();
+  });
+
+  it('does not create a paid confirmation for another project that reuses the same revision and node id', async () => {
+    let resolveRoute!: (route: { provider: '4dai'; modelRoute: string }) => void;
+    const route = new Promise<{ provider: '4dai'; modelRoute: string }>((resolve) => { resolveRoute = resolve; });
+    const resolvePaidJobRoute = vi.fn(() => route);
+    Object.assign(source, { resolvePaidJobRoute });
+
+    const pending = adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
+    while (resolvePaidJobRoute.mock.calls.length === 0) await Promise.resolve();
+    project = parseCanvasProject({
+      ...project,
+      id: 'project-2',
+      edges: [],
+    });
+    resolveRoute({ provider: '4dai', modelRoute: '4dai-gpt-image-1-5' });
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'PROJECT_REVISION_CONFLICT' },
+    });
+    expect(revision).toBe(4);
+    expect(source.runNode).not.toHaveBeenCalled();
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+  });
+
+  it('requires a fresh paid confirmation when the resolved provider route changes', async () => {
+    const image = project.nodes.find((node) => node.id === 'image-1');
+    if (image?.type !== 'module') throw new Error('image node missing');
+    image.data.config = { prompt: 'Studio product image', resolution: '4K' };
+    let resolvedRoute = { provider: '4dai', modelRoute: '4dai-gpt-image-1-5' };
+    Object.assign(source, {
+      resolvePaidJobRoute: vi.fn(async () => resolvedRoute),
+    });
+
+    const first = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
+    const oldRequestId = readErrorDetailString(first, 'requestId');
+    const oldGrant = adapter.confirmPaidJob(oldRequestId);
+    resolvedRoute = { provider: 'comfly', modelRoute: 'comfly-gpt-image-2' };
+
+    await expect(adapter.handle({
+      tool: 'canvas_run_node',
+      expectedRevision: 4,
+      nodeId: 'image-1',
+      confirmationToken: oldGrant.token,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'PAID_CONFIRMATION_REQUIRED' },
+    });
+    expect(source.runNode).not.toHaveBeenCalled();
+
+    const refreshed = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
+    expect(refreshed).toMatchObject({
+      ok: false,
+      error: {
+        code: 'PAID_CONFIRMATION_REQUIRED',
+        details: {
+          provider: 'comfly',
+          modelRoute: 'comfly-gpt-image-2',
+        },
+      },
+    });
+    expect(readErrorDetailString(refreshed, 'requestId')).not.toBe(oldRequestId);
+  });
+
+  it('creates a fresh paid confirmation after an approved run fails to start', async () => {
+    vi.mocked(source.runNode).mockResolvedValueOnce({ started: false, jobIds: [] });
+    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'image-1' };
+    const first = await adapter.handle(request);
+    const firstRequestId = readErrorDetailString(first, 'requestId');
+    const grant = adapter.confirmPaidJob(firstRequestId);
+
+    await expect(adapter.handle({ ...request, confirmationToken: grant.token })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'JOB_START_FAILED' },
+    });
+    const retried = await adapter.handle(request);
+    expect(retried).toMatchObject({
+      ok: false,
+      error: { code: 'PAID_CONFIRMATION_REQUIRED', details: { confirmationRequired: true } },
+    });
+    const nextRequestId = readErrorDetailString(retried, 'requestId');
+    expect(nextRequestId).not.toBe(firstRequestId);
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([
+      expect.objectContaining({ id: nextRequestId, kind: 'paid_job' }),
+    ]);
   });
   it('opens the Canvas Atelier picker instead of accepting a path from MCP', async () => {
     await expect(adapter.handle({ tool: 'canvas_import_media', expectedRevision: 4, mediaKind: 'video', position: { x: 120, y: 240 } })).resolves.toMatchObject({ ok: true, result: { pickerOpened: true } });

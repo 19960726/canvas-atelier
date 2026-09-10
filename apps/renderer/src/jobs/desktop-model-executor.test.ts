@@ -28,7 +28,7 @@ describe('desktop model job executor', () => {
     }));
 
     const executor = createDesktopModelJobExecutor();
-    const submitted = await executor.submit(job());
+    const submitted = await executor.submit(job({ imageQuality: 'high' }));
     const polled = await executor.poll({ ...job(), providerTaskId: submitted.providerTaskId });
     await executor.cancel?.({ ...job(), providerTaskId: submitted.providerTaskId });
     await (executor as unknown as { ackTerminal(job: ModelJob): Promise<void> }).ackTerminal({
@@ -50,6 +50,7 @@ describe('desktop model job executor', () => {
       conversationId: 'conversation-1',
       sessionId: 'desktop-session-1',
       referenceAssetIds: ['asset-reference'],
+      quality: 'high',
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(ackImageJobTerminal).toHaveBeenCalledWith({
@@ -113,22 +114,27 @@ describe('desktop model job executor', () => {
     });
   });
 
-  it('rejects a stale job route before submission when another provider is active', async () => {
-    const submitImageJob = vi.fn();
+  it('submits a task through its persisted provider without consulting the active provider preference', async () => {
+    const getActiveProvider = vi.fn(async () => ({ activeProvider: 'comfly' as const }));
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-fourdai-public' }));
     vi.stubGlobal('window', {
       novusDesktop: {
         provider: {
-          getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
+          getActiveProvider,
           submitImageJob,
         },
       },
     });
 
     await expect(createDesktopModelJobExecutor().submit(job({
-      provider: 'relayme',
-      modelRoute: 'relayme-gpt-image-2',
-    }))).rejects.toMatchObject({ code: 'PROVIDER_INACTIVE' });
-    expect(submitImageJob).not.toHaveBeenCalled();
+      provider: '4dai',
+      modelRoute: '4dai/gpt-image-2',
+    }))).resolves.toEqual({ providerTaskId: 'provider-job-fourdai-public' });
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
+      provider: '4dai',
+      modelRoute: '4dai/gpt-image-2',
+    }));
+    expect(getActiveProvider).not.toHaveBeenCalled();
   });
 
   it('routes video jobs through the video bridge and preserves video controls', async () => {

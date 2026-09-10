@@ -1,5 +1,5 @@
 import type { CanvasWorkflowMutation } from '@agent-canvas/domain';
-import type { McpConfirmationGrant } from './mcp-confirmation-store';
+import type { McpConfirmationGrant, PaidJobOutputCount } from './mcp-confirmation-store';
 
 export type McpUiConfirmationRequest = {
   readonly id: string;
@@ -17,6 +17,8 @@ export type McpUiConfirmationRequest = {
     readonly kind: 'paid_job';
     readonly nodeId: string;
     readonly jobKind: 'image' | 'video' | 'reverse';
+    readonly outputCount: PaidJobOutputCount;
+    readonly provider?: string;
     readonly modelRoute: string;
   }
 );

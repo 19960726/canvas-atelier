@@ -14,7 +14,7 @@ import type { KnowledgeClient } from './knowledge-client';
 import type { ProjectCommitRequest, ProjectCommitResult, ProjectPersistenceClient } from './desktop-persistence';
 import { createBrowserPersistenceClient } from './desktop-persistence';
 import { PROJECT_STORAGE_KEY } from './project-persistence';
-import { App, cancelMcpCanvasJob, listMcpWorkspaceJobs, resetAppHydrationForTests, runMcpCanvasNode } from './App';
+import { App, cancelMcpCanvasJob, listMcpWorkspaceJobs, resetAppHydrationForTests, resolveMcpPaidJobRoute, runMcpCanvasNode } from './App';
 import { mcpUiConfirmationStore } from './mcp-ui-confirmation-store';
 
 describe('App persistence hydration', () => {
@@ -142,7 +142,7 @@ describe('App persistence hydration', () => {
     expect(useAppStore.getState().project.name).toBe('StrictMode Durable Project');
   });
 
-  it('subscribes once to desktop close-flush requests in StrictMode and ACKs after durable close', async () => {
+  it('keeps blur saves suppressed until the matching desktop close attempt is explicitly aborted', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
       project: nextProject,
@@ -155,6 +155,7 @@ describe('App persistence hydration', () => {
     }));
     const close = vi.fn(async () => {});
     const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
+    const abortedListeners: Array<(event: { requestId: string; reason: 'cancel' | 'failed' | 'timeout' | 'unavailable' }) => void> = [];
     const ackCloseFlush = vi.fn();
     const unsubscribe = vi.fn();
     window.novusDesktop = {
@@ -162,6 +163,10 @@ describe('App persistence hydration', () => {
         ackCloseFlush,
         subscribeCloseFlushRequest: vi.fn((listener) => {
           listeners.push(listener);
+          return unsubscribe;
+        }),
+        subscribeCloseFlushAborted: vi.fn((listener) => {
+          abortedListeners.push(listener);
           return unsubscribe;
         }),
       },
@@ -192,6 +197,83 @@ describe('App persistence hydration', () => {
       [{ requestId: 'close-request-strict-1', phase: 'save_started' }],
       [{ requestId: 'close-request-strict-1', phase: 'completed', outcome: 'saved' }],
     ]);
+
+    window.dispatchEvent(new Event('blur'));
+    window.dispatchEvent(new Event('beforeunload'));
+    window.dispatchEvent(new Event('pagehide'));
+    await Promise.resolve();
+
+    expect(stablePoint).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('blur'));
+    await Promise.resolve();
+
+    expect(stablePoint).toHaveBeenCalledTimes(1);
+
+    abortedListeners[abortedListeners.length - 1]?.({ requestId: 'close-request-other', reason: 'failed' });
+    window.dispatchEvent(new Event('blur'));
+    await Promise.resolve();
+    expect(stablePoint).toHaveBeenCalledTimes(1);
+
+    abortedListeners[abortedListeners.length - 1]?.({ requestId: 'close-request-strict-1', reason: 'failed' });
+    window.dispatchEvent(new Event('blur'));
+    await Promise.resolve();
+
+    expect(stablePoint).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not clear the native close guard when focus returns before renderer persistence finishes', async () => {
+    let finishCloseSave: (saved: boolean) => void = () => undefined;
+    const pendingCloseSave = new Promise<boolean>((resolve) => {
+      finishCloseSave = resolve;
+    });
+    const preparePersistenceForClose = vi.fn(() => pendingCloseSave);
+    const flushProjectSave = vi.fn(async () => true);
+    const listeners: Array<(request: { requestId: string }) => void | Promise<void>> = [];
+    const abortedListeners: Array<(event: { requestId: string; reason: 'cancel' | 'failed' | 'timeout' | 'unavailable' }) => void> = [];
+    window.novusDesktop = {
+      lifecycle: {
+        ackCloseFlush: vi.fn(),
+        subscribeCloseFlushAborted: vi.fn((listener) => {
+          abortedListeners.push(listener);
+          return vi.fn();
+        }),
+        subscribeCloseFlushRequest: vi.fn((listener) => {
+          listeners.push(listener);
+          return vi.fn();
+        }),
+      },
+    } as unknown as typeof window.novusDesktop;
+    replaceProjectPersistenceClientForTests(createHydrationClient({
+      hydrate: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: { ...createStarterProject(), name: 'Pending close focus base', nodes: [], edges: [] },
+        revision: 7,
+        saveStatus: 'saved' as const,
+      })),
+    }));
+    useAppStore.setState({ flushProjectSave, preparePersistenceForClose } as never);
+
+    render(<App />);
+    await waitFor(() => expect(useAppStore.getState().project.name).toBe('Pending close focus base'));
+    useAppStore.getState().setProject({ ...createStarterProject(), name: 'Pending close focus draft', graphVersion: 2 });
+
+    const closeRequest = listeners[0]?.({ requestId: 'close-request-pending-focus' });
+    await waitFor(() => expect(preparePersistenceForClose).toHaveBeenCalledOnce());
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('blur'));
+    await Promise.resolve();
+
+    expect(flushProjectSave).not.toHaveBeenCalled();
+
+    finishCloseSave(false);
+    await closeRequest;
+    abortedListeners[0]?.({ requestId: 'close-request-pending-focus', reason: 'failed' });
+    window.dispatchEvent(new Event('blur'));
+    await waitFor(() => expect(flushProjectSave).toHaveBeenCalledOnce());
   });
 
   it('ACKs close-flush false when the pending durable save fails', async () => {
@@ -208,6 +290,7 @@ describe('App persistence hydration', () => {
     window.novusDesktop = {
       lifecycle: {
         ackCloseFlush,
+        subscribeCloseFlushAborted: vi.fn(() => vi.fn()),
         subscribeCloseFlushRequest: vi.fn((listener) => {
           listeners.push(listener);
           return vi.fn();
@@ -252,6 +335,7 @@ describe('App persistence hydration', () => {
       lifecycle: {
         ackCloseFlush,
         chooseCloseDecision,
+        subscribeCloseFlushAborted: vi.fn(() => vi.fn()),
         subscribeCloseFlushRequest: vi.fn((listener) => {
           listeners.push(listener);
           return vi.fn();
@@ -299,6 +383,7 @@ describe('App persistence hydration', () => {
       lifecycle: {
         ackCloseFlush,
         chooseCloseDecision,
+        subscribeCloseFlushAborted: vi.fn(() => vi.fn()),
         subscribeCloseFlushRequest: vi.fn((listener) => {
           listeners.push(listener);
           return vi.fn();
@@ -341,6 +426,7 @@ describe('App persistence hydration', () => {
       lifecycle: {
         ackCloseFlush,
         chooseCloseDecision,
+        subscribeCloseFlushAborted: vi.fn(() => vi.fn()),
         subscribeCloseFlushRequest: vi.fn((listener) => {
           listeners.push(listener);
           return vi.fn();
@@ -393,6 +479,7 @@ describe('App persistence hydration', () => {
       lifecycle: {
         ackCloseFlush,
         chooseCloseDecision,
+        subscribeCloseFlushAborted: vi.fn(() => vi.fn()),
         subscribeCloseFlushRequest: vi.fn((listener) => {
           listeners.push(listener);
           return vi.fn();
@@ -501,27 +588,250 @@ describe('App persistence hydration', () => {
     });
   });
 
+  it('resolves a blank MCP image route through the same runnable provider catalog used at execution', async () => {
+    const image = createCanvasModuleNode('mcp-image-route', 'image_generation', { x: 20, y: 40 });
+    image.data.config = {
+      prompt: 'A studio product image',
+      providerDisplayName: '4dai',
+      resolution: '1K',
+    };
+    const profile = {
+      provider: '4dai' as const,
+      modelRoute: '4dai-gpt-image-1-5',
+      modelId: 'gpt-image-1.5',
+      displayName: 'GPT Image 1.5',
+      capabilities: ['image_generation' as const],
+      capabilityStatus: 'complete' as const,
+      enabled: true,
+    };
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async (request?: { provider?: string }) => request?.provider === '4dai' ? [profile] : []),
+        getStatus: vi.fn(async (request?: { provider?: string }) => ({ configured: request?.provider === '4dai', locked: false })),
+        getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    await expect(resolveMcpPaidJobRoute(image)).resolves.toEqual({
+      provider: '4dai',
+      modelRoute: '4dai-gpt-image-1-5',
+    });
+  });
+
+  it.each([
+    { label: 'missing provider metadata', storedProvider: undefined },
+    { label: 'stale Comfly provider metadata', storedProvider: 'comfly' },
+  ])('resolves an exact 4D reverse route with $label', async ({ storedProvider }) => {
+    const reverse = createCanvasModuleNode('mcp-exact-4d-reverse', 'reverse_agent', { x: 20, y: 40 });
+    reverse.data.config = {
+      modelRoute: '4dai-gpt-6-astra-reverse',
+      role: 'Analyst',
+      task: 'Analyze the reference.',
+      ...(storedProvider === undefined ? {} : { providerDisplayName: storedProvider }),
+    };
+    const profiles = {
+      comfly: [{
+        provider: 'comfly' as const,
+        modelRoute: 'comfly-gpt-6-astra-reverse',
+        modelId: 'gpt-6-astra',
+        displayName: 'GPT-6 Astra',
+        capabilities: ['chat' as const, 'vision' as const, 'reverse_prompt' as const],
+      }],
+      '4dai': [{
+        provider: '4dai' as const,
+        modelRoute: '4dai-gpt-6-astra-reverse',
+        modelId: 'gpt-6-astra',
+        displayName: 'GPT-6 Astra',
+        capabilities: ['chat' as const, 'vision' as const, 'reverse_prompt' as const],
+      }],
+    };
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async (request?: { provider?: 'comfly' | 'relayme' | 'julun' | '4dai' }) => (
+          request?.provider === 'comfly' || request?.provider === '4dai' ? profiles[request.provider] : []
+        )),
+        getStatus: vi.fn(async (request?: { provider?: 'comfly' | 'relayme' | 'julun' | '4dai' }) => ({
+          configured: request?.provider === 'comfly' || request?.provider === '4dai',
+          locked: false,
+        })),
+        getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    await expect(resolveMcpPaidJobRoute(reverse)).resolves.toEqual({
+      provider: '4dai',
+      modelRoute: '4dai-gpt-6-astra-reverse',
+    });
+  });
+
+  it('does not confirm a response-only MCP reverse route while execution still requires chat completions', async () => {
+    const reverse = createCanvasModuleNode('mcp-incomplete-reverse-route', 'reverse_agent', { x: 20, y: 40 });
+    reverse.data.config = {
+      modelRoute: '4dai-incomplete-reverse',
+      providerDisplayName: '4dai',
+      role: 'Analyst',
+      task: 'Analyze the reference.',
+    };
+    const profile = {
+      provider: '4dai' as const,
+      modelRoute: '4dai-incomplete-reverse',
+      modelId: 'incomplete-reverse',
+      displayName: 'Incomplete Reverse',
+      capabilities: ['responses' as const, 'vision' as const, 'reverse_prompt' as const],
+      capabilityStatus: 'complete' as const,
+      enabled: true,
+    };
+    const validProfile = {
+      provider: '4dai' as const,
+      modelRoute: '4dai-valid-chat-reverse',
+      modelId: 'valid-chat-reverse',
+      displayName: 'Valid Chat Reverse',
+      capabilities: ['chat' as const, 'vision' as const, 'reverse_prompt' as const],
+      capabilityStatus: 'complete' as const,
+      enabled: true,
+    };
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async (request?: { provider?: string }) => request?.provider === '4dai' ? [profile, validProfile] : []),
+        getStatus: vi.fn(async (request?: { provider?: string }) => ({ configured: request?.provider === '4dai', locked: false })),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    await expect(resolveMcpPaidJobRoute(reverse)).resolves.toBeUndefined();
+  });
+
+  it('keeps the MCP renderer runtime responsive when an approved node run rejects its capability', async () => {
+    const video = createCanvasModuleNode('mcp-video-capability', 'video_generation', { x: 20, y: 40 });
+    video.data.config = {
+      prompt: 'A supported zero-cost test prompt',
+      modelRoute: 'qa/unsupported-video-fixture',
+      referenceAssetIds: [],
+    };
+    const project = {
+      ...createStarterProject(),
+      id: 'mcp-capability-project',
+      nodes: [video],
+      edges: [],
+    };
+    replaceProjectPersistenceClientForTests(createHydrationClient({
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project,
+        revision: 4,
+        saveStatus: 'saved',
+      }),
+    }));
+    const capabilityError = Object.assign(
+      new Error('Selected Comfly video model does not support this reference-image mode'),
+      { code: 'CAPABILITY_UNSUPPORTED' as const },
+    );
+    const runVideoPreviewNode = vi.fn(async () => { throw capabilityError; });
+    const listeners: Array<(payload: {
+      requestId: string;
+      request:
+        | { tool: 'canvas_run_node'; expectedRevision: number; nodeId: string; confirmationToken?: string }
+        | { tool: 'canvas_read_workflow' };
+    }) => void | Promise<void>> = [];
+    const respond = vi.fn();
+    const onRequest = vi.fn((listener) => {
+      listeners.push(listener as (typeof listeners)[number]);
+      return vi.fn();
+    });
+    window.novusDesktop = {
+      mcpRuntime: {
+        getStatus: vi.fn(async () => ({ state: 'running', rendererConnected: true, serverVersion: '1.0.0', toolCount: 14, lastError: null })),
+        onRequest,
+        respond,
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ runVideoPreviewNode } as never);
+
+    render(<App />);
+    await waitFor(() => expect(onRequest).toHaveBeenCalledOnce());
+    await waitFor(() => expect(useAppStore.getState().desktopRevision).toBe(4));
+    const runRequest = {
+      tool: 'canvas_run_node' as const,
+      expectedRevision: 4,
+      nodeId: video.id,
+    };
+    await listeners[0]?.({ requestId: 'mcp-capability-plan', request: runRequest });
+    const confirmationRequest = mcpUiConfirmationStore.getSnapshot()[0];
+    expect(confirmationRequest).toMatchObject({ kind: 'paid_job', nodeId: video.id });
+    const grant = mcpUiConfirmationStore.confirm(confirmationRequest!.id);
+
+    respond.mockClear();
+    await expect(listeners[0]?.({
+      requestId: 'mcp-capability-approved',
+      request: { ...runRequest, confirmationToken: grant.token },
+    })).resolves.toBeUndefined();
+    expect(respond).toHaveBeenCalledWith({
+      requestId: 'mcp-capability-approved',
+      response: {
+        ok: false,
+        error: {
+          code: 'MCP_WORKSPACE_ERROR',
+          message: 'Selected Comfly video model does not support this reference-image mode',
+        },
+      },
+    });
+
+    await expect(listeners[0]?.({
+      requestId: 'mcp-capability-follow-up',
+      request: { tool: 'canvas_read_workflow' },
+    })).resolves.toBeUndefined();
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'mcp-capability-follow-up',
+      response: expect.objectContaining({ ok: true }),
+    }));
+  });
+
   it('returns all newly enqueued model job ids to MCP after starting image generation', async () => {
     const image = createCanvasModuleNode('mcp-image', 'image_generation', { x: 20, y: 40 });
-    image.data.config = { prompt: 'A studio product image', outputCount: 2 };
+    image.data.config = {
+      prompt: 'A studio product image',
+      modelRoute: 'comfly-gpt-image-2',
+      resolution: '4K',
+      imageQuality: 'high',
+      outputCount: 2,
+    };
+    const runImageGenerationNode = vi.fn(async () => {
+      useAppStore.setState({
+        modelJobs: [
+          { id: 'job-image-1', kind: 'image', modelId: 'model', status: 'queued', promptNodeId: 'mcp-image', retryCount: 0, referenceAssetIds: [] },
+          { id: 'job-image-2', kind: 'image', modelId: 'model', status: 'queued', promptNodeId: 'mcp-image', retryCount: 0, referenceAssetIds: [] },
+        ],
+      } as never);
+      return true;
+    });
     resetAppStoreForTests({ project: 'empty' });
     useAppStore.setState({
       project: { ...useAppStore.getState().project, nodes: [image], edges: [] },
       modelJobs: [],
-      runImageGenerationNode: vi.fn(async () => {
-        useAppStore.setState({
-          modelJobs: [
-            { id: 'job-image-1', kind: 'image', modelId: 'model', status: 'queued', promptNodeId: 'mcp-image', retryCount: 0, referenceAssetIds: [] },
-            { id: 'job-image-2', kind: 'image', modelId: 'model', status: 'queued', promptNodeId: 'mcp-image', retryCount: 0, referenceAssetIds: [] },
-          ],
-        } as never);
-        return true;
-      }),
+      runImageGenerationNode,
     } as never);
 
-    await expect(runMcpCanvasNode('mcp-image')).resolves.toEqual({
+    const executionRoute = {
+      projectId: useAppStore.getState().project.id,
+      expectedRevision: useAppStore.getState().desktopRevision,
+      provider: '4dai' as const,
+      modelRoute: '4dai-gpt-image-1-5',
+    };
+    await expect(runMcpCanvasNode('mcp-image', executionRoute)).resolves.toEqual({
       started: true,
       jobIds: ['job-image-1', 'job-image-2'],
+    });
+    expect(runImageGenerationNode).toHaveBeenCalledWith('mcp-image', {
+      prompt: 'A studio product image',
+      modelRoute: '4dai-gpt-image-1-5',
+      aspectRatio: undefined,
+      resolution: '4K',
+      imageQuality: 'high',
+      outputCount: 2,
+      referenceAssetIds: [],
+      executionRoute,
     });
   });
 
@@ -545,6 +855,139 @@ describe('App persistence hydration', () => {
     expect(listMcpWorkspaceJobs()).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'reverse-run-1', nodeId: 'mcp-reverse', kind: 'reverse', status: 'running' }),
     ]));
+  });
+
+  it('waits for a new running reverse id instead of returning the completed id from the previous run', async () => {
+    const reverse = createCanvasModuleNode('mcp-reverse-rerun', 'reverse_agent', { x: 20, y: 40 });
+    reverse.data.config = {
+      modelRoute: 'reverse-route',
+      role: 'analyst',
+      task: 'Analyze the reference again',
+      reverseAgentRunId: 'reverse-run-old',
+      reverseAgentRunState: 'completed',
+    };
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] },
+      runReverseAgentNode: vi.fn(() => {
+        setTimeout(() => {
+          const running = {
+            ...reverse,
+            data: {
+              ...reverse.data,
+              config: {
+                ...reverse.data.config,
+                reverseAgentRunId: 'reverse-run-new',
+                reverseAgentRunState: 'running',
+              },
+            },
+          };
+          useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [running], edges: [] } } as never);
+        }, 35);
+        return new Promise(() => undefined);
+      }),
+    } as never);
+
+    await expect(Promise.race([
+      runMcpCanvasNode('mcp-reverse-rerun'),
+      new Promise((resolve) => setTimeout(() => resolve({ started: false, jobIds: ['timed-out'] }), 250)),
+    ])).resolves.toEqual({ started: true, jobIds: ['reverse-run-new'] });
+  });
+
+  it('returns the new reverse id when the provider completes before MCP observes the running state', async () => {
+    const reverse = createCanvasModuleNode('mcp-reverse-fast-completion', 'reverse_agent', { x: 20, y: 40 });
+    reverse.data.config = {
+      modelRoute: 'reverse-route',
+      role: 'analyst',
+      task: 'Analyze the reference immediately',
+      reverseAgentRunId: 'reverse-run-old',
+      reverseAgentRunState: 'completed',
+    };
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] },
+      runReverseAgentNode: vi.fn(async () => {
+        const completed = {
+          ...reverse,
+          data: {
+            ...reverse.data,
+            config: {
+              ...reverse.data.config,
+              reverseAgentRunId: 'reverse-run-fast',
+              reverseAgentRunState: 'completed',
+            },
+          },
+        };
+        useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [completed], edges: [] } } as never);
+        return {} as never;
+      }),
+    } as never);
+
+    await expect(Promise.race([
+      runMcpCanvasNode('mcp-reverse-fast-completion'),
+      new Promise((resolve) => setTimeout(() => resolve({ started: false, jobIds: ['timed-out'] }), 250)),
+    ])).resolves.toEqual({ started: true, jobIds: ['reverse-run-fast'] });
+  });
+
+  it('does not report a completed reverse id when the new reverse start rejects', async () => {
+    const reverse = createCanvasModuleNode('mcp-reverse-rejected-rerun', 'reverse_agent', { x: 20, y: 40 });
+    reverse.data.config = {
+      modelRoute: 'reverse-route',
+      role: 'analyst',
+      task: 'Try the reference again',
+      reverseAgentRunId: 'reverse-run-completed',
+      reverseAgentRunState: 'completed',
+    };
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, nodes: [reverse], edges: [] },
+      runReverseAgentNode: vi.fn(async () => { throw new Error('reverse start rejected'); }),
+    } as never);
+
+    await expect(runMcpCanvasNode('mcp-reverse-rejected-rerun')).resolves.toEqual({ started: false, jobIds: [] });
+  });
+
+  it('does not expose another canvas model job through the active MCP workspace', () => {
+    const image = createCanvasModuleNode('shared-mcp-node', 'image_generation', { x: 20, y: 40 });
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, id: 'mcp-current-project', nodes: [image], edges: [] },
+      modelJobs: [{
+        id: 'mcp-foreign-job',
+        kind: 'image',
+        modelId: 'foreign-model',
+        promptNodeId: image.id,
+        projectId: 'mcp-foreign-project',
+        referenceAssetIds: [],
+        retryCount: 0,
+        status: 'running',
+      }],
+    });
+
+    expect(listMcpWorkspaceJobs()).toEqual([]);
+  });
+
+  it('does not cancel another canvas model job through the active MCP workspace', async () => {
+    const image = createCanvasModuleNode('shared-mcp-cancel-node', 'image_generation', { x: 20, y: 40 });
+    const cancelModelJob = vi.fn(async () => undefined);
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, id: 'mcp-cancel-current-project', nodes: [image], edges: [] },
+      cancelModelJob,
+      modelJobs: [{
+        id: 'mcp-cancel-foreign-job',
+        kind: 'image',
+        modelId: 'foreign-model',
+        promptNodeId: image.id,
+        projectId: 'mcp-cancel-foreign-project',
+        referenceAssetIds: [],
+        retryCount: 0,
+        status: 'running',
+      }],
+    } as never);
+
+    await expect(cancelMcpCanvasJob('mcp-cancel-foreign-job')).rejects.toThrow(/not found/i);
+    expect(cancelModelJob).not.toHaveBeenCalled();
   });
 
   it('routes reverse MCP cancellation to the reverse runner instead of the model job queue', async () => {

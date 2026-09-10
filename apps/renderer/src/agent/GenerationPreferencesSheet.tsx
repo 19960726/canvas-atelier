@@ -1,5 +1,6 @@
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { X } from 'lucide-react';
+import { IMAGE_QUALITY_OPTIONS, imageQualityLabel, normalizeImageQuality, supportsGptImageQuality } from '../app/image-generation-quality';
 import { generationProfiles, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
 
 export function GenerationPreferencesSheet({ value, profiles, onChange, onClose }: {
@@ -13,6 +14,7 @@ export function GenerationPreferencesSheet({ value, profiles, onChange, onClose 
   const candidates = generationProfiles(profiles, kind);
   const profile = candidates.find((item) => item.modelRoute === preference.modelRoute);
   const constraints = profile?.constraints?.[kind];
+  const hasGptImageQuality = kind === 'image' && supportsGptImageQuality(profile);
   const parameter = (key: keyof GenerationParameters, next: string) => onChange({ ...value, [kind]: { ...preference, parameters: { ...preference.parameters, [key]: next === '' ? undefined : ['outputCount', 'durationSeconds'].includes(key) ? Number(next) : next } } });
   const duration = kind === 'video' ? profile?.constraints?.video?.duration : undefined;
   return <section className="skill-chat-workbench__sheet generation-preferences" data-anchor="composer-footer" role="dialog" aria-label="生成偏好">
@@ -24,6 +26,7 @@ export function GenerationPreferencesSheet({ value, profiles, onChange, onClose 
         {!profile && <option value={preference.modelRoute ?? ''}>请选择可用模型</option>}{candidates.map((item) => <option key={item.modelRoute} value={item.modelRoute}>{item.displayName}</option>)}
       </select></label>
       {([['aspectRatio', '画幅比例', constraints?.aspectRatios], ['resolution', '分辨率', constraints?.resolutions], ['outputCount', '生成数量', constraints?.outputCounts]] as const).map(([key, label, values]) => values?.length ? <label key={key}>{label}<select aria-label={`固定${label}`} value={preference.parameters[key] ?? ''} onChange={(event) => parameter(key, event.target.value)}><option value="">使用模型默认值</option>{values.map((item) => <option key={item} value={item}>{item}</option>)}</select></label> : null)}
+      {hasGptImageQuality && <label>GPT 图片质量<select aria-label="固定 GPT 图片质量" value={normalizeImageQuality(preference.parameters.imageQuality) ?? 'medium'} onChange={(event) => parameter('imageQuality', event.target.value)}>{IMAGE_QUALITY_OPTIONS.map((quality) => <option key={quality} value={quality}>{imageQualityLabel(quality)}</option>)}</select></label>}
       {duration?.mode === 'options' && <label>视频时长<select aria-label="固定视频时长" value={preference.parameters.durationSeconds ?? ''} onChange={(event) => parameter('durationSeconds', event.target.value)}><option value="">使用模型默认值</option>{duration.options.map((item) => <option key={item} value={item}>{item}秒</option>)}</select></label>}
       {duration?.mode === 'range' && <label>视频时长<input aria-label="固定视频时长" type="number" min={duration.min} max={duration.max} step={duration.step} value={preference.parameters.durationSeconds ?? ''} onChange={(event) => parameter('durationSeconds', event.target.value)} /></label>}
     </>}

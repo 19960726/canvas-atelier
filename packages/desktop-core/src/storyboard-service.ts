@@ -57,7 +57,8 @@ export function createStoryboardService(options: {
       if (!isSafeRequest(request)) throw createProviderBridgeError('INVALID_REQUEST', 'Storyboard request is invalid');
       const profiles = await options.listProfiles();
       const profile = profiles.find((item) => item.provider === request.provider && item.modelRoute === request.modelRoute);
-      if (profile === undefined || (!profile.capabilities.includes('chat') && !profile.capabilities.includes('vision'))) {
+      if (profile === undefined || profile.enabled === false || profile.capabilityStatus === 'incomplete'
+        || (!profile.capabilities.includes('chat') && !profile.capabilities.includes('vision'))) {
         throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Requested storyboard model profile is unavailable');
       }
       let raw: unknown;

@@ -7876,9 +7876,9 @@
     grid-template-columns: 1fr !important;
   }
 }
-/* Dual-provider settings final contract */
+/* Four-provider settings final contract */
 .workspace--canvas-layout .settings-provider-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
 }
 .workspace--canvas-layout .settings-provider-grid > button {
   min-height: 64px !important;
@@ -8182,7 +8182,7 @@
   gap: 14px !important;
 }
 .workspace--canvas-layout .settings-provider-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
 }
 .workspace--canvas-layout .settings-provider-endpoint {
   position: relative;
@@ -9232,6 +9232,26 @@
 
 .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar > .module-node__run-generation {
   grid-column: 5 !important;
+}
+
+/* GPT image adds a dedicated quality control. Keep all six parameters on the
+   same rail and move the two terminal actions one column to the right. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality {
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, .75fr) minmax(0, .75fr) minmax(0, .68fr) minmax(0, .72fr) minmax(0, 1fr) !important;
+  grid-template-rows: 38px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .generation-parameter-popover {
+  min-width: 0 !important;
+  flex: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > select[aria-label='Image generation quantity'] {
+  grid-column: 5 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .module-node__run-generation {
+  grid-column: 6 !important;
 }
 
 .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-control-bar > .module-node__run-generation {

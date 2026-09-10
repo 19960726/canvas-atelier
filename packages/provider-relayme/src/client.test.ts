@@ -301,6 +301,28 @@ describe('RelayMeClient', () => {
     }]);
   });
 
+  it('maps the live public capability aliases and keeps them when duplicate offers are merged', async () => {
+    const fetch = vi.fn(async () => jsonResponse({ data: [
+      {
+        id: 'offer-standard', name: 'Gemini Vision', model: 'gemini-3.1-flash-lite',
+        capability: 'text', modelType: 'TEXT', pricing: { input: '1' },
+      },
+      {
+        id: 'offer-special', name: 'Gemini Vision', model: 'gemini-3.1-flash-lite',
+        capability: 'text', modelType: 'TEXT', visionInputSupported: true,
+        imageReferenceLimit: 4, pricing: { input: '0.5' }, isSpecialOffer: true,
+      },
+    ] }));
+    const client = new RelayMeClient({ tokenSupplier: async () => 'relay-secret', fetch });
+
+    await expect(client.listModels()).resolves.toMatchObject([{
+      deploymentName: 'gemini-3.1-flash-lite',
+      supportsVision: true,
+      supportsImageToImage: true,
+      offers: [{ id: 'offer-standard' }, { id: 'offer-special', specialOffer: true }],
+    }]);
+  });
+
   it('redacts keys and protected payloads from API errors', async () => {
     const fetch = vi.fn(async () => jsonResponse({
       success: false,

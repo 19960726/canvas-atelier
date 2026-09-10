@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CLOSE_FLUSH_TIMEOUT_MS,
   createRendererCloseFlushCoordinator,
+  parseCloseFlushAbort,
   parseCloseFlushAck,
   parseCloseFlushRequest,
+  selectCloseFinalizeTarget,
 } from './renderer-close-flush';
 
 describe('renderer close-flush coordinator', () => {
@@ -51,6 +53,7 @@ describe('renderer close-flush coordinator', () => {
       .mockResolvedValueOnce(undefined);
     const finalizeClose = vi.fn();
     const onCloseBlocked = vi.fn(async () => 'cancel' as const);
+    const onCloseFlushAborted = vi.fn();
     const requestIds = ['close-after-save-fails', 'close-after-save-retry'];
     let coordinator: ReturnType<typeof createRendererCloseFlushCoordinator>;
     coordinator = createRendererCloseFlushCoordinator({
@@ -58,6 +61,7 @@ describe('renderer close-flush coordinator', () => {
       createRequestId: () => requestIds.shift()!,
       finalizeClose,
       onCloseBlocked,
+      onCloseFlushAborted,
       sendCloseFlushRequest: (request) => {
         void coordinator.handleCloseFlushAck({ requestId: request.requestId, phase: 'completed', outcome: 'saved' });
         return true;
@@ -67,10 +71,109 @@ describe('renderer close-flush coordinator', () => {
     await coordinator.requestClose({ preventDefault: vi.fn() });
     expect(onCloseBlocked).toHaveBeenCalledWith('failed');
     expect(finalizeClose).not.toHaveBeenCalled();
+    expect(onCloseFlushAborted).not.toHaveBeenCalled();
 
     await coordinator.requestClose({ preventDefault: vi.fn() });
     expect(closeAllProjects).toHaveBeenCalledTimes(2);
     expect(finalizeClose).toHaveBeenCalledWith('saved');
+    expect(onCloseFlushAborted).not.toHaveBeenCalled();
+  });
+
+  it('notifies the renderer when a failed renderer save is cancelled before project sessions close', async () => {
+    const onCloseFlushAborted = vi.fn();
+    const coordinator = createRendererCloseFlushCoordinator({
+      closeAllProjects: vi.fn(),
+      createRequestId: () => 'close-renderer-save-failed',
+      finalizeClose: vi.fn(),
+      onCloseBlocked: vi.fn(async () => 'cancel' as const),
+      onCloseFlushAborted,
+      sendCloseFlushRequest: () => true,
+    });
+
+    const closing = coordinator.requestClose({ preventDefault: vi.fn() });
+    await coordinator.handleCloseFlushAck({
+      requestId: 'close-renderer-save-failed',
+      phase: 'completed',
+      outcome: 'failed',
+    });
+    await closing;
+
+    expect(onCloseFlushAborted).toHaveBeenCalledOnce();
+    expect(onCloseFlushAborted).toHaveBeenCalledWith({
+      requestId: 'close-renderer-save-failed',
+      reason: 'failed',
+    });
+  });
+
+  it('notifies the renderer after a pre-session-close timeout is cancelled', async () => {
+    let fireTimeout: () => void = () => undefined;
+    const onCloseFlushAborted = vi.fn();
+    const coordinator = createRendererCloseFlushCoordinator({
+      closeAllProjects: vi.fn(),
+      createRequestId: () => 'close-renderer-timeout',
+      finalizeClose: vi.fn(),
+      onCloseBlocked: vi.fn(async () => 'cancel' as const),
+      onCloseFlushAborted,
+      sendCloseFlushRequest: () => true,
+      setTimeout: (listener) => {
+        fireTimeout = listener;
+        return 1;
+      },
+    });
+
+    const closing = coordinator.requestClose({ preventDefault: vi.fn() });
+    fireTimeout();
+    await closing;
+
+    expect(onCloseFlushAborted).toHaveBeenCalledWith({
+      requestId: 'close-renderer-timeout',
+      reason: 'timeout',
+    });
+  });
+
+  it('resets main-process attempt state when renderer delivery was unavailable', async () => {
+    const onCloseAttemptAborted = vi.fn();
+    const onCloseFlushAborted = vi.fn();
+    const coordinator = createRendererCloseFlushCoordinator({
+      canRequestRendererFlush: () => false,
+      closeAllProjects: vi.fn(),
+      createRequestId: () => 'close-renderer-unavailable',
+      finalizeClose: vi.fn(),
+      onCloseAttemptAborted,
+      onCloseBlocked: vi.fn(async () => 'cancel' as const),
+      onCloseFlushAborted,
+      sendCloseFlushRequest: vi.fn(),
+    });
+
+    await coordinator.requestClose({ preventDefault: vi.fn() });
+
+    expect(onCloseAttemptAborted).toHaveBeenCalledOnce();
+    expect(onCloseFlushAborted).not.toHaveBeenCalled();
+  });
+
+  it('safely releases the renderer guard when the recovery dialog fails before session close', async () => {
+    const onCloseFlushAborted = vi.fn();
+    const coordinator = createRendererCloseFlushCoordinator({
+      closeAllProjects: vi.fn(),
+      createRequestId: () => 'close-recovery-dialog-failed',
+      finalizeClose: vi.fn(),
+      onCloseBlocked: vi.fn(async () => { throw new Error('dialog unavailable'); }),
+      onCloseFlushAborted,
+      sendCloseFlushRequest: () => true,
+    });
+
+    const closing = coordinator.requestClose({ preventDefault: vi.fn() });
+    await coordinator.handleCloseFlushAck({
+      requestId: 'close-recovery-dialog-failed',
+      phase: 'completed',
+      outcome: 'failed',
+    });
+    await closing;
+
+    expect(onCloseFlushAborted).toHaveBeenCalledWith({
+      requestId: 'close-recovery-dialog-failed',
+      reason: 'failed',
+    });
   });
 
   it('restarts the watchdog when renderer saving begins', async () => {
@@ -145,11 +248,13 @@ describe('renderer close-flush coordinator', () => {
     const finalizeClose = vi.fn();
     const closeAllProjects = vi.fn();
     const onCloseBlocked = vi.fn(async () => 'discard' as const);
+    const onCloseFlushAborted = vi.fn();
     const coordinator = createRendererCloseFlushCoordinator({
       closeAllProjects,
       createRequestId: () => 'close-request-discard-after-failure',
       finalizeClose,
       onCloseBlocked,
+      onCloseFlushAborted,
       sendCloseFlushRequest: () => true,
     });
 
@@ -165,6 +270,7 @@ describe('renderer close-flush coordinator', () => {
     expect(closeAllProjects).toHaveBeenCalledOnce();
     expect(closeAllProjects).toHaveBeenCalledWith('discarded');
     expect(finalizeClose).toHaveBeenCalledWith('discarded');
+    expect(onCloseFlushAborted).not.toHaveBeenCalled();
   });
 
   it('does not time out while the user is deciding, then cancels and permits a later discard', async () => {
@@ -196,6 +302,39 @@ describe('renderer close-flush coordinator', () => {
     expect(harness.calls).toContain('finalize:discarded');
   });
 
+  it('returns to idle before notifying the renderer that a close attempt was aborted', async () => {
+    const requestIds = ['close-request-aborted', 'close-request-immediate-retry'];
+    const sendCloseFlushRequest = vi.fn(() => true);
+    let retriedClose: Promise<void> | null = null;
+    let coordinator: ReturnType<typeof createRendererCloseFlushCoordinator>;
+    coordinator = createRendererCloseFlushCoordinator({
+      closeAllProjects: vi.fn(),
+      createRequestId: () => requestIds.shift()!,
+      finalizeClose: vi.fn(),
+      onCloseFlushAborted: () => {
+        retriedClose = coordinator.requestClose({ preventDefault: vi.fn() });
+      },
+      sendCloseFlushRequest,
+    });
+
+    const firstClose = coordinator.requestClose({ preventDefault: vi.fn() });
+    await coordinator.handleCloseFlushAck({
+      requestId: 'close-request-aborted',
+      phase: 'completed',
+      outcome: 'cancelled',
+    });
+    await firstClose;
+
+    expect(sendCloseFlushRequest).toHaveBeenCalledTimes(2);
+    expect(retriedClose).not.toBeNull();
+    await coordinator.handleCloseFlushAck({
+      requestId: 'close-request-immediate-retry',
+      phase: 'completed',
+      outcome: 'discarded',
+    });
+    await retriedClose;
+  });
+
   it('coalesces duplicate close attempts into one renderer request', async () => {
     const harness = createHarness();
 
@@ -212,13 +351,35 @@ describe('renderer close-flush coordinator', () => {
     expect(harness.finalizeClose).toHaveBeenCalledOnce();
   });
 
-  it('ignores malformed, mismatched, and duplicate ACKs without unlocking close', async () => {
+  it('keeps an active app shutdown target when a duplicate window close arrives', () => {
+    expect(selectCloseFinalizeTarget('app', 'window', true)).toBe('app');
+    expect(selectCloseFinalizeTarget('window', 'app', true)).toBe('app');
+    expect(selectCloseFinalizeTarget('window', 'window', true)).toBe('window');
+    expect(selectCloseFinalizeTarget('app', 'window', false)).toBe('window');
+  });
+
+  it('reports whether a close attempt is currently pending', async () => {
     const harness = createHarness();
+
+    expect(harness.coordinator.hasPendingCloseAttempt()).toBe(false);
+    const closing = harness.coordinator.requestClose(harness.closeEvent);
+    expect(harness.coordinator.hasPendingCloseAttempt()).toBe(true);
+
+    await harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'completed', outcome: 'discarded' });
+    await closing;
+
+    expect(harness.coordinator.hasPendingCloseAttempt()).toBe(false);
+  });
+
+  it('ignores malformed, mismatched, and duplicate ACKs without unlocking close', async () => {
+    const onCloseFlushAckAccepted = vi.fn();
+    const harness = createHarness({ onCloseFlushAckAccepted });
     const closing = harness.coordinator.requestClose(harness.closeEvent);
 
     await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'other-request', phase: 'completed', outcome: 'saved' })).resolves.toBe(false);
     await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'completed', outcome: 'saved', token: 'secret' })).resolves.toBe(false);
     expect(harness.closeAllProjects).not.toHaveBeenCalled();
+    expect(onCloseFlushAckAccepted).not.toHaveBeenCalled();
 
     await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'save_started' })).resolves.toBe(true);
     await expect(harness.coordinator.handleCloseFlushAck({ requestId: 'close-request-1', phase: 'save_started' })).resolves.toBe(false);
@@ -227,6 +388,10 @@ describe('renderer close-flush coordinator', () => {
     await closing;
 
     expect(harness.calls).toEqual(['send:close-request-1', 'closeAllProjects', 'finalize:saved']);
+    expect(onCloseFlushAckAccepted.mock.calls).toEqual([
+      [{ requestId: 'close-request-1', phase: 'save_started' }],
+      [{ requestId: 'close-request-1', phase: 'completed', outcome: 'saved' }],
+    ]);
   });
 
   it('strictly validates close-flush payloads without paths or secrets', () => {
@@ -251,11 +416,18 @@ describe('renderer close-flush coordinator', () => {
     expect(parseCloseFlushRequest({ requestId: 'close-request-123456', path: 'C:\\Users\\Private\\draft.json' })).toBeNull();
     expect(parseCloseFlushAck({ requestId: 'close-request-123456', phase: 'completed', outcome: 'saved', Authorization: 'Bearer secret' })).toBeNull();
     expect(parseCloseFlushAck({ requestId: '../project', phase: 'completed', outcome: 'saved' })).toBeNull();
+    expect(parseCloseFlushAbort({ requestId: 'close-request-123456', reason: 'failed' })).toEqual({
+      requestId: 'close-request-123456',
+      reason: 'failed',
+    });
+    expect(parseCloseFlushAbort({ requestId: 'close-request-123456', reason: 'saved' })).toBeNull();
+    expect(parseCloseFlushAbort({ requestId: 'close-request-123456', reason: 'failed', path: 'C:\\Users\\Private\\draft.json' })).toBeNull();
   });
 });
 
 function createHarness(options: {
   canRequestRendererFlush?: () => boolean;
+  onCloseFlushAckAccepted?: ReturnType<typeof vi.fn>;
   requestIds?: string[];
 } = {}) {
   const requestIds = options.requestIds ?? ['close-request-1'];
@@ -280,6 +452,7 @@ function createHarness(options: {
     closeAllProjects,
     createRequestId: () => requestIds.shift() ?? 'close-request-fallback',
     finalizeClose,
+    onCloseFlushAckAccepted: options.onCloseFlushAckAccepted,
     sendCloseFlushRequest,
     setTimeout: (listener, ms) => {
       timeout = listener;

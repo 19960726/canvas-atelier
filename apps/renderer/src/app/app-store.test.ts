@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommitAck, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { buildProjectMemoryContext, createAgentKnowledgeLease, createCanvasModuleNode, createSkillPromotionCandidateFingerprint, parseCanvasProject } from '@agent-canvas/domain';
-import type { AgentCanvasPlan, CanvasNode, CanvasProject, ModelJob, OrderedReference, ProjectTransaction, ReversePromptResult, SkillPromotionCandidate } from '@agent-canvas/domain';
+import type { AgentCanvasPlan, CanvasModuleNode, CanvasNode, CanvasProject, ModelJob, OrderedReference, ProjectTransaction, ReversePromptResult, SkillPromotionCandidate } from '@agent-canvas/domain';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import {
   createStarterProject,
@@ -60,6 +60,95 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().project.nodes).toEqual([]);
     expect(useAppStore.getState().project.edges).toEqual([]);
   });
+
+  it('coalesces concurrent project media refreshes for the same project', async () => {
+    const images = deferred<Awaited<ReturnType<ProjectPersistenceClient['listProjectImages']>>>();
+    const projectImage = {
+      assetId: '0123456789abcdef', byteSize: 42, displayUrl: 'novus-asset://project/session/0123456789abcdef',
+      extension: 'png' as const, height: 100, label: 'Generated image', mediaType: 'image/png' as const,
+      origin: 'generated' as const, sha256: 'a'.repeat(64), usageCount: 1, width: 100,
+    };
+    const listProjectImages = vi.fn(() => images.promise);
+    const listProjectVideos = vi.fn(async () => []);
+    replaceProjectPersistenceClientForTests(createMockClient({ listProjectImages, listProjectVideos }));
+
+    const first = useAppStore.getState().refreshProjectImages();
+    const second = useAppStore.getState().refreshProjectImages();
+
+    expect(listProjectImages).toHaveBeenCalledOnce();
+    expect(listProjectVideos).toHaveBeenCalledOnce();
+    images.resolve([projectImage]);
+    await Promise.all([first, second]);
+    expect(useAppStore.getState().projectImages).toEqual([projectImage]);
+  });
+
+  it('ignores a project media refresh that resolves after the active project changes', async () => {
+    const images = deferred<Awaited<ReturnType<ProjectPersistenceClient['listProjectImages']>>>();
+    const staleImage = {
+      assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa',
+      extension: 'png' as const, height: 100, label: 'Stale image', mediaType: 'image/png' as const,
+      origin: 'generated' as const, sha256: 'a'.repeat(64), usageCount: 1, width: 100,
+    };
+    const currentImage = {
+      ...staleImage,
+      assetId: 'bbbbbbbbbbbbbbbb',
+      displayUrl: 'novus-asset://project/session/bbbbbbbbbbbbbbbb',
+      label: 'Current image',
+      sha256: 'b'.repeat(64),
+    };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      listProjectImages: vi.fn(() => images.promise),
+      listProjectVideos: vi.fn(async () => []),
+    }));
+
+    const refresh = useAppStore.getState().refreshProjectImages();
+    useAppStore.setState((state) => ({
+      project: { ...state.project, id: 'replacement-project' },
+      projectImages: [currentImage],
+      projectImageError: null,
+    }));
+    images.resolve([staleImage]);
+    await refresh;
+
+    expect(useAppStore.getState().projectImages).toEqual([currentImage]);
+    expect(useAppStore.getState().projectImageError).toBeNull();
+  });
+
+  it('ignores a project media refresh after a persistence boundary even when the project id is reused', async () => {
+    const images = deferred<Awaited<ReturnType<ProjectPersistenceClient['listProjectImages']>>>();
+    const staleImage = {
+      assetId: 'cccccccccccccccc', byteSize: 42, displayUrl: 'novus-asset://project/old-session/cccccccccccccccc',
+      extension: 'png' as const, height: 100, label: 'Old session image', mediaType: 'image/png' as const,
+      origin: 'generated' as const, sha256: 'c'.repeat(64), usageCount: 1, width: 100,
+    };
+    const currentImage = {
+      ...staleImage,
+      assetId: 'dddddddddddddddd',
+      displayUrl: 'novus-asset://project/new-session/dddddddddddddddd',
+      label: 'New session image',
+      sha256: 'd'.repeat(64),
+    };
+    replaceProjectPersistenceClientForTests(createMockClient({
+      listProjectImages: vi.fn(() => images.promise),
+      listProjectVideos: vi.fn(async () => []),
+    }));
+    const reusedProjectId = 'reused-project-id';
+    useAppStore.setState((state) => ({ project: { ...state.project, id: reusedProjectId } }));
+
+    const refresh = useAppStore.getState().refreshProjectImages();
+    resetAppStoreForTests();
+    useAppStore.setState((state) => ({
+      project: { ...state.project, id: reusedProjectId },
+      projectImages: [currentImage],
+      projectImageError: null,
+    }));
+    images.resolve([staleImage]);
+    await refresh;
+
+    expect(useAppStore.getState().projectImages).toEqual([currentImage]);
+    expect(useAppStore.getState().projectImageError).toBeNull();
+  });
+
   it('keeps the Agent workspace collapsed for an initial and fresh canvas', async () => {
     expect(useAppStore.getState().agentPanelCollapsed).toBe(true);
 
@@ -741,6 +830,597 @@ describe('project optimization memory', () => {
     expect(openProject).toHaveBeenCalledWith('recent_0123456789abcdef01234567');
     expect(useAppStore.getState().project.name).toBe('Recent project opened by id');
   });
+
+  it('coalesces concurrent project opens so a later request cannot overwrite the first result', async () => {
+    const firstProject = { ...moduleGraphProject(), id: 'single-flight-project-a', name: 'Single flight A' };
+    const opened = deferred<ProjectHydrationResult | null>();
+    const openProject = vi.fn((_recentProjectId?: string) => opened.promise);
+    replaceProjectPersistenceClientForTests(createMockClient({ openProject }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    const first = useAppStore.getState().openProject('recent-project-a');
+    const second = useAppStore.getState().openProject('recent-project-b');
+
+    expect(openProject).toHaveBeenCalledTimes(1);
+    expect(openProject).toHaveBeenCalledWith('recent-project-a');
+    opened.resolve({
+      availableSnapshotIds: [],
+      lifecycle: 'durable',
+      mode: 'desktop',
+      project: firstProject,
+      revision: 7,
+      saveStatus: 'saved',
+    });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(useAppStore.getState().project).toEqual(firstProject);
+    expect(openProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('pauses another project running job when a different canvas is opened', async () => {
+    const timestamp = new Date().toISOString();
+    const foreignJob: ModelJob = {
+      id: 'open-project-foreign-running-job',
+      kind: 'image',
+      modelId: 'foreign-image-model',
+      status: 'running',
+      promptNodeId: 'shared-open-node',
+      providerTaskId: 'foreign-provider-task',
+      confirmedAt: timestamp,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'foreign-image-route',
+      displayName: 'Foreign image model',
+      conversationId: 'foreign-project-conversation',
+      projectId: 'open-project-a',
+      projectSessionId: 'open-project-a-session',
+      referenceAssetIds: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const storage = createTestModelJobStorage([foreignJob]);
+    const poll = vi.fn(async () => ({ status: 'running' as const, progress: 0.5 }));
+    const openedProject = { ...createStarterProject(), id: 'open-project-b', name: 'Opened project B' };
+    replaceModelJobExecutorForTests({ submit: vi.fn(), poll, cancel: vi.fn() });
+    replaceModelJobStorageForTests(storage);
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      openProject: async () => ({
+        availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+        project: openedProject, revision: 2, saveStatus: 'saved' as const,
+      }),
+    }), { getSessionId: () => 'open-project-b-session' }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({
+      project: { ...useAppStore.getState().project, id: 'open-project-a' },
+      persistenceMode: 'desktop',
+      modelJobs: [foreignJob],
+    });
+
+    await expect(useAppStore.getState().openProject()).resolves.toBe(true);
+    await delay(20);
+
+    expect(useAppStore.getState().project.id).toBe(openedProject.id);
+    expect(poll).not.toHaveBeenCalled();
+    expect(await storage.get(foreignJob.id)).toMatchObject({ status: 'running' });
+  });
+
+  it('resumes an opened project running job from its durable old-session anchor', async () => {
+    const timestamp = new Date().toISOString();
+    const jobId = 'open-project-owned-running-job';
+    const generation = createCanvasModuleNode('open-project-owned-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = { lastResultJobId: jobId, resultState: 'pending' };
+    const openedProject = {
+      ...createStarterProject(),
+      id: 'open-project-owned',
+      name: 'Opened owned project',
+      nodes: [generation],
+      edges: [],
+    };
+    const ownedJob: ModelJob = {
+      id: jobId,
+      kind: 'image',
+      modelId: 'owned-image-model',
+      status: 'running',
+      promptNodeId: generation.id,
+      providerTaskId: 'owned-provider-task',
+      confirmedAt: timestamp,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'owned-image-route',
+      displayName: 'Owned image model',
+      conversationId: 'owned-project-conversation',
+      projectId: openedProject.id,
+      projectSessionId: 'retired-owned-session',
+      referenceAssetIds: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const storage = createTestModelJobStorage([ownedJob]);
+    const poll = vi.fn(async () => ({ status: 'cancelled' as const }));
+    replaceModelJobExecutorForTests({ submit: vi.fn(), poll, cancel: vi.fn() });
+    replaceModelJobStorageForTests(storage);
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      openProject: async () => ({
+        availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+        project: openedProject, revision: 3, saveStatus: 'saved' as const,
+      }),
+    }), { getSessionId: () => 'current-owned-session' }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await expect(useAppStore.getState().openProject()).resolves.toBe(true);
+    await waitForStore(() => useAppStore.getState().modelJobs[0]?.status === 'cancelled');
+
+    expect(poll).toHaveBeenCalledOnce();
+    expect(poll).toHaveBeenCalledWith(expect.objectContaining({ id: jobId, projectId: openedProject.id }));
+  });
+
+  it('cancels a stale queued formal job instead of submitting it after its project is reopened', async () => {
+    const timestamp = new Date().toISOString();
+    const staleJobId = 'open-project-stale-queued-job';
+    const currentJobId = 'open-project-current-batch-job';
+    const generation = createCanvasModuleNode('open-project-stale-queued-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      lastResultJobId: currentJobId,
+      pendingResultJobIds: [currentJobId],
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    const openedProject = {
+      ...createStarterProject(),
+      id: 'open-project-stale-queued',
+      nodes: [generation],
+      edges: [],
+      assets: [],
+    };
+    const staleJob: ModelJob = {
+      id: staleJobId,
+      kind: 'image',
+      modelId: 'stale-image-model',
+      status: 'queued',
+      promptNodeId: generation.id,
+      confirmedAt: timestamp,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'stale-image-route',
+      displayName: 'Stale image route',
+      conversationId: 'stale-image-conversation',
+      projectId: openedProject.id,
+      projectSessionId: 'retired-stale-session',
+      referenceAssetIds: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const submit = vi.fn(async () => ({ providerTaskId: 'must-not-submit-stale-job' }));
+    const storage = createTestModelJobStorage([staleJob]);
+    replaceModelJobStorageForTests(storage);
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      openProject: async () => ({
+        availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+        project: openedProject, revision: 4, saveStatus: 'saved' as const,
+      }),
+    }), { getSessionId: () => 'current-stale-session' }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await expect(useAppStore.getState().openProject()).resolves.toBe(true);
+    await delay(20);
+    const stored = await storage.get(staleJobId);
+    resetAppStoreForTests();
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(stored).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('removes orphaned generation job anchors before hydrated work can resume', async () => {
+    const generation: CanvasModuleNode = createCanvasModuleNode('hydrated-orphan-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelRoute: 'hydrated-orphan-route',
+      modelDisplayName: 'Hydrated orphan route',
+      lastResultJobId: 'missing-hydrated-job',
+      pendingResultJobIds: ['missing-hydrated-job'],
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    generation.data.execution = { state: 'queued' };
+    const durableProject: CanvasProject = {
+      ...moduleGraphProject(),
+      id: 'hydrated-orphan-project',
+      nodes: [generation],
+      edges: [],
+      assets: [],
+    };
+    let persistedProject: CanvasProject = durableProject;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      persistedProject = request.nextProject;
+      return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+    });
+    const submit = vi.fn();
+    replaceModelJobStorageForTests(createTestModelJobStorage());
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable',
+        mode: 'desktop',
+        project: durableProject,
+        revision: 5,
+        saveStatus: 'saved',
+      }),
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(commit.mock.calls[0]?.[0].transaction.label).toBe('Remove orphaned generation job bindings');
+    const repaired = persistedProject.nodes.find((node) => node.id === generation.id);
+    expect(repaired).toMatchObject({ data: { config: { resultState: 'failed' }, execution: { state: 'failed' } } });
+    expect(repaired?.type === 'module' ? repaired.data.config.pendingResultJobIds : undefined).toEqual([]);
+    expect(repaired?.type === 'module' ? repaired.data.config.lastResultJobId : undefined).toBeUndefined();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('does not repair a completed historical batch back into a formal node that owns a newer batch', async () => {
+    const timestamp = new Date().toISOString();
+    const projectId = 'historical-repair-project';
+    const currentJobId = 'current-formal-batch-job';
+    const historicalJobId = 'historical-formal-batch-job';
+    const generation = createCanvasModuleNode('historical-repair-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      lastResultJobId: currentJobId,
+      pendingResultJobIds: [currentJobId],
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    const durableProject = {
+      ...createStarterProject(), id: projectId, nodes: [generation], edges: [], assets: [],
+    };
+    const historicalJob: ModelJob = {
+      id: historicalJobId,
+      kind: 'image',
+      modelId: 'historical-image-model',
+      status: 'completed',
+      promptNodeId: generation.id,
+      providerTaskId: 'historical-provider-task',
+      confirmedAt: timestamp,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'historical-image-route',
+      displayName: 'Historical image route',
+      conversationId: 'historical-image-conversation',
+      projectId,
+      projectSessionId: 'retired-historical-session',
+      referenceAssetIds: [],
+      resultAssetId: 'aaaaaaaaaaaaaaaa',
+      resultAssetIds: ['aaaaaaaaaaaaaaaa'],
+      resultNodeId: generation.id,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      completedAt: timestamp,
+      progress: 1,
+    };
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true, project: request.nextProject, revision: request.baseRevision + 1,
+    }));
+    replaceModelJobStorageForTests(createTestModelJobStorage([historicalJob]));
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+        project: durableProject, revision: 7, saveStatus: 'saved' as const,
+      }),
+    }), { getSessionId: () => 'current-historical-session' }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+    const updated = useAppStore.getState().project.nodes.find((node) => node.id === generation.id);
+    const config = updated?.type === 'module' ? cloneProjectForExpectation(updated.data.config) : {};
+    const repairCalls = commit.mock.calls.filter(([request]) => request.transaction.id === `model-job-inline-result-${historicalJobId}`);
+    resetAppStoreForTests();
+
+    expect(repairCalls).toEqual([]);
+    expect(config).toMatchObject({
+      pendingResultJobIds: [],
+      resultAssetIds: [],
+      resultState: 'failed',
+    });
+    expect(config.lastResultJobId).toBeUndefined();
+  });
+
+  it('rechecks completed formal result ownership after a newer batch commit leaves the stable queue', async () => {
+    const timestamp = new Date().toISOString();
+    const historicalJobId = 'repair-race-historical-job';
+    const currentJobId = 'repair-race-current-job';
+    const generation = createCanvasModuleNode('repair-race-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      lastResultJobId: historicalJobId,
+      pendingResultJobIds: [historicalJobId],
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    const durableProject = {
+      ...createStarterProject(), id: 'repair-race-project', nodes: [generation], edges: [], assets: [],
+    };
+    const completedJob: ModelJob = {
+      id: historicalJobId,
+      kind: 'image',
+      modelId: 'repair-race-model',
+      status: 'completed',
+      promptNodeId: generation.id,
+      providerTaskId: 'repair-race-provider-task',
+      confirmedAt: timestamp,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'repair-race-route',
+      displayName: 'Repair race route',
+      conversationId: 'repair-race-conversation',
+      projectId: durableProject.id,
+      projectSessionId: 'repair-race-session',
+      referenceAssetIds: [],
+      resultAssetId: 'dededededededede',
+      resultAssetIds: ['dededededededede'],
+      resultNodeId: generation.id,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      completedAt: timestamp,
+      progress: 1,
+    };
+    const imageRead = deferred<Awaited<ReturnType<ProjectPersistenceClient['listProjectImages']>>>();
+    let imageReadCount = 0;
+    let replaceBatchAfterOwnershipCheck = false;
+    let replacementScheduled = false;
+    let currentProject: CanvasProject | null = null;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true, project: request.nextProject, revision: request.baseRevision + 1,
+    }));
+    replaceModelJobStorageForTests(createTestModelJobStorage([completedJob]));
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+        project: durableProject, revision: 5, saveStatus: 'saved' as const,
+      }),
+      listProjectImages: vi.fn(async () => {
+        imageReadCount += 1;
+        return imageReadCount === 1 ? imageRead.promise : [];
+      }),
+    }), {
+      getSessionId: () => {
+        if (replaceBatchAfterOwnershipCheck && !replacementScheduled && currentProject !== null) {
+          replacementScheduled = true;
+          queueMicrotask(() => useAppStore.setState({ project: currentProject! }));
+        }
+        return 'repair-race-session';
+      },
+    }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    const hydration = useAppStore.getState().hydratePersistence();
+    await waitForStore(() => useAppStore.getState().project.id === durableProject.id);
+    const currentNode = {
+      ...generation,
+      data: {
+        ...generation.data,
+        config: {
+          ...generation.data.config,
+          lastResultJobId: currentJobId,
+          pendingResultJobIds: [currentJobId],
+          resultAssetIds: [],
+          resultState: 'pending',
+        },
+      },
+    };
+    currentProject = {
+      ...useAppStore.getState().project,
+      nodes: useAppStore.getState().project.nodes.map((node) => node.id === generation.id ? currentNode : node),
+    };
+    replaceBatchAfterOwnershipCheck = true;
+    imageRead.resolve([]);
+
+    await hydration;
+    const updated = useAppStore.getState().project.nodes.find((node) => node.id === generation.id);
+    const config = updated?.type === 'module' ? cloneProjectForExpectation(updated.data.config) : {};
+    const repairCalls = commit.mock.calls.filter(([request]) => request.transaction.id === `model-job-inline-result-${historicalJobId}`);
+    resetAppStoreForTests();
+
+    expect(repairCalls).toEqual([]);
+    expect(config).toMatchObject({
+      lastResultJobId: currentJobId,
+      pendingResultJobIds: [currentJobId],
+      resultAssetIds: [],
+      resultState: 'pending',
+    });
+  });
+
+  it('blocks an in-flight result commit as soon as native project opening switches sessions', async () => {
+    const timestamp = new Date().toISOString();
+    const jobId = 'project-switch-inflight-job';
+    const generation = createCanvasModuleNode('project-switch-inflight-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      lastResultJobId: jobId,
+      pendingResultJobIds: [jobId],
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    const projectA = { ...createStarterProject(), id: 'project-switch-a', nodes: [generation], edges: [], assets: [] };
+    const projectB = { ...createStarterProject(), id: 'project-switch-b', nodes: [], edges: [], assets: [] };
+    const runningJob: ModelJob = {
+      id: jobId,
+      kind: 'image',
+      modelId: 'switch-image-model',
+      status: 'running',
+      promptNodeId: generation.id,
+      providerTaskId: 'switch-provider-task',
+      confirmedAt: timestamp,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'switch-image-route',
+      displayName: 'Switch image route',
+      conversationId: 'switch-image-conversation',
+      projectId: projectA.id,
+      projectSessionId: 'project-switch-a-session',
+      referenceAssetIds: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const finalPoll = deferred<{ status: 'completed'; progress: 1; result: { assetId: string; width: number; height: number } }>();
+    const secondImageRead = deferred<Awaited<ReturnType<ProjectPersistenceClient['listProjectImages']>>>();
+    let imageReadCount = 0;
+    let currentSessionId = 'project-switch-a-session';
+    const resultCommitSessions: string[] = [];
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (request.transaction.id.startsWith('model-job-inline-result-')) resultCommitSessions.push(currentSessionId);
+      return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+    });
+    const listProjectImages = vi.fn(async () => {
+      imageReadCount += 1;
+      return imageReadCount === 2 ? secondImageRead.promise : [];
+    });
+    const poll = vi.fn(() => finalPoll.promise);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(),
+      poll,
+      cancel: vi.fn(async () => {}),
+    });
+    replaceModelJobStorageForTests(createTestModelJobStorage([runningJob]));
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+        project: projectA, revision: 1, saveStatus: 'saved' as const,
+      }),
+      listProjectImages,
+      openProject: async () => {
+        currentSessionId = 'project-switch-b-session';
+        return {
+          availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+          project: projectB, revision: 2, saveStatus: 'saved' as const,
+        };
+      },
+    }), { getSessionId: () => currentSessionId }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+    await waitForStore(() => poll.mock.calls.length === 1);
+    const opening = useAppStore.getState().openProject();
+    await waitForStore(() => imageReadCount === 2 && currentSessionId === 'project-switch-b-session');
+    finalPoll.resolve({
+      status: 'completed', progress: 1,
+      result: { assetId: 'bbbbbbbbbbbbbbbb', width: 1024, height: 1024 },
+    });
+    await delay(20);
+    const sessionsBeforeAdoptingProjectB = [...resultCommitSessions];
+    secondImageRead.resolve([]);
+    await opening;
+    const activeProjectId = useAppStore.getState().project.id;
+    resetAppStoreForTests();
+
+    expect(sessionsBeforeAdoptingProjectB).toEqual([]);
+    expect(activeProjectId).toBe(projectB.id);
+  });
+
+  it('blocks an in-flight result commit while native hydration switches sessions', async () => {
+    const timestamp = new Date().toISOString();
+    const jobId = 'project-hydration-inflight-job';
+    const generation = createCanvasModuleNode('project-hydration-inflight-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      lastResultJobId: jobId,
+      pendingResultJobIds: [jobId],
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    const projectA = { ...createStarterProject(), id: 'project-hydration-a', nodes: [generation], edges: [], assets: [] };
+    const projectB = { ...createStarterProject(), id: 'project-hydration-b', nodes: [], edges: [], assets: [] };
+    const runningJob: ModelJob = {
+      id: jobId,
+      kind: 'image',
+      modelId: 'hydration-image-model',
+      status: 'running',
+      promptNodeId: generation.id,
+      providerTaskId: 'hydration-provider-task',
+      confirmedAt: timestamp,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'hydration-image-route',
+      displayName: 'Hydration image route',
+      conversationId: 'hydration-image-conversation',
+      projectId: projectA.id,
+      projectSessionId: 'project-hydration-a-session',
+      referenceAssetIds: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const finalPoll = deferred<{ status: 'completed'; progress: 1; result: { assetId: string; width: number; height: number } }>();
+    const secondHydration = deferred<void>();
+    let hydrationCount = 0;
+    let currentSessionId = 'project-hydration-a-session';
+    const resultCommitSessions: string[] = [];
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (request.transaction.id.startsWith('model-job-inline-result-')) resultCommitSessions.push(currentSessionId);
+      return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+    });
+    const poll = vi.fn(() => finalPoll.promise);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(),
+      poll,
+      cancel: vi.fn(async () => {}),
+    });
+    replaceModelJobStorageForTests(createTestModelJobStorage([runningJob]));
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      hydrate: async () => {
+        hydrationCount += 1;
+        if (hydrationCount === 1) {
+          return {
+            availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+            project: projectA, revision: 1, saveStatus: 'saved' as const,
+          };
+        }
+        currentSessionId = 'project-hydration-b-session';
+        await secondHydration.promise;
+        return {
+          availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+          project: projectB, revision: 2, saveStatus: 'saved' as const,
+        };
+      },
+      listProjectImages: vi.fn(async () => []),
+    }), { getSessionId: () => currentSessionId }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+    await waitForStore(() => poll.mock.calls.length === 1);
+    const hydration = useAppStore.getState().hydratePersistence();
+    await waitForStore(() => currentSessionId === 'project-hydration-b-session');
+    finalPoll.resolve({
+      status: 'completed', progress: 1,
+      result: { assetId: 'cccccccccccccccc', width: 1024, height: 1024 },
+    });
+    await delay(20);
+    const sessionsBeforeAdoptingProjectB = [...resultCommitSessions];
+    secondHydration.resolve();
+    await hydration;
+    const activeProjectId = useAppStore.getState().project.id;
+    resetAppStoreForTests();
+
+    expect(sessionsBeforeAdoptingProjectB).toEqual([]);
+    expect(activeProjectId).toBe(projectB.id);
+  });
+
   it('deletes selected canvas nodes together with their connected edges in one durable transaction', async () => {
     const first = createCanvasModuleNode('delete-first', 'text_prompt', { x: 80, y: 120 });
     const second = createCanvasModuleNode('delete-second', 'image_generation', { x: 360, y: 120 });
@@ -2343,6 +3023,170 @@ describe('project optimization memory', () => {
     });
   });
 
+  it('does not persist an image-generation binding after its native save fails before dispatch', async () => {
+    const generation = createCanvasModuleNode('failed-binding-image-node', 'image_generation', { x: 0, y: 0 });
+    const project: CanvasProject = { ...moduleGraphProject(), id: 'failed-binding-project', nodes: [generation], edges: [], assets: [] };
+    const storage = createTestModelJobStorage();
+    let durableProject: CanvasProject = project;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      if (commit.mock.calls.length === 1) {
+        return {
+          ok: false,
+          code: 'DURABLE_WRITE_FAILED',
+          project: request.previousProject,
+          retryable: true,
+          revision: request.baseRevision,
+        };
+      }
+      durableProject = request.nextProject;
+      return { ok: true, project: request.nextProject, revision: request.baseRevision + 1 };
+    });
+    replaceModelJobStorageForTests(storage);
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'failed-binding-route', displayName: 'Failed binding route', modelId: 'failed-binding-model',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit }), {
+      ensureModelExecutionSession: vi.fn(async () => 'failed-binding-session'),
+      getSessionId: () => 'failed-binding-session',
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project,
+      projectLifecycle: 'durable',
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+    });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'failed-binding-route',
+      prompt: 'Do not save a binding without a dispatchable queue record',
+      aspectRatio: '1:1',
+      resolution: '2K',
+      outputCount: 1,
+    })).rejects.toMatchObject({ code: 'PROJECT_COMMIT_FAILED' });
+
+    expect(useAppStore.getState().canRetryProjectCommit).toBe(false);
+    await expect(useAppStore.getState().retryFailedProjectCommit()).resolves.toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1);
+    const durableNode = durableProject.nodes.find((node) => node.id === generation.id);
+    expect(durableNode).toMatchObject({
+      data: { config: { resultState: 'empty' }, execution: { state: 'idle' } },
+    });
+    expect(durableNode?.type === 'module' ? durableNode.data.config.pendingResultJobIds ?? [] : []).toEqual([]);
+    expect((await storage.list()).every((job) => job.status === 'cancelled')).toBe(true);
+  });
+
+  it('persists an initial image job behind a dispatch hold before saving its canvas binding', async () => {
+    const generation = createCanvasModuleNode('held-initial-image-node', 'image_generation', { x: 0, y: 0 });
+    const project = { ...moduleGraphProject(), id: 'held-initial-project', nodes: [generation], edges: [], assets: [] };
+    const storage = createTestModelJobStorage();
+    const commitAck = deferred<void>();
+    const commit = vi.fn((request: ProjectCommitRequest): Promise<ProjectCommitResult> => (
+      commitAck.promise.then(() => ({ ok: true, project: request.nextProject, revision: request.baseRevision + 1 }))
+    ));
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    replaceModelJobStorageForTests(storage);
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'held-initial-route', displayName: 'Held initial route', modelId: 'held-initial-model',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit }), {
+      ensureModelExecutionSession: vi.fn(async () => 'held-initial-session'),
+      getSessionId: () => 'held-initial-session',
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project,
+      projectLifecycle: 'durable',
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+    });
+
+    const starting = useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'held-initial-route',
+      prompt: 'Persist the job before the binding is acknowledged',
+      aspectRatio: '1:1',
+      resolution: '2K',
+      outputCount: 1,
+    });
+    await waitForStore(() => commit.mock.calls.length === 1);
+
+    expect(await storage.list()).toEqual([
+      expect.objectContaining({ projectId: project.id, projectSessionId: 'held-initial-session', status: 'queued' }),
+    ]);
+    expect(submit).not.toHaveBeenCalled();
+
+    commitAck.resolve();
+    await expect(starting).resolves.toBe(true);
+    await waitForStore(() => submit.mock.calls.length === 1);
+  });
+
+  it('does not start generation while a same-id project session is being opened', async () => {
+    const generation = createCanvasModuleNode('opening-session-image-node', 'image_generation', { x: 0, y: 0 });
+    const project = { ...moduleGraphProject(), id: 'same-id-opening-project', nodes: [generation], edges: [], assets: [] };
+    const opened = deferred<ProjectHydrationResult | null>();
+    const storage = createTestModelJobStorage();
+    const commit = vi.fn(async ({ nextProject, baseRevision }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: baseRevision + 1,
+    }));
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    replaceModelJobStorageForTests(storage);
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'opening-session-route', displayName: 'Opening session route', modelId: 'opening-session-model',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      openProject: vi.fn(() => opened.promise),
+    }), {
+      ensureModelExecutionSession: vi.fn(async () => 'same-id-session-before-open'),
+      getSessionId: () => 'same-id-session-before-open',
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project,
+      projectLifecycle: 'durable',
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+    });
+
+    const opening = useAppStore.getState().openProject('same-id-reopen');
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'opening-session-route',
+      prompt: 'Do not enqueue against the session being replaced',
+      aspectRatio: '1:1',
+      resolution: '2K',
+      outputCount: 1,
+    })).resolves.toBe(false);
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(await storage.list()).toEqual([]);
+
+    opened.resolve({
+      availableSnapshotIds: [],
+      lifecycle: 'durable',
+      mode: 'desktop',
+      project: { ...project, name: 'Same id, newly opened session' },
+      revision: 8,
+      saveStatus: 'saved',
+    });
+    await expect(opening).resolves.toBe(true);
+  });
+
   it('adapts an unsupported Comfly 4K tier to the documented 2K bridge request', async () => {
     const generation = createCanvasModuleNode('tier-image-node', 'image_generation', { x: 0, y: 0 });
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-tier' }));
@@ -2373,14 +3217,59 @@ describe('project optimization memory', () => {
       prompt: 'A native 4K product image',
       aspectRatio: '16:9',
       resolution: '4K',
+      imageQuality: 'high',
       outputCount: 1,
     })).resolves.toBe(true);
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
     expect(useAppStore.getState().modelJobs[0]?.resolution).toBe('2K');
+    expect(useAppStore.getState().modelJobs[0]?.imageQuality).toBe('high');
     expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
       aspectRatio: '16:9',
       resolution: '2K',
+      quality: 'high',
+    }));
+  });
+
+  it('preserves an explicit GPT 4K tier when a complete provider profile omits resolution metadata', async () => {
+    const generation = createCanvasModuleNode('gpt-no-resolution-metadata-node', 'image_generation', { x: 0, y: 0 });
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-gpt-4k' }));
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async () => [{
+          provider: '4dai' as const,
+          modelRoute: 'gpt-image-2',
+          displayName: 'GPT Image 2',
+          modelId: 'gpt-image-2',
+          capabilities: ['image_generation' as const],
+          capabilityStatus: 'complete' as const,
+          constraints: { image: { outputCounts: [1] } },
+        }]),
+        submitImageJob,
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'gpt-image-2',
+      prompt: 'Generate the requested native 4K image',
+      aspectRatio: '16:9',
+      resolution: '4K',
+      imageQuality: 'high',
+      outputCount: 1,
+    })).resolves.toBe(true);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      provider: '4dai',
+      aspectRatio: '16:9',
+      resolution: '4K',
+      imageQuality: 'high',
+    });
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
+      aspectRatio: '16:9',
+      resolution: '4K',
+      quality: 'high',
     }));
   });
 
@@ -2461,6 +3350,153 @@ describe('project optimization memory', () => {
     });
   });
 
+  it('keeps a 4D AI node on its owning provider when another provider exposes the same image route', async () => {
+    const generation = createCanvasModuleNode('fourdai-owned-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelDisplayName: 'GPT Image 2',
+      modelRoute: 'shared/gpt-image-2',
+      providerDisplayName: '4dai',
+    };
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly',
+      modelRoute: 'shared/gpt-image-2',
+      displayName: 'GPT Image 2',
+      modelId: 'gpt-image-2',
+      capabilities: ['image_generation'],
+    }, {
+      provider: '4dai',
+      modelRoute: 'shared/gpt-image-2',
+      displayName: 'GPT Image 2',
+      modelId: 'gpt-image-2',
+      capabilities: ['image_generation'],
+    }]);
+    resetAppStoreForTests();
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'shared/gpt-image-2',
+      prompt: 'Keep the selected API website',
+      aspectRatio: '1:1',
+      resolution: '2K',
+      outputCount: 1,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      provider: '4dai',
+      modelRoute: 'shared/gpt-image-2',
+    });
+  });
+
+  it('executes the exact image provider route already confirmed by MCP', async () => {
+    const generation = createCanvasModuleNode('mcp-locked-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelRoute: 'shared/gpt-image',
+      providerDisplayName: 'comfly',
+    };
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'shared/gpt-image', displayName: 'Comfly GPT Image', modelId: 'gpt-image-2',
+      capabilities: ['image_generation'],
+    }, {
+      provider: '4dai', modelRoute: 'shared/gpt-image', displayName: '4D GPT Image', modelId: 'gpt-image-2',
+      capabilities: ['image_generation'],
+    }]);
+    resetAppStoreForTests();
+    const project = { ...createStarterProject(), id: 'mcp-image-lock-project', nodes: [generation], edges: [] };
+    useAppStore.setState({ project });
+    const executionRoute = {
+      projectId: project.id,
+      expectedRevision: useAppStore.getState().desktopRevision,
+      provider: '4dai' as const,
+      modelRoute: 'shared/gpt-image',
+    };
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'shared/gpt-image', prompt: 'Execute the confirmed API route', aspectRatio: '1:1', resolution: '2K', outputCount: 1,
+      executionRoute,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      provider: '4dai',
+      modelRoute: 'shared/gpt-image',
+    });
+  });
+
+  it('rejects a confirmed 4D image batch larger than the complete route allows', async () => {
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    const generation = createCanvasModuleNode('mcp-4dai-output-count-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelRoute: '4dai-gpt-image-1-5',
+      providerDisplayName: '4dai',
+    };
+    installProviderProfilesForModelJobTests([{
+      provider: '4dai',
+      modelRoute: '4dai-gpt-image-1-5',
+      displayName: '4D GPT Image 1.5',
+      modelId: 'gpt-image-1.5',
+      capabilities: ['image_generation'],
+      capabilityStatus: 'complete',
+      constraints: { image: { aspectRatios: ['1:1'], resolutions: ['2K'], outputCounts: [1] } },
+    }]);
+    resetAppStoreForTests();
+    const project = { ...createStarterProject(), id: 'mcp-4dai-output-count-project', nodes: [generation], edges: [] };
+    useAppStore.setState({ project });
+    const executionRoute = {
+      projectId: project.id,
+      expectedRevision: useAppStore.getState().desktopRevision,
+      provider: '4dai' as const,
+      modelRoute: '4dai-gpt-image-1-5',
+    };
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: '4dai-gpt-image-1-5',
+      prompt: 'Do not silently expand a paid one-output route',
+      aspectRatio: '1:1',
+      resolution: '2K',
+      outputCount: 4,
+      executionRoute,
+    })).rejects.toMatchObject({ code: 'GENERATION_PARAMETERS_UNSUPPORTED' });
+
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a confirmed image route when the project revision changes while profiles load', async () => {
+    const generation = createCanvasModuleNode('mcp-stale-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = { ...generation.data.config, modelRoute: 'shared/gpt-image', providerDisplayName: 'comfly' };
+    const profiles = deferred<ProviderBridgeProfile[]>();
+    window.novusDesktop = {
+      provider: {
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(() => profiles.promise),
+      },
+    } as unknown as typeof window.novusDesktop;
+    resetAppStoreForTests();
+    const project = { ...createStarterProject(), id: 'mcp-stale-image-project', nodes: [generation], edges: [] };
+    useAppStore.setState({ desktopRevision: 7, project });
+    const running = useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'shared/gpt-image', prompt: 'Do not run a stale confirmation', aspectRatio: '1:1', resolution: '2K', outputCount: 1,
+      executionRoute: { projectId: project.id, expectedRevision: 7, provider: '4dai', modelRoute: 'shared/gpt-image' },
+    });
+    const rejected = expect(running).rejects.toMatchObject({ code: 'PROJECT_CONTEXT_CHANGED' });
+    await delay(0);
+    useAppStore.setState({ desktopRevision: 8 });
+    profiles.resolve([{
+      provider: '4dai', modelRoute: 'shared/gpt-image', displayName: '4D GPT Image', modelId: 'gpt-image-2',
+      capabilities: ['image_generation'],
+    }]);
+
+    await rejected;
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+  });
+
   it('rejects ambiguous same-provider RelayMe image repair before enqueue', async () => {
     const generation = createCanvasModuleNode('ambiguous-relayme-image-node', 'image_generation', { x: 0, y: 0 });
     generation.data.config = {
@@ -2507,7 +3543,7 @@ describe('project optimization memory', () => {
     installProviderProfilesForModelJobTests([{
       provider: 'relayme', modelRoute: 'relay-image-constrained', displayName: 'Relay Image Constrained', modelId: 'relay-image-constrained',
       capabilities: ['image_generation', 'async_tasks'],
-      constraints: { image: { aspectRatios: ['1:1'], resolutions: ['2K'], outputCounts: [1] } },
+      constraints: { image: { aspectRatios: ['1:1'], resolutions: ['2K'], outputCounts: [1, 2, 3, 4] } },
     }]);
     resetAppStoreForTests();
     const generation = createCanvasModuleNode('adapted-image-node', 'image_generation', { x: 0, y: 0 });
@@ -2550,7 +3586,862 @@ describe('project optimization memory', () => {
     expect(jobs.every((job) => job.promptNodeId === generation.id && job.kind === 'image' && job.outputCount === 1)).toBe(true);
     expect(new Set(jobs.map((job) => job.confirmedAt)).size).toBe(1);
     expect(useAppStore.getState().project.nodes.find((node) => node.id === generation.id)).toMatchObject({
-      data: { config: { lastResultJobId: jobs[0]?.id, resultState: 'pending' } },
+      data: { config: { lastResultJobId: jobs[0]?.id, pendingResultJobIds: jobs.map((job) => job.id), resultState: 'pending' } },
+    });
+  });
+
+  it('materializes every job in a three-image batch even when sibling results finish out of order', async () => {
+    const completionOrder: string[] = [];
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async (job: ModelJob) => {
+        await delay((2 - (job.queueIndex ?? 0)) * 4);
+        completionOrder.push(job.id);
+        return {
+          status: 'completed' as const,
+          progress: 1,
+          result: { assetId: `${job.queueIndex ?? 0}`.repeat(16), width: 1024, height: 1024 },
+        };
+      }),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'three-up-image', displayName: 'Three Up Image', modelId: 'three-up-image',
+      capabilities: ['image_generation', 'async_tasks'],
+      constraints: { image: { aspectRatios: ['1:1'], resolutions: ['2K'], outputCounts: [1, 2, 3, 4] } },
+    }]);
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('completed-multi-image-node', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({
+      project: { ...createStarterProject(), id: 'completed-multi-image-project', nodes: [generation], edges: [] },
+    });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'three-up-image', prompt: 'Return every image in this batch',
+      aspectRatio: '1:1', resolution: '2K', outputCount: 3,
+    })).resolves.toBe(true);
+
+    const deadline = Date.now() + 250;
+    while (Date.now() < deadline && !useAppStore.getState().modelJobs.every((job) => job.status === 'completed')) {
+      await delay(0);
+    }
+    const jobs = useAppStore.getState().modelJobs.map((job) => ({ ...job }));
+    const updated = useAppStore.getState().project.nodes.find((node) => node.id === generation.id);
+    const config = updated?.type === 'module' ? cloneProjectForExpectation(updated.data.config) : {};
+    resetAppStoreForTests();
+
+    expect(jobs).toHaveLength(3);
+    expect(jobs.every((job) => job.status === 'completed')).toBe(true);
+    expect(new Set(completionOrder.slice(0, 3))).toEqual(new Set(jobs.map((job) => job.id)));
+    expect(config.resultAssetIds).toHaveLength(3);
+    expect(config.resultAssetIds).toEqual(expect.arrayContaining(['0'.repeat(16), '1'.repeat(16), '2'.repeat(16)]));
+    expect(config.pendingResultJobIds).toEqual([]);
+  });
+
+  it('does not persist a retry after the source node was deleted', async () => {
+    const projectId = 'deleted-retry-source-project';
+    const failedJob: ModelJob = {
+      id: 'deleted-retry-source-job',
+      kind: 'image',
+      conversationId: 'deleted-retry-source-conversation',
+      displayName: 'Deleted retry model',
+      modelId: 'deleted-retry-model',
+      modelRoute: 'deleted-retry-route',
+      projectId,
+      promptNodeId: 'deleted-generation-node',
+      prompt: 'Do not retry after deletion',
+      provider: 'comfly',
+      referenceAssetIds: [],
+      retryCount: 0,
+      status: 'failed',
+    };
+    const storage = createTestModelJobStorage([failedJob]);
+    const submit = vi.fn(async () => ({ providerTaskId: 'must-not-submit' }));
+    replaceModelJobStorageForTests(storage);
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(),
+      cancel: vi.fn(async () => {}),
+    });
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...createStarterProject(), id: projectId, nodes: [], edges: [] },
+      modelJobs: [failedJob],
+    });
+
+    await useAppStore.getState().retryModelJob(failedJob.id);
+
+    expect(await storage.list()).toEqual([failedJob]);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('does not persist a formal retry after the generation draft changed', async () => {
+    const projectId = 'edited-retry-source-project';
+    const source = createCanvasModuleNode('edited-retry-source-node', 'image_generation', { x: 0, y: 0 });
+    const failedJob: ModelJob = {
+      id: 'edited-retry-source-job',
+      kind: 'image',
+      conversationId: 'edited-retry-source-conversation',
+      displayName: 'Edited retry model',
+      modelId: 'edited-retry-model',
+      modelRoute: 'edited-retry-route',
+      projectId,
+      projectSessionId: 'edited-retry-session',
+      promptNodeId: source.id,
+      prompt: 'Original failed prompt',
+      aspectRatio: '1:1',
+      resolution: '2K',
+      provider: 'comfly',
+      referenceAssetIds: [],
+      retryCount: 0,
+      status: 'failed',
+    };
+    source.data.config = {
+      ...source.data.config,
+      prompt: 'Edited prompt that needs a new generation',
+      modelRoute: failedJob.modelRoute,
+      aspectRatio: failedJob.aspectRatio,
+      resolution: failedJob.resolution,
+      lastResultJobId: failedJob.id,
+      pendingResultJobIds: [failedJob.id],
+      resultState: 'failed',
+    };
+    const storage = createTestModelJobStorage([failedJob]);
+    const submit = vi.fn(async () => ({ providerTaskId: 'must-not-submit' }));
+    replaceModelJobStorageForTests(storage);
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.1 })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession: vi.fn(async () => 'edited-retry-session'),
+      getSessionId: () => 'edited-retry-session',
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...createStarterProject(), id: projectId, nodes: [source], edges: [] },
+      projectLifecycle: 'durable',
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+      modelJobs: [failedJob],
+    });
+
+    await useAppStore.getState().retryModelJob(failedJob.id);
+
+    expect(await storage.list()).toEqual([failedJob]);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('does not persist a retry when its source node is deleted during session resolution', async () => {
+    const projectId = 'deleted-during-retry-session-project';
+    const source = createCanvasModuleNode('deleted-during-retry-session-node', 'image_generation', { x: 0, y: 0 });
+    const failedJob: ModelJob = {
+      id: 'deleted-during-retry-session-job',
+      kind: 'image',
+      conversationId: 'deleted-during-retry-session-conversation',
+      displayName: 'Deleted during retry session model',
+      modelId: 'deleted-during-retry-session-model',
+      modelRoute: 'deleted-during-retry-session-route',
+      projectId,
+      promptNodeId: source.id,
+      prompt: 'Do not retry after deletion during session resolution',
+      provider: 'comfly',
+      referenceAssetIds: [],
+      retryCount: 0,
+      status: 'failed',
+    };
+    source.data.config = {
+      ...source.data.config,
+      lastResultJobId: failedJob.id,
+      pendingResultJobIds: [failedJob.id],
+      resultState: 'failed',
+    };
+    const storage = createTestModelJobStorage([failedJob]);
+    const session = deferred<string>();
+    const ensureModelExecutionSession = vi.fn(async () => session.promise);
+    replaceModelJobStorageForTests(storage);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async () => ({ providerTaskId: 'must-not-submit' })),
+      poll: vi.fn(),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession,
+      getSessionId: () => null,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...createStarterProject(), id: projectId, nodes: [source], edges: [] },
+      projectLifecycle: 'durable',
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+      modelJobs: [failedJob],
+    });
+
+    const retrying = useAppStore.getState().retryModelJob(failedJob.id);
+    await waitForStore(() => ensureModelExecutionSession.mock.calls.length === 1);
+    useAppStore.setState((state) => ({ project: { ...state.project, nodes: [] } }));
+    session.resolve('resolved-after-source-delete');
+    await retrying;
+
+    expect(await storage.list()).toEqual([failedJob]);
+  });
+
+  it.each([
+    { label: 'current-session job', stableProjectId: true, previousSessionId: 'retry-current-session' },
+    { label: 'legacy job from a retired session', stableProjectId: false, previousSessionId: 'retry-retired-session' },
+  ])('rebinds a failed formal $label before retrying and stores its returned image', async ({ stableProjectId, previousSessionId }) => {
+    const projectId = 'retry-formal-image-project';
+    const currentSessionId = 'retry-current-session';
+    const failedJobId = `failed-formal-${stableProjectId ? 'stable' : 'legacy'}`;
+    const generatedAssetId = stableProjectId ? '3333333333333333' : '4444444444444444';
+    const generation = createCanvasModuleNode('retry-formal-image-node', 'image_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      lastResultJobId: failedJobId,
+      pendingResultJobIds: [failedJobId],
+      resultAssetIds: [],
+      resultState: 'failed',
+    };
+    const timestamp = new Date().toISOString();
+    const failedJob: ModelJob = {
+      id: failedJobId,
+      kind: 'image',
+      modelId: 'retry-image-model',
+      status: 'failed',
+      promptNodeId: generation.id,
+      confirmedAt: timestamp,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'retry-image-route',
+      displayName: 'Retry image route',
+      conversationId: 'retry-formal-image-conversation',
+      ...(stableProjectId ? { projectId } : {}),
+      projectSessionId: previousSessionId,
+      referenceAssetIds: [],
+      prompt: 'Retry this image exactly once',
+      queueIndex: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      error: 'provider failed',
+    };
+    const storage = createTestModelJobStorage([failedJob]);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async () => ({
+        status: 'completed' as const,
+        progress: 1,
+        result: { assetId: generatedAssetId, width: 1024, height: 1024 },
+      })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceModelJobStorageForTests(storage);
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession: vi.fn(async () => currentSessionId),
+      getSessionId: () => currentSessionId,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...createStarterProject(), id: projectId, nodes: [generation], edges: [], assets: [] },
+      projectLifecycle: 'durable',
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+      modelJobs: [failedJob],
+    });
+
+    await useAppStore.getState().retryModelJob(failedJob.id);
+    const deadline = Date.now() + 250;
+    while (Date.now() < deadline && !useAppStore.getState().modelJobs.some((job) => job.id !== failedJob.id && job.status === 'completed')) {
+      await delay(0);
+    }
+    const jobs = useAppStore.getState().modelJobs.map((job) => ({ ...job }));
+    const retried = jobs.find((job) => job.id !== failedJob.id);
+    const updated = useAppStore.getState().project.nodes.find((node) => node.id === generation.id);
+    const config = updated?.type === 'module' ? cloneProjectForExpectation(updated.data.config) : {};
+    resetAppStoreForTests();
+
+    expect(retried).toMatchObject({
+      status: 'completed',
+      projectId,
+      projectSessionId: currentSessionId,
+      resultAssetId: generatedAssetId,
+    });
+    expect(config).toMatchObject({
+      lastResultJobId: retried?.id,
+      pendingResultJobIds: [],
+      resultAssetIds: [generatedAssetId],
+      resultState: 'fresh',
+    });
+  });
+
+  it.each(['success', 'failure'] as const)(
+    'holds a formal retry behind its native binding ACK on $label',
+    async (label) => {
+      const projectId = `retry-binding-${label}-project`;
+      const sessionId = `retry-binding-${label}-session`;
+      const failedJobId = `retry-binding-${label}-failed`;
+      const activeNode = createCanvasModuleNode(`retry-binding-${label}-active-node`, 'image_generation', { x: 0, y: 0 });
+      const retryNode = createCanvasModuleNode(`retry-binding-${label}-retry-node`, 'image_generation', { x: 320, y: 0 });
+      retryNode.data.config = {
+        ...retryNode.data.config,
+        lastResultJobId: failedJobId,
+        pendingResultJobIds: [failedJobId],
+        resultAssetIds: [],
+        resultState: 'failed',
+      };
+      const timestamp = new Date().toISOString();
+      const failedJob: ModelJob = {
+        id: failedJobId,
+        kind: 'image',
+        modelId: 'retry-binding-model',
+        status: 'failed',
+        promptNodeId: retryNode.id,
+        confirmedAt: timestamp,
+        retryCount: 0,
+        provider: 'comfly',
+        modelRoute: 'retry-binding-route',
+        displayName: 'Retry binding route',
+        conversationId: 'retry-binding-conversation',
+        projectId,
+        projectSessionId: sessionId,
+        referenceAssetIds: [],
+        prompt: 'Retry only after the binding is durable',
+        queueIndex: 0,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        error: 'provider failed',
+      };
+      const bindingCommit = deferred<ProjectCommitResult>();
+      let bindingRequest: ProjectCommitRequest | null = null;
+      const commit = vi.fn((request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+        if (request.transaction.id.startsWith('retry-model-job-')) {
+          bindingRequest = request;
+          return bindingCommit.promise;
+        }
+        return Promise.resolve({ ok: true, project: request.nextProject, revision: request.baseRevision + 1 });
+      });
+      const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+      const storage = createTestModelJobStorage([failedJob]);
+      replaceModelJobStorageForTests(storage);
+      replaceModelJobExecutorForTests({
+        submit,
+        poll: vi.fn(async () => {
+          await delay(1);
+          return { status: 'running' as const, progress: 0.3 };
+        }),
+        cancel: vi.fn(async () => {}),
+      });
+      installProviderProfilesForModelJobTests([{
+        provider: 'comfly', modelRoute: 'active-binding-route', displayName: 'Active binding route', modelId: 'active-binding-model',
+        capabilities: ['image_generation', 'async_tasks'],
+      }]);
+      replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit }), {
+        ensureModelExecutionSession: vi.fn(async () => sessionId),
+        getSessionId: () => sessionId,
+      }));
+      resetAppStoreForTests();
+      useAppStore.setState({
+        project: { ...createStarterProject(), id: projectId, nodes: [activeNode, retryNode], edges: [], assets: [] },
+        projectLifecycle: 'durable',
+        persistenceMode: 'desktop',
+        saveStatus: 'saved',
+        modelJobs: [failedJob],
+      });
+
+      await useAppStore.getState().runImageGenerationNode(activeNode.id, {
+        modelRoute: 'active-binding-route', prompt: 'Keep the sibling worker active', outputCount: 1,
+      });
+      await waitForStore(() => useAppStore.getState().modelJobs.some((job) => job.promptNodeId === activeNode.id && job.status === 'running'));
+      const retrying = useAppStore.getState().retryModelJob(failedJobId);
+      await waitForStore(() => bindingRequest !== null);
+      const retryRecord = (await storage.list()).find((job) => job.id !== failedJobId && job.promptNodeId === retryNode.id);
+      expect(retryRecord).toBeDefined();
+      await delay(30);
+      expect(submit.mock.calls.map(([job]) => job.id)).not.toContain(retryRecord?.id);
+
+      const request = bindingRequest!;
+      bindingCommit.resolve(label === 'success'
+        ? { ok: true, project: request.nextProject, revision: request.baseRevision + 1 }
+        : { ok: false, code: 'DISK_FULL', project: request.previousProject, revision: request.baseRevision });
+      await retrying;
+      if (label === 'success') {
+        await waitForStore(() => submit.mock.calls.some(([job]) => job.id === retryRecord?.id));
+        expect(await storage.get(retryRecord!.id)).toMatchObject({ status: 'running' });
+      } else {
+        await delay(20);
+        expect(submit.mock.calls.map(([job]) => job.id)).not.toContain(retryRecord?.id);
+        expect(await storage.get(retryRecord!.id)).toMatchObject({ status: 'cancelled' });
+      }
+      resetAppStoreForTests();
+    },
+  );
+
+  it('binds an Agent-created multi-output generation node to its whole batch before any result returns', async () => {
+    const referenceAsset = {
+      assetId: '5555555555555555', byteSize: 64, extension: 'png' as const, height: 256,
+      label: 'Agent reference', mediaType: 'image/png' as const, origin: 'imported' as const,
+      sha256: '5'.repeat(64), width: 256,
+    };
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async (job: ModelJob) => ({
+        status: 'completed' as const,
+        progress: 1,
+        result: { assetId: `${6 + (job.queueIndex ?? 0)}`.repeat(16), width: 1024, height: 1024 },
+      })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'agent-batch-image', displayName: 'Agent Batch Image', modelId: 'agent-batch-image',
+      capabilities: ['image_generation', 'image_edit', 'async_tasks'],
+      constraints: { image: { aspectRatios: ['1:1'], resolutions: ['2K'], outputCounts: [1, 2, 3] } },
+    }]);
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession: vi.fn(async () => 'agent-batch-session'),
+      getSessionId: () => 'agent-batch-session',
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: {
+        ...createStarterProject(), id: 'agent-batch-project', nodes: [], edges: [], assets: [referenceAsset],
+      },
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+    useAppStore.getState().draftReverseWorkflowPlan({
+      modelRoute: 'agent-batch-image',
+      modelRouteDisplayName: 'Agent Batch Image',
+      references: [{ assetId: referenceAsset.assetId, label: referenceAsset.label, mention: '@图片1' }],
+      analysis: {
+        intent: { deliverable: '产品图', useCase: '测试', defaults: [], missing: [] },
+        referenceDuties: [{
+          assetId: referenceAsset.assetId, mention: '@图片1', responsibility: '主体',
+          inherit: ['主体'], replace: [], doNotCopy: [],
+        }],
+        visual: {
+          subject: '产品', environment: '影棚', material: '金属', lighting: '柔光', camera: '正面',
+          depth: '清晰', composition: '居中', perspective: '自然', layers: '前中后景',
+        },
+        prompts: { zh: '生成产品图', en: 'Generate a product image', negative: ['水印'] },
+        variants: [{ id: 'faithful', name: 'faithful', change: '保持主体', prompt: '生成产品图' }],
+        checklist: [], missing: [], runnable: true,
+      },
+      generation: {
+        kind: 'image', modelRoute: 'agent-batch-image', modelRouteDisplayName: 'Agent Batch Image',
+        parameters: { aspectRatio: '1:1', resolution: '2K', outputCount: 3 },
+      },
+    });
+
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    const deadline = Date.now() + 300;
+    while (Date.now() < deadline && !useAppStore.getState().modelJobs.every((job) => job.status === 'completed')) {
+      await delay(0);
+    }
+    const jobs = useAppStore.getState().modelJobs.map((job) => ({ ...job }));
+    const generation = useAppStore.getState().project.nodes.find((node) => (
+      node.type === 'module' && node.data.moduleType === 'image_generation'
+    ));
+    const config = generation?.type === 'module' ? cloneProjectForExpectation(generation.data.config) : {};
+    resetAppStoreForTests();
+
+    expect(jobs).toHaveLength(3);
+    expect(jobs.every((job) => job.status === 'completed')).toBe(true);
+    expect(config.resultAssetIds).toEqual(expect.arrayContaining(['6'.repeat(16), '7'.repeat(16), '8'.repeat(16)]));
+    expect(config.pendingResultJobIds).toEqual([]);
+  });
+
+  it('binds an Agent update of an existing generation node before its single result returns', async () => {
+    const generation = createCanvasModuleNode('agent-updated-image-node', 'image_generation', { x: 0, y: 0 });
+    const updatedGeneration = {
+      ...generation,
+      data: {
+        ...generation.data,
+        config: { ...generation.data.config, prompt: 'Agent updated prompt', outputCount: 1 },
+      },
+    };
+    const plan: AgentCanvasPlan = {
+      id: 'agent-update-generation-plan',
+      state: 'waiting_for_confirmation',
+      transaction: {
+        id: 'agent-update-generation-transaction',
+        label: 'Update the existing generation node',
+        operations: [{ kind: 'update_node', node: updatedGeneration }],
+      },
+      requestedCapabilities: ['model_execution'],
+      confirmations: {},
+      conflicts: [],
+      modelRoute: 'agent-update-image',
+      modelRouteDisplayName: 'Agent Update Image',
+      jobCount: 1,
+    };
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async () => ({
+        status: 'completed' as const,
+        progress: 1,
+        result: { assetId: '9999999999999999', width: 1024, height: 1024 },
+      })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'agent-update-image', displayName: 'Agent Update Image', modelId: 'agent-update-image',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession: vi.fn(async () => 'agent-update-session'),
+      getSessionId: () => 'agent-update-session',
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...createStarterProject(), id: 'agent-update-project', nodes: [generation], edges: [] },
+      agentPlan: plan,
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    const deadline = Date.now() + 250;
+    while (Date.now() < deadline && useAppStore.getState().modelJobs[0]?.status !== 'completed') await delay(0);
+    const job = useAppStore.getState().modelJobs[0];
+    const updated = useAppStore.getState().project.nodes.find((node) => node.id === generation.id);
+    const config = updated?.type === 'module' ? cloneProjectForExpectation(updated.data.config) : {};
+    resetAppStoreForTests();
+
+    expect(job).toMatchObject({ status: 'completed', resultAssetId: '9999999999999999' });
+    expect(config).toMatchObject({
+      lastResultJobId: job?.id,
+      pendingResultJobIds: [],
+      resultAssetIds: ['9999999999999999'],
+      resultState: 'fresh',
+    });
+  });
+
+  it.each([
+    {
+      provider: 'julun' as const,
+      moduleType: 'video_generation' as const,
+      modelRoute: 'julun-seedance-2-0-deal',
+      modelId: 'seedance-2.0-deal',
+      capability: 'video_generation' as const,
+      decoyCapability: 'image_generation' as const,
+      expectedKind: 'video' as const,
+    },
+    {
+      provider: '4dai' as const,
+      moduleType: 'image_generation' as const,
+      modelRoute: '4dai-gpt-image-2',
+      modelId: 'gpt-image-2',
+      capability: 'image_generation' as const,
+      decoyCapability: 'video_generation' as const,
+      expectedKind: 'image' as const,
+    },
+  ])('confirms a $provider Agent plan through the loaded profile with the matching capability', async ({
+    provider,
+    moduleType,
+    modelRoute,
+    modelId,
+    capability,
+    decoyCapability,
+    expectedKind,
+  }) => {
+    const existingGeneration = createCanvasModuleNode(`${provider}-confirmed-generation`, moduleType, { x: 0, y: 0 });
+    const updatedGeneration = {
+      ...existingGeneration,
+      data: {
+        ...existingGeneration.data,
+        config: {
+          ...existingGeneration.data.config,
+          prompt: `Run ${provider} from its loaded profile`,
+          referenceAssetIds: [],
+          outputCount: 1,
+        },
+      },
+    };
+    const plan: AgentCanvasPlan = {
+      id: `${provider}-confirmed-plan`,
+      state: 'waiting_for_confirmation',
+      transaction: {
+        id: `${provider}-confirmed-transaction`,
+        label: `Confirm ${provider} generation`,
+        operations: [{ kind: 'update_node', node: updatedGeneration }],
+      },
+      requestedCapabilities: ['model_execution'],
+      confirmations: {},
+      conflicts: [],
+      modelRoute,
+      modelRouteDisplayName: `${provider} generation`,
+      jobCount: 1,
+    };
+    const storedJobs: ModelJob[] = [];
+    replaceModelJobStorageForTests(createMutableModelJobStorage(storedJobs, async (jobs) => {
+      storedJobs.splice(0, storedJobs.length, ...jobs);
+    }));
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    window.novusDesktop = {
+      provider: {
+        ackImageJobTerminal: vi.fn(),
+        cancelImageJob: vi.fn(),
+        configure: vi.fn(),
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async ({ provider: requestedProvider } = {}) => {
+          if (requestedProvider === provider) {
+            return [{
+              provider,
+              modelRoute,
+              displayName: `${provider} generation`,
+              modelId,
+              capabilities: [capability, 'async_tasks'],
+              capabilityStatus: 'complete' as const,
+            }];
+          }
+          if (requestedProvider === 'comfly') {
+            return [{
+              provider: 'comfly' as const,
+              modelRoute,
+              displayName: 'Wrong capability decoy',
+              modelId: `decoy-${modelId}`,
+              capabilities: [decoyCapability],
+              capabilityStatus: 'complete' as const,
+            }];
+          }
+          return [];
+        }),
+        pollImageJob: vi.fn(),
+        submitImageJob: vi.fn(),
+        unlock: vi.fn(),
+      },
+    } as unknown as typeof window.novusDesktop;
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession: vi.fn(async () => `${provider}-confirmed-session`),
+      getSessionId: () => `${provider}-confirmed-session`,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: {
+        ...createStarterProject(),
+        id: `${provider}-confirmed-project`,
+        nodes: [existingGeneration],
+        edges: [],
+        assets: [],
+      },
+      agentPlan: plan,
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({ provider, modelRoute, kind: expectedKind });
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      modelProvider: provider,
+      modelRoute,
+      state: 'reviewing_results',
+    });
+  });
+
+  it('does not commit a formal Agent generation binding when its durable queue write fails', async () => {
+    const generation = createCanvasModuleNode('agent-queue-first-image-node', 'image_generation', { x: 0, y: 0 });
+    const updatedGeneration = {
+      ...generation,
+      data: {
+        ...generation.data,
+        config: { ...generation.data.config, prompt: 'Queue this before committing the binding', outputCount: 1 },
+      },
+    };
+    const plan: AgentCanvasPlan = {
+      id: 'agent-queue-first-plan',
+      state: 'waiting_for_confirmation',
+      transaction: {
+        id: 'agent-queue-first-transaction',
+        label: 'Queue before binding the formal generation node',
+        operations: [{ kind: 'update_node', node: updatedGeneration }],
+      },
+      requestedCapabilities: ['model_execution'],
+      confirmations: {},
+      conflicts: [],
+      modelRoute: 'agent-queue-first-image',
+      modelRouteDisplayName: 'Agent Queue First Image',
+      jobCount: 1,
+    };
+    const commit = vi.fn(async ({ nextProject, baseRevision }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: baseRevision + 1,
+    }));
+    replaceModelJobStorageForTests({
+      get: vi.fn(),
+      list: vi.fn(async () => []),
+      put: vi.fn(),
+      bulkPut: vi.fn(async () => { throw new Error('queue storage unavailable'); }),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'agent-queue-first-image', displayName: 'Agent Queue First Image', modelId: 'agent-queue-first-image',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit }), {
+      ensureModelExecutionSession: vi.fn(async () => 'agent-queue-first-session'),
+      getSessionId: () => 'agent-queue-first-session',
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: { ...moduleGraphProject(), id: 'agent-queue-first-project', nodes: [generation], edges: [], assets: [] },
+      agentPlan: plan,
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(useAppStore.getState().project.projectMemory).toEqual([]);
+    const current = useAppStore.getState().project.nodes.find((node) => node.id === generation.id);
+    expect(current?.type === 'module' ? current.data.config.pendingResultJobIds ?? [] : []).toEqual([]);
+    expect(useAppStore.getState().agentPlan).toMatchObject({
+      id: plan.id,
+      state: 'waiting_for_confirmation',
+    });
+  });
+
+  it('cancels a formal Agent queue if its project changes while the queue write is in flight', async () => {
+    const generation = createCanvasModuleNode('agent-switch-image-node', 'image_generation', { x: 0, y: 0 });
+    const updatedGeneration = {
+      ...generation,
+      data: {
+        ...generation.data,
+        config: { ...generation.data.config, prompt: 'Never bind this into another project', outputCount: 1 },
+      },
+    };
+    const plan: AgentCanvasPlan = {
+      id: 'agent-switch-plan',
+      state: 'waiting_for_confirmation',
+      transaction: {
+        id: 'agent-switch-transaction',
+        label: 'Queue an Agent job while project A is active',
+        operations: [{ kind: 'update_node', node: updatedGeneration }],
+      },
+      requestedCapabilities: ['model_execution'],
+      confirmations: {},
+      conflicts: [],
+      modelRoute: 'agent-switch-image',
+      modelRouteDisplayName: 'Agent Switch Image',
+      jobCount: 1,
+    };
+    const queuedJobs: ModelJob[] = [];
+    const queueEntered = deferred<void>();
+    const releaseQueue = deferred<void>();
+    const bulkPut = vi.fn(async (jobs: ModelJob[]) => {
+      queueEntered.resolve();
+      await releaseQueue.promise;
+      queuedJobs.splice(0, queuedJobs.length, ...jobs);
+    });
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    const commit = vi.fn(async ({ nextProject, baseRevision }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: baseRevision + 1,
+    }));
+    const projectA = { ...moduleGraphProject(), id: 'agent-switch-project-a', nodes: [generation], edges: [], assets: [] };
+    const projectB = { ...moduleGraphProject(), id: 'agent-switch-project-b', name: 'Agent switch project B' };
+    let activeSessionId = 'agent-switch-session-a';
+    replaceModelJobStorageForTests(createMutableModelJobStorage(queuedJobs, bulkPut));
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'agent-switch-image', displayName: 'Agent Switch Image', modelId: 'agent-switch-image',
+      capabilities: ['image_generation', 'async_tasks'],
+    }]);
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      openProject: vi.fn(async () => ({
+        availableSnapshotIds: [],
+        lifecycle: 'durable' as const,
+        mode: 'desktop' as const,
+        project: projectB,
+        revision: 9,
+        saveStatus: 'saved' as const,
+      })),
+    }), {
+      ensureModelExecutionSession: vi.fn(async () => activeSessionId),
+      getSessionId: () => activeSessionId,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: projectA,
+      agentPlan: plan,
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    const confirming = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    await queueEntered.promise;
+    activeSessionId = 'agent-switch-session-b';
+    await expect(useAppStore.getState().openProject('agent-switch-project-b')).resolves.toBe(true);
+    releaseQueue.resolve();
+    await confirming;
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project).toEqual(projectB);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ projectId: projectA.id, status: 'cancelled' });
+  });
+
+  it('does not let a running image job from another project session block a reused node id', async () => {
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'current-session-image', displayName: 'Current Session Image', modelId: 'current-session-image',
+      capabilities: ['image_generation'],
+    }]);
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      getSessionId: () => 'current-project-session',
+      ensureModelExecutionSession: async () => 'current-project-session',
+    }));
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('reused-image-node-id', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({
+      persistenceMode: 'desktop',
+      project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] },
+      modelJobs: [{
+        id: 'foreign-running-image-job',
+        kind: 'image',
+        modelId: 'foreign-image-model',
+        promptNodeId: generation.id,
+        projectSessionId: 'another-project-session',
+        referenceAssetIds: [],
+        retryCount: 0,
+        status: 'running',
+      }],
+    });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'current-session-image', prompt: 'Generate in the current project',
+      aspectRatio: '1:1', resolution: '2K', outputCount: 1,
+    })).resolves.toBe(true);
+    await waitForStore(() => submit.mock.calls.length === 1);
+
+    expect(submit.mock.calls[0]?.[0]).toMatchObject({
+      projectSessionId: 'current-project-session',
+      promptNodeId: generation.id,
     });
   });
 
@@ -2613,7 +4504,7 @@ describe('project optimization memory', () => {
     installProviderProfilesForModelJobTests([{
       provider: 'relayme', modelRoute: 'relay-video-constrained', displayName: 'Relay Video Constrained', modelId: 'relay-video-constrained',
       capabilities: ['video_generation', 'async_tasks'],
-      constraints: { video: { aspectRatios: ['9:16'], resolutions: ['720p'], duration: { mode: 'options', options: [4, 6] }, outputCounts: [1] } },
+      constraints: { video: { aspectRatios: ['9:16'], resolutions: ['720p'], duration: { mode: 'options', options: [4, 6] }, outputCounts: [1, 2, 3, 4] } },
     }]);
     resetAppStoreForTests();
     const generation = createCanvasModuleNode('adapted-video-node', 'video_generation', { x: 0, y: 0 });
@@ -2629,6 +4520,155 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().modelJobs[0]).toMatchObject({
       aspectRatio: '9:16', videoResolution: '720p', durationSeconds: 6, outputCount: 1,
     });
+  });
+
+  it('executes the exact video provider route already confirmed by MCP', async () => {
+    const generation = createCanvasModuleNode('mcp-locked-video-node', 'video_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelRoute: 'shared/video-model',
+      providerDisplayName: 'comfly',
+    };
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'shared/video-model', displayName: 'Comfly Video', modelId: 'video-model',
+      capabilities: ['video_generation', 'async_tasks'],
+    }, {
+      provider: 'julun', modelRoute: 'shared/video-model', displayName: 'Julun Video', modelId: 'video-model',
+      capabilities: ['video_generation', 'async_tasks'],
+    }]);
+    resetAppStoreForTests();
+    const project = { ...createStarterProject(), id: 'mcp-video-lock-project', nodes: [generation], edges: [], assets: [] };
+    useAppStore.setState({ project });
+    const executionRoute = {
+      projectId: project.id,
+      expectedRevision: useAppStore.getState().desktopRevision,
+      provider: 'julun' as const,
+      modelRoute: 'shared/video-model',
+    };
+
+    await expect(useAppStore.getState().runVideoPreviewNode(generation.id, {
+      modelRoute: 'shared/video-model', prompt: 'Execute the confirmed video API route', referenceAssetIds: [], keyframe: 'auto',
+      aspectRatio: '16:9', resolution: '1080p', durationSeconds: 5, outputCount: 1, audioEnabled: false,
+      executionRoute,
+    })).resolves.toBe(true);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      provider: 'julun',
+      modelRoute: 'shared/video-model',
+    });
+  });
+
+  it('rejects a confirmed Julun batch larger than its one-output video constraint', async () => {
+    const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
+    replaceModelJobExecutorForTests({
+      submit,
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    const generation = createCanvasModuleNode('mcp-julun-output-count-node', 'video_generation', { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      modelRoute: 'julun-seedance-2-0-fast-deal',
+      providerDisplayName: 'julun',
+    };
+    installProviderProfilesForModelJobTests([{
+      provider: 'julun',
+      modelRoute: 'julun-seedance-2-0-fast-deal',
+      displayName: 'Julun Seedance 2.0 Fast',
+      modelId: 'seedance-2.0-fast-deal',
+      capabilities: ['video_generation', 'async_tasks'],
+      capabilityStatus: 'complete',
+      constraints: {
+        video: {
+          aspectRatios: ['16:9'],
+          resolutions: ['720p'],
+          duration: { mode: 'options', options: [5, 10], defaultValue: 10 },
+          outputCounts: [1],
+        },
+      },
+    }]);
+    resetAppStoreForTests();
+    const project = {
+      ...createStarterProject(),
+      id: 'mcp-julun-output-count-project',
+      nodes: [generation],
+      edges: [],
+      assets: [],
+    };
+    useAppStore.setState({ project });
+    const executionRoute = {
+      projectId: project.id,
+      expectedRevision: useAppStore.getState().desktopRevision,
+      provider: 'julun' as const,
+      modelRoute: 'julun-seedance-2-0-fast-deal',
+    };
+
+    await expect(useAppStore.getState().runVideoPreviewNode(generation.id, {
+      modelRoute: 'julun-seedance-2-0-fast-deal',
+      prompt: 'Do not silently create four paid Julun tasks',
+      referenceAssetIds: [],
+      keyframe: 'auto',
+      aspectRatio: '16:9',
+      resolution: '720p',
+      durationSeconds: 10,
+      outputCount: 4,
+      audioEnabled: false,
+      executionRoute,
+    })).rejects.toMatchObject({ code: 'GENERATION_PARAMETERS_UNSUPPORTED' });
+
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('materializes every job in a multi-output video batch into the source node', async () => {
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async (job: ModelJob) => ({
+        status: 'completed' as const,
+        progress: 1,
+        result: {
+          assetId: `${(job.queueIndex ?? 0) + 10}`.repeat(8),
+          width: 1280,
+          height: 720,
+          durationSeconds: 6,
+        },
+      })),
+      cancel: vi.fn(async () => {}),
+    });
+    installProviderProfilesForModelJobTests([{
+      provider: 'relayme', modelRoute: 'relay-video-multi', displayName: 'Relay Video Multi', modelId: 'relay-video-multi',
+      capabilities: ['video_generation', 'async_tasks'],
+      constraints: { video: { aspectRatios: ['16:9'], resolutions: ['1080p'], duration: { mode: 'options', options: [6] }, outputCounts: [1, 2, 3, 4] } },
+    }]);
+    resetAppStoreForTests();
+    const generation = createCanvasModuleNode('completed-multi-video-node', 'video_generation', { x: 0, y: 0 });
+    useAppStore.setState({
+      project: { ...createStarterProject(), id: 'completed-multi-video-project', nodes: [generation], edges: [], assets: [] },
+    });
+
+    await expect(useAppStore.getState().runVideoPreviewNode(generation.id, {
+      modelRoute: 'relay-video-multi', prompt: 'Return every video in this batch', referenceAssetIds: [], keyframe: 'auto',
+      aspectRatio: '16:9', resolution: '1080p', durationSeconds: 6, outputCount: 3, audioEnabled: true,
+    })).resolves.toBe(true);
+
+    const deadline = Date.now() + 250;
+    while (Date.now() < deadline && !useAppStore.getState().modelJobs.every((job) => job.status === 'completed')) {
+      await delay(0);
+    }
+    const jobs = useAppStore.getState().modelJobs.map((job) => ({ ...job }));
+    const updated = useAppStore.getState().project.nodes.find((node) => node.id === generation.id);
+    const config = updated?.type === 'module' ? cloneProjectForExpectation(updated.data.config) : {};
+    resetAppStoreForTests();
+
+    expect(jobs).toHaveLength(3);
+    expect(jobs.every((job) => job.status === 'completed')).toBe(true);
+    expect(config.videoResults).toHaveLength(3);
+    expect(config.videoResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetId: '10'.repeat(8), durationMs: 6_000, mediaType: 'video/mp4' }),
+      expect.objectContaining({ assetId: '11'.repeat(8), durationMs: 6_000, mediaType: 'video/mp4' }),
+      expect.objectContaining({ assetId: '12'.repeat(8), durationMs: 6_000, mediaType: 'video/mp4' }),
+    ]));
+    expect(config.pendingResultJobIds).toEqual([]);
   });
   it('repairs a mixed RelayMe video node to its canonical same-provider route before enqueue', async () => {
     const generation = createCanvasModuleNode('mixed-relayme-video-node', 'video_generation', { x: 0, y: 0 });
@@ -2760,7 +4800,7 @@ describe('project optimization memory', () => {
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
-    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenCalledTimes(4);
     expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
     expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(submitImageJob).toHaveBeenCalledWith({
@@ -2827,9 +4867,9 @@ describe('project optimization memory', () => {
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
-    expect(events.slice(0, 3)).toEqual(['profiles', 'profiles', 'commit']);
+    expect(events.slice(0, 5)).toEqual(['profiles', 'profiles', 'profiles', 'profiles', 'commit']);
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenCalledTimes(4);
     expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
     expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(submitImageJob).toHaveBeenCalledWith({
@@ -2888,7 +4928,7 @@ describe('project optimization memory', () => {
       skillWriteback: false,
     })).resolves.toBeUndefined();
 
-    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenCalledTimes(4);
     expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
     expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(commit).not.toHaveBeenCalled();
@@ -2937,7 +4977,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
     });
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 2);
+    await waitForStore(() => listProfiles.mock.calls.length === 4);
 
     useAppStore.getState().cancelAgentPlan();
     expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'confirming' });
@@ -2993,7 +5033,7 @@ describe('project optimization memory', () => {
     });
     const originalPlanId = useAppStore.getState().agentPlan?.id;
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 2);
+    await waitForStore(() => listProfiles.mock.calls.length === 4);
 
     useAppStore.getState().draftAgentPlan('Replacement plan must stay waiting', {
       modelRoute: 'nano-banana-2-actual-route',
@@ -3058,7 +5098,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
     });
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 2);
+    await waitForStore(() => listProfiles.mock.calls.length === 4);
 
     useAppStore.getState().setProject({
       ...useAppStore.getState().project,
@@ -3118,7 +5158,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
     });
     const firstConfirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 2);
+    await waitForStore(() => listProfiles.mock.calls.length === 4);
     const secondConfirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
 
     profileResolution.resolve([{
@@ -3132,7 +5172,7 @@ describe('project optimization memory', () => {
     await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
     await waitForStore(() => submitImageJob.mock.calls.length === 1);
 
-    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenCalledTimes(4);
     expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
     expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(commit).toHaveBeenCalledTimes(1);
@@ -3174,7 +5214,7 @@ describe('project optimization memory', () => {
       modelRoute: 'image-generation',
     });
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 2);
+    await waitForStore(() => listProfiles.mock.calls.length === 4);
     profileResolution.resolve([{
       provider: 'comfly',
       modelRoute: 'image-generation',
@@ -3232,7 +5272,7 @@ describe('project optimization memory', () => {
     });
     const originalPlanId = useAppStore.getState().agentPlan?.id;
     const confirmation = useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
-    await waitForStore(() => listProfiles.mock.calls.length === 2);
+    await waitForStore(() => listProfiles.mock.calls.length === 4);
     profileResolution.resolve([{
       provider: 'comfly',
       modelRoute: 'image-generation',
@@ -3348,6 +5388,62 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/queue|model/i);
   });
 
+  it('does not enqueue a project A Agent retry into project B after the canvas is opened', async () => {
+    const storedJobs: ModelJob[] = [];
+    const bulkPut = vi.fn(async (jobs: ModelJob[]) => {
+      if (bulkPut.mock.calls.length === 1) throw new Error('queue storage unavailable');
+      storedJobs.splice(0, storedJobs.length, ...jobs);
+    });
+    const projectA = { ...moduleGraphProject(), id: 'agent-retry-project-a', name: 'Agent retry project A' };
+    const projectB = { ...moduleGraphProject(), id: 'agent-retry-project-b', name: 'Agent retry project B' };
+    let activeSessionId = 'agent-retry-session-a';
+    const commit = vi.fn(async ({ nextProject, baseRevision }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: nextProject,
+      revision: baseRevision + 1,
+    }));
+    const openProject = vi.fn(async () => ({
+      availableSnapshotIds: [],
+      lifecycle: 'durable' as const,
+      mode: 'desktop' as const,
+      project: projectB,
+      revision: 4,
+      saveStatus: 'saved' as const,
+    }));
+    replaceModelJobStorageForTests(createMutableModelJobStorage(storedJobs, bulkPut));
+    installProviderProfilesForModelJobTests();
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({ commit, openProject }), {
+      ensureModelExecutionSession: vi.fn(async () => activeSessionId),
+      getSessionId: () => activeSessionId,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project: projectA,
+      projectLifecycle: 'durable',
+      persistenceMode: 'desktop',
+      saveStatus: 'saved',
+    });
+
+    useAppStore.getState().draftAgentPlan('Keep this retry scoped to project A', {
+      modelRoute: 'image-generation',
+    });
+    await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'waiting_for_job_retry' });
+
+    activeSessionId = 'agent-retry-session-b';
+    commit.mockClear();
+    bulkPut.mockClear();
+    await expect(useAppStore.getState().openProject('recent-project-b')).resolves.toBe(true);
+    const openedProject = cloneProjectForExpectation(useAppStore.getState().project);
+    await useAppStore.getState().retryAgentPlanJobs();
+
+    expect(useAppStore.getState().project).toEqual(openedProject);
+    expect(commit).not.toHaveBeenCalled();
+    expect(bulkPut).not.toHaveBeenCalled();
+    expect(storedJobs.some((job) => job.projectId === projectB.id)).toBe(false);
+    expect(useAppStore.getState().agentPlan).toBeNull();
+  });
+
   it('retries model job enqueue after a committed Agent plan without duplicating canvas, undo, or memory', async () => {
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -3396,6 +5492,87 @@ describe('project optimization memory', () => {
       conversationId: 'agent-conversation-shared',
       modelRoute: 'image-generation',
       provider: 'comfly',
+    });
+    expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'reviewing_results' });
+  });
+
+  it.each([
+    {
+      provider: 'julun' as const,
+      moduleType: 'video_generation' as const,
+      modelRoute: 'julun-video-generation',
+    },
+    {
+      provider: '4dai' as const,
+      moduleType: 'image_generation' as const,
+      modelRoute: '4dai-image-generation',
+    },
+  ])('retries an already committed $provider Agent generation plan through its persisted provider', async ({
+    provider,
+    moduleType,
+    modelRoute,
+  }) => {
+    const generation = createCanvasModuleNode(`${provider}-committed-generation`, moduleType, { x: 0, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      prompt: `Run the committed ${provider} generation`,
+      modelRoute,
+      outputCount: 1,
+    };
+    const project = {
+      ...createStarterProject(),
+      id: `${provider}-committed-project`,
+      nodes: [generation],
+      edges: [],
+      assets: [],
+    };
+    const plan: AgentCanvasPlan = {
+      id: `${provider}-committed-plan`,
+      state: 'waiting_for_job_retry',
+      transaction: {
+        id: `${provider}-committed-transaction`,
+        label: `Committed ${provider} generation`,
+        operations: [{ kind: 'update_node', node: generation }],
+      },
+      requestedCapabilities: ['model_execution'],
+      confirmations: { canvas: '2026-09-10T00:00:00.000Z', models: '2026-09-10T00:00:00.000Z' },
+      conflicts: ['Model jobs could not be queued. Retry the model queue without applying the canvas again.'],
+      modelProvider: provider,
+      modelRoute,
+      modelRouteDisplayName: `${provider} generation`,
+      modelId: modelRoute,
+      modelConversationId: 'agent-conversation-shared',
+      jobCount: 1,
+    };
+    const storedJobs: ModelJob[] = [];
+    replaceModelJobStorageForTests(createMutableModelJobStorage(storedJobs, async (jobs) => {
+      storedJobs.splice(0, storedJobs.length, ...jobs);
+    }));
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` })),
+      poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({}), {
+      ensureModelExecutionSession: vi.fn(async () => `${provider}-committed-session`),
+      getSessionId: () => `${provider}-committed-session`,
+    }));
+    resetAppStoreForTests();
+    useAppStore.setState({
+      project,
+      agentPlan: plan,
+      persistenceMode: 'desktop',
+      projectLifecycle: 'durable',
+      saveStatus: 'saved',
+    });
+
+    await useAppStore.getState().retryAgentPlanJobs();
+    await waitForStore(() => useAppStore.getState().modelJobs.length === 1);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      provider,
+      modelRoute,
+      kind: moduleType === 'video_generation' ? 'video' : 'image',
     });
     expect(useAppStore.getState().agentPlan).toMatchObject({ state: 'reviewing_results' });
   });
@@ -3506,7 +5683,7 @@ describe('project optimization memory', () => {
     });
     await useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false });
 
-    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenCalledTimes(4);
     expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
     expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(commit).not.toHaveBeenCalled();
@@ -3544,7 +5721,7 @@ describe('project optimization memory', () => {
     await expect(
       useAppStore.getState().confirmAgentPlan({ models: true, deleteNodes: false, skillWriteback: false }),
     ).resolves.toBeUndefined();
-    expect(listProfiles).toHaveBeenCalledTimes(2);
+    expect(listProfiles).toHaveBeenCalledTimes(4);
     expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
     expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
     expect(commit).not.toHaveBeenCalled();
@@ -3553,7 +5730,7 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().agentPlan?.conflicts.join(' ')).toMatch(/model profile/i);
   });
 
-  it('hydrates the durable project and stops an interrupted model job without waiting for its provider', async () => {
+  it('hydrates another durable project and pauses its interrupted model job without waiting for the provider', async () => {
     const finalPoll = deferred<{ status: 'completed'; result: { assetId: string } }>();
     replaceModelJobExecutorForTests({
       submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
@@ -3594,7 +5771,7 @@ describe('project optimization memory', () => {
       expect(resolvedBeforeProvider).toBe(true);
       expect(useAppStore.getState().project.name).toBe('hydrated-before-recovery-finishes');
       expect(useAppStore.getState().desktopRevision).toBe(12);
-      expect(useAppStore.getState().modelJobs[0]?.status).toBe('cancelled');
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('running');
     } finally {
       finalPoll.resolve({ status: 'completed', result: { assetId: 'asset-after-hydrate' } });
       await Promise.race([hydration.catch(() => undefined), delay(100)]);
@@ -3685,6 +5862,70 @@ describe('project optimization memory', () => {
         execution: { state: 'completed' },
       },
     });
+  });
+
+  it('hydrates and resumes a stable-project Agent fallback job from its prompt node', async () => {
+    const jobId = 'persisted-agent-fallback-job';
+    const persistedAt = new Date(Date.now() - 60_000).toISOString();
+    const durableProject = {
+      ...createStarterProject(),
+      id: 'persisted-agent-fallback-project',
+      assets: [],
+    };
+    const storage = createTestModelJobStorage([{
+      id: jobId,
+      kind: 'image',
+      modelId: 'gpt-image-1',
+      status: 'running',
+      promptNodeId: 'prompt-start',
+      providerTaskId: 'provider-persisted-agent-fallback-job',
+      confirmedAt: persistedAt,
+      retryCount: 0,
+      provider: 'comfly',
+      modelRoute: 'image-generation',
+      displayName: 'GPT Image',
+      conversationId: 'agent-model-jobs',
+      projectId: durableProject.id,
+      projectSessionId: 'old-agent-session',
+      referenceAssetIds: [],
+      createdAt: persistedAt,
+      updatedAt: persistedAt,
+    }]);
+    const poll = vi.fn(async () => ({
+      status: 'completed' as const,
+      result: { assetId: 'abababababababab', width: 512, height: 512 },
+    }));
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
+      ok: true,
+      project: request.nextProject,
+      revision: request.baseRevision + 1,
+    }));
+    replaceModelJobStorageForTests(storage);
+    replaceModelJobExecutorForTests({
+      submit: vi.fn(async () => ({ providerTaskId: 'unused-submit' })),
+      poll,
+      cancel: vi.fn(async () => {}),
+    });
+    replaceProjectPersistenceClientForTests(Object.assign(createMockClient({
+      commit,
+      hydrate: async () => ({
+        availableSnapshotIds: [], lifecycle: 'durable' as const, mode: 'desktop' as const,
+        project: durableProject, revision: 5, saveStatus: 'saved' as const,
+      }),
+    }), { getSessionId: () => 'new-agent-session' }));
+    resetAppStoreForTests({ project: 'empty' });
+
+    await useAppStore.getState().hydratePersistence();
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('completed');
+    }, { timeout: 2_000 });
+
+    expect(poll).toHaveBeenCalledWith(expect.objectContaining({ id: jobId, status: 'running' }));
+    expect(useAppStore.getState().project.nodes).toContainEqual(expect.objectContaining({
+      id: `image-result-${jobId}`,
+      type: 'image_result',
+      data: expect.objectContaining({ assetId: 'abababababababab', jobId }),
+    }));
   });
 
   it('waits for durable recovery before resuming the exact owned running image job', async () => {
@@ -3889,7 +6130,7 @@ describe('project optimization memory', () => {
     });
   });
 
-  it('ignores a late provider result from a model job stopped during hydration', async () => {
+  it('ignores a late provider result from a foreign model job paused during hydration', async () => {
     const finalPoll = deferred<{ status: 'completed'; result: { assetId: string } }>();
     const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
@@ -3934,7 +6175,7 @@ describe('project optimization memory', () => {
       await hydration;
       await delay(20);
 
-      expect(useAppStore.getState().modelJobs[0]?.status).toBe('cancelled');
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('running');
       expect(commit.mock.calls.map(([request]) => request).some((request) => request.transaction.id.startsWith('model-job-result-'))).toBe(false);
     } finally {
       finalPoll.resolve({ status: 'completed', result: { assetId: 'asset-hydrated-result' } });
@@ -3942,7 +6183,7 @@ describe('project optimization memory', () => {
     }
   });
 
-  it('does not stream progress or terminal updates from an interrupted job after hydration', async () => {
+  it('does not stream progress or terminal updates from a foreign job paused after hydration', async () => {
     const finalPoll = deferred<{ status: 'completed'; progress: number; result: { assetId: string } }>();
     replaceModelJobExecutorForTests({
       submit: vi.fn(async (job) => ({ providerTaskId: `task-${job.id}` })),
@@ -3977,14 +6218,14 @@ describe('project optimization memory', () => {
     const hydration = useAppStore.getState().hydratePersistence();
     try {
       await hydration;
-      expect(useAppStore.getState().modelJobs[0]?.status).toBe('cancelled');
+      expect(useAppStore.getState().modelJobs[0]?.status).toBe('running');
       expect(useAppStore.getState().modelJobs[0]?.progress).not.toBe(0.65);
 
       finalPoll.resolve({ status: 'completed', progress: 1, result: { assetId: 'asset-live-recovered' } });
       await delay(20);
 
       expect(useAppStore.getState().modelJobs[0]).toMatchObject({
-        status: 'cancelled',
+        status: 'running',
       });
       expect(useAppStore.getState().modelJobs[0]).not.toHaveProperty('resultAssetId');
     } finally {
@@ -6382,7 +8623,7 @@ describe('stable module graph commits', () => {
     });
   });
 
-  it('resolves a reverse model from the active RelayMe catalog without crossing providers', async () => {
+  it('executes the exact saved reverse route even when another provider is active', async () => {
     const reverse = createCanvasModuleNode('reverse-full-dialogue-catalog', 'reverse_agent', { x: 360, y: 0 });
     reverse.data.config = {
       modelRoute: 'comfly-vision-dialogue',
@@ -6425,9 +8666,212 @@ describe('stable module graph commits', () => {
 
     await expect(useAppStore.getState().runReverseAgentNode(reverse.id)).resolves.toMatchObject({ positivePrompt: 'Catalog reverse prompt.' });
     expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
-      provider: 'relayme',
-      run: expect.objectContaining({ agentConfig: expect.objectContaining({ modelRoute: 'relayme-vision-dialogue' }) }),
+      provider: 'comfly',
+      run: expect.objectContaining({ agentConfig: expect.objectContaining({ modelRoute: 'comfly-vision-dialogue' }) }),
     }));
+  });
+
+  it.each([
+    { label: 'missing provider metadata', storedProvider: undefined },
+    { label: 'stale Comfly provider metadata', storedProvider: 'comfly' },
+  ])('executes an exact 4D reverse route with $label', async ({ storedProvider }) => {
+    const reverse = createCanvasModuleNode('exact-4d-reverse-node', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: '4dai-gpt-6-astra-reverse',
+      role: 'Analyst',
+      task: 'Analyze the cited image with the selected 4D route.',
+      knowledgeBaseIds: [],
+      referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+      ...(storedProvider === undefined ? {} : { providerDisplayName: storedProvider }),
+    };
+    const asset = {
+      assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100,
+      label: 'Managed product', mediaType: 'image/png' as const, origin: 'imported' as const,
+      sha256: 'a'.repeat(64), width: 100,
+    };
+    const project = parseCanvasProject({ ...createStarterProject(), assets: [asset], nodes: [reverse], edges: [] });
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId,
+      nonce: input.run.nonce,
+      knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'Exact 4D route analysis.',
+      keywords: ['4dai'],
+      positivePrompt: 'Exact 4D reverse prompt.',
+      negativeConstraints: ['No cross-provider fallback.'],
+      executionChecklist: ['Review the selected API.'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-6-astra-reverse',
+      modelId: 'gpt-6-astra',
+      displayName: 'GPT-6 Astra',
+      capabilities: ['chat', 'vision', 'reverse_prompt'],
+    }, {
+      provider: '4dai',
+      modelRoute: '4dai-gpt-6-astra-reverse',
+      modelId: 'gpt-6-astra',
+      displayName: 'GPT-6 Astra',
+      capabilities: ['chat', 'vision', 'reverse_prompt'],
+    }]);
+    useAppStore.setState({
+      project,
+      projectImages: [{ ...asset, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', usageCount: 0 }],
+    });
+
+    await expect(useAppStore.getState().runReverseAgentNode(reverse.id)).resolves.toMatchObject({
+      positivePrompt: 'Exact 4D reverse prompt.',
+    });
+    expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      provider: '4dai',
+      run: expect.objectContaining({ agentConfig: expect.objectContaining({ modelRoute: '4dai-gpt-6-astra-reverse' }) }),
+    }));
+  });
+
+  it('rejects a response-only reverse profile while execution still requires chat completions', async () => {
+    const reverse = createCanvasModuleNode('incomplete-reverse-node', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: '4dai-incomplete-reverse', providerDisplayName: '4dai', role: 'Analyst',
+      task: 'Analyze the cited image.', knowledgeBaseIds: [], referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+    };
+    const asset = {
+      assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100,
+      label: 'Managed product', mediaType: 'image/png' as const, origin: 'imported' as const,
+      sha256: 'a'.repeat(64), width: 100,
+    };
+    const analyzeReversePrompt = vi.fn();
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    installProviderProfilesForModelJobTests([{
+      provider: '4dai', modelRoute: '4dai-incomplete-reverse', displayName: 'Incomplete Reverse', modelId: 'incomplete-reverse',
+      capabilities: ['responses', 'vision', 'reverse_prompt'],
+    }, {
+      provider: '4dai', modelRoute: '4dai-valid-chat-reverse', displayName: 'Valid Chat Reverse', modelId: 'valid-chat-reverse',
+      capabilities: ['chat', 'vision', 'reverse_prompt'],
+    }]);
+    const project = parseCanvasProject({ ...createStarterProject(), assets: [asset], nodes: [reverse], edges: [] });
+    useAppStore.setState({
+      project,
+      projectImages: [{ ...asset, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', usageCount: 0 }],
+    });
+
+    await expect(useAppStore.getState().runReverseAgentNode(reverse.id)).rejects.toThrow('所选模型没有明确声明反推能力');
+    expect(analyzeReversePrompt).not.toHaveBeenCalled();
+  });
+
+  it('executes the exact reverse provider route already confirmed by MCP', async () => {
+    const reverse = createCanvasModuleNode('mcp-locked-reverse-node', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: 'shared/reverse-model',
+      providerDisplayName: 'comfly',
+      role: 'Analyst',
+      task: 'Analyze the cited image.',
+      knowledgeBaseIds: [],
+      referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+    };
+    const asset = {
+      assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100,
+      label: 'Managed product', mediaType: 'image/png' as const, origin: 'imported' as const,
+      sha256: 'a'.repeat(64), width: 100,
+    };
+    const project = parseCanvasProject({
+      ...createStarterProject(), id: 'mcp-reverse-lock-project', assets: [asset], nodes: [reverse], edges: [],
+    });
+    const analyzeReversePrompt = vi.fn(async (input: NonNullable<ProjectPersistenceClient['analyzeReversePrompt']> extends (value: infer T) => Promise<unknown> ? T : never) => ({
+      sessionId: input.run.sessionId,
+      nonce: input.run.nonce,
+      knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+      analysis: 'Confirmed route analysis.',
+      keywords: ['confirmed'],
+      positivePrompt: 'Confirmed reverse prompt.',
+      negativeConstraints: ['No distortion.'],
+      executionChecklist: ['Review the output.'],
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    installProviderProfilesForModelJobTests([{
+      provider: 'comfly', modelRoute: 'shared/reverse-model', displayName: 'Comfly Reverse', modelId: 'reverse-model',
+      capabilities: ['chat', 'reverse_prompt', 'vision'],
+    }, {
+      provider: '4dai', modelRoute: 'shared/reverse-model', displayName: '4D Reverse', modelId: 'reverse-model',
+      capabilities: ['chat', 'reverse_prompt', 'vision'],
+    }]);
+    useAppStore.setState({
+      project,
+      projectImages: [{ ...asset, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', usageCount: 0 }],
+    });
+    const executionRoute = {
+      projectId: project.id,
+      expectedRevision: useAppStore.getState().desktopRevision,
+      provider: '4dai' as const,
+      modelRoute: 'shared/reverse-model',
+    };
+
+    await expect(useAppStore.getState().runReverseAgentNode(reverse.id, undefined, executionRoute))
+      .resolves.toMatchObject({ positivePrompt: 'Confirmed reverse prompt.' });
+    expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
+      provider: '4dai',
+      run: expect.objectContaining({ agentConfig: expect.objectContaining({ modelRoute: 'shared/reverse-model' }) }),
+    }));
+  });
+
+  it('rejects a confirmed reverse route when a queued canvas commit advances the revision before start persists', async () => {
+    const reverse = createCanvasModuleNode('mcp-queued-reverse-node', 'reverse_agent', { x: 360, y: 0 });
+    reverse.data.config = {
+      modelRoute: '4dai-reverse-model', providerDisplayName: '4dai', role: 'Analyst',
+      task: 'Analyze the cited image.', knowledgeBaseIds: [], referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
+    };
+    const asset = {
+      assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100,
+      label: 'Managed product', mediaType: 'image/png' as const, origin: 'imported' as const,
+      sha256: 'a'.repeat(64), width: 100,
+    };
+    const project = parseCanvasProject({
+      ...createStarterProject(), id: 'mcp-queued-reverse-project', assets: [asset], nodes: [reverse], edges: [],
+    });
+    const firstCommit = deferred<void>();
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      await firstCommit.promise;
+      return { ok: true, project: request.nextProject, revision: 5 };
+    });
+    const analyzeReversePrompt = vi.fn();
+    replaceProjectPersistenceClientForTests(createMockClient({ analyzeReversePrompt, commit }));
+    replaceKnowledgeClientForTests(createKnowledgeClient());
+    let queuedCanvasMutation: Promise<boolean> | undefined;
+    window.novusDesktop = {
+      provider: {
+        getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
+        listProfiles: vi.fn(async () => {
+          queuedCanvasMutation = useAppStore.getState().addModuleNode('text_prompt', { x: 20, y: 20 });
+          return [{
+            provider: '4dai' as const, modelRoute: '4dai-reverse-model', displayName: '4D Reverse', modelId: 'reverse-model',
+            capabilities: ['chat' as const, 'reverse_prompt' as const, 'vision' as const],
+          }];
+        }),
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({
+      desktopRevision: 4,
+      persistenceMode: 'desktop',
+      project,
+      projectLifecycle: 'durable',
+      projectImages: [{ ...asset, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa', usageCount: 0 }],
+      saveStatus: 'saved',
+    });
+    const running = useAppStore.getState().runReverseAgentNode(reverse.id, undefined, {
+      projectId: project.id, expectedRevision: 4, provider: '4dai', modelRoute: '4dai-reverse-model',
+    });
+    const rejected = expect(running).rejects.toMatchObject({ code: 'PROJECT_CONTEXT_CHANGED' });
+    while (commit.mock.calls.length === 0) await delay(0);
+    firstCommit.resolve();
+
+    await expect(queuedCanvasMutation).resolves.toBe(true);
+    await rejected;
+    expect(analyzeReversePrompt).not.toHaveBeenCalled();
+    expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).not.toMatchObject({
+      data: { config: { reverseAgentRunId: expect.any(String), reverseAgentRunState: 'running' } },
+    });
   });
 
   it('autosaves reverse Agent draft fields before the task is run', async () => {

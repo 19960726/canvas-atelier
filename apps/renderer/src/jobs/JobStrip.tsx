@@ -1,5 +1,6 @@
 import type { ModelJob } from '@agent-canvas/domain';
 import { Loader2, RotateCcw, XCircle } from 'lucide-react';
+import { canRetryModelJob, isUncertainExternalSubmission } from './model-job-retry-policy';
 
 interface JobStripProps {
   canReloadSave?: boolean;
@@ -28,9 +29,10 @@ export function JobStrip({
 }: JobStripProps) {
   const activeJobs = jobs.filter((job) => activeStatuses.has(job.status));
   const queuedJobs = activeJobs.filter((job) => job.status === 'queued');
-  const visibleJobs = jobs
-    .filter((job) => job.status !== 'completed')
-    .slice(0, 4);
+  const visibleJobs = [
+    ...activeJobs,
+    ...jobs.filter((job) => job.status !== 'completed' && !activeStatuses.has(job.status)),
+  ].slice(0, 4);
 
   return (
     <footer
@@ -59,13 +61,19 @@ export function JobStrip({
             {job.progress !== undefined && <span>{Math.round(job.progress * 100)}%</span>}
             {job.retryCount > 0 && <span>{job.retryCount} 次重试</span>}
             {job.error && <span className="job-chip__error" title={job.error}>{job.error}</span>}
-            {(job.status === 'failed' || job.status === 'cancelled') && (
+            {canRetryModelJob(job) && (
               <button data-testid="job-retry" type="button" aria-label={`重试 ${job.displayName ?? job.id}`} title="重试" onClick={() => onRetry(job.id)}>
                 <RotateCcw size={13} />
               </button>
             )}
             {activeStatuses.has(job.status) && (
-              <button data-testid="job-cancel" type="button" aria-label={`取消 ${job.displayName ?? job.id}`} title="取消" onClick={() => onCancel(job.id)}>
+              <button
+                data-testid="job-cancel"
+                type="button"
+                aria-label={`${usesLocalStopSemantics(job) ? '停止等待' : '取消'} ${job.displayName ?? job.id}`}
+                title={usesLocalStopSemantics(job) ? '停止等待' : '取消'}
+                onClick={() => onCancel(job.id)}
+              >
                 <XCircle size={13} />
               </button>
             )}
@@ -110,6 +118,12 @@ function statusLabel(job: ModelJob): string {
     case 'running': return '生成';
     case 'completed': return '完成';
     case 'failed': return '失败';
-    case 'cancelled': return '已取消';
+    case 'cancelled': return isUncertainExternalSubmission(job)
+      ? '提交状态不确定'
+      : usesLocalStopSemantics(job) ? '已停止跟踪' : '已取消';
   }
+}
+
+function usesLocalStopSemantics(job: ModelJob): boolean {
+  return job.provider === 'julun' || job.provider === '4dai';
 }

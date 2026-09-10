@@ -169,6 +169,23 @@ export function cloneProviderProfile(profile: ProviderBridgeProfile): ProviderBr
   };
 }
 
+export function markProviderProfileSelections(
+  available: readonly ProviderBridgeProfile[],
+  configured: readonly ProviderBridgeProfile[],
+): ProviderBridgeProfile[] {
+  const matchesConfigured = (profile: ProviderBridgeProfile) => configured.some((candidate) => (
+    candidate.enabled !== false
+    && candidate.provider === profile.provider
+    && (candidate.modelRoute === profile.modelRoute
+      || (candidate.modelId !== undefined && profile.modelId !== undefined && candidate.modelId === profile.modelId))
+  ));
+  const hasExplicitSelection = configured.length > 0;
+  return available.map((profile) => ({
+    ...cloneProviderProfile(profile),
+    enabled: !hasExplicitSelection || matchesConfigured(profile),
+  }));
+}
+
 function cloneProviderConstraints(
   constraints: NonNullable<ProviderBridgeProfile['constraints']>,
 ): NonNullable<ProviderBridgeProfile['constraints']> {
@@ -216,7 +233,10 @@ function capabilitiesForComflyModel(model: ComflyCatalogModel): ProviderBridgePr
   if (hasVision && hasChat) capabilities.push('vision', 'reverse_prompt');
   if (hasVideoUnderstanding) capabilities.push('video_understanding');
   if (hasResponses) capabilities.push('responses');
-  if (hasVision && !hasChat) capabilities.push('vision', 'reverse_prompt');
+  // The reverse executor currently sends images through chat completions.
+  // Keep Responses-only vision metadata visible without advertising a route
+  // that the installed transport cannot execute.
+  if (hasVision && !hasChat) capabilities.push('vision');
   if (tags.has('异步任务')) capabilities.push('async_tasks');
   return capabilities;
 }

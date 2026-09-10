@@ -75,7 +75,9 @@ function WorkflowSummary({ request }: { readonly request: Extract<McpUiConfirmat
 function PaidJobSummary({ request }: { readonly request: Extract<McpUiConfirmationRequest, { kind: 'paid_job' }> }) {
   return <dl className="mcp-workflow-preview__paid">
     <div><dt>任务</dt><dd>{request.jobKind}</dd></div>
+    {request.provider !== undefined && <div><dt>API</dt><dd>{request.provider}</dd></div>}
     <div><dt>模型</dt><dd>{request.modelRoute}</dd></div>
+    <div><dt>输出数量</dt><dd>{request.outputCount}</dd></div>
     <div><dt>节点</dt><dd>{request.nodeId}</dd></div>
     <div><dt>版本</dt><dd>r{request.expectedRevision}</dd></div>
   </dl>;

@@ -51,6 +51,7 @@ export interface ComflyResponsesRequest {
 
 export interface ComflyImageGenerationRequest {
   readonly model: string;
+  readonly quality?: 'low' | 'medium' | 'high' | 'auto';
   readonly prompt: string;
   readonly async?: boolean;
   readonly image?: unknown;
@@ -58,7 +59,8 @@ export interface ComflyImageGenerationRequest {
    * controls it has not documented; callers must only expose them for configured
    * image-generation routes. */
   readonly aspect_ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16';
-  readonly size?: '1024x1024' | '1536x1024' | '1024x1536';
+  /** GPT Image accepts any exact WxH size inside the provider's documented bounds. */
+  readonly size?: string;
   readonly n?: 1 | 2 | 3 | 4;
   readonly [key: string]: unknown;
 }

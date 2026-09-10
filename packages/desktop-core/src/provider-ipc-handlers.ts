@@ -25,6 +25,7 @@ import {
   type PollVideoJobBridgeRequest,
   type PollVideoJobBridgeResult,
   type ProviderBridgeProfile,
+  type ProviderBridgeProvider,
   type ProviderActiveState,
   type LoginRelayMeBridgeRequest,
   type ListProviderTasksBridgeRequest,
@@ -165,7 +166,7 @@ export function createProviderBridgeHandlers(
     },
     submitImageJob: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;
-      return executeActiveProviderCall(source, options?.activeStore, parsed.provider, async () => (
+      return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => (
         parseProviderBridgeResponse(
           PROVIDER_BRIDGE_CHANNELS.submitImageJob,
           await selectService(source, parsed.provider).submitImageJob(parsed),
@@ -174,28 +175,25 @@ export function createProviderBridgeHandlers(
     },
     pollImageJob: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.pollImageJob, request) as PollImageJobBridgeRequest;
-      await assertExecutionProvider(options?.activeStore, parsed.provider);
       return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => (
         parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.pollImageJob, await selectService(source, parsed.provider).pollImageJob(parsed)) as PollImageJobBridgeResult
       ));
     },
     cancelImageJob: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, request) as CancelImageJobBridgeRequest;
-      await assertExecutionProvider(options?.activeStore, parsed.provider);
       return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => (
         parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.cancelImageJob, await selectService(source, parsed.provider).cancelImageJob(parsed)) as CancelImageJobBridgeResult
       ));
     },
     ackImageJobTerminal: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, request) as AckImageJobTerminalBridgeRequest;
-      await assertExecutionProvider(options?.activeStore, parsed.provider);
       return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => (
         parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.ackImageJobTerminal, await selectService(source, parsed.provider).ackImageJobTerminal(parsed)) as AckImageJobTerminalBridgeResult
       ));
     },
     submitVideoJob: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitVideoJob, request) as SubmitVideoJobBridgeRequest;
-      return executeActiveProviderCall(source, options?.activeStore, parsed.provider, async () => {
+      return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => {
         const service = selectService(source, parsed.provider);
         if (service.submitVideoJob === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '视频生成暂不可用');
         return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.submitVideoJob, await service.submitVideoJob(parsed)) as SubmitVideoJobBridgeResult;
@@ -203,7 +201,6 @@ export function createProviderBridgeHandlers(
     },
     pollVideoJob: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.pollVideoJob, request) as PollVideoJobBridgeRequest;
-      await assertExecutionProvider(options?.activeStore, parsed.provider);
       const service = selectService(source, parsed.provider);
       if (service.pollVideoJob === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '视频生成暂不可用');
       return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => (
@@ -212,7 +209,6 @@ export function createProviderBridgeHandlers(
     },
     cancelVideoJob: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.cancelVideoJob, request) as CancelVideoJobBridgeRequest;
-      await assertExecutionProvider(options?.activeStore, parsed.provider);
       const service = selectService(source, parsed.provider);
       if (service.cancelVideoJob === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '视频生成暂不可用');
       return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => (
@@ -221,7 +217,6 @@ export function createProviderBridgeHandlers(
     },
     ackVideoJobTerminal: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.ackVideoJobTerminal, request) as AckVideoJobTerminalBridgeRequest;
-      await assertExecutionProvider(options?.activeStore, parsed.provider);
       const service = selectService(source, parsed.provider);
       if (service.ackVideoJobTerminal === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '视频生成暂不可用');
       return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => (
@@ -230,7 +225,7 @@ export function createProviderBridgeHandlers(
     },
     analyzeReversePrompt: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt, request) as AnalyzeReversePromptBridgeRequest;
-      return executeActiveProviderCall(source, options?.activeStore, parsed.provider, async () => {
+      return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => {
         const service = selectService(source, parsed.provider);
         if (service.analyzeReversePrompt === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '反推分析暂不可用');
         return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.analyzeReversePrompt, await service.analyzeReversePrompt(parsed)) as AnalyzeReversePromptBridgeResult;
@@ -246,11 +241,11 @@ export function createProviderBridgeHandlers(
         if (service.chat === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Agent 对话暂不可用');
         return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.chat, await service.chat(parsed)) as ChatSkillBridgeResult;
       };
-      return executeActiveProviderCall(source, options?.activeStore, parsed.provider, executeChat);
+      return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, executeChat);
     },
     generateStoryboard: async (_event, request) => {
       const parsed = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.generateStoryboard, request) as GenerateStoryboardBridgeRequest;
-      return executeActiveProviderCall(source, options?.activeStore, parsed.provider, async () => {
+      return executeProviderCallWithExpiry(source, options?.activeStore, parsed.provider, async () => {
         const service = selectService(source, parsed.provider);
         if (service.generateStoryboard === undefined) throw createProviderBridgeError('PROVIDER_UNAVAILABLE', '分镜生成暂不可用');
         return parseProviderBridgeResponse(PROVIDER_BRIDGE_CHANNELS.generateStoryboard, await service.generateStoryboard(parsed)) as GenerateStoryboardBridgeResult;
@@ -266,42 +261,22 @@ function requireActiveStore(options: { readonly activeStore?: ProviderActiveStat
   return options.activeStore;
 }
 
-async function assertExecutionProvider(
-  activeStore: ProviderActiveStateStore | undefined,
-  requestedProvider: 'comfly' | 'relayme',
-): Promise<void> {
-  if (activeStore === undefined) return;
-  const { activeProvider } = await activeStore.getActiveProvider();
-  if (activeProvider !== requestedProvider) {
-    throw createProviderBridgeError('PROVIDER_INACTIVE', 'Requested provider is not active');
-  }
-}
-
-async function executeActiveProviderCall<T>(
-  source: ProviderService | ProviderRegistry,
-  activeStore: ProviderActiveStateStore | undefined,
-  requestedProvider: 'comfly' | 'relayme',
-  operation: () => Promise<T>,
-): Promise<T> {
-  await assertExecutionProvider(activeStore, requestedProvider);
-  return executeProviderCallWithExpiry(source, activeStore, requestedProvider, operation);
-}
-
 async function executeProviderCallWithExpiry<T>(
   source: ProviderService | ProviderRegistry,
   activeStore: ProviderActiveStateStore | undefined,
-  requestedProvider: 'comfly' | 'relayme',
+  requestedProvider: ProviderBridgeProvider,
   operation: () => Promise<T>,
 ): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (!isRelayMeAuthenticationExpiry(error) || requestedProvider !== 'relayme' || activeStore === undefined) throw error;
-    const active = await activeStore.getActiveProvider();
-    if (active.activeProvider !== 'relayme') throw error;
+    if (!isRelayMeAuthenticationExpiry(error) || requestedProvider !== 'relayme') throw error;
     const relayme = selectService(source, 'relayme');
     if (relayme.logoutRelayMe !== undefined) await relayme.logoutRelayMe();
-    await activeStore.setActiveProvider(null);
+    if (activeStore !== undefined) {
+      const active = await activeStore.getActiveProvider();
+      if (active.activeProvider === 'relayme') await activeStore.setActiveProvider(null);
+    }
     throw error;
   }
 }
@@ -312,6 +287,6 @@ function isRelayMeAuthenticationExpiry(error: unknown): boolean {
     && error.authenticationExpired === true;
 }
 
-function selectService(source: ProviderService | ProviderRegistry, provider: 'comfly' | 'relayme'): ProviderService {
+function selectService(source: ProviderService | ProviderRegistry, provider: ProviderBridgeProvider): ProviderService {
   return isProviderRegistry(source) ? source.get(provider) : source;
 }

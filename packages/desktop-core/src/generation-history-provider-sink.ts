@@ -9,6 +9,7 @@ import {
 } from '@agent-canvas/domain';
 
 import { GenerationHistoryStore } from './generation-history-store.js';
+import type { ProviderBridgeProvider } from './provider-contracts.js';
 
 const HISTORY_PROMPT_SUMMARIES = { image: 'Image generation request', video: 'Video generation request' } as const;
 const HISTORY_CAPABILITY_REVISIONS = { image: 'image-generation-v1', video: 'video-generation-v1' } as const;
@@ -40,13 +41,13 @@ export interface GenerationHistoryProviderSinkContract {
     readonly jobId: string;
     readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
-    readonly provider?: 'comfly' | 'relayme';
+    readonly provider?: ProviderBridgeProvider;
   }): Promise<GenerationHistorySubmissionReservation>;
   queued(input: {
     readonly jobId: string;
     readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
-    readonly provider?: 'comfly' | 'relayme';
+    readonly provider?: ProviderBridgeProvider;
   }): Promise<string>;
   running(historyId: string): Promise<void>;
   getTerminal(historyId: string): Promise<GenerationHistoryDurableTerminal | null>;
@@ -91,7 +92,7 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
     readonly jobId: string;
     readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
-    readonly provider?: 'comfly' | 'relayme';
+    readonly provider?: ProviderBridgeProvider;
   }): Promise<GenerationHistorySubmissionReservation> {
     const identities = deriveHistoryIdentities(input.jobId);
     const timestamp = this.nowIso();
@@ -108,7 +109,7 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
       job: { jobId: identities.jobId },
       status: 'queued',
       provider: {
-        displayName: provider === 'relayme' ? 'RelayMe' : 'Comfly',
+        displayName: providerDisplayName(provider),
         modelDisplayName: input.modelDisplayName,
         capabilityRevision: HISTORY_CAPABILITY_REVISIONS[kind],
       },
@@ -138,7 +139,7 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
     readonly jobId: string;
     readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
-    readonly provider?: 'comfly' | 'relayme';
+    readonly provider?: ProviderBridgeProvider;
   }): Promise<string> {
     return (await this.reserveSubmission(input)).historyId;
   }
@@ -339,6 +340,13 @@ function failureMessage(code: GenerationHistoryFailureCode): string {
   if (code === 'provider_failed') return 'Generation failed';
   if (code === 'provider_unavailable') return 'Provider unavailable';
   return 'Generated result was invalid';
+}
+
+function providerDisplayName(provider: ProviderBridgeProvider): string {
+  if (provider === 'relayme') return 'RelayMe';
+  if (provider === 'julun') return '巨轮 API';
+  if (provider === '4dai') return '4D AI';
+  return 'Comfly';
 }
 
 function sha256(bytes: Uint8Array): string {

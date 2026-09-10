@@ -14,6 +14,238 @@ import {
 const confirmedAt = '2026-07-16T08:00:00.000Z';
 
 describe('persistent model job store', () => {
+  it.each(['queued', 'submitting', 'running'] as const)('cold recovery preserves a foreign stable-project %s job by default', async (status) => {
+    const storage = createInMemoryModelJobStorage();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow,
+      shouldProcessJob: (job) => job.projectId === 'project-current' });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'foreign', projectId: 'project-foreign', confirmedAt, requests: [request()] });
+    await storage.put({ ...job!, status });
+    await store.recover();
+    expect(await storage.get(job!.id)).toMatchObject({ status, projectId: 'project-foreign' });
+  });
+
+  it.each([true, false])('recovery never rewrites preserved or recoverable snapshots (preserve=%s)', async (preserveOutOfScopeJobs) => {
+    const storage = createInMemoryModelJobStorage();
+    const entered = deferred<void>();
+    const gate = deferred<boolean>();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow,
+      shouldProcessJob: (job) => job.projectId === 'project-current',
+      canRecoverRunningJob: async (job) => {
+        if (job.id === 'block') { entered.resolve(); return gate.promise; }
+        return true;
+      } });
+    await store.enqueueConfirmedJobs({ conversationId: 'current', projectId: 'project-current', confirmedAt,
+      requests: [request({ id: 'owned' }), request({ id: 'block' })] });
+    await store.enqueueConfirmedJobs({ conversationId: 'foreign', projectId: 'project-foreign', confirmedAt, requests: [request({ id: 'foreign' })] });
+    for (const job of await storage.list()) await storage.put({ ...job, status: 'running', providerTaskId: `task-${job.id}` });
+    const recovery = store.recover({ preserveOutOfScopeJobs });
+    await entered.promise;
+    await storage.put({ ...(await storage.get('owned'))!, progress: 0.9 });
+    await storage.put({ ...(await storage.get('foreign'))!, status: 'completed', progress: 1, providerTaskId: 'new-provider-task' });
+    gate.resolve(true);
+    await recovery;
+    expect(await storage.get('owned')).toMatchObject({ status: 'running', progress: 0.9 });
+    expect(await storage.get('foreign')).toMatchObject({ status: 'completed', progress: 1, providerTaskId: 'new-provider-task' });
+  });
+
+  it.each(['completed', 'running'] as const)('recovery cancellation does not overwrite a concurrently changed %s run', async (status) => {
+    const storage = createInMemoryModelJobStorage();
+    const entered = deferred<void>();
+    const gate = deferred<boolean>();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow,
+      canRecoverRunningJob: async () => { entered.resolve(); return gate.promise; } });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'current', confirmedAt, requests: [request()] });
+    await storage.put({ ...job!, status: 'running', providerTaskId: 'old-task' });
+    const recovery = store.recover();
+    await entered.promise;
+    await storage.put({ ...job!, status, providerTaskId: 'new-task', progress: 0.8 });
+    gate.resolve(false);
+    await recovery;
+    expect(await storage.get(job!.id)).toMatchObject({ status, providerTaskId: 'new-task', progress: 0.8 });
+  });
+
+  it.each(['submit', 'poll'] as const)('rechecks project scope when a selected %s reaches the provider queue', async (operation) => {
+    const storage = createInMemoryModelJobStorage();
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    let current = 'project-a';
+    const submit = vi.fn(async (job: ModelJob) => { if (job.id === 'first') { entered.resolve(); await gate.promise; } return { providerTaskId: `task-${job.id}` }; });
+    const poll = vi.fn(async (job: ModelJob) => { if (job.id === 'first') { entered.resolve(); await gate.promise; } return { status: 'running' as const, progress: 0.5 }; });
+    const store = createModelJobStore({ storage, executor: createExecutor({ submit, poll }), commitProjectTransaction: vi.fn(), now: fixedNow,
+      pollConcurrency: 1, shouldProcessJob: (job) => job.projectId === current });
+    await store.enqueueConfirmedJobs({ conversationId: 'a', projectId: 'project-a', confirmedAt, requests: [request({ id: 'first' }), request({ id: 'second' })] });
+    if (operation === 'poll') for (const job of await storage.list()) await storage.put({ ...job, status: 'running', providerTaskId: `task-${job.id}` });
+    const execution = operation === 'submit' ? store.processQueue() : store.pollActiveJobs();
+    await entered.promise;
+    current = 'project-b';
+    gate.resolve();
+    await execution;
+    expect(operation === 'submit' ? submit : poll).toHaveBeenCalledTimes(1);
+    expect(await storage.get('second')).toMatchObject({ status: operation === 'submit' ? 'queued' : 'running' });
+    current = 'project-a';
+    await store.recover({ resumeOwnedJobs: true });
+    if (operation === 'submit') {
+      await store.processQueue();
+      expect(submit.mock.calls.filter(([job]) => job.id === 'second')).toHaveLength(1);
+    }
+  });
+
+  it('resumeOwnedJobs retains queued and locally submitting jobs while cancelling orphaned submissions', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    const store = createModelJobStore({ storage, executor: createExecutor({ submit: async () => { entered.resolve(); await gate.promise; return { providerTaskId: 'live-task' }; } }),
+      commitProjectTransaction: vi.fn(), now: fixedNow, shouldProcessJob: (job) => job.projectId === 'project-a' });
+    await store.enqueueConfirmedJobs({ conversationId: 'a', projectId: 'project-a', confirmedAt, requests: [request({ id: 'live' })] });
+    const submission = store.processQueue();
+    await entered.promise;
+    await store.enqueueConfirmedJobs({ conversationId: 'a', projectId: 'project-a', confirmedAt, requests: [request({ id: 'queued' }), request({ id: 'orphan' })] });
+    await storage.put({ ...(await storage.get('orphan'))!, status: 'submitting' });
+    await store.recover({ resumeOwnedJobs: true });
+    const snapshot = await storage.list();
+    gate.resolve();
+    await submission;
+    expect(snapshot.find((job) => job.id === 'live')).toMatchObject({ status: 'submitting' });
+    expect(snapshot.find((job) => job.id === 'queued')).toMatchObject({ status: 'queued' });
+    expect(snapshot.find((job) => job.id === 'orphan')).toMatchObject({ status: 'cancelled' });
+    expect(await storage.get('live')).toMatchObject({ status: 'running', providerTaskId: 'live-task' });
+  });
+
+  it.each([
+    { provider: 'julun' as const, kind: 'video' as const },
+    { provider: '4dai' as const, kind: 'image' as const },
+  ])('marks an orphaned $provider submission as uncertain and refuses a new-id retry', async ({ provider, kind }) => {
+    const storage = createInMemoryModelJobStorage();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow });
+    const [job] = await store.enqueueConfirmedJobs({
+      conversationId: `uncertain-${provider}`,
+      confirmedAt,
+      requests: [request({ id: `uncertain-${provider}`, provider, kind, referenceAssetIds: [] })],
+    });
+    await storage.put({ ...job!, status: 'submitting', providerTaskId: undefined });
+
+    await store.recover({ resumeOwnedJobs: true });
+
+    await expect(storage.get(job!.id)).resolves.toMatchObject({
+      status: 'cancelled',
+      error: expect.stringContaining('提交状态不确定'),
+    });
+    await expect(store.retryJob(job!.id, { id: `unsafe-retry-${provider}` })).rejects.toThrow('提交状态不确定');
+    await expect(storage.list()).resolves.toHaveLength(1);
+  });
+
+  it('returns the coalesced retry record with explicit identity and current project ownership', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow });
+    const [job] = await store.enqueueConfirmedJobs({ conversationId: 'old', projectId: 'old-project', projectSessionId: 'old-session', confirmedAt, requests: [request()] });
+    await storage.put({ ...job!, status: 'failed' });
+    const first = store.retryJob(job!.id, { id: 'explicit-retry', projectId: 'current-project', projectSessionId: 'current-session' });
+    const second = store.retryJob(job!.id, { id: 'duplicate-retry' });
+    const [retry, duplicate] = await Promise.all([first, second]);
+    expect(retry).toMatchObject({ id: 'explicit-retry', projectId: 'current-project', projectSessionId: 'current-session', status: 'queued', retryCount: 1 });
+    expect(duplicate).toEqual(retry);
+    expect(await storage.list()).toHaveLength(2);
+    expect(await storage.get('explicit-retry')).toEqual(retry);
+  });
+
+  it.each([
+    { provider: 'julun' as const, kind: 'video' as const },
+    { provider: '4dai' as const, kind: 'image' as const },
+  ])('preserves the $provider provider when retrying a terminal job', async ({ provider, kind }) => {
+    const storage = createInMemoryModelJobStorage();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow });
+    const [job] = await store.enqueueConfirmedJobs({
+      conversationId: `conversation-${provider}`,
+      projectId: `project-${provider}`,
+      confirmedAt,
+      requests: [request({ id: `job-${provider}`, provider, kind, referenceAssetIds: [] })],
+    });
+    await storage.put({ ...job!, status: 'failed' });
+
+    await expect(store.retryJob(job!.id, { id: `retry-${provider}` })).resolves.toMatchObject({
+      id: `retry-${provider}`,
+      provider,
+      kind,
+      status: 'queued',
+      retryCount: 1,
+    });
+  });
+
+  it('persists the stable project id on every confirmed queue record', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const store = createModelJobStore({ storage, executor: createExecutor(), commitProjectTransaction: vi.fn(), now: fixedNow });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'project-owned-conversation',
+      projectId: 'project-owned-canvas',
+      confirmedAt,
+      requests: [request({ id: 'project-owned-queue-record' })],
+    } as Parameters<typeof store.enqueueConfirmedJobs>[0] & { projectId: string });
+
+    expect(await storage.get('project-owned-queue-record')).toMatchObject({
+      projectId: 'project-owned-canvas',
+    });
+  });
+
+  it('does not poll or keep its run loop alive for another active project', async () => {
+    const foreign = {
+      ...request({ id: 'foreign-running-project-job' }),
+      confirmedAt,
+      conversationId: 'foreign-project-conversation',
+      createdAt: confirmedAt,
+      kind: 'image' as const,
+      projectId: 'project-foreign',
+      providerTaskId: 'foreign-provider-task',
+      retryCount: 0,
+      status: 'running' as const,
+      updatedAt: confirmedAt,
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([foreign]);
+    const executor = createExecutor({ poll: vi.fn() });
+    const store = createModelJobStore({
+      storage,
+      executor,
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+      pollIntervalMs: 0,
+      shouldProcessJob: (job) => (job as ModelJob & { projectId?: string }).projectId === 'project-current',
+    } as Parameters<typeof createModelJobStore>[0] & { shouldProcessJob: (job: ModelJob) => boolean });
+
+    await expect(Promise.race([
+      store.run().then(() => 'stopped'),
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+    ])).resolves.toBe('stopped');
+    expect(executor.poll).not.toHaveBeenCalled();
+    expect(await storage.get(foreign.id)).toMatchObject({ status: 'running' });
+  });
+
+  it('leaves another project active record untouched during current-project recovery', async () => {
+    const foreign = {
+      ...request({ id: 'foreign-recovery-project-job' }),
+      confirmedAt,
+      conversationId: 'foreign-project-conversation',
+      createdAt: confirmedAt,
+      kind: 'image' as const,
+      projectId: 'project-foreign',
+      providerTaskId: 'foreign-provider-task',
+      retryCount: 0,
+      status: 'running' as const,
+      updatedAt: confirmedAt,
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([foreign]);
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor(),
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+      shouldProcessJob: (job) => (job as ModelJob & { projectId?: string }).projectId === 'project-current',
+    } as Parameters<typeof createModelJobStore>[0] & { shouldProcessJob: (job: ModelJob) => boolean });
+
+    await store.recover({ preserveOutOfScopeJobs: true });
+
+    expect(await storage.get(foreign.id)).toMatchObject({ status: 'running' });
+  });
+
   it('persists queued jobs across store instances before execution', async () => {
     const storage = createInMemoryModelJobStorage();
     const executor = createExecutor();
@@ -164,7 +396,7 @@ describe('persistent model job store', () => {
     ]);
   });
 
-  it('retires an expired running job even when the provider ledger still claims ownership', async () => {
+  it('retires an expired Comfly running job even when the provider ledger still claims ownership', async () => {
     const stale = {
       ...request({ id: 'job-running-expired' }),
       conversationId: 'expired-recovery',
@@ -189,6 +421,40 @@ describe('persistent model job store', () => {
 
     expect(canRecoverRunningJob).not.toHaveBeenCalled();
     expect(await storage.get(stale.id)).toMatchObject({ status: 'cancelled' });
+  });
+
+  it.each([
+    { provider: 'julun' as const, kind: 'video' as const },
+    { provider: '4dai' as const, kind: 'image' as const },
+  ])('recovers a 31-minute $provider task with a durable provider id and ledger ownership', async ({ provider, kind }) => {
+    const stale = {
+      ...request({ id: `job-running-${provider}`, provider, kind, referenceAssetIds: [] }),
+      conversationId: `expired-recovery-${provider}`,
+      confirmedAt: '2026-07-16T07:29:00.000Z',
+      createdAt: '2026-07-16T07:29:00.000Z',
+      updatedAt: '2026-07-16T07:29:00.000Z',
+      status: 'running' as const,
+      retryCount: 0,
+      providerTaskId: `task-job-running-${provider}`,
+    } as ModelJob;
+    const storage = createInMemoryModelJobStorage([stale]);
+    const canRecoverRunningJob = vi.fn(async () => true);
+    const restarted = createModelJobStore({
+      storage,
+      executor: createExecutor(),
+      canRecoverRunningJob,
+      commitProjectTransaction: vi.fn(),
+      now: fixedNow,
+    });
+
+    await restarted.recover();
+
+    expect(canRecoverRunningJob).toHaveBeenCalledWith(expect.objectContaining({
+      id: stale.id,
+      provider,
+      providerTaskId: stale.providerTaskId,
+    }));
+    expect(await storage.get(stale.id)).toMatchObject({ status: 'running' });
   });
 
   it('repairs a completed result into its original generation node without resuming the provider job', async () => {
@@ -470,6 +736,110 @@ describe('persistent model job store', () => {
     expect(project.nodes.find((node) => node.id === imageModule.id)).toMatchObject({
       data: { config: { resultAssetIds: ['1111111111111111', '2222222222222222'] } },
     });
+  });
+
+  it('reconciles every formal sibling when two jobs return the same image asset', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const jobIds = ['same-result-job-1', 'same-result-job-2'];
+    const assetId = 'aaaaaaaaaaaaaaaa';
+    const imageModule = createCanvasModuleNode('same-result-source', 'image_generation', { x: 120, y: 80 });
+    imageModule.data.config = {
+      ...imageModule.data.config,
+      lastResultJobId: jobIds[0],
+      pendingResultJobIds: jobIds,
+      resultAssetIds: [],
+      resultState: 'pending',
+    };
+    let project: CanvasProject = { ...createStarterProject(), nodes: [imageModule], edges: [] };
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({ status: 'completed' as const, progress: 1, result: { assetId } })),
+      }),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'same-formal-result',
+      confirmedAt,
+      requests: jobIds.map((id) => request({ id, promptNodeId: imageModule.id, referenceAssetIds: [] })),
+    });
+    await store.run();
+
+    const updated = project.nodes.find((node) => node.id === imageModule.id);
+    expect((await storage.list()).filter((job) => jobIds.includes(job.id)).every((job) => job.status === 'completed')).toBe(true);
+    expect(updated?.type === 'module' ? updated.data.config.resultAssetIds : undefined).toEqual([assetId]);
+    expect(updated?.type === 'module' ? updated.data.config.pendingResultJobIds : undefined).toEqual([]);
+    expect(commitProjectTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('materializes missing secondary assets when a formal multi-image primary already exists', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const jobId = 'existing-primary-job';
+    const primaryAssetId = 'bbbbbbbbbbbbbbbb';
+    const secondaryAssetId = 'cccccccccccccccc';
+    const imageModule = createCanvasModuleNode('existing-primary-source', 'image_generation', { x: 120, y: 80 });
+    imageModule.data.config = {
+      ...imageModule.data.config,
+      lastResultJobId: jobId,
+      pendingResultJobIds: [jobId],
+      resultAssetIds: [primaryAssetId],
+      resultState: 'pending',
+    };
+    let project: CanvasProject = { ...createStarterProject(), nodes: [imageModule], edges: [] };
+    const commitProjectTransaction = vi.fn(async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    });
+    const store = createModelJobStore({
+      storage,
+      executor: createExecutor({
+        poll: vi.fn(async () => ({
+          status: 'completed' as const,
+          progress: 1,
+          result: {
+            assetId: primaryAssetId,
+            assetIds: [primaryAssetId, secondaryAssetId],
+            width: 1024,
+            height: 1024,
+          },
+        })),
+      }),
+      commitProjectTransaction,
+      getProject: () => project,
+      now: fixedNow,
+      pollIntervalMs: 0,
+    });
+
+    await store.enqueueConfirmedJobs({
+      conversationId: 'existing-primary-formal-result',
+      confirmedAt,
+      requests: [request({
+        id: jobId,
+        provider: 'relayme',
+        promptNodeId: imageModule.id,
+        referenceAssetIds: [],
+        outputCount: 2,
+      })],
+    });
+    await store.run();
+
+    const updated = project.nodes.find((node) => node.id === imageModule.id);
+    expect(updated?.type === 'module' ? updated.data.config.resultAssetIds : undefined).toEqual([
+      primaryAssetId,
+      secondaryAssetId,
+    ]);
+    expect(updated?.type === 'module' ? updated.data.config.pendingResultJobIds : undefined).toEqual([]);
+    expect(commitProjectTransaction).toHaveBeenCalledOnce();
   });
 
   it('does not mark a provider result completed when source-node persistence fails', async () => {

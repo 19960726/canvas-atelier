@@ -1,4 +1,9 @@
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
+import {
+  orderProviderProfilesBySavedDefault,
+  selectSavedProviderModelDefault,
+  type ProviderModelDefaultCapability,
+} from '../settings/provider-model-defaults';
 
 export type ActiveProvider = ProviderBridgeProfile['provider'] | null;
 
@@ -9,42 +14,70 @@ type ProviderProfileBridge = {
 };
 
 const providerProfileRouteAliases = new Map<string, string>();
+const providerCatalogProviders = ['comfly', 'relayme', 'julun', '4dai'] as const;
 
-export async function listRunnableProviderProfiles(bridge: ProviderProfileBridge): Promise<ProviderBridgeProfile[]> {
-  const active = await bridge.getActiveProvider?.();
-  if (active?.activeProvider === 'comfly' || active?.activeProvider === 'relayme') {
-    return (await bridge.listProfiles({ provider: active.activeProvider }))
-      .filter(isRunnableProfile)
-      .filter(shouldExposeProviderProfile)
-      .map(normalizeProviderProfilePresentation);
+export async function listRunnableProviderProfiles(
+  bridge: ProviderProfileBridge,
+  options: { readonly includeLocked?: boolean } = {},
+): Promise<ProviderBridgeProfile[]> {
+  const loaded = await loadAllProviderProfiles(bridge, { preserveImageRoutes: true });
+  const profiles = loaded.profiles.filter((profile) => isRunnableProfile(profile)
+    && !loaded.unconfiguredProviders.has(profile.provider)
+    && (options.includeLocked === true || !loaded.lockedProviders.has(profile.provider)));
+  let activeProvider: ProviderBridgeProfile['provider'] | null | undefined;
+  try {
+    activeProvider = (await bridge.getActiveProvider?.())?.activeProvider;
+  } catch {
+    // The active provider only affects ordering. Keep the usable catalog when
+    // the local preference cannot be read during refresh or startup.
+    return profiles;
   }
-  return (await listAllProviderProfiles(bridge)).filter(isRunnableProfile);
+  if (activeProvider === undefined || activeProvider === null) return profiles;
+  return [...profiles].sort((left, right) => (
+    Number(right.provider === activeProvider) - Number(left.provider === activeProvider)
+  ));
 }
 
-/** Chat-only routes can be usable before the provider reports complete
- * generation capability metadata. Keep those routes available for Agent
- * conversations, while continuing to hide incomplete generation routes. */
 function isRunnableProfile(profile: ProviderBridgeProfile): boolean {
-  if (profile.capabilityStatus !== 'incomplete') return true;
-  return profile.capabilities.includes('chat')
-    && !profile.capabilities.includes('image_generation')
-    && !profile.capabilities.includes('video_generation');
+  return profile.enabled !== false && profile.capabilityStatus !== 'incomplete';
 }
 
-export async function listAllProviderProfiles(bridge: ProviderProfileBridge): Promise<ProviderBridgeProfile[]> {
+export async function listAllProviderProfiles(
+  bridge: ProviderProfileBridge,
+  options: { readonly preserveImageRoutes?: boolean } = {},
+): Promise<ProviderBridgeProfile[]> {
+  return (await loadAllProviderProfiles(bridge, options)).profiles;
+}
+
+async function loadAllProviderProfiles(
+  bridge: ProviderProfileBridge,
+  options: { readonly preserveImageRoutes?: boolean } = {},
+): Promise<{
+  readonly profiles: ProviderBridgeProfile[];
+  readonly configuredProviders: ReadonlySet<ProviderBridgeProfile['provider']> | null;
+  readonly lockedProviders: ReadonlySet<ProviderBridgeProfile['provider']>;
+  readonly unconfiguredProviders: ReadonlySet<ProviderBridgeProfile['provider']>;
+}> {
   providerProfileRouteAliases.clear();
-  const providers = ['comfly', 'relayme'] as const;
   const [results, statusResults] = await Promise.all([
-    Promise.allSettled(providers.map((provider) => bridge.listProfiles({ provider }))),
+    Promise.allSettled(providerCatalogProviders.map((provider) => bridge.listProfiles({ provider }))),
     bridge.getStatus === undefined
       ? Promise.resolve([])
-      : Promise.allSettled(providers.map((provider) => bridge.getStatus!({ provider }))),
+      : Promise.allSettled(providerCatalogProviders.map((provider) => bridge.getStatus!({ provider }))),
   ]);
   const configuredProviders = new Set<ProviderBridgeProfile['provider']>();
+  const lockedProviders = new Set<ProviderBridgeProfile['provider']>();
+  const unconfiguredProviders = new Set<ProviderBridgeProfile['provider']>();
   statusResults.forEach((result, index) => {
-    if (result.status === 'fulfilled' && result.value !== undefined && result.value.configured && !result.value.locked) {
-      const provider = providers[index];
-      if (provider !== undefined) configuredProviders.add(provider);
+    if (result.status !== 'fulfilled' || result.value === undefined) return;
+    const provider = providerCatalogProviders[index];
+    if (provider === undefined) return;
+    if (!result.value.configured) {
+      unconfiguredProviders.add(provider);
+    } else if (result.value.locked) {
+      lockedProviders.add(provider);
+    } else {
+      configuredProviders.add(provider);
     }
   });
   const profiles = results.flatMap((result) => result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : []);
@@ -65,7 +98,23 @@ export async function listAllProviderProfiles(bridge: ProviderProfileBridge): Pr
       recordProfileAlias(presentation, current);
     }
   }
-  return [...unique.values()].sort(compareProviderProfiles);
+  const selected = [...unique.values()];
+  // Canvas nodes persist exact routes. Keep image variants available for
+  // resolving saved selections even when their menu labels are identical.
+  if (options.preserveImageRoutes) {
+    for (const profile of profiles) {
+      if (!profile.capabilities.includes('image_generation') || !shouldExposeProviderProfile(profile)) continue;
+      if (!selected.some((candidate) => candidate.provider === profile.provider && candidate.modelRoute === profile.modelRoute)) {
+        selected.push(normalizeProviderProfilePresentation(profile));
+      }
+    }
+  }
+  return {
+    profiles: selected.sort(compareProviderProfiles),
+    configuredProviders: bridge.getStatus === undefined ? null : configuredProviders,
+    lockedProviders,
+    unconfiguredProviders,
+  };
 }
 
 export function listActiveProviderProfiles(
@@ -104,7 +153,7 @@ export function listAgentChatProfiles(
       : `visible:${normalizedProviderDisplayName(profile)}`;
     if (!unique.has(key)) unique.set(key, profile);
   }
-  return [...unique.values()];
+  return orderProviderProfilesBySavedDefault([...unique.values()], 'chat');
 }
 
 export function listCodexAgentProfiles(
@@ -152,7 +201,7 @@ export function filterProviderCatalogProfiles(
     const presentation = normalizeProviderProfilePresentation(profile);
     const key = catalogProfileFamilyKey(presentation);
     const current = unique.get(key);
-    if (current === undefined || catalogProfileVariantScore(presentation) < catalogProfileVariantScore(current)) {
+    if (current === undefined || compareCatalogProfileVariants(presentation, current) < 0) {
       unique.set(key, presentation);
     }
   }
@@ -162,36 +211,64 @@ export function filterProviderCatalogProfiles(
 export function buildCanvasProviderRouteSets(
   profiles: readonly ProviderBridgeProfile[],
   reverseProfiles: readonly ProviderBridgeProfile[] = profiles,
+  savedImageRoutes: readonly string[] = [],
 ): {
   readonly imageGeneration: ProviderBridgeProfile[];
   readonly videoGeneration: ProviderBridgeProfile[];
   readonly reversePrompt: ProviderBridgeProfile[];
   readonly storyboard: ProviderBridgeProfile[];
 } {
-  const catalog = filterProviderCatalogProfiles(
-    profiles.filter((profile) => profile.capabilityStatus !== 'incomplete'),
-  );
-  const reverseCatalog = filterProviderCatalogProfiles(
-    reverseProfiles.filter((profile) => profile.capabilityStatus !== 'incomplete'),
-  );
+  const catalog = orderProfilesByProviderPriority(filterProviderCatalogProfiles(
+    profiles.filter((profile) => profile.enabled !== false && profile.capabilityStatus !== 'incomplete'),
+  ), profiles);
+  const reverseCatalog = orderProfilesByProviderPriority(filterProviderCatalogProfiles(
+    reverseProfiles.filter((profile) => profile.enabled !== false && profile.capabilityStatus !== 'incomplete'),
+  ), reverseProfiles);
+  const imageGeneration = dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('image_generation')));
+  for (const profile of profiles) {
+    if (!savedImageRoutes.includes(profile.modelRoute)
+      || profile.enabled === false
+      || profile.capabilityStatus === 'incomplete'
+      || !profile.capabilities.includes('image_generation')
+      || isProviderActionRoute(profile)
+      || !shouldExposeProviderProfile(profile)) continue;
+    if (!imageGeneration.some((candidate) => candidate.provider === profile.provider && candidate.modelRoute === profile.modelRoute)) {
+      imageGeneration.push(normalizeProviderProfilePresentation(profile));
+    }
+  }
   return {
-    imageGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('image_generation'))),
-    videoGeneration: dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('video_generation'))),
-    // Reverse analysis uses the provider's dialogue endpoint.  RelayMe's
+    imageGeneration: orderProviderProfilesBySavedDefault(
+      orderProfilesByProviderPriority(imageGeneration, profiles),
+      'image_generation',
+    ),
+    videoGeneration: orderProviderProfilesBySavedDefault(
+      dedupeProviderProfilesByVisibleName(catalog.filter((profile) => profile.capabilities.includes('video_generation'))),
+      'video_generation',
+    ),
+    // Reverse analysis uses the provider's executable dialogue endpoint. RelayMe's
     // catalog can omit vision metadata for a dialogue deployment, so the
     // reverse route is keyed by the explicit reverse_prompt capability rather
     // than requiring a separate vision flag.
-    reversePrompt: dedupeProviderProfilesByVisibleName(reverseCatalog.filter((profile) => {
-      const hasDialogueReverse = profile.capabilities.includes('reverse_prompt')
-        && (profile.capabilities.includes('chat') || profile.capabilities.includes('responses'));
-      const hasVisionDialogue = profile.capabilities.includes('vision')
-        && (profile.capabilities.includes('chat') || profile.capabilities.includes('responses'));
-      const hasGeminiNativeReverse = profile.capabilities.includes('gemini_native')
-        && profile.capabilities.includes('reverse_prompt');
-      return hasDialogueReverse || hasVisionDialogue || hasGeminiNativeReverse;
-    })),
+    reversePrompt: orderProviderProfilesBySavedDefault(dedupeProviderProfilesByVisibleName(
+      reverseCatalog.filter(isReverseCapableProviderProfile),
+    ), 'reverse_prompt'),
     storyboard: listAgentChatProfiles(catalog),
   };
+}
+
+function orderProfilesByProviderPriority(
+  profiles: readonly ProviderBridgeProfile[],
+  orderedSource: readonly ProviderBridgeProfile[],
+): ProviderBridgeProfile[] {
+  const providerRanks = new Map<ProviderBridgeProfile['provider'], number>();
+  for (const profile of orderedSource) {
+    if (!providerRanks.has(profile.provider)) providerRanks.set(profile.provider, providerRanks.size);
+  }
+  return [...profiles].sort((left, right) => (
+    (providerRanks.get(left.provider) ?? Number.MAX_SAFE_INTEGER)
+    - (providerRanks.get(right.provider) ?? Number.MAX_SAFE_INTEGER)
+    || compareProviderProfiles(left, right)
+  ));
 }
 
 function isProviderActionRoute(profile: ProviderBridgeProfile): boolean {
@@ -205,6 +282,9 @@ function isProviderActionRoute(profile: ProviderBridgeProfile): boolean {
 
 function catalogProfileFamilyKey(profile: ProviderBridgeProfile): string {
   const popularFamily = popularImageFamily(profile);
+  if (popularFamily === 'gpt-image-2.5-flare' || popularFamily === 'gpt-image-2.5-sunburst') {
+    return `${profile.provider}:popular-image:${providerProfileIdentity(profile)}`;
+  }
   if (popularFamily !== null) return `${profile.provider}:popular-image:${popularFamily}`;
   return `${profile.provider}:${providerProfileIdentity(profile)
     .replace(/-20\d{2}-\d{2}-\d{2}$/u, '')
@@ -221,9 +301,42 @@ function catalogProfileVariantScore(profile: ProviderBridgeProfile): number {
   return score;
 }
 
+function compareCatalogProfileVariants(left: ProviderBridgeProfile, right: ProviderBridgeProfile): number {
+  return catalogProfileVariantScore(left) - catalogProfileVariantScore(right)
+    || catalogProfileCanonicalPenalty(left) - catalogProfileCanonicalPenalty(right)
+    || catalogProfileContractBreadth(right) - catalogProfileContractBreadth(left)
+    || profileLexicalKey(left).localeCompare(profileLexicalKey(right), 'en', { numeric: true, sensitivity: 'base' });
+}
+
+function catalogProfileCanonicalPenalty(profile: ProviderBridgeProfile): number {
+  const family = popularImageFamily(profile);
+  if (family === null) return 0;
+  const identity = providerProfileIdentity(profile);
+  if (identity === family) return 0;
+  if (identity === `${family}-all`) return 1;
+  return 2;
+}
+
+function catalogProfileContractBreadth(profile: ProviderBridgeProfile): number {
+  const image = profile.constraints?.image;
+  const video = profile.constraints?.video;
+  return (image?.resolutions?.length ?? 0) * 1_000
+    + (video?.resolutions?.length ?? 0) * 1_000
+    + (image?.aspectRatios?.length ?? 0) * 100
+    + (video?.aspectRatios?.length ?? 0) * 100
+    + (image?.outputCounts?.length ?? 0) * 10
+    + (video?.outputCounts?.length ?? 0) * 10
+    + profile.capabilities.length;
+}
+
 function normalizeProviderProfilePresentation(profile: ProviderBridgeProfile): ProviderBridgeProfile {
   const family = popularImageFamily(profile);
   if (family === 'gpt-image-2') return { ...profile, displayName: 'GPT Image 2' };
+  if (family === 'gpt-image-2.5-flare' || family === 'gpt-image-2.5-sunburst') {
+    const resolution = providerProfileIdentity(profile).match(/-(2k|4k)$/u)?.[1]?.toLocaleUpperCase();
+    const variant = family === 'gpt-image-2.5-flare' ? 'Flare' : 'Sunburst';
+    return { ...profile, displayName: `GPT Image 2.5 ${variant}${resolution === undefined ? '' : ` ${resolution}`}` };
+  }
   if (family === 'nano-banana-2') return { ...profile, displayName: 'Nano Banana 2' };
   if (family === 'nano-banana-pro') return { ...profile, displayName: 'Nano Banana Pro' };
   const identity = providerProfileIdentity(profile);
@@ -256,7 +369,7 @@ function normalizedProviderDisplayName(profile: ProviderBridgeProfile): string {
   return normalizeProviderProfilePresentation(profile).displayName
     .trim()
     .toLocaleLowerCase()
-    .replace(/^(?:comfly|relayme)[\s:/_-]+/u, '')
+    .replace(/^(?:comfly|relayme|julun|4dai)[\s:/_-]+/u, '')
     .replace(/[\s_-]+/gu, ' ');
 }
 
@@ -287,14 +400,19 @@ function providerProfileIdentity(profile: ProviderBridgeProfile): string {
   return (profile.modelId ?? profile.displayName ?? profile.modelRoute)
     .trim()
     .toLocaleLowerCase()
-    .replace(/^(?:comfly|relayme)[\s:/_-]+/u, '')
+    .replace(/^(?:comfly|relayme|julun|4dai)[\s:/_-]+/u, '')
     .replace(/[\s_]+/gu, '-');
 }
 
-function popularImageFamily(profile: ProviderBridgeProfile): 'gpt-image-2' | 'nano-banana-2' | 'nano-banana-pro' | null {
+type PopularImageFamily = 'gpt-image-2' | 'gpt-image-2.5-flare' | 'gpt-image-2.5-sunburst' | 'nano-banana-2' | 'nano-banana-pro';
+
+function popularImageFamily(profile: ProviderBridgeProfile): PopularImageFamily | null {
   if (!profile.capabilities.includes('image_generation')) return null;
-  const identity = `${providerProfileIdentity(profile)} ${profile.modelRoute.toLocaleLowerCase()} ${profile.displayName.toLocaleLowerCase()}`;
-  if (/gpt[-\s_]?image[-\s_]?2(?:\b|[-_/])/u.test(identity)) return 'gpt-image-2';
+  const profileIdentity = providerProfileIdentity(profile);
+  if (/^gpt-image-2(?:[.-]?5)-flare(?:-(?:2k|4k))?$/u.test(profileIdentity)) return 'gpt-image-2.5-flare';
+  if (/^gpt-image-2(?:[.-]?5)-sunburst(?:-(?:2k|4k))?$/u.test(profileIdentity)) return 'gpt-image-2.5-sunburst';
+  if (/^gpt-image-2(?:-(?:all|2k|4k|vip))?$/u.test(profileIdentity)) return 'gpt-image-2';
+  const identity = `${profileIdentity} ${profile.modelRoute.toLocaleLowerCase()} ${profile.displayName.toLocaleLowerCase()}`;
   if (/nano[-\s_]?banana[-\s_]?pro/u.test(identity) || /gemini[-\s_]?3[-\s_]?pro[-\s_]?.*image/u.test(identity)) return 'nano-banana-pro';
   if (/nano[-\s_]?banana[-\s_]?2/u.test(identity) || /gemini[-\s_]?3(?:[.\s_-]?1)?[-\s_]?.*image/u.test(identity)) return 'nano-banana-2';
   return null;
@@ -372,7 +490,7 @@ function recordProfileAlias(discarded: ProviderBridgeProfile, selected: Provider
 function compareProviderProfiles(left: ProviderBridgeProfile, right: ProviderBridgeProfile): number {
   const priority = (profile: ProviderBridgeProfile): number => {
     const family = popularImageFamily(profile);
-    if (family === 'gpt-image-2') return 0;
+    if (family?.startsWith('gpt-image-2')) return 0;
     if (family === 'nano-banana-2') return 1;
     if (family === 'nano-banana-pro') return 2;
     const identity = providerProfileIdentity(profile);
@@ -390,7 +508,12 @@ export function selectProviderProfile(
   capability: ProviderBridgeProfile['capabilities'][number],
 ): ProviderBridgeProfile | undefined {
   const capable = profiles.filter((profile) => profile.capabilities.includes(capability));
-  if (requestedRoute === undefined || requestedRoute.trim().length === 0) return capable[0];
+  if (requestedRoute === undefined || requestedRoute.trim().length === 0) {
+    const defaultCapability = toProviderModelDefaultCapability(capability);
+    return (defaultCapability === undefined
+      ? undefined
+      : selectSavedProviderModelDefault(capable, defaultCapability)) ?? capable[0];
+  }
   const exact = capable.find((profile) => profile.modelRoute === requestedRoute || profile.modelId === requestedRoute);
   if (exact) return exact;
   const requestedGroup = providerCapabilityGroupForCapability(capability);
@@ -415,6 +538,75 @@ export function selectProviderProfile(
         || leftProvider.localeCompare(rightProvider);
     })
     .map(([, profile]) => profile)[0];
+}
+
+export interface ReverseProfileRequest {
+  readonly provider?: ProviderBridgeProfile['provider'];
+  readonly modelRoute?: string;
+}
+
+export function selectReverseProviderProfile(
+  profiles: readonly ProviderBridgeProfile[],
+  request: ReverseProfileRequest,
+): ProviderBridgeProfile | undefined {
+  const capable = profiles.filter(isReverseCapableProviderProfile);
+  const requestedRoute = request.modelRoute?.trim();
+  if (requestedRoute) {
+    const exactRoute = profiles.filter((profile) => profile.modelRoute === requestedRoute);
+    if (exactRoute.length > 0) {
+      return selectExecutableExactReverseProfile(exactRoute, request.provider);
+    }
+    const exactModel = profiles.filter((profile) => profile.modelId === requestedRoute);
+    if (exactModel.length > 0) {
+      return selectExecutableExactReverseProfile(exactModel, request.provider);
+    }
+  }
+
+  const preferredProvider = request.provider ?? capable[0]?.provider;
+  const owned = preferredProvider === undefined
+    ? capable
+    : capable.filter((profile) => profile.provider === preferredProvider);
+  return selectProviderProfile(owned, requestedRoute, 'reverse_prompt') ?? owned[0];
+}
+
+function selectExecutableExactReverseProfile(
+  profiles: readonly ProviderBridgeProfile[],
+  requestedProvider: ProviderBridgeProfile['provider'] | undefined,
+): ProviderBridgeProfile | undefined {
+  const providerMatches = requestedProvider === undefined
+    ? []
+    : profiles.filter((profile) => profile.provider === requestedProvider);
+  const scoped = providerMatches.length > 0
+    ? providerMatches
+    : profiles.length === 1 ? profiles : [];
+  const executable = scoped.filter(isReverseCapableProviderProfile);
+  return executable.length === 1 ? executable[0] : undefined;
+}
+
+export function isReverseCapableProviderProfile(profile: ProviderBridgeProfile): boolean {
+  const hasDialogueReverse = profile.capabilities.includes('reverse_prompt')
+    && profile.capabilities.includes('chat');
+  const hasVisionDialogue = profile.capabilities.includes('vision')
+    && profile.capabilities.includes('chat');
+  const hasGeminiNativeReverse = profile.capabilities.includes('gemini_native')
+    && profile.capabilities.includes('reverse_prompt');
+  return hasDialogueReverse || hasVisionDialogue || hasGeminiNativeReverse;
+}
+
+function toProviderModelDefaultCapability(
+  capability: ProviderBridgeProfile['capabilities'][number],
+): ProviderModelDefaultCapability | undefined {
+  switch (capability) {
+    case 'image_generation':
+    case 'video_generation':
+    case 'chat':
+    case 'reverse_prompt':
+    case 'vision':
+    case 'video_understanding':
+      return capability;
+    default:
+      return undefined;
+  }
 }
 
 export interface GenerationProfileRequest {
@@ -444,7 +636,7 @@ export function selectGenerationProviderProfile(
   if (requestedDisplayName) {
     const normalizedRequestName = requestedDisplayName
       .toLocaleLowerCase()
-      .replace(/^(?:comfly|relayme)[\s:/_-]+/u, '')
+      .replace(/^(?:comfly|relayme|julun|4dai)[\s:/_-]+/u, '')
       .replace(/[\s_-]+/gu, ' ');
     const visibleMatches = capable.filter((profile) => (
       normalizedProviderDisplayName(profile) === normalizedRequestName
@@ -452,5 +644,7 @@ export function selectGenerationProviderProfile(
     return visibleMatches.length === 1 ? visibleMatches[0] : undefined;
   }
 
-  return requestedRoute ? undefined : capable[0];
+  return requestedRoute
+    ? undefined
+    : selectSavedProviderModelDefault(capable, capability) ?? capable[0];
 }

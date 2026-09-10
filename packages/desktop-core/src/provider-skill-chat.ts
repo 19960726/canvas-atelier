@@ -48,6 +48,8 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
   const profile = snapshot.profiles.find((item) => (
     item.provider === validated.provider
     && item.modelRoute === validated.modelRoute
+    && item.enabled !== false
+    && item.capabilityStatus !== 'incomplete'
     && (item.capabilities.includes('chat') || item.capabilities.includes('responses'))
     && !item.capabilities.includes('image_generation')
     && !item.capabilities.includes('image_edit')
