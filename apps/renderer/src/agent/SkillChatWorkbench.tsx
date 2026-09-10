@@ -36,7 +36,7 @@ import { parseReverseAnalysisResponse, type ReverseAnalysisResult } from './reve
 import { GenerationPreferencesSheet } from './GenerationPreferencesSheet';
 import { CodexReasoningPopover } from './CodexReasoningPopover';
 import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
-import { creativePlanningInstructions, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
+import { creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
 
 type SkillMessage = {
   readonly id: string;
@@ -88,7 +88,7 @@ export interface SkillWorkflowDraftRequest {
   readonly modelRoute?: string;
   readonly modelRouteDisplayName?: string;
   readonly knowledgeBaseIds?: readonly string[];
-  readonly generation?: { kind: 'image' | 'video'; modelRoute?: string; modelRouteDisplayName?: string; parameters?: GenerationParameters };
+  readonly generation?: { kind: 'image' | 'video'; prompt?: string; modelRoute?: string; modelRouteDisplayName?: string; parameters?: GenerationParameters };
 }
 
 const IMAGE_MENTION_CAPABILITY_ERROR = '当前模型不支持图片引用，请切换具备视觉能力的聊天模型。';
@@ -105,6 +105,14 @@ const MEDIA_CAPABILITY_ERRORS = new Set([
 ]);
 const AGENT_REQUEST_TIMEOUT_MS = 195_000;
 const AGENT_VISUAL_REQUEST_TIMEOUT_MS = 315_000;
+const CODEX_REQUEST_TIMEOUTS_MS: Readonly<Record<CodexReasoningEffort, number>> = {
+  low: 90_000,
+  medium: 150_000,
+  high: 240_000,
+  xhigh: 360_000,
+  max: 480_000,
+  ultra: 600_000,
+};
 const REASONING_EFFORT_LABELS: Readonly<Record<CodexReasoningEffort, string>> = {
   low: '轻度', medium: '中', high: '高', xhigh: '极高', max: 'Max', ultra: 'Ultra',
 };
@@ -112,6 +120,16 @@ const REQUIRED_AGENT_KNOWLEDGE_CHOICES = [
   { knowledgeBaseId: 'scene-skill', displayName: '场景 Skill', description: '产品场景、构图、材质与灯光规则' },
   { knowledgeBaseId: 'ecommerce-detail-knowledge', displayName: '电商详情页知识库', description: '详情页结构、卖点表达与视觉规范' },
 ] as const;
+
+export function resolveAgentRequestTimeoutMs(
+  provider: SkillChatRequest['provider'],
+  reasoningEffort: CodexReasoningEffort,
+  usesVisualAnalysis: boolean,
+): number {
+  return provider === 'codex'
+    ? CODEX_REQUEST_TIMEOUTS_MS[reasoningEffort]
+    : usesVisualAnalysis ? AGENT_VISUAL_REQUEST_TIMEOUT_MS : AGENT_REQUEST_TIMEOUT_MS;
+}
 
 export interface ReverseTimelineEntry {
   readonly nodeId: string;
@@ -146,6 +164,7 @@ export interface SkillCanvasActionRequest {
   readonly prompt: string;
   readonly modelRoute?: string;
   readonly createNode?: boolean;
+  readonly createWorkflow?: boolean;
   readonly projectId?: string;
   readonly parameters?: GenerationParameters;
   readonly referenceAssetIds?: readonly string[];
@@ -948,11 +967,11 @@ export function SkillChatWorkbench({
         ...(supportedEfforts.length > 0 ? { reasoningEffort } : {}),
         ...(visualAnalysis ? { reverseAnalysisDepth } : {}),
         visualAnalysis,
-      }), selectedProfile.provider === 'codex'
-        ? 10 * 60_000
-        : selectedReferences.length > 0 || visualAnalysis
-          ? AGENT_VISUAL_REQUEST_TIMEOUT_MS
-          : AGENT_REQUEST_TIMEOUT_MS);
+      }), resolveAgentRequestTimeoutMs(
+        selectedProfile.provider,
+        reasoningEffort,
+        selectedReferences.length > 0 || visualAnalysis,
+      ));
       if (requestId.current !== activeRequestId) return;
       setMessages((current) => [...current.map((message) => message.id === userMessage.id && message.request !== undefined
         ? { ...message, request: { ...message.request, status: 'completed' as const } }
@@ -983,7 +1002,7 @@ export function SkillChatWorkbench({
     try {
       const { profile, parameters } = resolveGenerationPreference(option.kind, generationPreferences, profiles, option.modelRoute, references.length);
       const kind = `${option.kind}_generation` as const;
-      setPendingCanvasAction({ kind, nodeId: `agent-${option.kind}-${createMessageId()}`, createNode: true, projectId, prompt: option.prompt, modelRoute: profile.modelRoute, parameters, referenceAssetIds: references.map((item) => item.assetId) });
+      setPendingCanvasAction({ kind, nodeId: `agent-${option.kind}-${createMessageId()}`, createNode: true, createWorkflow: true, projectId, prompt: option.prompt, modelRoute: profile.modelRoute, parameters, referenceAssetIds: references.map((item) => item.assetId) });
       setSelectedCreativeOptionKey(`${messageId}:${option.id}`);
       setPendingCanvasModelRoute(profile.modelRoute);
       setError(null);
@@ -1348,7 +1367,10 @@ export function SkillChatWorkbench({
                 {creativePlan.options.map((option) => {
                   const optionKey = `${message.id}:${option.id}`;
                   const selected = selectedCreativeOptionKey === optionKey;
-                  return <div key={option.id} className="creative-plan__option"><strong>{option.title}</strong><p>{option.reason}</p><details><summary>查看完整提示词</summary><p>{option.prompt}</p></details>
+                  const workflowSteps = creativeWorkflowSteps(option, precedingMessage?.request?.references.length ?? 0);
+                  return <div key={option.id} className="creative-plan__option"><strong>{option.title}</strong><p>{option.reason}</p>
+                    <section className="creative-plan__workflow" aria-label={`工作流预览：${option.title}`}><b>工作流预览</b><ol>{workflowSteps.map((step, index) => <li key={`${step.title}-${index}`}><span>{index + 1}</span><div><strong>{step.title}</strong><p>{step.detail}</p></div></li>)}</ol></section>
+                    <details><summary>查看完整执行提示词</summary><p>{option.prompt}</p></details>
                     {messageMode !== 'chat' && <button type="button" className={`creative-plan__select${selected ? ' is-selected' : ''}`} aria-label={`选择方案：${option.title}`} aria-pressed={selected} disabled={canvasActionRunning || status === 'sending'} onClick={() => chooseCreativeOption(message.id, option, precedingMessage?.request?.references ?? [])}>{selected ? '✓ 已选择' : '选择此方案'}</button>}
                   </div>;
                 })}
@@ -1416,7 +1438,7 @@ export function SkillChatWorkbench({
                       try {
                         const kind = generationPreferences.kind;
                         const { profile, parameters } = resolveGenerationPreference(kind, generationPreferences, profiles, undefined, workflowReferences.length);
-                        generation = { kind, modelRoute: profile.modelRoute, modelRouteDisplayName: profile.displayName, parameters };
+                        generation = { kind, prompt: precedingMessage.content, modelRoute: profile.modelRoute, modelRouteDisplayName: profile.displayName, parameters };
                       } catch (error) { setError(error instanceof Error ? error.message : '请配置生成模型'); return; }
                       draftWorkflowFromAnalysis?.({
                         generation,
@@ -1448,7 +1470,9 @@ export function SkillChatWorkbench({
           {pendingCanvasAction && agentMode !== 'chat' && (
             <article ref={confirmationCardRef} className="skill-chat-workbench__message skill-chat-workbench__message--assistant skill-chat-workbench__confirmation" aria-label="待确认画布操作">
               <span>等待确认</span>
-              <p>{pendingCanvasAction.createNode ? `将新建独立节点并执行${canvasActionLabel(pendingCanvasAction.kind)}` : `将在节点 ${pendingCanvasAction.nodeId} 执行${canvasActionLabel(pendingCanvasAction.kind)}`}。</p>
+              <p>{pendingCanvasAction.createWorkflow
+                ? `将创建${(pendingCanvasAction.referenceAssetIds?.length ?? 0) + 3}个节点：${pendingCanvasAction.referenceAssetIds?.length ? '参考素材 → ' : ''}提示词 → ${canvasActionLabel(pendingCanvasAction.kind)} → 结果，并执行已确认方案。`
+                : pendingCanvasAction.createNode ? `将新建独立节点并执行${canvasActionLabel(pendingCanvasAction.kind)}` : `将在节点 ${pendingCanvasAction.nodeId} 执行${canvasActionLabel(pendingCanvasAction.kind)}`}。</p>
               <details><summary>查看执行提示词与参数</summary><p>{pendingCanvasAction.prompt}</p><p>{Object.entries(pendingCanvasAction.parameters ?? {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '使用模型默认参数'}</p></details>
               {pendingCanvasActionProfiles.length > 0 && (
                 <label className="skill-chat-workbench__action-model">使用模型
@@ -1466,7 +1490,7 @@ export function SkillChatWorkbench({
               <section className="skill-chat-workbench__request-card skill-chat-workbench__confirmation-card is-sending">
                 <header><strong>画布操作</strong><span>待确认</span></header>
                 <div className="skill-chat-workbench__confirmation-actions">
-                  <button type="button" className="is-primary" aria-label={`确认执行${canvasActionLabel(pendingCanvasAction.kind)}`} disabled={canvasActionRunning || pendingCanvasActionProfiles.length === 0} onClick={() => void confirmCanvasAction()}>{canvasActionRunning ? '正在创建…' : '确认并新建节点'}</button>
+                  <button type="button" className="is-primary" aria-label={`确认执行${canvasActionLabel(pendingCanvasAction.kind)}`} disabled={canvasActionRunning || pendingCanvasActionProfiles.length === 0} onClick={() => void confirmCanvasAction()}>{canvasActionRunning ? '正在创建…' : pendingCanvasAction.createWorkflow ? '确认并创建工作流' : '确认并新建节点'}</button>
                   <button type="button" className="is-secondary" aria-label="取消画布操作" disabled={canvasActionRunning} onClick={() => { setPendingCanvasAction(null); setSelectedCreativeOptionKey(null); }}>取消</button>
                 </div>
               </section>

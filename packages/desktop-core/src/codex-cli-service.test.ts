@@ -393,6 +393,10 @@ describe('Codex CLI Astra service', () => {
       && (args[index + 1] === 'code_mode_host' || args[index + 1] === 'unified_exec'))).toBe(false);
     expect(invocation?.args.some((arg, index, args) => arg === '-c' && args[index + 1] === '-c')).toBe(false);
     expect(invocation?.stdin).toContain('读取当前画布');
+    expect(invocation?.stdin).toContain('创建工作流时，先调用 canvas_read_workflow 一次');
+    expect(invocation?.stdin).toContain('调用 canvas_plan_workflow');
+    expect(invocation?.stdin).toContain('不能只返回关键词');
+    expect(invocation?.stdin).toContain('避免重复读取画布');
   });
 
   it('resolves managed image references into short-lived CLI image arguments', async () => {

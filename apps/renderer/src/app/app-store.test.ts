@@ -3266,6 +3266,25 @@ describe('project optimization memory', () => {
     }));
   });
 
+  it('drafts a Codex generation request as a visible prompt-generation-result workflow', () => {
+    useAppStore.getState().draftAgentPlan('生成 8 秒产品环绕视频', {
+      modelRoute: 'video/seedance',
+      modelRouteDisplayName: 'Seedance 2.5',
+      generation: { kind: 'video', parameters: { durationSeconds: 8, resolution: '1080p' } },
+      referenceAssetIds: [],
+    });
+
+    const plan = useAppStore.getState().agentPlan!;
+    const moduleTypes = plan.transaction.operations.flatMap((operation) => (
+      (operation.kind === 'create_node' || operation.kind === 'update_node') && operation.node.type === 'module'
+        ? [operation.node.data.moduleType]
+        : []
+    ));
+    expect(moduleTypes).toEqual(expect.arrayContaining(['text_prompt', 'video_generation', 'video_result']));
+    expect(plan.transaction.operations.filter((operation) => operation.kind === 'create_edge')).toHaveLength(2);
+    expect(plan).toMatchObject({ modelRoute: 'video/seedance', modelRouteDisplayName: 'Seedance 2.5', jobCount: 1 });
+  });
+
   it('preserves the selected 2K tier for a complete Comfly image route without resolution metadata', async () => {
     const generation = createCanvasModuleNode('comfly-default-resolution-node', 'image_generation', { x: 0, y: 0 });
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-comfly-2k' }));
@@ -9941,7 +9960,7 @@ describe('agent generation model selection', () => {
     expect(requests.map((request) => [request.promptNodeId, request.prompt, request.kind])).toEqual([['variant-A', 'A', 'image'], ['variant-B', 'B', 'image']]);
     expect(requests.every((request) => request.aspectRatio === '3:4')).toBe(true);
   });
-  it('creates the chosen generation node durably and idempotently without submitting jobs', async () => {
+  it('creates a connected prompt-generation-result workflow durably and idempotently without submitting jobs', async () => {
     delete window.novusDesktop;
     localStorage.clear();
     replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
@@ -9951,6 +9970,14 @@ describe('agent generation model selection', () => {
     expect(await state.ensureAgentGenerationNode('chosen-video', 'video_generation', [])).toBe(true);
     expect(await state.ensureAgentGenerationNode('chosen-video', 'video_generation', [])).toBe(true);
     expect(useAppStore.getState().project.nodes.filter((node) => node.id === 'chosen-video')).toHaveLength(1);
+    expect(useAppStore.getState().project.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'chosen-video-prompt', type: 'module', data: expect.objectContaining({ moduleType: 'text_prompt' }) }),
+      expect.objectContaining({ id: 'chosen-video-output', type: 'module', data: expect.objectContaining({ moduleType: 'video_result' }) }),
+    ]));
+    expect(useAppStore.getState().project.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'chosen-video-prompt', sourcePortId: 'prompt', target: 'chosen-video', targetPortId: 'prompt' }),
+      expect.objectContaining({ source: 'chosen-video', sourcePortId: 'result', target: 'chosen-video-output', targetPortId: 'video' }),
+    ]));
     expect(useAppStore.getState().modelJobs).toHaveLength(0);
     expect(await state.ensureAgentGenerationNode('chosen-video', 'image_generation', [])).toBe(false);
   });

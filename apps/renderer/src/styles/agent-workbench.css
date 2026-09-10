@@ -169,6 +169,13 @@
 .creative-plan p, .creative-plan__progress, .skill-chat-workbench__message details { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
 .creative-plan p { margin: 5px 0; line-height: 1.65; }
 .creative-plan__option { border-top: 1px solid var(--border); padding: 12px 0; }
+.creative-plan__workflow { margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); }
+.creative-plan__workflow > b { display: block; margin-bottom: 8px; font-size: 12px; color: var(--text); }
+.creative-plan__workflow ol { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.creative-plan__workflow li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; align-items: start; }
+.creative-plan__workflow li > span { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700; }
+.creative-plan__workflow li strong { display: block; font-size: 12px; color: var(--text); }
+.creative-plan__workflow li p { margin: 2px 0 0; font-size: 11px; line-height: 1.45; color: var(--text-secondary); }
 .creative-plan__option button { min-height: 30px; margin-top: 8px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-muted); color: var(--text); }
 .creative-plan__progress { display: flex; flex-wrap: wrap; gap: 10px; padding-block: 12px; }
 .creative-plan__progress > span { flex-basis: 100%; font-size: 12px; color: var(--text-secondary); }

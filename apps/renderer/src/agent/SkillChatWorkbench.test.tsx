@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CODEX_ASTRA_PROFILE, type ChatSkillBridgeResult, type ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
-import { resolveClipboardPasteAction, SkillChatWorkbench, type SkillCanvasActionRequest, type SkillChatRequest } from './SkillChatWorkbench';
+import { resolveAgentRequestTimeoutMs, resolveClipboardPasteAction, SkillChatWorkbench, type SkillCanvasActionRequest, type SkillChatRequest } from './SkillChatWorkbench';
 import { createAgentConversation, writeAgentConversationCollection } from './skill-chat-session-store';
 
 afterEach(() => {
@@ -124,6 +124,14 @@ function canonicalNodeLength(node: Node): number {
 }
 
 describe('SkillChatWorkbench', () => {
+  it('scales Codex timeout with the selected reasoning effort instead of giving every request ten minutes', () => {
+    expect(resolveAgentRequestTimeoutMs('codex', 'low', false)).toBe(90_000);
+    expect(resolveAgentRequestTimeoutMs('codex', 'medium', false)).toBe(150_000);
+    expect(resolveAgentRequestTimeoutMs('codex', 'high', true)).toBe(240_000);
+    expect(resolveAgentRequestTimeoutMs('codex', 'max', false)).toBe(480_000);
+    expect(resolveAgentRequestTimeoutMs('codex', 'ultra', false)).toBe(600_000);
+    expect(resolveAgentRequestTimeoutMs('comfly', 'high', true)).toBe(315_000);
+  });
   it('shows model-declared reasoning in chat and creative Agent while keeping each mode independent', async () => {
     const chat = vi.fn(async () => ({ message: '完成', modelRoute: 'chat/reasoning', sources: [] }));
     const reasoningProfile: ProviderBridgeProfile = {
@@ -138,6 +146,9 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByRole('button', { name: '思考能力：中' })).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '思考能力：中' }));
     fireEvent.change(screen.getByRole('slider', { name: '思考能力' }), { target: { value: '2' } });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成可执行工作流方案' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({ agentMode: 'original', reasoningEffort: 'high' })));
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     expect(screen.getByRole('button', { name: '思考能力：轻度' })).toBeVisible();
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '检查方案' } });
@@ -259,16 +270,21 @@ describe('SkillChatWorkbench', () => {
     await waitFor(() => expect(chat).toHaveBeenCalledOnce());
     const option = await screen.findByRole('button', { name: '选择方案：简洁棚拍' });
     expect(option.closest('article')).toHaveClass('skill-chat-workbench__message--creative-plan');
+    expect(option.closest('.creative-plan__option')).toHaveTextContent('工作流预览');
+    expect(option.closest('.creative-plan__option')).toHaveTextContent('整理需求与素材');
+    expect(option.closest('.creative-plan__option')).toHaveTextContent('执行图片生成');
+    expect(option.closest('.creative-plan__option')).toHaveTextContent('回写并检查结果');
     fireEvent.click(option);
     expect(option).toHaveAttribute('aria-pressed', 'true');
     expect(option).toHaveTextContent('已选择');
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
     expect(executeCanvasAction).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('将新建独立节点并执行生图');
+    expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('将创建3个节点：提示词 → 生图 → 结果');
     expect(screen.getByLabelText('待确认画布操作')).toHaveClass('skill-chat-workbench__confirmation');
     fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
     await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith(expect.objectContaining({
       createNode: true,
+      createWorkflow: true,
       nodeId: expect.stringMatching(/^agent-image-/u),
       modelRoute: 'image/only',
       prompt: '产品居中，柔和棚灯',
@@ -1887,7 +1903,7 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成工作流' }));
     expect(draftWorkflowFromAnalysis).toHaveBeenCalledWith({
       analysis: '结构化反推结果',
-      generation: { kind: 'image', modelRoute: 'image/only', modelRouteDisplayName: 'Image only', parameters: {} },
+      generation: { kind: 'image', prompt: '@图片1 @图片2 反推图片并输出提示词', modelRoute: 'image/only', modelRouteDisplayName: 'Image only', parameters: {} },
       modelRoute: 'chat/vision',
       modelRouteDisplayName: 'Creative chat',
       references: [
@@ -1974,7 +1990,7 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成工作流' }));
     expect(draftWorkflowFromAnalysis).toHaveBeenCalledWith({
       analysis: '建议按输入、反推、生图和输出依次连接。',
-      generation: { kind: 'image', modelRoute: 'image/only', modelRouteDisplayName: 'Image only', parameters: {} },
+      generation: { kind: 'image', prompt: '为产品图创建一个反推后生图的工作流', modelRoute: 'image/only', modelRouteDisplayName: 'Image only', parameters: {} },
       references: [],
       modelRoute: 'codex/gpt-5.6-sol',
       modelRouteDisplayName: 'GPT-5.6 Sol',

@@ -459,6 +459,8 @@ function buildCodexPrompt(
     instructions: [
       '你是 Canvas Atelier 内嵌 Codex。基本问题可以直接回答。',
       '涉及当前画布的读取或修改时，只能调用 canvas_atelier MCP；不得使用 shell、文件、浏览器、网络搜索、应用或其他 MCP。',
+      '创建工作流时，先调用 canvas_read_workflow 一次了解当前节点和 revision，再调用 canvas_plan_workflow 提交包含节点、连线、模型参数和输出的可审查方案；不能只返回关键词或口头步骤。',
+      '除 PROJECT_REVISION_CONFLICT 外避免重复读取画布。工具要求确认时，用简洁中文说明即将创建的节点和连线，等待用户在画布内确认。',
       '每次写操作必须使用工具返回的最新 revision；没有成功的工具结果时不得声称画布操作成功。',
       '如果写操作仅返回 PROJECT_REVISION_CONFLICT，必须重新读取画布并只重试原工具一次；重试仍失败就停止。',
       '用户选择的推理强度已由宿主传给模型，不要在回复中虚构或改写该等级。',

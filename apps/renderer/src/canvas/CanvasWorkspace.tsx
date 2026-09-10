@@ -2343,8 +2343,13 @@ export function CanvasWorkspace() {
                   });
                   return;
                 }
-                const orderedReferences = references.map((reference) => `${reference.mention}=${reference.label}[${reference.assetId}]`).join('\n');
-                draftAgentPlan(`${analysis}\n\n工作流引用顺序：\n${orderedReferences}`, { modelRoute: generation?.modelRoute, modelRouteDisplayName: generation?.modelRouteDisplayName });
+                const executionPrompt = generation?.prompt?.trim() || analysis;
+                draftAgentPlan(executionPrompt, {
+                  modelRoute: generation?.modelRoute,
+                  modelRouteDisplayName: generation?.modelRouteDisplayName,
+                  ...(generation === undefined ? {} : { generation: { kind: generation.kind, parameters: generation.parameters } }),
+                  referenceAssetIds: references.map((reference) => reference.assetId),
+                });
               }}
               onClose={closeAgentPanel}
               chat={workspaceApi.chat}

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentCanvasPlan } from '@agent-canvas/domain';
+import { createCanvasModuleNode, type AgentCanvasPlan } from '@agent-canvas/domain';
 import { PlanPreview } from './PlanPreview';
 
 const plan: AgentCanvasPlan = {
@@ -44,6 +44,13 @@ describe('PlanPreview', () => {
     fireEvent.click(screen.getByLabelText('确认模型执行'));
     fireEvent.click(screen.getByRole('button', { name: '确认执行' }));
     expect(onConfirm).toHaveBeenCalledWith({ models: true, deleteNodes: false, skillWriteback: false });
+  });
+
+  it('names executable workflow nodes in user-facing Chinese', () => {
+    const imageNode = createCanvasModuleNode('image-1', 'image_generation', { x: 0, y: 0 });
+    render(<PlanPreview plan={{ ...plan, transaction: { ...plan.transaction, operations: [{ kind: 'create_node', node: imageNode }] } }} onConfirm={() => {}} onCancel={() => {}} />);
+    expect(screen.getByText('创建图片生成节点')).toBeInTheDocument();
+    expect(screen.queryByText(/Executable module/u)).not.toBeInTheDocument();
   });
 
   it('cancels the proposed plan without applying it', () => {

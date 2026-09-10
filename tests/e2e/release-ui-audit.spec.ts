@@ -604,7 +604,7 @@ for (const theme of ['dark', 'light'] as const) {
     const resolutionOptions = imageGeneration
       .getByRole('menu', { name: 'Image generation resolution options' })
       .getByRole('menuitemradio');
-    await expect(resolutionOptions).toHaveText(['2K', '4K']);
+    await expect(resolutionOptions).toHaveText(['1K', '2K', '4K']);
     await resolutionOptions.filter({ hasText: '4K' }).focus();
     await page.keyboard.press('Enter');
     await expect(resolutionTrigger).toHaveAttribute('value', '4K');

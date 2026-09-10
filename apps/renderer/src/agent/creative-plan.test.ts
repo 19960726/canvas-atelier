@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions } from './creative-plan';
+import { parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions, creativeWorkflowSteps } from './creative-plan';
 import { defaultGenerationPreferences, generationProfiles, resolveGenerationPreference, readGenerationPreferences, writeGenerationPreferences } from './generation-preferences';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
@@ -20,6 +20,27 @@ describe('creative plan boundary', () => {
     const option = { id: 'a', title: 'A', kind: 'image', prompt: '产品居中', reason: '展示主体' };
     expect(parseCreativePlan(JSON.stringify({ summary: 'test', options: [option, option] }))).toBeNull();
     expect(parseCreativePlan(JSON.stringify({ summary: 'test', options: [{ ...option, prompt: '' }] }))).toBeNull();
+  });
+  it('preserves model-authored workflow steps and supplies an understandable executable fallback', () => {
+    const plan = parseCreativePlan(JSON.stringify({
+      summary: '电商主图方案',
+      options: [{
+        id: 'a', title: '暖色厨房', kind: 'image', prompt: '红色产品置于厨房台面', reason: '突出使用场景',
+        workflow: [
+          { title: '锁定产品', detail: '使用参考图保持产品比例、Logo 和红色外观。' },
+          { title: '生成场景', detail: '生成暖色厨房背景并保留顶部文案安全区。' },
+          { title: '检查交付', detail: '核对产品轮廓和实际返图像素。' },
+        ],
+      }],
+    }));
+    expect(creativeWorkflowSteps(plan!.options[0]!, 1).map((step) => step.title)).toEqual(['锁定产品', '生成场景', '检查交付']);
+    const incomplete = creativeWorkflowSteps({
+      id: 'thin', title: '过于简略的方案', kind: 'image', prompt: '生成产品图', reason: '展示产品',
+      workflow: [{ title: '生图', detail: '执行' }],
+    }, 0);
+    expect(incomplete.map((step) => step.title)).toEqual(['整理需求与素材', '执行图片生成', '回写并检查结果']);
+    const fallback = creativeWorkflowSteps({ id: 'b', title: '短片', kind: 'video', prompt: '环绕产品', reason: '展示外观' }, 0);
+    expect(fallback.map((step) => step.title)).toEqual(['整理需求与素材', '执行视频生成', '回写并检查结果']);
   });
   it('recovers an empty structured response into one exact executable reference-edit option', () => {
     const imageEdit: ProviderBridgeProfile = {
@@ -49,6 +70,7 @@ describe('creative plan boundary', () => {
     expect(text).toContain('观察');
     expect(text).toContain('不输出隐藏思考');
     expect(text).toContain('video');
+    expect(text).toContain('workflow');
   });
   it('limits image routes in planning instructions when references are present', () => {
     const text = creativePlanningInstructions(defaultGenerationPreferences(), [

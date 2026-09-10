@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Check, Link2, Play, X } from 'lucide-react';
-import type { AgentCanvasPlan, AgentPlanApprovalSelection, CanvasNode, CanvasOperation } from '@agent-canvas/domain';
+import { getCanvasModuleDefinition, type AgentCanvasPlan, type AgentPlanApprovalSelection, type CanvasNode, type CanvasOperation } from '@agent-canvas/domain';
 
 interface PlanPreviewProps {
   plan: AgentCanvasPlan;
@@ -113,17 +113,17 @@ function modelRouteLabel(plan: AgentCanvasPlan): string {
 function operationLabel(operation: CanvasOperation): string {
   switch (operation.kind) {
     case 'reorder_input_edges': return 'Reorder module inputs';
-    case 'create_node': return `创建${nodeTypeLabel(operation.node.type)}`;
-    case 'update_node': return `更新${nodeTypeLabel(operation.node.type)}`;
+    case 'create_node': return `创建${nodeTypeLabel(operation.node)}`;
+    case 'update_node': return `更新${nodeTypeLabel(operation.node)}`;
     case 'delete_node': return '删除画布节点';
     case 'create_edge': return '连接画布节点';
     case 'delete_edge': return '删除节点连接';
   }
 }
 
-function nodeTypeLabel(type: CanvasNode['type']): string {
-  switch (type) {
-    case 'module': return 'Executable module';
+function nodeTypeLabel(node: CanvasNode): string {
+  switch (node.type) {
+    case 'module': return `${getCanvasModuleDefinition(node.data.moduleType).primaryName}节点`;
     case 'review': return '审核节点';
     case 'prompt': return '提示词节点';
     case 'reference': return '参考节点';

@@ -155,7 +155,7 @@ test('image and video generation expose the final ratio and clarity controls wit
   const clarityOptions = imageNode
     .getByRole('menu', { name: 'Image generation resolution options' })
     .getByRole('menuitemradio');
-  await expect(clarityOptions).toHaveText(['2K', '4K']);
+  await expect(clarityOptions).toHaveText(['1K', '2K', '4K']);
   await page.screenshot({ path: artifact('02-image-clarity-dark.png'), fullPage: true });
   await clarityOptions.filter({ hasText: '4K' }).click();
   await expect(imageClarity).toHaveAttribute('value', '4K');

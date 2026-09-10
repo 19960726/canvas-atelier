@@ -110,7 +110,7 @@ import { isGptImageQualityIdentity, normalizeImageQuality, supportsGptImageQuali
 import { resolveImageResolutionRoute } from './image-resolution-routing';
 import { buildReverseAgentCanvasPlan } from '../agent/reverse-workflow-proposal';
 import type { ReverseAnalysisResult } from '../agent/reverse-workflow-contract';
-import { supportsGenerationReferences } from '../agent/generation-preferences';
+import { supportsGenerationReferences, type GenerationParameters } from '../agent/generation-preferences';
 
 let planSequence = 0;
 let stableProjectCommitTail: Promise<void> | null = null;
@@ -379,7 +379,12 @@ interface AppState {
   draftReverseAgentConfig: (nodeId: string, config: ReverseAgentNodeConfig) => Promise<boolean>;
   applyReverseAgentConfig: (nodeId: string, config: ReverseAgentNodeConfig) => Promise<boolean>;
   updateReverseAgentResult: (nodeId: string, result: EditableReverseAgentResult) => Promise<boolean>;
-  draftAgentPlan: (message: string, options?: { modelRoute?: string; modelRouteDisplayName?: string }) => void;
+  draftAgentPlan: (message: string, options?: {
+    modelRoute?: string;
+    modelRouteDisplayName?: string;
+    generation?: { kind: 'image' | 'video'; parameters?: GenerationParameters };
+    referenceAssetIds?: readonly string[];
+  }) => void;
   draftReverseWorkflowPlan: (input: {
     analysis: ReverseAnalysisResult;
     references: readonly { assetId: string; label: string; mention: string }[];
@@ -1222,15 +1227,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!/^[A-Za-z0-9_-]{1,160}$/u.test(nodeId) || !['image_generation', 'video_generation'].includes(moduleType) || referenceAssetIds.length > 20) return false;
     const existing = project.nodes.find((node) => node.id === nodeId);
     if (existing) return existing.type === 'module' && existing.data.moduleType === moduleType;
+    const promptNodeId = `${nodeId}-prompt`;
+    const outputNodeId = `${nodeId}-output`;
+    if (project.nodes.some((node) => node.id === promptNodeId || node.id === outputNodeId)) return false;
     const assets = referenceAssetIds.map((assetId) => project.assets?.find((asset) => asset.assetId === assetId));
     if (new Set(referenceAssetIds).size !== referenceAssetIds.length || assets.some((asset) => !asset || !asset.mediaType.startsWith('image/'))) return false;
-    const node = createCanvasModuleNode(nodeId, moduleType, { x: 460, y: 160 + project.nodes.length * 30 });
+    const baseY = 160 + project.nodes.length * 30;
+    const promptNode = createCanvasModuleNode(promptNodeId, 'text_prompt', { x: 120, y: baseY + Math.max(0, assets.length - 1) * 90 });
+    promptNode.data.config = { ...promptNode.data.config, prompt: typeof initialConfig?.prompt === 'string' ? initialConfig.prompt : '' };
+    const node = createCanvasModuleNode(nodeId, moduleType, { x: 500, y: baseY });
     node.data.config = {
       ...node.data.config,
       ...(initialConfig ?? {}),
       referenceAssetIds: [...referenceAssetIds],
     };
-    const operations: ProjectTransaction['operations'] = [{ kind: 'canvas', operation: { kind: 'create_node', node } }];
+    const outputModuleType = moduleType === 'video_generation' ? 'video_result' : 'result_output';
+    const outputNode = createCanvasModuleNode(outputNodeId, outputModuleType, { x: 900, y: baseY });
+    const operations: ProjectTransaction['operations'] = [
+      { kind: 'canvas', operation: { kind: 'create_node', node: promptNode } },
+      { kind: 'canvas', operation: { kind: 'create_node', node } },
+      { kind: 'canvas', operation: { kind: 'create_node', node: outputNode } },
+      { kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-prompt`, source: promptNodeId, sourcePortId: 'prompt', target: nodeId, targetPortId: 'prompt', order: 0 } } },
+      { kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-output`, source: nodeId, sourcePortId: 'result', target: outputNodeId, targetPortId: moduleType === 'video_generation' ? 'video' : 'result', order: 0 } } },
+    ];
     assets.forEach((asset, index) => {
       const source = project.nodes.find((candidate) => candidate.type === 'module' && ['image_input', 'upload_image'].includes(candidate.data.moduleType) && candidate.data.config.assetId === asset!.assetId);
       const input = source ?? createCanvasModuleNode(`${nodeId}-ref-${index}`, 'image_input', { x: 100, y: 100 + index * 180 });
@@ -2142,6 +2161,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       const promptNode = state.project.nodes.find((node) => node.type === 'prompt');
       if (!promptNode || promptNode.type !== 'prompt' || message.trim().length === 0 || containsProtectedRendererPayload(message)) return state;
       const suffix = `${Date.now()}-${planSequence++}`;
+      if (options.generation !== undefined) {
+        const workflow = buildGeneralAgentGenerationWorkflow(state.project, message.trim(), suffix, options);
+        if (workflow === null) return state;
+        return { agentPlan: {
+          id: `agent-plan-${suffix}`,
+          state: 'waiting_for_confirmation',
+          transaction: workflow,
+          requestedCapabilities: ['model_execution'],
+          confirmations: {},
+          conflicts: [],
+          modelRoute: options.modelRoute,
+          modelRouteDisplayName: options.modelRouteDisplayName,
+          jobCount: 1,
+        } };
+      }
       const reviewId = `agent-review-${suffix}`;
       return { agentPlan: {
         id: `agent-plan-${suffix}`,
@@ -4520,6 +4554,78 @@ export function buildModelJobRequests(
     referenceSnapshotRevision: referenceSnapshot.projectRevision,
     referenceSnapshotFingerprint: referenceSnapshot.fingerprint,
   }));
+}
+
+function buildGeneralAgentGenerationWorkflow(
+  project: CanvasProject,
+  prompt: string,
+  suffix: string,
+  options: {
+    modelRoute?: string;
+    modelRouteDisplayName?: string;
+    generation?: { kind: 'image' | 'video'; parameters?: GenerationParameters };
+    referenceAssetIds?: readonly string[];
+  },
+): CanvasTransaction | null {
+  const generation = options.generation;
+  if (generation === undefined) return null;
+  const referenceAssetIds = [...new Set(options.referenceAssetIds ?? [])];
+  if (referenceAssetIds.length !== (options.referenceAssetIds?.length ?? 0) || referenceAssetIds.length > MAX_GENERATION_REFERENCES) return null;
+  const assets = referenceAssetIds.map((assetId) => project.assets?.find((asset) => asset.assetId === assetId));
+  if (assets.some((asset) => asset === undefined || !asset.mediaType.startsWith('image/'))) return null;
+
+  const promptNodeId = `agent-workflow-prompt-${suffix}`;
+  const generationNodeId = `agent-workflow-${generation.kind}-${suffix}`;
+  const outputNodeId = `agent-workflow-output-${suffix}`;
+  const reservedIds = new Set([promptNodeId, generationNodeId, outputNodeId]);
+  if (project.nodes.some((node) => reservedIds.has(node.id))) return null;
+  const rightmostX = project.nodes.reduce((maximum, node) => Math.max(maximum, node.position.x), 80);
+  const baseX = rightmostX + 180;
+  const baseY = Math.max(120, project.nodes.reduce((minimum, node) => Math.min(minimum, node.position.y), 120));
+  const promptNode = createCanvasModuleNode(promptNodeId, 'text_prompt', { x: baseX, y: baseY + referenceAssetIds.length * 110 });
+  promptNode.data.config = { ...promptNode.data.config, prompt };
+  const generationModuleType = generation.kind === 'video' ? 'video_generation' : 'image_generation';
+  const generationNode = createCanvasModuleNode(generationNodeId, generationModuleType, { x: baseX + 380, y: baseY });
+  generationNode.data.config = {
+    ...generationNode.data.config,
+    ...(generation.parameters ?? {}),
+    prompt,
+    ...(options.modelRoute === undefined ? {} : { modelRoute: options.modelRoute }),
+    ...(options.modelRouteDisplayName === undefined ? {} : { modelDisplayName: options.modelRouteDisplayName, routeDisplayName: options.modelRouteDisplayName }),
+    referenceAssetIds,
+  };
+  const outputModuleType = generation.kind === 'video' ? 'video_result' : 'result_output';
+  const outputNode = createCanvasModuleNode(outputNodeId, outputModuleType, { x: baseX + 780, y: baseY });
+  const operations: CanvasOperation[] = [
+    { kind: 'create_node', node: promptNode },
+    { kind: 'create_node', node: generationNode },
+    { kind: 'create_node', node: outputNode },
+    { kind: 'create_edge', edge: { id: `agent-workflow-prompt-edge-${suffix}`, source: promptNodeId, sourcePortId: 'prompt', target: generationNodeId, targetPortId: 'prompt', order: 0 } },
+    { kind: 'create_edge', edge: { id: `agent-workflow-output-edge-${suffix}`, source: generationNodeId, sourcePortId: 'result', target: outputNodeId, targetPortId: generation.kind === 'video' ? 'video' : 'result', order: 0 } },
+  ];
+  assets.forEach((asset, index) => {
+    const existingSource = project.nodes.find((node) => node.type === 'module'
+      && ['image_input', 'upload_image'].includes(node.data.moduleType)
+      && node.data.config.assetId === asset!.assetId);
+    const source = existingSource ?? createCanvasModuleNode(`agent-workflow-reference-${suffix}-${index}`, 'image_input', { x: baseX, y: baseY + index * 180 });
+    if (existingSource === undefined && source.type === 'module') {
+      source.data.config = { ...source.data.config, assetId: asset!.assetId, label: asset!.label };
+      operations.push({ kind: 'create_node', node: source });
+    }
+    operations.push({ kind: 'create_edge', edge: {
+      id: `agent-workflow-reference-edge-${suffix}-${index}`,
+      source: source.id,
+      sourcePortId: 'image',
+      target: generationNodeId,
+      targetPortId: generation.kind === 'video' ? 'media' : 'references',
+      order: index,
+    } });
+  });
+  return {
+    id: `agent-workflow-tx-${suffix}`,
+    label: `Agent 创建${generation.kind === 'video' ? '视频' : '图片'}工作流`,
+    operations,
+  };
 }
 
 async function resolveModelJobProfile(plan: AgentCanvasPlan): Promise<ResolvedModelJobProfile> {
