@@ -107,6 +107,7 @@ import {
   selectReverseProviderProfile,
 } from './provider-profiles';
 import { isGptImageQualityIdentity, normalizeImageQuality, supportsGptImageQuality } from './image-generation-quality';
+import { resolveImageResolutionRoute } from './image-resolution-routing';
 import { buildReverseAgentCanvasPlan } from '../agent/reverse-workflow-proposal';
 import type { ReverseAnalysisResult } from '../agent/reverse-workflow-contract';
 import { supportsGenerationReferences } from '../agent/generation-preferences';
@@ -468,7 +469,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ? await listRunnableProviderProfiles(bridge)
       : await listProfilesForConfirmedExecutionRoute(bridge, input.executionRoute);
     assertConfirmedGenerationExecutionRoute(get(), input.executionRoute);
-    const profile = input.executionRoute === undefined
+    const requestedImageResolution = normalizeImageResolution(input.resolution);
+    const selectedProfile = input.executionRoute === undefined
       ? selectGenerationProviderProfile(profiles, {
         provider: readGenerationProvider(node.data.config.providerDisplayName),
         modelRoute: input.modelRoute,
@@ -477,9 +479,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       : profiles.find((candidate) => candidate.provider === input.executionRoute?.provider
         && candidate.modelRoute === input.executionRoute.modelRoute
         && candidate.capabilities.includes('image_generation'));
-    if (profile === undefined) throw createGenerationStartError('MODEL_ROUTE_UNAVAILABLE', 'Selected image model route is unavailable; reselect the model');
+    if (selectedProfile === undefined) throw createGenerationStartError('MODEL_ROUTE_UNAVAILABLE', 'Selected image model route is unavailable; reselect the model');
+    const profile = requestedImageResolution === undefined
+      ? selectedProfile
+      : resolveImageResolutionRoute(profiles, selectedProfile, requestedImageResolution);
+    if (profile === undefined) {
+      throw createGenerationStartError(
+        'GENERATION_PARAMETERS_UNSUPPORTED',
+        `Selected image model family does not provide a verified ${requestedImageResolution} route`,
+      );
+    }
     const requestedImageAspectRatio = normalizeImageAspectRatio(input.aspectRatio);
-    const requestedImageResolution = normalizeImageResolution(input.resolution);
     const supportsGptParameters = supportsGptImageQuality(profile);
     const imageQuality = supportsGptParameters
       ? normalizeImageQuality(input.imageQuality) ?? 'medium'
@@ -532,7 +542,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : supportsGptParameters ? requestedImageAspectRatio : undefined;
       imageResolution = supportedImageResolutions?.length
         ? adaptation.actual.resolution
-        : supportsGptParameters ? requestedImageResolution : undefined;
+        : requestedImageResolution;
     } else {
       const adaptedImageParameters = imageConstraints === undefined
         ? null

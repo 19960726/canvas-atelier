@@ -5,6 +5,7 @@ interface GenerationParameterPopoverProps {
   readonly ariaLabel: string;
   readonly value: string;
   readonly options: readonly string[];
+  readonly disabledOptions?: readonly string[];
   readonly onChange: (value: string) => void;
 }
 
@@ -18,6 +19,7 @@ export function ClarityPopover(props: GenerationParameterPopoverProps) {
 
 function GenerationParameterPopover({
   ariaLabel,
+  disabledOptions = [],
   layout,
   onChange,
   options,
@@ -98,6 +100,7 @@ function GenerationParameterPopover({
     >
       {options.map((option) => {
         const selected = option === value;
+        const disabled = disabledOptions.includes(option);
         return <button
           key={option}
           type="button"
@@ -105,6 +108,8 @@ function GenerationParameterPopover({
           role="menuitemradio"
           aria-checked={selected}
           aria-label={normalizeDisplayValue(option)}
+          disabled={disabled}
+          title={disabled ? '当前模型没有已验证的原生清晰度路线' : undefined}
           onClick={() => {
             onChange(option);
             setOpen(false);

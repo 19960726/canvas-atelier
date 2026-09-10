@@ -3266,6 +3266,86 @@ describe('project optimization memory', () => {
     }));
   });
 
+  it('preserves the selected 2K tier for a complete Comfly image route without resolution metadata', async () => {
+    const generation = createCanvasModuleNode('comfly-default-resolution-node', 'image_generation', { x: 0, y: 0 });
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-comfly-2k' }));
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async () => [{
+          provider: 'comfly' as const,
+          modelRoute: 'dall-e-3',
+          displayName: 'DALL-E 3',
+          modelId: 'dall-e-3',
+          capabilities: ['image_generation' as const],
+          capabilityStatus: 'complete' as const,
+          constraints: { image: { outputCounts: [1] } },
+        }]),
+        submitImageJob,
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'dall-e-3',
+      prompt: 'Generate the selected 2K product image',
+      aspectRatio: '1:1',
+      resolution: '2K',
+      outputCount: 1,
+    })).resolves.toBe(true);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({ resolution: '2K' });
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({ resolution: '2K' }));
+  });
+
+  it('routes a requested Nano Banana 4K run to the matching family variant before enqueueing', async () => {
+    const generation = createCanvasModuleNode('nano-family-four-k-node', 'image_generation', { x: 0, y: 0 });
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-nano-family-4k' }));
+    const profiles = [
+      {
+        provider: 'comfly' as const, modelRoute: 'comfly-nano-banana-2', displayName: 'Nano Banana 2', modelId: 'nano-banana-2',
+        capabilities: ['image_generation' as const, 'image_edit' as const], capabilityStatus: 'complete' as const,
+        constraints: { image: { aspectRatios: ['1:1' as const], resolutions: ['1K' as const], outputCounts: [1 as const] } },
+      },
+      {
+        provider: 'comfly' as const, modelRoute: 'comfly-nano-banana-2-2k', displayName: 'Nano Banana 2', modelId: 'nano-banana-2-2k',
+        capabilities: ['image_generation' as const, 'image_edit' as const], capabilityStatus: 'complete' as const,
+        constraints: { image: { aspectRatios: ['1:1' as const], resolutions: ['2K' as const], outputCounts: [1 as const] } },
+      },
+      {
+        provider: 'comfly' as const, modelRoute: 'comfly-nano-banana-2-4k', displayName: 'Nano Banana 2', modelId: 'nano-banana-2-4k',
+        capabilities: ['image_generation' as const, 'image_edit' as const], capabilityStatus: 'complete' as const,
+        constraints: { image: { aspectRatios: ['1:1' as const], resolutions: ['4K' as const], outputCounts: [1 as const] } },
+      },
+    ];
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async () => profiles),
+        submitImageJob,
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'comfly-nano-banana-2',
+      prompt: 'Generate the requested native 4K product image',
+      aspectRatio: '1:1',
+      resolution: '4K',
+      outputCount: 1,
+    })).resolves.toBe(true);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      modelRoute: 'comfly-nano-banana-2-4k',
+      modelId: 'nano-banana-2-4k',
+      resolution: '4K',
+    });
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
+      modelRoute: 'comfly-nano-banana-2-4k',
+      resolution: '4K',
+    }));
+  });
+
   it('rejects 2K on a complete 1K-only image model instead of silently downgrading it', async () => {
     const generation = createCanvasModuleNode('one-k-only-image-node', 'image_generation', { x: 0, y: 0 });
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-one-k' }));

@@ -286,6 +286,61 @@ describe('SkillChatWorkbench', () => {
     expect(await screen.findByLabelText('生成执行进度')).toHaveTextContent('结果已生成，但尚未回写画布');
   });
 
+  it('turns an empty structured creative response into one selectable reference-edit plan', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: '```json\n{"summary":"只精修产品并保持其他内容","observations":["保留背景"],"estimates":[],"unknowns":[],"options":[]}\n```',
+      modelRoute: 'chat/vision',
+      sources: [],
+    }));
+    renderWorkbench({
+      profiles: [
+        { ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] },
+        { ...profiles[1]!, modelRoute: 'image/edit', capabilities: ['image_generation', 'image_edit'] },
+      ],
+      referenceImages: [{ assetId: 'product-reference', label: '产品参考', displayUrl: 'novus-project://asset/product' }],
+      chat,
+      executeCanvasAction,
+    });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'product-reference' } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 把产品单独精修，其他不需要改变' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    const option = await screen.findByRole('button', { name: '选择方案：按当前要求精修' });
+    fireEvent.click(option);
+    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+
+    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'image_generation',
+      modelRoute: 'image/edit',
+      prompt: '把产品单独精修，其他不需要改变',
+      referenceAssetIds: ['product-reference'],
+    })));
+  });
+
+  it('sends only the active mode history after switching from chat to Codex', async () => {
+    const chat = vi.fn(async (request: SkillChatRequest) => ({
+      message: request.agentMode === 'codex' ? 'Codex 已检查画布' : '对话模式已分析素材',
+      modelRoute: request.modelRoute,
+      sources: [],
+    }));
+    renderWorkbench({ profiles, codexProfiles: [catalogAstraProfile], chat });
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '先分析这张产品图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByText('对话模式已分析素材');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'GPT-6 Astra'));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '检查当前画布节点' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledTimes(2));
+
+    expect(chat.mock.calls[1]?.[0].messages).toEqual([{ role: 'user', content: '检查当前画布节点' }]);
+  });
+
   it('does not allow a fixed generation preference before its model directory is available', () => {
     renderWorkbench({
       profiles: [{ ...profiles[0]!, modelRoute: 'chat/only', displayName: 'Chat only', capabilities: ['chat'] }],
@@ -1083,6 +1138,28 @@ describe('SkillChatWorkbench', () => {
       agentMode: 'codex',
       reasoningEffort: 'max',
     })));
+  });
+
+  it('shows the active Codex model, Max effort, elapsed time, and a direct stop action while analysis is running', async () => {
+    let rejectChat: ((error: Error) => void) | undefined;
+    const chat = vi.fn((_request: SkillChatRequest) => new Promise<ChatSkillBridgeResult>((_resolve, reject) => { rejectChat = reject; }));
+    const cancelChat = vi.fn(async () => {
+      rejectChat?.(Object.assign(new Error('cancelled'), { code: 'CODEX_CLI_CANCELLED' }));
+      return true;
+    });
+    renderWorkbench({ profiles: [], codexProfiles: [catalogAstraProfile], chat, cancelChat });
+    fireEvent.click(screen.getByRole('button', { name: /^思考能力：/ }));
+    fireEvent.change(screen.getByRole('slider', { name: '思考能力' }), { target: { value: '4' } });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '检查当前画布并提出执行方案' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('GPT-6 Astra · Max');
+    expect(screen.getByRole('status')).toHaveTextContent(/已等待 \d+ 秒/u);
+    fireEvent.click(screen.getByRole('button', { name: '停止 Codex 分析' }));
+
+    const sentRequestId = (chat.mock.calls[0]?.[0] as SkillChatRequest | undefined)?.requestId;
+    await waitFor(() => expect(cancelChat).toHaveBeenCalledWith(sentRequestId));
+    await waitFor(() => expect(screen.queryByLabelText('Agent 正在分析')).not.toBeInTheDocument());
   });
 
   it('cancels the current local Codex request when a new task replaces it', async () => {
@@ -1902,6 +1979,30 @@ describe('SkillChatWorkbench', () => {
       modelRoute: 'codex/gpt-5.6-sol',
       modelRouteDisplayName: 'GPT-5.6 Sol',
     });
+  });
+
+  it('offers a Codex workflow for a referenced product-refinement request without requiring the word workflow', async () => {
+    const chat = vi.fn(async () => ({ message: '先锁定参考图，只精修产品主体并保持背景。', modelRoute: 'codex/gpt-5.6-sol', sources: [] }));
+    const draftWorkflowFromAnalysis = vi.fn();
+    const localSolProfile = {
+      ...catalogAstraProfile,
+      modelRoute: 'codex/gpt-5.6-sol' as const,
+      modelId: 'gpt-5.6-sol',
+      displayName: 'GPT-5.6 Sol',
+    };
+    renderWorkbench({
+      profiles: [{ ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }],
+      codexProfiles: [localSolProfile],
+      referenceImages: [{ assetId: 'codex-product', label: '产品图', displayUrl: 'novus-project://asset/codex-product' }],
+      chat,
+      draftWorkflowFromAnalysis,
+    });
+    window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'codex-product' } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品图'));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 把产品单独精修，其他不需要改变' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(await screen.findByText('是否基于本次方案生成工作流？')).toBeVisible();
   });
 
   it('renders the twentieth Agent image reference as a highlighted 图片20 mention chip', () => {

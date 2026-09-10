@@ -23,6 +23,7 @@ export interface StoredAgentMessage {
   readonly id: string;
   readonly role: 'user' | 'assistant';
   readonly content: string;
+  readonly mode?: AgentConversationMode;
   readonly sources?: readonly StoredAgentMessageSource[];
   readonly request?: StoredAgentRequestSummary;
 }
@@ -162,7 +163,7 @@ function parseConversation(value: unknown): StoredAgentConversation | null {
   const modelRoute = value.modelRoute === undefined ? undefined : readSafeText(value.modelRoute, 160);
   const knowledgeBaseIds = readSafeTextList(value.knowledgeBaseIds, 16, 160);
   const projectMemoryIds = readSafeTextList(value.projectMemoryIds, 32, 160);
-  const messages = parseMessages(value.messages);
+  const messages = mode === null ? null : parseMessages(value.messages, mode);
   if (!id || !title || mode === null || reasoningEfforts === null || (value.modelRoute !== undefined && !modelRoute)
     || knowledgeBaseIds === null || projectMemoryIds === null || messages === null
     || !isSafeTimestamp(value.createdAt) || !isSafeTimestamp(value.updatedAt)) return null;
@@ -183,7 +184,7 @@ function parseConversation(value: unknown): StoredAgentConversation | null {
 
 function parseLegacySession(value: unknown): LegacyStoredSkillChatSession | null {
   if (!isRecord(value) || value.version !== 1) return null;
-  const messages = parseMessages(value.messages);
+  const messages = parseMessages(value.messages, 'codex');
   const modelRoute = value.modelRoute === undefined ? undefined : readSafeText(value.modelRoute, 160);
   const knowledgeBaseIds = value.knowledgeBaseIds === undefined ? undefined : readSafeTextList(value.knowledgeBaseIds, 16, 160);
   const projectMemoryIds = value.projectMemoryIds === undefined ? undefined : readSafeTextList(value.projectMemoryIds, 32, 160);
@@ -198,21 +199,22 @@ function parseLegacySession(value: unknown): LegacyStoredSkillChatSession | null
   };
 }
 
-function parseMessages(value: unknown): StoredAgentMessage[] | null {
+function parseMessages(value: unknown, fallbackMode: AgentConversationMode): StoredAgentMessage[] | null {
   if (!Array.isArray(value) || value.length > MAX_MESSAGES) return null;
-  const messages = value.map(parseMessage);
+  const messages = value.map((message) => parseMessage(message, fallbackMode));
   return messages.some((message) => message === null) ? null : messages as StoredAgentMessage[];
 }
 
-function parseMessage(value: unknown): StoredAgentMessage | null {
+function parseMessage(value: unknown, fallbackMode: AgentConversationMode): StoredAgentMessage | null {
   if (!isRecord(value) || (value.role !== 'user' && value.role !== 'assistant')) return null;
   const id = readSafeText(value.id, 160);
   const content = readSafeText(value.content, MAX_TEXT_LENGTH);
-  if (!id || !content) return null;
+  const mode = value.mode === undefined ? fallbackMode : parseMode(value.mode);
+  if (!id || !content || mode === null) return null;
   const sources = value.sources === undefined ? undefined : parseSources(value.sources);
   const request = value.request === undefined ? undefined : parseRequest(value.request);
   if (sources === null || request === null) return null;
-  return { id, role: value.role, content, ...(sources === undefined ? {} : { sources }), ...(request === undefined ? {} : { request }) };
+  return { id, role: value.role, content, mode, ...(sources === undefined ? {} : { sources }), ...(request === undefined ? {} : { request }) };
 }
 
 function parseSources(value: unknown): StoredAgentMessageSource[] | null {

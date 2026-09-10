@@ -211,6 +211,48 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('button', { name: 'Image generation quality' })).not.toBeInTheDocument();
   });
 
+  it('keeps clarity visible and switches a Nano Banana family to its selected 4K route', async () => {
+    const node = createCanvasModuleNode('nano-banana-resolution-family', 'image_generation', { x: 0, y: 0 });
+    node.data.config = {
+      ...node.data.config,
+      prompt: 'Preserve the product and refine the surface',
+      modelRoute: 'comfly-nano-banana-2',
+      resolution: '1K',
+    };
+    const runImageGenerationNode = vi.fn(async () => true);
+    const routes = [
+      {
+        provider: 'comfly', modelRoute: 'comfly-nano-banana-2', displayName: 'Nano Banana 2', modelId: 'nano-banana-2',
+        capabilities: ['image_generation', 'image_edit'], capabilityStatus: 'complete', constraints: { image: { resolutions: ['1K'] } },
+      },
+      {
+        provider: 'comfly', modelRoute: 'comfly-nano-banana-2-2k', displayName: 'Nano Banana 2', modelId: 'nano-banana-2-2k',
+        capabilities: ['image_generation', 'image_edit'], capabilityStatus: 'complete', constraints: { image: { resolutions: ['2K'] } },
+      },
+      {
+        provider: 'comfly', modelRoute: 'comfly-nano-banana-2-4k', displayName: 'Nano Banana 2', modelId: 'nano-banana-2-4k',
+        capabilities: ['image_generation', 'image_edit'], capabilityStatus: 'complete', constraints: { image: { resolutions: ['4K'] } },
+      },
+    ] as const;
+    const data = { ...node.data, imageGenerationRoutes: routes } as typeof node.data;
+    useAppStore.setState({
+      runImageGenerationNode,
+      project: { ...useAppStore.getState().project, nodes: [{ ...node, data }], edges: [] },
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['1K', '2K', '4K']);
+    chooseGenerationParameterOption('Image generation resolution', '4K');
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
+
+    await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({
+      modelRoute: 'comfly-nano-banana-2-4k',
+      resolution: '4K',
+    })));
+  });
+
   it('replaces locally edited image parameters when another project reuses the same node id', async () => {
     const nodeA = createCanvasModuleNode('shared-image-draft-node', 'image_generation', { x: 0, y: 0 });
     nodeA.data.config = {
@@ -1086,7 +1128,8 @@ describe('ModuleNodeCard', () => {
     expect(within(routeSelect).getAllByRole('option')).toHaveLength(2);
     expect(within(routeSelect).getByRole('option', { name: 'GPT Image 2 · 2K' })).toHaveValue('comfly-gpt-image-2-2k');
     expect(within(routeSelect).getByRole('option', { name: 'GPT Image 2' })).toHaveValue('comfly-gpt-image-2');
-    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['2K']);
+    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['1K', '2K', '4K']);
+    expect(screen.getByRole('menuitemradio', { name: '1K' })).toBeDisabled();
   });
 
   it('keeps the active provider route when duplicate reverse names are supplied', () => {
@@ -2544,12 +2587,13 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
 
     expect(readGenerationParameterOptions('Image generation aspect ratio')).toEqual(['AUTO', '1:1', '16:9']);
-    expect(screen.queryByLabelText('Image generation resolution')).not.toBeInTheDocument();
-    expect(screen.getByText('供应商默认')).toBeVisible();
+    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['1K', '2K', '4K']);
+    expect(screen.getByRole('menuitemradio', { name: '2K' })).toBeEnabled();
+    expect(screen.getByRole('menuitemradio', { name: '4K' })).toBeEnabled();
     expect(within(screen.getByLabelText('Image generation quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1', '2']);
   });
 
-  it('does not advertise 2K or 4K when a complete provider profile omits a resolution contract', () => {
+  it('keeps clarity visible and disables unverified tiers when a complete provider profile omits a resolution contract', () => {
     const node = createCanvasModuleNode('image-provider-defaults', 'image_generation', { x: 0, y: 0 });
     const runImageGenerationNode = vi.fn(async () => true);
     useAppStore.setState({ runImageGenerationNode } as never);
@@ -2566,14 +2610,15 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
 
     expect(readGenerationParameterOptions('Image generation aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9']);
-    expect(screen.queryByLabelText('Image generation resolution')).not.toBeInTheDocument();
-    expect(screen.getByText('供应商默认')).toBeVisible();
+    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['1K', '2K', '4K']);
+    expect(screen.getByRole('menuitemradio', { name: '2K' })).toBeEnabled();
+    expect(screen.getByRole('menuitemradio', { name: '4K' })).toBeDisabled();
     expect(within(screen.getByLabelText('Image generation quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1']);
     chooseGenerationParameterOption('Image generation aspect ratio', 'AUTO');
     fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'Use image defaults' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
     expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({ outputCount: 1 }));
-    expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.not.objectContaining({ resolution: expect.anything() }));
+    expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({ resolution: '2K' }));
     expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.not.objectContaining({ aspectRatio: expect.anything() }));
   });
   it('recalibrates controls when refreshed constraints change on the same model route', async () => {
@@ -2601,7 +2646,9 @@ describe('ModuleNodeCard', () => {
     rerender(<ReactFlowProvider><ModuleNodeCard id={node.id} data={refreshed} selected={false} /></ReactFlowProvider>);
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Image generation resolution' })).toHaveValue('1K'));
-    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['1K']);
+    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['1K', '2K', '4K']);
+    expect(screen.getByRole('menuitemradio', { name: '2K' })).toBeDisabled();
+    expect(screen.getByRole('menuitemradio', { name: '4K' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'Use refreshed constraints' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
     expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({ resolution: '1K' }));

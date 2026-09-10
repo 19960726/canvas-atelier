@@ -230,7 +230,7 @@ export const CANVAS_MODULE_DEFINITIONS: readonly CanvasModuleDefinition[] = Obje
     input('mask', 'Mask', 'mask_asset', false),
     input('pose', 'Pose', 'pose_data', false),
     out('result', 'Result', 'generation_result'),
-  ], ['result_output', 'image_compare', 'image_editor'], Object.freeze({ enabledInputCapabilities: ['references'], resolution: '1K', resultState: 'empty' })),
+  ], ['result_output', 'image_compare', 'image_editor'], Object.freeze({ enabledInputCapabilities: ['references'], resolution: '2K', resultState: 'empty' })),
   definition('video_generation', 'generation', 'video_generation', 'provider', ['video_generation'], [
     // A video prompt can combine ordered image references with one managed
     // source video.  The card and executor cap this ordered collection at the

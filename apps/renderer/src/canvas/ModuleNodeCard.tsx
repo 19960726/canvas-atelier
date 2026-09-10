@@ -23,6 +23,7 @@ import { ConnectedAgentMediaSlots, type ConnectedAgentMediaSlotItem } from './Co
 import { useAppStore } from '../app/app-store';
 import { isRenderableManagedImageUrl } from '../app/managed-image-url';
 import { IMAGE_QUALITY_OPTIONS, imageQualityFromLabel, imageQualityLabel, isGptImageQualityIdentity, normalizeImageQuality, supportsGptImageQuality } from '../app/image-generation-quality';
+import { IMAGE_RESOLUTION_TIERS, listImageResolutionTiers, resolveImageResolutionRoute } from '../app/image-resolution-routing';
 import { resolveMediaImportMode } from '../app/media-import-capability';
 import { getActiveProjectSessionId } from '../app/desktop-persistence';
 import { filterModelJobsForProject, modelJobMatchesGenerationDraft, type GenerationJobDraftIdentity } from '../jobs/project-model-jobs';
@@ -150,8 +151,7 @@ interface ImageGenerationRouteSummary {
 }
 
 const IMAGE_ASPECT_RATIO_OPTIONS = ['自由比例', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'] as const;
-const IMAGE_RESOLUTION_OPTIONS = ['1K', '2K', '4K'] as const;
-const DEFAULT_IMAGE_RESOLUTION_OPTIONS: readonly typeof IMAGE_RESOLUTION_OPTIONS[number][] = ['2K', '4K'];
+const IMAGE_RESOLUTION_OPTIONS = IMAGE_RESOLUTION_TIERS;
 const MEDIA_RESULT_REFRESH_RETRY_DELAYS_MS = [0, 250, 750, 1_500] as const;
 
 function normalizeImageResolutionSelection(value: unknown): typeof IMAGE_RESOLUTION_OPTIONS[number] {
@@ -1258,14 +1258,7 @@ function ImageGenerationSummary({
   const imageAspectRatioOptions: (typeof IMAGE_ASPECT_RATIO_OPTIONS[number])[] = imageConstraints?.aspectRatios?.length
     ? ['自由比例', ...imageConstraints.aspectRatios.filter((value): value is Exclude<typeof IMAGE_ASPECT_RATIO_OPTIONS[number], '自由比例'> => IMAGE_ASPECT_RATIO_OPTIONS.includes(value as never))]
     : [...IMAGE_ASPECT_RATIO_OPTIONS];
-  const constrainedImageResolutions = imageConstraints?.resolutions?.filter((value): value is typeof IMAGE_RESOLUTION_OPTIONS[number] => IMAGE_RESOLUTION_OPTIONS.includes(value as never));
-  const usesProviderResolutionDefault = selectedImageRoute !== undefined
-    && !hasGptImageQuality
-    && ((selectedImageRoute.capabilityStatus === 'complete' && constrainedImageResolutions?.length === undefined)
-      || (imageConstraints?.resolutions !== undefined && (constrainedImageResolutions?.length ?? 0) === 0));
-  const imageResolutionOptions: (typeof IMAGE_RESOLUTION_OPTIONS[number])[] = constrainedImageResolutions?.length
-    ? constrainedImageResolutions
-    : usesProviderResolutionDefault ? [] : [...DEFAULT_IMAGE_RESOLUTION_OPTIONS];
+  const imageResolutionOptions = listImageResolutionTiers(compatibleRoutes, selectedImageRoute);
   const effectiveImageResolution = imageResolutionOptions.includes(resolution as never) ? resolution : imageResolutionOptions[0];
   const constrainedImageOutputCounts = imageConstraints?.outputCounts?.filter((value): value is typeof IMAGE_OUTPUT_COUNT_OPTIONS[number] => (
     IMAGE_OUTPUT_COUNT_OPTIONS.includes(value as never)
@@ -1656,12 +1649,21 @@ function ImageGenerationSummary({
               options={imageAspectRatioOptions.map((value) => value === '自由比例' ? 'AUTO' : value)}
               onChange={(value) => setAspectRatio(value === 'AUTO' ? '自由比例' : readSupportedImageString(value, IMAGE_ASPECT_RATIO_OPTIONS, aspectRatio))}
             />
-            {imageResolutionOptions.length > 0 ? <ClarityPopover
+            <ClarityPopover
               ariaLabel="Image generation resolution"
               value={effectiveImageResolution!}
-              options={imageResolutionOptions}
-              onChange={(value) => setResolution(normalizeImageResolutionSelection(value))}
-            /> : <span className="module-node__provider-default-resolution" title="该模型未公布可选择的清晰度参数">供应商默认</span>}
+              options={IMAGE_RESOLUTION_OPTIONS}
+              disabledOptions={IMAGE_RESOLUTION_OPTIONS.filter((value) => !imageResolutionOptions.includes(value))}
+              onChange={(value) => {
+                const nextResolution = normalizeImageResolutionSelection(value);
+                setResolution(nextResolution);
+                if (selectedImageRoute === undefined) return;
+                const nextRoute = resolveImageResolutionRoute(compatibleRoutes, selectedImageRoute, nextResolution);
+                if (nextRoute === undefined || nextRoute.modelRoute === modelRouteRef.current) return;
+                modelRouteRef.current = nextRoute.modelRoute;
+                setModelRoute(nextRoute.modelRoute);
+              }}
+            />
             {hasGptImageQuality && <ClarityPopover
               ariaLabel="Image generation quality"
               value={imageQualityLabel(imageQuality)}

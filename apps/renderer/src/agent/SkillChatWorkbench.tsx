@@ -36,12 +36,13 @@ import { parseReverseAnalysisResponse, type ReverseAnalysisResult } from './reve
 import { GenerationPreferencesSheet } from './GenerationPreferencesSheet';
 import { CodexReasoningPopover } from './CodexReasoningPopover';
 import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
-import { creativePlanningInstructions, parseCreativePlan, type CreativePlanOption } from './creative-plan';
+import { creativePlanningInstructions, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
 
 type SkillMessage = {
   readonly id: string;
   readonly role: 'user' | 'assistant';
   readonly content: string;
+  readonly mode?: 'chat' | 'original' | 'codex';
   readonly sources?: Readonly<ChatSkillBridgeResult['sources']>;
   readonly request?: SkillRequestSummary;
 };
@@ -104,6 +105,9 @@ const MEDIA_CAPABILITY_ERRORS = new Set([
 ]);
 const AGENT_REQUEST_TIMEOUT_MS = 195_000;
 const AGENT_VISUAL_REQUEST_TIMEOUT_MS = 315_000;
+const REASONING_EFFORT_LABELS: Readonly<Record<CodexReasoningEffort, string>> = {
+  low: '轻度', medium: '中', high: '高', xhigh: '极高', max: 'Max', ultra: 'Ultra',
+};
 const REQUIRED_AGENT_KNOWLEDGE_CHOICES = [
   { knowledgeBaseId: 'scene-skill', displayName: '场景 Skill', description: '产品场景、构图、材质与灯光规则' },
   { knowledgeBaseId: 'ecommerce-detail-knowledge', displayName: '电商详情页知识库', description: '详情页结构、卖点表达与视觉规范' },
@@ -242,6 +246,7 @@ export function SkillChatWorkbench({
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryCategory, setLibraryCategory] = useState<'common' | 'favorite' | 'mine'>('common');
   const [status, setStatus] = useState<'idle' | 'sending'>('idle');
+  const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const [agentMode, setAgentMode] = useState<'chat' | 'original' | 'codex'>(initialConversation.mode);
   const [reasoningEfforts, setReasoningEfforts] = useState(initialConversation.reasoningEfforts);
   const [reverseAnalysisDepth, setReverseAnalysisDepth] = useState<ReverseAnalysisDepth>(initialConversation.reverseAnalysisDepth);
@@ -294,6 +299,17 @@ export function SkillChatWorkbench({
     ? supportedEfforts.includes(reasoningEffort)
     : true;
   const supportedEffortKey = supportedEfforts.join(',');
+  useEffect(() => {
+    if (status !== 'sending') {
+      setAnalysisElapsedSeconds(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const updateElapsed = () => setAnalysisElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [status]);
   useEffect(() => {
     if (!supportedEfforts.includes(reasoningEffort)) {
       const defaultEffort = selectedProfile?.provider === 'codex'
@@ -893,6 +909,7 @@ export function SkillChatWorkbench({
       id: replacesFailedRequest ? previousMessage!.id : createMessageId(),
       role: 'user',
       content,
+      mode: agentMode,
       request: requestSummary,
     };
     const nextMessages = replacesFailedRequest
@@ -910,13 +927,14 @@ export function SkillChatWorkbench({
     setError(null);
     setStatus('sending');
     try {
+      const activeModeMessages = nextMessages.filter((message) => (message.mode ?? agentMode) === agentMode);
       const result = await withProviderOperationTimeout(chat({
         provider: selectedProfile?.provider ?? 'comfly',
         modelRoute,
         ...(localCodexRequestId === undefined ? {} : { requestId: localCodexRequestId }),
-        messages: nextMessages.map(({ role, content: messageContent }, index) => ({
+        messages: activeModeMessages.map(({ role, content: messageContent }, index) => ({
           role,
-          content: planning && index === nextMessages.length - 1
+          content: planning && index === activeModeMessages.length - 1
             ? messageContent + '\n\n' + planningInstructions
             : messageContent,
         })),
@@ -942,6 +960,7 @@ export function SkillChatWorkbench({
         id: createMessageId(),
         role: 'assistant',
         content: result.message,
+        mode: agentMode,
         sources: result.sources,
       }]);
       setStatus('idle');
@@ -1285,13 +1304,24 @@ export function SkillChatWorkbench({
           )}
           {messages.map((message, messageIndex) => {
             const precedingMessage = messageIndex > 0 ? messages[messageIndex - 1] : undefined;
-            const creativePlan = message.role === 'assistant' ? parseCreativePlan(message.content) : null;
+            const messageMode = message.mode ?? agentMode;
+            const creativePlan = message.role === 'assistant' && messageMode === 'original'
+              ? parseCreativePlan(message.content) ?? (precedingMessage?.role === 'user'
+                ? recoverEmptyCreativePlan(
+                  message.content,
+                  precedingMessage.content,
+                  generationPreferences,
+                  profiles,
+                  precedingMessage.request?.references.length ?? 0,
+                )
+                : null)
+              : null;
             const reverseWorkflowOffer = precedingMessage?.role === 'user'
               && precedingMessage.request?.visualAnalysis === true
               && isReverseAnalysisIntent(precedingMessage.content);
             const requestedWorkflowOffer = precedingMessage?.role === 'user'
-              && agentMode === 'codex'
-              && isWorkflowCreationIntent(precedingMessage.content);
+              && messageMode === 'codex'
+              && isWorkflowCreationIntent(precedingMessage.content, precedingMessage.request?.references.length ?? 0);
             const workflowOffer = message.role === 'assistant'
               && precedingMessage?.role === 'user'
               && (reverseWorkflowOffer || requestedWorkflowOffer)
@@ -1319,7 +1349,7 @@ export function SkillChatWorkbench({
                   const optionKey = `${message.id}:${option.id}`;
                   const selected = selectedCreativeOptionKey === optionKey;
                   return <div key={option.id} className="creative-plan__option"><strong>{option.title}</strong><p>{option.reason}</p><details><summary>查看完整提示词</summary><p>{option.prompt}</p></details>
-                    {agentMode !== 'chat' && <button type="button" className={`creative-plan__select${selected ? ' is-selected' : ''}`} aria-label={`选择方案：${option.title}`} aria-pressed={selected} disabled={canvasActionRunning || status === 'sending'} onClick={() => chooseCreativeOption(message.id, option, precedingMessage?.request?.references ?? [])}>{selected ? '✓ 已选择' : '选择此方案'}</button>}
+                    {messageMode !== 'chat' && <button type="button" className={`creative-plan__select${selected ? ' is-selected' : ''}`} aria-label={`选择方案：${option.title}`} aria-pressed={selected} disabled={canvasActionRunning || status === 'sending'} onClick={() => chooseCreativeOption(message.id, option, precedingMessage?.request?.references ?? [])}>{selected ? '✓ 已选择' : '选择此方案'}</button>}
                   </div>;
                 })}
               </section>}
@@ -1454,7 +1484,23 @@ export function SkillChatWorkbench({
           {status === 'sending' && (
             <article className="skill-chat-workbench__message skill-chat-workbench__message--assistant skill-chat-workbench__message--thinking" aria-label="Agent 正在分析">
               <span>Agent</span>
-              <p className="skill-chat-workbench__status" role="status"><i aria-hidden="true" />正在分析需求…</p>
+              <div className="skill-chat-workbench__status" role="status">
+                <i aria-hidden="true" />
+                <span>{agentMode === 'codex' && selectedProfile?.provider === 'codex'
+                  ? `${selectedProfile.displayName} · ${REASONING_EFFORT_LABELS[reasoningEffort]} 正在分析，已等待 ${analysisElapsedSeconds} 秒`
+                  : '正在分析需求…'}</span>
+                {agentMode === 'codex' && selectedProfile?.provider === 'codex' && activeLocalCodexRequestId.current !== null && (
+                  <button type="button" className="skill-chat-workbench__thinking-stop" aria-label="停止 Codex 分析" onClick={() => {
+                    void cancelActiveCodexRequest().finally(() => {
+                      if (!mounted.current) return;
+                      setMessages((current) => current.map((message) => message.mode === 'codex' && message.request?.status === 'sending'
+                        ? { ...message, request: { ...message.request, status: 'error' as const } }
+                        : message));
+                      setStatus('idle');
+                    });
+                  }}>停止</button>
+                )}
+              </div>
             </article>
           )}
         </section>
@@ -1780,8 +1826,11 @@ function isReverseAnalysisIntent(content: string): boolean {
   return /(?:反推|逆向|复刻|提取|还原).*(?:图片|图像|提示词|prompt)?|(?:reverse|reconstruct).*(?:image|prompt)?/iu.test(content);
 }
 
-function isWorkflowCreationIntent(content: string): boolean {
-  return /(?:创建|生成|制作|搭建|设计|建立|编排).*(?:工作流|流程|节点|连线)|(?:workflow|pipeline).*(?:create|build|design|generate)?/iu.test(content);
+function isWorkflowCreationIntent(content: string, referenceCount = 0): boolean {
+  if (/(?:创建|生成|制作|搭建|设计|建立|编排).*(?:工作流|流程|节点|连线)|(?:workflow|pipeline).*(?:create|build|design|generate)?/iu.test(content)) return true;
+  return referenceCount > 0
+    && /(?:精修|修图|修改|调整|替换|移除|保留|不.*改变|优化|edit|refine|preserve)/iu.test(content)
+    && /(?:产品|主体|背景|图片|图像|参考|product|subject|background|image)/iu.test(content);
 }
 
 function canvasActionLabel(kind: SkillCanvasActionKind): string {

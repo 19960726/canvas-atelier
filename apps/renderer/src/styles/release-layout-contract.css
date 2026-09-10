@@ -1702,6 +1702,7 @@
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--thinking { padding: 9px 12px !important; color: #687d83 !important; background: #f4f8f8 !important; }
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status { display: inline-flex !important; align-items: center !important; gap: 7px !important; color: #687d83 !important; font-size: 12px !important; }
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status i { width: 12px !important; height: 12px !important; border: 2px solid #9aacb0 !important; border-right-color: transparent !important; border-radius: 50% !important; animation: agent-thinking-spin .8s linear infinite !important; }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__thinking-stop { margin-left: auto !important; min-height: 26px !important; padding: 3px 10px !important; border: 1px solid #b8cbce !important; border-radius: 8px !important; color: #43656c !important; background: #fff !important; font-size: 11px !important; cursor: pointer !important; }
 @keyframes agent-thinking-spin { to { transform: rotate(360deg); } }
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__error {
   align-self: flex-start !important;

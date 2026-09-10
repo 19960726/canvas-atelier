@@ -17,6 +17,53 @@ export function parseCreativePlan(message: string): CreativePlan | null {
     return { summary: source.summary, observations: strings(source.observations), estimates: strings(source.estimates), unknowns: strings(source.unknowns), options };
   } catch { return null; }
 }
+
+export function recoverEmptyCreativePlan(
+  message: string,
+  request: string,
+  preferences: GenerationPreferences,
+  profiles: readonly ProviderBridgeProfile[],
+  referenceCount = 0,
+): CreativePlan | null {
+  try {
+    const source = JSON.parse(stripJsonFence(message));
+    if (!source || !text(source.summary, 2000) || !Array.isArray(source.options) || source.options.length !== 0) return null;
+    const kind = inferRecoveryKind(request, preferences.kind, referenceCount);
+    const candidates = generationProfiles(profiles, kind, referenceCount);
+    const preferredRoute = preferences[kind].modelRoute;
+    const profile = candidates.find((candidate) => candidate.modelRoute === preferredRoute) ?? candidates[0];
+    if (profile === undefined) return null;
+    const prompt = request.replace(/@(?:图片|视频)\d+/gu, ' ').replace(/\s+/gu, ' ').trim();
+    if (!text(prompt)) return null;
+    const refining = kind === 'image' && (referenceCount > 0 || /(?:精修|修改|调整|替换|移除|保留|不.*改变|edit|refine|preserve)/iu.test(prompt));
+    return {
+      summary: source.summary,
+      observations: strings(source.observations),
+      estimates: strings(source.estimates),
+      unknowns: strings(source.unknowns),
+      options: [{
+        id: 'recovered-exact-request',
+        title: refining ? '按当前要求精修' : kind === 'video' ? '按当前要求生成视频' : '按当前要求生成图片',
+        reason: refining ? '使用已连接参考素材，只修改明确要求的部分。' : '按当前请求与已配置生成路线执行。',
+        kind,
+        prompt,
+        modelRoute: profile.modelRoute,
+      }],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function stripJsonFence(message: string): string {
+  return message.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
+}
+
+function inferRecoveryKind(request: string, preference: GenerationKind, referenceCount: number): GenerationKind {
+  if (/(?:视频|动画|短片|video|animation)/iu.test(request)) return 'video';
+  if (referenceCount > 0 || /(?:图片|图像|主图|海报|产品图|精修|修图|image|photo|poster)/iu.test(request)) return 'image';
+  return preference;
+}
 export function creativePlanningInstructions(
   preferences: GenerationPreferences,
   profiles: readonly ProviderBridgeProfile[],

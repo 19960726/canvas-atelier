@@ -114,4 +114,26 @@ describe('skill chat conversation storage', () => {
       reverseAnalysisDepth: 'standard',
     });
   });
+
+  it('persists message modes and assigns legacy messages to their saved conversation mode', () => {
+    const conversation = {
+      ...createAgentConversation(920),
+      id: 'mode-aware-history',
+      mode: 'original' as const,
+      messages: [
+        { id: 'creative-user', role: 'user' as const, content: '生成产品方案' },
+        { id: 'codex-user', role: 'user' as const, content: '检查画布', mode: 'codex' as const },
+      ],
+    };
+    window.localStorage.setItem('agent-canvas:skill-chat:v2:mode-history', JSON.stringify({
+      version: 2,
+      activeConversationId: conversation.id,
+      conversations: [conversation],
+    }));
+
+    expect(readAgentConversationCollection('mode-history', 921).conversations[0]?.messages).toEqual([
+      { id: 'creative-user', role: 'user', content: '生成产品方案', mode: 'original' },
+      { id: 'codex-user', role: 'user', content: '检查画布', mode: 'codex' },
+    ]);
+  });
 });

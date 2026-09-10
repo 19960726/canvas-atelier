@@ -16,8 +16,8 @@ import {
 } from './canvas-module';
 
 describe('canvas module registry', () => {
-  it('uses a 1K tier for new image generation nodes and normalizes legacy saved dimensions', () => {
-    expect(createCanvasModuleNode('new-image', 'image_generation', { x: 0, y: 0 }).data.config.resolution).toBe('1K');
+  it('uses a selectable 2K tier for new image generation nodes and normalizes legacy saved dimensions', () => {
+    expect(createCanvasModuleNode('new-image', 'image_generation', { x: 0, y: 0 }).data.config.resolution).toBe('2K');
     expect(normalizeCanvasModuleConfig('image_generation', { resolution: '1536x1024', aspectRatio: '16:9' })).toMatchObject({
       resolution: '2K',
       aspectRatio: '16:9',

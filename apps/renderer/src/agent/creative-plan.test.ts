@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreativePlan, creativePlanningInstructions } from './creative-plan';
+import { parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions } from './creative-plan';
 import { defaultGenerationPreferences, generationProfiles, resolveGenerationPreference, readGenerationPreferences, writeGenerationPreferences } from './generation-preferences';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
@@ -20,6 +20,28 @@ describe('creative plan boundary', () => {
     const option = { id: 'a', title: 'A', kind: 'image', prompt: '产品居中', reason: '展示主体' };
     expect(parseCreativePlan(JSON.stringify({ summary: 'test', options: [option, option] }))).toBeNull();
     expect(parseCreativePlan(JSON.stringify({ summary: 'test', options: [{ ...option, prompt: '' }] }))).toBeNull();
+  });
+  it('recovers an empty structured response into one exact executable reference-edit option', () => {
+    const imageEdit: ProviderBridgeProfile = {
+      provider: 'comfly', modelRoute: 'image-edit', displayName: 'Image edit', capabilities: ['image_generation', 'image_edit'],
+    };
+    const plan = recoverEmptyCreativePlan(
+      '```json\n{"summary":"需要只精修产品","observations":["保留背景"],"unknowns":[],"options":[]}\n```',
+      '把产品单独精修，其他不需要改变',
+      defaultGenerationPreferences(),
+      [imageEdit],
+      1,
+    );
+
+    expect(plan).toMatchObject({
+      summary: '需要只精修产品',
+      options: [{
+        title: '按当前要求精修',
+        kind: 'image',
+        prompt: '把产品单独精修，其他不需要改变',
+        modelRoute: 'image-edit',
+      }],
+    });
   });
   it('instructs planning and confirmation, with no fabricated thinking', () => {
     const text = creativePlanningInstructions(defaultGenerationPreferences(), profiles);
