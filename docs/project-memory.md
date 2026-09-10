@@ -1022,3 +1022,10 @@ Before producing an installer, verify at minimum:
 - 1.6.129 独立候选位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.129-resolution-agent-20260910`。安装器 `CanvasAtelier-Win10-11-x64-1.6.129.exe` 为 103304817 字节、SHA-256 `A7DB56E304087DB8DFE366CE74EBF2D8591ABF443F971B1D92B280578CB9B884`；blockmap 为 109613 字节、SHA-256 `8A355238FD2A4889EA580A3AAA0814DB0ABE24FA45A6E208D9934B4FCE5758C1`；`latest.yml` 为 375 字节、SHA-256 `B7A656C83C77E5024C1731768BBF4A661D375D7D1E62928F54E6A66B5C56C49A`；候选 EXE SHA-256 `CB814DD32CC1BE07075D067E621838090CD4460D261071E4A6DDF208582A1259`；`app.asar` SHA-256 `59AA1A8B69DA8D70B0ABC1A2A28DD3DC3ED9C148B1D3F0CDE0B20A053685AEFB`。12 文件包载荷门禁通过，安装器 Authenticode 状态为 `NotSigned`。
 - 候选包隔离验收通过：图片路线/返图测试确认模型目录刷新和项目重开后路线、结果与图片均保留；多供应商测试跨两个独立 Electron 生命周期确认四供应商设置、4D Nano Banana 2/Pro 的 1K/2K/4K、GPT `high + 4K`、重启持久化、MCP 连接，`reconfigureCount=0`、页面错误 0；Agent 创作方案测试确认选择方案后创建节点、提交、显示结果缩略图并在重启后保留。三组测试均未触碰真实项目，网络或付费生成调用为 0。
 - 真实供应商是否最终返回所选像素仍受上游模型、账号和供应商目录能力约束；本轮没有发送付费生成任务，不能把协议映射、精确路线选择和返图像素校验写成 live 4K 返图成功。日用安装目录尚未由本候选覆盖；GitHub 发布状态在正式上传后另行记录。
+
+## 2026-09-10 v1.6.129 GitHub 正式发布
+
+- 发布源码提交为 `9db758d5b08a24acb93177a8b68830a9177857e1`，已推送到 `origin/feature/canvas-agent-mvp`。annotated tag `v1.6.129` 的本地展开提交与远端 peeled tag 都精确指向该提交。
+- GitHub Release `https://github.com/19960726/canvas-atelier/releases/tag/v1.6.129` 已设为 latest，状态为非草稿、非预发布。线上安装包 103304817 字节、SHA-256 `a7db56e304087db8dfe366ce74ebf2d8591abf443f971b1d92b280578cb9b884`；blockmap 109613 字节、SHA-256 `8a355238fd2a4889ea580a3aaa0814db0abe24fa45a6e208d9934b4fce5758c1`；`latest.yml` 375 字节、SHA-256 `b7a656c83c77e5024c1731768bbf4a661d375d7d1e62928f54e6a66b5c56c49a`。GitHub API 返回三个资产均为 `uploaded`，大小和 digest 与本地最终候选逐项一致。
+- Release 使用通过源码、Playwright、包载荷和三组隔离 Electron 门禁的 1.6.129 候选。安装包仍未做 Authenticode 签名；发布不等于日用安装目录已经覆盖，也不等于真实供应商付费 2K/4K 返图已经通过。
+- 真实 GitHub 更新链补充通过：日用 1.6.128 应用在隔离 user-data 中识别 1.6.129 为 `available`，下载达到 `ready_to_restart`；下载文件为 103304817 字节，SHA-256 `a7db56e304087db8dfe366ce74ebf2d8591abf443f971b1d92b280578cb9b884`。测试没有调用重启安装，日用 EXE 与 `app.asar` 前后哈希一致，隔离下载缓存已安全删除。证据为 `work/qa-github-update-1.6.129-from-1.6.128/report.json`。
