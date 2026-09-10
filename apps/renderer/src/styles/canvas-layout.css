@@ -9397,6 +9397,125 @@
   transform: none !important;
 }
 
+/* Capability-aware image output controls and returned-size feedback. */
+.workspace--canvas-layout .module-node__provider-default-resolution {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--gate-muted);
+  background: var(--gate-card-muted);
+  border: 1px dashed var(--gate-border);
+  border-radius: 10px;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace--canvas-layout .module-node__generation-editor-preview {
+  position: relative !important;
+}
+
+.workspace--canvas-layout .module-node__resolution-warning {
+  position: absolute;
+  z-index: 3;
+  right: 14px;
+  bottom: 12px;
+  left: 14px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 7px 10px;
+  color: #8a5b00;
+  background: color-mix(in srgb, #fff3cd 92%, transparent);
+  border: 1px solid color-mix(in srgb, #d99a16 58%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 10%);
+  font-size: 10px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+:root[data-theme='dark'] .workspace--canvas-layout .module-node__resolution-warning {
+  color: #ffd77a;
+  background: color-mix(in srgb, #4b3711 92%, transparent);
+  border-color: #8b6724;
+}
+
+/* The reverse depth is a task input, so it stays immediately above role and
+   prompt and uses the same compact segmented-control language as the Agent. */
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__reverse-depth {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  min-width: 0;
+}
+
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__reverse-depth > button {
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 7px;
+  color: var(--gate-muted);
+  background: var(--gate-card-muted);
+  border: 1px solid var(--gate-border);
+  border-radius: 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__reverse-depth > button.is-active {
+  color: var(--gate-accent);
+  background: color-mix(in srgb, var(--gate-accent) 14%, var(--gate-card));
+  border-color: var(--gate-accent);
+}
+
+/* Public Codex/MCP capability facts are grouped separately from paths,
+   tokens and raw process errors. */
+.workspace--canvas-layout .settings-mcp-capability-diagnostics {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  color: var(--gate-text);
+  background: color-mix(in srgb, var(--gate-accent) 7%, var(--settings-card));
+  border: 1px solid var(--settings-border);
+  border-radius: 12px;
+}
+
+.workspace--canvas-layout .settings-mcp-capability-diagnostics > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workspace--canvas-layout .settings-mcp-capability-diagnostics > header strong { font-size: 11px; }
+.workspace--canvas-layout .settings-mcp-capability-diagnostics > header small { color: var(--gate-muted); font-size: 8px; }
+.workspace--canvas-layout .settings-mcp-capability-diagnostics > dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+.workspace--canvas-layout .settings-mcp-capability-diagnostics > dl > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 9px;
+  background: var(--settings-card);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+.workspace--canvas-layout .settings-mcp-capability-diagnostics dt { color: var(--gate-muted); font-size: 8px; }
+.workspace--canvas-layout .settings-mcp-capability-diagnostics dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 10px; font-weight: 650; }
+.workspace--canvas-layout .settings-mcp-capability-diagnostics > p { margin: 0; color: #c87821; font-size: 9px; }
+
+@media (max-width: 720px) {
+  .workspace--canvas-layout .settings-mcp-capability-diagnostics > dl { grid-template-columns: minmax(0, 1fr); }
+}
+
 .workspace--canvas-layout .module-node.module-node[data-module-type='video_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__video-composer .module-node__video-control-bar > .module-node__video-fallback-control {
   display: none !important;
   visibility: hidden !important;

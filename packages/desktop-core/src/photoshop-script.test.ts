@@ -1,7 +1,105 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPhotoshopPlacementPayload } from './photoshop-script.js';
+
+interface PlacementGeometry {
+  readonly layerWidth: number;
+  readonly layerHeight: number;
+  readonly canvasWidth: number;
+  readonly canvasHeight: number;
+}
+
+async function runEmbeddedPlacement(input: PlacementGeometry) {
+  const scriptPath = fileURLToPath(new URL('./photoshop-place-smart-object.jsx', import.meta.url));
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace(/^#target photoshop\s*/u, '')
+    .replace('__PAYLOAD_PATH__', 'payload.json');
+  const payload = createPhotoshopPlacementPayload({ absolutePath: 'E:/managed/source.png', layerName: 'Placed image' });
+  const bounds = {
+    left: 17,
+    top: 23,
+    right: 17 + input.layerWidth,
+    bottom: 23 + input.layerHeight,
+  };
+  const resizeCalls: Array<{ readonly horizontal: number; readonly vertical: number; readonly anchor: string }> = [];
+  const layers: unknown[] = [];
+  const unit = (value: number) => ({ as: (name: string) => {
+    if (name !== 'px') throw new Error(`Unexpected unit ${name}`);
+    return value;
+  } });
+  const layer = {
+    kind: 'smart-object',
+    name: '',
+    get bounds() {
+      return [unit(bounds.left), unit(bounds.top), unit(bounds.right), unit(bounds.bottom)];
+    },
+    resize(horizontal: number, vertical: number, anchor: string) {
+      resizeCalls.push({ horizontal, vertical, anchor });
+      const centerX = (bounds.left + bounds.right) / 2;
+      const centerY = (bounds.top + bounds.bottom) / 2;
+      const width = (bounds.right - bounds.left) * horizontal / 100;
+      const height = (bounds.bottom - bounds.top) * vertical / 100;
+      bounds.left = centerX - width / 2;
+      bounds.right = centerX + width / 2;
+      bounds.top = centerY - height / 2;
+      bounds.bottom = centerY + height / 2;
+    },
+    translate(horizontal: number, vertical: number) {
+      bounds.left += horizontal;
+      bounds.right += horizontal;
+      bounds.top += vertical;
+      bounds.bottom += vertical;
+    },
+    remove() {
+      const index = layers.indexOf(layer);
+      if (index >= 0) layers.splice(index, 1);
+    },
+  };
+  const documentRef = {
+    width: unit(input.canvasWidth),
+    height: unit(input.canvasHeight),
+    activeLayer: layer,
+  };
+  class FakeFile {
+    exists = true;
+    encoding = '';
+    constructor(readonly path: string) {}
+    open() { return true; }
+    read() { return this.path === 'payload.json' ? payload : ''; }
+    close() {}
+  }
+  class FakeActionDescriptor {
+    putPath() {}
+    putEnumerated() {}
+  }
+  runInNewContext(source, {
+    ActionDescriptor: FakeActionDescriptor,
+    AnchorPosition: { MIDDLECENTER: 'middle-center' },
+    DialogModes: { NO: 0 },
+    File: FakeFile,
+    LayerKind: { SMARTOBJECT: 'smart-object' },
+    SaveOptions: { DONOTSAVECHANGES: 2 },
+    app: { activeDocument: documentRef, documents: [documentRef] },
+    charIDToTypeID: (value: string) => value,
+    decodeURIComponent,
+    escape,
+    executeAction: (action: string) => {
+      if (action !== 'Plc ') throw new Error(`Unexpected action ${action}`);
+      if (!layers.includes(layer)) layers.push(layer);
+      documentRef.activeLayer = layer;
+    },
+    isFinite,
+    Math,
+    stringIDToTypeID: (value: string) => value,
+  });
+  return {
+    bounds,
+    layerCount: layers.length,
+    resizeCalls,
+  };
+}
 
 describe('Photoshop placement script contract', () => {
   it('encodes paths and layer names as data instead of executable source', () => {
@@ -23,10 +121,27 @@ describe('Photoshop placement script contract', () => {
     const scriptSource = await readFile(scriptPath, 'utf8');
 
     expect(scriptSource).toContain("executeAction(charIDToTypeID('Plc ')");
-    expect(scriptSource).toContain('Math.min(1, canvasWidth / layerWidth, canvasHeight / layerHeight)');
+    expect(scriptSource).toContain('Math.min(canvasWidth / layerWidth, canvasHeight / layerHeight)');
     expect(scriptSource).toContain('AnchorPosition.MIDDLECENTER');
     expect(scriptSource).not.toMatch(/saveAs|clipboard|placedLayerRelinkToFile/iu);
     expect(scriptSource).not.toMatch(/(?:app\.activeDocument|documentRef)\.(?:save|close)\s*\(/u);
+  });
+
+  it.each([
+    { name: 'small landscape', layerWidth: 120, layerHeight: 60, expected: { left: 0, top: 60, right: 240, bottom: 180 } },
+    { name: 'large landscape', layerWidth: 320, layerHeight: 180, expected: { left: 0, top: 52.5, right: 240, bottom: 187.5 } },
+    { name: 'small portrait', layerWidth: 60, layerHeight: 120, expected: { left: 60, top: 0, right: 180, bottom: 240 } },
+    { name: 'large portrait', layerWidth: 180, layerHeight: 320, expected: { left: 52.5, top: 0, right: 187.5, bottom: 240 } },
+  ])('contains and centers one $name Smart Object', async ({ layerWidth, layerHeight, expected }) => {
+    const result = await runEmbeddedPlacement({ layerWidth, layerHeight, canvasWidth: 240, canvasHeight: 240 });
+
+    expect(result.bounds).toEqual(expected);
+    expect(result.resizeCalls).toEqual([{
+      horizontal: 240 / Math.max(layerWidth, layerHeight) * 100,
+      vertical: 240 / Math.max(layerWidth, layerHeight) * 100,
+      anchor: 'middle-center',
+    }]);
+    expect(result.layerCount).toBe(1);
   });
 
   it('keeps every Photoshop placement path as a proportional embedded Smart Object', async () => {
@@ -45,7 +160,7 @@ describe('Photoshop placement script contract', () => {
     expect(scriptSource).toContain("readPayloadString(raw, 'imagePathBase64')");
     expect(runnerSource).toContain('newPlacedLayer');
     expect(runnerSource).toContain('LayerKind.SMARTOBJECT');
-    expect(runnerSource).toContain('Math.min(1, canvasWidth / layerWidth, canvasHeight / layerHeight)');
+    expect(runnerSource).toContain('Math.min(canvasWidth / layerWidth, canvasHeight / layerHeight)');
     expect(runnerSource).toContain('canvasCenterX - layerCenterX');
     expect(runnerSource).toContain('return resolvedLayerName');
     expect(runnerSource).not.toContain('return copiedLayer.name');

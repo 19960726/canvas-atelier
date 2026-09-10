@@ -3306,14 +3306,17 @@ describe('desktop bridge contract', () => {
     expect(close).toHaveBeenCalledWith(opened);
   });
 
-  it('opens a corrupt stable snapshot as an explicit recovery preview with valid candidates', async () => {
+  it.each([
+    ['CORRUPT_SNAPSHOT', 'corrupt_snapshot'],
+    ['CORRUPT_JOURNAL', 'corrupt_journal'],
+  ] as const)('opens %s as an explicit recovery preview with valid candidates', async (errorCode, recoveryIssue) => {
     const projectRoot = ['C:', 'redacted', 'CorruptRecovery.novus-project'].join(String.fromCharCode(92));
     const candidatePath = ['C:', 'redacted', 'candidate.json'].join(String.fromCharCode(92));
     const opened = createOpenedSession(projectRoot);
     const recoveredProject = { ...starterProject, name: 'Recovered preview' };
     const close = vi.fn(async () => undefined);
-    const corruptError = Object.assign(new Error('Stable snapshot is corrupt'), {
-      code: 'CORRUPT_SNAPSHOT',
+    const corruptError = Object.assign(new Error('Saved project state is corrupt'), {
+      code: errorCode,
       retryable: false,
     });
     const scan = vi.fn(async () => ({
@@ -3325,7 +3328,7 @@ describe('desktop bridge contract', () => {
         snapshotId: 'snapshot-recovered',
         tailStatus: 'complete' as const,
       }],
-      issues: ['corrupt_snapshot'],
+      issues: [recoveryIssue],
       projectId: starterProject.id,
       recoveredRevision: 3,
       stableSnapshotId: 'snapshot-recovered',

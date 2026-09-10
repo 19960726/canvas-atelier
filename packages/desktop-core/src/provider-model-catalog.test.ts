@@ -83,6 +83,27 @@ describe('provider model catalog', () => {
     expect(profiles.find((item) => item.modelId === 'mystery-video-name')).toMatchObject({ capabilities: [], capabilityStatus: 'incomplete' });
   });
 
+  it('declares reasoning efforts and the real transport protocol for every runnable language profile', () => {
+    const comfly = buildComflyModelProfiles({
+      version: 'reasoning-capabilities',
+      models: [
+        { key: 'chat-model', name: 'Chat model', provider: 'Other', tags: ['对话'], apis: ['/v1/chat/completions'], capabilityStatus: 'complete' },
+        { key: 'responses-model', name: 'Responses model', provider: 'OpenAI', tags: ['对话'], apis: ['/v1/responses'], capabilityStatus: 'complete' },
+      ],
+    });
+    const relayme = buildRelayMeModelProfiles([relayModels[1]!]);
+
+    expect(comfly.find((profile) => profile.modelId === 'chat-model')?.reasoning).toEqual({
+      efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', protocol: 'system_instruction',
+    });
+    expect(comfly.find((profile) => profile.modelId === 'responses-model')?.reasoning).toEqual({
+      efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', protocol: 'responses',
+    });
+    expect(relayme[0]?.reasoning).toEqual({
+      efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', protocol: 'system_instruction',
+    });
+  });
+
   it('uses explicit Comfly image endpoints when a multimodal model is tagged as chat', () => {
     const profiles = buildComflyModelProfiles({
       version: 'catalog-nano-banana-2',

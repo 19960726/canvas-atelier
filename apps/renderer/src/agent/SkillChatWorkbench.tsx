@@ -29,6 +29,7 @@ import {
   deriveAgentConversationTitle,
   readAgentConversationCollection,
   writeAgentConversationCollection,
+  type ReverseAnalysisDepth,
   type StoredAgentConversation,
 } from './skill-chat-session-store';
 import { parseReverseAnalysisResponse, type ReverseAnalysisResult } from './reverse-workflow-contract';
@@ -64,6 +65,7 @@ export interface SkillChatRequest {
   readonly referenceMentions?: readonly { readonly assetId: string; readonly label: string; readonly mention: string }[];
   readonly agentMode?: 'chat' | 'original' | 'codex';
   readonly reasoningEffort?: CodexReasoningEffort;
+  readonly reverseAnalysisDepth?: ReverseAnalysisDepth;
   readonly visualAnalysis?: boolean;
 }
 
@@ -241,7 +243,10 @@ export function SkillChatWorkbench({
   const [libraryCategory, setLibraryCategory] = useState<'common' | 'favorite' | 'mine'>('common');
   const [status, setStatus] = useState<'idle' | 'sending'>('idle');
   const [agentMode, setAgentMode] = useState<'chat' | 'original' | 'codex'>(initialConversation.mode);
-  const [reasoningEffort, setReasoningEffort] = useState<CodexReasoningEffort>(initialConversation.reasoningEffort);
+  const [reasoningEfforts, setReasoningEfforts] = useState(initialConversation.reasoningEfforts);
+  const [reverseAnalysisDepth, setReverseAnalysisDepth] = useState<ReverseAnalysisDepth>(initialConversation.reverseAnalysisDepth);
+  const reasoningEffort = reasoningEfforts[agentMode];
+  const setReasoningEffort = (effort: CodexReasoningEffort) => setReasoningEfforts((current) => ({ ...current, [agentMode]: effort }));
   const [error, setError] = useState<string | null>(null);
   const [sentImageCopyFeedback, setSentImageCopyFeedback] = useState<'success' | 'source-error' | 'error' | null>(null);
   const [pendingCanvasAction, setPendingCanvasAction] = useState<SkillCanvasActionRequest | null>(null);
@@ -284,13 +289,17 @@ export function SkillChatWorkbench({
   pasteContext.current.supportsMedia = supportsImageMentions;
   const supportedEfforts: readonly CodexReasoningEffort[] = selectedProfile?.provider === 'codex'
     ? selectedProfile.supportedReasoningEfforts ?? []
-    : ['low', 'medium', 'high'];
-  const hasSupportedReasoningEffort = selectedProfile?.provider !== 'codex' || supportedEfforts.includes(reasoningEffort);
+    : selectedProfile?.reasoning?.efforts ?? [];
+  const hasSupportedReasoningEffort = selectedProfile?.provider === 'codex'
+    ? supportedEfforts.includes(reasoningEffort)
+    : true;
   const supportedEffortKey = supportedEfforts.join(',');
   useEffect(() => {
     if (!supportedEfforts.includes(reasoningEffort)) {
-      setReasoningEffort(selectedProfile?.provider === 'codex' && selectedProfile.defaultReasoningEffort
-        && supportedEfforts.includes(selectedProfile.defaultReasoningEffort) ? selectedProfile.defaultReasoningEffort : supportedEfforts[0] ?? 'medium');
+      const defaultEffort = selectedProfile?.provider === 'codex'
+        ? selectedProfile.defaultReasoningEffort
+        : selectedProfile?.reasoning?.defaultEffort;
+      setReasoningEffort(defaultEffort && supportedEfforts.includes(defaultEffort) ? defaultEffort : supportedEfforts[0] ?? 'medium');
     }
   }, [reasoningEffort, selectedProfile, supportedEffortKey]);
   const referenceImporting = isPasteImportBusy(pasteImportState.current);
@@ -601,11 +610,14 @@ export function SkillChatWorkbench({
   };
   const handleComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const payload = readAgentChatClipboard(event.clipboardData);
+    const fallbackVisionProfile = pasteContext.current.supportsMedia || agentMode === 'codex'
+      ? undefined
+      : chatProfiles.find((profile) => supportsAgentMediaReferences(profile, agentMode));
     const action = resolveClipboardPasteAction({
       hasPlainText: event.clipboardData.getData('text/plain').length > 0,
       parsedText: payload.text,
       hasMedia: payload.media.length > 0,
-      supportsMedia: pasteContext.current.supportsMedia,
+      supportsMedia: pasteContext.current.supportsMedia || fallbackVisionProfile !== undefined,
     });
     if (action === 'native-text' || action === 'ignore') return;
     event.preventDefault();
@@ -639,6 +651,11 @@ export function SkillChatWorkbench({
     // A pasted file is already a concrete media reference; keep the mention
     // picker from covering the newly attached thumbnail while the import runs.
     dispatchPopover({ type: 'close-external' });
+    if (fallbackVisionProfile !== undefined) {
+      invalidateActivePlan();
+      setModelRoute(fallbackVisionProfile.modelRoute);
+      pasteContext.current.supportsMedia = true;
+    }
     const insertionMarker = createPasteInsertionMarker(pasteInsertionSequence.current++);
     pendingPasteMarkers.current.add(insertionMarker);
     setComposer((current) => reducePasteComposer(
@@ -730,7 +747,8 @@ export function SkillChatWorkbench({
           ? deriveAgentConversationTitle(firstUserMessage.content)
           : existing.title,
         mode: agentMode,
-        reasoningEffort,
+        reasoningEfforts,
+        reverseAnalysisDepth,
         ...(modelRoute === undefined ? { modelRoute: undefined } : { modelRoute }),
         knowledgeBaseIds: [...selectedKnowledgeBaseIds],
         projectMemoryIds: [...selectedProjectMemoryIds],
@@ -745,7 +763,7 @@ export function SkillChatWorkbench({
       writeAgentConversationCollection(projectId, next);
       return next;
     });
-  }, [activeConversationId, agentMode, messages, modelRoute, projectId, reasoningEffort, selectedKnowledgeBaseIds, selectedProjectMemoryIds]);
+  }, [activeConversationId, agentMode, messages, modelRoute, projectId, reasoningEfforts, reverseAnalysisDepth, selectedKnowledgeBaseIds, selectedProjectMemoryIds]);
 
   useLayoutEffect(() => {
     const offset = pendingComposerCaretRef.current;
@@ -781,7 +799,8 @@ export function SkillChatWorkbench({
     setSelectedProjectMemoryIds(clampProjectMemoryIds(conversation.projectMemoryIds, availableProjectMemoryIds));
     setMessages([...conversation.messages]);
     setAgentMode(conversation.mode);
-    setReasoningEffort(conversation.reasoningEffort);
+    setReasoningEfforts(conversation.reasoningEfforts);
+    setReverseAnalysisDepth(conversation.reverseAnalysisDepth);
     setComposer({ text: '', citations: [] });
     setStatus(cancellingCodex ? 'sending' : 'idle');
     setPendingCanvasAction(null);
@@ -819,7 +838,8 @@ export function SkillChatWorkbench({
     setSelectedProjectMemoryIds([...created.projectMemoryIds]);
     setMessages([]);
     setAgentMode(created.mode);
-    setReasoningEffort(created.reasoningEffort);
+    setReasoningEfforts(created.reasoningEfforts);
+    setReverseAnalysisDepth(created.reverseAnalysisDepth);
     setComposer({ text: '', citations: [] });
     setStatus(cancellingCodex ? 'sending' : 'idle');
     setPendingCanvasAction(null);
@@ -907,7 +927,8 @@ export function SkillChatWorkbench({
         ...(selectedReferences.length > 0 ? { referenceAssetIds: selectedReferences.map((reference) => reference.assetId) } : {}),
         ...(selectedReferences.length > 0 ? { referenceMentions: selectedReferences } : {}),
         agentMode,
-        ...(agentMode === 'codex' ? { reasoningEffort } : {}),
+        ...(supportedEfforts.length > 0 ? { reasoningEffort } : {}),
+        ...(visualAnalysis ? { reverseAnalysisDepth } : {}),
         visualAnalysis,
       }), selectedProfile.provider === 'codex'
         ? 10 * 60_000
@@ -1523,14 +1544,23 @@ export function SkillChatWorkbench({
             }}>{label}</button>)}
           </div>
           <button type="button" className="skill-chat-workbench__model-pill" data-testid="agent-model-trigger" aria-label="打开聊天模型菜单" data-selected-model={selectedProfile?.displayName ?? '未配置'} onClick={() => dispatchPopover({ type: 'open', id: 'model' })}>{selectedProfile ? providerModelLabel(selectedProfile, chatProfiles) : agentMode === 'codex' ? '未发现 Codex 模型' : '选择模型'}</button>
-          {agentMode === 'codex' && <CodexReasoningPopover
+          {(selectedProfile?.provider === 'codex' || selectedProfile?.reasoning !== undefined) && <CodexReasoningPopover
             modelLabel={selectedProfile?.displayName ?? '未选择模型'} efforts={supportedEfforts} value={reasoningEffort}
-            defaultValue={selectedProfile?.provider === 'codex' ? selectedProfile.defaultReasoningEffort : 'medium'}
+            defaultValue={selectedProfile?.provider === 'codex' ? selectedProfile.defaultReasoningEffort : selectedProfile?.reasoning?.defaultEffort}
             disabled={!selectedProfile} open={activePopover === 'reasoning'} onChange={setReasoningEffort}
             onToggle={() => dispatchPopover({ type: 'toggle', id: 'reasoning' })}
             onClose={() => dispatchPopover({ type: 'close-external' })}
             onSelectModel={() => dispatchPopover({ type: 'open', id: 'model' })}
           />}
+          {supportsImageMentions && <div className="skill-chat-workbench__reverse-depth" role="group" aria-label="反推强度">
+            {([['fast', '快速反推'], ['standard', '标准反推'], ['deep', '深度反推']] as const).map(([depth, label]) => <button
+              key={depth}
+              type="button"
+              aria-pressed={reverseAnalysisDepth === depth}
+              className={reverseAnalysisDepth === depth ? 'is-active' : undefined}
+              onClick={() => setReverseAnalysisDepth(depth)}
+            >{label}</button>)}
+          </div>}
           <button type="button" className="skill-chat-workbench__generation-trigger" data-testid="agent-generation-preferences" aria-label="生成偏好" title="生成偏好" onClick={() => dispatchPopover({ type: 'open', id: 'generation' })}><SlidersHorizontal size={15} /></button>
           <div className="skill-chat-workbench__composer-actions">
             <button type="button" className="skill-chat-workbench__tool skill-chat-workbench__knowledge-compact" data-testid="knowledge-base-trigger" aria-label="打开知识库" onClick={() => dispatchPopover({ type: 'open', id: 'knowledge' })}><Grid3X3 size={14} strokeWidth={1.6} /></button>

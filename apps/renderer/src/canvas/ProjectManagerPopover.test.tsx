@@ -52,7 +52,7 @@ describe('ProjectManagerPopover', () => {
       recoverySnapshotIds={[]}
       onClose={vi.fn()}
       onOpenOther={vi.fn()}
-      onOpenRecentProject={vi.fn(async () => true)}
+      onOpenRecentProject={vi.fn(async () => 'opened' as const)}
       onRestoreSnapshot={vi.fn()}
     />);
 
@@ -64,7 +64,7 @@ describe('ProjectManagerPopover', () => {
   it('loads recent projects and opens an available project by opaque id', async () => {
     const list = vi.fn(async () => [availableProject]);
     window.novusDesktop = { recentProjects: { list } } as never;
-    const onOpenRecentProject = vi.fn(async () => true);
+    const onOpenRecentProject = vi.fn(async () => 'opened' as const);
 
     render(<ProjectManagerPopover
       currentProject={{ id: 'project-current', name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
@@ -83,9 +83,44 @@ describe('ProjectManagerPopover', () => {
     expect(list).toHaveBeenCalledOnce();
   });
 
+  it('does not claim the project file is missing when switching is blocked by the current unsaved canvas', async () => {
+    window.novusDesktop = { recentProjects: { list: vi.fn(async () => [availableProject]) } } as never;
+
+    render(<ProjectManagerPopover
+      currentProject={{ id: 'project-current', name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
+      recoveryRequired={false}
+      recoverySnapshotIds={[]}
+      onClose={vi.fn()}
+      onOpenOther={vi.fn()}
+      onOpenRecentProject={vi.fn(async () => 'switch-blocked' as const)}
+      onRestoreSnapshot={vi.fn()}
+    />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '打开商品主视觉项目' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('当前画布尚未保存');
+    expect(screen.getByRole('status')).not.toHaveTextContent('文件');
+  });
+
+  it('reports an unavailable recent project only after the open operation reaches storage', async () => {
+    window.novusDesktop = { recentProjects: { list: vi.fn(async () => [availableProject]) } } as never;
+
+    render(<ProjectManagerPopover
+      currentProject={{ id: 'project-current', name: '当前工作流', nodeCount: 1, edgeCount: 0 }}
+      recoveryRequired={false}
+      recoverySnapshotIds={[]}
+      onClose={vi.fn()}
+      onOpenOther={vi.fn()}
+      onOpenRecentProject={vi.fn(async () => 'unavailable' as const)}
+      onRestoreSnapshot={vi.fn()}
+    />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '打开商品主视觉项目' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('项目文件无法读取');
+  });
+
   it('marks the already-open project instead of presenting a misleading Open action', async () => {
     window.novusDesktop = { recentProjects: { list: vi.fn(async () => [availableProject]) } } as never;
-    const onOpenRecentProject = vi.fn(async () => true);
+    const onOpenRecentProject = vi.fn(async () => 'opened' as const);
 
     render(<ProjectManagerPopover
       currentProject={{ id: availableProject.projectId, name: '当前工作流', nodeCount: 8, edgeCount: 2 }}
@@ -115,7 +150,7 @@ describe('ProjectManagerPopover', () => {
       recoverySnapshotIds={[]}
       onClose={vi.fn()}
       onOpenOther={vi.fn()}
-      onOpenRecentProject={vi.fn(async () => true)}
+      onOpenRecentProject={vi.fn(async () => 'opened' as const)}
       onRestoreSnapshot={vi.fn()}
     />);
 
@@ -137,7 +172,7 @@ describe('ProjectManagerPopover', () => {
       recoverySnapshotIds={['snapshot-one', 'snapshot-two']}
       onClose={vi.fn()}
       onOpenOther={vi.fn()}
-      onOpenRecentProject={vi.fn(async () => true)}
+      onOpenRecentProject={vi.fn(async () => 'opened' as const)}
       onRestoreSnapshot={vi.fn()}
     />);
 
@@ -162,7 +197,7 @@ describe('ProjectManagerPopover', () => {
       recoverySnapshotIds={['snapshot-recovery']}
       onClose={onClose}
       onOpenOther={vi.fn()}
-      onOpenRecentProject={vi.fn(async () => true)}
+      onOpenRecentProject={vi.fn(async () => 'opened' as const)}
       onRestoreSnapshot={onRestoreSnapshot}
     />);
 

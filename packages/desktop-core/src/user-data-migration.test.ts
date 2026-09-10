@@ -142,4 +142,89 @@ describe('stable desktop user data', () => {
       expect.objectContaining({ availability: 'available', projectId: 'legacy-id' }),
     ]);
   });
+
+  it('merges legacy recent projects when a stable recent-project index already exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'canvasforge-user-data-merge-index-'));
+    temporaryRoots.push(root);
+    const stableRoot = join(root, 'Canvas Atelier');
+    const legacyRoot = join(root, 'CanvasForge');
+    const stableProjectRoot = join(stableRoot, 'projects', 'stable.novus-project');
+    const legacyProjectRoot = join(legacyRoot, 'projects', 'legacy.novus-project');
+    await mkdir(stableProjectRoot, { recursive: true });
+    await mkdir(legacyProjectRoot, { recursive: true });
+    await writeFile(join(stableProjectRoot, 'project.novus.json'), JSON.stringify({ projectId: 'stable-id' }), 'utf8');
+    await writeFile(join(legacyProjectRoot, 'project.novus.json'), JSON.stringify({ projectId: 'legacy-id' }), 'utf8');
+    const entry = (projectId: string, displayName: string, projectRoot: string) => ({
+      recentProjectId: createRecentProjectId(projectRoot),
+      projectId,
+      displayName,
+      lastOpenedAt: '2026-09-10T08:00:00.000Z',
+      lastSavedAt: '2026-09-10T08:00:00.000Z',
+      root: projectRoot,
+      nodeCount: 1,
+      imageCount: 0,
+      videoCount: 0,
+    });
+    await writeFile(join(stableRoot, 'recent-projects.index.json'), JSON.stringify({
+      schemaVersion: 1,
+      entries: [entry('stable-id', 'Stable project', stableProjectRoot)],
+    }), 'utf8');
+    await writeFile(join(legacyRoot, 'recent-projects.index.json'), JSON.stringify({
+      schemaVersion: 1,
+      entries: [entry('legacy-id', 'Legacy project', legacyProjectRoot)],
+    }), 'utf8');
+
+    await migrateLegacyUserData({ stableRoot, legacyRoots: [legacyRoot] });
+
+    const projects = await new RecentProjectStore({ appDataRoot: stableRoot }).list();
+    expect(projects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ availability: 'available', projectId: 'stable-id' }),
+      expect.objectContaining({ availability: 'available', projectId: 'legacy-id' }),
+    ]));
+    expect(projects).toHaveLength(2);
+  });
+
+  it('replaces an unavailable stable duplicate with the matching available legacy project', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'canvasforge-user-data-recover-duplicate-'));
+    temporaryRoots.push(root);
+    const stableRoot = join(root, 'Canvas Atelier');
+    const legacyRoot = join(root, 'CanvasForge');
+    const staleProjectRoot = join(root, 'moved-away.novus-project');
+    const legacyProjectRoot = join(legacyRoot, 'projects', 'recovered.novus-project');
+    const recoveredProjectRoot = join(stableRoot, 'projects', 'recovered.novus-project');
+    await mkdir(stableRoot, { recursive: true });
+    await mkdir(legacyProjectRoot, { recursive: true });
+    await writeFile(join(legacyProjectRoot, 'project.novus.json'), JSON.stringify({ projectId: 'recover-id' }), 'utf8');
+    const entry = (projectRoot: string, displayName: string) => ({
+      recentProjectId: createRecentProjectId(projectRoot),
+      projectId: 'recover-id',
+      displayName,
+      lastOpenedAt: '2026-09-10T08:00:00.000Z',
+      lastSavedAt: '2026-09-10T08:00:00.000Z',
+      root: projectRoot,
+      nodeCount: 2,
+      imageCount: 1,
+      videoCount: 0,
+    });
+    await writeFile(join(stableRoot, 'recent-projects.index.json'), JSON.stringify({
+      schemaVersion: 1,
+      entries: [entry(staleProjectRoot, 'Unavailable copy')],
+    }), 'utf8');
+    await writeFile(join(legacyRoot, 'recent-projects.index.json'), JSON.stringify({
+      schemaVersion: 1,
+      entries: [entry(legacyProjectRoot, 'Recovered copy')],
+    }), 'utf8');
+
+    await migrateLegacyUserData({ stableRoot, legacyRoots: [legacyRoot] });
+
+    const projects = await new RecentProjectStore({ appDataRoot: stableRoot }).list();
+    expect(projects).toEqual([
+      expect.objectContaining({
+        availability: 'available',
+        projectId: 'recover-id',
+        displayName: 'Recovered copy',
+        recentProjectId: createRecentProjectId(recoveredProjectRoot),
+      }),
+    ]);
+  });
 });

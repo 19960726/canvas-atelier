@@ -92,6 +92,7 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
         instructions: buildSkillChatSystemInstructions({
           agentMode: validated.agentMode ?? 'chat',
           reasoningEffort: validated.reasoningEffort,
+          reverseAnalysisDepth: validated.reverseAnalysisDepth,
           visualAnalysis: validated.visualAnalysis === true,
           referenceMentions: validated.referenceMentions ?? [],
         }),
@@ -103,21 +104,26 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
     ...attachManagedImagesToLatestUserMessage(validated.messages, images),
   ];
   const client = options.createClient(snapshot);
-  const codexReasoningEffort = validated.agentMode === 'codex'
+  const reasoningEffort = validated.reasoningEffort !== undefined
+    && (profile.reasoning?.efforts.includes(validated.reasoningEffort) ?? validated.agentMode === 'codex')
     ? validated.reasoningEffort
     : undefined;
+  const reasoningProtocol = profile.reasoning?.protocol
+    ?? (validated.agentMode === 'codex'
+      ? profile.capabilities.includes('responses') ? 'responses' : 'chat_completions'
+      : 'system_instruction');
   const requestTimeoutMs = images.length > 0 || validated.visualAnalysis === true
     ? VISUAL_SKILL_CHAT_TIMEOUT_MS
     : SKILL_CHAT_TIMEOUT_MS;
   const chatRequest = {
     model: profile.modelId ?? profile.modelRoute,
     messages,
-    ...(codexReasoningEffort === undefined ? {} : { reasoning_effort: codexReasoningEffort }),
+    ...(reasoningEffort === undefined || reasoningProtocol !== 'chat_completions' ? {} : { reasoning_effort: reasoningEffort }),
   };
   const responsesRequest = {
     model: profile.modelId ?? profile.modelRoute,
     input: toResponsesInput(messages),
-    ...(codexReasoningEffort === undefined ? {} : { reasoning: { effort: codexReasoningEffort } }),
+    ...(reasoningEffort === undefined || reasoningProtocol !== 'responses' ? {} : { reasoning: { effort: reasoningEffort } }),
   };
   const message = profile.capabilities.includes('chat')
     ? (await client.chat(chatRequest, requestTimeoutMs)).choices[0]?.message?.content

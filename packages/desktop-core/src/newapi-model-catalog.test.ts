@@ -279,6 +279,22 @@ describe('New API authenticated model catalog', () => {
     })]);
   });
 
+  it('keeps 4D GPT Image 2 fixed-tier model ids bound to their exact 2K or 4K contract', () => {
+    const profiles = buildAuthenticatedNewApiCatalog({
+      provider: '4dai',
+      accessibleModelIds: ['gpt-image-2-2k', 'gpt-image-2-4k'],
+      pricing: [
+        { modelName: 'gpt-image-2-2k', supportedEndpointTypes: ['image-generation'] },
+        { modelName: 'gpt-image-2-4k', supportedEndpointTypes: ['image-generation'] },
+      ],
+    });
+
+    expect(profiles.map((profile) => [profile.modelId, profile.constraints?.image?.resolutions])).toEqual([
+      ['gpt-image-2-2k', ['2K']],
+      ['gpt-image-2-4k', ['4K']],
+    ]);
+  });
+
   it('publishes only the three GPT Image 1 and 1.5 ratios the service maps exactly', () => {
     const profiles = buildAuthenticatedNewApiCatalog({
       provider: '4dai',

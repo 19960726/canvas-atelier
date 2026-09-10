@@ -50,9 +50,11 @@ const PROVIDER_CONNECTION_CHECK_TIMEOUT_MS = 35_000;
 const RELAYME_LOGIN_TIMEOUT_MS = 35_000;
 type DesktopMcpIntegration = NonNullable<typeof window.novusDesktop>['mcpIntegration'];
 type DesktopMcpRuntime = NonNullable<typeof window.novusDesktop>['mcpRuntime'];
+type DesktopCodexCli = NonNullable<typeof window.novusDesktop>['codexCli'];
 type McpClientId = Parameters<DesktopMcpIntegration['connect']>[0];
 type McpClientStatus = Awaited<ReturnType<DesktopMcpIntegration['connect']>>;
 type McpRuntimePublicStatus = Awaited<ReturnType<DesktopMcpRuntime['getStatus']>>;
+type CodexCliProfile = Awaited<ReturnType<DesktopCodexCli['listProfiles']>>[number];
 type SettingsTab = 'api' | 'storage' | 'mcp' | 'sync';
 type CacheAction = 'choose' | 'open' | 'reset' | null;
 type CacheDirectoryState = {
@@ -208,6 +210,7 @@ export function SettingsDrawer({
   const [mcpPermissions, setMcpPermissions] = useState<McpPermissionFlags>(readMcpPermissions);
   const [mcpRuntimeStatus, setMcpRuntimeStatus] = useState<McpRuntimePublicStatus | null>(null);
   const [mcpClientStatuses, setMcpClientStatuses] = useState<readonly McpClientStatus[]>([]);
+  const [codexCliProfiles, setCodexCliProfiles] = useState<readonly CodexCliProfile[] | null>(null);
   const [mcpBusyClient, setMcpBusyClient] = useState<McpClientId | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [pendingMcpConnect, setPendingMcpConnect] = useState<McpClientId | null>(null);
@@ -224,6 +227,8 @@ export function SettingsDrawer({
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>('api');
   const codexWorkflowContract = createCodexWorkflowContract();
+  const codexClientStatus = mcpClientStatuses.find((item) => item.client === 'codex');
+  const highestCodexReasoningEffort = findHighestCodexReasoningEffort(codexCliProfiles ?? []);
   const provider = bridge?.provider;
   const selectedProviderStatus = providerStatuses[selectedProvider] ?? (selectedProvider === 'comfly' ? providerStatus : null);
   const modelRefreshRequest = useRef(0);
@@ -349,21 +354,27 @@ export function SettingsDrawer({
         if (!cancelled) {
           setMcpRuntimeStatus(null);
           setMcpClientStatuses([]);
+          setCodexCliProfiles([]);
         }
         return;
       }
       try {
-        const [runtimeStatus, clientStatuses] = await Promise.all([
+        const [runtimeStatus, clientStatuses, cliProfiles] = await Promise.all([
           bridge.mcpRuntime.getStatus(),
           bridge.mcpIntegration.getStatus(),
+          bridge.codexCli?.listProfiles() ?? Promise.resolve([]),
         ]);
         if (!cancelled) {
           setMcpRuntimeStatus(runtimeStatus);
           setMcpClientStatuses(clientStatuses);
+          setCodexCliProfiles(cliProfiles);
           setMcpError(null);
         }
       } catch {
-        if (!cancelled) setMcpError('MCP_STATUS_UNAVAILABLE');
+        if (!cancelled) {
+          setCodexCliProfiles([]);
+          setMcpError('MCP_STATUS_UNAVAILABLE');
+        }
       }
     };
     void refreshMcpStatus();
@@ -372,7 +383,7 @@ export function SettingsDrawer({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeTab, bridge?.mcpIntegration, bridge?.mcpRuntime]);
+  }, [activeTab, bridge?.codexCli, bridge?.mcpIntegration, bridge?.mcpRuntime]);
 
   useEffect(() => {
     setProviderStatuses((current) => ({ ...current, comfly: providerStatus ?? current.comfly ?? null }));
@@ -1216,6 +1227,20 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
               ) : <p className="settings-mcp-desktop-only" data-testid="mcp-desktop-only">仅桌面版可配置 MCP 客户端</p>}
             </article>
 
+            <section className="settings-mcp-capability-diagnostics" role="region" aria-label="Codex 与 MCP 能力诊断">
+              <header><strong>Codex 与 MCP 能力诊断</strong><small>只显示可公开的能力状态</small></header>
+              <dl>
+                <div><dt>Codex CLI</dt><dd>{codexCliProfiles === null ? '读取中' : codexCliProfiles.length > 0 ? '可用' : '未发现'}</dd></div>
+                <div><dt>模型</dt><dd>{codexCliProfiles?.length ?? 0} 个</dd></div>
+                <div><dt>最高推理</dt><dd>{highestCodexReasoningEffort ?? '—'}</dd></div>
+                <div><dt>MCP runtime</dt><dd>{formatMcpRuntimeState(mcpRuntimeStatus?.state)} · {mcpRuntimeStatus?.toolCount ?? 0} 个工具</dd></div>
+                <div><dt>Codex 客户端</dt><dd>{formatMcpClientState(codexClientStatus?.state)}</dd></div>
+              </dl>
+              {codexClientStatus?.state === 'connection_failed' ? (
+                <p>点击“连接”重新写入 Codex MCP 配置，再点击“测试”验证。</p>
+              ) : null}
+            </section>
+
             <div className="settings-mcp-client-list" aria-label="MCP 客户端列表">
               {(['codex', 'workbuddy'] as const).map((client) => {
                 const clientName = formatMcpClientName(client);
@@ -1575,6 +1600,15 @@ function formatMcpClientState(state: McpClientStatus['state'] | undefined): stri
     connected: '配置匹配 · 桥接可用',
     connection_failed: '配置或桥接异常',
   })[state ?? 'unconfigured'];
+}
+
+function findHighestCodexReasoningEffort(profiles: readonly CodexCliProfile[]): string | null {
+  const order = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+  for (let index = order.length - 1; index >= 0; index -= 1) {
+    const effort = order[index]!;
+    if (profiles.some((profile) => profile.supportedReasoningEfforts?.includes(effort) === true)) return effort;
+  }
+  return null;
 }
 
 function formatMcpClientActionResult(status: McpClientStatus): string {

@@ -120,12 +120,16 @@ describe('reverse prompt personas', () => {
 
 describe('reverse prompt runs', () => {
   it('allows an Agent node to select zero or more distinct knowledge bases', () => {
-    expect(reverseAgentNodeConfigSchema.parse(agentConfig)).toEqual(agentConfig);
+    expect(reverseAgentNodeConfigSchema.parse(agentConfig)).toEqual({ ...agentConfig, analysisDepth: 'standard' });
     expect(() => reverseAgentNodeConfigSchema.parse({ ...agentConfig, modelRoute: '' })).toThrow(ZodError);
     expect(() => reverseAgentNodeConfigSchema.parse({ ...agentConfig, role: ' ' })).toThrow(ZodError);
     expect(() => reverseAgentNodeConfigSchema.parse({ ...agentConfig, task: '' })).toThrow(ZodError);
     expect(reverseAgentNodeConfigSchema.parse({ ...agentConfig, knowledgeBaseIds: [] })).toMatchObject({ knowledgeBaseIds: [] });
     expect(reverseAgentNodeConfigSchema.parse({ ...agentConfig, knowledgeBaseIds: ['scene-skill'] })).toMatchObject({ knowledgeBaseIds: ['scene-skill'] });
+    expect(reverseAgentNodeConfigSchema.parse(agentConfig)).toMatchObject({ analysisDepth: 'standard' });
+    expect(reverseAgentNodeConfigSchema.parse({ ...agentConfig, analysisDepth: 'fast' })).toMatchObject({ analysisDepth: 'fast' });
+    expect(reverseAgentNodeConfigSchema.parse({ ...agentConfig, analysisDepth: 'deep' })).toMatchObject({ analysisDepth: 'deep' });
+    expect(() => reverseAgentNodeConfigSchema.parse({ ...agentConfig, analysisDepth: 'extreme' })).toThrow(ZodError);
     expect(reverseAgentNodeConfigSchema.parse({
       ...agentConfig,
       knowledgeBaseIds: ['brand-rules', 'scene-skill', 'product-detail'],
@@ -135,7 +139,7 @@ describe('reverse prompt runs', () => {
 
   it('persists distinct managed image citation ids in an Agent node config', () => {
     const withCitations = { ...agentConfig, referenceAssetIds: ['image-a', 'image-b'] };
-    expect(reverseAgentNodeConfigSchema.parse(withCitations)).toEqual(withCitations);
+    expect(reverseAgentNodeConfigSchema.parse(withCitations)).toEqual({ ...withCitations, analysisDepth: 'standard' });
     expect(() => reverseAgentNodeConfigSchema.parse({ ...agentConfig, referenceAssetIds: ['image-a', 'image-a'] })).toThrow(ZodError);
     expect(() => reverseAgentNodeConfigSchema.parse({
       ...agentConfig,

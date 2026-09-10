@@ -160,7 +160,24 @@ function normalizeImageResolutionSelection(value: unknown): typeof IMAGE_RESOLUT
   if (value === '2K' || value === '1536x1024' || value === '1024x1536') return '2K';
   if (value === '4K') return '4K';
   return '2K';
-}const REQUIRED_REVERSE_KNOWLEDGE_BASES = [
+}
+
+function readImageResolutionTier(value: unknown): typeof IMAGE_RESOLUTION_OPTIONS[number] | undefined {
+  return value === '1K' || value === '2K' || value === '4K' ? value : undefined;
+}
+
+function imageLongEdgeBelowRequestedTier(
+  tier: typeof IMAGE_RESOLUTION_OPTIONS[number],
+  width: number | null | undefined,
+  height: number | null | undefined,
+): boolean {
+  const minimumLongEdge = tier === '4K' ? 3_500 : tier === '2K' ? 1_800 : 900;
+  return typeof width === 'number' && Number.isFinite(width)
+    && typeof height === 'number' && Number.isFinite(height)
+    && Math.max(width, height) < minimumLongEdge;
+}
+
+const REQUIRED_REVERSE_KNOWLEDGE_BASES = [
   { knowledgeBaseId: 'scene-skill', displayName: '场景 Skill', description: '产品场景、构图、材质与灯光规则' },
   { knowledgeBaseId: 'ecommerce-detail-knowledge', displayName: '电商详情页知识库', description: '详情页结构、卖点表达与视觉规范' },
 ] as const;
@@ -1242,10 +1259,14 @@ function ImageGenerationSummary({
     ? ['自由比例', ...imageConstraints.aspectRatios.filter((value): value is Exclude<typeof IMAGE_ASPECT_RATIO_OPTIONS[number], '自由比例'> => IMAGE_ASPECT_RATIO_OPTIONS.includes(value as never))]
     : [...IMAGE_ASPECT_RATIO_OPTIONS];
   const constrainedImageResolutions = imageConstraints?.resolutions?.filter((value): value is typeof IMAGE_RESOLUTION_OPTIONS[number] => IMAGE_RESOLUTION_OPTIONS.includes(value as never));
+  const usesProviderResolutionDefault = selectedImageRoute !== undefined
+    && !hasGptImageQuality
+    && ((selectedImageRoute.capabilityStatus === 'complete' && constrainedImageResolutions?.length === undefined)
+      || (imageConstraints?.resolutions !== undefined && (constrainedImageResolutions?.length ?? 0) === 0));
   const imageResolutionOptions: (typeof IMAGE_RESOLUTION_OPTIONS[number])[] = constrainedImageResolutions?.length
     ? constrainedImageResolutions
-    : [...DEFAULT_IMAGE_RESOLUTION_OPTIONS];
-  const effectiveImageResolution = imageResolutionOptions.includes(resolution as never) ? resolution : imageResolutionOptions[0] ?? '2K';
+    : usesProviderResolutionDefault ? [] : [...DEFAULT_IMAGE_RESOLUTION_OPTIONS];
+  const effectiveImageResolution = imageResolutionOptions.includes(resolution as never) ? resolution : imageResolutionOptions[0];
   const constrainedImageOutputCounts = imageConstraints?.outputCounts?.filter((value): value is typeof IMAGE_OUTPUT_COUNT_OPTIONS[number] => (
     IMAGE_OUTPUT_COUNT_OPTIONS.includes(value as never)
   ));
@@ -1263,7 +1284,7 @@ function ImageGenerationSummary({
   }, [config.referenceAssetIds]);
   useEffect(() => {
     if (!imageAspectRatioOptions.includes(aspectRatio as never)) setAspectRatio(imageAspectRatioOptions[0] ?? '1:1');
-    if (!imageResolutionOptions.includes(resolution)) setResolution(imageResolutionOptions[0] ?? '2K');
+    if (imageResolutionOptions.length > 0 && !imageResolutionOptions.includes(resolution)) setResolution(imageResolutionOptions[0]!);
     if (!imageOutputCountOptions.includes(outputCount)) setOutputCount(imageOutputCountOptions[0] ?? 1);
   }, [modelRoute, imageOptionsKey]);
   useEffect(() => {
@@ -1390,6 +1411,10 @@ function ImageGenerationSummary({
     .map((assetId) => projectImages.find((asset) => asset.assetId === assetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [persistedResultAssetIds, projectImages]);
   const previewItems = durablePreviewAssets.length > 0 ? durablePreviewAssets : generatedPreviewAssets;
+  const requestedResultResolution = readImageResolutionTier(config.requestedResolution);
+  const undersizedResult = requestedResultResolution === undefined
+    ? undefined
+    : previewItems.find((asset) => imageLongEdgeBelowRequestedTier(requestedResultResolution, asset.width, asset.height));
   const hasCompletedImageResult = previewItems.length > 0;
   const completedImageOrientation = previewItems.length !== 1
     ? 'grid'
@@ -1445,7 +1470,7 @@ function ImageGenerationSummary({
     setLocalGenerationStartedAt(new Date().toISOString());
     if (runnableModelRoute !== modelRoute) setModelRoute(runnableModelRoute);
     const requestedAspectRatio = aspectRatio === '自由比例' ? resolveAutomaticImageAspectRatio(connectedMedia, projectImages) : aspectRatio;
-    void onRun(id, { prompt: prompt.trim(), ...(runnableModelRoute ? { modelRoute: runnableModelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), resolution: effectiveImageResolution, ...(effectiveImageQuality === undefined ? {} : { imageQuality: effectiveImageQuality }), outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
+    void onRun(id, { prompt: prompt.trim(), ...(runnableModelRoute ? { modelRoute: runnableModelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), ...(effectiveImageResolution === undefined ? {} : { resolution: effectiveImageResolution }), ...(effectiveImageQuality === undefined ? {} : { imageQuality: effectiveImageQuality }), outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
       if (!started) {
         setLocalGenerationStartedAt(null);
         setRunError('生成未启动，请检查当前项目保存状态和模型选择后重试。');
@@ -1542,6 +1567,11 @@ function ImageGenerationSummary({
                 <span aria-hidden="true">{index + 1}</span>
               </button>)}
             </div>
+            {undersizedResult !== undefined && requestedResultResolution !== undefined ? (
+              <p className="module-node__resolution-warning" role="status">
+                请求 {requestedResultResolution} · 实际 {undersizedResult.width}×{undersizedResult.height}，供应商返回尺寸低于所选清晰度。
+              </p>
+            ) : null}
           </section>}
           {resultRecoveryFailed && <div className="module-node__generation-error nodrag nopan" role="alert" onPointerDown={stopCanvasPointer}>
             <span>{missingResultRecord ? '返图记录缺失，请重新加载；不会重复提交生成任务。' : '返图加载失败，请重新加载；不会重复提交生成任务。'}</span>
@@ -1626,12 +1656,12 @@ function ImageGenerationSummary({
               options={imageAspectRatioOptions.map((value) => value === '自由比例' ? 'AUTO' : value)}
               onChange={(value) => setAspectRatio(value === 'AUTO' ? '自由比例' : readSupportedImageString(value, IMAGE_ASPECT_RATIO_OPTIONS, aspectRatio))}
             />
-            <ClarityPopover
+            {imageResolutionOptions.length > 0 ? <ClarityPopover
               ariaLabel="Image generation resolution"
-              value={effectiveImageResolution}
+              value={effectiveImageResolution!}
               options={imageResolutionOptions}
               onChange={(value) => setResolution(normalizeImageResolutionSelection(value))}
-            />
+            /> : <span className="module-node__provider-default-resolution" title="该模型未公布可选择的清晰度参数">供应商默认</span>}
             {hasGptImageQuality && <ClarityPopover
               ariaLabel="Image generation quality"
               value={imageQualityLabel(imageQuality)}
@@ -2234,6 +2264,9 @@ function ReverseAgentSummary({
   const initialTask = readNonEmptyString(config.task) ?? '';
   const [role, setRole] = useState(initialRole);
   const [task, setTask] = useState(initialTask);
+  const [analysisDepth, setAnalysisDepth] = useState<'fast' | 'standard' | 'deep'>(() => (
+    config.analysisDepth === 'fast' || config.analysisDepth === 'deep' ? config.analysisDepth : 'standard'
+  ));
   const taskSelectionRef = useRef<MediaMentionSelection | null>(null);
   const reverseTextEdited = useRef(false);
   const setRoleDraft: typeof setRole = (nextRole) => {
@@ -2273,6 +2306,10 @@ function ReverseAgentSummary({
       referenceAssetIds: nextReferenceAssetIds,
     };
   }, [config.knowledgeBaseIds, config.referenceAssetIds]);
+  useEffect(() => {
+    const nextDepth = config.analysisDepth === 'fast' || config.analysisDepth === 'deep' ? config.analysisDepth : 'standard';
+    setAnalysisDepth((current) => current === nextDepth ? current : nextDepth);
+  }, [config.analysisDepth]);
   const externalRole = readNonEmptyString(config.role) ?? '';
   const externalTask = readNonEmptyString(config.task) ?? '';
   useEffect(() => {
@@ -2298,9 +2335,10 @@ function ReverseAgentSummary({
     modelRoute,
     role,
     task,
+    analysisDepth,
     knowledgeBaseIds: selected,
     referenceAssetIds: mentionedReferenceAssetIds,
-  }), [mentionedReferenceAssetIds, modelRoute, role, selected, task]);
+  }), [analysisDepth, mentionedReferenceAssetIds, modelRoute, role, selected, task]);
   const draftConfigKey = useMemo(() => JSON.stringify(draftConfig), [draftConfig]);
   const latestReverseDraftRef = useRef(draftConfig);
   latestReverseDraftRef.current = draftConfig;
@@ -2451,6 +2489,15 @@ function ReverseAgentSummary({
           {compatibleRoutes.length === 0 && <p className="module-node__agent-notice" role="status">该账号没有此类模型，请先在设置中切换供应商。</p>}
           {interruptedPersistedRun && <p className="module-node__agent-notice" role="status">上次反推已中断，可以重新执行。</p>}
           <section className="module-node__agent-task nodrag nopan" aria-label="Reverse task editor" data-agent-region="task" onPointerDown={stopCanvasPointer}>
+            <div className="module-node__reverse-depth" role="group" aria-label="反推强度">
+              {([['fast', '快速反推'], ['standard', '标准反推'], ['deep', '深度反推']] as const).map(([depth, depthLabel]) => <button
+                key={depth}
+                type="button"
+                aria-pressed={analysisDepth === depth}
+                className={analysisDepth === depth ? 'is-active' : undefined}
+                onClick={() => setAnalysisDepth(depth)}
+              >{depthLabel}</button>)}
+            </div>
             <label><span>角色</span><input aria-label="Role positioning" value={role} placeholder="例如：产品视觉分析师" onChange={(event) => {
               const nextRole = event.target.value;
               setRoleDraft(nextRole);
@@ -2575,7 +2622,7 @@ function ReverseAgentSummary({
                 setLocalCompletedAt(null);
                 setIsApplying(true);
                 setIsRunningLocally(true);
-                void onRun(id, { modelRoute: modelRoute.trim(), role: role.trim(), task: task.trim(), knowledgeBaseIds: selected, ...(mentionedReferenceAssetIds.length > 0 ? { referenceAssetIds: mentionedReferenceAssetIds } : {}) })
+                void onRun(id, { modelRoute: modelRoute.trim(), role: role.trim(), task: task.trim(), analysisDepth, knowledgeBaseIds: selected, ...(mentionedReferenceAssetIds.length > 0 ? { referenceAssetIds: mentionedReferenceAssetIds } : {}) })
                   .then((value) => {
                     if (runSequenceRef.current !== runSequence) return;
                     setResult(value);
@@ -2968,7 +3015,11 @@ function dedupeVisibleModelRoutes<T extends {
 }>(routes: readonly T[], preferredRoute?: string): T[] {
   const unique = new Map<string, T>();
   for (const route of routes) {
-    const key = `${route.provider}::${route.displayName.trim().toLocaleLowerCase().replace(/[\s_-]+/gu, ' ')}`;
+    const fixedImageResolution = route.capabilities?.includes('image_generation')
+      && route.constraints?.image?.resolutions?.length === 1
+      ? route.constraints.image.resolutions[0]
+      : undefined;
+    const key = `${route.provider}::${route.displayName.trim().toLocaleLowerCase().replace(/[\s_-]+/gu, ' ')}${fixedImageResolution === undefined ? '' : `::${fixedImageResolution}`}`;
     const current = unique.get(key);
     if (
       current === undefined
@@ -3091,6 +3142,10 @@ function formatGenerationJobError(job: ModelJob | undefined, kind: 'image' | 'vi
   if (error.includes('429') || error.includes('rate limit') || error.includes('quota')) {
     return '请求过于频繁或账户额度受限，请稍后重试。';
   }
+  if ((job.provider === 'comfly' || error.includes('comfly'))
+    && (error.includes('status 503') || error.includes('(503)'))) {
+    return 'Comfly 模型服务暂时不可用（503），请稍后重试或切换其他生图模型。';
+  }
   if (error.includes('provider task mapping is unavailable')) {
     return '本地模型任务状态不可用，请重启应用后重试；若仍失败，请重新登录当前供应商。';
   }
@@ -3179,9 +3234,16 @@ function formatGenerationStartError(error: unknown, kind: 'image' | 'video'): st
 }
 
 function modelRouteOptionLabel(
-  route: Pick<ImageGenerationRouteSummary, 'provider' | 'displayName' | 'modelRoute'>,
-  _routes: readonly Pick<ImageGenerationRouteSummary, 'provider' | 'displayName' | 'modelRoute'>[],
+  route: Pick<ImageGenerationRouteSummary, 'provider' | 'displayName' | 'modelRoute' | 'constraints'>,
+  routes: readonly Pick<ImageGenerationRouteSummary, 'provider' | 'displayName' | 'modelRoute' | 'constraints'>[],
 ): string {
+  const hasSameProviderNameVariant = routes.some((candidate) => candidate.modelRoute !== route.modelRoute
+    && candidate.provider === route.provider
+    && candidate.displayName.trim().toLocaleLowerCase() === route.displayName.trim().toLocaleLowerCase());
+  const fixedResolution = route.constraints?.image?.resolutions?.length === 1
+    ? route.constraints.image.resolutions[0]
+    : undefined;
+  if (hasSameProviderNameVariant && fixedResolution !== undefined) return `${route.displayName} · ${fixedResolution}`;
   return route.displayName;
 }
 

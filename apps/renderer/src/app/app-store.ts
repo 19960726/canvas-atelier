@@ -500,6 +500,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (usesVerifiedProviderDefaults && imageConstraints?.resolutions !== undefined && supportedImageResolutions?.length === 0) {
       throw createGenerationStartError('GENERATION_PARAMETERS_UNSUPPORTED', 'Image resolution constraints are unsupported');
     }
+    if (requestedImageResolution !== undefined
+      && supportedImageResolutions !== undefined
+      && supportedImageResolutions.length > 0
+      && !supportedImageResolutions.includes(requestedImageResolution)) {
+      throw createGenerationStartError(
+        'GENERATION_PARAMETERS_UNSUPPORTED',
+        `Selected image route does not support requested ${requestedImageResolution} resolution`,
+      );
+    }
     let imageAspectRatio = requestedImageAspectRatio;
     let imageResolution = requestedImageResolution;
     if (usesVerifiedProviderDefaults) {
@@ -575,6 +584,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       prompt,
       ...(imageAspectRatio === undefined ? {} : { aspectRatio: imageAspectRatio }),
       ...(imageResolution === undefined ? {} : { resolution: imageResolution }),
+      ...(requestedImageResolution === undefined ? {} : { requestedResolution: requestedImageResolution }),
       ...(imageQuality === undefined ? {} : { imageQuality }),
       outputCount: imageOutputCount,
       providerDisplayName: profile.provider,
@@ -977,6 +987,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelRoute: node.data.config.modelRoute,
       role: node.data.config.role,
       task: node.data.config.task,
+      analysisDepth: node.data.config.analysisDepth,
       knowledgeBaseIds: node.data.config.knowledgeBaseIds,
       referenceAssetIds: node.data.config.referenceAssetIds,
     });
@@ -1497,7 +1508,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       prompt: config.prompt,
       modelRoute: config.modelRoute ?? '',
       aspectRatio: config.aspectRatio ?? (node.data.moduleType === 'video_generation' ? '16:9' : '1:1'),
-      resolution: config.resolution ?? (node.data.moduleType === 'video_generation' ? '1080P' : '2K'),
+      ...(node.data.moduleType === 'video_generation'
+        ? { resolution: config.resolution ?? '1080P' }
+        : config.resolution === undefined ? {} : { resolution: config.resolution }),
       ...(node.data.moduleType === 'image_generation' ? { imageQuality: nextImageQuality } : {}),
       outputCount: normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined) ?? 1,
       ...(node.data.moduleType === 'video_generation' ? {

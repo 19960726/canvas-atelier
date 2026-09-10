@@ -104,9 +104,74 @@ async function rebaseRecentProjectIndex(stableRoot: string, legacyRoots: readonl
     changed = true;
     return { ...entry, recentProjectId: createRecentProjectId(rebasedRoot), root: rebasedRoot };
   }));
+  const knownProjectIds = new Set(entries.flatMap((entry) => (
+    isRecord(entry) && typeof entry.projectId === 'string' ? [entry.projectId] : []
+  )));
+  const knownRoots = new Set(entries.flatMap((entry) => (
+    isRecord(entry) && typeof entry.root === 'string' ? [normalize(resolve(entry.root)).toLocaleLowerCase('en-US')] : []
+  )));
+
+  for (const legacyRootValue of legacyRoots) {
+    const legacyIndexPath = resolve(legacyRootValue, 'recent-projects.index.json');
+    if (!(await pathExists(legacyIndexPath))) continue;
+    let legacyParsed: unknown;
+    try {
+      legacyParsed = JSON.parse(await readFile(legacyIndexPath, 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!isRecord(legacyParsed) || !Array.isArray(legacyParsed.entries)) continue;
+    for (const legacyEntry of legacyParsed.entries) {
+      if (!isMergeableRecentProjectEntry(legacyEntry)) continue;
+      const rebasedRoot = rebaseProjectRoot(legacyEntry.root, stableRoot, legacyRoots);
+      if (rebasedRoot === null || !(await directoryExists(rebasedRoot))) continue;
+      const rootKey = normalize(resolve(rebasedRoot)).toLocaleLowerCase('en-US');
+      const duplicateProjectIndex = entries.findIndex((entry) => (
+        isRecord(entry) && entry.projectId === legacyEntry.projectId
+      ));
+      if (duplicateProjectIndex >= 0) {
+        const currentEntry = entries[duplicateProjectIndex];
+        const currentRoot = isRecord(currentEntry) && typeof currentEntry.root === 'string'
+          ? currentEntry.root
+          : '';
+        if (currentRoot.length > 0 && await directoryExists(currentRoot)) continue;
+        if (currentRoot.length > 0) knownRoots.delete(normalize(resolve(currentRoot)).toLocaleLowerCase('en-US'));
+        entries[duplicateProjectIndex] = {
+          ...legacyEntry,
+          recentProjectId: createRecentProjectId(rebasedRoot),
+          root: rebasedRoot,
+        };
+        knownRoots.add(rootKey);
+        changed = true;
+        continue;
+      }
+      if (knownProjectIds.has(legacyEntry.projectId) || knownRoots.has(rootKey)) continue;
+      entries.push({ ...legacyEntry, recentProjectId: createRecentProjectId(rebasedRoot), root: rebasedRoot });
+      knownProjectIds.add(legacyEntry.projectId);
+      knownRoots.add(rootKey);
+      changed = true;
+    }
+  }
   if (changed) {
     await writeFile(indexPath, `${JSON.stringify({ ...parsed, entries })}\n`, 'utf8');
   }
+}
+
+function isMergeableRecentProjectEntry(value: unknown): value is Record<string, unknown> & {
+  readonly projectId: string;
+  readonly root: string;
+} {
+  if (!isRecord(value)) return false;
+  return typeof value.projectId === 'string'
+    && value.projectId.trim().length > 0
+    && typeof value.root === 'string'
+    && value.root.trim().length > 0
+    && typeof value.displayName === 'string'
+    && typeof value.lastOpenedAt === 'string'
+    && typeof value.lastSavedAt === 'string'
+    && typeof value.nodeCount === 'number'
+    && typeof value.imageCount === 'number'
+    && typeof value.videoCount === 'number';
 }
 
 function rebaseProjectRoot(root: string, stableRoot: string, legacyRoots: readonly string[]): string | null {

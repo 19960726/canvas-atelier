@@ -80,19 +80,28 @@ describe('skill chat conversation storage', () => {
     expect(deriveAgentConversationTitle('   ')).toBe('新任务');
   });
 
-  it('persists the advanced reasoning levels supported by local GPT-6 Astra', () => {
-    const conversation = { ...createAgentConversation(900), reasoningEffort: 'max' as const };
+  it('persists reasoning independently for chat, creative Agent, and Codex plus reverse depth', () => {
+    const conversation = {
+      ...createAgentConversation(900),
+      reasoningEfforts: { chat: 'low' as const, original: 'high' as const, codex: 'max' as const },
+      reverseAnalysisDepth: 'deep' as const,
+    };
     writeAgentConversationCollection('astra', {
       version: 2,
       activeConversationId: conversation.id,
       conversations: [conversation],
     });
 
-    expect(readAgentConversationCollection('astra', 901).conversations[0]?.reasoningEffort).toBe('max');
+    expect(readAgentConversationCollection('astra', 901).conversations[0]).toMatchObject({
+      reasoningEfforts: { chat: 'low', original: 'high', codex: 'max' },
+      reverseAnalysisDepth: 'deep',
+    });
   });
 
-  it('preserves ultra effort and the conversation for catalogs that support it', () => {
+  it('migrates an old v2 single reasoning value only into its saved mode', () => {
     const conversation = { ...createAgentConversation(910), id: 'legacy-ultra', reasoningEffort: 'ultra' };
+    delete (conversation as { reasoningEfforts?: unknown }).reasoningEfforts;
+    delete (conversation as { reverseAnalysisDepth?: unknown }).reverseAnalysisDepth;
     window.localStorage.setItem('agent-canvas:skill-chat:v2:astra-migration', JSON.stringify({
       version: 2,
       activeConversationId: conversation.id,
@@ -101,7 +110,8 @@ describe('skill chat conversation storage', () => {
 
     expect(readAgentConversationCollection('astra-migration', 911).conversations[0]).toMatchObject({
       id: 'legacy-ultra',
-      reasoningEffort: 'ultra',
+      reasoningEfforts: { chat: 'medium', original: 'medium', codex: 'ultra' },
+      reverseAnalysisDepth: 'standard',
     });
   });
 });

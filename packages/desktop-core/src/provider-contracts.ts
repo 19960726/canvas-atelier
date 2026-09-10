@@ -126,6 +126,16 @@ const providerParameterConstraintsSchema = z.object({
   }).strict().optional(),
 }).strict();
 
+const providerReasoningCapabilitySchema = z.object({
+  efforts: z.array(z.enum(['low', 'medium', 'high'])).min(1),
+  defaultEffort: z.enum(['low', 'medium', 'high']),
+  protocol: z.enum(['chat_completions', 'responses', 'model_variant', 'system_instruction']),
+}).strict().superRefine((value, context) => {
+  if (!value.efforts.includes(value.defaultEffort)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['defaultEffort'], message: 'Default reasoning effort must be supported' });
+  }
+});
+
 export const ProviderBridgeProfileSchema = z.object({
   provider: providerSchema,
   modelRoute: nonEmptyStringSchema,
@@ -135,6 +145,7 @@ export const ProviderBridgeProfileSchema = z.object({
   capabilityStatus: z.enum(['complete', 'incomplete']).optional(),
   enabled: z.boolean().optional(),
   constraints: providerParameterConstraintsSchema.optional(),
+  reasoning: providerReasoningCapabilitySchema.optional(),
 }).strict().superRefine((value, context) => {
   addProtectedPayloadIssues(value, context, 'Provider bridge payload contains protected payload');
 });
@@ -515,6 +526,7 @@ export const ChatSkillBridgeRequestSchema = z.object({
   referenceMentions: z.array(skillChatReferenceMentionSchema).max(20).optional(),
   agentMode: z.enum(['chat', 'original', 'codex']).optional(),
   reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
+  reverseAnalysisDepth: z.enum(['fast', 'standard', 'deep']).optional(),
   visualAnalysis: z.boolean().optional(),
   messages: z.array(skillChatMessageSchema).min(1).max(48),
   context: skillChatContextSchema,

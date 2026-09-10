@@ -57,6 +57,7 @@ export const reverseAgentNodeConfigSchema = z.object({
   modelRoute: nonEmptyTrimmedStringSchema,
   role: nonEmptyTrimmedStringSchema,
   task: nonEmptyTrimmedStringSchema,
+  analysisDepth: z.enum(['fast', 'standard', 'deep']).default('standard'),
   referenceAssetIds: reverseAgentCitationAssetIdsSchema.optional(),
   knowledgeBaseIds: z.array(nonEmptyTrimmedStringSchema).superRefine((ids, context) => {
     if (new Set(ids).size !== ids.length) {
@@ -447,7 +448,9 @@ export const reversePromptResultSchema = z.object({
 }).strict();
 
 export type ReversePromptPersona = z.infer<typeof reversePromptPersonaSchema>;
-export type ReverseAgentNodeConfig = z.infer<typeof reverseAgentNodeConfigSchema>;
+// Persisted node input may predate analysisDepth. Schema parsing returns the
+// normalized output with `standard` filled in before a run is executed.
+export type ReverseAgentNodeConfig = z.input<typeof reverseAgentNodeConfigSchema>;
 export type ManagedMp4InputSnapshot = z.infer<typeof managedMp4InputSnapshotSchema>;
 export type OrderedAgentMediaItem = z.infer<typeof orderedAgentMediaItemSchema>;
 export type ApprovedMemorySnapshot = z.infer<typeof approvedMemorySnapshotSchema>;

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { RecentProjectSummary } from '@agent-canvas/desktop-core';
 import { AlertTriangle, FolderOpen, Link2, Trash2, X } from 'lucide-react';
 
+export type RecentProjectOpenResult = 'opened' | 'switch-blocked' | 'unavailable';
+
 interface ProjectManagerPopoverProps {
   currentProject: {
     readonly id: string;
@@ -13,7 +15,7 @@ interface ProjectManagerPopoverProps {
   recoverySnapshotIds: readonly string[];
   onClose(): void;
   onOpenOther(): void;
-  onOpenRecentProject(recentProjectId: string): Promise<boolean>;
+  onOpenRecentProject(recentProjectId: string): Promise<RecentProjectOpenResult>;
   onRestoreSnapshot(snapshotId: string): void | Promise<void>;
 }
 
@@ -73,8 +75,10 @@ export function ProjectManagerPopover({
     setPendingAction({ kind: 'open', recentProjectId: project.recentProjectId });
     setRecentError(null);
     try {
-      if (await onOpenRecentProject(project.recentProjectId)) onClose();
-      else setRecentError('项目未能打开，请检查文件是否仍然存在');
+      const result = await onOpenRecentProject(project.recentProjectId);
+      if (result === 'opened') onClose();
+      else if (result === 'switch-blocked') setRecentError('当前画布尚未保存，请先完成保存或明确放弃更改后再切换项目');
+      else setRecentError('项目文件无法读取，可以重新定位项目文件夹后再试');
     } catch {
       setRecentError('项目未能打开，请稍后重试');
     } finally {

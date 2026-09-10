@@ -697,7 +697,8 @@ export function createDesktopBridgeHandlers(
       try {
         summary = await summarizeSession(repository, sessionId, opened);
       } catch (error) {
-        if (!hasPersistenceErrorCode(error, 'CORRUPT_SNAPSHOT')) throw error;
+        if (!hasPersistenceErrorCode(error, 'CORRUPT_SNAPSHOT')
+          && !hasPersistenceErrorCode(error, 'CORRUPT_JOURNAL')) throw error;
         const scan = await recoveryScanner.scan(opened.root);
         const candidate = selectHighestCompleteRecoveryCandidate(scan, opened.manifest.projectId);
         if (candidate === null) throw error;

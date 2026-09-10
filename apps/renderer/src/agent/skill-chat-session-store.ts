@@ -1,5 +1,6 @@
 export type AgentConversationMode = 'chat' | 'original' | 'codex';
 export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export type ReverseAnalysisDepth = 'fast' | 'standard' | 'deep';
 export type StoredAgentRequestStatus = 'sending' | 'completed' | 'error';
 
 export interface StoredAgentMessageSource {
@@ -30,7 +31,8 @@ export interface StoredAgentConversation {
   readonly id: string;
   readonly title: string;
   readonly mode: AgentConversationMode;
-  readonly reasoningEffort: AgentReasoningEffort;
+  readonly reasoningEfforts: Readonly<Record<AgentConversationMode, AgentReasoningEffort>>;
+  readonly reverseAnalysisDepth: ReverseAnalysisDepth;
   readonly modelRoute?: string;
   readonly knowledgeBaseIds: readonly string[];
   readonly projectMemoryIds: readonly string[];
@@ -64,7 +66,8 @@ export function createAgentConversation(now = Date.now()): StoredAgentConversati
     id: `conversation-${now}`,
     title: '新任务',
     mode: 'codex',
-    reasoningEffort: 'medium',
+    reasoningEfforts: { chat: 'medium', original: 'medium', codex: 'medium' },
+    reverseAnalysisDepth: 'standard',
     knowledgeBaseIds: [],
     projectMemoryIds: [],
     messages: [],
@@ -154,19 +157,21 @@ function parseConversation(value: unknown): StoredAgentConversation | null {
   const id = readSafeText(value.id, 160);
   const title = readSafeText(value.title, 160);
   const mode = parseMode(value.mode);
-  const reasoningEffort = parseReasoningEffort(value.reasoningEffort);
+  const reasoningEfforts = parseReasoningEfforts(value.reasoningEfforts, value.mode, value.reasoningEffort);
+  const reverseAnalysisDepth = parseReverseAnalysisDepth(value.reverseAnalysisDepth) ?? 'standard';
   const modelRoute = value.modelRoute === undefined ? undefined : readSafeText(value.modelRoute, 160);
   const knowledgeBaseIds = readSafeTextList(value.knowledgeBaseIds, 16, 160);
   const projectMemoryIds = readSafeTextList(value.projectMemoryIds, 32, 160);
   const messages = parseMessages(value.messages);
-  if (!id || !title || mode === null || reasoningEffort === null || (value.modelRoute !== undefined && !modelRoute)
+  if (!id || !title || mode === null || reasoningEfforts === null || (value.modelRoute !== undefined && !modelRoute)
     || knowledgeBaseIds === null || projectMemoryIds === null || messages === null
     || !isSafeTimestamp(value.createdAt) || !isSafeTimestamp(value.updatedAt)) return null;
   return {
     id,
     title,
     mode,
-    reasoningEffort,
+    reasoningEfforts,
+    reverseAnalysisDepth,
     ...(modelRoute === undefined ? {} : { modelRoute }),
     knowledgeBaseIds,
     projectMemoryIds,
@@ -256,6 +261,27 @@ function parseReasoningEffort(value: unknown): AgentReasoningEffort | null {
     || value === 'xhigh' || value === 'max' || value === 'ultra'
     ? value
     : null;
+}
+
+function parseReasoningEfforts(
+  value: unknown,
+  modeValue: unknown,
+  legacyValue: unknown,
+): Readonly<Record<AgentConversationMode, AgentReasoningEffort>> | null {
+  const mode = parseMode(modeValue);
+  if (isRecord(value)) {
+    const chat = parseReasoningEffort(value.chat);
+    const original = parseReasoningEffort(value.original);
+    const codex = parseReasoningEffort(value.codex);
+    return chat === null || original === null || codex === null ? null : { chat, original, codex };
+  }
+  const legacy = parseReasoningEffort(legacyValue);
+  if (mode === null || legacy === null) return null;
+  return { chat: 'medium', original: 'medium', codex: 'medium', [mode]: legacy };
+}
+
+function parseReverseAnalysisDepth(value: unknown): ReverseAnalysisDepth | null {
+  return value === 'fast' || value === 'standard' || value === 'deep' ? value : null;
 }
 
 function readSafeTextList(value: unknown, limit: number, maxLength: number): string[] | null {

@@ -136,6 +136,7 @@ export class RecentProjectStore {
       const index = await this.readIndex();
       const entry = index.entries.find((candidate) => candidate.recentProjectId === recentProjectId);
       if (entry === undefined) return null;
+      if (!(await this.isAvailable(root)) || !(await this.projectIdAtRootMatches(root, entry.projectId))) return null;
       const relocated = validateRecentProjectEntry({ ...entry, root });
       const nextId = createRecentProjectId(relocated.root);
       const entries = index.entries
@@ -181,6 +182,18 @@ export class RecentProjectStore {
       if (!rootStat.isDirectory()) return false;
       return (await this.fileSystem.stat(manifestPath)).isFile();
     }, false);
+  }
+
+  private async projectIdAtRootMatches(root: string, expectedProjectId: string): Promise<boolean> {
+    try {
+      const parsed = JSON.parse(await this.fileSystem.readFile(join(root, PROJECT_MANIFEST_FILE), 'utf8')) as unknown;
+      return typeof parsed === 'object'
+        && parsed !== null
+        && !Array.isArray(parsed)
+        && (parsed as { readonly projectId?: unknown }).projectId === expectedProjectId;
+    } catch {
+      return false;
+    }
   }
 
   private fileExists(path: string, kind: 'directory' | 'file'): Promise<boolean> {

@@ -3187,7 +3187,7 @@ describe('project optimization memory', () => {
     await expect(opening).resolves.toBe(true);
   });
 
-  it('adapts an unsupported Comfly 4K tier to the documented 2K bridge request', async () => {
+  it('rejects an unsupported Comfly 4K tier instead of silently submitting 2K', async () => {
     const generation = createCanvasModuleNode('tier-image-node', 'image_generation', { x: 0, y: 0 });
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-tier' }));
     window.novusDesktop = {
@@ -3219,16 +3219,9 @@ describe('project optimization memory', () => {
       resolution: '4K',
       imageQuality: 'high',
       outputCount: 1,
-    })).resolves.toBe(true);
-    await waitForStore(() => submitImageJob.mock.calls.length === 1);
-
-    expect(useAppStore.getState().modelJobs[0]?.resolution).toBe('2K');
-    expect(useAppStore.getState().modelJobs[0]?.imageQuality).toBe('high');
-    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
-      aspectRatio: '16:9',
-      resolution: '2K',
-      quality: 'high',
-    }));
+    })).rejects.toMatchObject({ code: 'GENERATION_PARAMETERS_UNSUPPORTED' });
+    expect(useAppStore.getState().modelJobs).toEqual([]);
+    expect(submitImageJob).not.toHaveBeenCalled();
   });
 
   it('preserves an explicit GPT 4K tier when a complete provider profile omits resolution metadata', async () => {
@@ -3273,7 +3266,7 @@ describe('project optimization memory', () => {
     }));
   });
 
-  it('accepts a complete image model that declares 1K output', async () => {
+  it('rejects 2K on a complete 1K-only image model instead of silently downgrading it', async () => {
     const generation = createCanvasModuleNode('one-k-only-image-node', 'image_generation', { x: 0, y: 0 });
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-one-k' }));
     window.novusDesktop = {
@@ -3293,9 +3286,8 @@ describe('project optimization memory', () => {
 
     await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
       modelRoute: 'one-k-image', prompt: 'Generate at 1K', aspectRatio: '1:1', resolution: '2K', outputCount: 1,
-    })).resolves.toBe(true);
-    await waitForStore(() => submitImageJob.mock.calls.length === 1);
-    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({ resolution: '1K' }));
+    })).rejects.toMatchObject({ code: 'GENERATION_PARAMETERS_UNSUPPORTED' });
+    expect(submitImageJob).not.toHaveBeenCalled();
   });
   it('reports an unavailable selected image route instead of silently returning false', async () => {
     const generation = createCanvasModuleNode('missing-route-image-node', 'image_generation', { x: 0, y: 0 });
@@ -3534,7 +3526,7 @@ describe('project optimization memory', () => {
     expect(useAppStore.getState().modelJobs).toEqual([]);
     expect(submitImageJob).not.toHaveBeenCalled();
   });
-  it('adapts an image-node request to the selected model constraints before enqueueing', async () => {
+  it('adapts compatible non-resolution image parameters to the selected model constraints before enqueueing', async () => {
     replaceModelJobExecutorForTests({
       submit: vi.fn(async (job: ModelJob) => ({ providerTaskId: 'provider-' + job.id })),
       poll: vi.fn(async () => ({ status: 'running' as const, progress: 0.2 })),
@@ -3551,7 +3543,7 @@ describe('project optimization memory', () => {
 
     await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
       modelRoute: 'relay-image-constrained', prompt: 'Adapt this image request',
-      aspectRatio: '16:9', resolution: '4K', outputCount: 4,
+      aspectRatio: '16:9', resolution: '2K', outputCount: 4,
     })).resolves.toBe(true);
 
     expect(useAppStore.getState().modelJobs).toHaveLength(4);
@@ -8370,12 +8362,13 @@ describe('stable module graph commits', () => {
     expect(analyzeReversePrompt).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'comfly',
       media: [{ kind: 'image', assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, mediaType: 'image/png', sha256: 'a'.repeat(64) }],
-      run: expect.objectContaining({ agentConfig: {
+      run: expect.objectContaining({ agentConfig: expect.objectContaining({
         modelRoute: 'gemini-reverse',
         role: 'Commercial visual analyst',
         task: 'Return a concise image-generation prompt.',
+        analysisDepth: 'standard',
         knowledgeBaseIds: [],
-      } }),
+      }) }),
     }));
     expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
       data: {

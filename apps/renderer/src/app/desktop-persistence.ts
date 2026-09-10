@@ -64,6 +64,7 @@ export interface SkillChatRequest {
   readonly referenceMentions?: readonly { readonly assetId: string; readonly label: string; readonly mention: string }[];
   readonly agentMode?: 'chat' | 'original' | 'codex';
   readonly reasoningEffort?: CodexReasoningEffort;
+  readonly reverseAnalysisDepth?: 'fast' | 'standard' | 'deep';
   readonly visualAnalysis?: boolean;
 }
 

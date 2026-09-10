@@ -159,7 +159,17 @@ function constraintsFor(
       },
     };
   }
-  if (/^gpt-image-2(?:-(?:2k|4k))?$/iu.test(modelId)) {
+  if (/^gpt-image-2-(?:2k|4k)$/iu.test(modelId)) {
+    const fixedResolution = /-4k$/iu.test(modelId) ? '4K' : '2K';
+    return {
+      constraints: { image: {
+        aspectRatios: ['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16'],
+        resolutions: [fixedResolution],
+        outputCounts: [1],
+      } },
+    };
+  }
+  if (/^gpt-image-2$/iu.test(modelId)) {
     return {
       constraints: { image: {
         aspectRatios: ['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16'],

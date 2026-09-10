@@ -1090,6 +1090,80 @@ describe('SettingsDrawer', () => {
     expect(screen.getByText('WebDAV')).toBeVisible();
   });
 
+  it('summarizes Codex CLI and MCP capability without exposing protected diagnostics', async () => {
+    const protectedExecutable = 'C:\\Users\\Alice\\AppData\\Roaming\\npm\\codex.cmd';
+    const protectedConfig = 'C:\\Users\\Alice\\.codex\\config.toml';
+    const protectedSecret = ['sk', 'super-secret-value'].join('-');
+    window.novusDesktop = {
+      codexCli: {
+        listProfiles: vi.fn(async () => [
+          {
+            provider: 'codex' as const,
+            modelRoute: 'codex/gpt-6-astra' as const,
+            modelId: 'gpt-6-astra',
+            displayName: 'GPT-6 Astra',
+            capabilities: ['responses'] as const,
+            capabilityStatus: 'complete' as const,
+            transport: 'codex-cli' as const,
+            availability: 'installed' as const,
+            supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const,
+          },
+          {
+            provider: 'codex' as const,
+            modelRoute: 'codex/gpt-5.6-sol' as const,
+            modelId: 'gpt-5.6-sol',
+            displayName: 'GPT-5.6 Sol',
+            capabilities: ['responses'] as const,
+            capabilityStatus: 'complete' as const,
+            transport: 'codex-cli' as const,
+            availability: 'installed' as const,
+            supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] as const,
+          },
+        ]),
+        chat: vi.fn(),
+        cancel: vi.fn(),
+      },
+      mcpRuntime: {
+        getStatus: vi.fn(async () => ({
+          state: 'running' as const,
+          rendererConnected: true,
+          serverVersion: '1.6.128',
+          toolCount: 14 as const,
+          lastError: `${protectedExecutable} ${protectedSecret}`,
+        })),
+      },
+      mcpIntegration: {
+        getStatus: vi.fn(async () => [
+          {
+            client: 'codex' as const,
+            state: 'connection_failed' as const,
+            toolCount: 0 as const,
+            lastError: `MCP_CONFIG_MISMATCH ${protectedConfig} ${protectedSecret}`,
+          },
+          { client: 'workbuddy' as const, state: 'configured' as const, toolCount: 0 as const, lastError: null },
+        ]),
+        connect: vi.fn(),
+        copyConfig: vi.fn(),
+        test: vi.fn(),
+        disconnect: vi.fn(),
+      },
+    } as unknown as typeof window.novusDesktop;
+
+    render(<SettingsDrawer providerStatus={null} onClose={vi.fn()} onProviderStatusChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: /MCP/u }));
+
+    const diagnostics = await screen.findByRole('region', { name: 'Codex 与 MCP 能力诊断' });
+    expect(diagnostics).toHaveTextContent('Codex CLI可用');
+    expect(diagnostics).toHaveTextContent('模型2 个');
+    expect(diagnostics).toHaveTextContent('最高推理ultra');
+    expect(diagnostics).toHaveTextContent('MCP runtime运行中 · 14 个工具');
+    expect(diagnostics).toHaveTextContent('Codex 客户端配置或桥接异常');
+    expect(diagnostics).toHaveTextContent('点击“连接”重新写入 Codex MCP 配置，再点击“测试”验证');
+    expect(diagnostics).not.toHaveTextContent(protectedExecutable);
+    expect(diagnostics).not.toHaveTextContent(protectedConfig);
+    expect(diagnostics).not.toHaveTextContent(protectedSecret);
+  });
+
   it('shows live MCP runtime status and separate Codex and WorkBuddy controls', async () => {
     const connect = vi.fn(async (client: 'codex' | 'workbuddy') => ({ client, state: 'connected' as const, toolCount: 14 as const, lastError: null }));
     const disconnect = vi.fn(async (client: 'codex' | 'workbuddy') => ({ client, state: 'unconfigured' as const, toolCount: 0 as const, lastError: null }));

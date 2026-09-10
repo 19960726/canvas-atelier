@@ -1,8 +1,155 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createNodeWindowsPhotoshopSmartObjectAdapter,
   createWindowsPhotoshopSmartObjectAdapter,
 } from './photoshop-windows-adapter.js';
+
+interface RunnerHarnessOptions {
+  readonly primaryError: string;
+  readonly duplicateFails?: boolean;
+  readonly copyFails?: boolean;
+  readonly layerWidth?: number;
+  readonly layerHeight?: number;
+}
+
+async function runWindowsPlacementFallback(options: RunnerHarnessOptions) {
+  const runnerPath = fileURLToPath(new URL('./photoshop-windows-runner.js', import.meta.url));
+  const runnerSource = (await readFile(runnerPath, 'utf8')).replace(/WScript\.Quit\(0\);/gu, 'return;');
+  const payload = JSON.stringify({
+    version: 1,
+    imagePathBase64: Buffer.from('E:/managed/source.png', 'utf8').toString('base64'),
+    layerNameBase64: Buffer.from('Placed image', 'utf8').toString('base64'),
+  });
+  const output: string[] = [];
+  const targetLayers: unknown[] = [];
+  const bounds = {
+    left: 17,
+    top: 23,
+    right: 17 + (options.layerWidth ?? 120),
+    bottom: 23 + (options.layerHeight ?? 60),
+  };
+  const unit = (value: number) => ({ as: (name: string) => {
+    if (name !== 'px') throw new Error(`Unexpected unit ${name}`);
+    return value;
+  } });
+  const copiedLayer = {
+    kind: 'ordinary-layer',
+    name: '',
+    get bounds() {
+      return [unit(bounds.left), unit(bounds.top), unit(bounds.right), unit(bounds.bottom)];
+    },
+    resize(horizontal: number, vertical: number) {
+      const centerX = (bounds.left + bounds.right) / 2;
+      const centerY = (bounds.top + bounds.bottom) / 2;
+      const width = (bounds.right - bounds.left) * horizontal / 100;
+      const height = (bounds.bottom - bounds.top) * vertical / 100;
+      bounds.left = centerX - width / 2;
+      bounds.right = centerX + width / 2;
+      bounds.top = centerY - height / 2;
+      bounds.bottom = centerY + height / 2;
+    },
+    translate(horizontal: number, vertical: number) {
+      bounds.left += horizontal;
+      bounds.right += horizontal;
+      bounds.top += vertical;
+      bounds.bottom += vertical;
+    },
+    remove() {
+      const index = targetLayers.indexOf(copiedLayer);
+      if (index >= 0) targetLayers.splice(index, 1);
+    },
+  };
+  const copy = vi.fn(() => {
+    if (options.copyFails === true) throw new Error('copy failed');
+  });
+  const paste = vi.fn(() => {
+    targetLayers.push(copiedLayer);
+    return copiedLayer;
+  });
+  const duplicate = vi.fn(() => {
+    if (options.duplicateFails === true) throw new Error('duplicate failed');
+    targetLayers.push(copiedLayer);
+    return copiedLayer;
+  });
+  const closeSourceDocument = vi.fn();
+  const sourceDocument = {
+    activeLayer: { copy, duplicate },
+    close: closeSourceDocument,
+  };
+  const targetDocument = {
+    width: unit(240),
+    height: unit(240),
+    activeLayer: copiedLayer,
+    paste,
+  };
+  const openSourceDocument = vi.fn(() => sourceDocument);
+  let javaScriptCalls = 0;
+  const application = {
+    version: '27.0',
+    documents: { length: 1 },
+    activeDocument: targetDocument,
+    open: openSourceDocument,
+    DoJavaScript(script: string) {
+      javaScriptCalls += 1;
+      if (javaScriptCalls === 1) throw new Error(options.primaryError);
+      runInNewContext(script, {
+        AnchorPosition: { MIDDLECENTER: 'middle-center' },
+        DialogModes: { NO: 0 },
+        LayerKind: { SMARTOBJECT: 'smart-object' },
+        app: application,
+        executeAction: (action: string) => {
+          if (action !== 'newPlacedLayer') throw new Error(`Unexpected action ${action}`);
+          copiedLayer.kind = 'smart-object';
+        },
+        isFinite,
+        Math,
+        stringIDToTypeID: (value: string) => value,
+      });
+    },
+  };
+  const files = new Map([
+    ['C:/temp/place.jsx', 'jsx source'],
+    ['C:/temp/payload.json', payload],
+  ]);
+  runInNewContext(runnerSource, {
+    ActiveXObject: function ActiveXObject(name: string) {
+      if (name !== 'Scripting.FileSystemObject') throw new Error(`Unexpected ActiveX object ${name}`);
+      return {
+        OpenTextFile(path: string) {
+          return {
+            Close() {},
+            ReadAll() { return files.get(path) ?? ''; },
+          };
+        },
+      };
+    },
+    GetObject: () => application,
+    WScript: {
+      Arguments: {
+        length: 2,
+        Item: (index: number) => ['C:/temp/place.jsx', 'C:/temp/payload.json'][index],
+      },
+      Quit() {},
+      StdOut: { Write: (value: string) => output.push(value) },
+    },
+    decodeURIComponent,
+    escape,
+    isFinite,
+    Math,
+  });
+  return {
+    bounds,
+    closeSourceDocument,
+    copy,
+    openSourceDocument,
+    output: JSON.parse(output.join('')) as Record<string, unknown>,
+    paste,
+    targetLayerCount: targetLayers.length,
+  };
+}
 
 function temporaryFiles() {
   return {
@@ -17,6 +164,31 @@ function temporaryFiles() {
 }
 
 describe('Windows Photoshop smart object adapter', () => {
+  it('fits and centers a small fallback image as one proportional Smart Object without clipboard transfer', async () => {
+    const result = await runWindowsPlacementFallback({
+      primaryError: 'place-layer failed',
+      layerWidth: 120,
+      layerHeight: 60,
+    });
+
+    expect(result.output).toMatchObject({ kind: 'success', method: 'direct-com' });
+    expect(result.bounds).toEqual({ left: 0, top: 60, right: 240, bottom: 180 });
+    expect(result.targetLayerCount).toBe(1);
+    expect(result.closeSourceDocument).toHaveBeenCalledOnce();
+    expect(result.copy).not.toHaveBeenCalled();
+    expect(result.paste).not.toHaveBeenCalled();
+  });
+
+  it('closes the fallback source and stops when duplicate fails instead of pasting a possible second layer', async () => {
+    const result = await runWindowsPlacementFallback({ primaryError: 'place-layer failed', duplicateFails: true });
+
+    expect(result.output).toMatchObject({ kind: 'placement_failed' });
+    expect(result.targetLayerCount).toBe(0);
+    expect(result.closeSourceDocument).toHaveBeenCalledOnce();
+    expect(result.copy).not.toHaveBeenCalled();
+    expect(result.paste).not.toHaveBeenCalled();
+  });
+
   it('creates the production adapter from fixed application resources', () => {
     const adapter = createNodeWindowsPhotoshopSmartObjectAdapter({
       platform: 'darwin',

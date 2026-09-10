@@ -986,3 +986,19 @@ Before producing an installer, verify at minimum:
 - 日用目录隔离断网复测全部通过：四供应商设置卡和 Comfly 文档入口存在；4D GPT Image 2.5、巨轮视频专用边界、GPT `high + 4K` 保持；模型刷新和完整应用进程重启后红色“重新配置”计数为 0；受控返回图片可见，目录刷新和项目重开后精确 route、result asset 和图片均保留；10 类正式节点与明暗主题页面错误为 0；bundled MCP 可连接。对应报告为 `work/qa-installed-gpt-multi-provider-1.6.124-comfly-apifox-installed/report.json`、`work/qa-packaged-image-route-result-1.6.124-comfly-apifox-installed/report.json` 和 `work/qa-installed-ui-and-nodes-1.6.124-comfly-apifox-installed/result.json`。
 - 当前由 Codex 维持的 4 个 `Canvas Atelier.exe ... resources\\mcp\\canvasforge-mcp.cjs` 进程均来自同一个 Codex 父进程，是 per-user 本地 stdio MCP bridge，不是 QA GUI 残留。其他 Windows 用户可以在自己的账户安装/运行画布、配置自己的 MCP 客户端和供应商凭据后调用；它不是默认开放给局域网或云端用户的公共 API。本轮没有第二个 Windows 用户或第二台机器的实机验证。
 - 本轮只做公开目录读取与隔离零费用传输/持久化门禁，没有发送真实供应商生图、视频或反推请求，也没有消耗额度。官方协议、客户端解析和画布返图链已经覆盖；真实 Comfly 账号鉴权、计费队列与最终上游图片仍需用户主动发起一次低成本请求后单独验收。
+
+## 2026-09-10 推理强度、Photoshop 等比导入、清晰度与旧项目恢复源码检查点
+
+- 按计划 1+2+3+4+6 完成源码实现。对话与创作 Agent 现在按模式分别保存模型推理强度；反推节点和 Agent 反推增加快速、标准、深度三档，并把选项送入供应商协议或系统指令。设置页增加 Codex CLI 与 MCP 能力诊断，只显示模型数、最高推理档、runtime/客户端状态和修复动作，不显示可执行文件路径、配置路径、密钥或底层错误原文。
+- Photoshop 导入的缩放根因是 `Math.min(1, canvasW/layerW, canvasH/layerH)` 禁止小图放大；脚本现按画布与素材比例求统一缩放因子，横图、竖图、大图和小图都保持原比例、完整落在画布内并居中。直接导入失败回退不再先残留一次 duplicate 再走剪贴板，保证一次操作最多生成一个智能对象，并在失败时关闭临时源文档、恢复目标文档。脚本和 Windows adapter 回归覆盖等比几何、单图层、无剪贴板回退与异常清理；本轮没有修改或关闭用户当前 Photoshop 文档，也没有执行真实 COM 写入。
+- 生图 2K 问题的根因有三类：显式 4K 在不支持时被静默适配为 2K；完整供应商模型缺少 resolution contract 时仍展示虚假的 2K/4K；同名固定 2K/4K 路线被目录去重折叠。现在显式不支持的清晰度会在提交前明确拒绝，供应商默认尺寸不再伪装为可选 K 档，固定路线按精确分辨率保留并显示 `· 2K`/`· 4K`，4D GPT 固定 2K/4K 路线使用各自精确约束。请求档位持久化为 `requestedResolution`，供应商实际返图低于所选档位时保留图片并显示请求与实际像素警告。修复了目录刷新或重启时草稿默认值把固定 4K 路线覆写成 2K 的回归。
+- 旧项目打不开的根因是最近项目索引迁移只在稳定索引不存在时合并旧索引，且同 projectId 的失效新路径会压住仍有效的旧路径。迁移现在始终合并兼容索引、重定位旧根；同 ID 当前目录不可用时采用可用旧记录。项目管理区区分已打开、切换被阻止、文件不可用三种结果；损坏 journal 与损坏 snapshot 都进入恢复；手动重定位会校验目录和 manifest projectId。真实旧项目目录未被改写，本轮证据为隔离回归测试。
+- 上下文污染复核覆盖项目隔离对话、模式切换后丢弃迟到响应、模型刷新后的精确路线保持、新对话、参考图归属、foreign job 过滤、项目重开和旧反推配置归一。此前共享任务队列按重复节点 ID 串项目、失败节点修改后仍重试旧参数的生产根因继续由稳定 projectId、durable node anchor 和草稿身份守卫封闭；本轮新增的每模式推理设置不会跨模式覆盖。
+- 验证：完整 Vitest 为 234 个文件通过、2 个按设计跳过，3470 项通过、2 项跳过、0 失败；最新设置页聚焦回归 74/74；相关 Playwright 23/23，覆盖 Agent 图片粘贴/选择、Codex 推理、GPT 质量与 4K、图片生成返图、多供应商、Photoshop 入口和项目管理；全 workspace typecheck、最新生产 build、secret/path scan 与 `git diff --check` 均通过。Vite 只有既有的 chunk size 提示。
+- 当前是基于提交 `54d3214` 的脏工作区源码检查点，版本元数据为 1.6.128。未重新打包、未安装、未发布 GitHub，也没有提交真实 Comfly、RelayMe、巨轮或 4D 付费任务；因此这些结果不能冒充安装版、在线更新、真实供应商返图或真实 Photoshop COM 已通过。根目录既有 `.recent-projects.index.json.tmp-*`、QA 记录和其他未跟踪文件均按要求保留，没有 reset、clean 或删除。
+
+## 2026-09-10 1.6.128 推理、Photoshop、清晰度与旧项目恢复安装包候选
+
+- 用户明确要求安装包后，使用独立输出目录生成 NSIS x64 候选 `apps/desktop-modern/dist-builder/desktop-modern-1.6.128-reasoning-ps-resolution-project-recovery-20260910`，没有覆盖既有 `desktop-modern`、旧 1.6.128 候选或历史版本。安装器为 `CanvasAtelier-Win10-11-x64-1.6.128.exe`，103303836 字节，SHA-256 `1DCD6B804609057EA4308F113E28C03D8311A1633541F449EBAA98720C00E0F3`；blockmap 109636 字节，SHA-256 `9F523AAEF4A6FB9D76B92C7250D21095BAAD38D4A85DB049A57267D6B6EEF262`；`latest.yml` 375 字节，SHA-256 `84FBF86CA5456BBE455D78CE50573B358E1904549A1EB53BB50A2BCE688AD278`。候选 EXE SHA-256 `C2D260CA1586A845B463FDE945405C1054AABE6C10BF06A6ADEFF607F24A0DB8`；`app.asar` SHA-256 `7B87C4A2AA9DDDA65A7804A44D439958E0B767D84F383F78D42FC4F44CF2244D`。
+- 安装器解包后 12/12 关键应用载荷与 `win-unpacked` 逐项一致。候选 CSP 启动门禁通过，主进程退出且隔离 QA 根已清理。多供应商离线门禁在两个独立 Electron 生命周期中识别版本 1.6.128：四供应商卡、Comfly 文档、4D GPT Image 2.5/Nano Banana 2/Nano Banana Pro、巨轮视频专用边界、GPT medium 默认质量、`high + 4K`、受控返图、保存与完整进程重启均通过；两轮 `reconfigureCount=0`、页面错误 0、网络尝试 0、generationSubmitted=false、真实项目未触碰。报告为 `work/qa-installed-gpt-multi-provider-1.6.128-reasoning-ps-resolution-project-recovery-candidate/report.json` 和 `work/qa-release-1.6.128-reasoning-ps-resolution-project-recovery-package-hashes.json`。
+- 安装包 Authenticode 状态为 `NotSigned`。本轮只生成并验证候选包，没有运行 NSIS 安装、没有覆盖日用安装目录、没有发布 GitHub，也没有提交真实供应商付费任务或执行真实 Photoshop COM 写入。

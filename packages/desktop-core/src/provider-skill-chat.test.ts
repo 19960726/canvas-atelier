@@ -249,6 +249,47 @@ describe('executeSkillChat', () => {
     }), 180_000);
   });
 
+  it('maps ordinary chat reasoning through a profile-declared chat-completions protocol', async () => {
+    const chat = vi.fn(async () => ({
+      id: 'chat-ordinary-reasoning-1',
+      model: 'gpt-reasoning',
+      choices: [{ message: { role: 'assistant', content: 'Reasoned answer.' } }],
+    }));
+    await executeSkillChat({
+      request: {
+        provider: 'comfly', modelRoute: 'chat/reasoning', agentMode: 'chat', reasoningEffort: 'high',
+        messages: [{ role: 'user', content: 'Compare options.' }], context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly', modelRoute: 'chat/reasoning', modelId: 'gpt-reasoning', displayName: 'Reasoning chat', capabilities: ['chat'],
+        reasoning: { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', protocol: 'chat_completions' },
+      }] }),
+      createClient: () => ({ chat, responses: vi.fn() }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+    });
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({ reasoning_effort: 'high' }), 180_000);
+  });
+
+  it('maps creative Agent reasoning through a profile-declared Responses protocol', async () => {
+    const responses = vi.fn(async () => ({
+      id: 'responses-original-reasoning-1',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'Creative answer.' }] }],
+    }));
+    await executeSkillChat({
+      request: {
+        provider: 'comfly', modelRoute: 'responses/creative', agentMode: 'original', reasoningEffort: 'low',
+        messages: [{ role: 'user', content: 'Draft a concept.' }], context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly', modelRoute: 'responses/creative', modelId: 'creative-responses', displayName: 'Creative responses', capabilities: ['responses'],
+        reasoning: { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', protocol: 'responses' },
+      }] }),
+      createClient: () => ({ chat: vi.fn(), responses }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+    });
+    expect(responses).toHaveBeenCalledWith(expect.objectContaining({ reasoning: { effort: 'low' } }), 180_000);
+  });
+
   it('sends managed image references through an explicitly visual Responses route using Responses content parts', async () => {
     const responses = vi.fn(async () => ({
       id: 'response-codex-image-1',

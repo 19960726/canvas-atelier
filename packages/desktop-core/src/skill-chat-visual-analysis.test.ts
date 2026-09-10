@@ -65,4 +65,33 @@ describe('buildSkillChatSystemInstructions', () => {
     expect(instructions).toContain('深度推理');
     expect(instructions).toContain('依赖关系、失败边界和验证步骤');
   });
+
+  it.each([
+    ['chat', 'low', '快速推理'],
+    ['original', 'high', '深度推理'],
+  ] as const)('applies %s mode reasoning effort through safe system instructions', (agentMode, reasoningEffort, expected) => {
+    const instructions = buildSkillChatSystemInstructions({
+      agentMode,
+      reasoningEffort,
+      visualAnalysis: false,
+      referenceMentions: [],
+    });
+    expect(instructions).toContain(expected);
+  });
+
+  it.each([
+    ['fast', '快速取证'],
+    ['standard', '标准反推'],
+    ['deep', '逐素材证据'],
+  ] as const)('keeps visual reverse depth %s independent from model reasoning', (reverseAnalysisDepth, expected) => {
+    const instructions = buildSkillChatSystemInstructions({
+      agentMode: 'original',
+      reasoningEffort: 'low',
+      reverseAnalysisDepth,
+      visualAnalysis: true,
+      referenceMentions: [{ assetId: 'a'.repeat(16), label: '产品参考', mention: '@图片1' }],
+    });
+    expect(instructions).toContain('快速推理');
+    expect(instructions).toContain(expected);
+  });
 });

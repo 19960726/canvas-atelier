@@ -69,20 +69,16 @@
     var targetDocument = application.activeDocument;
     var imagePath = readPayloadValue(payloadFile, 'imagePathBase64');
     var layerName = readPayloadValue(payloadFile, 'layerNameBase64');
-    var sourceDocument = application.open(imagePath);
-    var sourceLayer = sourceDocument.activeLayer;
+    var sourceDocument = null;
     var copiedLayer;
     var resolvedLayerName = layerName;
     try {
-      copiedLayer = sourceLayer.duplicate(targetDocument);
-    } catch (duplicateError) {
-      // COM exposes Copy/Paste more consistently than Layer.duplicate.
-      sourceLayer.copy();
-      app.activeDocument = targetDocument;
-      copiedLayer = targetDocument.paste();
+      sourceDocument = application.open(imagePath);
+      copiedLayer = sourceDocument.activeLayer.duplicate(targetDocument);
+    } finally {
+      if (sourceDocument !== null) sourceDocument.close(2);
+      application.activeDocument = targetDocument;
     }
-    sourceDocument.close(2);
-    application.activeDocument = targetDocument;
     // Preserve the label before conversion because some Photoshop COM builds
     // invalidate the original layer proxy after newPlacedLayer replaces it.
     try { copiedLayer.name = layerName; } catch (renameError) { /* keep Photoshop name */ }
@@ -103,8 +99,8 @@
         'var layerHeight = bottom - top;',
         'var canvasWidth = documentRef.width.as("px");',
         'var canvasHeight = documentRef.height.as("px");',
-        'var scale = Math.min(1, canvasWidth / layerWidth, canvasHeight / layerHeight);',
-        'if (scale < 1) layer.resize(scale * 100, scale * 100, AnchorPosition.MIDDLECENTER);',
+        'var scale = Math.min(canvasWidth / layerWidth, canvasHeight / layerHeight);',
+        'if (scale !== 1) layer.resize(scale * 100, scale * 100, AnchorPosition.MIDDLECENTER);',
         'bounds = layer.bounds;',
         'left = bounds[0].as("px"); top = bounds[1].as("px");',
         'right = bounds[2].as("px"); bottom = bounds[3].as("px");',

@@ -894,13 +894,13 @@ export function CanvasWorkspace() {
 
   const openRecentSavedProject = useCallback(async (recentProjectId: string) => {
     cancelClipboardImageImportBatch();
-    if (!await prepareForProjectSwitch('打开其他项目')) return false;
+    if (!await prepareForProjectSwitch('打开其他项目')) return 'switch-blocked' as const;
     setFileMenuOpen(false);
     setModuleLibraryOpen(false);
     setQuickInsert(null);
     setResultOutputMenuNodeId(null);
     changeSurface(null);
-    return openProject(recentProjectId);
+    return await openProject(recentProjectId) ? 'opened' as const : 'unavailable' as const;
   }, [cancelClipboardImageImportBatch, changeSurface, openProject, prepareForProjectSwitch]);
   const canvasProviderRoutes = useMemo(
     // Canvas generation and Reverse Agent can use every configured provider.

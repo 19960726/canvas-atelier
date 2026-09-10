@@ -105,6 +105,21 @@ describe('recent project store', () => {
     expect(await readFile(join(fixture.appDataRoot, 'recent-projects.index.json'), 'utf8')).not.toContain('project-missing');
   });
 
+  it('refuses to relocate a recent entry to a different project manifest', async () => {
+    const fixture = await createFixture();
+    const missingRoot = await createProjectRoot(fixture.workspaceRoot, 'Original project', 'project-original', false);
+    const wrongRoot = await createProjectRoot(fixture.workspaceRoot, 'Different project', 'project-different', false);
+    const store = new RecentProjectStore({ appDataRoot: fixture.appDataRoot });
+    await store.upsert(createEntry(missingRoot, 'project-original', 'Original project'));
+    await rm(missingRoot, { force: true, recursive: true });
+    const [missing] = await store.list();
+
+    await expect(store.relocate(missing!.recentProjectId, wrongRoot)).resolves.toBeNull();
+    await expect(store.list()).resolves.toEqual([
+      expect.objectContaining({ projectId: 'project-original', availability: 'missing' }),
+    ]);
+  });
+
   it('removes recent entries without deleting managed or external project directories', async () => {
     const fixture = await createFixture();
     const managedRoot = await createProjectRoot(

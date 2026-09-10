@@ -124,9 +124,9 @@
   var layerHeight = bounds[3].as('px') - bounds[1].as('px');
   var canvasWidth = documentRef.width.as('px');
   var canvasHeight = documentRef.height.as('px');
-  var scale = Math.min(1, canvasWidth / layerWidth, canvasHeight / layerHeight);
+  var scale = Math.min(canvasWidth / layerWidth, canvasHeight / layerHeight);
   stage = 'resize-layer';
-  if (scale < 1) layer.resize(scale * 100, scale * 100, AnchorPosition.MIDDLECENTER);
+  if (scale !== 1) layer.resize(scale * 100, scale * 100, AnchorPosition.MIDDLECENTER);
   stage = 'center-layer';
   centerLayerInDocument(layer, documentRef);
 }());

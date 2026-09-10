@@ -87,6 +87,7 @@ export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog):
     capabilities: capabilitiesForComflyModel(model),
     capabilityStatus: model.capabilityStatus,
     constraints: constraintsForComflyModel(model),
+    reasoning: reasoningForComflyModel(model),
   }))));
 }
 
@@ -99,6 +100,7 @@ export function buildRelayMeModelProfiles(models: readonly RelayMeModel[]): Prov
     capabilities: capabilitiesForRelayMeModel(model),
     capabilityStatus: relayMeCapabilityStatus(model),
     constraints: constraintsForRelayMeModel(model),
+    reasoning: model.capability === 'text' ? defaultReasoningCapability('system_instruction') : undefined,
   })));
 }
 
@@ -134,6 +136,7 @@ export function buildRelayMeWorkflowModelProfiles(workflows: readonly RelayMeWor
         modelId,
         capabilities,
         capabilityStatus: 'complete',
+        reasoning: node.modelType === 'TEXT' ? defaultReasoningCapability('system_instruction') : undefined,
       }));
     }
   }
@@ -166,7 +169,22 @@ export function cloneProviderProfile(profile: ProviderBridgeProfile): ProviderBr
     ...profile,
     capabilities: [...profile.capabilities],
     ...(profile.constraints === undefined ? {} : { constraints: cloneProviderConstraints(profile.constraints) }),
+    ...(profile.reasoning === undefined ? {} : { reasoning: { ...profile.reasoning, efforts: [...profile.reasoning.efforts] } }),
   };
+}
+
+function defaultReasoningCapability(protocol: NonNullable<ProviderBridgeProfile['reasoning']>['protocol']): NonNullable<ProviderBridgeProfile['reasoning']> {
+  return { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', protocol };
+}
+
+function reasoningForComflyModel(model: ComflyCatalogModel): ProviderBridgeProfile['reasoning'] {
+  if (hasComflyApi(model, '/v1/responses') && !isMediaOutputModelIdentity(model.key, model.name)) {
+    return defaultReasoningCapability('responses');
+  }
+  if (hasComflyApi(model, '/v1/chat/completions') && !isMediaOutputModelIdentity(model.key, model.name)) {
+    return defaultReasoningCapability('system_instruction');
+  }
+  return undefined;
 }
 
 export function markProviderProfileSelections(

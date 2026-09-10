@@ -10,7 +10,7 @@ function runWithMedia(orderedMedia: ReversePromptRun['orderedMedia'], role = '1'
     projectId: 'project-1',
     skill: { id: 'reverse-skill', version: '1' },
     persona: { id: 'commercial_visual_director', label: '高级商业视觉设计师' },
-    agentConfig: { modelRoute: 'reverse-model', role, task: '拆解参考并适配白底产品图', knowledgeBaseIds: [] },
+    agentConfig: { modelRoute: 'reverse-model', role, task: '拆解参考并适配白底产品图', analysisDepth: 'standard', knowledgeBaseIds: [] },
     knowledgeLease: { schemaVersion: 1, runId: 'reverse-run', leaseId: 'lease-1', createdAt: '2026-08-21T00:00:00.000Z', capability: 'reverse_prompt', versionKey: 'knowledge-v1', snapshots: [], references: [], citations: [] },
     approvedMemorySnapshot: { version: 'memory-v1', approvedAt: '2026-08-21T00:00:00.000Z', approvedMemoryIds: [] },
     projectMemoryIds: [],
@@ -47,6 +47,17 @@ const video = {
 };
 
 describe('professional reverse request', () => {
+  it.each([
+    ['fast', /快速取证|简洁/u],
+    ['standard', /标准反推|关键取舍/u],
+    ['deep', /逐素材证据|冲突裁决/u],
+  ] as const)('maps %s depth into one professional request contract', (analysisDepth, expected) => {
+    const run = runWithMedia([image(0)]);
+    run.agentConfig = { ...run.agentConfig!, analysisDepth };
+    const request = buildProfessionalReverseRequest(run, []);
+    expect(JSON.stringify(request.modeInstructions)).toMatch(expected);
+  });
+
   it('requires a deep single-image production analysis and ignores numeric role overrides', () => {
     const knowledge = [{ knowledgeBaseId: 'scene-skill', documents: [] }];
     const request = buildProfessionalReverseRequest(runWithMedia([image(0)]), knowledge);

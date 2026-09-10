@@ -1061,7 +1061,7 @@ describe('ModuleNodeCard', () => {
     expect(within(screen.getByLabelText('Agent model route')).getAllByRole('option', { name: 'Gemini 3.1 Pro' })).toHaveLength(2);
   });
 
-  it('uses the widest verified resolution contract for one provider model family', () => {
+  it('preserves same-name fixed-resolution image routes instead of collapsing their 2K and 4K identities', () => {
     const node = createCanvasModuleNode('dedupe-image-family-resolution', 'image_generation', { x: 0, y: 0 });
     const data = {
       ...node.data,
@@ -1082,8 +1082,11 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
 
-    expect(screen.getByLabelText('Image generation model route')).toHaveValue('comfly-gpt-image-2');
-    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['2K', '4K']);
+    const routeSelect = screen.getByLabelText('Image generation model route');
+    expect(within(routeSelect).getAllByRole('option')).toHaveLength(2);
+    expect(within(routeSelect).getByRole('option', { name: 'GPT Image 2 · 2K' })).toHaveValue('comfly-gpt-image-2-2k');
+    expect(within(routeSelect).getByRole('option', { name: 'GPT Image 2' })).toHaveValue('comfly-gpt-image-2');
+    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['2K']);
   });
 
   it('keeps the active provider route when duplicate reverse names are supplied', () => {
@@ -2495,7 +2498,6 @@ describe('ModuleNodeCard', () => {
     const resolution = screen.getByRole('button', { name: 'Image generation resolution' });
     expect(controlBar).toContainElement(resolution);
     expect(resolution).toHaveValue('2K');
-    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['2K', '4K']);
     expect(screen.queryByText('????')).not.toBeInTheDocument();
     expect(controlBar).toContainElement(screen.getByLabelText('Image generation quantity'));
     expect(screen.getByLabelText('Image generation quantity')).toHaveTextContent('1');
@@ -2542,11 +2544,12 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
 
     expect(readGenerationParameterOptions('Image generation aspect ratio')).toEqual(['AUTO', '1:1', '16:9']);
-    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['2K', '4K']);
+    expect(screen.queryByLabelText('Image generation resolution')).not.toBeInTheDocument();
+    expect(screen.getByText('供应商默认')).toBeVisible();
     expect(within(screen.getByLabelText('Image generation quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1', '2']);
   });
 
-  it('always offers direct 2K and 4K image clarity choices even when provider metadata omits them', () => {
+  it('does not advertise 2K or 4K when a complete provider profile omits a resolution contract', () => {
     const node = createCanvasModuleNode('image-provider-defaults', 'image_generation', { x: 0, y: 0 });
     const runImageGenerationNode = vi.fn(async () => true);
     useAppStore.setState({ runImageGenerationNode } as never);
@@ -2563,14 +2566,14 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
 
     expect(readGenerationParameterOptions('Image generation aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9']);
-    expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['2K', '4K']);
+    expect(screen.queryByLabelText('Image generation resolution')).not.toBeInTheDocument();
+    expect(screen.getByText('供应商默认')).toBeVisible();
     expect(within(screen.getByLabelText('Image generation quantity')).getAllByRole('option').map((item) => item.getAttribute('value'))).toEqual(['1']);
     chooseGenerationParameterOption('Image generation aspect ratio', 'AUTO');
     fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'Use image defaults' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
-    expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({
-      resolution: '2K', outputCount: 1,
-    }));
+    expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({ outputCount: 1 }));
+    expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.not.objectContaining({ resolution: expect.anything() }));
     expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.not.objectContaining({ aspectRatio: expect.anything() }));
   });
   it('recalibrates controls when refreshed constraints change on the same model route', async () => {
@@ -2581,7 +2584,7 @@ describe('ModuleNodeCard', () => {
       ...node.data,
       imageGenerationRoutes: [{
         provider: 'relayme', modelRoute: 'relay-image-stable', displayName: 'Relay Image Stable', modelId: 'relay-image-stable',
-        capabilities: ['image_generation'], constraints: { image: { resolutions: ['480p', '720p', '1080p'] } },
+        capabilities: ['image_generation'], constraints: { image: { resolutions: ['2K', '4K'] } },
       }],
     } as typeof node.data;
     const { rerender } = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
@@ -3477,6 +3480,24 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByLabelText('Image generation prompt workspace')).toBeVisible();
   });
 
+  it('keeps a returned image but warns when its durable pixel size is below the requested 4K tier', () => {
+    const node = createCanvasModuleNode('image-resolution-mismatch', 'image_generation', { x: 0, y: 0 });
+    node.data.config = {
+      ...node.data.config,
+      requestedResolution: '4K',
+      resultAssetIds: [projectImage.assetId],
+      resultState: 'fresh',
+    };
+    const returnedImage = { ...projectImage, origin: 'generated' as const, width: 1696, height: 2528 };
+    useAppStore.setState({ projectImages: [returnedImage], modelJobs: [] } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByText('请求 4K · 实际 1696×2528，供应商返回尺寸低于所选清晰度。')).toBeVisible();
+    expect(screen.getByRole('img', { name: 'Generated image 1' })).toBeVisible();
+  });
+
   it('uses a true one-cell gallery only after one completed image exists', () => {
     const node = createCanvasModuleNode('image-one-result-grid', 'image_generation', { x: 0, y: 0 });
     useAppStore.setState({
@@ -4071,6 +4092,39 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
 
     expect(screen.getByRole('alert')).toHaveTextContent('API 密钥认证失败');
+  });
+
+  it('reports a Comfly 503 as temporary model service unavailability instead of an API configuration error', () => {
+    const node = createCanvasModuleNode('generator-comfly-503', 'image_generation', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-gpt-image-2-5-sunburst-2k',
+        displayName: 'GPT Image 2.5 Sunburst 2K',
+        modelId: 'gpt-image-2.5-sunburst-2k',
+        capabilities: ['image_generation'],
+      }],
+    } as typeof node.data;
+    useAppStore.setState({
+      modelJobs: [{
+        id: 'failed-comfly-503-image-job',
+        kind: 'image',
+        provider: 'comfly',
+        modelRoute: 'comfly-gpt-image-2-5-sunburst-2k',
+        promptNodeId: node.id,
+        status: 'failed',
+        error: 'Comfly request failed with status 503 for [redacted] [model=gpt-image-2.5-sunburst-2k]',
+        updatedAt: '2026-09-10T05:49:50.626Z',
+      }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Comfly 模型服务暂时不可用（503）');
+    expect(screen.getByRole('alert')).toHaveTextContent('稍后重试或切换其他生图模型');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('检查模型与 API 配置');
   });
 
   it('hides a failed image job after the node prompt has been edited', () => {
@@ -4799,11 +4853,14 @@ describe('ModuleNodeCard', () => {
     fireEvent.change(screen.getByLabelText('Analysis task'), { target: { value: 'Analyze the original MP4' } });
 
     expect(screen.getByRole('button', { name: 'Start reverse analysis' })).toBeEnabled();
+    expect(screen.getByRole('group', { name: '反推强度' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '深度反推' }));
     fireEvent.click(screen.getByRole('button', { name: 'Start reverse analysis' }));
     expect(applyReverseAgentConfig).toHaveBeenLastCalledWith('reverse-config', {
       modelRoute: 'gemini-video',
       role: 'Video director',
       task: 'Analyze the original MP4',
+      analysisDepth: 'deep',
       knowledgeBaseIds: [],
     });
 
@@ -4820,6 +4877,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'gemini-video',
       role: 'Video director',
       task: 'Analyze the original MP4',
+      analysisDepth: 'deep',
       knowledgeBaseIds: ['brand-rules', 'scene-skill', 'product-detail'],
     });
   });
@@ -4844,6 +4902,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'gemini-reverse',
       role: 'Product scene analyst',
       task: 'Preserve this draft without running.',
+      analysisDepth: 'standard',
       knowledgeBaseIds: [],
       referenceAssetIds: [],
     }));
@@ -4877,6 +4936,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'gemini-reverse',
       role: 'Latest analyst role',
       task: 'Latest analysis task',
+      analysisDepth: 'standard',
       knowledgeBaseIds: [],
       referenceAssetIds: [],
     }));
@@ -5051,6 +5111,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'e2e-reverse',
       role: 'Commercial visual analyst',
       task: 'Analyze the connected reference.',
+      analysisDepth: 'standard',
       knowledgeBaseIds: [],
     });
     expect(screen.getByLabelText('Reverse model workspace')).toHaveClass('module-node__agent-route-region');
@@ -5152,6 +5213,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'saved-reverse',
       role: 'Commercial visual analyst',
       task: 'Analyze the connected reference.',
+      analysisDepth: 'standard',
       knowledgeBaseIds: [],
     });
   });
@@ -5428,6 +5490,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'gemini-video',
       role: 'Commercial visual analyst',
       task: 'Analyze the managed reference.',
+      analysisDepth: 'standard',
       knowledgeBaseIds: [],
     };
     const runReverseAgentNode = vi.fn(async () => ({ positivePrompt: 'Cinematic product shot with a controlled soft key light.' }));
@@ -5444,6 +5507,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'gemini-video',
       role: 'Commercial visual analyst',
       task: 'Analyze the managed reference.',
+      analysisDepth: 'standard',
       knowledgeBaseIds: [],
     }));
     expect(screen.getByText('Cinematic product shot with a controlled soft key light.')).toBeVisible();
@@ -5515,6 +5579,7 @@ describe('ModuleNodeCard', () => {
       modelRoute: 'gemini-video',
       role: 'Commercial visual analyst',
       task: 'Analyze the managed reference.',
+      analysisDepth: 'standard',
       knowledgeBaseIds: [],
     }));
     expect(screen.queryByLabelText('AI analysis output')).not.toBeInTheDocument();

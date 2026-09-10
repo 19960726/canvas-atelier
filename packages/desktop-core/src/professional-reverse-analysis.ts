@@ -126,7 +126,8 @@ export function buildProfessionalReverseRequest(
       ? 'multi_reference'
       : 'single_image';
   const userPreference = normalizeReverseRolePreference(run.agentConfig?.role ?? '');
-  const modeInstructions = analysisMode === 'video'
+  const analysisDepth = run.agentConfig?.analysisDepth ?? 'standard';
+  const modeInstructions = [reverseDepthInstruction(analysisDepth), ...(analysisMode === 'video'
     ? [
       '按时间轴逐镜头拆解视频，镜头边界不得只按均匀时长猜测；说明切镜依据。',
       '逐镜头分析景别、估计焦距、机位、推拉摇移跟、升降环绕、手持/稳定器、速度曲线、稳定方式、主体动作、转场和关键帧。',
@@ -142,7 +143,7 @@ export function buildProfessionalReverseRequest(
       : [
         '对单张素材做深度取证：空间结构、主体/模特/食物位置与比例、前中后景、景深、焦点、纹理材质、灯光、焦距、机位和透视。',
         '检查所有可见特效、流体和光效，逐层说明用途、实现和白底产品适配，不得只罗列风格形容词。',
-      ];
+      ])];
 
   return {
     systemRole: SYSTEM_ROLE,
@@ -167,6 +168,12 @@ export function buildProfessionalReverseRequest(
       knowledgeSnapshotVersion: run.knowledgeLease.versionKey,
     },
   };
+}
+
+function reverseDepthInstruction(depth: 'fast' | 'standard' | 'deep'): string {
+  if (depth === 'fast') return '快速取证：优先主体、构图、光线、材质和可执行提示词，保留完整输出字段但内容简洁。';
+  if (depth === 'deep') return '深度反推：逐素材证据、冲突裁决、空间与材质细节、复现步骤需要充分展开。';
+  return '标准反推：覆盖完整合同并说明关键取舍。';
 }
 
 function buildMediaManifest(run: ReversePromptRun): ProfessionalReverseRequest['mediaManifest'] {

@@ -124,6 +124,48 @@ function canonicalNodeLength(node: Node): number {
 }
 
 describe('SkillChatWorkbench', () => {
+  it('shows model-declared reasoning in chat and creative Agent while keeping each mode independent', async () => {
+    const chat = vi.fn(async () => ({ message: '完成', modelRoute: 'chat/reasoning', sources: [] }));
+    const reasoningProfile: ProviderBridgeProfile = {
+      provider: 'comfly', modelRoute: 'chat/reasoning', modelId: 'reasoning-chat', displayName: 'Reasoning chat', capabilities: ['chat'],
+      reasoning: { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', protocol: 'system_instruction' },
+    };
+    renderWorkbench({ profiles: [reasoningProfile], chat });
+
+    fireEvent.click(await screen.findByRole('button', { name: '思考能力：中' }));
+    fireEvent.change(screen.getByRole('slider', { name: '思考能力' }), { target: { value: '0' } });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    expect(screen.getByRole('button', { name: '思考能力：中' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '思考能力：中' }));
+    fireEvent.change(screen.getByRole('slider', { name: '思考能力' }), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    expect(screen.getByRole('button', { name: '思考能力：轻度' })).toBeVisible();
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '检查方案' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({ agentMode: 'chat', reasoningEffort: 'low' })));
+  });
+
+  it('sends a separately selected reverse-analysis depth without changing model reasoning', async () => {
+    const chat = vi.fn(async () => ({ message: '完成', modelRoute: 'chat/vision', sources: [] }));
+    const visualProfile: ProviderBridgeProfile = {
+      provider: 'comfly', modelRoute: 'chat/vision', modelId: 'vision-chat', displayName: 'Vision chat', capabilities: ['chat', 'vision'],
+      reasoning: { efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', protocol: 'system_instruction' },
+    };
+    renderWorkbench({
+      profiles: [visualProfile], chat,
+      referenceImages: [{ assetId: 'a'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/product' }],
+    });
+    window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'a'.repeat(16) } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
+    expect(screen.getByRole('group', { name: '反推强度' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '深度反推' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 分析当前构图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      reasoningEffort: 'medium', reverseAnalysisDepth: 'deep',
+    })));
+  });
+
   it('uses each local model reasoning catalog including ultra without offering unsupported levels', async () => {
     const localProfile = { ...CODEX_ASTRA_PROFILE, supportedReasoningEfforts: ['low', 'ultra'] as const, defaultReasoningEffort: 'low' as const };
     renderWorkbench({ profiles: [], codexProfiles: [localProfile] });
@@ -2339,6 +2381,40 @@ describe('SkillChatWorkbench', () => {
     expect(resolveClipboardPasteAction({ hasPlainText: false, parsedText: '', hasMedia: false, supportsMedia: true })).toBe('ignore');
     expect(resolveClipboardPasteAction({ hasPlainText: false, parsedText: '', hasMedia: true, supportsMedia: false })).toBe('reject-media');
     expect(resolveClipboardPasteAction({ hasPlainText: true, parsedText: 'mixed', hasMedia: true, supportsMedia: true })).toBe('import-media');
+  });
+
+  it.each([
+    ['chat', '对话'],
+    ['original', '创作 Agent'],
+  ] as const)('switches %s mode to an available vision model when an image is pasted', async (mode, _label) => {
+    const image = new File(['one'], `${mode}-reference.png`, { type: 'image/png' });
+    const visionProfile: ProviderBridgeProfile = {
+      ...profiles[0]!,
+      modelRoute: 'chat/vision',
+      displayName: 'Vision chat',
+      capabilities: ['chat', 'vision'],
+    };
+    const onImportReferenceImage = vi.fn().mockResolvedValue({
+      assetId: `${mode}-managed-image`,
+      label: `${mode}-reference.png`,
+      displayUrl: `novus-asset://${mode}-managed-image`,
+    });
+    const initialConversation = { ...createAgentConversation(1), mode, modelRoute: 'chat/creative' };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: initialConversation.id,
+      conversations: [initialConversation],
+    });
+    renderWorkbench({ profiles: [profiles[0]!, visionProfile], onImportReferenceImage });
+
+    fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+      clipboardData: { files: [image], items: [], getData: () => '' },
+    });
+
+    await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Vision chat'));
+    expect(screen.getByLabelText('Selected image references')).toBeVisible();
+    expect(screen.queryByText(/当前模型不支持图片或视频/u)).not.toBeInTheDocument();
   });
 
   it('keeps readable text and reports the existing capability error for a mixed paste on an initial text-only model', async () => {

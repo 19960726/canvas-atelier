@@ -7,25 +7,27 @@ export interface SkillChatReferenceMention {
 export function buildSkillChatSystemInstructions(input: {
   readonly agentMode?: 'chat' | 'original' | 'codex';
   readonly reasoningEffort?: 'low' | 'medium' | 'high';
+  readonly reverseAnalysisDepth?: 'fast' | 'standard' | 'deep';
   readonly visualAnalysis: boolean;
   readonly referenceMentions: readonly SkillChatReferenceMention[];
 }): string {
-  const base = input.agentMode === 'codex'
+  const role = input.agentMode === 'codex'
     ? [
       'Act as the planning brain for the current Canvas Atelier project.',
       'When the user requests a workflow, provide a concrete blueprint with 节点类型、连接顺序、每个节点的职责、关键配置和运行前检查。',
       '不能声称已经修改画布。The interface will ask for 用户确认 before applying any nodes, connections, or paid model jobs.',
-      reasoningInstruction(input.reasoningEffort),
     ].join(' ')
     : input.agentMode === 'original'
       ? '你是视觉创作助手，负责提示词、构图、镜头、分镜、生图与视频方案。给出可复制的创作结果，但 Do not create or modify canvas nodes.'
       : '你是通用对话助手，负责讨论、分析、文案与问答。Answer with useful and copyable suggestions only. Do not create or modify canvas nodes.';
+  const base = [role, reasoningInstruction(input.reasoningEffort)].join(' ');
   if (!input.visualAnalysis) return base;
   const orderedReferences = input.referenceMentions
     .map((reference) => `${reference.mention}（${reference.label}）`)
     .join('、');
   return [
     base,
+    reverseDepthInstruction(input.reverseAnalysisDepth),
     '只描述图片中真实可见的主体、环境、材质、光线、镜头和景深；无法确认的内容必须标记为不确定，不能把猜测写成事实。',
     '按固定结构输出：',
     '1. 主体与模特：主体身份、数量、姿态、朝向、服装、表情、可见细节；无人像时明确写无模特。',
@@ -38,6 +40,12 @@ export function buildSkillChatSystemInstructions(input: {
     '8. 最后依次输出中文提示词、英文提示词、负面约束、执行清单。执行清单必须保持引用顺序。',
     '完成反推后，结果本身不要声称已经创建工作流；画布界面会另外询问用户是否基于本次反推生成工作流。',
   ].join('\n');
+}
+
+function reverseDepthInstruction(depth: 'fast' | 'standard' | 'deep' | undefined): string {
+  if (depth === 'fast') return '使用快速取证反推：优先主体、构图、光线、材质和可执行提示词，内容保持简洁。';
+  if (depth === 'deep') return '使用深度反推：逐素材证据、冲突裁决、空间与材质细节、复现步骤必须充分。';
+  return '使用标准反推：覆盖完整分析合同并说明关键取舍。';
 }
 
 function reasoningInstruction(effort: 'low' | 'medium' | 'high' | undefined): string {
