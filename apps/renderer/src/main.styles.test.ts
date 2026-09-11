@@ -637,14 +637,15 @@ describe('renderer stylesheet precedence', () => {
     expect(terminal).toMatch(/\.module-node__generation-error--collapsed-result-refresh > button \{[\s\S]*?pointer-events: auto !important;/);
   });
 
-  it('gives provider reasoning its own compact Agent grid column outside Codex mode', () => {
+  it('groups generation, knowledge and send after the provider reasoning control without a reserved gap', () => {
     const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
-    const terminal = release.slice(release.lastIndexOf('FINAL AGENT REASONING GRID ISOLATION'));
+    const terminal = release.slice(release.lastIndexOf('FINAL AGENT COMPACT ACTION GROUP'));
 
-    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\)[\s\S]*?grid-template-columns: 34px minmax\(0, 1fr\) 92px 34px 74px !important;/);
+    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\)[\s\S]*?grid-template-columns: 34px minmax\(0, 1fr\) 92px 102px !important;/);
+    expect(terminal).toMatch(/composer-footer:not\(:has\(> \.codex-reasoning\)\)[\s\S]*?grid-template-columns: 34px minmax\(0, 1fr\) 102px !important;/);
     expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\) > \.codex-reasoning[\s\S]*?grid-column: 3 !important;/);
-    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\) > \.skill-chat-workbench__generation-trigger[\s\S]*?grid-column: 4 !important;/);
-    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\) > \.skill-chat-workbench__composer-actions[\s\S]*?grid-column: 5 !important;/);
+    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\) > \.skill-chat-workbench__composer-actions[\s\S]*?grid-column: 4 !important;/);
+    expect(terminal).toMatch(/agent-panel--skill-chat\.agent-panel--skill-chat[\s\S]*?skill-chat-workbench__composer-actions \{[\s\S]*?grid-template-columns: repeat\(3, 30px\) !important;[\s\S]*?gap: 6px !important;[\s\S]*?justify-self: stretch !important;/);
     expect(terminal).toMatch(/skill-chat-workbench__generation-trigger > span[\s\S]*?display: none !important;/);
   });
 });

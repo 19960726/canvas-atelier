@@ -1676,8 +1676,8 @@ export function SkillChatWorkbench({
               onClick={() => setReverseAnalysisDepth(depth)}
             >{label}</button>)}
           </div>}
-          <button type="button" className="skill-chat-workbench__generation-trigger" data-testid="agent-generation-preferences" aria-label="生成偏好" title={`当前：${generationPreferences.kind === 'image' ? '图片' : '视频'}工作流；点击选择输出类型和生成模型`} onClick={() => dispatchPopover({ type: 'open', id: 'generation' })}><SlidersHorizontal size={15} /><span>{generationPreferences.kind === 'image' ? '图片工作流' : '视频工作流'}</span></button>
           <div className="skill-chat-workbench__composer-actions">
+            <button type="button" className="skill-chat-workbench__generation-trigger" data-testid="agent-generation-preferences" aria-label="生成偏好" title={`当前：${generationPreferences.kind === 'image' ? '图片' : '视频'}工作流；点击选择输出类型和生成模型`} onClick={() => dispatchPopover({ type: 'open', id: 'generation' })}><SlidersHorizontal size={15} /><span>{generationPreferences.kind === 'image' ? '图片工作流' : '视频工作流'}</span></button>
             <button type="button" className="skill-chat-workbench__tool skill-chat-workbench__knowledge-compact" data-testid="knowledge-base-trigger" aria-label="打开知识库" onClick={() => dispatchPopover({ type: 'open', id: 'knowledge' })}><Grid3X3 size={14} strokeWidth={1.6} /></button>
             <button type="button" className="skill-chat-workbench__tool" aria-label="新建对话" onClick={createConversation}><RotateCcw size={14} strokeWidth={1.6} /></button>
             <button type="submit" className="skill-chat-workbench__send" aria-label="发送" title="发送" disabled={!hasSendablePasteText(draft, pendingPasteMarkers.current) || selectedProfile === undefined || !hasSupportedReasoningEffort || status === 'sending'}><ArrowUp size={17} /></button>

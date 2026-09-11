@@ -4640,12 +4640,15 @@ html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workben
   cursor: pointer !important;
 }
 
-/* FINAL AGENT REASONING GRID ISOLATION
-   Provider reasoning controls use the same dedicated slot as local Codex.
-   The compact generation button keeps its text in the accessible title so
-   its visible label cannot cover the neighboring model control. */
+/* FINAL AGENT COMPACT ACTION GROUP
+   Provider reasoning keeps a dedicated slot. Generation preferences,
+   knowledge and send form one compact action group without a reserved gap. */
 html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) {
-  grid-template-columns: 34px minmax(0, 1fr) 92px 34px 74px !important;
+  grid-template-columns: 34px minmax(0, 1fr) 92px 102px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not(:has(> .codex-reasoning)) {
+  grid-template-columns: 34px minmax(0, 1fr) 102px !important;
 }
 
 html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) > .codex-reasoning {
@@ -4656,14 +4659,39 @@ html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workben
   max-width: 92px !important;
 }
 
-html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) > .skill-chat-workbench__generation-trigger {
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) > .skill-chat-workbench__composer-actions {
   grid-column: 4 !important;
   grid-row: 2 !important;
 }
 
-html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) > .skill-chat-workbench__composer-actions {
-  grid-column: 5 !important;
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:not(:has(> .codex-reasoning)) > .skill-chat-workbench__composer-actions {
+  grid-column: 3 !important;
   grid-row: 2 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions {
+  display: grid !important;
+  grid-template-columns: repeat(3, 30px) !important;
+  gap: 6px !important;
+  width: 102px !important;
+  min-width: 102px !important;
+  max-width: 102px !important;
+  margin: 0 !important;
+  justify-self: stretch !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-footer > .skill-chat-workbench__composer-actions > :is(button, select) {
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat.agent-panel--skill-chat .skill-chat-workbench__composer-actions > .skill-chat-workbench__generation-trigger {
+  display: inline-grid !important;
+  place-items: center !important;
 }
 
 html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__generation-trigger > span {

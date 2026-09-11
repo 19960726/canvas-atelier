@@ -5,6 +5,7 @@ import { makeReferenceImage } from './helpers/fixtures';
 
 const artifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.55-agent-layout', 'agent-layout.png');
 const composerArtifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.55-agent-layout', 'agent-composer-compact.png');
+const compactActionsArtifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.133-agent-compact-actions', 'agent-compact-actions.png');
 
 test('keeps the Agent header aligned and lets a referenced long-form composer grow without overflow', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -151,4 +152,53 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
 
   await page.screenshot({ path: artifact, fullPage: true });
   await panel.locator('.skill-chat-workbench__composer').screenshot({ path: composerArtifact });
+});
+
+test('keeps reasoning, generation preferences, knowledge and send controls in one compact row', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    let bridge: typeof window.novusDesktop | undefined;
+    Object.defineProperty(window, 'novusDesktop', {
+      configurable: true,
+      get: () => bridge,
+      set: (value: typeof window.novusDesktop) => {
+        const reasoningProfile = {
+          provider: 'comfly' as const,
+          modelRoute: 'comfly-qa-reasoning-vision',
+          modelId: 'qa-reasoning-vision',
+          displayName: 'QA Reasoning Vision',
+          capabilities: ['chat', 'vision', 'reverse_prompt'] as const,
+          capabilityStatus: 'complete' as const,
+          reasoning: { efforts: ['low', 'medium', 'high'] as const, defaultEffort: 'medium' as const, protocol: 'system_instruction' as const },
+        };
+        bridge = { ...value, provider: {
+          ...value?.provider,
+          getActiveProvider: async () => ({ activeProvider: 'comfly' as const }),
+          getStatus: async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const }),
+          listProfiles: async (request) => request?.provider === 'comfly' ? [reasoningProfile] : [],
+          listAvailableModelIds: async (request) => request?.provider === 'comfly' ? [reasoningProfile.modelId] : [],
+        } } as typeof window.novusDesktop;
+      },
+    });
+  });
+  await openEmptyApp(page);
+  await openAgentPanel(page);
+  await page.getByRole('tab', { name: '创作 Agent' }).click();
+
+  const panel = page.getByTestId('agent-panel');
+  await expect(panel.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'QA Reasoning Vision');
+  const controls = await panel.evaluate((element) => {
+    const rect = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect().toJSON();
+    return {
+      reasoning: rect('.codex-reasoning'),
+      generation: rect('.skill-chat-workbench__generation-trigger'),
+      knowledge: rect('.skill-chat-workbench__knowledge-compact'),
+      send: rect('.skill-chat-workbench__send'),
+    };
+  });
+
+  expect(controls.generation.x - (controls.reasoning.x + controls.reasoning.width)).toBeLessThanOrEqual(10);
+  expect(controls.knowledge.x - (controls.generation.x + controls.generation.width)).toBeLessThanOrEqual(10);
+  expect(controls.send.x - (controls.knowledge.x + controls.knowledge.width)).toBeLessThanOrEqual(10);
+  await panel.locator('.skill-chat-workbench__composer').screenshot({ path: compactActionsArtifact });
 });

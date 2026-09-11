@@ -1066,3 +1066,11 @@ Before producing an installer, verify at minimum:
 - 最终候选的隔离 Electron 门禁确认 Comfly 只提供 Comfly 生图路线，目录刷新与项目重开保持路线和返图；创作 Agent 创建并执行四节点图片工作流，受控返图在关闭重启后保持；CSP 门禁通过。上述包验收没有外部网络、没有触碰真实项目、没有付费调用，因此不等同于真实供应商账户返图成功。
 - 发布源码提交和 `v1.6.132` 标签均指向 `ff9d88e95d2845ca506a3793abeb0475db001f94`。GitHub Release `https://github.com/19960726/canvas-atelier/releases/tag/v1.6.132` 已设为 latest，非草稿、非预发布；线上安装器、blockmap 与 `latest.yml` 的大小和 SHA-256 与最终本地产物逐项一致，三个资产状态均为 `uploaded`。
 - 真实 GitHub 更新链从隔离的 1.6.131 候选识别 1.6.132 为 `available`，下载达到 `ready_to_restart`；下载文件为 103306854 字节、SHA-256 `fc221aff1e4a64b0ff32ee6dd6b7d1d92ec9770e2c019ff8dcf197c32924f113`。测试没有调用重启安装，1.6.131 源 EXE 与 `app.asar` 前后哈希一致，隔离下载缓存已删除。报告为 `work/qa-github-update-1.6.132-from-1.6.131/report.json`。
+
+## 2026-09-11 1.6.133 Agent 紧凑操作组待用户确认候选
+
+- 用户指出 Agent 底栏生成偏好与知识库之间仍有一块无意义留白。首轮真实浏览器 RED 测得跨容器间隔 13px；把生成偏好移入操作组后，第二轮 RED 又暴露旧高优先级兼容样式仍把操作组锁为 66px，导致三个按钮换行并形成 53px 间隔。
+- 最终结构把生成偏好、知识库和发送放在同一个三列操作组，每个按钮 30px、统一间距 6px；推理强度保留独立 92px 轨道，模型列继续自适应。创作 Agent、Codex、亮暗主题、800px 窄窗口、长输入和多引用布局均未溢出。
+- 聚焦 Vitest 5 文件 253/253 通过；相关 Playwright 6/6 通过。workspace typecheck、production build、NSIS x64 候选、12/12 载荷比对和候选 CSP 启动门禁通过。
+- 待确认候选位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.133-agent-compact-actions-confirmation-20260911`。安装器 103307127 字节、SHA-256 `D514F0B7CE75509181FAD7D851B3E775CF8877BF9B462C25F8EDA8ABD5368EDA`；blockmap 109579 字节、SHA-256 `FD73AD33124226CC0583CD3CB89A8BB04B975237CCBCA03B12DC31A51ED191E0`；`latest.yml` 375 字节、SHA-256 `6A6E1357AC7AF6CBA59D851D9F20E611AD601579CB585290AD6BC89C5D33FC05`。候选 EXE SHA-256 `C3A774A6FE0232A38964C83B6ACAEA647AEC3C13E89F709E03DDB586BFD0C257`，`app.asar` SHA-256 `85F5D0B0D8CD8099AF08D9B65028FACAE72B3ED2813393E71A79A39DD5791F2E`，Authenticode 为 `NotSigned`。
+- 按用户要求，本候选尚未发布 GitHub、尚未上传在线更新、尚未安装到日用目录；等待用户确认界面后再执行完整发布门禁。
