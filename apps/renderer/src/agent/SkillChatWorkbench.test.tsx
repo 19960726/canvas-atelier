@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CODEX_ASTRA_PROFILE, type ChatSkillBridgeResult, type ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import { codexAnalysisDelayHint, resolveAgentRequestTimeoutMs, resolveClipboardPasteAction, SkillChatWorkbench, type SkillCanvasActionRequest, type SkillChatRequest } from './SkillChatWorkbench';
+import { queueGeneratedImageForAgent } from './generated-image-agent-transfer';
 import { createAgentConversation, writeAgentConversationCollection } from './skill-chat-session-store';
 
 afterEach(() => {
@@ -946,6 +947,25 @@ describe('SkillChatWorkbench', () => {
 
     await waitFor(() => expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1'));
     expect(screen.getByLabelText('Selected image references')).toHaveTextContent('Generated hero');
+  });
+
+  it('consumes a generated-image transfer that was queued before the Agent listener mounted', async () => {
+    queueGeneratedImageForAgent('q'.repeat(16));
+    renderWorkbench({
+      profiles: [
+        { ...profiles[0]!, displayName: 'Text only', capabilities: ['chat'] },
+        { ...profiles[0]!, modelRoute: 'chat/vision-transfer', displayName: 'Vision transfer', capabilities: ['chat', 'vision'] },
+      ],
+      referenceImages: [{
+        assetId: 'q'.repeat(16),
+        label: 'Queued generated image',
+        displayUrl: 'novus-project://asset/queued-generated-image',
+      }],
+    });
+
+    await waitFor(() => expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1'));
+    expect(screen.getByLabelText('Selected image references')).toHaveTextContent('Queued generated image');
+    expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Vision transfer');
   });
 
   it('restores the composer caret after a generated-image mention replaces an in-sentence @ query', async () => {

@@ -636,4 +636,15 @@ describe('renderer stylesheet precedence', () => {
     expect(terminal).toMatch(/\.module-node__generation-error--collapsed-result-refresh \{[\s\S]*?pointer-events: none !important;/);
     expect(terminal).toMatch(/\.module-node__generation-error--collapsed-result-refresh > button \{[\s\S]*?pointer-events: auto !important;/);
   });
+
+  it('gives provider reasoning its own compact Agent grid column outside Codex mode', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+    const terminal = release.slice(release.lastIndexOf('FINAL AGENT REASONING GRID ISOLATION'));
+
+    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\)[\s\S]*?grid-template-columns: 34px minmax\(0, 1fr\) 92px 34px 74px !important;/);
+    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\) > \.codex-reasoning[\s\S]*?grid-column: 3 !important;/);
+    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\) > \.skill-chat-workbench__generation-trigger[\s\S]*?grid-column: 4 !important;/);
+    expect(terminal).toMatch(/composer-footer:has\(> \.codex-reasoning\) > \.skill-chat-workbench__composer-actions[\s\S]*?grid-column: 5 !important;/);
+    expect(terminal).toMatch(/skill-chat-workbench__generation-trigger > span[\s\S]*?display: none !important;/);
+  });
 });

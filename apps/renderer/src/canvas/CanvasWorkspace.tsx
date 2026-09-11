@@ -903,9 +903,9 @@ export function CanvasWorkspace() {
     return await openProject(recentProjectId) ? 'opened' as const : 'unavailable' as const;
   }, [cancelClipboardImageImportBatch, changeSurface, openProject, prepareForProjectSwitch]);
   const canvasProviderRoutes = useMemo(
-    // Canvas generation and Reverse Agent can use every configured provider.
-    // The active provider affects ordering only; saved node routes keep their
-    // exact provider identity across catalog refreshes and app restarts.
+    // The visible catalog is already scoped to the active supplier. Saved
+    // routes remain durable in project data, while controls offer only models
+    // from the supplier selected in Settings.
     () => buildCanvasProviderRouteSets(providerProfiles, providerProfiles, project.nodes.flatMap((node) => (
       node.type === 'module' && node.data.moduleType === 'image_generation' && typeof node.data.config.modelRoute === 'string'
         ? [node.data.config.modelRoute] : []
@@ -1772,7 +1772,7 @@ export function CanvasWorkspace() {
       const requestSequence = ++refreshSequence;
       void Promise.all([
         provider.getStatus().catch(() => null),
-        listRunnableProviderProfiles(provider).catch(() => []),
+        listRunnableProviderProfiles(provider, { activeProviderOnly: true }).catch(() => []),
       ]).then(([status, profiles]) => {
         if (cancelled || requestSequence !== refreshSequence) return;
         setProviderStatus(status);

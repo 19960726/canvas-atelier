@@ -97,5 +97,27 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(catalog).toBeVisible();
     await catalog.screenshot({ path: artifact(`model-catalog-${theme}.png`) });
     await page.screenshot({ path: artifact(`settings-${theme}.png`), fullPage: true });
+
+    await settings.getByRole('button', { name: '关闭设置' }).click();
+    await page.evaluate(async () => {
+      await window.__NOVUS_E2E__!.createModule('image_generation', { x: 360, y: 160 });
+    });
+    const imageNode = page.locator('[data-module-type="image_generation"]').last();
+    await imageNode.getByRole('button', { name: 'Open image generation editor' }).click();
+    const routeSelect = imageNode.getByRole('combobox', { name: 'Image generation model route' });
+    await expect.poll(async () => routeSelect.locator('option').evaluateAll((options) => (
+      options.map((option) => (option as HTMLOptionElement).value)
+    ))).toEqual(expect.arrayContaining(['4dai-gpt-image-1-5', '4dai-gemini-3-1-flash-image-preview']));
+    expect(await routeSelect.locator('option').evaluateAll((options) => options.every((option) => (
+      (option as HTMLOptionElement).value.startsWith('4dai-')
+    )))).toBe(true);
+
+    await page.evaluate(async () => {
+      await window.novusDesktop?.provider.setActiveProvider?.({ activeProvider: 'comfly' });
+      globalThis.dispatchEvent(new CustomEvent('novus:provider-catalog-changed'));
+    });
+    await expect.poll(async () => routeSelect.locator('option').evaluateAll((options) => options.length > 0 && options.every((option) => (
+      (option as HTMLOptionElement).value.startsWith('comfly-')
+    )))).toBe(true);
   });
 }

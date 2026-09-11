@@ -3888,7 +3888,7 @@ describe('ModuleNodeCard', () => {
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Generated image 1; double click to preview' }));
     fireEvent.click(screen.getByRole('menuitem', { name: '发送到 AI 对话' }));
 
-    expect(openAgent).toHaveBeenCalledOnce();
+    await waitFor(() => expect(openAgent).toHaveBeenCalledOnce());
     await waitFor(() => expect(sendToAgent).toHaveBeenCalledWith(expect.objectContaining({ detail: { assetId: projectImage.assetId } })));
     window.removeEventListener('novus:open-agent', openAgent);
     window.removeEventListener('novus:generated-image-to-agent', sendToAgent);

@@ -433,18 +433,18 @@ describe('provider-local generation profile resolution', () => {
 });
 
 describe('listAllProviderProfiles', () => {
-  it('keeps every provider catalog runnable and uses the active provider only as an ordering preference', async () => {
+  it('can isolate the visible runnable catalog to the active provider', async () => {
     const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => [{
       provider: provider ?? 'comfly', modelRoute: `${provider}-image`, displayName: `${provider} image`, capabilities: ['image_generation' as const],
     }]);
     const profiles = await listRunnableProviderProfiles({
       listProfiles,
       getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
-    });
+    }, { activeProviderOnly: true });
 
-    expect(profiles).toHaveLength(4);
-    expect(profiles[0]).toEqual(expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly-image' }));
-    expect(profiles.map((profile) => profile.provider)).toEqual(expect.arrayContaining(['comfly', 'relayme', 'julun', '4dai']));
+    expect(profiles).toEqual([
+      expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly-image' }),
+    ]);
     expect(listProfiles).toHaveBeenCalledTimes(4);
     expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
     expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });

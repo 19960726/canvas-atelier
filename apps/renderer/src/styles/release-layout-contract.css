@@ -4640,6 +4640,36 @@ html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workben
   cursor: pointer !important;
 }
 
+/* FINAL AGENT REASONING GRID ISOLATION
+   Provider reasoning controls use the same dedicated slot as local Codex.
+   The compact generation button keeps its text in the accessible title so
+   its visible label cannot cover the neighboring model control. */
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) {
+  grid-template-columns: 34px minmax(0, 1fr) 92px 34px 74px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) > .codex-reasoning {
+  grid-column: 3 !important;
+  grid-row: 2 !important;
+  width: 92px !important;
+  min-width: 92px !important;
+  max-width: 92px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) > .skill-chat-workbench__generation-trigger {
+  grid-column: 4 !important;
+  grid-row: 2 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .codex-reasoning) > .skill-chat-workbench__composer-actions {
+  grid-column: 5 !important;
+  grid-row: 2 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__generation-trigger > span {
+  display: none !important;
+}
+
 html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__reverse-depth > button.is-active {
   color: var(--accent) !important;
   background: var(--accent-soft) !important;

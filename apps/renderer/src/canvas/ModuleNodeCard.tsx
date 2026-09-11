@@ -26,6 +26,7 @@ import { IMAGE_QUALITY_OPTIONS, imageQualityFromLabel, imageQualityLabel, isGptI
 import { IMAGE_RESOLUTION_TIERS, listImageResolutionTiers, resolveImageResolutionRoute } from '../app/image-resolution-routing';
 import { resolveMediaImportMode } from '../app/media-import-capability';
 import { getActiveProjectSessionId } from '../app/desktop-persistence';
+import { queueGeneratedImageForAgent } from '../agent/generated-image-agent-transfer';
 import { filterModelJobsForProject, modelJobMatchesGenerationDraft, type GenerationJobDraftIdentity } from '../jobs/project-model-jobs';
 import {
   getPhotoshopImportAvailability,
@@ -1436,13 +1437,7 @@ function ImageGenerationSummary({
     current.trim().length === 0 ? suggestion : `${current.trimEnd()}，${suggestion}`
   ));
   const sendPreviewToAgent = (asset: ProjectImageAssetSummary) => {
-    // The workspace owns the visible surface as well as the collapsed flag.
-    // Ask it to select Agent so a generated-image action cannot leave the
-    // mounted panel hidden behind the Canvas surface.
-    globalThis.dispatchEvent(new CustomEvent('novus:open-agent'));
-    // Let the newly opened Agent panel mount its event listener before sending
-    // the asset reference; dispatching synchronously loses the event.
-    globalThis.setTimeout(() => globalThis.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: asset.assetId } })), 0);
+    queueGeneratedImageForAgent(asset.assetId);
   };
   const runImageGeneration = () => {
     setRunError(null);

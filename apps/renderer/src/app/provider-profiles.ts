@@ -18,7 +18,7 @@ const providerCatalogProviders = ['comfly', 'relayme', 'julun', '4dai'] as const
 
 export async function listRunnableProviderProfiles(
   bridge: ProviderProfileBridge,
-  options: { readonly includeLocked?: boolean } = {},
+  options: { readonly includeLocked?: boolean; readonly activeProviderOnly?: boolean } = {},
 ): Promise<ProviderBridgeProfile[]> {
   const loaded = await loadAllProviderProfiles(bridge, { preserveImageRoutes: true });
   const profiles = loaded.profiles.filter((profile) => isRunnableProfile(profile)
@@ -33,6 +33,9 @@ export async function listRunnableProviderProfiles(
     return profiles;
   }
   if (activeProvider === undefined || activeProvider === null) return profiles;
+  if (options.activeProviderOnly === true) {
+    return profiles.filter((profile) => profile.provider === activeProvider);
+  }
   return [...profiles].sort((left, right) => (
     Number(right.provider === activeProvider) - Number(left.provider === activeProvider)
   ));

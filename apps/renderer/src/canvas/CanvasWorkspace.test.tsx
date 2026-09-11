@@ -2680,7 +2680,8 @@ describe('CanvasWorkspace', () => {
     expect((useAppStore.getState().project.nodes[0] as typeof node | undefined)?.data.config).toEqual(expected);
   });
 
-  it('shows every configured provider route while using the active provider only as the first choice', async () => {
+  it('shows only the active supplier routes in the Agent model picker', async () => {
+    let activeProvider: 'comfly' | 'relayme' = 'relayme';
     const comflyProfile = {
       provider: 'comfly' as const,
       modelRoute: 'comfly-chat',
@@ -2697,7 +2698,7 @@ describe('CanvasWorkspace', () => {
     };
     window.novusDesktop = {
       provider: {
-        getActiveProvider: vi.fn(async () => ({ activeProvider: 'relayme' as const })),
+        getActiveProvider: vi.fn(async () => ({ activeProvider })),
         getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
         listProfiles: vi.fn(async (request?: { provider?: 'comfly' | 'relayme' }) => (
           request?.provider === 'relayme' ? [relayProfile] : [comflyProfile]
@@ -2714,7 +2715,16 @@ describe('CanvasWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
     const modelDialog = screen.getByRole('dialog', { name: '选择聊天模型' });
     expect(within(modelDialog).getByText('RelayMe Chat Active')).toBeVisible();
-    expect(within(modelDialog).getByText('Comfly Chat Hidden')).toBeVisible();
+    expect(within(modelDialog).queryByText('Comfly Chat Hidden')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    activeProvider = 'comfly';
+    await act(async () => { globalThis.dispatchEvent(new Event('novus:provider-catalog-changed')); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开聊天模型菜单' })).toHaveTextContent('Comfly Chat Hidden'));
+    fireEvent.click(screen.getByRole('button', { name: '打开聊天模型菜单' }));
+    const refreshedDialog = screen.getByRole('dialog', { name: '选择聊天模型' });
+    expect(within(refreshedDialog).getByText('Comfly Chat Hidden')).toBeVisible();
+    expect(within(refreshedDialog).queryByText('RelayMe Chat Active')).not.toBeInTheDocument();
   });
 
   it('projects only the latest 32 active project memories into Agent context', () => {

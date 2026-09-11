@@ -37,6 +37,7 @@ import { GenerationPreferencesSheet } from './GenerationPreferencesSheet';
 import { CodexReasoningPopover } from './CodexReasoningPopover';
 import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationKind, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
 import { constrainCreativePlanKind, creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
+import { consumeQueuedGeneratedImageForAgent, listQueuedGeneratedImagesForAgent } from './generated-image-agent-transfer';
 
 type SkillMessage = {
   readonly id: string;
@@ -749,14 +750,18 @@ export function SkillChatWorkbench({
   }, [availableProjectMemoryIds]);
 
   useEffect(() => {
-    const receiveGeneratedImage = (event: Event) => {
-      const assetId = (event as CustomEvent<{ assetId?: unknown }>).detail?.assetId;
-      if (typeof assetId !== 'string') return;
+    const receiveGeneratedImageAsset = (assetId: string): boolean => {
       const reference = mentionReferences.find((candidate) => candidate.assetId === assetId);
-      if (reference === undefined) return;
+      if (reference === undefined) return false;
       if (!supportsImageMentions) {
-        setError(imageMentionCapabilityError);
-        return;
+        const visualProfile = visibleChatProfiles.find((profile) => supportsAgentMediaReferences(profile, agentMode))
+          ?? chatProfiles.find((profile) => supportsAgentMediaReferences(profile, 'chat'));
+        if (visualProfile === undefined) {
+          setError(imageMentionCapabilityError);
+          return true;
+        }
+        if (agentMode === 'codex' && visualProfile.provider !== 'codex') setAgentMode('chat');
+        setModelRoute(visualProfile.modelRoute);
       }
       setComposer((current) => {
         if (current.citations.some((citation) => citation.assetId === reference.assetId)) return current;
@@ -772,10 +777,19 @@ export function SkillChatWorkbench({
       });
       setError(null);
       dispatchPopover({ type: 'close-external' });
+      return true;
+    };
+    const receiveGeneratedImage = (event: Event) => {
+      const assetId = (event as CustomEvent<{ assetId?: unknown }>).detail?.assetId;
+      if (typeof assetId !== 'string') return;
+      if (receiveGeneratedImageAsset(assetId)) consumeQueuedGeneratedImageForAgent(assetId);
     };
     globalThis.addEventListener('novus:generated-image-to-agent', receiveGeneratedImage);
+    for (const assetId of listQueuedGeneratedImagesForAgent()) {
+      if (receiveGeneratedImageAsset(assetId)) consumeQueuedGeneratedImageForAgent(assetId);
+    }
     return () => globalThis.removeEventListener('novus:generated-image-to-agent', receiveGeneratedImage);
-  }, [mentionReferences, supportsImageMentions]);
+  }, [agentMode, chatProfiles, imageMentionCapabilityError, mentionReferences, supportsImageMentions, visibleChatProfiles]);
 
   useLayoutEffect(() => {
     setConversationCollection((current) => {
