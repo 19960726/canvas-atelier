@@ -20,10 +20,21 @@ export async function listRunnableProviderProfiles(
   bridge: ProviderProfileBridge,
   options: { readonly includeLocked?: boolean; readonly activeProviderOnly?: boolean } = {},
 ): Promise<ProviderBridgeProfile[]> {
+  if (options.activeProviderOnly === true) {
+    try {
+      const activeProvider = (await bridge.getActiveProvider?.())?.activeProvider;
+      if (activeProvider !== undefined && activeProvider !== null) {
+        const loaded = await loadProviderProfiles(bridge, [activeProvider], { preserveImageRoutes: true });
+        return filterRunnableProfiles(loaded, options);
+      }
+    } catch {
+      // Fall back to the complete usable catalog when the local active-provider
+      // preference cannot be read during startup.
+    }
+  }
+
   const loaded = await loadAllProviderProfiles(bridge, { preserveImageRoutes: true });
-  const profiles = loaded.profiles.filter((profile) => isRunnableProfile(profile)
-    && !loaded.unconfiguredProviders.has(profile.provider)
-    && (options.includeLocked === true || !loaded.lockedProviders.has(profile.provider)));
+  const profiles = filterRunnableProfiles(loaded, options);
   let activeProvider: ProviderBridgeProfile['provider'] | null | undefined;
   try {
     activeProvider = (await bridge.getActiveProvider?.())?.activeProvider;
@@ -41,6 +52,15 @@ export async function listRunnableProviderProfiles(
   ));
 }
 
+function filterRunnableProfiles(
+  loaded: Awaited<ReturnType<typeof loadProviderProfiles>>,
+  options: { readonly includeLocked?: boolean },
+): ProviderBridgeProfile[] {
+  return loaded.profiles.filter((profile) => isRunnableProfile(profile)
+    && !loaded.unconfiguredProviders.has(profile.provider)
+    && (options.includeLocked === true || !loaded.lockedProviders.has(profile.provider)));
+}
+
 function isRunnableProfile(profile: ProviderBridgeProfile): boolean {
   return profile.enabled !== false && profile.capabilityStatus !== 'incomplete';
 }
@@ -55,6 +75,14 @@ export async function listAllProviderProfiles(
 async function loadAllProviderProfiles(
   bridge: ProviderProfileBridge,
   options: { readonly preserveImageRoutes?: boolean } = {},
+): ReturnType<typeof loadProviderProfiles> {
+  return loadProviderProfiles(bridge, providerCatalogProviders, options);
+}
+
+async function loadProviderProfiles(
+  bridge: ProviderProfileBridge,
+  providers: readonly ProviderBridgeProfile['provider'][],
+  options: { readonly preserveImageRoutes?: boolean } = {},
 ): Promise<{
   readonly profiles: ProviderBridgeProfile[];
   readonly configuredProviders: ReadonlySet<ProviderBridgeProfile['provider']> | null;
@@ -63,17 +91,17 @@ async function loadAllProviderProfiles(
 }> {
   providerProfileRouteAliases.clear();
   const [results, statusResults] = await Promise.all([
-    Promise.allSettled(providerCatalogProviders.map((provider) => bridge.listProfiles({ provider }))),
+    Promise.allSettled(providers.map((provider) => bridge.listProfiles({ provider }))),
     bridge.getStatus === undefined
       ? Promise.resolve([])
-      : Promise.allSettled(providerCatalogProviders.map((provider) => bridge.getStatus!({ provider }))),
+      : Promise.allSettled(providers.map((provider) => bridge.getStatus!({ provider }))),
   ]);
   const configuredProviders = new Set<ProviderBridgeProfile['provider']>();
   const lockedProviders = new Set<ProviderBridgeProfile['provider']>();
   const unconfiguredProviders = new Set<ProviderBridgeProfile['provider']>();
   statusResults.forEach((result, index) => {
     if (result.status !== 'fulfilled' || result.value === undefined) return;
-    const provider = providerCatalogProviders[index];
+    const provider = providers[index];
     if (provider === undefined) return;
     if (!result.value.configured) {
       unconfiguredProviders.add(provider);

@@ -1740,27 +1740,6 @@ export function CanvasWorkspace() {
     let cancelled = false;
     const provider = window.novusDesktop?.provider;
     if (!provider) {
-      setProviderStatus(null);
-      return () => {
-        cancelled = true;
-      };
-    }
-    provider.getStatus()
-      .then((status) => {
-        if (!cancelled) setProviderStatus(status);
-      })
-      .catch(() => {
-        if (!cancelled) setProviderStatus(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const provider = window.novusDesktop?.provider;
-    if (!provider) {
       setProviderProfiles([]);
       return () => {
         cancelled = true;
@@ -1770,12 +1749,12 @@ export function CanvasWorkspace() {
     let refreshSequence = 0;
     const refreshProviderCatalog = () => {
       const requestSequence = ++refreshSequence;
-      void Promise.all([
-        provider.getStatus().catch(() => null),
-        listRunnableProviderProfiles(provider, { activeProviderOnly: true }).catch(() => []),
-      ]).then(([status, profiles]) => {
+      void provider.getStatus().catch(() => null).then((status) => {
         if (cancelled || requestSequence !== refreshSequence) return;
         setProviderStatus(status);
+      });
+      void listRunnableProviderProfiles(provider, { activeProviderOnly: true }).catch(() => []).then((profiles) => {
+        if (cancelled || requestSequence !== refreshSequence) return;
         setAgentProviderProfiles(profiles);
         setProviderProfiles(profiles);
       });

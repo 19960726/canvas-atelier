@@ -433,7 +433,7 @@ describe('provider-local generation profile resolution', () => {
 });
 
 describe('listAllProviderProfiles', () => {
-  it('can isolate the visible runnable catalog to the active provider', async () => {
+  it('loads only the active provider when isolating the visible runnable catalog', async () => {
     const listProfiles = vi.fn(async ({ provider }: { provider?: ProviderId } = {}) => [{
       provider: provider ?? 'comfly', modelRoute: `${provider}-image`, displayName: `${provider} image`, capabilities: ['image_generation' as const],
     }]);
@@ -445,11 +445,8 @@ describe('listAllProviderProfiles', () => {
     expect(profiles).toEqual([
       expect.objectContaining({ provider: 'comfly', modelRoute: 'comfly-image' }),
     ]);
-    expect(listProfiles).toHaveBeenCalledTimes(4);
-    expect(listProfiles).toHaveBeenNthCalledWith(1, { provider: 'comfly' });
-    expect(listProfiles).toHaveBeenNthCalledWith(2, { provider: 'relayme' });
-    expect(listProfiles).toHaveBeenNthCalledWith(3, { provider: 'julun' });
-    expect(listProfiles).toHaveBeenNthCalledWith(4, { provider: '4dai' });
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(listProfiles).toHaveBeenCalledWith({ provider: 'comfly' });
   });
 
   it('keeps configured runnable catalogs when the active-provider preference cannot be read', async () => {

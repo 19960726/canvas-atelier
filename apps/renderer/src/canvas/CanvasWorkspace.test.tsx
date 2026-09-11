@@ -2666,7 +2666,7 @@ describe('CanvasWorkspace', () => {
     expect((useAppStore.getState().project.nodes[0] as typeof node | undefined)?.data.config).toEqual(expected);
     profiles.reverse();
     await act(async () => { globalThis.dispatchEvent(new Event('novus:provider-catalog-changed')); });
-    await waitFor(() => expect(listProfiles.mock.calls.length).toBeGreaterThanOrEqual(4));
+    await waitFor(() => expect(listProfiles.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(screen.getByLabelText('Image generation model route')).toHaveValue(expected.modelRoute);
     expect((useAppStore.getState().project.nodes[0] as typeof node | undefined)?.data.config).toEqual(expected);
     const saved = JSON.parse(JSON.stringify(useAppStore.getState().project));
@@ -2678,6 +2678,34 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(screen.getByLabelText('打开生图模型列表')).toHaveTextContent('Nano Banana 2'));
     expect(screen.getByLabelText('Image generation model route')).toHaveValue(expected.modelRoute);
     expect((useAppStore.getState().project.nodes[0] as typeof node | undefined)?.data.config).toEqual(expected);
+  });
+
+  it('shows the active image catalog without waiting for provider status', async () => {
+    const node = createCanvasModuleNode('startup-image', 'image_generation', { x: 100, y: 100 });
+    const activeProfile = {
+      provider: 'comfly' as const,
+      modelRoute: 'comfly/gpt-image-2',
+      modelId: 'gpt-image-2',
+      displayName: 'GPT Image 2',
+      capabilities: ['image_generation' as const],
+      capabilityStatus: 'complete' as const,
+    };
+    const pendingStatus = new Promise<never>(() => undefined);
+    const getStatus = vi.fn((request?: { provider?: string }) => request?.provider === 'comfly'
+      ? Promise.resolve({ configured: true, locked: false, encryption: 'safeStorage' as const })
+      : pendingStatus);
+    window.novusDesktop = { provider: {
+      listProfiles: vi.fn(async ({ provider }: { provider?: string } = {}) => provider === 'comfly' ? [activeProfile] : []),
+      getActiveProvider: vi.fn(async () => ({ activeProvider: 'comfly' as const })),
+      getStatus,
+    } } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node], edges: [] } });
+
+    render(<CanvasWorkspace />);
+
+    fireEvent.click(await screen.findByLabelText('Open image generation editor'));
+    await waitFor(() => expect(screen.getByLabelText('打开生图模型列表')).toHaveTextContent('GPT Image 2'));
+    expect(getStatus.mock.calls.filter(([request]) => request === undefined)).toHaveLength(1);
   });
 
   it('shows only the active supplier routes in the Agent model picker', async () => {

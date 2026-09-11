@@ -1469,6 +1469,40 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('returns persisted Comfly profiles after restart without waiting for catalog discovery', async () => {
+    const appDataRoot = await makeTempRoot();
+    const safeStorage = createFakeSafeStorage();
+    const persistedProfile: ProviderBridgeProfile = {
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-image-2',
+      modelId: 'gpt-image-2',
+      displayName: 'GPT Image 2',
+      capabilities: ['image_generation', 'async_tasks'],
+    };
+    const first = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: vi.fn(),
+    });
+    await first.configure({ token, profiles: [persistedProfile] });
+
+    const restartFetch = vi.fn(async (url: string) => url.endsWith('/v1/models')
+      ? jsonResponse({ object: 'list', data: [{ id: 'slow-remote-model' }] })
+      : jsonResponse({ data: { version: 'slow-remote-catalog', models: [] } }));
+    const restarted = createComflyProviderService({
+      appDataRoot,
+      credentialStore: createSecureProviderCredentialStore({ appDataRoot, safeStorage }),
+      fetch: restartFetch,
+      discoverModelCatalog: true,
+    });
+
+    await expect(restarted.listProfiles()).resolves.toEqual([
+      { ...persistedProfile, capabilities: ['async_tasks', 'image_generation'] },
+    ]);
+    expect(restartFetch).not.toHaveBeenCalled();
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('keeps a disabled discovered Comfly model out of the executable catalog after refresh', async () => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn(async (url: string) => {
@@ -1548,7 +1582,7 @@ describe('Comfly provider service', () => {
     expect(storeGeneratedImage).toHaveBeenCalledWith('desktop-session-sync-image', expect.any(Uint8Array), 'image/png');
     await cleanupTempRoot(appDataRoot);
   });
-  it('refreshes the discovered model catalog after the provider key changes', async () => {
+  it('refreshes the discovered model catalog after the provider key changes and connection check', async () => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
       const tokenId = init?.headers?.authorization === 'Bearer sk-second-provider' ? 'second-image-model' : 'first-image-model';
@@ -1568,6 +1602,7 @@ describe('Comfly provider service', () => {
     ]));
 
     await service.configure({ token: 'sk-second-provider' });
+    await expect(service.checkConnection()).resolves.toMatchObject({ status: 'connected' });
     const refreshedProfiles = await service.listProfiles();
     expect(refreshedProfiles).toEqual(expect.arrayContaining([
       expect.objectContaining({ modelId: 'second-image-model' }),

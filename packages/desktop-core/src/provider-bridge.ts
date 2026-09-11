@@ -237,7 +237,6 @@ export function createComflyProviderService(options: {
         await providerConfiguration.write(nextConfiguration);
         configurationOverride = null;
         configurationCache = cloneConfiguration(nextConfiguration);
-        discoveredProfileCache = null;
         return configurationStatus(nextConfiguration.baseUrl);
       });
     },
@@ -256,6 +255,8 @@ export function createComflyProviderService(options: {
       const configuration = await captureConfigurationSnapshot();
       const configuredProfiles = configuredProfilesFor(configuration);
       if (options.discoverModelCatalog !== true) return configuredProfiles;
+      if (discoveredProfileCache !== null) return markProviderProfileSelections(discoveredProfileCache, configuredProfiles);
+      if (configuredProfiles.length > 0) return configuredProfiles;
       const status = await options.credentialStore.getStatus();
       if (!status.configured || status.locked) return configuredProfiles;
       return (await captureRuntimeSnapshot()).profiles.map(cloneProfile);
@@ -942,7 +943,6 @@ function historyFailureCode(error: unknown): GenerationHistoryFailureCode {
   }
   return 'provider_unavailable';
 }
-
 function createPublicProviderTaskId(): string {
   return `provider-job-${randomBytes(16).toString('hex')}`;
 }
