@@ -12,6 +12,21 @@ describe('release layout contract', () => {
     expect(css).toMatch(/\.generated-image-action-menu\s*>\s*button:not\(:disabled\):hover[\s\S]*?outline:/iu);
   });
 
+  it('uses a neutral detail-viewer surface and exposes zoom and pan states', () => {
+    const stageStart = hybridCss.indexOf('.generated-image-lightbox__stage {');
+    const stageEnd = hybridCss.indexOf('\n}', stageStart);
+    const stageContract = hybridCss.slice(stageStart, stageEnd + 2);
+
+    expect(stageContract).toContain('background: #10161c;');
+    expect(stageContract).not.toContain('var(--gate-accent-soft');
+    expect(hybridCss).toMatch(/\.generated-image-lightbox__stage\[data-zoomed='true'\][\s\S]*?cursor:\s*grab/iu);
+    expect(hybridCss).toMatch(/\.generated-image-lightbox__stage\[data-dragging='true'\][\s\S]*?cursor:\s*grabbing/iu);
+    expect(hybridCss).toMatch(/\.generated-image-lightbox__stage\s*>\s*img[\s\S]*?transform-origin:\s*center/iu);
+    expect(hybridCss).toMatch(/\.generated-image-lightbox__dialog[\s\S]*?color:\s*var\(--gate-text,\s*var\(--text\)\)/iu);
+    expect(hybridCss).toMatch(/\.generated-image-lightbox__dialog[\s\S]*?background:\s*var\(--gate-card,\s*var\(--surface\)\)/iu);
+    expect(hybridCss).toMatch(/\.generated-image-lightbox__header span[\s\S]*?var\(--gate-muted,\s*var\(--text-secondary\)\)/iu);
+  });
+
   it('gives the canvas manager an opaque light and dark surface token', () => {
     expect(hybridCss).toMatch(/--gate-panel-surface:\s*#ffffff/iu);
     expect(hybridCss).toMatch(/--gate-panel-surface:\s*#141b22/iu);

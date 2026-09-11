@@ -1953,6 +1953,38 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('img', { name: 'Generated image 1 full preview' })).toHaveAttribute('src', projectImage.displayUrl);
   });
 
+  it('zooms the generated-image lightbox with the mouse wheel and resets the detail view', () => {
+    const node = createCanvasModuleNode('image-lightbox-zoom', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, resultState: 'fresh' };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      modelJobs: [{ id: 'completed-zoom-job', promptNodeId: node.id, status: 'completed', resultAssetId: projectImage.assetId }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    fireEvent.doubleClick(screen.getByRole('button', { name: 'Open image generation editor' }));
+
+    const viewer = screen.getByLabelText('Generated image detail viewer');
+    const image = screen.getByRole('img', { name: 'Generated image 1 full preview' });
+    expect(screen.getByLabelText('Generated image zoom level')).toHaveTextContent('100%');
+    expect(viewer).toHaveAttribute('data-zoomed', 'false');
+
+    fireEvent.wheel(viewer, { deltaY: -120, clientX: 0, clientY: 0 });
+
+    expect(screen.getByLabelText('Generated image zoom level')).toHaveTextContent('125%');
+    expect(viewer).toHaveAttribute('data-zoomed', 'true');
+    expect(image).toHaveStyle({ transform: 'translate3d(0px, 0px, 0) scale(1.25)' });
+
+    fireEvent.pointerDown(viewer, { button: 0, pointerId: 7, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(viewer, { pointerId: 7, clientX: 24, clientY: 18 });
+    expect(image).toHaveStyle({ transform: 'translate3d(14px, 8px, 0) scale(1.25)' });
+    fireEvent.pointerUp(viewer, { pointerId: 7, clientX: 24, clientY: 18 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset generated image zoom' }));
+    expect(screen.getByLabelText('Generated image zoom level')).toHaveTextContent('100%');
+    expect(image).toHaveStyle({ transform: 'translate3d(0px, 0px, 0) scale(1)' });
+  });
+
   it('uses a connected image-input edge as the image-generation reference slot and submit input', () => {
     const image = createCanvasModuleNode('image-slot-source', 'image_input', { x: 0, y: 0 });
     image.data.config = { assetId: projectImage.assetId };

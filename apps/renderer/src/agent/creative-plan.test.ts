@@ -10,9 +10,27 @@ const profiles: ProviderBridgeProfile[] = [
 ];
 describe('creative plan boundary', () => {
   it('accepts only model-provided executable choices, preserving evidence labels', () => {
-    const plan = parseCreativePlan(JSON.stringify({ summary: '产品短片方案', observations: ['主体居中'], estimates: ['约50mm'], unknowns: ['内部结构不可见'], options: [{ id: 'a', title: '缓慢环绕', kind: 'video', prompt: '镜头缓慢环绕产品', reason: '保持产品轮廓' }] }));
+    const plan = parseCreativePlan(JSON.stringify({
+      summary: '产品短片方案',
+      requirements: {
+        goal: '生成突出产品外观的短片',
+        mustKeep: ['产品轮廓与 Logo'],
+        mustChange: ['增加缓慢环绕镜头'],
+        mustAvoid: ['不要改动产品颜色'],
+        acceptanceCriteria: ['主体全程完整可见'],
+      },
+      observations: ['主体居中'], estimates: ['约50mm'], unknowns: ['内部结构不可见'],
+      options: [{ id: 'a', title: '缓慢环绕', kind: 'video', prompt: '镜头缓慢环绕产品', reason: '保持产品轮廓' }],
+    }));
     expect(plan?.options[0]?.kind).toBe('video');
     expect(plan?.estimates).toEqual(['约50mm']);
+    expect(plan?.requirements).toEqual({
+      goal: '生成突出产品外观的短片',
+      mustKeep: ['产品轮廓与 Logo'],
+      mustChange: ['增加缓慢环绕镜头'],
+      mustAvoid: ['不要改动产品颜色'],
+      acceptanceCriteria: ['主体全程完整可见'],
+    });
     expect(parseCreativePlan('帮我生成一张图')).toBeNull();
     expect(parseCreativePlan('{"summary":"猜测","options":[{"kind":"shell","prompt":"run"}]}')).toBeNull();
   });
@@ -56,6 +74,11 @@ describe('creative plan boundary', () => {
 
     expect(plan).toMatchObject({
       summary: '需要只精修产品',
+      requirements: {
+        goal: '把产品单独精修，其他不需要改变',
+        mustKeep: ['其他不需要改变'],
+        mustChange: ['把产品单独精修'],
+      },
       options: [{
         title: '按当前要求精修',
         kind: 'image',
@@ -74,6 +97,17 @@ describe('creative plan boundary', () => {
       1,
     )).toEqual({
       summary: '没有兼容的图片编辑路线',
+      requirements: {
+        goal: '精修产品，其他不要改变',
+        mustKeep: ['其他不要改变'],
+        mustChange: ['精修产品'],
+        mustAvoid: [],
+        acceptanceCriteria: [
+          '最终交付为图片，不得改成其他输出类型。',
+          '按发送顺序使用 1 个参考素材，并逐项核对需要保留和允许修改的内容。',
+          '使用已确认的模型与参数执行，完成后检查返图、实际像素和清晰度。',
+        ],
+      },
       observations: ['需要保留原图'],
       estimates: [],
       unknowns: [],
@@ -81,7 +115,7 @@ describe('creative plan boundary', () => {
     });
   });
   it('instructs planning and confirmation, with no fabricated thinking', () => {
-    const text = creativePlanningInstructions(defaultGenerationPreferences(), profiles);
+    const text = creativePlanningInstructions(defaultGenerationPreferences(), profiles, 0, 'deep');
     expect(text).toContain('用户选择');
     expect(text).toContain('观察');
     expect(text).toContain('不输出隐藏思考');
@@ -89,6 +123,12 @@ describe('creative plan boundary', () => {
     expect(text).toContain('workflow');
     expect(text).toContain('本次已明确选择输出类型：image');
     expect(text).toContain('不得自动改成 video');
+    expect(text).toContain('需求分析强度：deep（深度分析）');
+    expect(text).toContain('mustKeep');
+    expect(text).toContain('mustChange');
+    expect(text).toContain('mustAvoid');
+    expect(text).toContain('acceptanceCriteria');
+    expect(text).toContain('每条要求必须落实到完整提示词或 workflow');
   });
   it('removes a model-authored video fallback when the user selected an image workflow', () => {
     const plan = parseCreativePlan(JSON.stringify({

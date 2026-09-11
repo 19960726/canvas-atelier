@@ -63,6 +63,20 @@ export function selectAgentProjectMemoryIds(timeline: readonly ProjectMemoryEntr
   return buildProjectMemoryContext([...timeline], MAX_AGENT_PROJECT_MEMORY_IDS).map((memory) => memory.id);
 }
 
+export function resolveSelectedMediaPasteTarget(
+  nodes: readonly Node<CanvasFlowNodeData>[],
+): Node<CanvasFlowNodeData> | undefined {
+  const selectedNodes = nodes.filter((node) => node.selected === true);
+  if (selectedNodes.length !== 1) return undefined;
+  const node = selectedNodes[0];
+  if (node?.type !== 'module') return undefined;
+  return node.data.moduleType === 'image_input'
+    || node.data.moduleType === 'upload_image'
+    || node.data.moduleType === 'video_input'
+    ? node
+    : undefined;
+}
+
 interface CanvasFlowInstance {
   getViewport: () => Viewport;
   screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
@@ -1429,14 +1443,23 @@ export function CanvasWorkspace() {
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
       if (isEditablePasteTarget(event.target)) return;
-      const selectedImageTarget = draftNodes.find((node) => (
-        node.selected === true
-        && node.type === 'module'
-        && (node.data.moduleType === 'image_input' || node.data.moduleType === 'upload_image')
-      ));
-      const importToSelectedImage = (file: File | null) => {
-        if (selectedImageTarget === undefined || file === null || !file.type.startsWith('image/')) return false;
-        void useAppStore.getState().importImageForModule(selectedImageTarget.id, file);
+      const selectedMediaTarget = resolveSelectedMediaPasteTarget(draftNodes);
+      const importToSelectedMedia = (file: File | null) => {
+        if (selectedMediaTarget === undefined || file === null) return false;
+        const moduleType = selectedMediaTarget.data.moduleType;
+        if (moduleType === 'video_input') {
+          if (!isClipboardVideoFile(file)) {
+            useAppStore.setState({ projectImageError: 'CLIPBOARD_VIDEO_REQUIRED' });
+            return true;
+          }
+          void useAppStore.getState().importVideoForModule(selectedMediaTarget.id, file);
+          return true;
+        }
+        if (!file.type.startsWith('image/')) {
+          useAppStore.setState({ projectImageError: 'CLIPBOARD_IMAGE_REQUIRED' });
+          return true;
+        }
+        void useAppStore.getState().importImageForModule(selectedMediaTarget.id, file);
         return true;
       };
       // On Windows some image-producing applications advertise text/html (or
@@ -1460,7 +1483,7 @@ export function CanvasWorkspace() {
       // by drag and drop; use native clipboard IPC only when no File exists.
       const clipboardFiles = readClipboardMediaFiles(event.clipboardData);
       if (clipboardFiles.length > 0) {
-        if (clipboardFiles.length === 1 && importToSelectedImage(clipboardFiles[0]!)) return;
+        if (clipboardFiles.length === 1 && importToSelectedMedia(clipboardFiles[0]!)) return;
         // A clipboard File can be exposed by Chromium even when Electron
         // cannot resolve a filesystem path for it.  Try the file importer
         // first, then let the native clipboard reader recover the bitmap so
@@ -1486,7 +1509,7 @@ export function CanvasWorkspace() {
       const clipboardTypes = event.clipboardData?.types;
       if (clipboardTypes !== undefined && Array.from(clipboardTypes).some((type) => type.toLocaleLowerCase() === 'text/plain')
         && !clipboardEventMayContainMedia(event)) return;
-      if (selectedImageTarget !== undefined) {
+      if (selectedMediaTarget !== undefined) {
         // Do not let an ordinary text paste consume the last native bitmap
         // and unexpectedly overwrite the selected image node. Some desktop
         // image producers expose no media File, so HTML-only events still
@@ -1494,7 +1517,7 @@ export function CanvasWorkspace() {
         // unambiguous text-editing case.
         event.preventDefault();
         void readClipboardImageFile().then((file) => {
-          if (importToSelectedImage(file)) return;
+          if (importToSelectedMedia(file)) return;
           useAppStore.setState({ projectImageError: 'CLIPBOARD_MEDIA_UNAVAILABLE' });
         });
         return;
@@ -2163,7 +2186,7 @@ export function CanvasWorkspace() {
         {formalCanvasNodeCount === 0 && !recoveryRequired && !saveManagerOpen && (
           <p className="canvas-empty-hint" role="status">双击空白处添加模块</p>
         )}
-        {projectImageError === 'CLIPBOARD_MEDIA_UNAVAILABLE' && (
+        {projectImageError?.startsWith('CLIPBOARD_') && (
           <section className="canvas-media-feedback" role="alert" aria-label="画布媒体导入提示">
             <span>{mediaImportErrorMessage(projectImageError)}</span>
           </section>
@@ -2416,7 +2439,7 @@ async function readClipboardImageFile(): Promise<File | null> {
 function readClipboardMediaFiles(data: DataTransfer | null): File[] {
   if (data === null) return [];
   const isMedia = (candidate: File) => (
-    candidate.type.startsWith('image/') || candidate.type === 'video/mp4' || /\.mp4$/iu.test(candidate.name)
+    candidate.type.startsWith('image/') || isClipboardVideoFile(candidate)
   );
   const files = Array.from(data.files ?? []).filter(isMedia);
   if (files.length > 0) return files;
@@ -2424,6 +2447,10 @@ function readClipboardMediaFiles(data: DataTransfer | null): File[] {
     const file = item.getAsFile();
     return file && isMedia(file) ? [file] : [];
   });
+}
+
+function isClipboardVideoFile(file: File): boolean {
+  return file.type.toLocaleLowerCase() === 'video/mp4' || /\.mp4$/iu.test(file.name);
 }
 
 function isEditablePasteTarget(target: EventTarget | null): boolean {
@@ -2438,7 +2465,10 @@ function isEditableKeyboardTarget(target: EventTarget | null): boolean {
 function clipboardEventMayContainMedia(event: ClipboardEvent): boolean {
   const types = event.clipboardData?.types;
   if (!types || types.length === 0) return false;
-  return Array.from(types).some((type) => type === 'Files' || type.toLocaleLowerCase().startsWith('image/'));
+  return Array.from(types).some((type) => {
+    const normalized = type.toLocaleLowerCase();
+    return type === 'Files' || normalized.startsWith('image/') || normalized === 'video/mp4';
+  });
 }
 
 async function copyManagedImageToClipboard(displayUrl: string): Promise<boolean> {
@@ -2463,6 +2493,8 @@ async function copyManagedImageToClipboard(displayUrl: string): Promise<boolean>
 }
 
 function mediaImportErrorMessage(code: string): string {
+  if (code === 'CLIPBOARD_IMAGE_REQUIRED') return '当前选中的是图片素材，请复制 PNG、JPG、WebP 或 GIF 图片后再粘贴替换。';
+  if (code === 'CLIPBOARD_VIDEO_REQUIRED') return '当前选中的是视频素材，请复制 MP4 视频文件后再粘贴替换。';
   if (code === 'CLIPBOARD_MEDIA_UNAVAILABLE') return '剪贴板中没有可导入的图片或 MP4 视频。请先复制图片或视频文件后再粘贴。';
   return '无法导入媒体，请检查文件类型后重试。';
 }

@@ -1,6 +1,9 @@
+import path from 'node:path';
 import { expect, test } from './helpers/e2e-test';
 import { e2eState, openEmptyApp, queueProjectImageImport } from './helpers/app';
 import { makeReferenceImage } from './helpers/fixtures';
+
+const zoomPreviewArtifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.133-image-zoom', 'generated-image-zoom.png');
 
 test('reverse completion creates and fills a connected result node', async ({ page }) => {
   await openEmptyApp(page);
@@ -112,6 +115,24 @@ test('a completed generated image is visible inside its generation node', async 
   });
   expect(dimensions.width / dimensions.containerWidth).toBeGreaterThan(0.75);
   expect(dimensions.height / dimensions.containerHeight).toBeGreaterThan(0.75);
+
+  await generatedImage.dblclick();
+  const lightbox = page.getByRole('dialog', { name: 'Generated image preview' });
+  const detailViewer = page.getByLabel('Generated image detail viewer');
+  await expect(lightbox).toBeVisible();
+  await expect(detailViewer).toHaveAttribute('data-zoomed', 'false');
+  expect(await detailViewer.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe('rgb(16, 22, 28)');
+
+  const viewerBox = await detailViewer.boundingBox();
+  expect(viewerBox).not.toBeNull();
+  await page.mouse.move(viewerBox!.x + viewerBox!.width / 2, viewerBox!.y + viewerBox!.height / 2);
+  await page.mouse.wheel(0, -240);
+  await expect(lightbox.getByLabel('Generated image zoom level')).toHaveText('125%');
+  await expect(detailViewer).toHaveAttribute('data-zoomed', 'true');
+  await lightbox.screenshot({ path: zoomPreviewArtifact });
+
+  await lightbox.getByRole('button', { name: 'Reset generated image zoom' }).click();
+  await expect(lightbox.getByLabel('Generated image zoom level')).toHaveText('100%');
 });
 
 test('a newly completed image returns to the result-only gallery without a prompt', async ({ page }) => {

@@ -173,6 +173,14 @@
 .creative-plan { display: grid; gap: 14px; margin-top: 12px; min-width: 0; }
 .creative-plan p, .creative-plan__progress, .skill-chat-workbench__message details { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
 .creative-plan p { margin: 5px 0; line-height: 1.65; }
+.creative-plan__requirements { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); }
+.creative-plan__requirements > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.creative-plan__requirements > header strong { color: var(--text); font-size: 13px; }
+.creative-plan__requirements > header span { color: var(--text-secondary); font-size: 11px; }
+.creative-plan__requirements dl { display: grid; gap: 8px; margin: 0; }
+.creative-plan__requirements dl > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; align-items: start; }
+.creative-plan__requirements dt { color: var(--text-secondary); font-size: 11px; font-weight: 700; line-height: 1.55; }
+.creative-plan__requirements dd { min-width: 0; margin: 0; color: var(--text); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .creative-plan__option { border-top: 1px solid var(--border); padding: 12px 0; }
 .creative-plan__workflow { margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); }
 .creative-plan__workflow > b { display: block; margin-bottom: 8px; font-size: 12px; color: var(--text); }

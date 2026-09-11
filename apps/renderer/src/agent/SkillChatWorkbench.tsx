@@ -925,7 +925,7 @@ export function SkillChatWorkbench({
     }
     const visualAnalysis = shouldUseVisualAnalysis(agentMode, content, selectedReferences.length);
     const planning = agentMode === 'original';
-    const planningInstructions = planning ? creativePlanningInstructions(generationPreferences, profiles, selectedReferences.length) : '';
+    const planningInstructions = planning ? creativePlanningInstructions(generationPreferences, profiles, selectedReferences.length, reverseAnalysisDepth) : '';
     if (content.length + planningInstructions.length + 2 > 16000) {
       setError('消息过长，请分段发送。');
       return;
@@ -1402,6 +1402,16 @@ export function SkillChatWorkbench({
               <span>{message.role === 'user' ? '你的请求' : 'Agent 建议'}</span>
               <p>{creativePlan?.summary ?? message.content}</p>
               {creativePlan && <section className="creative-plan" aria-label="创作方案">
+                <section className="creative-plan__requirements" aria-label="需求分析">
+                  <header><strong>需求分析</strong><span>已拆解为执行约束</span></header>
+                  <dl>
+                    <div><dt>目标</dt><dd>{creativePlan.requirements.goal}</dd></div>
+                    {creativePlan.requirements.mustKeep.length > 0 && <div><dt>必须保留</dt><dd>{creativePlan.requirements.mustKeep.join('\n')}</dd></div>}
+                    {creativePlan.requirements.mustChange.length > 0 && <div><dt>需要修改</dt><dd>{creativePlan.requirements.mustChange.join('\n')}</dd></div>}
+                    {creativePlan.requirements.mustAvoid.length > 0 && <div><dt>禁止事项</dt><dd>{creativePlan.requirements.mustAvoid.join('\n')}</dd></div>}
+                    {creativePlan.requirements.acceptanceCriteria.length > 0 && <div><dt>验收标准</dt><dd>{creativePlan.requirements.acceptanceCriteria.join('\n')}</dd></div>}
+                  </dl>
+                </section>
                 {([['观察', creativePlan.observations], ['估计', creativePlan.estimates], ['未知', creativePlan.unknowns]] as const).map(([label, items]) => items.length > 0 ? <div key={label}><strong>{label}</strong><p>{items.join('\n')}</p></div> : null)}
                 {creativePlan.options.map((option) => {
                   const optionKey = `${message.id}:${option.id}`;

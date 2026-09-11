@@ -19,7 +19,7 @@ import type {
   ProjectHydrationResult,
   ProjectPersistenceClient,
 } from '../app/desktop-persistence';
-import { calculateModuleInsertionPosition, calculateModulePlacement, CanvasWorkspace, createCanvasConnectionValidator, getCompatibleQuickInsertModuleTypes, getCompatibleQuickInsertSourceModuleTypes, getModulePlacementSize, getWorkbenchFocusTarget, isCanvasModuleDropSurface, isValidCanvasConnection, resolveQuickInsertConnection, selectAgentProjectMemoryIds, setConnectorPreviewQuality, shouldAutoFocusFlowNode, shouldCloseAgentForModuleLibrary, type ModulePlacementBounds } from './CanvasWorkspace';
+import { calculateModuleInsertionPosition, calculateModulePlacement, CanvasWorkspace, createCanvasConnectionValidator, getCompatibleQuickInsertModuleTypes, getCompatibleQuickInsertSourceModuleTypes, getModulePlacementSize, getWorkbenchFocusTarget, isCanvasModuleDropSurface, isValidCanvasConnection, resolveQuickInsertConnection, resolveSelectedMediaPasteTarget, selectAgentProjectMemoryIds, setConnectorPreviewQuality, shouldAutoFocusFlowNode, shouldCloseAgentForModuleLibrary, type ModulePlacementBounds } from './CanvasWorkspace';
 import { MODULE_DRAG_MIME } from './ModuleLibrary';
 import { CONNECTED_MEDIA_DRAG_MIME, encodeConnectedMediaDragPayload } from './connected-media-drag';
 
@@ -704,6 +704,106 @@ describe('CanvasWorkspace', () => {
 
     await waitFor(() => expect(importImageForModule).toHaveBeenCalledWith(target.id, replacement));
     expect(importDroppedMedia).not.toHaveBeenCalled();
+  });
+
+  it('replaces the selected video node when Ctrl+V supplies an MP4 file', async () => {
+    const target = createCanvasModuleNode('paste-selected-video', 'video_input', { x: 120, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    const importVideoForModule = vi.fn(async () => true);
+    const importDroppedMedia = vi.fn(async () => true);
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [target] },
+      importVideoForModule,
+      importDroppedMedia,
+    } as never));
+    render(<CanvasWorkspace />);
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(flowNode).not.toBeNull();
+    fireEvent.click(flowNode!);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+
+    const replacement = new File(['replacement video'], 'replacement.mp4', { type: 'video/mp4' });
+    fireEvent(window, createEvent.paste(window, { clipboardData: { types: ['Files'], files: [replacement] } }));
+
+    await waitFor(() => expect(importVideoForModule).toHaveBeenCalledWith(target.id, replacement));
+    expect(importDroppedMedia).not.toHaveBeenCalled();
+  });
+
+  it('replaces a selected video from an items-only MP4 clipboard payload', async () => {
+    const target = createCanvasModuleNode('paste-selected-video-item', 'video_input', { x: 120, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    const importVideoForModule = vi.fn(async () => true);
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [target] },
+      importVideoForModule,
+    } as never));
+    render(<CanvasWorkspace />);
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node');
+    fireEvent.click(flowNode!);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+
+    const replacement = new File(['replacement video'], 'replacement.mp4', { type: 'video/mp4' });
+    fireEvent(window, createEvent.paste(window, {
+      clipboardData: {
+        types: ['video/mp4'],
+        files: [],
+        items: [{ type: 'video/mp4', getAsFile: () => replacement }],
+      },
+    }));
+
+    await waitFor(() => expect(importVideoForModule).toHaveBeenCalledWith(target.id, replacement));
+  });
+
+  it('rejects a mismatched clipboard media type instead of creating a second node', async () => {
+    const target = createCanvasModuleNode('paste-video-into-image', 'image_input', { x: 120, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    const importImageForModule = vi.fn(async () => true);
+    const importDroppedMedia = vi.fn(async () => true);
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [target] },
+      importImageForModule,
+      importDroppedMedia,
+    } as never));
+    render(<CanvasWorkspace />);
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(flowNode).not.toBeNull();
+    fireEvent.click(flowNode!);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+
+    const mismatchedVideo = new File(['video'], 'wrong-type.mp4', { type: 'video/mp4' });
+    fireEvent(window, createEvent.paste(window, { clipboardData: { types: ['Files'], files: [mismatchedVideo] } }));
+
+    await waitFor(() => expect(useAppStore.getState().projectImageError).toBe('CLIPBOARD_IMAGE_REQUIRED'));
+    expect(screen.getByRole('alert', { name: '画布媒体导入提示' })).toHaveTextContent('当前选中的是图片素材');
+    expect(importImageForModule).not.toHaveBeenCalled();
+    expect(importDroppedMedia).not.toHaveBeenCalled();
+  });
+
+  it('keeps multi-selection paste as a new-node action instead of replacing either selected material', async () => {
+    const first = createCanvasModuleNode('paste-multi-first', 'image_input', { x: 120, y: 120 });
+    const second = createCanvasModuleNode('paste-multi-second', 'video_input', { x: 520, y: 120 });
+    expect(resolveSelectedMediaPasteTarget([
+      { ...first, selected: true },
+      { ...second, selected: true },
+    ] as never)).toBeUndefined();
+    resetAppStoreForTests({ project: 'empty' });
+    const importImageForModule = vi.fn(async () => true);
+    const importVideoForModule = vi.fn(async () => true);
+    const importDroppedMedia = vi.fn(async () => true);
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [first, second] },
+      importImageForModule,
+      importVideoForModule,
+      importDroppedMedia,
+    } as never));
+    render(<CanvasWorkspace />);
+
+    const pastedImage = new File(['image'], 'new-node.png', { type: 'image/png' });
+    fireEvent(window, createEvent.paste(window, { clipboardData: { types: ['Files'], files: [pastedImage] } }));
+
+    await waitFor(() => expect(importDroppedMedia).toHaveBeenCalledOnce());
+    expect(importImageForModule).not.toHaveBeenCalled();
+    expect(importVideoForModule).not.toHaveBeenCalled();
   });
 
   it.each(['files', 'items'])('imports all 25 clipboard images from %s once in sequence at separate positions', async (source) => {

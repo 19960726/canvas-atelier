@@ -262,7 +262,18 @@ describe('SkillChatWorkbench', () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView });
     const executeCanvasAction = vi.fn(async () => true);
-    const chat = vi.fn(async () => ({ message: JSON.stringify({ summary: '保留产品比例，选择构图', observations: ['产品居中'], estimates: [], unknowns: [], options: [{ id: 'clean', title: '简洁棚拍', reason: '突出产品', kind: 'image', prompt: '产品居中，柔和棚灯', modelRoute: 'image/only' }] }), modelRoute: 'chat/creative', sources: [] }));
+    const chat = vi.fn(async () => ({ message: JSON.stringify({
+      summary: '保留产品比例，选择构图',
+      requirements: {
+        goal: '生成一张产品主图',
+        mustKeep: ['产品比例与 Logo'],
+        mustChange: ['改为简洁棚拍构图'],
+        mustAvoid: ['不要改变产品颜色'],
+        acceptanceCriteria: ['产品完整清晰，实际返图尺寸符合所选清晰度'],
+      },
+      observations: ['产品居中'], estimates: [], unknowns: [],
+      options: [{ id: 'clean', title: '简洁棚拍', reason: '突出产品', kind: 'image', prompt: '产品居中，柔和棚灯', modelRoute: 'image/only' }],
+    }), modelRoute: 'chat/creative', sources: [] }));
     const canvasActionTargets = [{ kind: 'image_generation' as const, nodeId: 'image-node', label: '图片节点', selected: true }];
     const view = renderWorkbench({ chat, executeCanvasAction, canvasActionTargets });
     fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
@@ -275,8 +286,16 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     expect(executeCanvasAction).not.toHaveBeenCalled();
     await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([expect.objectContaining({
+        content: expect.stringContaining('每条要求必须落实到完整提示词或 workflow'),
+      })]),
+    }));
     const option = await screen.findByRole('button', { name: '选择方案：简洁棚拍' });
     expect(option.closest('article')).toHaveClass('skill-chat-workbench__message--creative-plan');
+    expect(screen.getByLabelText('需求分析')).toHaveTextContent('产品比例与 Logo');
+    expect(screen.getByLabelText('需求分析')).toHaveTextContent('不要改变产品颜色');
+    expect(screen.getByLabelText('需求分析')).toHaveTextContent('实际返图尺寸符合所选清晰度');
     expect(option.closest('.creative-plan__option')).toHaveTextContent('工作流预览');
     expect(option.closest('.creative-plan__option')).toHaveTextContent('整理需求与素材');
     expect(option.closest('.creative-plan__option')).toHaveTextContent('执行图片生成');

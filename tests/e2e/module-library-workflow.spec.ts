@@ -349,6 +349,31 @@ test('pastes a clipboard MP4 before falling back to clipboard image import', asy
   expect(after.durableProjectContainsTransientImageUrl).toBe(false);
 });
 
+test('pastes one MP4 over the selected video material without creating another node', async ({ page }) => {
+  await openEmptyApp(page);
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.createModule('video_input', { x: 320, y: 180 });
+  });
+  const videoNode = page.locator('[data-module-type="video_input"]');
+  await queueProjectVideoImport(page, { label: 'Original material.mp4' });
+  await videoNode.getByRole('button', { name: /Import video/u }).click();
+  await expect(videoNode.locator('video')).toHaveAttribute('aria-label', 'Original material');
+
+  const flowNode = videoNode.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " react-flow__node ")]');
+  await flowNode.click({ position: { x: 12, y: 12 } });
+  await expect(flowNode).toHaveClass(/selected/u);
+  const before = await e2eState(page);
+  await page.evaluate(() => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([new Uint8Array([1, 2, 3])], 'Replacement material.mp4', { type: 'video/mp4' }));
+    window.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+  });
+
+  await expect(videoNode.locator('video')).toHaveAttribute('aria-label', 'Replacement material');
+  await expect(page.locator('[data-module-type="video_input"]')).toHaveCount(1);
+  await expect.poll(async () => (await e2eState(page)).commitCount).toBe(before.commitCount + 1);
+});
+
 test('pastes a clipboard image as one managed media node transaction', async ({ page }) => {
   await openEmptyApp(page);
   await queueProjectImageImport(

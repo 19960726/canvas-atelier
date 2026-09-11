@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
-import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Send, Video, Volume2, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, RotateCcw, Send, Video, Volume2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -1744,6 +1744,37 @@ function GeneratedImageLightbox({
   onPrevious: () => void;
   onNext: () => void;
 }) {
+  const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragStart = useRef<{ pointerId: number; clientX: number; clientY: number; x: number; y: number } | null>(null);
+  const resetView = () => setView({ scale: 1, x: 0, y: 0 });
+  const setZoom = (nextScale: number, focalX = 0, focalY = 0) => {
+    const clampedScale = Math.min(8, Math.max(1, Math.round(nextScale * 100) / 100));
+    setView((current) => {
+      if (clampedScale === 1) return { scale: 1, x: 0, y: 0 };
+      if (clampedScale === current.scale) return current;
+      const ratio = clampedScale / current.scale;
+      return {
+        scale: clampedScale,
+        x: focalX - ((focalX - current.x) * ratio),
+        y: focalY - ((focalY - current.y) * ratio),
+      };
+    });
+  };
+
+  useEffect(() => {
+    setView({ scale: 1, x: 0, y: 0 });
+    setDragging(false);
+    dragStart.current = null;
+  }, [asset.assetId]);
+
+  const finishDragging = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStart.current?.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    dragStart.current = null;
+    setDragging(false);
+  };
+
   const dialog = (
     <div className="generated-image-lightbox" role="presentation" onPointerDown={onClose}>
       <section
@@ -1754,16 +1785,70 @@ function GeneratedImageLightbox({
         onPointerDown={(event) => event.stopPropagation()}
       >
         <header className="generated-image-lightbox__header">
-          <div><strong>生成图片预览</strong><span>双击图片打开 · 原图比例显示</span></div>
+          <div><strong>生成图片预览</strong><span>滚轮缩放 · 放大后拖动查看细节</span></div>
           <button type="button" aria-label="Close generated image preview" onClick={onClose}><X aria-hidden="true" size={18} /></button>
         </header>
-        <div className="generated-image-lightbox__stage">
-          <img src={asset.displayUrl} alt={`Generated image ${index + 1} full preview`} draggable={false} />
+        <div
+          className="generated-image-lightbox__stage"
+          aria-label="Generated image detail viewer"
+          data-zoomed={view.scale > 1 ? 'true' : 'false'}
+          data-dragging={dragging ? 'true' : 'false'}
+          tabIndex={0}
+          onWheel={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            const focalX = event.clientX - rect.left - (rect.width / 2);
+            const focalY = event.clientY - rect.top - (rect.height / 2);
+            setZoom(view.scale * (event.deltaY < 0 ? 1.25 : 0.8), focalX, focalY);
+          }}
+          onPointerDown={(event) => {
+            if (view.scale <= 1 || event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            dragStart.current = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: view.x, y: view.y };
+            setDragging(true);
+          }}
+          onPointerMove={(event) => {
+            const start = dragStart.current;
+            if (start === null || start.pointerId !== event.pointerId) return;
+            setView((current) => ({ ...current, x: start.x + event.clientX - start.clientX, y: start.y + event.clientY - start.clientY }));
+          }}
+          onPointerUp={finishDragging}
+          onPointerCancel={finishDragging}
+          onKeyDown={(event) => {
+            if (event.key === '+' || event.key === '=') {
+              event.preventDefault();
+              setZoom(view.scale * 1.25);
+            } else if (event.key === '-') {
+              event.preventDefault();
+              setZoom(view.scale * 0.8);
+            } else if (event.key === '0') {
+              event.preventDefault();
+              resetView();
+            }
+          }}
+        >
+          <img
+            src={asset.displayUrl}
+            alt={`Generated image ${index + 1} full preview`}
+            draggable={false}
+            style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})` }}
+          />
         </div>
         <footer className="generated-image-lightbox__footer">
-          <button type="button" aria-label="Previous generated image" disabled={total < 2} onClick={onPrevious}><ChevronLeft aria-hidden="true" size={20} /></button>
-          <span>{index + 1} / {total}</span>
-          <button type="button" aria-label="Next generated image" disabled={total < 2} onClick={onNext}><ChevronRight aria-hidden="true" size={20} /></button>
+          <div className="generated-image-lightbox__pager">
+            <button type="button" aria-label="Previous generated image" disabled={total < 2} onClick={onPrevious}><ChevronLeft aria-hidden="true" size={20} /></button>
+            <span>{index + 1} / {total}</span>
+            <button type="button" aria-label="Next generated image" disabled={total < 2} onClick={onNext}><ChevronRight aria-hidden="true" size={20} /></button>
+          </div>
+          <div className="generated-image-lightbox__zoom-controls">
+            <button type="button" aria-label="Zoom out generated image" disabled={view.scale <= 1} onClick={() => setZoom(view.scale * 0.8)}><ZoomOut aria-hidden="true" size={18} /></button>
+            <output aria-label="Generated image zoom level">{Math.round(view.scale * 100)}%</output>
+            <button type="button" aria-label="Zoom in generated image" disabled={view.scale >= 8} onClick={() => setZoom(view.scale * 1.25)}><ZoomIn aria-hidden="true" size={18} /></button>
+            <button type="button" aria-label="Reset generated image zoom" disabled={view.scale === 1 && view.x === 0 && view.y === 0} onClick={resetView}><RotateCcw aria-hidden="true" size={17} /></button>
+          </div>
         </footer>
       </section>
     </div>
