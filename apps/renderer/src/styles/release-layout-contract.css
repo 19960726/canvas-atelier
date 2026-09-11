@@ -4708,3 +4708,29 @@ html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workben
   outline: 2px solid var(--accent) !important;
   outline-offset: 2px !important;
 }
+
+/* A vision-capable chat adds three reverse-depth choices. Give that choice
+   group its own full-width row so all Chinese labels remain readable beside
+   the compact footer actions at the minimum Agent panel width. */
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .skill-chat-workbench__reverse-depth) {
+  grid-template-rows: 30px 30px 34px !important;
+  min-height: 110px !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .skill-chat-workbench__reverse-depth) > .skill-chat-workbench__mode-tabs,
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .skill-chat-workbench__reverse-depth) > .skill-chat-workbench__reverse-depth {
+  grid-column: 1 / -1 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .skill-chat-workbench__reverse-depth) > .skill-chat-workbench__reverse-depth {
+  grid-row: 2 !important;
+}
+
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__composer-footer:has(> .skill-chat-workbench__reverse-depth) > :is(
+  .skill-chat-workbench__tool,
+  .skill-chat-workbench__model-pill,
+  .codex-reasoning,
+  .skill-chat-workbench__composer-actions
+) {
+  grid-row: 3 !important;
+}

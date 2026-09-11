@@ -1078,3 +1078,11 @@ Before producing an installer, verify at minimum:
 - TDD 的两条界面回归先稳定复现“非当前供应商被调用”和“状态查询悬住时模型不出现”，服务层回归先复现“重启读取已保存目录仍访问网络”；修复后完整 Vitest 为 234 个文件通过、2 个性能文件按配置跳过，3496 项通过、2 项跳过，workspace typecheck 和 production build 通过。新安装包 12/12 载荷一致、CSP 门禁通过；隔离解包应用的项目重开与返图门禁通过，调用记录只出现当前 Comfly 目录，没有请求 RelayMe、巨轮或 4D。旧 `qa-installed-gpt-multi-provider` 脚本仍要求五条跨供应商路线同时出现在生图选择器，因与 1.6.132 已确认的供应商隔离要求冲突而失败，未作为本候选通过证据。
 - 本次替代候选位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.133-fast-active-provider-startup-confirmation-20260911`，没有覆盖上一份 1.6.133 候选。安装器 103307037 字节、SHA-256 `BABFCDCD69EA47C9017D98929FB592926ACBB034E577EF10D66AEAA4B133C429`；blockmap 109644 字节、SHA-256 `D58EECDAE3C102CD7FBEC9EE3BAAED7BB9B7DBA078AD6E134678D56FEE8B5E8F`；`latest.yml` 375 字节、SHA-256 `396D78A05F712F8536DCE794C2522644A6AD531BC5CBB91C450BF2C4A77F2A7F`。候选 EXE SHA-256 `FC79088E1431C24D40BCBCE67B3AA02E89F6678864CF7B4259E66EA13391021C`，`app.asar` SHA-256 `12D79AB09E2DF746EA0B860B1BD32B34879F21C69838B53117E936252678ACB7`，Authenticode 为 `NotSigned`。
 - 按用户最新要求，替代候选仍未发布 GitHub、未上传在线更新、未安装到日用目录；等待用户确认后再发布。
+
+## 2026-09-11 1.6.133 Agent 反推强度排版修复候选
+
+- 用户截图中的“快速反推 / 标准反推 / 深度反推”重叠是 1.6.133 紧凑操作组引入的布局回归：操作组缩为 102px 后，反推强度仍被限定在同一末列，三个中文按钮各自只有约 31px。反推参数和执行逻辑没有丢失，问题只在可见布局。
+- 先在 `tests/e2e/release-agent-layout.spec.ts` 增加真实浏览器几何回归；旧样式稳定失败为反推行与模式行重叠。修复后模式切换、反推强度和底部操作各占独立行，三种反推按钮使用全宽三等分，每项不低于 80px且文本不溢出；下方模型、推理、生成偏好、知识库和发送仍保持同一紧凑行。
+- 聚焦验证通过：Agent 布局 Playwright 2/2；`SkillChatWorkbench` 与 release layout contract Vitest 167/167；全 workspace typecheck 与 production build 通过。新候选安装包 12/12 关键载荷一致，候选 CSP 启动门禁通过，QA 主进程和隔离目录均已清理。
+- 替代候选位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.133-reverse-mode-layout-confirmation-20260911`。安装器 103307155 字节、SHA-256 `15D440E3AE667B1819B7F1CBF2141BF49FF2184A052A2A528D22DC5B030B580B`；blockmap 109658 字节、SHA-256 `86F3852D6C54CDCB8286981C5BF92712710DC9E335E8A812A84F1B3E375EE4E7`；`latest.yml` 375 字节、SHA-256 `0E6E6F018D5AC0D13A3D8C27C5CC8A306E4CC865096F6CFBC03D9C83863E7209`。候选 renderer CSS SHA-256 为 `EA969DCEDBC7222743CBB034CF99F3F09CBD775504E6AA9ED64BD227FA5D7570`，安装包 Authenticode 状态为 `NotSigned`。
+- 按用户要求，本候选未发布 GitHub、未上传在线更新、未安装到日用目录；等待用户确认界面后再发布。

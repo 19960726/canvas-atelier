@@ -154,7 +154,7 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
   await panel.locator('.skill-chat-workbench__composer').screenshot({ path: composerArtifact });
 });
 
-test('keeps reasoning, generation preferences, knowledge and send controls in one compact row', async ({ page }) => {
+test('keeps reverse depth readable above reasoning, generation preferences, knowledge and send controls', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.addInitScript(() => {
     let bridge: typeof window.novusDesktop | undefined;
@@ -189,7 +189,16 @@ test('keeps reasoning, generation preferences, knowledge and send controls in on
   await expect(panel.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'QA Reasoning Vision');
   const controls = await panel.evaluate((element) => {
     const rect = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect().toJSON();
+    const reverseDepth = [...element.querySelectorAll<HTMLElement>('.skill-chat-workbench__reverse-depth > button')].map((button) => ({
+      ...button.getBoundingClientRect().toJSON(),
+      clientWidth: button.clientWidth,
+      scrollWidth: button.scrollWidth,
+      text: button.textContent,
+    }));
     return {
+      modeTabs: rect('.skill-chat-workbench__mode-tabs'),
+      reverseDepthGroup: rect('.skill-chat-workbench__reverse-depth'),
+      reverseDepth,
       reasoning: rect('.codex-reasoning'),
       generation: rect('.skill-chat-workbench__generation-trigger'),
       knowledge: rect('.skill-chat-workbench__knowledge-compact'),
@@ -200,5 +209,13 @@ test('keeps reasoning, generation preferences, knowledge and send controls in on
   expect(controls.generation.x - (controls.reasoning.x + controls.reasoning.width)).toBeLessThanOrEqual(10);
   expect(controls.knowledge.x - (controls.generation.x + controls.generation.width)).toBeLessThanOrEqual(10);
   expect(controls.send.x - (controls.knowledge.x + controls.knowledge.width)).toBeLessThanOrEqual(10);
+  expect(controls.reverseDepth).toHaveLength(3);
+  expect(controls.reverseDepth.map((button) => button.text)).toEqual(['快速反推', '标准反推', '深度反推']);
+  expect(controls.reverseDepthGroup.y).toBeGreaterThanOrEqual(controls.modeTabs.y + controls.modeTabs.height);
+  expect(controls.reasoning.y).toBeGreaterThanOrEqual(controls.reverseDepthGroup.y + controls.reverseDepthGroup.height);
+  for (const button of controls.reverseDepth) {
+    expect(button.width).toBeGreaterThanOrEqual(80);
+    expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
+  }
   await panel.locator('.skill-chat-workbench__composer').screenshot({ path: compactActionsArtifact });
 });
