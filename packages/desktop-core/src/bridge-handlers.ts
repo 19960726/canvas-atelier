@@ -1116,7 +1116,7 @@ export function createDesktopBridgeHandlers(
         }
         const existing = await readExistingClipboardImagePaste(assetStore, repository, currentSession, validated.target);
         if (existing !== null) return existing;
-        if (validated.target.kind === 'new_image_input' && validated.target.reconcileOnly === true) return null;
+        if ('reconcileOnly' in validated.target && validated.target.reconcileOnly === true) return null;
         const image = await clipboard.readImage();
         if (image === null) return null;
         const commitState: {
@@ -1192,7 +1192,7 @@ export function createDesktopBridgeHandlers(
         }
         const videoSource = await openVideoSource(sourcePath);
         if (videoSource !== null) {
-          if (request.target.kind !== 'new_media_input') {
+          if (request.target.kind === 'agent_reference') {
             await videoSource.close().catch(() => undefined);
             throw invalidRequest('An image or Agent image reference target can only import an image');
           }
@@ -1208,6 +1208,12 @@ export function createDesktopBridgeHandlers(
               commitReference: async (storedAsset) => {
                 assertVideoSourceSizeUnchanged(storedAsset, videoSource.byteSize);
                 const currentProject = await repository.readCurrentProject(currentSession.session);
+                if (videoTarget.kind === 'module') {
+                  const targetNode = currentProject.nodes.find((candidate) => candidate.id === videoTarget.nodeId);
+                  if (targetNode?.type !== 'module' || targetNode.data.moduleType !== 'video_input') {
+                    throw invalidRequest('Dropped video module target is not import-capable');
+                  }
+                }
                 const currentRevision = await readCurrentRevision(repository, currentSession.session);
                 const projectAsset = createImportedProjectVideoAsset(storedAsset);
                 const transaction = createDroppedVideoImportTransaction(currentProject, videoTarget, projectAsset);
@@ -1349,7 +1355,7 @@ export function createDesktopBridgeHandlers(
               if (targetNode?.type === 'module') {
                 const nextNode = {
                   ...targetNode,
-                  data: { ...targetNode.data, config: { ...targetNode.data.config, assetId: asset.assetId } },
+                  data: { ...targetNode.data, config: bindModuleAsset(targetNode.data.config, asset.assetId) },
                 };
                 operations.push({ kind: 'canvas', operation: { kind: 'update_node', node: nextNode } });
               }
@@ -2998,7 +3004,7 @@ function createProjectImageImportTransaction(
       ...node,
       data: {
         ...node.data,
-        config: { ...node.data.config, assetId: asset.assetId },
+        config: bindModuleAsset(node.data.config, asset.assetId),
       },
     };
   } else {
@@ -3053,6 +3059,30 @@ function createClipboardImagePasteTransaction(
       operations: [{ kind: 'set_project_assets', assets: upsertProjectImageAsset(project.assets ?? [], asset) }],
     };
   }
+  if (target.kind === 'module') {
+    const node = project.nodes.find((candidate) => candidate.id === target.nodeId);
+    if (node?.type !== 'module' || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')) {
+      throw invalidRequest('Clipboard image module target is not import-capable');
+    }
+    const nextNode = {
+      ...node,
+      data: {
+        ...node.data,
+        config: bindModuleAsset(node.data.config, asset.assetId, {
+          mediaType: 'image',
+          operationId: target.operationId,
+        }),
+      },
+    };
+    return {
+      id: identity.transactionId,
+      label: 'Replace module image from clipboard',
+      operations: [
+        { kind: 'set_project_assets', assets: upsertProjectImageAsset(project.assets ?? [], asset) },
+        { kind: 'canvas', operation: { kind: 'update_node', node: nextNode } },
+      ],
+    };
+  }
   const node = createCanvasModuleNode(identity.nodeId, 'image_input', target.position);
   const boundNode = {
     ...node,
@@ -3077,6 +3107,30 @@ function createClipboardVideoPasteTransaction(
   asset: ProjectVideoAsset,
 ): ProjectTransaction {
   const identity = clipboardVideoPasteIdentity(target.operationId);
+  if (target.kind === 'module') {
+    const node = project.nodes.find((candidate) => candidate.id === target.nodeId);
+    if (node?.type !== 'module' || node.data.moduleType !== 'video_input') {
+      throw invalidRequest('Clipboard video module target is not import-capable');
+    }
+    const nextNode = {
+      ...node,
+      data: {
+        ...node.data,
+        config: bindModuleAsset(node.data.config, asset.assetId, {
+          mediaType: 'video',
+          operationId: target.operationId,
+        }),
+      },
+    };
+    return {
+      id: identity.transactionId,
+      label: 'Replace module video from clipboard',
+      operations: [
+        { kind: 'set_project_assets', assets: upsertProjectAsset(project.assets ?? [], asset) },
+        { kind: 'canvas', operation: { kind: 'update_node', node: nextNode } },
+      ],
+    };
+  }
   const node = createCanvasModuleNode(identity.nodeId, 'video_input', target.position);
   const boundNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } };
   return {
@@ -3124,10 +3178,28 @@ function createDroppedImageImportTransaction(
 
 function createDroppedVideoImportTransaction(
   project: CanvasProject,
-  target: Extract<ImportDroppedProjectMediaBridgeRequest['target'], { readonly kind: 'new_media_input' }>,
+  target: Extract<ImportDroppedProjectMediaBridgeRequest['target'], { readonly kind: 'new_media_input' | 'module' }>,
   asset: ProjectVideoAsset,
 ): ProjectTransaction {
   const identity = droppedMediaIdentity(target.operationId, 'video');
+  if (target.kind === 'module') {
+    const node = project.nodes.find((candidate) => candidate.id === target.nodeId);
+    if (node?.type !== 'module' || node.data.moduleType !== 'video_input') {
+      throw invalidRequest('Dropped video module target is not import-capable');
+    }
+    const nextNode = {
+      ...node,
+      data: { ...node.data, config: bindModuleAsset(node.data.config, asset.assetId) },
+    };
+    return {
+      id: identity.transactionId,
+      label: 'Import dropped video into module',
+      operations: [
+        { kind: 'set_project_assets', assets: upsertProjectAsset(project.assets ?? [], asset) },
+        { kind: 'canvas', operation: { kind: 'update_node', node: nextNode } },
+      ],
+    };
+  }
   const node = createCanvasModuleNode(identity.nodeId, 'video_input', target.position);
   const boundNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } };
   return {
@@ -3160,13 +3232,31 @@ async function readExistingClipboardImagePaste(
   if (target.kind === 'agent_reference') return null;
   const identity = clipboardImagePasteIdentity(target.operationId);
   const project = await repository.readCurrentProject(session.session);
-  const node = project.nodes.find((candidate) => candidate.id === identity.nodeId);
-  if (node === undefined) return null;
+  if (target.kind === 'module') {
+    const receiptOwner = project.nodes.find((candidate) => candidate.type === 'module'
+      && moduleClipboardReceiptMatches(candidate.data.config, 'image', target.operationId));
+    if (receiptOwner !== undefined && receiptOwner.id !== target.nodeId) {
+      throw invalidRequest('Clipboard operation identity is already bound to a different image module');
+    }
+  }
+  const node = project.nodes.find((candidate) => candidate.id === (target.kind === 'module' ? target.nodeId : identity.nodeId));
+  if (node === undefined) {
+    if (target.kind === 'module') throw invalidRequest('Clipboard image module target is unavailable');
+    return null;
+  }
+  if (target.kind === 'module') {
+    if (node.type !== 'module' || (node.data.moduleType !== 'image_input' && node.data.moduleType !== 'upload_image')) {
+      throw invalidRequest('Clipboard image module target is not import-capable');
+    }
+    if (!moduleClipboardReceiptMatches(node.data.config, 'image', target.operationId)) return null;
+  }
   if (
     node.type !== 'module'
-    || node.data.moduleType !== 'image_input'
-    || node.position.x !== target.position.x
-    || node.position.y !== target.position.y
+    || (target.kind === 'new_image_input' && (
+      node.data.moduleType !== 'image_input'
+      || node.position.x !== target.position.x
+      || node.position.y !== target.position.y
+    ))
   ) {
     throw invalidRequest('Clipboard operation identity is already bound to different canvas content');
   }
@@ -3211,13 +3301,31 @@ async function readExistingClipboardVideoPaste(
 ): Promise<PasteProjectClipboardVideoBridgeResult | null> {
   const identity = clipboardVideoPasteIdentity(target.operationId);
   const project = await repository.readCurrentProject(session.session);
-  const node = project.nodes.find((candidate) => candidate.id === identity.nodeId);
-  if (node === undefined) return null;
+  if (target.kind === 'module') {
+    const receiptOwner = project.nodes.find((candidate) => candidate.type === 'module'
+      && moduleClipboardReceiptMatches(candidate.data.config, 'video', target.operationId));
+    if (receiptOwner !== undefined && receiptOwner.id !== target.nodeId) {
+      throw invalidRequest('Clipboard video operation identity is already bound to a different module');
+    }
+  }
+  const node = project.nodes.find((candidate) => candidate.id === (target.kind === 'module' ? target.nodeId : identity.nodeId));
+  if (node === undefined) {
+    if (target.kind === 'module') throw invalidRequest('Clipboard video module target is unavailable');
+    return null;
+  }
+  if (target.kind === 'module') {
+    if (node.type !== 'module' || node.data.moduleType !== 'video_input') {
+      throw invalidRequest('Clipboard video module target is not import-capable');
+    }
+    if (!moduleClipboardReceiptMatches(node.data.config, 'video', target.operationId)) return null;
+  }
   if (
     node.type !== 'module'
-    || node.data.moduleType !== 'video_input'
-    || node.position.x !== target.position.x
-    || node.position.y !== target.position.y
+    || (target.kind === 'new_video_input' && (
+      node.data.moduleType !== 'video_input'
+      || node.position.x !== target.position.x
+      || node.position.y !== target.position.y
+    ))
   ) {
     throw invalidRequest('Clipboard video operation identity is already bound to different canvas content');
   }
@@ -3252,6 +3360,41 @@ function clipboardVideoPasteIdentity(operationId: string): { readonly nodeId: st
     nodeId: `clipboard-video-${suffix}`,
     transactionId: `paste-clipboard-video-${suffix}`,
   };
+}
+
+const MODULE_CLIPBOARD_RECEIPT_KEY = '__novusClipboardPasteReceipt';
+
+function bindModuleAsset(
+  config: Readonly<Record<string, unknown>>,
+  assetId: string,
+  receipt?: { readonly mediaType: 'image' | 'video'; readonly operationId: string },
+): Record<string, unknown> {
+  const { [MODULE_CLIPBOARD_RECEIPT_KEY]: _previousReceipt, ...rest } = config;
+  return {
+    ...rest,
+    assetId,
+    ...(receipt === undefined ? {} : {
+      [MODULE_CLIPBOARD_RECEIPT_KEY]: {
+        ...receipt,
+        assetFingerprint: sha256Canonical({ assetId }),
+      },
+    }),
+  };
+}
+
+function moduleClipboardReceiptMatches(
+  config: Readonly<Record<string, unknown>>,
+  mediaType: 'image' | 'video',
+  operationId: string,
+): boolean {
+  const receipt = config[MODULE_CLIPBOARD_RECEIPT_KEY];
+  return typeof receipt === 'object'
+    && receipt !== null
+    && !Array.isArray(receipt)
+    && (receipt as Record<string, unknown>).mediaType === mediaType
+    && (receipt as Record<string, unknown>).operationId === operationId
+    && typeof config.assetId === 'string'
+    && (receipt as Record<string, unknown>).assetFingerprint === sha256Canonical({ assetId: config.assetId });
 }
 
 function assertClipboardAssetMatches(storedAsset: AssetMetadata, image: TrustedClipboardImage): void {
@@ -3998,6 +4141,23 @@ function validatePasteProjectClipboardImageBridgeRequest(value: unknown): PasteP
     assertPublicBridgePayload(request);
     return request;
   }
+  if (target.kind === 'module') {
+    assertExactKeys(target, ['kind', 'nodeId', 'operationId', 'reconcileOnly'], 'Clipboard image module target');
+    if ('reconcileOnly' in target && target.reconcileOnly !== true) {
+      throw invalidRequest('Clipboard image reconcileOnly must be true when provided');
+    }
+    const request = {
+      sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+      target: {
+        kind: 'module' as const,
+        nodeId: parseNonEmptyString(target.nodeId, 'target.nodeId'),
+        operationId: parseClipboardOperationId(target.operationId),
+        ...(target.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+      },
+    };
+    assertPublicBridgePayload(request);
+    return request;
+  }
   assertExactKeys(target, ['kind', 'operationId', 'position', 'reconcileOnly'], 'Clipboard image paste target');
   if (target.kind !== 'new_image_input') throw invalidRequest('Clipboard image paste target kind is invalid');
   if ('reconcileOnly' in target && target.reconcileOnly !== true) {
@@ -4025,6 +4185,23 @@ function validatePasteProjectClipboardVideoBridgeRequest(value: unknown): PasteP
   const record = expectPlainRecord(value);
   assertExactKeys(record, ['sessionId', 'target'], 'Clipboard video paste request');
   const target = expectPlainRecord(record.target);
+  if (target.kind === 'module') {
+    assertExactKeys(target, ['kind', 'nodeId', 'operationId', 'reconcileOnly'], 'Clipboard video module target');
+    if ('reconcileOnly' in target && target.reconcileOnly !== true) {
+      throw invalidRequest('Clipboard video reconcileOnly must be true when provided');
+    }
+    const request = {
+      sessionId: parseNonEmptyString(record.sessionId, 'sessionId'),
+      target: {
+        kind: 'module' as const,
+        nodeId: parseNonEmptyString(target.nodeId, 'target.nodeId'),
+        operationId: parseClipboardVideoOperationId(target.operationId),
+        ...(target.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+      },
+    };
+    assertPublicBridgePayload(request);
+    return request;
+  }
   assertExactKeys(target, ['kind', 'operationId', 'position', 'reconcileOnly'], 'Clipboard video paste target');
   if (target.kind !== 'new_video_input') throw invalidRequest('Clipboard video paste target kind is invalid');
   if ('reconcileOnly' in target && target.reconcileOnly !== true) {

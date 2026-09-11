@@ -754,6 +754,49 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(importVideoForModule).toHaveBeenCalledWith(target.id, replacement));
   });
 
+  it('uses the native clipboard bridge to replace a selected video when Explorer exposes no DOM File', async () => {
+    const target = createCanvasModuleNode('paste-selected-native-video', 'video_input', { x: 120, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    const pasteClipboardVideoForModule = vi.fn(async () => true);
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [target] },
+      pasteClipboardVideoForModule,
+    } as never));
+    window.novusDesktop = {} as typeof window.novusDesktop;
+    render(<CanvasWorkspace />);
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node');
+    fireEvent.click(flowNode!);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+
+    fireEvent(window, createEvent.paste(window, {
+      clipboardData: { types: ['text/html'], files: [], items: [] },
+    }));
+
+    await waitFor(() => expect(pasteClipboardVideoForModule).toHaveBeenCalledWith(target.id));
+  });
+
+  it('falls back to the native clipboard bridge for a selected image when Chromium exposes no bitmap File', async () => {
+    const target = createCanvasModuleNode('paste-selected-native-image', 'image_input', { x: 120, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    const pasteClipboardImageForModule = vi.fn(async () => true);
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [target] },
+      pasteClipboardImageForModule,
+    } as never));
+    window.novusDesktop = {} as typeof window.novusDesktop;
+    vi.stubGlobal('navigator', { clipboard: { read: vi.fn(async () => []) } });
+    render(<CanvasWorkspace />);
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node');
+    fireEvent.click(flowNode!);
+    await waitFor(() => expect(flowNode).toHaveClass('selected'));
+
+    fireEvent(window, createEvent.paste(window, {
+      clipboardData: { types: ['text/html'], files: [], items: [] },
+    }));
+
+    await waitFor(() => expect(pasteClipboardImageForModule).toHaveBeenCalledWith(target.id));
+  });
+
   it('rejects a mismatched clipboard media type instead of creating a second node', async () => {
     const target = createCanvasModuleNode('paste-video-into-image', 'image_input', { x: 120, y: 120 });
     resetAppStoreForTests({ project: 'empty' });

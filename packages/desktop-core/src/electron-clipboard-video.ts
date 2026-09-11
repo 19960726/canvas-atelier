@@ -16,19 +16,47 @@ interface ElectronClipboardFileLike {
 export function createElectronClipboardVideoAdapter(clipboard: ElectronClipboardFileLike): ClipboardVideoAdapter {
   return {
     async readVideoPath() {
-      const formats = new Set(clipboard.availableFormats().map((format) => format.toLocaleLowerCase()));
-      let paths: string[] = [];
-      if (formats.has('cf_hdrop')) {
-        paths = parseDropFiles(Buffer.from(clipboard.readBuffer('CF_HDROP')));
-      } else if (formats.has('filenamew')) {
-        paths = parseNullTerminatedPaths(Buffer.from(clipboard.readBuffer('FileNameW')), true, 1);
-      } else if (formats.has('filename')) {
-        paths = parseNullTerminatedPaths(Buffer.from(clipboard.readBuffer('FileName')), false, 1);
+      const formats = new Map(clipboard.availableFormats().map((format) => [format.toLocaleLowerCase(), format]));
+      const dropFormat = formats.get('cf_hdrop');
+      if (dropFormat !== undefined) {
+        const paths = parseDropFiles(readClipboardBuffer(clipboard, dropFormat));
+        return paths.length === 1 && isSafeLocalMp4Path(paths[0]!) ? { sourcePath: paths[0]! } : null;
       }
-      if (paths.length !== 1 || !isSafeLocalMp4Path(paths[0]!)) return null;
-      return { sourcePath: paths[0]! };
+      // Electron 43 can advertise a Windows Forms/Explorer file drop only as
+      // text/uri-list while the native FileNameW buffer remains readable.
+      // Probe the two narrow Windows filename formats and keep the existing
+      // absolute local MP4 validation as the trust boundary.
+      const wideFormat = formats.get('filenamew');
+      if (wideFormat === undefined) {
+        const hiddenPath = parseHiddenSinglePath(readClipboardBuffer(clipboard, 'FileNameW'), true);
+        if (hiddenPath !== null && isSafeLocalMp4Path(hiddenPath)) return { sourcePath: hiddenPath };
+      } else {
+        const widePaths = parseNullTerminatedPaths(readClipboardBuffer(clipboard, wideFormat), true, 1);
+        if (widePaths.length === 1 && isSafeLocalMp4Path(widePaths[0]!)) return { sourcePath: widePaths[0]! };
+      }
+      const ansiFormat = formats.get('filename');
+      if (ansiFormat === undefined) return null;
+      const ansiPaths = parseNullTerminatedPaths(readClipboardBuffer(clipboard, ansiFormat), false, 1);
+      return ansiPaths.length === 1 && isSafeLocalMp4Path(ansiPaths[0]!) ? { sourcePath: ansiPaths[0]! } : null;
     },
   };
+}
+
+function readClipboardBuffer(clipboard: ElectronClipboardFileLike, format: string): Buffer {
+  try {
+    return Buffer.from(clipboard.readBuffer(format));
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+function parseHiddenSinglePath(value: Buffer, wide: boolean): string | null {
+  if (value.length === 0 || (wide && value.length % 2 !== 0)) return null;
+  const decoded = value.toString(wide ? 'utf16le' : 'latin1');
+  if (decoded.length === 0 || /[\r\n]/u.test(decoded)) return null;
+  const terminator = decoded.indexOf('\0');
+  if (terminator < 0) return decoded;
+  return terminator === decoded.length - 1 ? decoded.slice(0, -1) : null;
 }
 
 function parseDropFiles(value: Buffer): string[] {

@@ -16,6 +16,43 @@ describe('Electron clipboard video adapter', () => {
     await expect(adapter.readVideoPath()).resolves.toEqual({ sourcePath });
   });
 
+  it('probes FileNameW when Electron advertises a Windows file list only as text/uri-list', async () => {
+    const sourcePath = localPath('C:', 'Media', 'explorer-hidden-format.mp4');
+    const adapter = createElectronClipboardVideoAdapter({
+      availableFormats: () => ['text/uri-list'],
+      readBuffer: (format) => format === 'FileNameW'
+        ? Buffer.from(`${sourcePath}\0`, 'utf16le')
+        : Buffer.alloc(0),
+    });
+
+    await expect(adapter.readVideoPath()).resolves.toEqual({ sourcePath });
+  });
+
+  it('also accepts an unterminated hidden FileNameW path', async () => {
+    const sourcePath = localPath('C:', 'Media', 'explorer-hidden-unterminated.mp4');
+    const adapter = createElectronClipboardVideoAdapter({
+      availableFormats: () => ['text/uri-list'],
+      readBuffer: (format) => format === 'FileNameW'
+        ? Buffer.from(sourcePath, 'utf16le')
+        : Buffer.alloc(0),
+    });
+
+    await expect(adapter.readVideoPath()).resolves.toEqual({ sourcePath });
+  });
+
+  it('rejects multiple hidden FileNameW paths when Electron omits the terminator', async () => {
+    const first = localPath('C:', 'Media', 'first.mp4');
+    const second = localPath('C:', 'Media', 'second.mp4');
+    const adapter = createElectronClipboardVideoAdapter({
+      availableFormats: () => ['text/uri-list'],
+      readBuffer: (format) => format === 'FileNameW'
+        ? Buffer.from(`${first}\0${second}`, 'utf16le')
+        : Buffer.alloc(0),
+    });
+
+    await expect(adapter.readVideoPath()).resolves.toBeNull();
+  });
+
   it('reads one wide CF_HDROP MP4 entry', async () => {
     const sourcePath = localPath('D:', 'Projects', 'clip.mp4');
     const adapter = createElectronClipboardVideoAdapter({

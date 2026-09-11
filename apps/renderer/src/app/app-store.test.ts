@@ -9621,6 +9621,7 @@ function createMockClient(overrides: Partial<ReloadableTestProjectPersistenceCli
     listProjectImages: overrides.listProjectImages ?? (async () => []),
     listProjectVideos: overrides.listProjectVideos ?? (async () => []),
     pasteClipboardImage: overrides.pasteClipboardImage ?? (async () => null),
+    pasteClipboardVideo: overrides.pasteClipboardVideo ?? (async () => null),
     restore: overrides.restore ?? (async () => {
       const result = await hydrate();
       return {
@@ -9791,6 +9792,108 @@ function knowledgeState(options: {
       saveErrorCode: 'DURABLE_WRITE_FAILED',
       saveStatus: 'error',
     });
+  });
+
+  it('replaces an existing image node through the native clipboard action and adopts its durable revision', async () => {
+    localStorage.clear();
+    resetAppStoreForTests({ project: 'empty' });
+    const node = createCanvasModuleNode('native-image-replacement', 'image_input', { x: 20, y: 30 });
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [node], edges: [] });
+    const asset = {
+      assetId: 'a'.repeat(16), byteSize: 42, displayUrl: 'novus-asset://project/session/aaaaaaaaaaaaaaaa',
+      extension: 'png' as const, height: 100, label: 'Clipboard image', mediaType: 'image/png' as const,
+      origin: 'imported' as const, sha256: 'a'.repeat(64), usageCount: 1, width: 100,
+    };
+    const { displayUrl: _displayUrl, usageCount: _usageCount, ...projectAsset } = asset;
+    const replacedNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } };
+    const resultProject = parseCanvasProject({ ...project, assets: [projectAsset], nodes: [replacedNode] });
+    const pasteClipboardImage = vi.fn(async () => ({ asset, project: resultProject, revision: 8 }));
+    replaceProjectPersistenceClientForTests(createMockClient({ pasteClipboardImage }));
+    useAppStore.setState({ desktopRevision: 7, project, projectImages: [], saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().pasteClipboardImageForModule(node.id)).resolves.toBe(true);
+
+    expect(pasteClipboardImage).toHaveBeenCalledWith(expect.objectContaining({ nodeId: node.id }));
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 8,
+      project: resultProject,
+      projectImageError: null,
+      projectImageImportingNodeId: null,
+      projectImages: [asset],
+      saveStatus: 'saved',
+    });
+    expect(localStorage.getItem('novus.pending-clipboard-media.v1')).toBeNull();
+  });
+
+  it('replaces an existing video node through the native clipboard action and adopts its durable revision', async () => {
+    localStorage.clear();
+    resetAppStoreForTests({ project: 'empty' });
+    const node = createCanvasModuleNode('native-video-replacement', 'video_input', { x: 20, y: 30 });
+    const project = parseCanvasProject({ ...createStarterProject(), nodes: [node], edges: [] });
+    const asset = {
+      assetId: 'b'.repeat(16), byteSize: 1024, displayUrl: 'novus-asset://project/session/bbbbbbbbbbbbbbbb',
+      durationMs: 1000, extension: 'mp4' as const, height: 720, label: 'Clipboard video', mediaType: 'video/mp4' as const,
+      origin: 'imported' as const, sha256: 'b'.repeat(64), usageCount: 1, width: 1280,
+    };
+    const { displayUrl: _displayUrl, usageCount: _usageCount, ...projectAsset } = asset;
+    const replacedNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } };
+    const resultProject = parseCanvasProject({ ...project, assets: [projectAsset], nodes: [replacedNode] });
+    const pasteClipboardVideo = vi.fn(async () => ({ asset, project: resultProject, revision: 9 }));
+    replaceProjectPersistenceClientForTests(createMockClient({ pasteClipboardVideo }));
+    useAppStore.setState({ desktopRevision: 8, project, projectVideos: [], saveStatus: 'saved' });
+
+    await expect(useAppStore.getState().pasteClipboardVideoForModule(node.id)).resolves.toBe(true);
+
+    expect(pasteClipboardVideo).toHaveBeenCalledWith(expect.objectContaining({ nodeId: node.id }));
+    expect(useAppStore.getState()).toMatchObject({
+      desktopRevision: 9,
+      project: resultProject,
+      projectImageError: null,
+      projectImageImportingNodeId: null,
+      projectVideos: [asset],
+      saveStatus: 'saved',
+    });
+    expect(localStorage.getItem('novus.pending-clipboard-media.v1')).toBeNull();
+  });
+
+  it('reconciles a committed module clipboard replacement after renderer restart without reading new media', async () => {
+    localStorage.clear();
+    resetAppStoreForTests({ project: 'empty' });
+    const node = createCanvasModuleNode('restart-image-replacement', 'image_input', { x: 20, y: 30 });
+    const project = parseCanvasProject({ ...createStarterProject(), id: 'restart-clipboard-project', nodes: [node], edges: [] });
+    const asset = {
+      assetId: 'c'.repeat(16), byteSize: 42, displayUrl: 'novus-asset://project/session/cccccccccccccccc',
+      extension: 'png' as const, height: 100, label: 'Recovered image', mediaType: 'image/png' as const,
+      origin: 'imported' as const, sha256: 'c'.repeat(64), usageCount: 1, width: 100,
+    };
+    const { displayUrl: _displayUrl, usageCount: _usageCount, ...projectAsset } = asset;
+    const replacedNode = { ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } };
+    const recoveredProject = parseCanvasProject({ ...project, assets: [projectAsset], nodes: [replacedNode] });
+    const pasteClipboardImage = vi.fn(async () => ({ asset, project: recoveredProject, revision: 5 }));
+    replaceProjectPersistenceClientForTests(createMockClient({
+      hydrate: async () => ({ availableSnapshotIds: [], lifecycle: 'durable', mode: 'desktop', project, revision: 4, saveStatus: 'saved' }),
+      pasteClipboardImage,
+    }));
+    localStorage.setItem('novus.pending-clipboard-media.v1', JSON.stringify({
+      version: 1,
+      projectId: project.id,
+      nodeId: node.id,
+      position: node.position,
+      videoOperationId: 'clipboard_video_restart-reconcile',
+      imageOperationId: 'clipboard_paste_restart-reconcile',
+      phase: 'image',
+      createdAt: Date.now(),
+    }));
+
+    await useAppStore.getState().hydratePersistence();
+
+    expect(pasteClipboardImage).toHaveBeenCalledWith({
+      operationId: 'clipboard_paste_restart-reconcile',
+      nodeId: node.id,
+      reconcileOnly: true,
+    });
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 5, project: recoveredProject, projectImages: [asset] });
+    expect(localStorage.getItem('novus.pending-clipboard-media.v1')).toBeNull();
   });
 
 describe('explicit project save', () => {

@@ -91,6 +91,50 @@ describe('Electron clipboard image adapter', () => {
     expect(createFromPath).toHaveBeenCalledWith(sourcePath);
   });
 
+  it('probes FileNameW when Electron advertises a Windows image file only as text/uri-list', async () => {
+    const png = createSolidPng();
+    const sourcePath = ['C:', 'Users', 'Artist', 'Desktop', 'hidden-reference.png'].join(win32.sep);
+    const createFromPath = vi.fn(() => ({
+      getSize: () => ({ width: 1, height: 1 }),
+      isEmpty: () => false,
+      toPNG: () => png,
+    }));
+    const adapter = createElectronClipboardImageAdapter({
+      availableFormats: () => ['text/uri-list'],
+      readBuffer: (format) => format === 'FileNameW'
+        ? Buffer.from(`${sourcePath}\0`, 'utf16le')
+        : Buffer.alloc(0),
+      readImage: () => ({
+        getSize: () => ({ width: 0, height: 0 }),
+        isEmpty: () => true,
+        toPNG: () => Buffer.alloc(0),
+      }),
+    }, { createFromPath });
+
+    await expect(adapter.readImage()).resolves.toMatchObject({ height: 1, label: 'Clipboard image', width: 1 });
+    expect(createFromPath).toHaveBeenCalledWith(sourcePath);
+  });
+
+  it('rejects multiple hidden FileNameW image paths', async () => {
+    const first = ['C:', 'Users', 'Artist', 'Desktop', 'first.png'].join(win32.sep);
+    const second = ['C:', 'Users', 'Artist', 'Desktop', 'second.png'].join(win32.sep);
+    const createFromPath = vi.fn();
+    const adapter = createElectronClipboardImageAdapter({
+      availableFormats: () => ['text/uri-list'],
+      readBuffer: (format) => format === 'FileNameW'
+        ? Buffer.from(`${first}\0${second}\0`, 'utf16le')
+        : Buffer.alloc(0),
+      readImage: () => ({
+        getSize: () => ({ width: 0, height: 0 }),
+        isEmpty: () => true,
+        toPNG: () => Buffer.alloc(0),
+      }),
+    }, { createFromPath });
+
+    await expect(adapter.readImage()).resolves.toBeNull();
+    expect(createFromPath).not.toHaveBeenCalled();
+  });
+
   it.each([
     { width: 0, height: 480, bytes: 3 },
     { width: 8193, height: 1, bytes: 3 },

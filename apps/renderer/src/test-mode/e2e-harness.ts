@@ -1127,10 +1127,14 @@ function createPersistenceClient(runtime: RuntimeState): ProjectPersistenceClien
       }));
     },
     async pasteClipboardImage(input) {
-      return pasteE2EClipboardImage(runtime, input.position);
+      return input.nodeId === undefined
+        ? pasteE2EClipboardImage(runtime, input.position)
+        : importE2EProjectImage(runtime, { kind: 'module', nodeId: input.nodeId });
     },
     async pasteClipboardVideo(input) {
-      return pasteE2EClipboardVideo(runtime, input.position);
+      return input.nodeId === undefined
+        ? pasteE2EClipboardVideo(runtime, input.position)
+        : importE2EProjectVideo(runtime, input.nodeId);
     },
     async restore(): Promise<ProjectRestoreResult> {
       return {

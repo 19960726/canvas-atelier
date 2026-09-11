@@ -164,6 +164,46 @@ describe('project video bridge', () => {
     }
   });
 
+  it('atomically imports a dropped MP4 into an existing video input node', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'project-video-drop-replace-'));
+    tempRoots.push(tempRoot);
+    const projectRoot = join(tempRoot, 'Video replace.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 7727 });
+    const created = await repository.create(projectRoot, {
+      project: videoProject(), projectId: 'video-project', projectName: 'Video Project',
+    });
+    await repository.close(created);
+    const sourcePath = join(tempRoot, 'replacement.mp4');
+    const bytes = createMinimalMp4();
+    await writeFile(sourcePath, bytes);
+    const handlers = createDesktopBridgeHandlers({
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      openVideoSource: async () => ({ byteSize: bytes.length, close: async () => undefined, stream: Readable.from(bytes) }),
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.importDroppedProjectMedia({}, {
+        request: {
+          sessionId: opened!.sessionId,
+          target: { kind: 'module', nodeId: 'video-input', operationId: 'dropped_media_video-replace' },
+        },
+        sourcePath,
+      });
+
+      expect(result!.project.nodes).toHaveLength(1);
+      expect(result!.project.nodes[0]).toMatchObject({
+        id: 'video-input',
+        data: { moduleType: 'video_input', config: { assetId: result!.asset.assetId } },
+      });
+      expect(result!.asset).toMatchObject({ mediaType: 'video/mp4', usageCount: 1 });
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'video-project');
+    }
+  });
+
   it('reports MISSING_ASSET when a catalogued MP4 is replaced by same-size corrupt bytes', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'project-video-list-integrity-'));
     tempRoots.push(tempRoot);
@@ -311,6 +351,88 @@ describe('project video bridge', () => {
     } finally {
       await handlers.closeAllProjects();
       releaseJournalState(join(fixture.projectRoot, 'journal', 'active.ndjson'), 'video-project');
+    }
+  });
+
+  it('atomically replaces an existing video input from the native clipboard', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'project-video-paste-replace-'));
+    tempRoots.push(tempRoot);
+    const projectRoot = join(tempRoot, 'Video replace.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 7725 });
+    const created = await repository.create(projectRoot, {
+      project: videoProject(),
+      projectId: 'video-project',
+      projectName: 'Video Project',
+    });
+    await repository.close(created);
+    const sourcePath = join(tempRoot, 'replacement.mp4');
+    await writeFile(sourcePath, createMinimalMp4());
+    const readVideoPath = vi.fn(async () => ({ sourcePath }));
+    const handlers = createDesktopBridgeHandlers({
+      clipboardVideo: { readVideoPath },
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+
+    try {
+      const opened = await handlers.openProject({}, { mode: 'write' });
+      const result = await handlers.pasteProjectClipboardVideo({}, {
+        sessionId: opened!.sessionId,
+        target: { kind: 'module', nodeId: 'video-input', operationId: 'clipboard_video_replace-video' },
+      });
+
+      expect(readVideoPath).toHaveBeenCalledOnce();
+      expect(result!.project.nodes).toHaveLength(1);
+      expect(result!.project.nodes[0]).toMatchObject({
+        id: 'video-input',
+        data: { moduleType: 'video_input', config: { assetId: result!.asset.assetId } },
+      });
+      expect(result!.asset.usageCount).toBe(1);
+    } finally {
+      await handlers.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'video-project');
+    }
+  });
+
+  it('replays a native clipboard video replacement after restart without rereading the clipboard', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'project-video-paste-replace-restart-'));
+    tempRoots.push(tempRoot);
+    const projectRoot = join(tempRoot, 'Video replace restart.novus-project');
+    const repository = new ProjectRepository({ createId: sequentialId('repo'), processId: 7726 });
+    const created = await repository.create(projectRoot, {
+      project: videoProject(), projectId: 'video-project', projectName: 'Video Project',
+    });
+    await repository.close(created);
+    const sourcePath = join(tempRoot, 'replacement.mp4');
+    await writeFile(sourcePath, createMinimalMp4());
+    const target = { kind: 'module' as const, nodeId: 'video-input', operationId: 'clipboard_video_replace-restart' };
+    const first = createDesktopBridgeHandlers({
+      clipboardVideo: { readVideoPath: vi.fn(async () => ({ sourcePath })) },
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+    const firstOpened = await first.openProject({}, { mode: 'write' });
+    const imported = await first.pasteProjectClipboardVideo({}, { sessionId: firstOpened!.sessionId, target });
+    await first.closeAllProjects();
+    releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'video-project');
+
+    const readAfterRestart = vi.fn(async () => { throw new Error('clipboard must not be read'); });
+    const second = createDesktopBridgeHandlers({
+      clipboardVideo: { readVideoPath: readAfterRestart },
+      dialogs: { chooseProjectRoot: vi.fn(async () => projectRoot) },
+      snapshotScheduler: { consider: vi.fn(() => null), flush: vi.fn() },
+    });
+    try {
+      const reopened = await second.openProject({}, { mode: 'write' });
+      const replayed = await second.pasteProjectClipboardVideo({}, { sessionId: reopened!.sessionId, target });
+
+      expect(readAfterRestart).not.toHaveBeenCalled();
+      expect(replayed!.asset.assetId).toBe(imported!.asset.assetId);
+      expect(replayed!.project.nodes).toHaveLength(1);
+      expect(replayed!.currentRevision).toBe(1);
+    } finally {
+      await second.closeAllProjects();
+      releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'video-project');
     }
   });
 

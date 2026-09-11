@@ -428,6 +428,136 @@ describe('desktop persistence', () => {
     expect(pasteClipboardImage).toHaveBeenCalledOnce();
   });
 
+  it('routes native clipboard replacement to an existing image module target', async () => {
+    const project = {
+      ...createStarterProject(),
+      nodes: [createCanvasModuleNode('native-image-target', 'image_input', { x: 10, y: 20 })],
+    };
+    const pasteClipboardImage = vi.fn(async () => null);
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    await client.pasteClipboardImage({ operationId: 'clipboard_paste_existing-image', nodeId: 'native-image-target' });
+
+    expect(pasteClipboardImage).toHaveBeenCalledWith({
+      sessionId: 'session',
+      target: { kind: 'module', nodeId: 'native-image-target', operationId: 'clipboard_paste_existing-image' },
+    });
+  });
+
+  it('routes native clipboard replacement to an existing video module target', async () => {
+    const project = {
+      ...createStarterProject(),
+      nodes: [createCanvasModuleNode('native-video-target', 'video_input', { x: 10, y: 20 })],
+    };
+    const pasteClipboardVideo = vi.fn(async () => null);
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+      projectVideos: { importVideo: vi.fn(), list: vi.fn(async () => []), pasteClipboardVideo },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    await client.pasteClipboardVideo?.({ operationId: 'clipboard_video_existing-video', nodeId: 'native-video-target' });
+
+    expect(pasteClipboardVideo).toHaveBeenCalledWith({
+      sessionId: 'session',
+      target: { kind: 'module', nodeId: 'native-video-target', operationId: 'clipboard_video_existing-video' },
+    });
+  });
+
+  it('imports a pasted desktop MP4 File into the selected video node without opening the picker', async () => {
+    const node = createCanvasModuleNode('desktop-video-file-target', 'video_input', { x: 10, y: 20 });
+    const project = { ...createStarterProject(), nodes: [node] };
+    const asset = {
+      assetId: '1123456789abcdef', byteSize: 128, displayUrl: 'novus-video://project/session/1123456789abcdef',
+      durationMs: 1_000, extension: 'mp4' as const, label: 'Dropped MP4', mediaType: 'video/mp4' as const,
+      origin: 'import' as const, sha256: '1'.repeat(64), usageCount: 1,
+    };
+    const importedProject = { ...project, nodes: [{ ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } }] };
+    const importDroppedMedia = vi.fn(async () => ({ asset, currentRevision: 1, project: importedProject }));
+    const importVideo = vi.fn(async () => null);
+    const pasteClipboardVideo = vi.fn(async () => null);
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      projectImages: { importDroppedMedia, importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+      projectVideos: { importVideo, list: vi.fn(async () => []), pasteClipboardVideo },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const file = new File(['mp4'], 'replacement.mp4', { type: 'video/mp4' });
+
+    await expect(client.importProjectVideo?.('desktop-video-file-target', file)).resolves.toMatchObject({ asset, revision: 1 });
+
+    expect(importDroppedMedia).toHaveBeenCalledWith({
+      sessionId: 'session',
+      target: expect.objectContaining({ kind: 'module', nodeId: 'desktop-video-file-target' }),
+    }, file);
+    expect(importVideo).not.toHaveBeenCalled();
+    expect(pasteClipboardVideo).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the native bitmap when Electron exposes an in-memory image File without a filesystem path', async () => {
+    const node = createCanvasModuleNode('desktop-memory-image-target', 'image_input', { x: 10, y: 20 });
+    const project = { ...createStarterProject(), edges: [], nodes: [node] };
+    const asset = {
+      assetId: 'fedcba0987654321', byteSize: 42, displayUrl: 'novus-asset://project/session/fedcba0987654321',
+      extension: 'png' as const, height: 18, label: 'Pasted bitmap', mediaType: 'image/png' as const,
+      origin: 'clipboard' as const, sha256: 'f'.repeat(64), usageCount: 1, width: 24,
+    };
+    const importedProject = { ...project, nodes: [{ ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } }] };
+    const importDroppedMedia = vi.fn(async () => null);
+    const pasteClipboardImage = vi.fn(async () => ({ asset, currentRevision: 1, project: importedProject }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      projectImages: { importDroppedMedia, importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const file = new File(['bitmap'], 'image.png', { type: 'image/png' });
+
+    await expect(client.importProjectImage({ kind: 'module', nodeId: node.id }, file)).resolves.toMatchObject({ asset, revision: 1 });
+    expect(pasteClipboardImage).toHaveBeenCalledWith({
+      sessionId: 'session', target: expect.objectContaining({ kind: 'module', nodeId: node.id }),
+    });
+  });
+
+  it('falls back to the native MP4 file list when Electron exposes a video File that the renderer cannot persist', async () => {
+    const node = createCanvasModuleNode('desktop-memory-video-target', 'video_input', { x: 10, y: 20 });
+    const project = { ...createStarterProject(), edges: [], nodes: [node] };
+    const asset = {
+      assetId: '0123456789abcdef', byteSize: 128, displayUrl: 'novus-video://project/session/0123456789abcdef',
+      durationMs: 1_000, extension: 'mp4' as const, label: 'Pasted MP4', mediaType: 'video/mp4' as const,
+      origin: 'clipboard' as const, sha256: '0'.repeat(64), usageCount: 1,
+    };
+    const importedProject = { ...project, nodes: [{ ...node, data: { ...node.data, config: { ...node.data.config, assetId: asset.assetId } } }] };
+    const importDroppedMedia = vi.fn(async () => null);
+    const pasteClipboardVideo = vi.fn(async () => ({ asset, currentRevision: 1, project: importedProject }));
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'session', 0)), restore: vi.fn(),
+      projectImages: { importDroppedMedia, importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+      projectVideos: { importVideo: vi.fn(), list: vi.fn(async () => []), pasteClipboardVideo },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const file = new File(['mp4'], 'video.mp4', { type: 'video/mp4' });
+
+    await expect(client.importProjectVideo?.(node.id, file)).resolves.toMatchObject({ asset, revision: 1 });
+    expect(pasteClipboardVideo).toHaveBeenCalledWith({
+      sessionId: 'session', target: expect.objectContaining({ kind: 'module', nodeId: node.id }),
+    });
+  });
+
   it('keeps normal browser launch empty even when prior canvas content exists locally', async () => {
     localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify({
       current: { ...createStarterProject(), name: 'Browser recent project' },

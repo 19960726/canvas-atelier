@@ -1516,9 +1516,13 @@ export function CanvasWorkspace() {
         // continue to the native reader below; explicit text/plain is the
         // unambiguous text-editing case.
         event.preventDefault();
+        if (selectedMediaTarget.data.moduleType === 'video_input') {
+          void useAppStore.getState().pasteClipboardVideoForModule(selectedMediaTarget.id);
+          return;
+        }
         void readClipboardImageFile().then((file) => {
           if (importToSelectedMedia(file)) return;
-          useAppStore.setState({ projectImageError: 'CLIPBOARD_MEDIA_UNAVAILABLE' });
+          void useAppStore.getState().pasteClipboardImageForModule(selectedMediaTarget.id);
         });
         return;
       }

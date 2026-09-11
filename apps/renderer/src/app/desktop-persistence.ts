@@ -169,21 +169,21 @@ export interface ProjectPersistenceClient {
   }): Promise<ProjectDroppedMediaImportResult | null>;
   importProjectVideo?(nodeId: string, file?: File): Promise<ProjectVideoImportResult | null>;
   importAgentReferenceVideo?(file?: File): Promise<ProjectVideoImportResult | null>;
-  pasteClipboardImage(input: {
-    readonly operationId: string;
-    readonly position: { readonly x: number; readonly y: number };
-    readonly reconcileOnly?: true;
-  }): Promise<ProjectImageImportResult | null>;
-  pasteClipboardVideo?(input: {
-    readonly operationId: string;
-    readonly position: { readonly x: number; readonly y: number };
-    readonly reconcileOnly?: true;
-  }): Promise<ProjectVideoImportResult | null>;
+  pasteClipboardImage(input: ProjectClipboardPasteInput): Promise<ProjectImageImportResult | null>;
+  pasteClipboardVideo?(input: ProjectClipboardPasteInput): Promise<ProjectVideoImportResult | null>;
   listProjectImages(): Promise<ProjectImageAssetSummary[]>;
   listProjectVideos?(): Promise<ProjectVideoAssetSummary[]>;
   restore(snapshotId: string): Promise<ProjectRestoreResult>;
   stablePoint(): Promise<ProjectStablePointResult>;
 }
+
+export type ProjectClipboardPasteInput = {
+  readonly operationId: string;
+  readonly reconcileOnly?: true;
+} & (
+  | { readonly nodeId: string; readonly position?: never }
+  | { readonly nodeId?: never; readonly position: { readonly x: number; readonly y: number } }
+);
 
 export interface LegacyProjectImportClient {
   createFromLegacyBundle(bundle: PersistedProjectBundle): Promise<unknown>;
@@ -644,10 +644,12 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
               : { kind: 'agent_reference', operationId },
           }, file)
         : await bridge.projectImages.importImage({ sessionId: writableSessionId, target });
-      if (result === null && file !== undefined && target.kind === 'agent_reference') {
+      if (result === null && file !== undefined && (target.kind === 'module' || target.kind === 'agent_reference')) {
         result = await bridge.projectImages.pasteClipboardImage({
           sessionId: writableSessionId,
-          target: { kind: 'agent_reference', operationId: createDesktopClipboardOperationId() },
+          target: target.kind === 'module'
+            ? { kind: 'module', nodeId: target.nodeId, operationId: createDesktopClipboardOperationId() }
+            : { kind: 'agent_reference', operationId: createDesktopClipboardOperationId() },
         });
       }
       if (result === null) return null;
@@ -699,14 +701,30 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         revision,
       };
     },
-    async importProjectVideo(nodeId) {
+    async importProjectVideo(nodeId, file) {
       const writableSessionId = await ensureWritableSession();
       if (writableSessionId === null) return null;
-      const result = await bridge.projectVideos.importVideo({
-        sessionId: writableSessionId,
-        target: { kind: 'module', nodeId },
-      });
+      let result = file === undefined
+        ? await bridge.projectVideos.importVideo({
+            sessionId: writableSessionId,
+            target: { kind: 'module', nodeId },
+          })
+        : await bridge.projectImages.importDroppedMedia({
+            sessionId: writableSessionId,
+            target: {
+              kind: 'module',
+              nodeId,
+              operationId: createDesktopDroppedMediaOperationId(),
+            },
+          }, file);
+      if (result === null && file !== undefined) {
+        result = await bridge.projectVideos.pasteClipboardVideo({
+          sessionId: writableSessionId,
+          target: { kind: 'module', nodeId, operationId: createDesktopClipboardVideoOperationId() },
+        });
+      }
       if (result === null) return null;
+      if (result.asset.mediaType !== 'video/mp4') return null;
       currentProject = validateRecoveredProject(result.project, currentProject);
       revision = result.currentRevision;
       return { asset: result.asset, project: currentProject, revision };
@@ -728,12 +746,19 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (writableSessionId === null) return null;
       const request = {
         sessionId: writableSessionId,
-        target: {
-          kind: 'new_image_input' as const,
-          operationId: input.operationId,
-          position: input.position,
-          ...(input.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
-        },
+        target: 'nodeId' in input && input.nodeId !== undefined
+          ? {
+              kind: 'module' as const,
+              nodeId: input.nodeId,
+              operationId: input.operationId,
+              ...(input.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+            }
+          : {
+              kind: 'new_image_input' as const,
+              operationId: input.operationId,
+              position: input.position,
+              ...(input.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+            },
       };
       let result;
       try {
@@ -752,12 +777,19 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       if (writableSessionId === null) return null;
       const request = {
         sessionId: writableSessionId,
-        target: {
-          kind: 'new_video_input' as const,
-          operationId: input.operationId,
-          position: input.position,
-          ...(input.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
-        },
+        target: 'nodeId' in input && input.nodeId !== undefined
+          ? {
+              kind: 'module' as const,
+              nodeId: input.nodeId,
+              operationId: input.operationId,
+              ...(input.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+            }
+          : {
+              kind: 'new_video_input' as const,
+              operationId: input.operationId,
+              position: input.position,
+              ...(input.reconcileOnly === true ? { reconcileOnly: true as const } : {}),
+            },
       };
       let result;
       try {
@@ -1128,6 +1160,12 @@ function createDesktopClipboardOperationId(): string {
   const crypto = globalThis.crypto;
   if (typeof crypto?.randomUUID === 'function') return `clipboard_paste_${crypto.randomUUID().toLocaleLowerCase()}`;
   return `clipboard_paste_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function createDesktopClipboardVideoOperationId(): string {
+  const crypto = globalThis.crypto;
+  if (typeof crypto?.randomUUID === 'function') return `clipboard_video_${crypto.randomUUID().toLocaleLowerCase()}`;
+  return `clipboard_video_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
 }
 
 function shouldRetryClipboardPaste(error: unknown): boolean {

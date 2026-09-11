@@ -86,18 +86,40 @@ export function createElectronClipboardImageAdapter(
 function readExplorerImagePath(clipboard: ElectronClipboardLike, formats: readonly string[]): string | null {
   if (clipboard.readBuffer === undefined) return null;
   const formatByLowerName = new Map(formats.map((format) => [format.toLocaleLowerCase(), format]));
-  let paths: string[] = [];
   const dropFormat = formatByLowerName.get('cf_hdrop');
-  const wideNameFormat = formatByLowerName.get('filenamew');
-  const ansiNameFormat = formatByLowerName.get('filename');
   if (dropFormat !== undefined) {
-    paths = parseDropFiles(Buffer.from(clipboard.readBuffer(dropFormat)));
-  } else if (wideNameFormat !== undefined) {
-    paths = parseNullTerminatedPaths(Buffer.from(clipboard.readBuffer(wideNameFormat)), true, 1);
-  } else if (ansiNameFormat !== undefined) {
-    paths = parseNullTerminatedPaths(Buffer.from(clipboard.readBuffer(ansiNameFormat)), false, 1);
+    const paths = parseDropFiles(readClipboardBuffer(clipboard, dropFormat));
+    return paths.length === 1 && isSafeLocalImagePath(paths[0]!) ? paths[0]! : null;
   }
-  return paths.length === 1 && isSafeLocalImagePath(paths[0]!) ? paths[0]! : null;
+  const wideFormat = formatByLowerName.get('filenamew');
+  if (wideFormat === undefined) {
+    const hiddenPath = parseHiddenSinglePath(readClipboardBuffer(clipboard, 'FileNameW'), true);
+    if (hiddenPath !== null && isSafeLocalImagePath(hiddenPath)) return hiddenPath;
+  } else {
+    const widePaths = parseNullTerminatedPaths(readClipboardBuffer(clipboard, wideFormat), true, 1);
+    if (widePaths.length === 1 && isSafeLocalImagePath(widePaths[0]!)) return widePaths[0]!;
+  }
+  const ansiFormat = formatByLowerName.get('filename');
+  if (ansiFormat === undefined) return null;
+  const ansiPaths = parseNullTerminatedPaths(readClipboardBuffer(clipboard, ansiFormat), false, 1);
+  return ansiPaths.length === 1 && isSafeLocalImagePath(ansiPaths[0]!) ? ansiPaths[0]! : null;
+}
+
+function readClipboardBuffer(clipboard: ElectronClipboardLike, format: string): Buffer {
+  try {
+    return Buffer.from(clipboard.readBuffer?.(format) ?? []);
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+function parseHiddenSinglePath(value: Buffer, wide: boolean): string | null {
+  if (value.length === 0 || (wide && value.length % 2 !== 0)) return null;
+  const decoded = value.toString(wide ? 'utf16le' : 'latin1');
+  if (decoded.length === 0 || /[\r\n]/u.test(decoded)) return null;
+  const terminator = decoded.indexOf('\0');
+  if (terminator < 0) return decoded;
+  return terminator === decoded.length - 1 ? decoded.slice(0, -1) : null;
 }
 
 function parseDropFiles(value: Buffer): string[] {

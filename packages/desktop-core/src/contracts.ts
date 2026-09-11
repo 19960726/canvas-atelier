@@ -285,6 +285,12 @@ export type ProjectClipboardImageTarget =
       readonly reconcileOnly?: true;
     }
   | {
+      readonly kind: 'module';
+      readonly nodeId: string;
+      readonly operationId: string;
+      readonly reconcileOnly?: true;
+    }
+  | {
       readonly kind: 'agent_reference';
       readonly operationId: string;
     };
@@ -299,12 +305,19 @@ export interface PasteProjectClipboardImageBridgeRequest {
   readonly target: ProjectClipboardImageTarget;
 }
 
-export interface ProjectClipboardVideoTarget {
-  readonly kind: 'new_video_input';
-  readonly operationId: string;
-  readonly position: { readonly x: number; readonly y: number };
-  readonly reconcileOnly?: true;
-}
+export type ProjectClipboardVideoTarget =
+  | {
+      readonly kind: 'new_video_input';
+      readonly operationId: string;
+      readonly position: { readonly x: number; readonly y: number };
+      readonly reconcileOnly?: true;
+    }
+  | {
+      readonly kind: 'module';
+      readonly nodeId: string;
+      readonly operationId: string;
+      readonly reconcileOnly?: true;
+    };
 
 export interface PasteProjectClipboardVideoBridgeRequest {
   readonly sessionId: string;
