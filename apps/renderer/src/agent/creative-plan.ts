@@ -4,6 +4,7 @@ import { generationProfiles, type GenerationKind, type GenerationPreferences } f
 export interface CreativeWorkflowStep { title: string; detail: string }
 export interface CreativePlanOption { id: string; title: string; reason: string; kind: GenerationKind; prompt: string; modelRoute?: string; workflow?: CreativeWorkflowStep[] }
 export interface CreativePlan { summary: string; observations: string[]; estimates: string[]; unknowns: string[]; options: CreativePlanOption[] }
+export interface ConstrainedCreativePlan { plan: CreativePlan; selectedKind: GenerationKind; rejectedCount: number }
 const text = (value: unknown, max = 6000): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item) => text(item, 1200)).slice(0, 12) : [];
 export function parseCreativePlan(message: string): CreativePlan | null {
@@ -49,6 +50,15 @@ export function creativeWorkflowSteps(option: CreativePlanOption, referenceCount
   ];
 }
 
+export function constrainCreativePlanKind(plan: CreativePlan, selectedKind: GenerationKind): ConstrainedCreativePlan {
+  const options = plan.options.filter((option) => option.kind === selectedKind);
+  return {
+    plan: { ...plan, options },
+    selectedKind,
+    rejectedCount: plan.options.length - options.length,
+  };
+}
+
 export function recoverEmptyCreativePlan(
   message: string,
   request: string,
@@ -59,11 +69,19 @@ export function recoverEmptyCreativePlan(
   try {
     const source = JSON.parse(stripJsonFence(message));
     if (!source || !text(source.summary, 2000) || !Array.isArray(source.options) || source.options.length !== 0) return null;
-    const kind = inferRecoveryKind(request, preferences.kind, referenceCount);
+    const kind = preferences.kind;
     const candidates = generationProfiles(profiles, kind, referenceCount);
     const preferredRoute = preferences[kind].modelRoute;
     const profile = candidates.find((candidate) => candidate.modelRoute === preferredRoute) ?? candidates[0];
-    if (profile === undefined) return null;
+    if (profile === undefined) {
+      return {
+        summary: source.summary,
+        observations: strings(source.observations),
+        estimates: strings(source.estimates),
+        unknowns: strings(source.unknowns),
+        options: [],
+      };
+    }
     const prompt = request.replace(/@(?:图片|视频)\d+/gu, ' ').replace(/\s+/gu, ' ').trim();
     if (!text(prompt)) return null;
     const refining = kind === 'image' && (referenceCount > 0 || /(?:精修|修改|调整|替换|移除|保留|不.*改变|edit|refine|preserve)/iu.test(prompt));
@@ -90,11 +108,6 @@ function stripJsonFence(message: string): string {
   return message.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
 }
 
-function inferRecoveryKind(request: string, preference: GenerationKind, referenceCount: number): GenerationKind {
-  if (/(?:视频|动画|短片|video|animation)/iu.test(request)) return 'video';
-  if (referenceCount > 0 || /(?:图片|图像|主图|海报|产品图|精修|修图|image|photo|poster)/iu.test(request)) return 'image';
-  return preference;
-}
 export function creativePlanningInstructions(
   preferences: GenerationPreferences,
   profiles: readonly ProviderBridgeProfile[],
@@ -119,7 +132,7 @@ export function creativePlanningInstructions(
     '请先分析需求，给出合理的创作方案，等待用户选择，再由界面请求确认执行。不能声称已生成或修改画布。不输出隐藏思考，只提供可核查的分析摘要。',
     '区分 observations（观察）、estimates（估计，含依据）、unknowns（未知）。需求不足以形成方案时，用普通文字询问缺失信息，不编造可执行方案。',
     '图片/视频生成需求明确时，返回纯 JSON：{"summary":"需求与取舍摘要","observations":[],"estimates":[],"unknowns":[],"options":[{"id":"option-1","title":"方案名称","reason":"适用原因","kind":"image 或 video","prompt":"完整具体可执行的提示词","modelRoute":"从可用生成模型中选择","workflow":[{"title":"用户能理解的步骤名称","detail":"该步骤会使用什么输入、创建什么节点、做什么检查"}]}]}。提供1至3个有实质差异的方案，每个方案提供3至6个具体 workflow 步骤，不能只给关键词或用相同提示词填充。',
-    `用户未指定产物时的偏好：${preferences.kind}。明确的图片或视频要求优先。固定模型与参数必须遵守，可用目录：${JSON.stringify(routes)}`,
+    `本次已明确选择输出类型：${preferences.kind}。所有 options.kind 必须为 ${preferences.kind}，不得自动改成 ${preferences.kind === 'image' ? 'video' : 'image'}。如果所选类型没有兼容路线，返回 options:[] 并明确提示用户配置兼容模型；不能用另一种产物代替。固定模型与参数必须遵守，可用目录：${JSON.stringify(routes)}`,
     ...(referenceCount > 0 ? ['本次请求含有参考图，图片方案只能引用支持 image_edit 或 gemini_native 的路线；视频方案必须匹配参考图数量对应的输入模式。'] : []),
     '聊天模型只负责规划。选项中只引用生成目录的路线，不能使用聊天路线。没有可用生成模型时给出建议并说明需配置，不能声称可以执行。',
   ].join('\n');

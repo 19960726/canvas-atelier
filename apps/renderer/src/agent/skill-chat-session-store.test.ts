@@ -136,4 +136,36 @@ describe('skill chat conversation storage', () => {
       { id: 'codex-user', role: 'user', content: '检查画布', mode: 'codex' },
     ]);
   });
+
+  it('persists the selected generation kind with a creative request across an app restart', () => {
+    const conversation = {
+      ...createAgentConversation(930),
+      id: 'generation-kind-history',
+      mode: 'original' as const,
+      messages: [{
+        id: 'creative-image-request',
+        role: 'user' as const,
+        content: '精修产品，其他不要改变',
+        mode: 'original' as const,
+        request: {
+          modelDisplayName: 'Vision chat',
+          modelRoute: 'chat/vision',
+          knowledgeBaseCount: 0,
+          knowledgeBaseIds: [],
+          projectMemoryCount: 0,
+          references: [{ assetId: 'product-reference', label: '产品参考' }],
+          status: 'completed' as const,
+          generationKind: 'image' as const,
+        },
+      }],
+    };
+    writeAgentConversationCollection('generation-kind', {
+      version: 2,
+      activeConversationId: conversation.id,
+      conversations: [conversation],
+    });
+
+    expect(readAgentConversationCollection('generation-kind', 931).conversations[0]?.messages[0]?.request)
+      .toMatchObject({ generationKind: 'image', references: [{ assetId: 'product-reference' }] });
+  });
 });

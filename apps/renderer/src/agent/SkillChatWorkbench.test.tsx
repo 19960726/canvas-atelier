@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CODEX_ASTRA_PROFILE, type ChatSkillBridgeResult, type ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
-import { resolveAgentRequestTimeoutMs, resolveClipboardPasteAction, SkillChatWorkbench, type SkillCanvasActionRequest, type SkillChatRequest } from './SkillChatWorkbench';
+import { codexAnalysisDelayHint, resolveAgentRequestTimeoutMs, resolveClipboardPasteAction, SkillChatWorkbench, type SkillCanvasActionRequest, type SkillChatRequest } from './SkillChatWorkbench';
 import { createAgentConversation, writeAgentConversationCollection } from './skill-chat-session-store';
 
 afterEach(() => {
@@ -124,6 +124,12 @@ function canonicalNodeLength(node: Node): number {
 }
 
 describe('SkillChatWorkbench', () => {
+  it('explains when Max or Ultra reasoning is the reason an analysis is taking longer', () => {
+    expect(codexAnalysisDelayHint('max', 59)).toBeNull();
+    expect(codexAnalysisDelayHint('max', 60)).toContain('Max 深度推理耗时较长');
+    expect(codexAnalysisDelayHint('ultra', 120)).toContain('切换到“高”或“中”');
+    expect(codexAnalysisDelayHint('high', 120)).toBeNull();
+  });
   it('scales Codex timeout with the selected reasoning effort instead of giving every request ten minutes', () => {
     expect(resolveAgentRequestTimeoutMs('codex', 'low', false)).toBe(90_000);
     expect(resolveAgentRequestTimeoutMs('codex', 'medium', false)).toBe(150_000);
@@ -300,6 +306,33 @@ describe('SkillChatWorkbench', () => {
       canvasActionResults: [{ nodeId: createdNodeId, status: 'completed', assetIds: [] }],
     }));
     expect(await screen.findByLabelText('生成执行进度')).toHaveTextContent('结果已生成，但尚未回写画布');
+  });
+
+  it('shows the selected image or video workflow type in the composer and sends it as a strict planning choice', async () => {
+    const chat = vi.fn(async () => ({ message: JSON.stringify({
+      summary: '视频方案', observations: [], estimates: [], unknowns: [],
+      options: [{ id: 'video', title: '视频替代', reason: '动态展示', kind: 'video', prompt: '生成产品视频' }],
+    }), modelRoute: 'chat/creative', sources: [] }));
+    renderWorkbench({ profiles: [
+      profiles[0]!,
+      { ...profiles[1]!, modelRoute: 'image/edit', capabilities: ['image_generation', 'image_edit'] },
+      { provider: 'julun', modelRoute: 'video/i2v', modelId: 'seedance-2.0-deal', displayName: 'Seedance', capabilities: ['video_generation'] },
+    ], chat });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+
+    expect(screen.getByRole('button', { name: '生成偏好' })).toHaveTextContent('图片工作流');
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 精修产品，其他不要改变' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('本次已明确选择输出类型：image') })]),
+    })));
+    expect(await screen.findByRole('alert')).toHaveTextContent('本次已选择图片工作流');
+    expect(screen.queryByRole('button', { name: '选择方案：视频替代' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '生成偏好' }));
+    fireEvent.click(screen.getByRole('tab', { name: '视频' }));
+    expect(screen.getByRole('button', { name: '生成偏好' })).toHaveTextContent('视频工作流');
   });
 
   it('turns an empty structured creative response into one selectable reference-edit plan', async () => {
@@ -535,6 +568,9 @@ describe('SkillChatWorkbench', () => {
     window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'v'.repeat(16) } }));
     await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
     fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成偏好' }));
+    fireEvent.click(screen.getByRole('tab', { name: '视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭生成偏好' }));
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 生成参考图视频' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(chat).toHaveBeenCalledOnce());
@@ -1176,6 +1212,27 @@ describe('SkillChatWorkbench', () => {
     const sentRequestId = (chat.mock.calls[0]?.[0] as SkillChatRequest | undefined)?.requestId;
     await waitFor(() => expect(cancelChat).toHaveBeenCalledWith(sentRequestId));
     await waitFor(() => expect(screen.queryByLabelText('Agent 正在分析')).not.toBeInTheDocument());
+  });
+
+  it('cancels the background Codex process when the effort deadline expires', async () => {
+    vi.useFakeTimers();
+    let rejectChat: ((error: Error) => void) | undefined;
+    const chat = vi.fn((_request: SkillChatRequest) => new Promise<ChatSkillBridgeResult>((_resolve, reject) => { rejectChat = reject; }));
+    const cancelChat = vi.fn(async () => {
+      rejectChat?.(Object.assign(new Error('cancelled'), { code: 'CODEX_CLI_CANCELLED' }));
+      return true;
+    });
+    renderWorkbench({ profiles: [], codexProfiles: [catalogAstraProfile], chat, cancelChat });
+    fireEvent.click(screen.getByRole('button', { name: /^思考能力：/ }));
+    fireEvent.change(screen.getByRole('slider', { name: '思考能力' }), { target: { value: '0' } });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '检查当前画布并建立工作流' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await act(async () => { await Promise.resolve(); });
+    const sentRequestId = (chat.mock.calls[0]?.[0] as SkillChatRequest | undefined)?.requestId;
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(91_000); });
+
+    expect(cancelChat).toHaveBeenCalledWith(sentRequestId);
   });
 
   it('cancels the current local Codex request when a new task replaces it', async () => {

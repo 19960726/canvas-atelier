@@ -17,6 +17,7 @@ export interface StoredAgentRequestSummary {
   readonly references: readonly { readonly assetId: string; readonly label: string }[];
   readonly status: StoredAgentRequestStatus;
   readonly visualAnalysis?: boolean;
+  readonly generationKind?: 'image' | 'video';
 }
 
 export interface StoredAgentMessage {
@@ -242,7 +243,8 @@ function parseRequest(value: unknown): StoredAgentRequestSummary | null {
   if (!modelDisplayName || !modelRoute || references.some((reference) => reference === null)
     || !isBoundedInteger(value.knowledgeBaseCount, 16) || !isBoundedInteger(value.projectMemoryCount, 32)
     || (value.status !== 'sending' && value.status !== 'completed' && value.status !== 'error')
-    || (value.visualAnalysis !== undefined && typeof value.visualAnalysis !== 'boolean')) return null;
+    || (value.visualAnalysis !== undefined && typeof value.visualAnalysis !== 'boolean')
+    || (value.generationKind !== undefined && value.generationKind !== 'image' && value.generationKind !== 'video')) return null;
   return {
     modelDisplayName,
     modelRoute,
@@ -251,6 +253,7 @@ function parseRequest(value: unknown): StoredAgentRequestSummary | null {
     references: references as Array<{ assetId: string; label: string }>,
     status: value.status,
     ...(value.visualAnalysis === undefined ? {} : { visualAnalysis: value.visualAnalysis }),
+    ...(value.generationKind === undefined ? {} : { generationKind: value.generationKind }),
   };
 }
 

@@ -10,6 +10,7 @@ import {
   buildCodexCliProcessEnvironment,
   createCodexCliService,
   normalizeCodexCliError,
+  resolveCodexCliRequestTimeoutMs,
   resolveCodexCliExecutablePath,
   type CodexCliProcessInvocation,
 } from './codex-cli-service';
@@ -68,6 +69,14 @@ const CODEX_ASTRA_CATALOG_PROFILE = {
 };
 
 describe('Codex CLI Astra service', () => {
+  it('bounds the background process by the selected reasoning effort', () => {
+    expect(resolveCodexCliRequestTimeoutMs('low')).toBe(90_000);
+    expect(resolveCodexCliRequestTimeoutMs('medium')).toBe(150_000);
+    expect(resolveCodexCliRequestTimeoutMs('high')).toBe(240_000);
+    expect(resolveCodexCliRequestTimeoutMs('xhigh')).toBe(360_000);
+    expect(resolveCodexCliRequestTimeoutMs('max')).toBe(480_000);
+    expect(resolveCodexCliRequestTimeoutMs('ultra')).toBe(600_000);
+  });
   it('classifies the actual invalid API key event as an authentication failure', async () => {
     const service = createCodexCliService({
       executablePath: 'C:\\Codex\\codex.exe',

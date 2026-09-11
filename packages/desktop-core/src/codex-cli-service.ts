@@ -94,7 +94,18 @@ export interface CreateCodexCliServiceOptions {
   readonly resolveImages?: (sessionId: string, ids: readonly string[]) => Promise<readonly CodexCliManagedImage[]>;
 }
 
-const CODEX_TIMEOUT_MS = 10 * 60 * 1_000;
+const CODEX_REQUEST_TIMEOUTS_MS = {
+  low: 90_000,
+  medium: 150_000,
+  high: 240_000,
+  xhigh: 360_000,
+  max: 480_000,
+  ultra: 600_000,
+} as const satisfies Readonly<Record<CodexCliChatRequest['reasoningEffort'], number>>;
+
+export function resolveCodexCliRequestTimeoutMs(effort: CodexCliChatRequest['reasoningEffort']): number {
+  return CODEX_REQUEST_TIMEOUTS_MS[effort];
+}
 const MAX_PROCESS_OUTPUT_BYTES = 4 * 1024 * 1024;
 const DISABLED_CODEX_FEATURES = [
   'apps',
@@ -258,7 +269,7 @@ export function createCodexCliService(options: CreateCodexCliServiceOptions): Co
         ),
         cwd: executionRoot,
         stdin: buildCodexPrompt(request, knowledge, projectMemory),
-        timeoutMs: CODEX_TIMEOUT_MS,
+        timeoutMs: resolveCodexCliRequestTimeoutMs(request.reasoningEffort),
       });
       throwIfCodexCancelled(cancellation);
       return parseCodexResult(result, knowledge, request.modelRoute);

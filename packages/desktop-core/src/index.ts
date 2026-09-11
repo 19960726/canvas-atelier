@@ -315,6 +315,7 @@ export {
   createCodexCliService,
   createNodeCodexCliProcessRunner,
   normalizeCodexCliError,
+  resolveCodexCliRequestTimeoutMs,
   resolveCodexCliExecutablePath,
 } from './codex-cli-service.js';
 export type {

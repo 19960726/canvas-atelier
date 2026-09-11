@@ -4232,6 +4232,27 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('alert')).not.toHaveTextContent('检查模型与 API 配置');
   });
 
+  it('shows the actual RelayMe balance failure instead of blaming API configuration', () => {
+    const node = createCanvasModuleNode('generator-relayme-balance-failure', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'relayme-rena2' };
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'relayme', modelRoute: 'relayme-rena2', displayName: 'RENA2', modelId: 'RENA2', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+    useAppStore.setState({ modelJobs: [{
+      id: 'failed-relayme-balance-job', kind: 'image', provider: 'relayme', modelRoute: 'relayme-rena2',
+      promptNodeId: node.id, status: 'failed', error: 'Insufficient balance. Please recharge and try again.',
+      updatedAt: '2026-09-10T23:58:36.403Z',
+    }] } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('RelayMe 账户余额不足');
+    expect(screen.getByRole('alert')).toHaveTextContent('充值或切换其他供应商模型');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('检查模型与 API 配置');
+  });
+
   it('identifies a Comfly route mismatch without blaming RelayMe', () => {
     const node = createCanvasModuleNode('generator-comfly-route-failure', 'image_generation', { x: 0, y: 0 });
     const data = {

@@ -3133,6 +3133,10 @@ function formatGenerationJobError(job: ModelJob | undefined, kind: 'image' | 'vi
   if (error.includes('401') || error.includes('authentication') || error.includes('unauthorized')) {
     return 'API 密钥认证失败，请检查当前模型所属平台的密钥。';
   }
+  if (error.includes('insufficient balance') || error.includes('please recharge') || error.includes('余额不足')) {
+    const providerLabel = job.provider === 'relayme' || error.includes('relayme') ? 'RelayMe ' : '';
+    return `${providerLabel}账户余额不足，请充值或切换其他供应商模型后重试。`;
+  }
   if (error.includes('invalid_result')
     || error.includes('invalid result')
     || error.includes('generated result was invalid')
@@ -3141,7 +3145,7 @@ function formatGenerationJobError(job: ModelJob | undefined, kind: 'image' | 'vi
     || error.includes('无法识别')) {
     return '模型返回的图片格式无法解析，请更换兼容模型或重试。';
   }
-  if (error.includes('429') || error.includes('rate limit') || error.includes('quota')) {
+  if (error.includes('429') || error.includes('rate limit') || error.includes('quota') || error.includes('额度')) {
     return '请求过于频繁或账户额度受限，请稍后重试。';
   }
   if ((job.provider === 'comfly' || error.includes('comfly'))

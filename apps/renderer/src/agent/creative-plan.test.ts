@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions, creativeWorkflowSteps } from './creative-plan';
+import { parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions, creativeWorkflowSteps, constrainCreativePlanKind } from './creative-plan';
 import { defaultGenerationPreferences, generationProfiles, resolveGenerationPreference, readGenerationPreferences, writeGenerationPreferences } from './generation-preferences';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
@@ -64,6 +64,22 @@ describe('creative plan boundary', () => {
       }],
     });
   });
+
+  it('keeps an empty structured plan visible when the selected workflow has no compatible route', () => {
+    expect(recoverEmptyCreativePlan(
+      JSON.stringify({ summary: '没有兼容的图片编辑路线', observations: ['需要保留原图'], options: [] }),
+      '@图片1 精修产品，其他不要改变',
+      defaultGenerationPreferences(),
+      [{ provider: 'relayme', modelRoute: 'relayme-rena2', modelId: 'RENA2', displayName: 'RENA2', capabilities: ['image_generation'] }],
+      1,
+    )).toEqual({
+      summary: '没有兼容的图片编辑路线',
+      observations: ['需要保留原图'],
+      estimates: [],
+      unknowns: [],
+      options: [],
+    });
+  });
   it('instructs planning and confirmation, with no fabricated thinking', () => {
     const text = creativePlanningInstructions(defaultGenerationPreferences(), profiles);
     expect(text).toContain('用户选择');
@@ -71,6 +87,20 @@ describe('creative plan boundary', () => {
     expect(text).toContain('不输出隐藏思考');
     expect(text).toContain('video');
     expect(text).toContain('workflow');
+    expect(text).toContain('本次已明确选择输出类型：image');
+    expect(text).toContain('不得自动改成 video');
+  });
+  it('removes a model-authored video fallback when the user selected an image workflow', () => {
+    const plan = parseCreativePlan(JSON.stringify({
+      summary: '模型擅自改成视频',
+      options: [{ id: 'video-fallback', title: '动态展示', kind: 'video', prompt: '生成动态展示', reason: '图片编辑路线不可用' }],
+    }))!;
+
+    expect(constrainCreativePlanKind(plan, 'image')).toMatchObject({
+      selectedKind: 'image',
+      rejectedCount: 1,
+      plan: { options: [] },
+    });
   });
   it('limits image routes in planning instructions when references are present', () => {
     const text = creativePlanningInstructions(defaultGenerationPreferences(), [

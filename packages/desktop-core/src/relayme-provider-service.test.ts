@@ -1595,6 +1595,23 @@ describe('RelayMe provider service', () => {
     expect(historySink.failed).toHaveBeenCalledWith('history_relayme_provider_failed', 'provider_failed');
   });
 
+  it('normalizes RelayMe insufficient-balance task failures into an actionable safe message', async () => {
+    const { service } = await createService([
+      modelsResponse(),
+      jsonResponse({ taskId: 'relay-insufficient-balance', status: 'queued' }),
+      jsonResponse({ status: 'FAILED', error: 'Insufficient balance. Please recharge and try again.' }),
+    ]);
+    const submitted = await service.submitImageJob({
+      jobId: 'model-job-v2-relay-insufficient-balance', provider: 'relayme', modelRoute: 'relayme-gpt-image-2',
+      prompt: 'provider balance', conversationId: 'conversation-provider-balance', sessionId: 'desktop-session-provider-balance', referenceAssetIds: [],
+    });
+
+    await expect(service.pollImageJob({ provider: 'relayme', providerTaskId: submitted.providerTaskId })).resolves.toMatchObject({
+      status: 'failed',
+      error: { code: 'PROVIDER_ERROR', message: 'RelayMe 当前额度或请求频率受限，请稍后重试', retryable: true },
+    });
+  });
+
   it('submits RelayMe jobs when the legacy global task ledger belongs to Comfly', async () => {
     const appDataRoot = await mkdtemp(join(tmpdir(), 'relayme-ledger-isolation-'));
     roots.push(appDataRoot);

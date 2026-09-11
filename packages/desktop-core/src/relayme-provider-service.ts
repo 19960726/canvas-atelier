@@ -878,7 +878,11 @@ async function mapTaskState(
   if (['queued', 'pending', 'running', 'processing'].includes(status)) return { status: 'running', progress: undefined };
   if (status === 'cancelled' || status === 'canceled') return { status: 'cancelled' };
   if (status === 'failed' || status === 'error') {
-    return { status: 'failed', error: normalizeProviderBridgeError(createProviderBridgeError('PROVIDER_ERROR', response.error ?? `RelayMe ${kind === 'image' ? '图片' : '视频'}任务失败`, true)) };
+    const fallback = `RelayMe ${kind === 'image' ? '图片' : '视频'}任务失败`;
+    const providerError = response.error === undefined
+      ? createProviderBridgeError('PROVIDER_ERROR', fallback, true)
+      : translateRelayMeError(new Error(response.error), fallback);
+    return { status: 'failed', error: normalizeProviderBridgeError(providerError) };
   }
   if (!['completed', 'success', 'succeeded'].includes(status)) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'RelayMe 返回了未知任务状态');
@@ -1256,7 +1260,7 @@ function translateRelayMeError(error: unknown, fallback: string): ProviderBridge
       { authenticationExpired: true as const },
     );
   }
-  if (status === 429 || /quota|额度|余额|rate[ -]?limit|too many requests|\b429\b/iu.test(message)) {
+  if (status === 429 || /quota|额度|余额|insufficient balance|please recharge|rate[ -]?limit|too many requests|\b429\b/iu.test(message)) {
     return createProviderBridgeError('PROVIDER_ERROR', 'RelayMe 当前额度或请求频率受限，请稍后重试', true);
   }
   if (retryable || (status !== undefined && status >= 500)) {

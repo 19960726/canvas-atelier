@@ -35,8 +35,8 @@ import {
 import { parseReverseAnalysisResponse, type ReverseAnalysisResult } from './reverse-workflow-contract';
 import { GenerationPreferencesSheet } from './GenerationPreferencesSheet';
 import { CodexReasoningPopover } from './CodexReasoningPopover';
-import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
-import { creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
+import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationKind, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
+import { constrainCreativePlanKind, creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
 
 type SkillMessage = {
   readonly id: string;
@@ -79,6 +79,7 @@ type SkillRequestSummary = {
   readonly references: readonly { readonly assetId: string; readonly label: string }[];
   readonly status: SkillRequestStatus;
   readonly visualAnalysis?: boolean;
+  readonly generationKind?: GenerationKind;
 };
 
 export interface SkillWorkflowDraftRequest {
@@ -129,6 +130,11 @@ export function resolveAgentRequestTimeoutMs(
   return provider === 'codex'
     ? CODEX_REQUEST_TIMEOUTS_MS[reasoningEffort]
     : usesVisualAnalysis ? AGENT_VISUAL_REQUEST_TIMEOUT_MS : AGENT_REQUEST_TIMEOUT_MS;
+}
+
+export function codexAnalysisDelayHint(effort: CodexReasoningEffort, elapsedSeconds: number): string | null {
+  if ((effort !== 'max' && effort !== 'ultra') || elapsedSeconds < 60) return null;
+  return `${REASONING_EFFORT_LABELS[effort]} 深度推理耗时较长；需要更快结果时可停止并切换到“高”或“中”。`;
 }
 
 export interface ReverseTimelineEntry {
@@ -921,6 +927,7 @@ export function SkillChatWorkbench({
       references: selectedReferences.map(({ assetId, label }) => ({ assetId, label })),
       status: 'sending',
       visualAnalysis,
+      ...(planning ? { generationKind: generationPreferences.kind } : {}),
     };
     const previousMessage = messages[messages.length - 1];
     const replacesFailedRequest = isIdenticalFailedRequest(previousMessage, content, requestSummary);
@@ -984,6 +991,15 @@ export function SkillChatWorkbench({
       }]);
       setStatus('idle');
     } catch (caught) {
+      if (caught instanceof ProviderOperationTimeoutError && localCodexRequestId !== undefined) {
+        try {
+          await cancelChatRef.current?.(localCodexRequestId);
+        } catch {
+          // The UI still ends the timed-out request even if the process already exited.
+        } finally {
+          if (activeLocalCodexRequestId.current === localCodexRequestId) activeLocalCodexRequestId.current = null;
+        }
+      }
       if (requestId.current !== activeRequestId) return;
       setStatus('idle');
       setComposer((current) => current.text.trim().length === 0 && current.citations.length === 0 ? retryComposer : current);
@@ -1324,12 +1340,21 @@ export function SkillChatWorkbench({
           {messages.map((message, messageIndex) => {
             const precedingMessage = messageIndex > 0 ? messages[messageIndex - 1] : undefined;
             const messageMode = message.mode ?? agentMode;
+            const parsedCreativePlan = message.role === 'assistant' && messageMode === 'original'
+              ? parseCreativePlan(message.content)
+              : null;
+            const requestedGenerationKind = precedingMessage?.role === 'user'
+              ? precedingMessage.request?.generationKind
+              : undefined;
+            const constrainedCreativePlan = parsedCreativePlan !== null && requestedGenerationKind !== undefined
+              ? constrainCreativePlanKind(parsedCreativePlan, requestedGenerationKind)
+              : null;
             const creativePlan = message.role === 'assistant' && messageMode === 'original'
-              ? parseCreativePlan(message.content) ?? (precedingMessage?.role === 'user'
+              ? constrainedCreativePlan?.plan ?? parsedCreativePlan ?? (precedingMessage?.role === 'user'
                 ? recoverEmptyCreativePlan(
                   message.content,
                   precedingMessage.content,
-                  generationPreferences,
+                  requestedGenerationKind === undefined ? generationPreferences : { ...generationPreferences, kind: requestedGenerationKind },
                   profiles,
                   precedingMessage.request?.references.length ?? 0,
                 )
@@ -1368,12 +1393,15 @@ export function SkillChatWorkbench({
                   const optionKey = `${message.id}:${option.id}`;
                   const selected = selectedCreativeOptionKey === optionKey;
                   const workflowSteps = creativeWorkflowSteps(option, precedingMessage?.request?.references.length ?? 0);
-                  return <div key={option.id} className="creative-plan__option"><strong>{option.title}</strong><p>{option.reason}</p>
+                  return <div key={option.id} className="creative-plan__option"><span className="creative-plan__kind">{option.kind === 'image' ? '图片工作流' : '视频工作流'}</span><strong>{option.title}</strong><p>{option.reason}</p>
                     <section className="creative-plan__workflow" aria-label={`工作流预览：${option.title}`}><b>工作流预览</b><ol>{workflowSteps.map((step, index) => <li key={`${step.title}-${index}`}><span>{index + 1}</span><div><strong>{step.title}</strong><p>{step.detail}</p></div></li>)}</ol></section>
                     <details><summary>查看完整执行提示词</summary><p>{option.prompt}</p></details>
                     {messageMode !== 'chat' && <button type="button" className={`creative-plan__select${selected ? ' is-selected' : ''}`} aria-label={`选择方案：${option.title}`} aria-pressed={selected} disabled={canvasActionRunning || status === 'sending'} onClick={() => chooseCreativeOption(message.id, option, precedingMessage?.request?.references ?? [])}>{selected ? '✓ 已选择' : '选择此方案'}</button>}
                   </div>;
                 })}
+                {creativePlan.options.length === 0 && requestedGenerationKind !== undefined && (
+                  <p className="skill-chat-workbench__error" role="alert">本次已选择{requestedGenerationKind === 'image' ? '图片' : '视频'}工作流，但模型没有返回对应方案。请打开生成偏好切换输出类型，或配置支持当前参考素材的{requestedGenerationKind === 'image' ? '图片' : '视频'}模型后重试。</p>
+                )}
               </section>}
               {message.role === 'user' && message.request?.references.length ? (
                 <section className="skill-chat-workbench__sent-references" aria-label="已发送素材">
@@ -1513,6 +1541,9 @@ export function SkillChatWorkbench({
                 <span>{agentMode === 'codex' && selectedProfile?.provider === 'codex'
                   ? `${selectedProfile.displayName} · ${REASONING_EFFORT_LABELS[reasoningEffort]} 正在分析，已等待 ${analysisElapsedSeconds} 秒`
                   : '正在分析需求…'}</span>
+                {agentMode === 'codex' && selectedProfile?.provider === 'codex' && codexAnalysisDelayHint(reasoningEffort, analysisElapsedSeconds) !== null && (
+                  <small className="skill-chat-workbench__thinking-hint">{codexAnalysisDelayHint(reasoningEffort, analysisElapsedSeconds)}</small>
+                )}
                 {agentMode === 'codex' && selectedProfile?.provider === 'codex' && activeLocalCodexRequestId.current !== null && (
                   <button type="button" className="skill-chat-workbench__thinking-stop" aria-label="停止 Codex 分析" onClick={() => {
                     void cancelActiveCodexRequest().finally(() => {
@@ -1631,7 +1662,7 @@ export function SkillChatWorkbench({
               onClick={() => setReverseAnalysisDepth(depth)}
             >{label}</button>)}
           </div>}
-          <button type="button" className="skill-chat-workbench__generation-trigger" data-testid="agent-generation-preferences" aria-label="生成偏好" title="生成偏好" onClick={() => dispatchPopover({ type: 'open', id: 'generation' })}><SlidersHorizontal size={15} /></button>
+          <button type="button" className="skill-chat-workbench__generation-trigger" data-testid="agent-generation-preferences" aria-label="生成偏好" title={`当前：${generationPreferences.kind === 'image' ? '图片' : '视频'}工作流；点击选择输出类型和生成模型`} onClick={() => dispatchPopover({ type: 'open', id: 'generation' })}><SlidersHorizontal size={15} /><span>{generationPreferences.kind === 'image' ? '图片工作流' : '视频工作流'}</span></button>
           <div className="skill-chat-workbench__composer-actions">
             <button type="button" className="skill-chat-workbench__tool skill-chat-workbench__knowledge-compact" data-testid="knowledge-base-trigger" aria-label="打开知识库" onClick={() => dispatchPopover({ type: 'open', id: 'knowledge' })}><Grid3X3 size={14} strokeWidth={1.6} /></button>
             <button type="button" className="skill-chat-workbench__tool" aria-label="新建对话" onClick={createConversation}><RotateCcw size={14} strokeWidth={1.6} /></button>
