@@ -62,6 +62,13 @@ type E2EState = {
     displayUrl: string;
     label: string;
   }>;
+  reverseAnalysisRequests: Array<{
+    analysisDepth: 'fast' | 'standard' | 'deep';
+    modelRoute: string;
+    provider: 'comfly' | 'relayme' | 'julun' | '4dai';
+    referenceCount: number;
+    sessionId: string;
+  }>;
   projectNodeTypes: string[];
   skillSyncWrites: Array<{
     candidateId: string;
@@ -474,6 +481,7 @@ declare global {
       }): void;
       failNextProjectCommit(): void;
       failNextModelJobEnqueue(): void;
+      failNextReverseAnalysis(): void;
       reopenProject(): Promise<void>;
       reset(): Promise<void>;
       seedSkillSyncDivergence(): Promise<void>;

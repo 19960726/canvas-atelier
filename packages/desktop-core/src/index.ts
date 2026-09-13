@@ -342,6 +342,7 @@ export {
   parseProviderBridgeResponse,
   registerProviderBridgeHandlers,
 } from './provider-bridge.js';
+export { ChatSkillBridgeRequestSchema } from './provider-contracts.js';
 export { createProviderConfigurationStore } from './provider-configuration-store.js';
 export type {
   PersistedProviderConfigurationState,

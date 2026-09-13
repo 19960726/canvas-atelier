@@ -38,6 +38,7 @@ test('managed canvas images can be mentioned in a vision Skill chat without chan
   const selectedModel = await panel.getByTestId('agent-model-trigger').getAttribute('data-selected-model');
   expect(selectedModel).toBeTruthy();
   await panel.getByTestId('agent-composer-input').pressSequentially('@');
+  await panel.getByRole('button', { name: '浏览项目图片' }).click();
   await panel.getByRole('menuitem').first().click();
   await expect(panel.getByTestId('agent-composer-input')).toHaveText(/图片1/);
   await panel.getByTestId('agent-composer-input').pressSequentially(' describe the composition');

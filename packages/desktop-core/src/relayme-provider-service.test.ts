@@ -832,6 +832,11 @@ describe('RelayMe provider service', () => {
     );
     expect(chatSpy).toHaveBeenCalledOnce();
     expect(chatSpy.mock.calls[0]).toHaveLength(1);
+    const ordinaryChatCalls = (fetch as unknown as {
+      readonly mock: { readonly calls: readonly (readonly [string, { readonly body?: unknown } | undefined])[] };
+    }).mock.calls;
+    const ordinaryChatCall = ordinaryChatCalls[ordinaryChatCalls.length - 1];
+    expect(JSON.parse(String(ordinaryChatCall?.[1]?.body)).max_tokens).toBeUndefined();
   });
 
   it('accepts RelayMe Gemini structured chat content instead of rejecting a valid reply', async () => {
@@ -878,6 +883,7 @@ describe('RelayMe provider service', () => {
       referenceAssetIds: [assetId],
       referenceMentions: [{ assetId, label: '产品图', mention: '@图片1' }],
       visualAnalysis: true,
+      reverseAnalysisDepth: 'deep',
       messages: [{ role: 'user', content: '请反推这张图片' }],
       context: { knowledgeBaseIds: [], projectMemoryIds: [] },
     })).resolves.toMatchObject({ message: '主体为一只白色咖啡杯。' });
@@ -888,6 +894,8 @@ describe('RelayMe provider service', () => {
     }).mock.calls.find(([url]) => url.endsWith('/chat/completions'));
     const body = JSON.parse(String(chatCall?.[1]?.body));
     expect(chatCall?.[1]?.timeoutMs).toBe(300_000);
+    expect(body.max_tokens).toBe(16_384);
+    expect(body.messages[0].content).toContain('使用深度反推');
     expect(body.messages.at(-1)).toEqual({
       role: 'user',
       content: [
@@ -978,6 +986,7 @@ describe('RelayMe provider service', () => {
         modelRoute: 'relayme-vision-chat',
         role: 'Commercial visual analyst',
         task: 'Analyze the managed original image.',
+        analysisDepth: 'deep',
         knowledgeBaseIds: [],
       },
       knowledgeLease: createAgentKnowledgeLease({
@@ -1015,6 +1024,10 @@ describe('RelayMe provider service', () => {
       media: [{ kind: 'image', assetId: imageAssetId, sha256: imageSha256, byteSize: 4, mediaType: 'image/png' }],
     })).resolves.toMatchObject({ ...expected, completeness: { status: 'partial' } });
     expect(readManagedReverseMedia).toHaveBeenCalledOnce();
+    const reverseBody = JSON.parse(String((fetch as unknown as {
+      readonly mock: { readonly calls: readonly (readonly [string, { readonly body?: unknown } | undefined])[] };
+    }).mock.calls.find(([url]) => url.endsWith('/chat/completions'))?.[1]?.body));
+    expect(reverseBody.max_tokens).toBe(16_384);
     expect(fetch).toHaveBeenLastCalledWith(
       'https://www.ml.relayme.uk/api/ai-tools/v1/chat/completions',
       expect.objectContaining({

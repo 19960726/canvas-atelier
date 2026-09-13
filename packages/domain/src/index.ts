@@ -38,6 +38,8 @@ export {
   createConfirmedModelJob,
   getLegalModelJobTransitions,
   modelJobSchema,
+  normalizeImageOutputFormat,
+  normalizeImageBackground,
   modelJobStatusSchema,
   sanitizeModelJobError,
   transitionModelJob,
@@ -130,7 +132,8 @@ export type {
   PlacementObject,
   ReferenceRole,
 } from './project-schema';
-export type { ConfirmedModelJobInput, ImageAspectRatio, ImageQuality, ImageResolutionTier, ModelJobKind, ModelJobProvider, ModelJobStatus, VideoResolutionTier } from './model-job';
+export type { ConfirmedModelJobInput, ImageAspectRatio, ImageQuality, ImageOutputFormat, ImageBackground, ImageResolutionTier, ModelJobKind, ModelJobProvider, ModelJobStatus, VideoResolutionTier } from './model-job';
+export { imageAspectRatioSchema } from './model-job';
 
 export type { AgentCanvasPlan, AgentPlanApprovalSelection, AgentCapability, AgentPlanConfirmations, AgentPlanState, AgentPlanValidation, ExecutionReferenceSnapshot } from './agent-plan';
 export type { RuntimeProfile, RuntimeProfileId } from './runtime-profile';

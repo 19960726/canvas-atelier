@@ -110,13 +110,12 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
       setLoading(false);
       return () => { cancelled = true; };
     }
-    void Promise.all([bridge.list(request), bridge.getCapacity()])
-      .then(([result, nextCapacity]) => {
+    void bridge.list(request)
+      .then((result) => {
         if (cancelled) return;
         setRecords(result.records);
         setTotal(result.total);
         setNextCursor(result.nextCursor);
-        setCapacity(nextCapacity);
         setSelectedId((current) => current !== null && result.records.some((record) => record.id === current) ? current : null);
       })
       .catch(() => {
@@ -124,6 +123,13 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+      });
+    void bridge.getCapacity()
+      .then((nextCapacity) => {
+        if (!cancelled) setCapacity(nextCapacity);
+      })
+      .catch(() => {
+        if (!cancelled) setCapacity(null);
       });
     return () => { cancelled = true; };
   }, [bridge, request]);

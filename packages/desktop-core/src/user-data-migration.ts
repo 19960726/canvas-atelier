@@ -25,6 +25,10 @@ const USER_DATA_FILES = [
   'recent-projects.index.json',
 ] as const;
 
+const USER_DATA_DIRECTORIES = [
+  'generation-history',
+] as const;
+
 export function resolveStableUserDataRoot(appDataRoot: string): string {
   return join(appDataRoot, STABLE_USER_DATA_DIRECTORY);
 }
@@ -51,8 +55,9 @@ export async function migrateLegacyUserData(options: {
   readonly legacyRoots: readonly string[];
 }): Promise<{ readonly copied: readonly string[] }> {
   const fileResult = await migrateWhitelistedFiles(options, USER_DATA_FILES);
+  const directoryResult = await migrateWhitelistedDirectories(options, USER_DATA_DIRECTORIES);
   const stableRoot = resolve(options.stableRoot);
-  const copied = [...fileResult.copied];
+  const copied = [...fileResult.copied, ...directoryResult.copied];
   const stableProjectsRoot = resolve(stableRoot, 'projects');
   assertConfinedPath(stableRoot, stableProjectsRoot);
 
@@ -82,6 +87,39 @@ export async function migrateLegacyUserData(options: {
   }
 
   await rebaseRecentProjectIndex(stableRoot, options.legacyRoots);
+
+  return { copied };
+}
+
+async function migrateWhitelistedDirectories(options: {
+  readonly stableRoot: string;
+  readonly legacyRoots: readonly string[];
+}, relativePaths: readonly string[]): Promise<{ readonly copied: readonly string[] }> {
+  const stableRoot = resolve(options.stableRoot);
+  const copied: string[] = [];
+
+  for (const relativePath of relativePaths) {
+    const targetPath = resolve(stableRoot, ...relativePath.split('/'));
+    assertConfinedPath(stableRoot, targetPath);
+    if (await entryExists(targetPath)) continue;
+
+    for (const legacyRootValue of options.legacyRoots) {
+      const legacyRoot = resolve(legacyRootValue);
+      if (legacyRoot.toLocaleLowerCase('en-US') === stableRoot.toLocaleLowerCase('en-US')) continue;
+      const sourcePath = resolve(legacyRoot, ...relativePath.split('/'));
+      assertConfinedPath(legacyRoot, sourcePath);
+      if (!(await directoryExists(sourcePath))) continue;
+
+      await mkdir(dirname(targetPath), { recursive: true });
+      try {
+        await cp(sourcePath, targetPath, { recursive: true, errorOnExist: true, force: false });
+        copied.push(relativePath);
+      } catch (error) {
+        if (!hasErrno(error, 'EEXIST')) throw error;
+      }
+      break;
+    }
+  }
 
   return { copied };
 }

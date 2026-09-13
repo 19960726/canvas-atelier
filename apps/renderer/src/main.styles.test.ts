@@ -71,6 +71,12 @@ describe('renderer stylesheet precedence', () => {
     expect(workspace).not.toContain('className="workspace-view-tabs"');
   });
 
+  it('keeps the compact theme switch visible in the final Canvas topbar', () => {
+    const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
+
+    expect(release).not.toMatch(/\.workspace--canvas-layout \.topbar__actions \.theme-control--compact,\s*\.workspace--canvas-layout \.topbar-close-action \{[\s\S]*?display:\s*none !important;/);
+  });
+
   it('keeps the reference media rails authoritative after hybrid CSS is loaded', () => {
     const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
 

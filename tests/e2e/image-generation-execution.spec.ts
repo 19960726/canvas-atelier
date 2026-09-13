@@ -5,7 +5,7 @@ import { makeReferenceImage } from './helpers/fixtures';
 
 const artifact = (name: string) => path.join(process.cwd(), 'artifacts', '2026-08-28-generation-retry', name);
 
-test('Generate image submits the selected model job and exposes a running state', async ({ page }) => {
+test('Generate image submits the selected model family at the visible resolution and exposes a running state', async ({ page }) => {
   await openEmptyApp(page);
   await page.evaluate(() => window.__NOVUS_E2E__!.createModule('image_generation', { x: 420, y: 140 }));
 
@@ -17,16 +17,26 @@ test('Generate image submits the selected model job and exposes a running state'
   const route = generation.getByRole('combobox', { name: 'Image generation model route' });
   await expect(route).toBeEnabled();
   const selectedRoute = await route.inputValue();
+  const selectedResolution = await generation
+    .getByRole('button', { name: 'Image generation resolution' })
+    .getAttribute('value');
   expect(selectedRoute).not.toBe('');
+  expect(selectedResolution).toMatch(/^(?:1K|2K|4K)$/u);
 
   await generation.getByRole('button', { name: 'Generate image' }).click();
 
   const state = await waitForModelSubmissions(page, 1);
-  expect(state.modelSubmissions[0]).toMatchObject({ modelRoute: selectedRoute, retryCount: 0 });
+  const submitted = state.modelSubmissions[0]!;
+  expect(submitted).toMatchObject({ resolution: selectedResolution, retryCount: 0 });
+  expect(imageResolutionFamily(submitted.modelRoute)).toBe(imageResolutionFamily(selectedRoute));
   expect(state.modelJobs[0]?.status).toMatch(/submitting|running/);
   await expect(generation.locator('.module-node__run-generation')).not.toHaveAttribute('aria-label', 'Generate image');
   expect((await e2eState(page)).modelJobs).toHaveLength(1);
 });
+
+function imageResolutionFamily(modelRoute: string): string {
+  return modelRoute.replace(/-(?:512px|1k|2k|4k)$/iu, '');
+}
 
 test('a generation start error exposes a clickable retry that starts the next attempt', async ({ page }) => {
   await openEmptyApp(page);

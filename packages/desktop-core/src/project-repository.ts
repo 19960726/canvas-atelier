@@ -210,6 +210,7 @@ export class ProjectRepository {
     }
 
     assertSafeWin7ProjectRoot(root);
+    await this.fileSystem.mkdir(join(root, 'recovery'), { recursive: true });
 
     const lockDecision = await this.tryAcquireWriteLock(root, manifest.projectId);
     if (lockDecision.mode !== 'write' || lockDecision.lock === null) {

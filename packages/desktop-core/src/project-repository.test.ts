@@ -137,6 +137,29 @@ describe('ProjectRepository', () => {
     });
   });
 
+  it('restores the recovery directory when an older project is opened for writing', async () => {
+    const tempRoot = await createTempRoot(tempRoots);
+    const projectRoot = join(tempRoot, 'LegacyWithoutRecovery.novus-project');
+    const repository = createRepository();
+
+    const created = await repository.create(projectRoot, {
+      project: starterProject,
+      projectId: 'project-legacy-without-recovery',
+      projectName: 'LegacyWithoutRecovery',
+    });
+    await repository.close(created);
+    await rm(join(projectRoot, 'recovery'), { force: true, recursive: true });
+
+    const reopened = await repository.open(projectRoot, { mode: 'write' });
+
+    expect(reopened.mode).toBe('write');
+    await expect(access(join(projectRoot, 'recovery', 'project.lock'))).resolves.toBeUndefined();
+    await expect(readJson<TestCleanCloseMarker>(join(projectRoot, 'recovery', 'clean-close.json'))).resolves.toMatchObject({
+      clean: false,
+      closedAt: null,
+    });
+  });
+
   it('opens a second live writer as read-only while the first lock is still live', async () => {
     const tempRoot = await createTempRoot(tempRoots);
     const projectRoot = join(tempRoot, 'Locked.novus-project');

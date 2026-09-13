@@ -19,7 +19,11 @@ export function buildReverseResultSections(result: Partial<ReversePromptResult>)
       'scene-responsibilities',
       '素材职责与取舍',
       result.mediaResponsibilities.map((item, index) => [
-        `${index + 1}. ${item.label ?? item.sourceId}（${item.sourceId}）`,
+        `${item.mention === undefined
+          ? `${index + 1}. ${item.label ?? item.sourceId}`
+          : item.label === undefined || item.label === item.mention
+            ? item.mention
+            : `${item.mention} · ${item.label}`}（${item.sourceId}）`,
         `职责：${item.role}`,
         `优先级：${item.priority}`,
         `可用元素：${item.usableElements.join('；')}`,

@@ -11,6 +11,9 @@ export function extractGeminiReverseText(parts: readonly unknown[] | undefined):
   if (parts === undefined) return undefined;
   const text = parts.flatMap((part) => {
     const record = asRecord(part);
+    // Gemini may return a textual chain-of-thought part before the final JSON.
+    // Thought parts are not provider output and must never be concatenated into it.
+    if (record?.thought === true) return [];
     return typeof record?.text === 'string' ? [record.text] : [];
   }).join('');
   return text.trim().length > 0 ? text : undefined;
@@ -25,7 +28,12 @@ export function normalizeReverseProviderResult(input: unknown, run: ReverseRunId
   for (const [key, value] of Object.entries(candidate)) {
     if (!allowedKeys.has(key)) continue;
     if (key === 'mediaResponsibilities') {
-      normalized[key] = value;
+      const cleaned = preserveKnownFields(restoreMissingMediaMentions(value, run), reversePromptResultSchema.shape.mediaResponsibilities);
+      if (Array.isArray(cleaned)) {
+        normalized[key] = cleaned.map((item) => item && typeof item === 'object'
+          ? { inheritance: [], conflicts: [], ...(item as Record<string, unknown>) }
+          : item);
+      }
       continue;
     }
     const fieldSchema = reversePromptResultSchema.shape[key as keyof typeof reversePromptResultSchema.shape];
@@ -43,7 +51,10 @@ export function normalizeReverseProviderResult(input: unknown, run: ReverseRunId
   const video = run.videoInput !== undefined || run.orderedMedia?.some((item) => item.kind === 'video');
   const required = REVERSE_ANALYSIS_CHAPTERS.filter((key) => video || (key !== 'videoTimeline' && key !== 'seedance25'));
   const missingSections = required.filter((key) => candidate[key] === undefined);
-  const invalidSections = REVERSE_ANALYSIS_CHAPTERS.filter((key) => candidate[key] !== undefined && normalized[key] === undefined);
+  const invalidSections = REVERSE_ANALYSIS_CHAPTERS.filter((key) => (
+    (candidate[key] !== undefined && normalized[key] === undefined)
+    || (required.includes(key) && isCriticalCollectionEmpty(key, normalized[key]))
+  ));
   // These diagnostics are computed locally; the provider cannot declare its own result complete.
   normalized.completeness = { status: missingSections.length || invalidSections.length ? 'partial' : 'complete', missingSections, invalidSections };
   normalized.partialSections = invalidSections.flatMap((section) => {
@@ -51,6 +62,26 @@ export function normalizeReverseProviderResult(input: unknown, run: ReverseRunId
     return content && content.length <= 24000 ? [{ section, content }] : [];
   });
   return normalized;
+}
+
+function restoreMissingMediaMentions(value: unknown, run: ReverseRunIdentity): unknown {
+  if (!Array.isArray(value) || run.orderedMedia === undefined) return value;
+  const mentionsBySource = new Map<string, string | undefined>();
+  let imageNumber = 0;
+  let videoNumber = 0;
+  for (const item of [...run.orderedMedia].sort((left, right) => left.order - right.order)) {
+    const mention = item.kind === 'image' ? `@图片${++imageNumber}` : `@视频${++videoNumber}`;
+    // Repeated assets can occupy different reference slots. Never guess a slot.
+    mentionsBySource.set(item.assetId, mentionsBySource.has(item.assetId) ? undefined : mention);
+  }
+  return value.map((item) => {
+    const record = asRecord(item);
+    if (record === null || record.mention !== undefined || typeof record.sourceId !== 'string') return item;
+    const mention = mentionsBySource.get(record.sourceId);
+    // Only recover an omitted identifier from authoritative, unique run media.
+    // Explicit mismatches and missing sources still reach strict domain validation.
+    return mention === undefined ? item : { ...record, mention };
+  });
 }
 
 function preserveKnownFields(value: unknown, schema: z.ZodTypeAny, depth = 0): unknown {
@@ -115,24 +146,39 @@ function fillPromptAlias(target: Record<string, unknown>, key: string, ...values
 
 function fillStringList(target: Record<string, unknown>, key: string, ...aliases: unknown[]): void {
   if (Array.isArray(target[key]) && target[key].length > 0) return;
-  const value = [target[key], ...aliases].find((candidate) => (
-    Array.isArray(candidate) || (typeof candidate === 'string' && candidate.trim().length > 0)
-  ));
-  if (Array.isArray(value)) {
-    const items = value.flatMap((item) => {
-      if (typeof item === 'string' && item.trim().length > 0) return [item.trim()];
-      const record = asRecord(item);
-      if (record === null) return [];
-      const text = [record.text, record.label, record.value, record.description]
-        .find((candidate) => typeof candidate === 'string' && candidate.trim().length > 0);
-      return typeof text === 'string' ? [text.trim()] : [];
-    });
-    if (items.length > 0) target[key] = items;
-    return;
+  for (const value of [target[key], ...aliases]) {
+    if (Array.isArray(value)) {
+      const items = value.flatMap((item) => {
+        if (typeof item === 'string' && item.trim().length > 0) return [item.trim()];
+        const record = asRecord(item);
+        if (record === null) return [];
+        const text = [record.text, record.label, record.value, record.description]
+          .find((candidate) => typeof candidate === 'string' && candidate.trim().length > 0);
+        return typeof text === 'string' ? [text.trim()] : [];
+      });
+      if (items.length > 0) {
+        target[key] = items;
+        return;
+      }
+      continue;
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const items = value.split(/[\n,，;；]+/u).map((item) => item.trim()).filter(Boolean);
+      if (items.length > 0) {
+        target[key] = items;
+        return;
+      }
+    }
   }
-  if (typeof value === 'string') {
-    target[key] = value.split(/[\n,，;；]+/u).map((item) => item.trim()).filter(Boolean);
+}
+
+function isCriticalCollectionEmpty(key: typeof REVERSE_ANALYSIS_CHAPTERS[number], value: unknown): boolean {
+  if (key === 'materialsAndTextures' || key === 'subjectScaleAndPlacement' || key === 'videoTimeline') {
+    return Array.isArray(value) && value.length === 0;
   }
+  if (key !== 'evidence') return false;
+  const evidence = asRecord(value);
+  return evidence !== null && Array.isArray(evidence.observations) && evidence.observations.length === 0;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

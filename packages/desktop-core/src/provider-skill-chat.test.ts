@@ -129,6 +129,7 @@ describe('executeSkillChat', () => {
           { assetId: 'b'.repeat(16), label: '场景参考', mention: '@图片2' },
         ],
         agentMode: 'codex',
+        reverseAnalysisDepth: 'fast',
         visualAnalysis: true,
         messages: [{ role: 'user', content: '反推这两张图片' }],
         context: { knowledgeBaseIds: [], projectMemoryIds: [] },
@@ -149,7 +150,55 @@ describe('executeSkillChat', () => {
     expect(String(system)).toContain('@图片1（产品参考）');
     expect(String(system)).toContain('@图片2（场景参考）');
     expect(String(system)).toContain('中文提示词、英文提示词、负面约束、执行清单');
-    expect(chat).toHaveBeenCalledWith(expect.any(Object), 300_000);
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 4_096 }), 90_000);
+  });
+
+  it('uses the Gemini-native endpoint for a visual Agent request when the catalog declares it', async () => {
+    const chat = vi.fn();
+    const generateGeminiContent = vi.fn(async () => ({
+      candidates: [{ finishReason: 'STOP', content: { role: 'model', parts: [{ text: '原生多图分析结果' }] } }],
+    }));
+
+    await expect(executeSkillChat({
+      request: {
+        provider: 'comfly',
+        modelRoute: 'comfly-gemini-3-1-pro-preview-customtools',
+        sessionId: 'desktop-session-native',
+        referenceAssetIds: ['a'.repeat(16)],
+        referenceMentions: [{ assetId: 'a'.repeat(16), label: '参考图', mention: '@图片1' }],
+        agentMode: 'original',
+        reverseAnalysisDepth: 'fast',
+        visualAnalysis: true,
+        messages: [{ role: 'user', content: '分析 @图片1' }],
+        context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+      },
+      captureRuntimeSnapshot: async () => ({ profiles: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-gemini-3-1-pro-preview-customtools',
+        modelId: 'gemini-3.1-pro-preview-customtools',
+        displayName: 'Gemini 3.1 Pro Preview Customtools',
+        capabilities: ['chat', 'vision', 'reverse_prompt', 'gemini_native'],
+      }] }),
+      createClient: () => ({ chat, responses: vi.fn(), generateGeminiContent }),
+      managedKnowledgeStore: {} as ManagedKnowledgeStore,
+      managedSkillChatImageResolver: { readManagedSkillChatImages: async () => [
+        { bytes: Uint8Array.of(1, 2, 3), mediaType: 'image/png' },
+      ] },
+    })).resolves.toMatchObject({ message: '原生多图分析结果' });
+
+    expect(generateGeminiContent).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gemini-3.1-pro-preview-customtools',
+      generationConfig: { maxOutputTokens: 4_096 },
+      systemInstruction: { parts: [expect.objectContaining({ text: expect.stringContaining('中文提示词') })] },
+      contents: [expect.objectContaining({
+        role: 'user',
+        parts: expect.arrayContaining([
+          { text: '分析 @图片1' },
+          { inlineData: { mimeType: 'image/png', data: 'AQID' } },
+        ]),
+      })],
+    }), 90_000);
+    expect(chat).not.toHaveBeenCalled();
   });
 
   it('uses the real responses endpoint for a responses-only profile', async () => {
@@ -321,6 +370,7 @@ describe('executeSkillChat', () => {
     })).resolves.toMatchObject({ message: 'Image understood.' });
 
     expect(responses).toHaveBeenCalledWith(expect.objectContaining({
+      max_output_tokens: 8_192,
       input: expect.arrayContaining([
         expect.objectContaining({
           content: expect.arrayContaining([
@@ -332,7 +382,7 @@ describe('executeSkillChat', () => {
           ]),
         }),
       ]),
-    }), 300_000);
+    }), 180_000);
   });
 
   it('rejects managed images for a Codex Responses route without an explicit vision capability', async () => {

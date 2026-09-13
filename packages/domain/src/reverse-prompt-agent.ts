@@ -521,14 +521,20 @@ export function parseReversePromptResult(input: unknown, run: ReversePromptRun):
     throw new Error('反推结果运行身份不匹配');
   }
   validateMediaResponsibilities(result, run);
+  validateSeedanceAssetBindings(result, run);
   return result;
 }
 
 function validateMediaResponsibilities(result: ReversePromptResult, run: ReversePromptRun): void {
   // Keep compatibility with older provider responses that predate the
-  // structured responsibility section. New responses that include the
-  // section are validated strictly so no cited asset can be silently omitted.
-  if (run.orderedMedia.length === 0 || result.mediaResponsibilities === undefined) return;
+  // structured responsibility section when a run has at most one asset.
+  // Multi-asset runs require the section so no cited asset can be silently omitted.
+  if (result.mediaResponsibilities === undefined) {
+    if (run.orderedMedia.length > 1) {
+      throw new Error('反推结果必须逐张输出素材职责；多素材运行缺少 mediaResponsibilities');
+    }
+    return;
+  }
   const expected = new Map<string, string>();
   let imageNumber = 0;
   let videoNumber = 0;
@@ -538,20 +544,65 @@ function validateMediaResponsibilities(result: ReversePromptResult, run: Reverse
       : `@视频${++videoNumber}`;
     expected.set(mention, item.assetId);
   }
-  const actual = result.mediaResponsibilities ?? [];
+  const actual = result.mediaResponsibilities;
   const actualMentions = new Set<string>();
+  const duplicateMentions: string[] = [];
+  const unknownEntries: string[] = [];
+  const unnumberedEntries: string[] = [];
   const mismatches: string[] = [];
   for (const responsibility of actual) {
-    if (responsibility.mention === undefined) continue;
+    if (responsibility.mention === undefined) {
+      unnumberedEntries.push(responsibility.sourceId);
+      continue;
+    }
+    if (actualMentions.has(responsibility.mention)) duplicateMentions.push(responsibility.mention);
     actualMentions.add(responsibility.mention);
     const expectedSourceId = expected.get(responsibility.mention);
-    if (expectedSourceId !== undefined && responsibility.sourceId !== expectedSourceId) {
+    if (expectedSourceId === undefined) {
+      unknownEntries.push(`${responsibility.mention}=${responsibility.sourceId}`);
+    } else if (responsibility.sourceId !== expectedSourceId) {
       mismatches.push(`${responsibility.mention} 应对应 ${expectedSourceId}，实际为 ${responsibility.sourceId}`);
     }
   }
   const missing = [...expected.keys()].filter((mention) => !actualMentions.has(mention));
-  if (missing.length > 0 || mismatches.length > 0) {
-    throw new Error(`反推结果必须逐张输出素材职责；缺少 ${missing.join('、') || '无'}${mismatches.length > 0 ? `；映射错误：${mismatches.join('；')}` : ''}`);
+  if (
+    missing.length > 0
+    || mismatches.length > 0
+    || duplicateMentions.length > 0
+    || unknownEntries.length > 0
+    || unnumberedEntries.length > 0
+  ) {
+    throw new Error([
+      `反推结果必须逐张输出素材职责；缺少 ${missing.join('、') || '无'}`,
+      mismatches.length > 0 ? `映射错误：${mismatches.join('；')}` : '',
+      duplicateMentions.length > 0 ? `重复编号：${duplicateMentions.join('、')}` : '',
+      unknownEntries.length > 0 ? `未知素材：${unknownEntries.join('、')}` : '',
+      unnumberedEntries.length > 0 ? `缺少编号：${unnumberedEntries.join('、')}` : '',
+    ].filter(Boolean).join('；'));
+  }
+}
+
+function validateSeedanceAssetBindings(result: ReversePromptResult, run: ReversePromptRun): void {
+  if (result.seedance25 === undefined) return;
+  const expectedSourceIds = [...run.orderedMedia]
+    .sort((left, right) => left.order - right.order)
+    .map((item) => item.assetId);
+  const expected = new Set(expectedSourceIds);
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  const unknown: string[] = [];
+  for (const binding of result.seedance25.assetBindings) {
+    if (seen.has(binding.sourceId)) duplicates.push(binding.sourceId);
+    seen.add(binding.sourceId);
+    if (!expected.has(binding.sourceId)) unknown.push(binding.sourceId);
+  }
+  const missing = expectedSourceIds.filter((sourceId) => !seen.has(sourceId));
+  if (missing.length > 0 || duplicates.length > 0 || unknown.length > 0) {
+    throw new Error([
+      `Seedance 素材职责必须与本次运行素材一一对应；缺少 ${missing.join('、') || '无'}`,
+      duplicates.length > 0 ? `重复素材：${duplicates.join('、')}` : '',
+      unknown.length > 0 ? `未知素材：${unknown.join('、')}` : '',
+    ].filter(Boolean).join('；'));
   }
 }
 

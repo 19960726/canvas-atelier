@@ -24,6 +24,24 @@ describe('parseCanvasProject', () => {
     expect(project.graphVersion).toBe(2);
   });
 
+  it('accepts a persisted Agent workflow sequence while keeping legacy projects compatible', () => {
+    const legacy = parseCanvasProject({
+      version: 1,
+      id: 'legacy-workflow-sequence',
+      name: 'legacy workflow sequence',
+      nodes: [],
+      edges: [],
+    });
+    const sequenced = parseCanvasProject({
+      ...legacy,
+      agentWorkflowSequence: 7,
+    });
+
+    expect((legacy as typeof legacy & { agentWorkflowSequence?: number }).agentWorkflowSequence).toBeUndefined();
+    expect((sequenced as typeof sequenced & { agentWorkflowSequence?: number }).agentWorkflowSequence).toBe(7);
+    expect(() => parseCanvasProject({ ...legacy, agentWorkflowSequence: -1 })).toThrow();
+  });
+
   it('accepts a strict module node with a port-aware edge', () => {
     const promptNode = createCanvasModuleNode('prompt', 'text_prompt', { x: 0, y: 0 });
 
@@ -838,8 +856,11 @@ describe('public domain API', () => {
       'getCanvasModuleDefinition',
       'getRuntimeProfile',
       'hasVerifiedComflyVideoSubmissionContract',
+      'imageAspectRatioSchema',
       'modelJobSchema',
       'modelJobStatusSchema',
+      'normalizeImageBackground',
+      'normalizeImageOutputFormat',
       'normalizePlacementObject',
       'normalizeReverseRolePreference',
       'orderedAgentMediaItemSchema',

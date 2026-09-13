@@ -25,9 +25,10 @@ export function readAgentChatClipboard(dataTransfer: DataTransfer): AgentChatCli
   const itemFiles = items
     .filter((item) => item.kind === 'file')
     .map((item) => item.getAsFile());
-  const candidates = itemFiles.some((file): file is File => file !== null)
-    ? itemFiles
-    : Array.from(dataTransfer.files ?? []);
+  // Chromium can expose different File wrappers for the same clipboard entry.
+  const additionalFiles = Array.from(dataTransfer.files ?? []).filter((file) => !itemFiles.some((item) => item !== null
+    && item.name === file.name && item.size === file.size && item.type === file.type && item.lastModified === file.lastModified));
+  const candidates = [...itemFiles, ...additionalFiles];
   const seen = new Set<File>();
   const media: AgentChatClipboardMedia[] = [];
 
@@ -35,9 +36,10 @@ export function readAgentChatClipboard(dataTransfer: DataTransfer): AgentChatCli
     if (file === null || seen.has(file)) continue;
     seen.add(file);
     const mimeType = file.type.toLowerCase();
-    const kind = mimeType.startsWith('image/')
+    const inferFromName = mimeType === '' || mimeType === 'application/octet-stream';
+    const kind = mimeType.startsWith('image/') || (inferFromName && /\.(?:png|jpe?g|gif|webp|bmp|avif)$/iu.test(file.name))
       ? 'image'
-      : mimeType.startsWith('video/')
+      : mimeType.startsWith('video/') || (inferFromName && /\.(?:mp4|webm|mov)$/iu.test(file.name))
         ? 'video'
         : undefined;
     if (kind !== undefined) media.push({ file, kind });

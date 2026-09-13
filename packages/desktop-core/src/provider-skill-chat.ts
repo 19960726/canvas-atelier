@@ -14,9 +14,10 @@ import {
 } from './provider-contracts.js';
 import { buildSkillChatSystemInstructions } from './skill-chat-visual-analysis.js';
 import { isMediaOutputModelIdentity } from './provider-model-catalog.js';
+import { resolveReverseAnalysisBudget } from './reverse-analysis-budget.js';
+import { extractGeminiReverseText } from './reverse-provider-result.js';
 
 const SKILL_CHAT_TIMEOUT_MS = 180_000;
-const VISUAL_SKILL_CHAT_TIMEOUT_MS = 300_000;
 
 export interface ProjectMemoryContextResolver {
   resolveSelectedProjectMemory(memoryIds: readonly string[], sessionId?: string): Promise<readonly ProjectMemoryContextSnapshot[]>;
@@ -37,7 +38,7 @@ export interface ManagedSkillChatImageResolver {
 export async function executeSkillChat<TSnapshot extends { readonly profiles: readonly ProviderBridgeProfile[] }>(options: {
   readonly request: unknown;
   readonly captureRuntimeSnapshot: () => Promise<TSnapshot>;
-  readonly createClient: (snapshot: TSnapshot) => Pick<ComflyClient, 'chat' | 'responses'>;
+  readonly createClient: (snapshot: TSnapshot) => Pick<ComflyClient, 'chat' | 'responses'> & Partial<Pick<ComflyClient, 'generateGeminiContent'>>;
   readonly managedKnowledgeStore: ManagedKnowledgeStore;
   readonly projectMemoryContextResolver?: ProjectMemoryContextResolver;
   readonly managedSkillChatImageResolver?: ManagedSkillChatImageResolver;
@@ -50,7 +51,7 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
     && item.modelRoute === validated.modelRoute
     && item.enabled !== false
     && item.capabilityStatus !== 'incomplete'
-    && (item.capabilities.includes('chat') || item.capabilities.includes('responses'))
+    && (item.capabilities.includes('chat') || item.capabilities.includes('responses') || item.capabilities.includes('gemini_native'))
     && !item.capabilities.includes('image_generation')
     && !item.capabilities.includes('image_edit')
     && !item.capabilities.includes('video_generation')
@@ -112,22 +113,28 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
     ?? (validated.agentMode === 'codex'
       ? profile.capabilities.includes('responses') ? 'responses' : 'chat_completions'
       : 'system_instruction');
-  const requestTimeoutMs = images.length > 0 || validated.visualAnalysis === true
-    ? VISUAL_SKILL_CHAT_TIMEOUT_MS
+  const usesVisualAnalysis = images.length > 0 || validated.visualAnalysis === true;
+  const reverseBudget = resolveReverseAnalysisBudget(validated.reverseAnalysisDepth);
+  const requestTimeoutMs = usesVisualAnalysis
+    ? reverseBudget.timeoutMs
     : SKILL_CHAT_TIMEOUT_MS;
   const chatRequest = {
     model: profile.modelId ?? profile.modelRoute,
     messages,
+    ...(usesVisualAnalysis ? { max_tokens: reverseBudget.maxOutputTokens } : {}),
     ...(reasoningEffort === undefined || reasoningProtocol !== 'chat_completions' ? {} : { reasoning_effort: reasoningEffort }),
   };
   const responsesRequest = {
     model: profile.modelId ?? profile.modelRoute,
     input: toResponsesInput(messages),
+    ...(usesVisualAnalysis ? { max_output_tokens: reverseBudget.maxOutputTokens } : {}),
     ...(reasoningEffort === undefined || reasoningProtocol !== 'responses' ? {} : { reasoning: { effort: reasoningEffort } }),
   };
-  const message = profile.capabilities.includes('chat')
-    ? (await client.chat(chatRequest, requestTimeoutMs)).choices[0]?.message?.content
-    : extractResponsesText((await client.responses(responsesRequest, requestTimeoutMs)).output);
+  const message = profile.capabilities.includes('gemini_native')
+    ? await executeGeminiNativeSkillChat(client, profile, messages, reverseBudget.maxOutputTokens, requestTimeoutMs, usesVisualAnalysis)
+    : profile.capabilities.includes('chat')
+      ? (await client.chat(chatRequest, requestTimeoutMs)).choices[0]?.message?.content
+      : extractResponsesText((await client.responses(responsesRequest, requestTimeoutMs)).output);
   if (typeof message !== 'string' || message.trim().length === 0) {
     throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Provider returned an invalid Skill chat response');
   }
@@ -136,6 +143,51 @@ export async function executeSkillChat<TSnapshot extends { readonly profiles: re
     modelRoute: validated.modelRoute,
     sources: knowledge.map(({ knowledgeBaseId, version, displayName }) => ({ knowledgeBaseId, version, displayName })),
   }) as ChatSkillBridgeResult;
+}
+
+async function executeGeminiNativeSkillChat(
+  client: Pick<ComflyClient, 'chat' | 'responses'> & Partial<Pick<ComflyClient, 'generateGeminiContent'>>,
+  profile: ProviderBridgeProfile,
+  messages: readonly { readonly role: 'system' | 'user' | 'assistant'; readonly content: string | readonly unknown[] }[],
+  maxOutputTokens: number,
+  timeoutMs: number,
+  usesVisualAnalysis: boolean,
+): Promise<string | undefined> {
+  if (client.generateGeminiContent === undefined) {
+    throw createProviderBridgeError('PROVIDER_UNAVAILABLE', 'Gemini-native Skill chat transport is unavailable');
+  }
+  const systemText = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => typeof message.content === 'string' ? message.content : '')
+    .filter(Boolean)
+    .join('\n');
+  const response = await client.generateGeminiContent({
+    model: profile.modelId ?? profile.modelRoute,
+    ...(systemText.length === 0 ? {} : { systemInstruction: { parts: [{ text: systemText }] } }),
+    ...(usesVisualAnalysis ? { generationConfig: { maxOutputTokens } } : {}),
+    contents: toGeminiContents(messages),
+  }, timeoutMs);
+  return extractGeminiReverseText(response.candidates[0]?.content?.parts);
+}
+
+function toGeminiContents(
+  messages: readonly { readonly role: 'system' | 'user' | 'assistant'; readonly content: string | readonly unknown[] }[],
+): Array<{ readonly role: 'user' | 'model'; readonly parts: readonly unknown[] }> {
+  return messages.flatMap((message) => {
+    if (message.role === 'system') return [];
+    const parts = typeof message.content === 'string'
+      ? [{ text: message.content }]
+      : message.content.flatMap((part) => toGeminiPart(part));
+    return parts.length === 0 ? [] : [{ role: message.role === 'assistant' ? 'model' as const : 'user' as const, parts }];
+  });
+}
+
+function toGeminiPart(value: unknown): readonly unknown[] {
+  if (!isRecord(value)) return [];
+  if (value.type === 'text' && typeof value.text === 'string') return [{ text: value.text }];
+  if (value.type !== 'image_url' || !isRecord(value.image_url) || typeof value.image_url.url !== 'string') return [];
+  const match = /^data:(image\/(?:gif|jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/u.exec(value.image_url.url);
+  return match === null ? [] : [{ inlineData: { mimeType: match[1]!, data: match[2]! } }];
 }
 
 function supportsManagedSkillChatImages(

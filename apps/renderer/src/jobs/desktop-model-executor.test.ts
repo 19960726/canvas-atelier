@@ -28,7 +28,7 @@ describe('desktop model job executor', () => {
     }));
 
     const executor = createDesktopModelJobExecutor();
-    const submitted = await executor.submit(job({ imageQuality: 'high' }));
+    const submitted = await executor.submit(job({ imageQuality: 'auto', imageOutputFormat: 'webp', imageBackground: 'transparent' }));
     const polled = await executor.poll({ ...job(), providerTaskId: submitted.providerTaskId });
     await executor.cancel?.({ ...job(), providerTaskId: submitted.providerTaskId });
     await (executor as unknown as { ackTerminal(job: ModelJob): Promise<void> }).ackTerminal({
@@ -50,7 +50,9 @@ describe('desktop model job executor', () => {
       conversationId: 'conversation-1',
       sessionId: 'desktop-session-1',
       referenceAssetIds: ['asset-reference'],
-      quality: 'high',
+      quality: 'auto',
+      imageOutputFormat: 'webp',
+      imageBackground: 'transparent',
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(ackImageJobTerminal).toHaveBeenCalledWith({

@@ -103,6 +103,7 @@ test('keeps the Agent header aligned and lets a referenced long-form composer gr
     await input.focus();
     await input.press('End');
     await input.pressSequentially(' @');
+    await panel.getByRole('button', { name: '浏览项目图片' }).click();
     await panel.getByRole('menuitem', { name: `Mention ${label}` }).click();
   }
   await input.focus();

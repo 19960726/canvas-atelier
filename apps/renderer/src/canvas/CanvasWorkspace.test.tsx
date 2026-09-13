@@ -1193,7 +1193,7 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('tool-add-node')).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('uses only the seven Canvas left-rail actions and does not expose the legacy upload control', () => {
+  it('uses the Canvas left-rail actions and does not expose the legacy upload control', () => {
     render(<CanvasWorkspace />);
 
     const rail = screen.getByTestId('toolrail');
@@ -1202,6 +1202,7 @@ describe('CanvasWorkspace', () => {
       'tool-add-node',
       'tool-modules',
       'tool-undo',
+      'tool-arrange',
       'agent-toggle',
       'history-toggle',
       'settings-toggle',
@@ -1212,11 +1213,11 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('quick-insert')).toBeVisible();
   });
 
-  it('matches the Canvas rail with seven visible actions and a topbar save affordance', () => {
+  it('matches the Canvas rail with visible actions and a topbar save affordance', () => {
     render(<CanvasWorkspace />);
 
     const toolrail = screen.getByTestId('toolrail');
-    expect(within(toolrail).getAllByRole('button')).toHaveLength(7);
+    expect(within(toolrail).getAllByRole('button')).toHaveLength(8);
     expect(screen.getByRole('button', { name: '保存项目' })).toBeVisible();
     const settingsToggle = screen.getByTestId('settings-toggle');
     expect(settingsToggle).toBeVisible();
@@ -1251,7 +1252,7 @@ describe('CanvasWorkspace', () => {
 
     const rail = screen.getByTestId('toolrail');
     expect(rail.querySelector('.toolrail__spacer')).toBeNull();
-    expect(within(rail).getAllByRole('button')).toHaveLength(7);
+    expect(within(rail).getAllByRole('button')).toHaveLength(8);
   });
 
   it('keeps shell controls within approved geometry and zero letter spacing', () => {
@@ -3608,7 +3609,7 @@ describe('CanvasWorkspace', () => {
       { provider: 'comfly', modelRoute: 'qa/gemini-native', displayName: 'QA Gemini Native', modelId: 'qa-gemini-native', capabilities: ['image_generation', 'gemini_native'] },
       { provider: 'comfly', modelRoute: 'qa/image-edit', displayName: 'QA Image Edit', modelId: 'qa-image-edit', capabilities: ['image_generation', 'image_edit'] },
     ]);
-    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'qa/gemini-native' }] }), modelRoute: 'chat/creative', sources: [] });
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '主体完整的产品主图，浅色棚拍背景，柔和侧光，居中构图，保持产品比例与 Logo 不变。', modelRoute: 'qa/gemini-native' }] }), modelRoute: 'chat/creative', sources: [] });
     const imageNode = createCanvasModuleNode('agent-image-node', 'image_generation', { x: 120, y: 120 });
     imageNode.data.config = { modelRoute: 'image/creative' };
     const runImageGenerationNode = vi.fn(async () => true);
@@ -3630,7 +3631,7 @@ describe('CanvasWorkspace', () => {
 
     await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith(expect.stringMatching(/^agent-image-/u), expect.objectContaining({
       modelRoute: 'qa/image-edit',
-      prompt: '生成一张产品主图',
+      prompt: '主体完整的产品主图，浅色棚拍背景，柔和侧光，居中构图，保持产品比例与 Logo 不变。',
     })));
     const createdNodeId = (runImageGenerationNode.mock.calls as unknown as Array<[string]>)[0]![0];
     expect(createdNodeId).not.toBe('agent-image-node');
@@ -3640,7 +3641,7 @@ describe('CanvasWorkspace', () => {
         id: createdNodeId,
         data: expect.objectContaining({
           moduleType: 'image_generation',
-          config: expect.objectContaining({ modelRoute: 'qa/image-edit', prompt: '生成一张产品主图' }),
+          config: expect.objectContaining({ modelRoute: 'qa/image-edit', prompt: '主体完整的产品主图，浅色棚拍背景，柔和侧光，居中构图，保持产品比例与 Logo 不变。' }),
         }),
       }),
     ]));
@@ -3652,7 +3653,7 @@ describe('CanvasWorkspace', () => {
       { provider: 'comfly', modelRoute: 'chat/creative', displayName: 'Creative chat', modelId: 'codex-creative-chat', capabilities: ['chat'] },
       { provider: 'comfly', modelRoute: gptRoute, displayName: 'GPT Image 1.5', modelId: 'gpt-image-1.5', capabilities: ['image_generation'] },
     ]);
-    chat.mockResolvedValue({ message: JSON.stringify({ summary: 'GPT 主图方案', options: [{ id: 'studio', title: 'GPT 棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张高质量产品主图', modelRoute: gptRoute }] }), modelRoute: 'chat/creative', sources: [] });
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: 'GPT 主图方案', options: [{ id: 'studio', title: 'GPT 棚拍', reason: '突出主体', kind: 'image', prompt: '产品居中构图，保持品牌色与主体结构，柔和侧光突出材质，纯净浅色背景，生成高清电商主图。', modelRoute: gptRoute }] }), modelRoute: 'chat/creative', sources: [] });
     const projectId = useAppStore.getState().project.id;
     window.localStorage.setItem(`agent-canvas:generation-preferences:v1:${projectId}`, JSON.stringify({
       kind: 'image',
@@ -3682,7 +3683,7 @@ describe('CanvasWorkspace', () => {
       { provider: 'comfly', modelRoute: 'chat/creative', displayName: 'Creative chat', modelId: 'codex-creative-chat', capabilities: ['chat'] },
       { provider: 'comfly', modelRoute: 'image/creative', displayName: 'Creative image', modelId: 'image-creative', capabilities: ['image_generation'] },
     ]);
-    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'image/creative' }] }), modelRoute: 'chat/creative', sources: [] });
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '主体完整的产品主图，浅色棚拍背景，柔和侧光，居中构图，保持产品比例与 Logo 不变。', modelRoute: 'image/creative' }] }), modelRoute: 'chat/creative', sources: [] });
     const ensureAgentGenerationNode = vi.fn(async () => {
       useAppStore.setState({ saveErrorCode: 'PERMISSION_DENIED' });
       return false;
@@ -3708,7 +3709,7 @@ describe('CanvasWorkspace', () => {
       { provider: 'comfly', modelRoute: 'chat/creative', displayName: 'Creative chat', modelId: 'codex-creative-chat', capabilities: ['chat'] },
       { provider: 'comfly', modelRoute: 'image/creative', displayName: 'Creative image', modelId: 'image-creative', capabilities: ['image_generation'] },
     ]);
-    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'image/creative' }] }), modelRoute: 'chat/creative', sources: [] });
+    chat.mockResolvedValue({ message: JSON.stringify({ summary: '产品主图方案', options: [{ id: 'studio', title: '棚拍', reason: '突出主体', kind: 'image', prompt: '主体完整的产品主图，浅色棚拍背景，柔和侧光，居中构图，保持产品比例与 Logo 不变。', modelRoute: 'image/creative' }] }), modelRoute: 'chat/creative', sources: [] });
     const runImageGenerationNode = vi.fn(async () => {
       useAppStore.setState({ saveErrorCode: 'PERMISSION_DENIED' });
       throw Object.assign(new Error('Project must be saved before image generation starts'), { code: 'PROJECT_COMMIT_FAILED' });

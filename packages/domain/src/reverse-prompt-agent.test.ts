@@ -431,6 +431,7 @@ describe('reverse prompt runs', () => {
       negativeConstraints: ['不要遗漏引用素材'],
       executionChecklist: ['核对素材职责表'],
     };
+    expect(() => parseReversePromptResult(baseResult, run)).toThrowError(/素材职责/u);
     const incomplete = {
       ...baseResult,
       mediaResponsibilities: [{
@@ -448,6 +449,91 @@ describe('reverse prompt runs', () => {
       ],
     };
     expect(parseReversePromptResult(complete, run)).toEqual(complete);
+    for (const mediaResponsibilities of [
+      [...complete.mediaResponsibilities, complete.mediaResponsibilities[0]],
+      [...complete.mediaResponsibilities, {
+        mention: '@图片99', sourceId: 'unknown-source', role: 'scene_composition', priority: 'supporting' as const,
+        inheritance: [], conflicts: [], usableElements: ['不属于本次运行的素材'],
+      }],
+      [...complete.mediaResponsibilities, {
+        sourceId: 'unknown-source', role: 'scene_composition', priority: 'supporting' as const,
+        inheritance: [], conflicts: [], usableElements: ['没有编号的额外素材'],
+      }],
+    ]) {
+      expect(() => parseReversePromptResult({ ...complete, mediaResponsibilities }, run)).toThrowError(/素材职责/u);
+    }
+  });
+
+  it('requires Seedance asset bindings to cover the current run media exactly once', () => {
+    const knowledgeLease = createKnowledgeLease('run-seedance-bindings');
+    const run = createReversePromptRun({
+      projectId: 'project-1',
+      skill: { id: 'scene-skill', version: 'v2' },
+      agentConfig,
+      knowledgeLease,
+      approvedMemorySnapshot: snapshot,
+      references,
+    }, deps(['session-seedance-bindings'], ['nonce-seedance-bindings']));
+    const responsibility = (mention: string, sourceId: string) => ({
+      mention,
+      sourceId,
+      role: 'scene_composition',
+      priority: 'primary' as const,
+      inheritance: ['构图'],
+      conflicts: [],
+      usableElements: ['空间关系'],
+    });
+    const binding = (sourceId: string) => ({
+      sourceId,
+      target: '当前方案',
+      adopt: ['构图'],
+      reject: [],
+    });
+    const assetBindings = run.orderedMedia.map((item) => binding(item.assetId));
+    const result = {
+      sessionId: run.sessionId,
+      nonce: run.nonce,
+      knowledgeSnapshotVersion: run.knowledgeLease.versionKey,
+      analysis: '制作级多素材分析。',
+      keywords: ['multi-reference'],
+      positivePrompt: '生成多素材视频方案。',
+      negativeConstraints: ['不要混淆素材'],
+      executionChecklist: ['核对所有素材'],
+      mediaResponsibilities: [
+        responsibility('@图片1', 'asset-product'),
+        responsibility('@图片2', 'asset-scene'),
+      ],
+      seedance25: {
+        taskType: 'multi_reference' as const,
+        rationale: '需要组合多份素材。',
+        assetBindings,
+        subjectContinuity: ['主体身份保持一致'],
+        stages: [{
+          label: '阶段一', startState: '开始', mainEvent: '组合素材', endState: '结束', carryForward: ['主体连续'],
+        }],
+        shots: [{
+          label: '镜头一', shotSize: '中景', camera: '50mm', movement: '缓慢推进', action: '展示主体',
+          lightingAndEffects: '柔和主光', transition: '直接切换', audio: '环境声',
+        }],
+        audioPlan: ['保持环境声'],
+        parameterLocks: ['保持画幅'],
+        promptZh: '组合@图片1与@图片2。',
+        promptEn: 'Combine image one and image two.',
+        negativeConstraints: ['不要新增主体'],
+        capabilityBoundaries: ['不承诺逐帧重合'],
+      },
+    };
+    expect(parseReversePromptResult(result, run)).toEqual(result);
+    for (const invalidBindings of [
+      assetBindings.slice(0, 1),
+      [...assetBindings, assetBindings[0]],
+      [...assetBindings, binding('unknown-source')],
+    ]) {
+      expect(() => parseReversePromptResult({
+        ...result,
+        seedance25: { ...result.seedance25, assetBindings: invalidBindings },
+      }, run)).toThrowError(/Seedance.*素材职责/u);
+    }
   });
 
   it('rejects a lease that does not pin the node-selected two knowledge bases', () => {

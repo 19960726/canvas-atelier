@@ -1,7 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { reverseFailureMessage } from '../app/reverse-failure';
 import { Handle, Position } from '@xyflow/react';
-import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, RotateCcw, Send, Video, Volume2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, RotateCcw, Send, Video, Volume2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -12,6 +13,8 @@ import {
   type CanvasModulePortDefinition,
   type ModelJob,
   type ImageQuality,
+  type ImageOutputFormat,
+  type ImageBackground,
   type ReverseAgentNodeConfig,
   type ReversePromptResult,
 } from '@agent-canvas/domain';
@@ -23,7 +26,7 @@ import { ConnectedAgentMediaSlots, type ConnectedAgentMediaSlotItem } from './Co
 import { useAppStore } from '../app/app-store';
 import { isRenderableManagedImageUrl } from '../app/managed-image-url';
 import { IMAGE_QUALITY_OPTIONS, imageQualityFromLabel, imageQualityLabel, isGptImageQualityIdentity, normalizeImageQuality, supportsGptImageQuality } from '../app/image-generation-quality';
-import { IMAGE_RESOLUTION_TIERS, listImageResolutionTiers, resolveImageResolutionRoute } from '../app/image-resolution-routing';
+import { IMAGE_RESOLUTION_TIERS, imageResolutionFamilyKey, listImageResolutionTiers, resolveImageResolutionRoute } from '../app/image-resolution-routing';
 import { resolveMediaImportMode } from '../app/media-import-capability';
 import { getActiveProjectSessionId } from '../app/desktop-persistence';
 import { queueGeneratedImageForAgent } from '../agent/generated-image-agent-transfer';
@@ -55,6 +58,28 @@ const executionStateLabels: Record<CanvasModuleNodeData['execution']['state'], s
 
 function formatExecutionState(state: CanvasModuleNodeData['execution']['state']): string {
   return executionStateLabels[state];
+}
+
+function resolveNodeWorkflowLabel(
+  nodeId: string,
+  moduleType: CanvasModuleNodeData['moduleType'],
+  config: Readonly<Record<string, unknown>>,
+): string | undefined {
+  const explicitLabel = typeof config.agentWorkflowLabel === 'string' ? config.agentWorkflowLabel.trim() : '';
+  if (explicitLabel.length > 0) return explicitLabel;
+  const typeLabel = moduleType === 'image_generation'
+    ? '生图节点'
+    : moduleType === 'video_generation'
+      ? '视频生成节点'
+      : moduleType === 'reverse_agent'
+        ? '反推节点'
+        : undefined;
+  if (typeLabel === undefined) return undefined;
+  const value = moduleType === 'reverse_agent' ? config.task : config.prompt;
+  const rawSummary = typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : '';
+  const summary = rawSummary.length > 28 ? `${rawSummary.slice(0, 28)}…` : rawSummary || '未命名';
+  const shortId = nodeId.slice(-6) || nodeId;
+  return `${typeLabel} · ${summary} · #${shortId}`;
 }
 
 interface ModulePortProps {
@@ -118,7 +143,7 @@ interface ModuleNodeCardProps {
     videoGenerationRoutes?: readonly ImageGenerationRouteSummary[];
     reverseAgentRoutes?: readonly ReverseAgentRouteSummary[];
     storyboardRoutes?: readonly ReverseAgentRouteSummary[];
-    onGenerateImage?: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; imageQuality?: ImageQuality; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
+    onGenerateImage?: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; imageQuality?: ImageQuality; imageOutputFormat?: ImageOutputFormat; imageBackground?: ImageBackground; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
     onReversePrompt?: (nodeId: string) => Promise<{ positivePrompt: string }>;
     onCancelJob?: (jobId: string) => Promise<void>;
     onGenerateStoryboard?: (nodeId: string, input: { modelRoute: string; script: string; shotCount: number; referenceAssetIds: readonly string[] }) => Promise<boolean>;
@@ -151,7 +176,7 @@ interface ImageGenerationRouteSummary {
   readonly constraints?: ProviderBridgeProfile['constraints'];
 }
 
-const IMAGE_ASPECT_RATIO_OPTIONS = ['自由比例', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'] as const;
+const IMAGE_ASPECT_RATIO_OPTIONS = ['自由比例', '1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'] as const;
 const IMAGE_RESOLUTION_OPTIONS = IMAGE_RESOLUTION_TIERS;
 const MEDIA_RESULT_REFRESH_RETRY_DELAYS_MS = [0, 250, 750, 1_500] as const;
 
@@ -173,9 +198,11 @@ function imageLongEdgeBelowRequestedTier(
   height: number | null | undefined,
 ): boolean {
   const minimumLongEdge = tier === '4K' ? 3_500 : tier === '2K' ? 1_800 : 900;
-  return typeof width === 'number' && Number.isFinite(width)
-    && typeof height === 'number' && Number.isFinite(height)
-    && Math.max(width, height) < minimumLongEdge;
+  if (typeof width !== 'number' || !Number.isFinite(width)
+    || typeof height !== 'number' || !Number.isFinite(height)) return false;
+  if (Math.max(width, height) >= minimumLongEdge) return false;
+  // Comfly's square 4K contract uses the same 8.29 MP budget as 3840x2160.
+  return tier !== '4K' || width * height < 7_400_000;
 }
 
 const REQUIRED_REVERSE_KNOWLEDGE_BASES = [
@@ -229,6 +256,7 @@ function aspectRatioGlyphStyle(value: string): CSSProperties {
     : { aspectRatio: '1 / 1' };
 }
 const IMAGE_OUTPUT_COUNT_OPTIONS = [1, 2, 3, 4] as const;
+const IMAGE_BATCH_COUNT_OPTIONS = [1, 2, 3, 4, 9] as const;
 const VIDEO_ASPECT_RATIO_OPTIONS = ['Auto', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'] as const;
 const VIDEO_RESOLUTION_OPTIONS = ['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K'] as const;
 const VIDEO_DURATION_OPTIONS = [4, 8, 12] as const;
@@ -250,6 +278,7 @@ function durationOptions(constraint: NonNullable<NonNullable<ProviderBridgeProfi
 
 export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected }: ModuleNodeCardProps) {
   const definition = getCanvasModuleDefinition(data.moduleType);
+  const workflowLabel = resolveNodeWorkflowLabel(id, data.moduleType, data.config);
   const connectedPortIds = new Set(data.connectedPortIds ?? []);
   const connectedPortKeys = new Set(data.connectedPortKeys ?? []);
   const isPortConnected = (port: CanvasModulePortDefinition) => (
@@ -469,6 +498,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
         <span className="module-node__heading">
           <strong>{definition.primaryName}</strong>
           <small>{definition.secondaryName}</small>
+          {workflowLabel !== undefined && <small className="module-node__workflow-label" title={workflowLabel}>{workflowLabel}</small>}
         </span>
         <button
           type="button"
@@ -1196,7 +1226,7 @@ function ImageGenerationSummary({
   hasConnectedReference: boolean;
   routes: readonly ImageGenerationRouteSummary[];
   executionState: CanvasModuleNodeData['execution']['state'];
-  onRun: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; imageQuality?: ImageQuality; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
+  onRun: (nodeId: string, input: { prompt: string; modelRoute?: string; aspectRatio?: string; resolution?: string; imageQuality?: ImageQuality; imageOutputFormat?: ImageOutputFormat; imageBackground?: ImageBackground; outputCount?: number; referenceAssetIds?: readonly string[] }) => Promise<boolean>;
   activeJobId?: string;
   onCancel: (jobId: string) => Promise<void>;
   onReorderMedia: (edgeIds: string[]) => Promise<boolean>;
@@ -1216,6 +1246,7 @@ function ImageGenerationSummary({
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>([]);
   const connectedReferenceAssetIds = connectedMedia.filter((item) => item.kind === 'image').map((item) => item.assetId);
+  const activeMentionedReferenceAssetIds = retainMentionedAssetIds(mentionedReferenceAssetIds, prompt, connectedImages);
   // Generated results belong to the formal job store.  Reading them here keeps
   // the four-up Canvas preview in sync with real completed jobs, rather than
   // relying on stale presentation metadata saved on the node.
@@ -1223,7 +1254,7 @@ function ImageGenerationSummary({
   const refreshProjectImages = useAppStore((state) => state.refreshProjectImages);
   const refreshModelJobs = useAppStore((state) => state.refreshModelJobs);
   const latestImageJob = selectLatestGenerationJob(modelJobs, id, 'image');
-  const hasReferenceInput = connectedReferenceAssetIds.length > 0 || mentionedReferenceAssetIds.length > 0;
+  const hasReferenceInput = connectedReferenceAssetIds.length > 0 || activeMentionedReferenceAssetIds.length > 0;
   const imageGenerationRoutes = useMemo(
     () => routes.filter((route) => route.capabilities.includes('image_generation') && route.capabilityStatus !== 'incomplete'),
     [routes],
@@ -1249,12 +1280,16 @@ function ImageGenerationSummary({
   const [aspectRatio, setAspectRatio] = useExternallyHydratedDraftState(readSupportedImageString(config.aspectRatio, IMAGE_ASPECT_RATIO_OPTIONS, '1:1'));
   const [resolution, setResolution] = useExternallyHydratedDraftState(normalizeImageResolutionSelection(config.resolution));
   const [imageQuality, setImageQuality] = useExternallyHydratedDraftState(normalizeImageQuality(config.imageQuality) ?? 'medium');
-  const [outputCount, setOutputCount] = useExternallyHydratedDraftState(readSupportedImageCount(config.outputCount));
+  const [imageOutputFormat, setImageOutputFormat] = useExternallyHydratedDraftState<ImageOutputFormat>(config.imageOutputFormat === 'jpeg' || config.imageOutputFormat === 'webp' ? config.imageOutputFormat : 'png');
+  const [imageBackground, setImageBackground] = useExternallyHydratedDraftState<ImageBackground>(config.imageBackground === 'opaque' || config.imageBackground === 'transparent' ? config.imageBackground : 'auto');
+  const [outputCount, setOutputCount] = useExternallyHydratedDraftState(config.outputCount === 9 ? 9 : readSupportedImageCount(config.outputCount));
   const draftGenerationNodeConfig = useAppStore((state) => state.draftGenerationNodeConfig);
   const selectedImageRoute = compatibleRoutes.find((route) => route.modelRoute === modelRoute);
   const hasGptImageQuality = supportsGptImageQuality(selectedImageRoute)
     || (selectedImageRoute === undefined && isGptImageQualityIdentity(modelRoute, configuredModelRoute, configuredModelDisplayName));
   const effectiveImageQuality = hasGptImageQuality ? imageQuality : undefined;
+  const effectiveImageOutputFormat = hasGptImageQuality ? imageOutputFormat : undefined;
+  const effectiveImageBackground = hasGptImageQuality ? (imageOutputFormat === 'jpeg' && imageBackground === 'transparent' ? 'opaque' : imageBackground) : undefined;
   const imageConstraints = selectedImageRoute?.constraints?.image;
   const imageAspectRatioOptions: (typeof IMAGE_ASPECT_RATIO_OPTIONS[number])[] = imageConstraints?.aspectRatios?.length
     ? ['自由比例', ...imageConstraints.aspectRatios.filter((value): value is Exclude<typeof IMAGE_ASPECT_RATIO_OPTIONS[number], '自由比例'> => IMAGE_ASPECT_RATIO_OPTIONS.includes(value as never))]
@@ -1264,9 +1299,9 @@ function ImageGenerationSummary({
   const constrainedImageOutputCounts = imageConstraints?.outputCounts?.filter((value): value is typeof IMAGE_OUTPUT_COUNT_OPTIONS[number] => (
     IMAGE_OUTPUT_COUNT_OPTIONS.includes(value as never)
   ));
-  const imageOutputCountOptions: (1 | 2 | 3 | 4)[] = constrainedImageOutputCounts?.length
+  const imageOutputCountOptions: number[] = constrainedImageOutputCounts?.length
     ? [...constrainedImageOutputCounts]
-    : [...IMAGE_OUTPUT_COUNT_OPTIONS];
+    : [...IMAGE_BATCH_COUNT_OPTIONS];
   const imageOptionsKey = [imageAspectRatioOptions.join('|'), imageResolutionOptions.join('|'), imageOutputCountOptions.join('|')].join('::');
   useEffect(() => {
     if (configuredModelRoute.length === 0) return;
@@ -1309,33 +1344,38 @@ function ImageGenerationSummary({
       aspectRatio,
       resolution: effectiveImageResolution,
       imageQuality: effectiveImageQuality,
+      imageOutputFormat: effectiveImageOutputFormat,
+      imageBackground: effectiveImageBackground,
       outputCount,
     };
     void persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, draft));
-  }, [aspectRatio, draftGenerationNodeConfig, effectiveImageQuality, effectiveImageResolution, id, modelRoute, outputCount, prompt]);
+  }, [aspectRatio, draftGenerationNodeConfig, effectiveImageQuality, effectiveImageOutputFormat, effectiveImageBackground, effectiveImageResolution, id, modelRoute, outputCount, prompt]);
   const persistImagePromptDraft = (nextPrompt: string) => persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, {
     prompt: nextPrompt,
     modelRoute,
     aspectRatio,
     resolution: effectiveImageResolution,
     imageQuality: effectiveImageQuality,
+    imageOutputFormat: effectiveImageOutputFormat,
+    imageBackground: effectiveImageBackground,
     outputCount,
   }));
   const imageDraftIdentity: GenerationJobDraftIdentity = {
     kind: 'image', prompt, modelRoute, aspectRatio, resolution: effectiveImageResolution, imageQuality: effectiveImageQuality,
+    imageOutputFormat: effectiveImageOutputFormat, imageBackground: effectiveImageBackground,
   };
   const failedJobError = formatGenerationJobError(selectLatestFailedGenerationJob(modelJobs, id, imageDraftIdentity));
   const completedImageJobs = useMemo(() => selectLatestCompletedGenerationJobs(modelJobs, id, 'image'), [id, modelJobs]);
   const persistedResultAssetIds = useMemo(() => readStringArray(config.resultAssetIds), [config.resultAssetIds]);
   const completedJobResultAssetIds = useMemo(() => [...new Set(completedImageJobs.flatMap((job) => (
     job.resultAssetIds ?? (job.resultAssetId === undefined ? [] : [job.resultAssetId])
-  )))].slice(0, 4), [completedImageJobs]);
+  )))].slice(0, 9), [completedImageJobs]);
   // A completed job is stored in one queue shared by every canvas. The
   // durable node config is the project-owned source of truth for which image
   // summaries this node may fetch after completion.
   const expectedResultAssetIds = useMemo(() => (
     persistedResultAssetIds.length > 0
-      ? [...new Set(persistedResultAssetIds)].slice(-4)
+      ? [...new Set(persistedResultAssetIds)].slice(-9)
       : completedJobResultAssetIds
   ), [completedJobResultAssetIds, persistedResultAssetIds]);
   const reportsCompletedImageResult = executionState === 'completed' || config.resultState === 'fresh';
@@ -1401,7 +1441,7 @@ function ImageGenerationSummary({
     .map((job) => projectImages.find((asset) => asset.assetId === job.resultAssetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [completedImageJobs, projectImages]);
   const durablePreviewAssets = useMemo(() => persistedResultAssetIds
-    .slice(0, 4)
+    .slice(0, 9)
     .map((assetId) => projectImages.find((asset) => asset.assetId === assetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [persistedResultAssetIds, projectImages]);
   const previewItems = durablePreviewAssets.length > 0 ? durablePreviewAssets : generatedPreviewAssets;
@@ -1441,7 +1481,7 @@ function ImageGenerationSummary({
   };
   const runImageGeneration = () => {
     setRunError(null);
-    const referenceAssetIds = mergeAssetIds(connectedReferenceAssetIds, mentionedReferenceAssetIds);
+    const referenceAssetIds = mergeAssetIds(connectedReferenceAssetIds, activeMentionedReferenceAssetIds);
     const selectedModelRoute = modelRouteRef.current;
     const runnableModelRoute = compatibleRoutes.some((route) => route.modelRoute === selectedModelRoute)
       ? selectedModelRoute
@@ -1458,7 +1498,7 @@ function ImageGenerationSummary({
     setLocalGenerationStartedAt(new Date().toISOString());
     if (runnableModelRoute !== modelRoute) setModelRoute(runnableModelRoute);
     const requestedAspectRatio = aspectRatio === '自由比例' ? resolveAutomaticImageAspectRatio(connectedMedia, projectImages) : aspectRatio;
-    void onRun(id, { prompt: prompt.trim(), ...(runnableModelRoute ? { modelRoute: runnableModelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), ...(effectiveImageResolution === undefined ? {} : { resolution: effectiveImageResolution }), ...(effectiveImageQuality === undefined ? {} : { imageQuality: effectiveImageQuality }), outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
+    void onRun(id, { prompt: prompt.trim(), ...(runnableModelRoute ? { modelRoute: runnableModelRoute } : {}), ...(requestedAspectRatio ? { aspectRatio: requestedAspectRatio } : {}), ...(effectiveImageResolution === undefined ? {} : { resolution: effectiveImageResolution }), ...(effectiveImageQuality === undefined ? {} : { imageQuality: effectiveImageQuality, imageOutputFormat: effectiveImageOutputFormat, imageBackground: effectiveImageBackground }), outputCount, ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}) }).then((started) => {
       if (!started) {
         setLocalGenerationStartedAt(null);
         setRunError('生成未启动，请检查当前项目保存状态和模型选择后重试。');
@@ -1470,7 +1510,7 @@ function ImageGenerationSummary({
   };
   const imageGenerationError = runError ?? failedJobError;
   return (
-    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 4) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
+    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 9) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
       <TaskTimingBadge
         ariaLabel="Image generation task timing"
         job={imageTimingJob}
@@ -1492,8 +1532,8 @@ function ImageGenerationSummary({
           setPreviewIndex(0);
         }}>
           <span className="module-node__generation-collapsed-title">图片生成 V2</span>
-          {hasCompletedImageResult && previewItems.length > 0 ? <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${Math.min(previewItems.length, 4)} module-node__generation-preview-gallery--collapsed`}>
-            {previewItems.slice(0, 4).map((asset, index) => (
+          {hasCompletedImageResult && previewItems.length > 0 ? <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${previewItems.length > 4 ? 9 : previewItems.length} module-node__generation-preview-gallery--collapsed`}>
+            {previewItems.slice(0, 9).map((asset, index) => (
               <div key={asset.assetId} className="module-node__generation-preview-item" aria-label={`Generated image preview ${index + 1}`}>
                   <img src={asset.displayUrl} alt={`Generated image preview ${index + 1}`} draggable={false} loading="lazy" decoding="async" />
                 <span aria-hidden="true">{index + 1}</span>
@@ -1524,8 +1564,8 @@ function ImageGenerationSummary({
         status={statusLabel}
         configuration={<>
           {hasCompletedImageResult && previewItems.length > 0 && <section className="module-node__generation-editor-preview nodrag nopan" aria-label="Image generation preview" onPointerDown={stopCanvasPointer}>
-            <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${Math.min(previewItems.length, 4)}`}>
-              {previewItems.slice(0, 4).map((asset, index) => <button
+            <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${previewItems.length > 4 ? 9 : previewItems.length}`}>
+              {previewItems.slice(0, 9).map((asset, index) => <button
                 key={asset.assetId}
                 className="module-node__generation-preview-item"
                 type="button"
@@ -1659,15 +1699,24 @@ function ImageGenerationSummary({
                 setModelRoute(nextRoute.modelRoute);
               }}
             />
+            <div className="module-node__image-quantity">
+              <select className="module-node__image-native-quantity" aria-label="Image generation quantity" value={outputCount} onChange={(event) => setOutputCount(Number(event.target.value))}>
+                {imageOutputCountOptions.map((value) => <option key={value} value={value}>{value} 张</option>)}
+              </select>
+              <ClarityPopover ariaLabel="Image generation batch count" value={`${outputCount}张`} options={imageOutputCountOptions.map((value) => `${value}张`)} onChange={(value) => setOutputCount(Number.parseInt(value, 10))} />
+            </div>
             {hasGptImageQuality && <ClarityPopover
+              className="module-node__image-quality"
+              label="画质"
               ariaLabel="Image generation quality"
               value={imageQualityLabel(imageQuality)}
-              options={IMAGE_QUALITY_OPTIONS.map(imageQualityLabel)}
+              options={[...IMAGE_QUALITY_OPTIONS.map(imageQualityLabel), '超高', '最高']}
+              disabledOptions={['超高', '最高']}
+              disabledReason="当前供应商只支持自动、低、中、高画质"
               onChange={(value) => setImageQuality(imageQualityFromLabel(value) ?? 'medium')}
             />}
-            <select aria-label="Image generation quantity" value={outputCount} onChange={(event) => setOutputCount(readSupportedImageCount(Number(event.target.value)))}>
-              {imageOutputCountOptions.map((value) => <option key={value} value={value}>{value} 张</option>)}
-            </select>
+            {hasGptImageQuality && <ClarityPopover className="module-node__image-format" label="格式" ariaLabel="Image generation format" value={imageOutputFormat.toUpperCase()} options={['PNG', 'JPEG', 'WEBP']} onChange={(value) => setImageOutputFormat(value.toLowerCase() as ImageOutputFormat)} />}
+            {hasGptImageQuality && <ClarityPopover className="module-node__image-background" label="背景" ariaLabel="Image generation background" value={effectiveImageBackground === 'opaque' ? '不透明' : effectiveImageBackground === 'transparent' ? '透明' : '自动'} options={['自动', '不透明', '透明']} disabledOptions={imageOutputFormat === 'jpeg' ? ['透明'] : []} disabledReason="JPEG 不支持透明背景，请选择 PNG 或 WEBP" onChange={(value) => setImageBackground(value === '不透明' ? 'opaque' : value === '透明' ? 'transparent' : 'auto')} />}
             <button
               className={`module-node__run-generation${activeJobId === undefined ? '' : ' is-cancelling'}`}
               type="button"
@@ -1683,6 +1732,7 @@ function ImageGenerationSummary({
                 runImageGeneration();
               }}
             >
+              {activeJobId === undefined && <Play size={16} aria-hidden="true" />}
               {activeJobId === undefined
                 ? '生成'
                 : '停止生成'}
@@ -1898,7 +1948,7 @@ function GeneratedImageActionMenu({
   const downloadImage = () => {
     const link = document.createElement('a');
     link.href = asset.displayUrl;
-    link.download = `${asset.label || 'generated-image'}.png`;
+    link.download = `${asset.label || 'generated-image'}.${asset.extension}`;
     link.click();
     onClose();
   };
@@ -2476,7 +2526,10 @@ function ReverseAgentSummary({
   const updateReverseAgentResult = useAppStore((state) => state.updateReverseAgentResult);
   const cancelReverseAgentNode = useAppStore((state) => state.cancelReverseAgentNode);
   const runSequenceRef = useRef(0);
-  const [runError, setRunError] = useState<string | null>(() => readNonEmptyString(config.reverseAgentError));
+  const [runError, setRunError] = useState<string | null>(() => {
+    const persistedError = readNonEmptyString(config.reverseAgentError);
+    return persistedError === null ? null : formatPersistedReverseRunError(persistedError);
+  });
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const [localStartedAt, setLocalStartedAt] = useState<string | null>(null);
   const [localCompletedAt, setLocalCompletedAt] = useState<string | null>(null);
@@ -2487,7 +2540,8 @@ function ReverseAgentSummary({
     setResult(readReverseAgentResult(config.reverseAgentResult));
   }, [config.reverseAgentResult]);
   useEffect(() => {
-    setRunError(readNonEmptyString(config.reverseAgentError));
+    const persistedError = readNonEmptyString(config.reverseAgentError);
+    setRunError(persistedError === null ? null : formatPersistedReverseRunError(persistedError));
   }, [config.reverseAgentError]);
   const toggleKnowledge = (knowledgeBaseId: string) => setSelectedIds((current) => current.includes(knowledgeBaseId)
     ? current.filter((id) => id !== knowledgeBaseId)
@@ -2576,10 +2630,13 @@ function ReverseAgentSummary({
                 key={depth}
                 type="button"
                 aria-pressed={analysisDepth === depth}
+                disabled={isRunning || isApplying}
+                title={isRunning || isApplying ? '当前反推进行中，完成或停止后可切换强度' : depthLabel}
                 className={analysisDepth === depth ? 'is-active' : undefined}
                 onClick={() => setAnalysisDepth(depth)}
               >{depthLabel}</button>)}
             </div>
+            {isRunning && <p className="module-node__agent-depth-status" role="status" aria-label="当前反推强度">本次运行：{analysisDepth === 'fast' ? '快速反推' : analysisDepth === 'deep' ? '深度反推' : '标准反推'}。停止后可切换强度。</p>}
             <label><span>角色</span><input aria-label="Role positioning" value={role} placeholder="例如：产品视觉分析师" onChange={(event) => {
               const nextRole = event.target.value;
               setRoleDraft(nextRole);
@@ -2757,6 +2814,8 @@ function mergeReverseKnowledgeBases(
 }
 
 function formatReverseRunError(error: unknown): string {
+  const knownFailure = reverseFailureMessage(error);
+  if (knownFailure !== undefined) return knownFailure;
   const code = error && typeof error === 'object' && 'code' in error
     && typeof (error as { code?: unknown }).code === 'string'
     ? (error as { code: string }).code
@@ -2764,25 +2823,33 @@ function formatReverseRunError(error: unknown): string {
   if (code === 'CREDENTIALS_LOCKED') return 'API 密钥已锁定，请重新解锁后再反推。';
   if (code === 'PROVIDER_UNAVAILABLE') return '所选反推模型当前不可用，请重新选择模型。';
   if (code === 'PROVIDER_INVALID_RESPONSE') {
-    const reason = typeof error === 'object' && error !== null && 'reason' in error
-      ? (error as { reason?: unknown }).reason
-      : undefined;
-    if (reason === 'TRUNCATED') return '模型输出达到长度上限而被截断，请减少素材或缩短任务后重试。';
-    if (reason === 'NO_TEXT') return '模型没有返回可用文本，请重试或更换反推模型。';
-    if (reason === 'INVALID_JSON') return '模型返回的内容不是有效 JSON，请重试或更换反推模型。';
-    if (reason === 'CORE_SCHEMA_INVALID') return '模型返回内容缺少反推必填字段，请重试或更换反推模型。';
-    if (reason === 'IDENTITY_MISMATCH') return '模型返回结果不属于本次反推运行，已拒绝使用。';
-    if (reason === 'MEDIA_RESPONSIBILITIES_INVALID') return '模型没有完整说明每个素材的职责，请重试或减少素材。';
-    return '模型已返回内容，但反推结果格式无效。';
+    return reverseFailureMessage(error) ?? '反推响应未通过格式校验，尚未取得可用结果。';
   }
   const message = sanitizeModelJobError(error);
   if (code === 'PROJECT_CONFIG_SAVE_FAILED' || code === 'PROJECT_SAVE_RETRY_REQUIRED') return '反推配置保存失败，请先确认画布可以保存后重试。';
   if (code === 'REVISION_CONFLICT' || code === 'CONCURRENT_WRITER') return '画布版本发生冲突，请重新载入项目后再反推。';
   if (code === 'RECOVERY_REQUIRED') return '画布需要先完成恢复，再运行反推。';
   if (code === 'PROJECT_READ_ONLY') return '当前画布是只读状态，无法保存反推配置。';
-  if (/timed out|timeout|超时/iu.test(message)) return '反推等待超时，请重试或更换响应更快的模型。';
+  const timeout = message.match(/\btimed out after\s+(\d{1,9})\s*ms\b/iu);
+  if (timeout !== null) {
+    const seconds = Math.max(1, Math.round(Number(timeout[1]) / 1_000));
+    return `反推已等待 ${seconds} 秒仍未返回，请减少素材、切换快速或标准反推，或更换模型后重试。`;
+  }
+  const status = message.match(/\bstatus\s+(401|403|408|409|422|429|5\d\d)\b/iu);
+  if (status !== null) {
+    if (status[1] === '401' || status[1] === '403') return `反推模型拒绝了当前凭据（${status[1]}），请检查 API 密钥与模型权限。`;
+    if (status[1] === '429') return '反推模型请求过于频繁（429），请稍后重试。';
+    return `反推模型上游返回 ${status[1]}，当前路线暂时异常，请稍后重试或切换模型。`;
+  }
+  if (/timed out|timeout|超时/iu.test(message)) return '反推等待超时，请减少素材、切换快速或标准反推，或更换模型后重试。';
   if (/managed.*media|MISSING_ASSET|素材/iu.test(message)) return '反推素材读取失败，请重新连接素材。';
   return message || '反推失败，请重试。';
+}
+
+function formatPersistedReverseRunError(message: string): string {
+  return /^Provider request (?:timed out after \d{1,9}ms|failed with status \d{3})$/u.test(message)
+    ? formatReverseRunError(new Error(message))
+    : message;
 }
 
 /**
@@ -2876,6 +2943,19 @@ function GenerationModelPicker({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selected = routes.find((route) => route.modelRoute === value);
+  const visibleRoutes = useMemo(() => {
+    if (modelKind !== 'image') return routes;
+    const families = new Map<string, ImageGenerationRouteSummary>();
+    for (const route of routes) {
+      const key = `${route.provider}::${imageResolutionFamilyKey(route)}`;
+      const current = families.get(key);
+      if (current === undefined || route.modelRoute === value) families.set(key, route);
+    }
+    return [...families.values()];
+  }, [modelKind, routes, value]);
+  const visibleLabel = (route: ImageGenerationRouteSummary) => modelKind === 'image'
+    ? route.displayName.replace(/(?:\s*[·-]?\s*)(?:1K|2K|4K)$/iu, '').trim()
+    : modelRouteOptionLabel(route, routes);
   useEffect(() => {
     if (!open) return;
     const close = (event: globalThis.MouseEvent) => {
@@ -2905,11 +2985,11 @@ function GenerationModelPicker({
       onClick={() => setOpen((current) => !current)}
     >
       <span className="module-node__video-model-icon" aria-hidden="true">{modelKind === 'image' ? <ImageIcon size={14} /> : <Video size={14} />}</span>
-      <span className="module-node__video-model-name">{selected ? modelRouteOptionLabel(selected, routes) : emptyTriggerLabel}</span>
+      <span className="module-node__video-model-name">{selected ? visibleLabel(selected) : emptyTriggerLabel}</span>
       <ChevronDown size={14} aria-hidden="true" />
     </button>
     {open && <div className="module-node__video-model-menu" role="listbox" aria-label={listAriaLabel}>
-      {routes.map((route) => {
+      {visibleRoutes.map((route) => {
         const isSelected = route.modelRoute === value;
         return <button
           key={route.modelRoute}
@@ -2924,7 +3004,7 @@ function GenerationModelPicker({
         >
           <span className="module-node__video-model-icon" aria-hidden="true">{modelKind === 'image' ? <ImageIcon size={14} /> : <Video size={14} />}</span>
           <span className="module-node__video-model-copy">
-            <strong>{modelRouteOptionLabel(route, routes)}</strong>
+            <strong>{visibleLabel(route)}</strong>
             <small>{route.provider === 'relayme' ? 'RelayMe' : route.provider === 'comfly' ? 'Comfly' : route.provider}</small>
           </span>
           {isSelected && <span aria-hidden="true">✓</span>}
@@ -3146,7 +3226,7 @@ function selectLatestCompletedGenerationJobs(
   return currentBatch
     .filter((job) => job.status === 'completed' && typeof job.resultAssetId === 'string')
     .sort((left, right) => (left.queueIndex ?? 0) - (right.queueIndex ?? 0) || left.id.localeCompare(right.id))
-    .slice(0, 4);
+    .slice(0, kind === 'image' ? 9 : 4);
 }
 
 function selectLatestGenerationJob(
@@ -3231,6 +3311,10 @@ function formatGenerationJobError(job: ModelJob | undefined, kind: 'image' | 'vi
   if ((job.provider === 'comfly' || error.includes('comfly'))
     && (error.includes('status 503') || error.includes('(503)'))) {
     return 'Comfly 模型服务暂时不可用（503），请稍后重试或切换其他生图模型。';
+  }
+  if ((job.provider === 'comfly' || error.includes('comfly'))
+    && (error.includes('status 502') || error.includes('(502)'))) {
+    return 'Comfly 上游服务暂时异常（502），请稍后重试或切换其他生图模型。';
   }
   if (error.includes('provider task mapping is unavailable')) {
     return '本地模型任务状态不可用，请重启应用后重试；若仍失败，请重新登录当前供应商。';

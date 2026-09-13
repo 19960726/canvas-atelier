@@ -6775,7 +6775,11 @@ textarea:focus-visible {
   top: 14px;
   left: 0;
   bottom: 14px;
+  z-index: 160;
   border-radius: 14px;
+}
+.workspace--canvas-layout[data-secondary-surface='module-library'] .toolrail--floating {
+  z-index: 170;
 }
 .workspace--canvas-layout .module-library__item,
 .workspace--canvas-layout .quick-insert__module {

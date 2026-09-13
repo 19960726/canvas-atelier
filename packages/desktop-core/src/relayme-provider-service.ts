@@ -13,6 +13,7 @@ import type { ProviderCredentialStore } from './provider-credential-vault.js';
 import { buildRelayMeModelProfiles, buildRelayMeWorkflowModelProfiles, cloneProviderProfile, markProviderProfileSelections } from './provider-model-catalog.js';
 import { ManagedKnowledgeStore } from './managed-knowledge-store.js';
 import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
+import { resolveReverseAnalysisBudget } from './reverse-analysis-budget.js';
 import { readPinnedReverseKnowledge } from './provider-reverse-knowledge.js';
 import {
   type ManagedSkillChatImageContent,
@@ -278,9 +279,11 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
       const media = await options.readManagedReverseMedia(validated.sessionId, validated.media);
       const knowledge = await readPinnedReverseKnowledge(managedKnowledgeStore, validated.run.knowledgeLease.snapshots);
       const reverseRequest = buildProfessionalReverseRequest(validated.run, knowledge);
+      const reverseBudget = resolveReverseAnalysisBudget(validated.run.agentConfig?.analysisDepth);
       const response = await translateRelayMeCall(
         () => createClientFromCredentials().then((client) => client.chat({
           model: profile.modelId ?? profile.modelRoute,
+          max_tokens: reverseBudget.maxOutputTokens,
           messages: [
             { role: 'system', content: 'Return only valid ReversePromptResult JSON.' },
             { role: 'user', content: [
@@ -291,7 +294,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
               })),
             ] },
           ],
-        }, RELAYME_VISUAL_TIMEOUT_MS)),
+        }, reverseBudget.timeoutMs)),
         'RelayMe 反推请求失败',
       );
       const choice = response.choices[0];
@@ -333,6 +336,7 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
             instructions: buildSkillChatSystemInstructions({
               agentMode: validated.agentMode ?? 'chat',
               reasoningEffort: validated.reasoningEffort,
+              reverseAnalysisDepth: validated.reverseAnalysisDepth,
               visualAnalysis: validated.visualAnalysis === true,
               referenceMentions: validated.referenceMentions ?? [],
             }),
@@ -343,14 +347,17 @@ export function createRelayMeProviderService(options: RelayMeProviderServiceOpti
         },
         ...attachRelayMeImagesToLatestUserMessage(validated.messages, images),
       ];
-      const visualTimeoutMs = images.length > 0 || validated.visualAnalysis === true
-        ? RELAYME_VISUAL_TIMEOUT_MS
+      const reverseBudget = validated.visualAnalysis === true
+        ? resolveReverseAnalysisBudget(validated.reverseAnalysisDepth)
         : undefined;
+      const visualTimeoutMs = reverseBudget?.timeoutMs
+        ?? (images.length > 0 ? RELAYME_VISUAL_TIMEOUT_MS : undefined);
       const response = await translateRelayMeCall(
         () => createClientFromCredentials().then((client) => {
           const chatRequest = {
             model: profile.modelId ?? profile.modelRoute,
             messages,
+            ...(reverseBudget === undefined ? {} : { max_tokens: reverseBudget.maxOutputTokens }),
             ...(validated.agentMode === 'codex' && validated.reasoningEffort !== undefined
               ? { reasoning_effort: validated.reasoningEffort }
               : {}),

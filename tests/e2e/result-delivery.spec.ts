@@ -6,6 +6,13 @@ import { makeReferenceImage } from './helpers/fixtures';
 const zoomPreviewArtifact = path.join(process.cwd(), 'artifacts', 'CanvasAtelier-1.6.133-image-zoom', 'generated-image-zoom.png');
 
 test('reverse completion creates and fills a connected result node', async ({ page }) => {
+  const externalRequests: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if ((url.protocol === 'http:' || url.protocol === 'https:') && !['127.0.0.1', 'localhost'].includes(url.hostname)) {
+      externalRequests.push(request.url());
+    }
+  });
   await openEmptyApp(page);
   await page.evaluate(async () => {
     await window.__NOVUS_E2E__!.createModule('image_input', { x: 40, y: 180 });
@@ -35,6 +42,8 @@ test('reverse completion creates and fills a connected result node', async ({ pa
   expect(availableRoute).not.toBe('');
   await route.selectOption(availableRoute);
   await reverse.getByLabel('Role positioning').fill('Commercial visual analyst');
+  await reverse.getByRole('button', { name: '深度反推' }).click();
+  await expect(reverse.getByRole('button', { name: '深度反推' })).toHaveAttribute('aria-pressed', 'true');
   await reverse.getByLabel('Analysis task').fill('@');
   const referenceItem = reverse.getByRole('menu', { name: 'Select reference image' }).getByRole('menuitem', { name: 'Reverse reference' });
   await expect(referenceItem).toBeVisible();
@@ -42,7 +51,20 @@ test('reverse completion creates and fills a connected result node', async ({ pa
   await expect.poll(() => reverse.getByLabel('Analysis task').evaluate((element) => (
     (element as HTMLDivElement & { value?: string }).value ?? ''
   ))).toBe('@图片1');
+
+  await page.evaluate(() => window.__NOVUS_E2E__!.failNextReverseAnalysis());
   await reverse.getByRole('button', { name: 'Start reverse analysis' }).click();
+  await expect(reverse.getByRole('alert')).toContainText('E2E controlled reverse failure');
+  const retryButton = reverse.getByRole('button', { name: 'Start reverse analysis' });
+  await expect(retryButton).toBeEnabled();
+  let reverseState = await e2eState(page);
+  expect(reverseState.reverseAnalysisRequests).toHaveLength(1);
+  expect(reverseState.reverseAnalysisRequests[0]).toMatchObject({
+    analysisDepth: 'deep',
+    modelRoute: availableRoute,
+  });
+
+  await retryButton.click();
 
   const result = page.locator('[data-module-type="reverse_result"]');
   await expect(result).toHaveCount(1);
@@ -55,6 +77,11 @@ test('reverse completion creates and fills a connected result node', async ({ pa
   await expect(preview).toContainText('Verified persisted reverse prompt');
   const positivePrompt = reverse.getByLabel('Reverse positive prompt');
   await expect(positivePrompt).toHaveValue('Verified persisted reverse prompt');
+  reverseState = await e2eState(page);
+  expect(reverseState.reverseAnalysisRequests).toHaveLength(2);
+  expect(reverseState.reverseAnalysisRequests.map((request) => request.analysisDepth)).toEqual(['deep', 'deep']);
+  expect(reverseState.modelSubmissions).toHaveLength(0);
+  expect(externalRequests).toEqual([]);
 
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'clipboard', {

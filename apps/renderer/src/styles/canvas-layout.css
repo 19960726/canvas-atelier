@@ -9501,6 +9501,16 @@
   background: color-mix(in srgb, var(--gate-accent) 14%, var(--gate-card));
   border-color: var(--gate-accent);
 }
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__reverse-depth > button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+.workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-depth-status {
+  margin: -2px 0 0;
+  color: var(--gate-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
 
 /* Public Codex/MCP capability facts are grouped separately from paths,
    tokens and raw process errors. */

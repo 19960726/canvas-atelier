@@ -33,6 +33,13 @@ export function resolveImageResolutionRoute<T extends ImageResolutionRoute>(
     return declared.length === 1 && declared[0] === resolution;
   });
   if (exactVariant !== undefined) return exactVariant;
+  const identityVariant = family.find((route) => identityResolutionTier(route) === resolution);
+  if (identityVariant !== undefined) return identityVariant;
+  if (resolution === '1K' && family.some((route) => identityResolutionTier(route) !== undefined)) {
+    const familyKey = imageResolutionFamilyKey(selected);
+    const baseVariant = family.find((route) => normalizedImageResolutionIdentity(route) === familyKey);
+    if (baseVariant !== undefined) return baseVariant;
+  }
   const declaredMatch = family.find((route) => declaredResolutionTiers(route).includes(resolution));
   if (declaredMatch !== undefined) return declaredMatch;
   return declaredResolutionTiers(selected).length === 0 && implicitResolutionTiers(selected).includes(resolution)
@@ -45,11 +52,23 @@ function resolutionFamilyRoutes<T extends ImageResolutionRoute>(routes: readonly
   return routes.filter((route) => route.provider === selected.provider && imageResolutionFamilyKey(route) === selectedKey);
 }
 
-function imageResolutionFamilyKey(route: ImageResolutionRoute): string {
-  const identity = route.modelId ?? route.displayName ?? route.modelRoute;
-  return identity.trim().toLocaleLowerCase()
-    .replace(/[._/\s]+/gu, '-')
+export function imageResolutionFamilyKey(route: ImageResolutionRoute): string {
+  return normalizedImageResolutionIdentity(route)
+    .replace(/[._/\s·]+/gu, '-')
     .replace(/-(?:512px|1k|2k|4k)$/u, '');
+}
+
+function normalizedImageResolutionIdentity(route: ImageResolutionRoute): string {
+  return (route.modelId ?? route.displayName ?? route.modelRoute).trim().toLocaleLowerCase()
+    .replace(/[._/\s·]+/gu, '-');
+}
+
+function identityResolutionTier(route: ImageResolutionRoute): ImageResolutionTier | undefined {
+  const suffix = normalizedImageResolutionIdentity(route).match(/-(512px|1k|2k|4k)$/u)?.[1];
+  if (suffix === '2k') return '2K';
+  if (suffix === '4k') return '4K';
+  if (suffix === '512px' || suffix === '1k') return '1K';
+  return undefined;
 }
 
 function declaredResolutionTiers(route: ImageResolutionRoute): ImageResolutionTier[] {

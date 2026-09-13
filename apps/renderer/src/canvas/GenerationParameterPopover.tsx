@@ -6,6 +6,9 @@ interface GenerationParameterPopoverProps {
   readonly value: string;
   readonly options: readonly string[];
   readonly disabledOptions?: readonly string[];
+  readonly disabledReason?: string;
+  readonly label?: string;
+  readonly className?: string;
   readonly onChange: (value: string) => void;
 }
 
@@ -20,6 +23,9 @@ export function ClarityPopover(props: GenerationParameterPopoverProps) {
 function GenerationParameterPopover({
   ariaLabel,
   disabledOptions = [],
+  disabledReason = '当前模型没有已验证的原生清晰度路线',
+  label,
+  className = '',
   layout,
   onChange,
   options,
@@ -70,7 +76,7 @@ function GenerationParameterPopover({
   }, [layout, open, options.length, value]);
 
   return <div
-    className={`generation-parameter-popover generation-parameter-popover--${layout} nodrag nopan`}
+    className={`generation-parameter-popover generation-parameter-popover--${layout} nodrag nopan ${className}`}
     ref={rootRef}
     onPointerDown={(event) => event.stopPropagation()}
     style={{ position: 'relative', display: 'block' }}
@@ -87,6 +93,7 @@ function GenerationParameterPopover({
       onClick={() => setOpen((current) => !current)}
     >
       {renderIcon?.(value)}
+      {label && <span className="generation-parameter-popover__label">{label}</span>}
       <span>{normalizeDisplayValue(value)}</span>
       <ChevronDown size={15} aria-hidden="true" />
     </button>
@@ -109,7 +116,7 @@ function GenerationParameterPopover({
           aria-checked={selected}
           aria-label={normalizeDisplayValue(option)}
           disabled={disabled}
-          title={disabled ? '当前模型没有已验证的原生清晰度路线' : undefined}
+          title={disabled ? disabledReason : undefined}
           onClick={() => {
             onChange(option);
             setOpen(false);

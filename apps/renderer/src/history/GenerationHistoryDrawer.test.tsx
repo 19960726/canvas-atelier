@@ -79,6 +79,19 @@ describe('GenerationHistoryDrawer', () => {
     expect(screen.getByText('2048 × 2048')).toBeVisible();
   });
 
+  it('shows history records without waiting for the full capacity audit', async () => {
+    const record = historyRecord('history_availableaaaaaa', 'available');
+    installHistoryBridge({
+      getCapacity: vi.fn(() => new Promise<never>(() => undefined)),
+      list: vi.fn(async () => ({ nextCursor: null, records: [record], revision: 1, total: 1 })),
+    });
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    expect(await screen.findByRole('button', { name: `查看 ${record.promptSummary}` })).toBeVisible();
+    expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('统一生成历史 (1)');
+  });
+
   it('labels failed generations as failures instead of unavailable media files', async () => {
     const failed = {
       ...historyRecord('history_failedaaaaaa', 'available'),

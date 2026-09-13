@@ -381,6 +381,89 @@ describe('desktop persistence', () => {
     expect(String((error as Error).message)).not.toMatch(/https?:\/\/|[A-Za-z]:\\|base64|authorization|bearer|secret/iu);
   });
 
+  it.each(['TRUNCATED', 'NO_TEXT', 'INVALID_JSON', 'CORE_SCHEMA_INVALID', 'IDENTITY_MISMATCH', 'MEDIA_RESPONSIBILITIES_INVALID'])('preserves the safe reverse failure reason %s across the desktop boundary', async (reason) => {
+    const project = createStarterProject();
+    const bridge = {
+      closeProject: vi.fn(), commit: vi.fn(), createStablePoint: vi.fn(), getRecoveryPlan: vi.fn(), restore: vi.fn(),
+      openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)),
+      provider: { analyzeReversePrompt: vi.fn(async () => Promise.reject({
+        code: 'PROVIDER_INVALID_RESPONSE', retryable: true, reason, message: 'https://private.example/secret',
+      })) },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const error = await client.analyzeReversePrompt?.({ provider: 'comfly', run: {} as ReversePromptRun, media: [] as never }).catch(error => error);
+    expect(error).toMatchObject({ code: 'PROVIDER_INVALID_RESPONSE', reason, retryable: true });
+    expect(error.message).not.toContain('private.example');
+  });
+
+  it('retains the observed connection-closed error without exposing the provider URL', async () => {
+    const project = createStarterProject();
+    const bridge = {
+      closeProject: vi.fn(), commit: vi.fn(), createStablePoint: vi.fn(), getRecoveryPlan: vi.fn(), restore: vi.fn(),
+      openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)),
+      provider: { analyzeReversePrompt: vi.fn(async () => Promise.reject({
+        code: 'PROVIDER_ERROR', retryable: true, message: 'Comfly request failed for https://private.example/v1/chat/completions: Provider network request failed (net::ERR_CONNECTION_CLOSED)',
+      })) },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+    const error = await client.analyzeReversePrompt?.({ provider: 'comfly', run: {} as ReversePromptRun, media: [] as never }).catch(error => error);
+    expect(error).toMatchObject({ code: 'PROVIDER_ERROR', message: 'Provider network request failed (ERR_CONNECTION_CLOSED)', retryable: true });
+    expect(error.message).not.toContain('private.example');
+  });
+
+  it('preserves a display-safe reverse timeout duration', async () => {
+    const project = createStarterProject();
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)), restore: vi.fn(),
+      provider: { analyzeReversePrompt: vi.fn(async () => Promise.reject({
+        code: 'PROVIDER_TIMEOUT', retryable: true, message: 'Comfly request timed out after 300000ms for https://private.example/v1/chat',
+      })) },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const error = await client.analyzeReversePrompt?.({ provider: 'comfly', run: {} as ReversePromptRun, media: [] as never })
+      .catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({
+      code: 'PROVIDER_TIMEOUT',
+      message: 'Provider request timed out after 300000ms',
+      retryable: true,
+    });
+  });
+
+  it('preserves a display-safe Agent provider status', async () => {
+    const project = createStarterProject();
+    const bridge = {
+      closeProject: vi.fn(async () => undefined), commit: vi.fn(), createStablePoint: vi.fn(),
+      getRecoveryPlan: vi.fn(), openProject: vi.fn(async () => createDesktopSession(project, 'desktop-session', 0)), restore: vi.fn(),
+      provider: { chat: vi.fn(async () => Promise.reject({
+        code: 'PROVIDER_ERROR', retryable: true, message: 'Comfly request failed with status 503 for https://private.example/v1/chat',
+      })) },
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []), pasteClipboardImage: vi.fn() },
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    const error = await client.chatSkill?.({
+      provider: 'comfly', modelRoute: 'gemini-vision',
+      messages: [{ role: 'user', content: 'Analyze this image.' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    }).catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: 'Provider request failed with status 503',
+      retryable: true,
+    });
+  });
+
   it('retries one ambiguous clipboard paste with the exact same operation identity', async () => {
     const project = createStarterProject();
     const result = {
@@ -2106,7 +2189,7 @@ describe('desktop persistence', () => {
     }, file);
   });
 
-  it('falls back to the native bitmap clipboard for an in-memory Agent image without opening the picker', async () => {
+  it.each(['file', 'native'] as const)('imports the %s Agent clipboard payload without opening the picker', async (source) => {
     const durableProject = createStarterProject();
     const importedProject = { ...durableProject, assets: [] };
     const asset = {
@@ -2128,8 +2211,12 @@ describe('desktop persistence', () => {
     await client.openProject?.();
     const file = new File(['clipboard bitmap'], 'image.png', { type: 'image/png' });
 
-    await expect(client.importProjectImage({ kind: 'agent_reference' } as never, file)).resolves.toEqual({ asset, project: importedProject, revision: 8 });
+    await expect(source === 'file'
+      ? client.importProjectImage({ kind: 'agent_reference' } as never, file)
+      : client.importProjectImage({ kind: 'agent_reference' } as never, undefined, { fromClipboard: true })
+    ).resolves.toEqual({ asset, project: importedProject, revision: 8 });
     expect(importImage).not.toHaveBeenCalled();
+    if (source === 'native') expect(importDroppedMedia).not.toHaveBeenCalled();
     expect(pasteClipboardImage).toHaveBeenCalledWith({
       sessionId: 'desktop-session', target: expect.objectContaining({ kind: 'agent_reference' }),
     });

@@ -86,6 +86,32 @@ describe('readAgentChatClipboard', () => {
     })).media).toEqual([{ file: image, kind: 'image' }]);
   });
 
+  it.each(['', 'application/octet-stream'])('recognizes image and video filenames when MIME is %s', (type) => {
+    const image = new File(['image'], 'reference.PNG', { type });
+    const video = new File(['video'], 'reference.mp4', { type });
+    expect(readAgentChatClipboard(clipboardData({ files: [image, video] })).media).toEqual([
+      { file: image, kind: 'image' },
+      { file: video, kind: 'video' },
+    ]);
+  });
+
+  it('keeps files omitted from a partial items list without duplicating shared files', () => {
+    const image = new File(['image'], 'first.png', { type: 'image/png' });
+    const second = new File(['second'], 'second.jpg', { type: 'image/jpeg' });
+    expect(readAgentChatClipboard(clipboardData({ files: [image, second], items: [fileItem(image)] })).media).toEqual([
+      { file: image, kind: 'image' },
+      { file: second, kind: 'image' },
+    ]);
+  });
+
+  it('does not import twice when items and files expose separate wrappers for one file', () => {
+    const image = new File(['image'], 'same.png', { type: 'image/png', lastModified: 123 });
+    const secondWrapper = new File(['image'], 'same.png', { type: 'image/png', lastModified: 123 });
+    expect(readAgentChatClipboard(clipboardData({ files: [secondWrapper], items: [fileItem(image)] })).media).toEqual([
+      { file: image, kind: 'image' },
+    ]);
+  });
+
   it('prefers text/plain over text/html', () => {
     expect(readAgentChatClipboard(clipboardData({
       plain: '纯文本',

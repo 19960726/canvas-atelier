@@ -63,6 +63,20 @@ export function selectAgentProjectMemoryIds(timeline: readonly ProjectMemoryEntr
   return buildProjectMemoryContext([...timeline], MAX_AGENT_PROJECT_MEMORY_IDS).map((memory) => memory.id);
 }
 
+function canvasAgentNodeLabel(node: CanvasModuleNode): string {
+  const config = node.data.config as Record<string, unknown>;
+  if (typeof config.agentWorkflowLabel === 'string') return config.agentWorkflowLabel;
+  const typeLabel = node.data.moduleType === 'image_generation'
+    ? '生图'
+    : node.data.moduleType === 'video_generation'
+      ? '视频生成'
+      : '反推';
+  const value = node.data.moduleType === 'reverse_agent' ? config.task : config.prompt;
+  const summary = typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : '';
+  if (summary.length === 0) return `${typeLabel}节点 · ${node.id.slice(0, 8)}`;
+  return `${typeLabel}节点 · ${summary.slice(0, 28)}${summary.length > 28 ? '…' : ''}`;
+}
+
 export function resolveSelectedMediaPasteTarget(
   nodes: readonly Node<CanvasFlowNodeData>[],
 ): Node<CanvasFlowNodeData> | undefined {
@@ -81,6 +95,7 @@ interface CanvasFlowInstance {
   getViewport: () => Viewport;
   screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
   setCenter: (x: number, y: number, options?: { zoom?: number; duration?: number }) => void;
+  fitView: (options?: { padding?: number; duration?: number }) => void;
 }
 
 function EdgeEndpointInternalsUpdater({ edges, nodes }: { readonly edges: readonly Edge[]; readonly nodes: readonly Node[] }) {
@@ -652,6 +667,7 @@ export function CanvasWorkspace() {
   const reuseHistoryParameters = useAppStore((state) => state.reuseHistoryParameters);
   const connectModulePorts = useAppStore((state) => state.connectModulePorts);
   const commitNodePositions = useAppStore((state) => state.commitNodePositions);
+  const arrangeCanvas = useAppStore((state) => state.arrangeCanvas);
   const deleteCanvasNodes = useAppStore((state) => state.deleteCanvasNodes);
   const deleteCanvasEdge = useAppStore((state) => state.deleteCanvasEdge);
   const handleDeleteCanvasEdge = useCallback((edgeId: string) => {
@@ -1092,6 +1108,7 @@ export function CanvasWorkspace() {
       nodeId: node.id,
       title: typeof config.task === 'string' && config.task.trim().length > 0 ? config.task : 'Agent 反推结果',
       positivePrompt: result.positivePrompt,
+      ...(typeof config.reverseAgentCompletedAt === 'string' ? { completedAt: config.reverseAgentCompletedAt } : {}),
     }];
   }), [project.nodes]);
   const agentCanvasActionTargets = useMemo(() => project.nodes.flatMap((node) => {
@@ -1099,7 +1116,7 @@ export function CanvasWorkspace() {
     return [{
       kind: node.data.moduleType as SkillCanvasActionRequest['kind'],
       nodeId: node.id,
-      label: node.id,
+      label: canvasAgentNodeLabel(node),
       selected: selectedFlowNodeIds.includes(node.id),
     }];
   }), [project.nodes, selectedFlowNodeIds]);
@@ -1147,7 +1164,9 @@ export function CanvasWorkspace() {
           ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
           ...(typeof config.aspectRatio === 'string' ? { aspectRatio: config.aspectRatio } : {}),
           ...(typeof config.resolution === 'string' ? { resolution: config.resolution } : {}),
-          ...(config.imageQuality === 'low' || config.imageQuality === 'medium' || config.imageQuality === 'high' ? { imageQuality: config.imageQuality } : {}),
+          ...(config.imageQuality === 'auto' || config.imageQuality === 'low' || config.imageQuality === 'medium' || config.imageQuality === 'high' ? { imageQuality: config.imageQuality } : {}),
+          ...(config.imageOutputFormat === 'png' || config.imageOutputFormat === 'jpeg' || config.imageOutputFormat === 'webp' ? { imageOutputFormat: config.imageOutputFormat } : {}),
+          ...(config.imageBackground === 'auto' || config.imageBackground === 'opaque' || config.imageBackground === 'transparent' ? { imageBackground: config.imageBackground } : {}),
           ...(typeof config.outputCount === 'number' ? { outputCount: config.outputCount } : {}),
           referenceAssetIds,
         });
@@ -1179,17 +1198,21 @@ export function CanvasWorkspace() {
         return rethrowGenerationSaveError(caught);
       }
     }
-    try {
-      await runReverseAgentNode(request.nodeId, requestedModelRoute ? {
-        modelRoute: requestedModelRoute,
-        role: typeof config.role === 'string' ? config.role : '专业视觉分析师',
-        task: typeof config.task === 'string' ? config.task : request.prompt,
-        knowledgeBaseIds: Array.isArray(config.knowledgeBaseIds) ? config.knowledgeBaseIds.filter((value): value is string => typeof value === 'string') : [],
-      } : undefined);
-      return true;
-    } catch {
-      return false;
-    }
+    const analysisDepth: 'fast' | 'standard' | 'deep' | undefined = config.analysisDepth === 'fast'
+      || config.analysisDepth === 'standard'
+      || config.analysisDepth === 'deep'
+      ? config.analysisDepth
+      : undefined;
+    const reverseConfig = requestedModelRoute ? {
+      modelRoute: requestedModelRoute,
+      role: typeof config.role === 'string' ? config.role : '专业视觉分析师',
+      task: typeof config.task === 'string' ? config.task : request.prompt,
+      ...(analysisDepth === undefined ? {} : { analysisDepth }),
+      ...(referenceAssetIds.length > 0 ? { referenceAssetIds } : {}),
+      knowledgeBaseIds: Array.isArray(config.knowledgeBaseIds) ? config.knowledgeBaseIds.filter((value): value is string => typeof value === 'string') : [],
+    } : undefined;
+    await runReverseAgentNode(request.nodeId, reverseConfig);
+    return true;
   }, [project.nodes, runImageGenerationNode, runReverseAgentNode, runVideoPreviewNode]);
   const resolveReferenceThumbnailUrl = (assetId: string) => managedImagesByAssetId.get(assetId)?.displayUrl ?? assetId;
   const placementImportError = referenceUploadError ?? projectImageError;
@@ -1206,6 +1229,14 @@ export function CanvasWorkspace() {
     flowInstanceRef.current = instance;
     viewportCulling.handleViewportInitialized(instance);
   }, [viewportCulling.handleViewportInitialized]);
+
+  const handleArrangeCanvas = useCallback(async () => {
+    const arranged = await arrangeCanvas();
+    if (!arranged) return;
+    window.requestAnimationFrame(() => {
+      flowInstanceRef.current?.fitView({ padding: 0.18, duration: 320 });
+    });
+  }, [arrangeCanvas]);
 
   const screenToFlowPosition = useCallback((position: { x: number; y: number }) => {
     const instance = flowInstanceRef.current;
@@ -2033,6 +2064,16 @@ export function CanvasWorkspace() {
         >
           <span className="toolrail__glyph" data-rail-icon="undo" aria-hidden="true">↶</span>
         </button>
+        <button
+          type="button"
+          data-testid="tool-arrange"
+          className="tool-button"
+          aria-label="整理画布"
+          title="整理画布"
+          onClick={() => { void handleArrangeCanvas(); }}
+        >
+          <LayoutTemplate size={18} aria-hidden="true" />
+        </button>
         {/* Retained as a non-rendered compatibility hook for persisted
             placement workflows; it is intentionally not part of the Canvas
             rail or any user-facing menu. */}
@@ -2328,6 +2369,7 @@ export function CanvasWorkspace() {
               onImportReferenceImage={importAgentReferenceImage}
               onImportReferenceVideo={importAgentReferenceVideo}
               canvasActionTargets={agentCanvasActionTargets}
+              canvasHasSelection={selectedFlowNodeIds.length > 0}
               canvasActionResults={project.nodes.flatMap((node) => {
                 if (node.type !== 'module' || !['image_generation', 'video_generation'].includes(node.data.moduleType)) return [];
                 const jobs = projectModelJobs.filter((job) => job.promptNodeId === node.id);

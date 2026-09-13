@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions, creativeWorkflowSteps, constrainCreativePlanKind } from './creative-plan';
+import { assessCreativeGenerationPrompt, parseCreativePlan, recoverEmptyCreativePlan, creativePlanningInstructions, creativeWorkflowSteps, constrainCreativePlanKind } from './creative-plan';
 import { defaultGenerationPreferences, generationProfiles, resolveGenerationPreference, readGenerationPreferences, writeGenerationPreferences } from './generation-preferences';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 
@@ -9,6 +9,32 @@ const profiles: ProviderBridgeProfile[] = [
   { provider: 'comfly', modelRoute: 'video', displayName: 'Video', modelId: 'veo3.1', capabilities: ['video_generation'], constraints: { video: { aspectRatios: ['16:9'], resolutions: ['720p'], outputCounts: [1], duration: { mode: 'options', options: [4, 8] } } } },
 ];
 describe('creative plan boundary', () => {
+  it('rejects copied or underspecified generation prompts while allowing an executable rewrite', () => {
+    expect(assessCreativeGenerationPrompt('根据你的要求，生成一张产品主图，请执行。', '生成一张产品主图'))
+      .toEqual({ valid: false, reason: 'copied' });
+    expect(assessCreativeGenerationPrompt('产品图', '为新品制作一张高级电商主图'))
+      .toEqual({ valid: false, reason: 'underspecified' });
+    expect(assessCreativeGenerationPrompt(
+      '红色产品居中构图，严格保持外观比例与品牌标识，柔和侧光突出材质，纯净暖灰背景，高清商业摄影。',
+      '生成一张产品主图',
+    )).toEqual({ valid: true });
+  });
+
+  it('rejects reference mention tokens and long generic praise without visual execution dimensions', () => {
+    expect(assessCreativeGenerationPrompt(
+      '@图片1 红色产品居中构图，柔和侧光突出金属材质，暖灰背景，保持品牌标识不变。',
+      '参考图片精修产品',
+    )).toEqual({ valid: false, reason: 'contains-mention' });
+    expect(assessCreativeGenerationPrompt(
+      '把整个画面做得更加高级好看专业精致清晰，整体效果自然舒服并且更有品质感。',
+      '优化产品图',
+    )).toEqual({ valid: false, reason: 'underspecified' });
+    expect(assessCreativeGenerationPrompt(
+      '把产品效果做得更加高级好看专业精致清晰，采用优秀构图和光鲜特色，整体自然舒服有品质感。',
+      '优化产品图',
+    )).toEqual({ valid: false, reason: 'underspecified' });
+  });
+
   it('accepts only model-provided executable choices, preserving evidence labels', () => {
     const plan = parseCreativePlan(JSON.stringify({
       summary: '产品短片方案',
@@ -60,7 +86,7 @@ describe('creative plan boundary', () => {
     const fallback = creativeWorkflowSteps({ id: 'b', title: '短片', kind: 'video', prompt: '环绕产品', reason: '展示外观' }, 0);
     expect(fallback.map((step) => step.title)).toEqual(['整理需求与素材', '执行视频生成', '回写并检查结果']);
   });
-  it('recovers an empty structured response into one exact executable reference-edit option', () => {
+  it('preserves analysis but never invents an executable option when the model returns none', () => {
     const imageEdit: ProviderBridgeProfile = {
       provider: 'comfly', modelRoute: 'image-edit', displayName: 'Image edit', capabilities: ['image_generation', 'image_edit'],
     };
@@ -79,13 +105,9 @@ describe('creative plan boundary', () => {
         mustKeep: ['其他不需要改变'],
         mustChange: ['把产品单独精修'],
       },
-      options: [{
-        title: '按当前要求精修',
-        kind: 'image',
-        prompt: '把产品单独精修，其他不需要改变',
-        modelRoute: 'image-edit',
-      }],
+      options: [],
     });
+    expect(plan?.options).toHaveLength(0);
   });
 
   it('keeps an empty structured plan visible when the selected workflow has no compatible route', () => {
@@ -129,6 +151,7 @@ describe('creative plan boundary', () => {
     expect(text).toContain('mustAvoid');
     expect(text).toContain('acceptanceCriteria');
     expect(text).toContain('每条要求必须落实到完整提示词或 workflow');
+    expect(text).toContain('不能原样复制用户请求');
   });
   it('removes a model-authored video fallback when the user selected an image workflow', () => {
     const plan = parseCreativePlan(JSON.stringify({

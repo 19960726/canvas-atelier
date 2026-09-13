@@ -105,7 +105,9 @@ describe('legacy desktop close coordinator', () => {
 
   it('awaits the durable project close before best-effort service shutdown and resets the retry latch on failure', async () => {
     const source = await readFile(join(process.cwd(), 'apps/desktop-legacy/src/main.ts'), 'utf8');
-    const shutdownFunction = source.match(/async function runCoordinatedShutdown[\s\S]*?\n\}\n\nfunction finalizeCoordinatedClose/u)?.[0];
+    const shutdownFunction = source.match(
+      /async function runCoordinatedShutdown[\s\S]*?\r?\n\}\r?\n\r?\nfunction finalizeCoordinatedClose/u,
+    )?.[0];
 
     expect(shutdownFunction).toBeDefined();
     expect(shutdownFunction).toMatch(/try\s*\{[\s\S]*await handlers\.closeAllProjects\(\{ flush: reason !== 'discarded' \}\);[\s\S]*await shutdownDesktopServices/u);

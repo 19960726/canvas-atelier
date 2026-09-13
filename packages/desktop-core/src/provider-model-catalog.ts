@@ -7,7 +7,7 @@ const MEDIA_OUTPUT_IDENTITY_PATTERNS = [
   /(?:^|-)gemini-\d+(?:-\d+)?-(?:[a-z0-9]+-)*image(?:-|$)/u,
   /(?:^|-)gpt-4o-image(?:-|$)/u,
   /(?:^|-)qwen-(?:image(?:-edit)?|mt-image)(?:-|$)/u,
-  /(?:^|-)seedream-\d+(?:-\d+)?(?:-|$)/u,
+  /(?:^|-)seedream-v?\d+(?:-\d+)?(?:-|$)/u,
   /(?:^|-)dall(?:e|-e)(?:-|$)/u,
   /(?:^|-)grok-imagine-video(?:-|$)/u,
   /(?:^|-)hailuo-video(?:-|$)/u,
@@ -39,6 +39,13 @@ const VERIFIED_COMFLY_GEMINI_IMAGE_EDIT_MODELS = new Set([
   'gemini-3.1-flash-image-preview-2k',
   'gemini-3.1-flash-image-preview-4k',
 ]);
+const VERIFIED_COMFLY_GENERATIONS_REFERENCE_IMAGE_MODELS = new Set([
+  ...VERIFIED_COMFLY_GEMINI_IMAGE_EDIT_MODELS,
+  'seedream-v5-pro',
+]);
+const VERIFIED_COMFLY_GEMINI_NATIVE_REVERSE_MODELS = new Set([
+  'gemini-3.1-pro-preview-customtools',
+]);
 
 export function isVerifiedComflyGeminiImageEditModel(modelId: string | undefined): boolean {
   if (modelId === undefined) return false;
@@ -48,26 +55,41 @@ export function isVerifiedComflyGeminiImageEditModel(modelId: string | undefined
 }
 
 /**
- * Repair the known Comfly catalog omission for Gemini 3.1 Flash Image.
+ * Repair known Comfly catalog omissions for models whose generations endpoint
+ * accepts reference images in its `image` field.
  *
  * The migration is applied both to freshly discovered catalog profiles and to
  * cached user profiles, so an existing canvas can be reopened and submitted
  * without requiring the user to delete/reselect the model. It only adds the
  * capability when image generation is already present and the model identity
- * is one of the verified Gemini 3.1 Flash Image variants.
+ * is one of the exact models verified against the provider documentation.
  */
 export function repairComflyImageEditCapability(profile: ProviderBridgeProfile): ProviderBridgeProfile {
   if (profile.provider !== 'comfly'
     || !profile.capabilities.includes('image_generation')
     || profile.capabilities.includes('image_edit')
     || profile.capabilityStatus === 'incomplete'
-    || !isVerifiedComflyGeminiImageEditModel(profile.modelId)) {
+    || profile.modelId === undefined
+    || !VERIFIED_COMFLY_GENERATIONS_REFERENCE_IMAGE_MODELS.has(profile.modelId)) {
     return profile;
   }
   const capabilities = [...profile.capabilities];
   const generationIndex = capabilities.indexOf('image_generation');
   capabilities.splice(generationIndex + 1, 0, 'image_edit');
   return { ...profile, capabilities };
+}
+
+export function repairComflyGeminiNativeReverseCapability(profile: ProviderBridgeProfile): ProviderBridgeProfile {
+  if (profile.provider !== 'comfly'
+    || profile.capabilityStatus === 'incomplete'
+    || profile.modelId === undefined
+    || !VERIFIED_COMFLY_GEMINI_NATIVE_REVERSE_MODELS.has(profile.modelId)
+    || !profile.capabilities.includes('vision')
+    || !profile.capabilities.includes('reverse_prompt')
+    || profile.capabilities.includes('gemini_native')) {
+    return profile;
+  }
+  return { ...profile, capabilities: [...profile.capabilities, 'gemini_native'] };
 }
 
 export function buildComflyModelProfiles(catalog: ComflyAccessibleModelCatalog): ProviderBridgeProfile[] {
@@ -241,8 +263,11 @@ function capabilitiesForComflyModel(model: ComflyCatalogModel): ProviderBridgePr
     && hasVerifiedComflyVideoSubmissionContract(model.key);
   const hasChat = !isMediaOutputModel && hasComflyApi(model, '/v1/chat/completions');
   const hasResponses = !isMediaOutputModel && hasComflyApi(model, '/v1/responses');
+  const hasGeminiNative = !isMediaOutputModel
+    && /^gemini(?:[-./]|$)/iu.test(model.key)
+    && (model.endpointTypes ?? []).some((endpointType) => endpointType.trim().toLocaleLowerCase() === 'gemini');
   const hasVisionTag = tags.has('识图') || tags.has('图生文') || tags.has('多模态');
-  const hasVision = (hasChat || hasResponses) && hasVisionTag;
+  const hasVision = (hasChat || hasResponses || hasGeminiNative) && hasVisionTag;
   const hasVideoUnderstanding = hasChat && (tags.has('视频分析') || tags.has('视频理解'));
   if (hasImageGeneration) capabilities.push('image_generation');
   if (hasImageEdit) capabilities.push('image_edit');
@@ -255,6 +280,10 @@ function capabilitiesForComflyModel(model: ComflyCatalogModel): ProviderBridgePr
   // Keep Responses-only vision metadata visible without advertising a route
   // that the installed transport cannot execute.
   if (hasVision && !hasChat) capabilities.push('vision');
+  if (hasVision && hasGeminiNative) {
+    if (!capabilities.includes('reverse_prompt')) capabilities.push('reverse_prompt');
+    capabilities.push('gemini_native');
+  }
   if (tags.has('异步任务')) capabilities.push('async_tasks');
   return capabilities;
 }
@@ -271,7 +300,12 @@ function hasComflyApi(model: ComflyCatalogModel, endpoint: string): boolean {
   });
 }
 function constraintsForComflyModel(model: ComflyCatalogModel): ProviderBridgeProfile['constraints'] {
-  const image = model.tags.includes('绘图') ? imageConstraintsFromTable(model.parameterTable) : undefined;
+  const parsedImage = model.tags.includes('绘图') ? imageConstraintsFromTable(model.parameterTable) : undefined;
+  // The current Seedream V5 provider contract exposes a 2K output tier. Its
+  // pricing table contains pixel billing bands rather than selectable sizes.
+  const image = model.key === 'seedream-v5-pro'
+    ? { ...parsedImage, resolutions: ['2K' as const] }
+    : parsedImage;
   const video = model.tags.includes('视频') ? videoConstraintsFromTable(model.parameterTable) : undefined;
   if (image === undefined && video === undefined) return undefined;
   return {

@@ -729,7 +729,7 @@ describe('secure New API provider service', () => {
     await expect(fourD.submitVideoJob({ provider: '4dai' } as never)).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' });
   });
 
-  it('allows 4D visual chat only for a pricing-verified vision model and sends managed image bytes', async () => {
+  it('uses the deep reverse budget for 4D Agent visual analysis and keeps ordinary chat defaults', async () => {
     const calls: Array<{ url: string; init?: NewApiFetchInit }> = [];
     const fetch = sequenceFetch(calls, [
       jsonResponse({ object: 'list', data: [{ id: 'gpt-6-astra' }] }),
@@ -737,6 +737,7 @@ describe('secure New API provider service', () => {
         model_name: 'gpt-6-astra', supported_endpoint_types: ['openai'], image_ratio: 0.5,
       }] }),
       jsonResponse({ choices: [{ message: { role: 'assistant', content: 'bright red package' } }] }),
+      jsonResponse({ choices: [{ message: { role: 'assistant', content: 'ordinary reply' } }] }),
     ]);
     const service = createNewApiProviderService({
       provider: '4dai', credentialStore: configuredCredentialStore(),
@@ -750,10 +751,26 @@ describe('secure New API provider service', () => {
     await expect(service.chat({
       provider: '4dai', modelRoute: '4dai-gpt-6-astra', sessionId: 'session-3',
       referenceAssetIds: ['0123456789abcdef'],
+      referenceMentions: [{ assetId: '0123456789abcdef', label: '产品图', mention: '@图片1' }],
+      visualAnalysis: true,
+      reverseAnalysisDepth: 'deep',
       messages: [{ role: 'user', content: 'describe the image' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
     })).resolves.toEqual({ message: 'bright red package', modelRoute: '4dai-gpt-6-astra', sources: [] });
-    const payload = JSON.parse(calls[calls.length - 1]!.init!.body as string) as { messages: unknown[] };
-    expect(JSON.stringify(payload.messages)).toContain('data:image/png;base64,iVBORw==');
+    await expect(service.chat({
+      provider: '4dai', modelRoute: '4dai-gpt-6-astra',
+      messages: [{ role: 'user', content: 'ordinary question' }],
+      context: { knowledgeBaseIds: [], projectMemoryIds: [] },
+    })).resolves.toEqual({ message: 'ordinary reply', modelRoute: '4dai-gpt-6-astra', sources: [] });
+
+    const chatCalls = calls.filter((call) => call.url.endsWith('/chat/completions'));
+    const deepPayload = JSON.parse(chatCalls[0]!.init!.body as string) as { max_tokens?: number; messages: unknown[] };
+    expect(JSON.stringify(deepPayload.messages)).toContain('data:image/png;base64,iVBORw==');
+    expect(deepPayload.max_tokens).toBe(16_384);
+    expect(chatCalls[0]!.init!.timeoutMs).toBe(300_000);
+    const ordinaryPayload = JSON.parse(chatCalls[1]!.init!.body as string) as { max_tokens?: number };
+    expect(ordinaryPayload.max_tokens).toBeUndefined();
+    expect(chatCalls[1]!.init!.timeoutMs).toBe(180_000);
   });
 
   it('rejects a remote image on localhost before DNS resolution or asset storage', async () => {
@@ -942,7 +959,13 @@ describe('secure New API provider service', () => {
     const references = [{ assetId: imageAssetId, label: 'Product', position: 0, role: 'product_identity' as const }];
     const run = createReversePromptRun({
       projectId: 'project-1', skill: { id: 'reverse-prompt', version: 'v1' },
-      agentConfig: { modelRoute: '4dai-gpt-6-astra', role: 'Analyst', task: 'Analyze.', knowledgeBaseIds: [] },
+      agentConfig: {
+        modelRoute: '4dai-gpt-6-astra',
+        role: 'Analyst',
+        task: 'Analyze.',
+        analysisDepth: 'deep',
+        knowledgeBaseIds: [],
+      },
       knowledgeLease: createAgentKnowledgeLease({
         runId: 'reverse-run-4d', capability: 'reverse_prompt', snapshots: [], references, citations: [],
       }, { leaseId: 'lease-4d', createdAt: '2026-09-09T00:00:00.000Z' }),
@@ -973,6 +996,10 @@ describe('secure New API provider service', () => {
     })).resolves.toMatchObject(providerResult);
     expect(calls[calls.length - 1]!.url).toBe('https://api.4dai.cc/v1/chat/completions');
     expect(calls[calls.length - 1]!.init!.body).toContain('data:image/png;base64,iVBORw==');
+    expect(calls[calls.length - 1]!.init!.timeoutMs).toBe(300_000);
+    expect(JSON.parse(String(calls[calls.length - 1]!.init!.body))).toMatchObject({
+      max_tokens: 16_384,
+    });
   });
 
   it('requires the explicit reverse_prompt capability for 4D reverse analysis', async () => {

@@ -61,9 +61,13 @@ const publicCatalogModelSchema = z.object({
   provider: nonEmptyStringSchema.optional().default('Comfly'),
   tags: publicCatalogTagsSchema,
   apis: z.array(nonEmptyStringSchema).optional().default([]),
+  supported_endpoint_types: z.array(nonEmptyStringSchema).optional().default([]),
   desc: z.string().optional(),
   ratios: publicCatalogParameterTableSchema.optional(),
-}).passthrough();
+}).passthrough().transform(({ supported_endpoint_types: endpointTypes, ...value }) => ({
+  ...value,
+  endpointTypes,
+}));
 const publicCatalogSchema = z.object({
   data: z.object({
     version: z.union([z.string(), z.number()]).transform(String),
@@ -87,7 +91,8 @@ const publicPricingModelSchema = z.object({
   name: value.model_name,
   provider: 'Comfly',
   tags: value.tags,
-  apis: verifiedImageApisFromPricing(value.supported_endpoint_types, value.apis),
+  apis: verifiedImageApisFromPricing(value.model_name, value.supported_endpoint_types, value.apis),
+  endpointTypes: value.supported_endpoint_types,
   ...(value.description === undefined ? {} : { desc: value.description }),
   ...(value.other_info?.ratios === undefined ? {} : { ratios: value.other_info.ratios }),
 }));
@@ -101,16 +106,22 @@ type PublicCatalogMetadata = {
   readonly provider: string;
   readonly tags: readonly string[];
   readonly apis: readonly string[];
+  readonly endpointTypes: readonly string[];
   readonly desc?: string;
   readonly ratios?: { readonly headers: readonly string[]; readonly rows: readonly (readonly string[])[] };
 };
 
 const IMAGE_GENERATION_ENDPOINT = '/v1/images/generations';
 const IMAGE_EDIT_ENDPOINT = '/v1/images/edits';
+// Comfly documents this exact model on the shared generations endpoint, with
+// optional image[] references, but its public pricing row currently omits both
+// `apis` and the `image-generation` endpoint type.
+const DOCUMENTED_GENERATIONS_MODELS_WITH_INCOMPLETE_PRICING = new Set(['seedream-v5-pro']);
 
-function verifiedImageApisFromPricing(endpointTypes: readonly string[], apis: readonly string[]): string[] {
+function verifiedImageApisFromPricing(modelId: string, endpointTypes: readonly string[], apis: readonly string[]): string[] {
   const verified: string[] = [];
-  if (endpointTypes.some((endpoint) => endpoint.trim().toLocaleLowerCase() === 'image-generation')) {
+  if (DOCUMENTED_GENERATIONS_MODELS_WITH_INCOMPLETE_PRICING.has(modelId)
+    || endpointTypes.some((endpoint) => endpoint.trim().toLocaleLowerCase() === 'image-generation')) {
     verified.push(IMAGE_GENERATION_ENDPOINT);
   }
   for (const endpoint of [IMAGE_GENERATION_ENDPOINT, IMAGE_EDIT_ENDPOINT]) {
@@ -144,6 +155,7 @@ function mergePublicCatalogModels(
         ...model,
         tags: [...model.tags],
         apis: [...model.apis],
+        endpointTypes: [...model.endpointTypes],
         ...(model.ratios === undefined ? {} : { ratios: { headers: [...model.ratios.headers], rows: model.ratios.rows.map((row) => [...row]) } }),
       });
       continue;
@@ -152,6 +164,7 @@ function mergePublicCatalogModels(
       ...current,
       tags: [...new Set([...current.tags, ...model.tags])],
       apis: [...new Set([...current.apis, ...model.apis])],
+      endpointTypes: [...new Set([...current.endpointTypes, ...model.endpointTypes])],
       ...(current.desc !== undefined || model.desc === undefined ? {} : { desc: model.desc }),
       ...(current.ratios !== undefined || model.ratios === undefined
         ? {}
@@ -369,6 +382,9 @@ function mapComflyImageGenerationInput(input: ComflyImageGenerationInput): Recor
     const { aspect_ratio: _aspectRatio, ...rest } = request;
     return { ...rest, size: mapComflyGptImageExactSize(input.size, input.aspect_ratio) };
   }
+  // Seedream V5's documented unified request accepts the provider tier itself
+  // (`size: "2K"`). Converting it to a generic pixel pair changes the contract.
+  if (input.model === 'seedream-v5-pro') return request;
   return { ...request, size: mapComflyImageResolutionTier(input.size, input.aspect_ratio) };
 }
 
@@ -442,6 +458,7 @@ export class ComflyClient {
         provider: metadata.provider,
         tags: [...metadata.tags],
         apis: [...metadata.apis],
+        endpointTypes: [...metadata.endpointTypes],
         ...(metadata.desc === undefined ? {} : { description: metadata.desc }),
         ...(metadata.ratios === undefined ? {} : { parameterTable: metadata.ratios }),
         // Generic provider-wide API lists are not enough to make a model
@@ -500,6 +517,28 @@ export class ComflyClient {
   }
 
   async editImage(input: ComflyImageEditRequest) {
+    if (isGptImageExactSizeModel(input.model)) {
+      const references = z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']), bytes: z.instanceof(Uint8Array) })).min(1).parse(input.image);
+      const { image: _image, ...parameters } = mapComflyImageGenerationInput(input as ComflyImageGenerationInput);
+      const form = new FormData();
+      for (const [name, value] of Object.entries(parameters)) {
+        if (value !== undefined) form.append(name, String(value));
+      }
+      for (const [index, reference] of references.entries()) {
+        const extension = reference.mediaType.split('/')[1];
+        form.append('image', new Blob([Uint8Array.from(reference.bytes)], { type: reference.mediaType }), `reference-${index + 1}.${extension}`);
+      }
+      // Serialize with the platform encoder; Electron net requires raw bytes.
+      const encoded = new Response(form);
+      return this.request('/v1/images/edits', {
+        method: 'POST',
+        rawBody: new Uint8Array(await encoded.arrayBuffer()),
+        contentType: encoded.headers.get('content-type')!,
+        model: input.model,
+        schema: imageGenerationResultSchema,
+        timeoutMs: this.generationTimeoutMs,
+      });
+    }
     return this.request('/v1/images/edits', {
       method: 'POST',
       body: input,
@@ -565,6 +604,8 @@ export class ComflyClient {
     options: {
       readonly method: 'GET' | 'POST';
       readonly body?: Record<string, unknown>;
+      readonly rawBody?: Uint8Array;
+      readonly contentType?: string;
       readonly model?: string;
       readonly schema: z.ZodType<T, z.ZodTypeDef, unknown>;
       readonly timeoutMs?: number;
@@ -583,8 +624,10 @@ export class ComflyClient {
         headers: {
           authorization: `Bearer ${token}`,
           ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+          ...(options.contentType === undefined ? {} : { 'content-type': options.contentType }),
         },
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        ...(options.rawBody === undefined ? {} : { body: options.rawBody }),
         signal: controller.signal,
         timeoutMs,
       });

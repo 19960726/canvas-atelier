@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CODEX_ASTRA_PROFILE, type ChatSkillBridgeResult, type ProviderBridgeProfile } from '@agent-canvas/desktop-core';
+import { ChatSkillBridgeRequestSchema, CODEX_ASTRA_PROFILE, type ChatSkillBridgeResult, type ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
 import { codexAnalysisDelayHint, resolveAgentRequestTimeoutMs, resolveClipboardPasteAction, SkillChatWorkbench, type SkillCanvasActionRequest, type SkillChatRequest } from './SkillChatWorkbench';
 import { queueGeneratedImageForAgent } from './generated-image-agent-transfer';
@@ -13,8 +13,15 @@ afterEach(() => {
   window.sessionStorage.clear();
   window.localStorage.clear();
   delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
   vi.useRealTimers();
 });
+
+function projectMention(label: string) {
+  const browse = screen.queryByRole('button', { name: '浏览项目图片' });
+  if (browse) fireEvent.click(browse);
+  return screen.getByRole('menuitem', { name: 'Mention ' + label });
+}
 
 const profiles: ProviderBridgeProfile[] = [
   {
@@ -272,7 +279,7 @@ describe('SkillChatWorkbench', () => {
         acceptanceCriteria: ['产品完整清晰，实际返图尺寸符合所选清晰度'],
       },
       observations: ['产品居中'], estimates: [], unknowns: [],
-      options: [{ id: 'clean', title: '简洁棚拍', reason: '突出产品', kind: 'image', prompt: '产品居中，柔和棚灯', modelRoute: 'image/only' }],
+      options: [{ id: 'clean', title: '简洁棚拍', reason: '突出产品', kind: 'image', prompt: '产品居中构图，保持产品比例与 Logo，柔和棚灯突出材质，纯净浅色背景，高清商业摄影。', modelRoute: 'image/only' }],
     }), modelRoute: 'chat/creative', sources: [] }));
     const canvasActionTargets = [{ kind: 'image_generation' as const, nodeId: 'image-node', label: '图片节点', selected: true }];
     const view = renderWorkbench({ chat, executeCanvasAction, canvasActionTargets });
@@ -313,7 +320,7 @@ describe('SkillChatWorkbench', () => {
       createWorkflow: true,
       nodeId: expect.stringMatching(/^agent-image-/u),
       modelRoute: 'image/only',
-      prompt: '产品居中，柔和棚灯',
+      prompt: '产品居中构图，保持产品比例与 Logo，柔和棚灯突出材质，纯净浅色背景，高清商业摄影。',
     })));
     const actionCall = (executeCanvasAction.mock.calls as unknown as Array<[SkillCanvasActionRequest]>)[0]!;
     expect(actionCall[0].nodeId).not.toBe('image-node');
@@ -355,7 +362,108 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByRole('button', { name: '生成偏好' })).toHaveTextContent('视频工作流');
   });
 
-  it('turns an empty structured creative response into one selectable reference-edit plan', async () => {
+  it('blocks a creative option that only repeats the user request', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        summary: '需要先改写执行提示词',
+        options: [{ id: 'copy', title: '原文方案', reason: '测试原文保护', kind: 'image', prompt: '生成一张产品主图', modelRoute: 'image/only' }],
+      }),
+      modelRoute: 'chat/creative',
+      sources: [],
+    }));
+    renderWorkbench({ chat, executeCanvasAction });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成一张产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：原文方案' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('没有把需求改写成生图提示词');
+    expect(screen.queryByRole('button', { name: '确认执行生图' })).not.toBeInTheDocument();
+    expect(executeCanvasAction).not.toHaveBeenCalled();
+  });
+
+  it('blocks a creative option that repeats the user request with the same image mention', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        summary: '需要先改写执行提示词',
+        options: [{ id: 'copy', title: '带引用原文方案', reason: '测试引用原文保护', kind: 'image', prompt: '@图片1 生成一张产品主图', modelRoute: 'image/edit' }],
+      }),
+      modelRoute: 'chat/vision',
+      sources: [],
+    }));
+    renderWorkbench({
+      profiles: [
+        { ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] },
+        { ...profiles[1]!, modelRoute: 'image/edit', capabilities: ['image_generation', 'image_edit'] },
+      ],
+      referenceImages: [{ assetId: 'a'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/product' }],
+      chat,
+      executeCanvasAction,
+    });
+    window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'a'.repeat(16) } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 生成一张产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：带引用原文方案' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('仍包含 @图片 或 @视频标记');
+    expect(screen.queryByRole('button', { name: '确认执行生图' })).not.toBeInTheDocument();
+    expect(executeCanvasAction).not.toHaveBeenCalled();
+  });
+
+  it('blocks a creative option that wraps the original request in generic chat wording', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        summary: '模型只给原话加了套话',
+        options: [{
+          id: 'wrapped-copy',
+          title: '套话方案',
+          reason: '验证高重合保护',
+          kind: 'image',
+          prompt: '根据你的要求，生成一张产品主图，请执行。',
+          modelRoute: 'image/only',
+        }],
+      }),
+      modelRoute: 'chat/creative',
+      sources: [],
+    }));
+    renderWorkbench({ chat, executeCanvasAction });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成一张产品主图' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：套话方案' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('没有把需求改写成生图提示词');
+    expect(screen.queryByRole('button', { name: '确认执行生图' })).not.toBeInTheDocument();
+    expect(executeCanvasAction).not.toHaveBeenCalled();
+  });
+
+  it('blocks an underspecified creative prompt before creating a generation node', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        summary: '模型没有写出可执行细节',
+        options: [{ id: 'thin', title: '过短方案', reason: '验证质量门禁', kind: 'image', prompt: '产品图', modelRoute: 'image/only' }],
+      }),
+      modelRoute: 'chat/creative',
+      sources: [],
+    }));
+    renderWorkbench({ chat, executeCanvasAction });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '为新品设计一张高级电商主图，保持品牌颜色和产品结构' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: '选择方案：过短方案' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('生图提示词过于简略');
+    expect(screen.queryByRole('button', { name: '确认执行生图' })).not.toBeInTheDocument();
+    expect(executeCanvasAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps an empty structured creative response non-executable instead of inventing a prompt', async () => {
     const executeCanvasAction = vi.fn(async () => true);
     const chat = vi.fn(async () => ({
       message: '```json\n{"summary":"只精修产品并保持其他内容","observations":["保留背景"],"estimates":[],"unknowns":[],"options":[]}\n```',
@@ -377,16 +485,9 @@ describe('SkillChatWorkbench', () => {
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 把产品单独精修，其他不需要改变' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
-    const option = await screen.findByRole('button', { name: '选择方案：按当前要求精修' });
-    fireEvent.click(option);
-    fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
-
-    await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'image_generation',
-      modelRoute: 'image/edit',
-      prompt: '把产品单独精修，其他不需要改变',
-      referenceAssetIds: ['product-reference'],
-    })));
+    expect(await screen.findByText('只精修产品并保持其他内容')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /选择方案/ })).not.toBeInTheDocument();
+    expect(executeCanvasAction).not.toHaveBeenCalled();
   });
 
   it('sends only the active mode history after switching from chat to Codex', async () => {
@@ -408,6 +509,76 @@ describe('SkillChatWorkbench', () => {
     await waitFor(() => expect(chat).toHaveBeenCalledTimes(2));
 
     expect(chat.mock.calls[1]?.[0].messages).toEqual([{ role: 'user', content: '检查当前画布节点' }]);
+  });
+
+  it('keeps a new Agent request within the 48-message provider contract after a long conversation', async () => {
+    const now = 1_725_000_000_000;
+    const conversation = {
+      ...createAgentConversation(now),
+      mode: 'chat' as const,
+      modelRoute: 'chat/creative',
+      messages: Array.from({ length: 48 }, (_, index) => ({
+        id: `history-${index}`,
+        role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+        mode: 'chat' as const,
+        content: `历史消息 ${index}`,
+      })),
+    };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: conversation.id,
+      conversations: [conversation],
+    });
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: '继续完成', modelRoute: 'chat/creative', sources: [] }));
+    renderWorkbench({ chat });
+
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '继续精修图片' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const sentMessages = chat.mock.calls[0]![0].messages;
+    expect(sentMessages).toHaveLength(48);
+    expect(sentMessages[0]).toEqual({ role: 'assistant', content: '历史消息 1' });
+    expect(sentMessages[sentMessages.length - 1]).toEqual({ role: 'user', content: '继续精修图片' });
+  });
+
+  it('allows a Codex request above the provider limit while keeping it inside the Codex 16000-character contract', async () => {
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: 'Codex 已完成长上下文检查', modelRoute: catalogAstraProfile.modelRoute, sources: [] }));
+    const content = `检查当前画布细节：${'构图与材质'.repeat(1_700)}`;
+    expect(content.length).toBeGreaterThan(8_000);
+    expect(content.length).toBeLessThan(16_000);
+    renderWorkbench({ profiles: [], codexProfiles: [catalogAstraProfile], chat });
+
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: content } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const sentMessages = chat.mock.calls[0]![0].messages;
+    expect(sentMessages[sentMessages.length - 1]?.content).toBe(content);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('does not let a link in an earlier model reply poison the next Agent request', async () => {
+    const chat = vi.fn(async (request: SkillChatRequest) => ({
+      message: request.messages[request.messages.length - 1]?.content === '第一次请求'
+        ? '可以查看 https://example.com/result'
+        : '第二次完成',
+      modelRoute: 'chat/creative',
+      sources: [],
+    }));
+    renderWorkbench({ chat });
+
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '第一次请求' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByText('可以查看 https://example.com/result');
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '第二次请求' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledTimes(2));
+    expect(chat.mock.calls[1]?.[0].messages).toEqual([
+      { role: 'user', content: '第一次请求' },
+      { role: 'user', content: '第二次请求' },
+    ]);
   });
 
   it('does not allow a fixed generation preference before its model directory is available', () => {
@@ -434,7 +605,7 @@ describe('SkillChatWorkbench', () => {
         observations: [],
         estimates: [],
         unknowns: [],
-        options: [{ id: 'gpt', title: 'GPT 高质量', reason: '保留细节', kind: 'image', prompt: '高细节产品主图', modelRoute: gptImage.modelRoute }],
+        options: [{ id: 'gpt', title: 'GPT 高质量', reason: '保留细节', kind: 'image', prompt: '产品居中构图，保持品牌色与外观比例，柔和侧光呈现材质细节，纯净背景，高清电商主图。', modelRoute: gptImage.modelRoute }],
       }),
       modelRoute: 'chat/creative',
       sources: [],
@@ -468,7 +639,7 @@ describe('SkillChatWorkbench', () => {
   it('delivers assets that arrive after a completed action was first observed without assets', async () => {
     const executeCanvasAction = vi.fn(async () => true);
     const chat = vi.fn(async () => ({
-      message: JSON.stringify({ summary: '迟到返图', options: [{ id: 'late', title: '迟到返图', reason: '验证回写竞态', kind: 'image', prompt: '产品主图', modelRoute: 'image/only' }] }),
+      message: JSON.stringify({ summary: '迟到返图', options: [{ id: 'late', title: '迟到返图', reason: '验证回写竞态', kind: 'image', prompt: '产品居中构图，保持品牌色与主体结构，柔和侧光突出材质，纯净背景，高清电商主图。', modelRoute: 'image/only' }] }),
       modelRoute: 'chat/creative',
       sources: [],
     }));
@@ -489,10 +660,106 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getAllByText('生成已完成，1 个结果已回写画布节点。')).toHaveLength(1);
   });
 
+  it('opens and copies a generated image from the Agent result progress', async () => {
+    const executeCanvasAction = vi.fn(async () => true);
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        summary: '生成结果预览',
+        options: [{ id: 'preview', title: '生成结果预览', reason: '验证结果交互', kind: 'image', prompt: '产品居中构图，保持品牌色与主体结构，柔和侧光突出材质，纯净背景，高清电商主图。', modelRoute: 'image/only' }],
+      }),
+      modelRoute: 'chat/creative',
+      sources: [],
+    }));
+    const writeClipboardImage = vi.fn(async (_bytes: Uint8Array) => true);
+    const originalDesktop = window.novusDesktop;
+    const originalFetch = globalThis.fetch;
+    window.novusDesktop = { projectImages: { writeClipboardImage } } as unknown as typeof window.novusDesktop;
+    globalThis.fetch = vi.fn(async () => new Response(new Blob(['image-bytes'], { type: 'image/png' }), {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    }));
+    try {
+      const view = renderWorkbench({ chat, executeCanvasAction });
+      fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+      fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '生成产品主图' } });
+      fireEvent.click(screen.getByRole('button', { name: '发送' }));
+      fireEvent.click(await screen.findByRole('button', { name: '选择方案：生成结果预览' }));
+      fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
+      await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledOnce());
+      const nodeId = (executeCanvasAction.mock.calls as unknown as Array<[SkillCanvasActionRequest]>)[0]![0].nodeId;
+      const resultImage = { assetId: 'result-preview', label: '生成结果', displayUrl: 'novus-project://asset/result-preview' };
+      view.rerender(workbench({ chat, executeCanvasAction, referenceImages: [resultImage], canvasActionResults: [{ nodeId, status: 'completed', assetIds: [resultImage.assetId] }] }));
+
+      const resultCard = await screen.findByLabelText('生成执行进度');
+      expect(resultCard.closest('article')).toHaveTextContent('生成已完成，1 个结果已回写画布节点。');
+      const previewButton = await screen.findByRole('button', { name: '查看生成结果：生成结果' });
+      previewButton.focus();
+      fireEvent.click(previewButton);
+      const dialog = screen.getByRole('dialog', { name: '生成结果预览：生成结果' });
+      expect(dialog).toBeVisible();
+      expect(within(dialog).getByRole('img', { name: '生成结果' })).toBeVisible();
+      const closeButton = within(dialog).getByRole('button', { name: '关闭图片预览' });
+      const zoomOutButton = within(dialog).getByRole('button', { name: '缩小预览' });
+      const zoomInButton = within(dialog).getByRole('button', { name: '放大预览' });
+      const copyButton = within(dialog).getByRole('button', { name: '复制生成图片：生成结果' });
+      expect(closeButton).toHaveFocus();
+      fireEvent.keyDown(closeButton, { key: 'Tab', shiftKey: true });
+      expect(copyButton).toHaveFocus();
+      fireEvent.keyDown(copyButton, { key: 'Tab' });
+      expect(closeButton).toHaveFocus();
+      expect(zoomOutButton).toBeDisabled();
+      for (let index = 0; index < 12; index += 1) fireEvent.click(zoomInButton);
+      expect(within(dialog).getByText('300%')).toBeVisible();
+      expect(zoomInButton).toBeDisabled();
+      for (let index = 0; index < 12; index += 1) fireEvent.click(zoomOutButton);
+      expect(within(dialog).getByText('100%')).toBeVisible();
+      expect(zoomOutButton).toBeDisabled();
+      fireEvent.click(copyButton);
+      await waitFor(() => expect(writeClipboardImage).toHaveBeenCalledOnce());
+      fireEvent.keyDown(closeButton, { key: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: '生成结果预览：生成结果' })).not.toBeInTheDocument();
+      expect(previewButton).toHaveFocus();
+    } finally {
+      vi.unstubAllGlobals();
+      window.novusDesktop = originalDesktop;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('scrolls the message stream to the newest generated result', async () => {
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    const resultNodeId = 'agent-image-scroll-result';
+    const conversation = {
+      ...createAgentConversation(40),
+      id: 'conversation-scroll-result',
+      messages: [{
+        id: `canvas-result:${resultNodeId}`,
+        role: 'assistant' as const,
+        content: '生成已完成，1 个结果已回写画布节点。',
+        mode: 'codex' as const,
+        canvasNodeLabel: '方案 1 · 最新结果',
+      }],
+    };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: conversation.id,
+      conversations: [conversation],
+    });
+
+    renderWorkbench({
+      codexProfiles: [catalogAstraProfile],
+      canvasActionTargets: [{ kind: 'image_generation', nodeId: resultNodeId, label: '方案 1 · 最新结果', selected: false }],
+      canvasActionResults: [{ nodeId: resultNodeId, status: 'completed', assetIds: [] }],
+    });
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: expect.any(Number), behavior: 'smooth' })));
+  });
+
   it.each(['failed', 'cancelled'] as const)('reports a successful retry of the same node after %s without duplicating stale terminal messages', async (terminalStatus) => {
     const executeCanvasAction = vi.fn(async () => true);
     const chat = vi.fn(async () => ({
-      message: JSON.stringify({ summary: '同节点重试', options: [{ id: 'retry', title: '同节点重试', reason: '验证终态通知', kind: 'image', prompt: '产品主图', modelRoute: 'image/only' }] }),
+      message: JSON.stringify({ summary: '同节点重试', options: [{ id: 'retry', title: '同节点重试', reason: '验证终态通知', kind: 'image', prompt: '产品居中构图，保持品牌色与主体结构，柔和侧光突出材质，纯净背景，高清电商主图。', modelRoute: 'image/only' }] }),
       modelRoute: 'chat/creative',
       sources: [],
     }));
@@ -513,7 +780,7 @@ describe('SkillChatWorkbench', () => {
     view.rerender(workbench({ chat, executeCanvasAction, canvasActionResults: [{ nodeId, status: 'completed', assetIds: ['retry-result'] }] }));
 
     expect(await screen.findByText('生成已完成，1 个结果已回写画布节点。')).toBeVisible();
-    expect(screen.getAllByText(staleText)).toHaveLength(1);
+    expect(screen.queryByText(staleText)).not.toBeInTheDocument();
   });
 
   it('auto-switches an incompatible fixed image preference for references and keeps compatible routes selectable', async () => {
@@ -529,7 +796,7 @@ describe('SkillChatWorkbench', () => {
         observations: ['保留主体'],
         estimates: [],
         unknowns: [],
-        options: [{ id: 'edit', title: '参考图编辑', reason: '保留主体', kind: 'image', prompt: '保持主体并调整背景', modelRoute: 'image/only' }],
+        options: [{ id: 'edit', title: '参考图编辑', reason: '保留主体', kind: 'image', prompt: '严格保持参考图主体结构与品牌色，调整为纯净浅色背景，柔和侧光突出材质，居中构图，高清输出。', modelRoute: 'image/only' }],
       }),
       modelRoute: 'chat/vision',
       sources: [],
@@ -570,7 +837,7 @@ describe('SkillChatWorkbench', () => {
         observations: ['保留主体'],
         estimates: [],
         unknowns: [],
-        options: [{ id: 'video', title: '参考图运镜', reason: '保持产品一致', kind: 'video', prompt: '围绕产品运镜', modelRoute: 'video/relay' }],
+        options: [{ id: 'video', title: '参考图运镜', reason: '保持产品一致', kind: 'video', prompt: '严格保持参考产品外观与品牌色，镜头缓慢环绕主体，柔和棚拍光线，背景稳定，画面清晰无变形。', modelRoute: 'video/relay' }],
       }),
       modelRoute: 'chat/vision',
       sources: [],
@@ -609,7 +876,7 @@ describe('SkillChatWorkbench', () => {
     const chat = vi.fn(async () => ({
       message: JSON.stringify({
         summary: '选择一个生图方案',
-        options: [{ id: 'fresh', title: '新方案', reason: '测试保存边界', kind: 'image', prompt: '新图', modelRoute: 'image/only' }],
+        options: [{ id: 'fresh', title: '新方案', reason: '测试保存边界', kind: 'image', prompt: '产品居中构图，保持品牌色与主体结构，柔和侧光突出材质，纯净背景，高清电商主图。', modelRoute: 'image/only' }],
       }),
       modelRoute: 'chat/creative',
       sources: [],
@@ -726,6 +993,20 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
   });
 
+  it.each([
+    ['PROVIDER_TIMEOUT', 'Provider request timed out after 300000ms', '模型分析已等待 300 秒仍未返回，请减少图片数量、切换快速或标准反推，或更换模型后重试。'],
+    ['PROVIDER_ERROR', 'Provider request failed with status 503', '模型上游服务返回 503，当前路线暂时异常，请稍后重试或切换模型。'],
+  ])('shows the display-safe provider diagnosis for Agent error %s', async (code, message, expectedMessage) => {
+    const chat = vi.fn().mockRejectedValue({ code, message, retryable: true });
+    renderWorkbench({ chat });
+
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '分析这个方案' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(expectedMessage));
+    expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
+  });
+
   it('times out a stalled Agent request and restores the composer for retry', async () => {
     vi.useFakeTimers();
     const chat = vi.fn(() => new Promise<ChatSkillBridgeResult>(() => undefined));
@@ -744,7 +1025,7 @@ describe('SkillChatWorkbench', () => {
       await vi.advanceTimersByTimeAsync(1);
     });
 
-    expect(screen.getByRole('alert')).toHaveTextContent('请求超时，请检查网络后重试。');
+    expect(screen.getByRole('alert')).toHaveTextContent('模型分析已等待 195 秒仍未返回，请减少图片数量、切换快速或标准反推，或更换模型后重试。');
     expect(screen.getByTestId('agent-composer-input')).toHaveValue('继续分析');
     expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
   });
@@ -829,7 +1110,7 @@ describe('SkillChatWorkbench', () => {
 
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+      fireEvent.click(projectMention('Bottle reference'));
       fireEvent.change(composer, { target: { value: content } });
       fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -849,7 +1130,7 @@ describe('SkillChatWorkbench', () => {
         await vi.advanceTimersByTimeAsync(1);
       });
 
-      expect(screen.getByRole('alert')).toHaveTextContent('请求超时，请检查网络后重试。');
+      expect(screen.getByRole('alert')).toHaveTextContent('模型分析已等待 315 秒仍未返回，请减少图片数量、切换快速或标准反推，或更换模型后重试。');
       expect(composer).toHaveValue(content);
       expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
     },
@@ -1061,10 +1342,84 @@ describe('SkillChatWorkbench', () => {
     expect((screen.getByRole('combobox', { name: 'Codex 任务' }) as HTMLSelectElement).value).toMatch(/^conversation-/u);
   });
 
+  it('restores each conversation generated-result card with its durable canvas node label', async () => {
+    const resultNodeId = 'agent-image-persisted-result';
+    const resultConversation = {
+      ...createAgentConversation(10),
+      id: 'conversation-with-result',
+      title: '产品主图方案',
+      messages: [{
+        id: `canvas-result:${resultNodeId}`,
+        role: 'assistant' as const,
+        content: '生成已完成，1 个结果已回写画布节点。',
+        mode: 'codex' as const,
+        canvasNodeLabel: '生图 · 旧的临时名称',
+      }],
+    };
+    const otherConversation = { ...createAgentConversation(20), id: 'conversation-other', title: '其他任务' };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: resultConversation.id,
+      conversations: [resultConversation, otherConversation],
+    });
+    const props = {
+      codexProfiles: [catalogAstraProfile],
+      canvasActionTargets: [{ kind: 'image_generation' as const, nodeId: resultNodeId, label: '方案 3 · 红色破壁机主图', selected: false }],
+      canvasActionResults: [{ nodeId: resultNodeId, status: 'completed', assetIds: ['generated-result'] }],
+      referenceImages: [{ assetId: 'generated-result', label: '生成结果 1', displayUrl: 'novus-asset://generated-result' }],
+    };
+
+    const first = renderWorkbench(props);
+    expect(await screen.findByLabelText('生成执行进度')).toHaveAttribute('data-node-label', '方案 3 · 红色破壁机主图');
+    await waitFor(() => {
+      const persisted = JSON.parse(window.localStorage.getItem('agent-canvas:skill-chat:v2:project-a') ?? '{}');
+      const marker = persisted.conversations?.[0]?.messages?.find((message: { id?: string }) => message.id === `canvas-result:${resultNodeId}`);
+      expect(marker?.canvasNodeLabel).toBe('方案 3 · 红色破壁机主图');
+    });
+    first.unmount();
+
+    renderWorkbench(props);
+    const selector = screen.getByRole('combobox', { name: 'Codex 任务' });
+    fireEvent.change(selector, { target: { value: otherConversation.id } });
+    expect(screen.queryByLabelText('生成执行进度')).not.toBeInTheDocument();
+    fireEvent.change(selector, { target: { value: resultConversation.id } });
+    expect(await screen.findByLabelText('生成执行进度')).toHaveAttribute('data-node-label', '方案 3 · 红色破壁机主图');
+    expect(screen.getByRole('button', { name: '查看生成结果：生成结果 1' })).toBeVisible();
+  });
+
+  it('reports an orphaned persisted result marker instead of showing it as running forever', () => {
+    const resultNodeId = 'deleted-agent-result';
+    const conversation = {
+      ...createAgentConversation(30),
+      id: 'conversation-with-orphaned-result',
+      messages: [{
+        id: `canvas-result:${resultNodeId}`,
+        role: 'assistant' as const,
+        content: '图片节点已开始运行。',
+        mode: 'codex' as const,
+        canvasNodeLabel: '图片 · 已删除的红色破壁机主图',
+      }],
+    };
+    writeAgentConversationCollection('project-a', {
+      version: 2,
+      activeConversationId: conversation.id,
+      conversations: [conversation],
+    });
+
+    renderWorkbench({ codexProfiles: [catalogAstraProfile], canvasActionTargets: [], canvasActionResults: [] });
+
+    const progress = screen.getByLabelText('生成执行进度');
+    expect(progress).toHaveAttribute('data-node-label', '图片 · 已删除的红色破壁机主图');
+    expect(progress).toHaveTextContent('节点或结果已不存在');
+    expect(progress).not.toHaveTextContent('生成任务执行中');
+    expect(within(screen.getByRole('article')).queryByText('图片节点已开始运行。')).not.toBeInTheDocument();
+  });
+
   it('shows reasoning effort only for Codex so the compact composer is not overcrowded', () => {
     renderWorkbench({ codexProfiles: [catalogAstraProfile] });
 
     expect(screen.getByRole('button', { name: /^思考能力：/ })).toBeVisible();
+    expect(screen.queryByRole('group', { name: '反推强度' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     expect(screen.queryByRole('button', { name: /^思考能力：/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
@@ -1596,6 +1951,64 @@ describe('SkillChatWorkbench', () => {
     expect(entry).toHaveTextContent('Frosted glass bottle, low-angle studio light.');
   });
 
+  it('shows and sends only the selected reverse node instead of every canvas reverse result', async () => {
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: '已参考当前反推。', modelRoute: catalogAstraProfile.modelRoute, sources: [] }));
+    renderWorkbench({
+      codexProfiles: [catalogAstraProfile],
+      chat,
+      reverseTimeline: [
+        { nodeId: 'reverse-old', title: '旧反推', positivePrompt: 'old unrelated prompt' },
+        { nodeId: 'reverse-current', title: '当前红色破壁机反推', positivePrompt: 'current red blender prompt' },
+        { nodeId: 'reverse-new', title: '其他新反推', positivePrompt: 'new unrelated prompt' },
+      ],
+      canvasActionTargets: [
+        { kind: 'reverse_agent', nodeId: 'reverse-old', label: '旧反推', selected: false },
+        { kind: 'reverse_agent', nodeId: 'reverse-current', label: '当前红色破壁机反推', selected: true },
+        { kind: 'reverse_agent', nodeId: 'reverse-new', label: '其他新反推', selected: false },
+      ],
+    });
+
+    expect(screen.getByLabelText('节点反推结果：当前红色破壁机反推')).toBeVisible();
+    expect(screen.queryByLabelText('节点反推结果：旧反推')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('节点反推结果：其他新反推')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '基于当前结果给我新的构图方案' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const request = chat.mock.calls[0]![0];
+    const sentContent = request.messages[request.messages.length - 1]?.content ?? '';
+    expect(sentContent).toContain('【当前反推节点上下文】');
+    expect(sentContent).toContain('当前红色破壁机反推');
+    expect(sentContent).toContain('current red blender prompt');
+    expect(sentContent).not.toContain('old unrelated prompt');
+    expect(sentContent).not.toContain('new unrelated prompt');
+  });
+
+  it('keeps the final provider message inside the desktop bridge 8000-character contract', async () => {
+    const chat = vi.fn(async (request: SkillChatRequest) => ({ message: '已生成方案。', modelRoute: request.modelRoute, sources: [] }));
+    renderWorkbench({
+      chat,
+      reverseTimeline: [{
+        nodeId: 'reverse-long-context',
+        title: '长反推上下文',
+        positivePrompt: '红色产品，暖色厨房，保持主体结构，柔和侧光，商业摄影。'.repeat(240),
+      }],
+    });
+    fireEvent.click(screen.getByRole('tab', { name: '创作 Agent' }));
+    const userRequest = `请根据当前反推重新设计一套完整电商主图方案，${'保留产品结构并优化构图。'.repeat(120)}`;
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: userRequest } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    const request = chat.mock.calls[0]![0];
+    const latestContent = request.messages[request.messages.length - 1]?.content ?? '';
+    expect(latestContent).toContain(userRequest);
+    expect(latestContent).toContain('请先分析需求');
+    expect(latestContent).toContain('【当前反推节点上下文】');
+    expect(latestContent.length).toBeLessThanOrEqual(8_000);
+    expect(ChatSkillBridgeRequestSchema.safeParse(request).success).toBe(true);
+  });
+
   it('uses a route sheet and project-safe skill library instead of exposing unrelated routes', () => {
     renderWorkbench({
       profiles: [
@@ -1663,12 +2076,12 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
-    const mentionItem = screen.getByRole('menuitem', { name: 'Mention Bottle reference' });
+    const mentionItem = projectMention('Bottle reference');
     expect(screen.getByRole('menu', { name: 'Reference images' })).toBeVisible();
     expect(within(mentionItem).getByRole('img')).toHaveAttribute('src', 'novus-project://asset/bottle');
     expect(mentionItem).toHaveTextContent('@图片1');
     expect(screen.queryByRole('button', { name: 'Mention image' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+    fireEvent.click(projectMention('Bottle reference'));
     expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片1');
     const presentation = screen.getByRole('textbox', { name: '向 Agent 发送消息' });
     expect(presentation).toHaveTextContent('图片1');
@@ -1706,7 +2119,7 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     const composer = screen.getByTestId('agent-composer-input');
     fireEvent.change(composer, { target: { value: '前文 @ 后文' } });
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+    fireEvent.click(projectMention('Bottle reference'));
 
     expect(composer).toHaveValue('前文 @图片1 后文');
   });
@@ -1738,7 +2151,7 @@ describe('SkillChatWorkbench', () => {
     selection.addRange(range);
     document.dispatchEvent(new Event('selectionchange'));
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+    fireEvent.click(projectMention('Bottle reference'));
 
     expect(composer).toHaveValue('前文@图片1后文，第二处@尾部');
   });
@@ -1762,7 +2175,7 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(screen.getByRole('tab', { name: '对话' }));
     const composer = screen.getByTestId('agent-composer-input');
     fireEvent.change(composer, { target: { value: '前文 @ 后文' } });
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+    fireEvent.click(projectMention('Bottle reference'));
 
     await waitFor(() => {
       const selection = window.getSelection();
@@ -1801,7 +2214,7 @@ describe('SkillChatWorkbench', () => {
 
     expect(screen.getByTestId('agent-reference-file-input')).toHaveAttribute('accept', 'image/*');
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
-    expect(screen.getByRole('menuitem', { name: 'Mention Bottle reference' })).toBeVisible();
+    expect(projectMention('Bottle reference')).toBeVisible();
     expect(screen.queryByRole('menuitem', { name: 'Mention Demo video' })).not.toBeInTheDocument();
 
     fireEvent.paste(screen.getByTestId('agent-composer-input'), {
@@ -1835,7 +2248,7 @@ describe('SkillChatWorkbench', () => {
       fireEvent.click(screen.getByRole('tab', { name: '对话' }));
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+      fireEvent.click(projectMention('Bottle reference'));
       expect(screen.queryByRole('menuitem', { name: 'Mention Demo video' })).not.toBeInTheDocument();
       fireEvent.change(composer, { target: { value: '@图片1 分析素材' } });
       fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -1876,7 +2289,7 @@ describe('SkillChatWorkbench', () => {
       fireEvent.click(screen.getByRole('tab', { name: '对话' }));
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+      fireEvent.click(projectMention('Bottle reference'));
       fireEvent.change(composer, { target: { value: '@图片1 分析素材' } });
       fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -1910,7 +2323,7 @@ describe('SkillChatWorkbench', () => {
       fireEvent.click(screen.getByRole('tab', { name: '对话' }));
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+      fireEvent.click(projectMention('Bottle reference'));
       fireEvent.change(composer, { target: { value: '@图片1 分析素材' } });
       fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -1948,7 +2361,7 @@ describe('SkillChatWorkbench', () => {
       fireEvent.click(screen.getByRole('tab', { name: '对话' }));
       const composer = screen.getByTestId('agent-composer-input');
       fireEvent.change(composer, { target: { value: '@' } });
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Bottle reference' }));
+      fireEvent.click(projectMention('Bottle reference'));
       fireEvent.change(composer, { target: { value: '@图片1 分析素材' } });
       fireEvent.click(screen.getByRole('button', { name: '发送' }));
       await waitFor(() => expect(chat).toHaveBeenCalledOnce());
@@ -1966,7 +2379,28 @@ describe('SkillChatWorkbench', () => {
   });
 
   it('submits ordered visual-analysis metadata and asks before drafting a workflow', async () => {
-    const chat = vi.fn(async () => ({ message: '结构化反推结果', modelRoute: 'chat/vision', sources: [] }));
+    const chat = vi.fn(async () => ({
+      message: JSON.stringify({
+        visual: {
+          subject: '红色产品',
+          environment: '浅色棚拍',
+          material: '磨砂材质',
+          lighting: '柔和侧光',
+          camera: '平视',
+          depth: '浅景深',
+          composition: '居中构图',
+          perspective: '正面视角',
+          layers: '前中后景分层',
+        },
+        prompts: {
+          zh: '红色产品，浅色棚拍，柔和侧光，居中构图，浅景深',
+          en: 'Red product, bright studio, soft side light, centered composition, shallow depth of field',
+          negative: ['水印'],
+        },
+      }),
+      modelRoute: 'chat/vision',
+      sources: [],
+    }));
     const draftWorkflowFromAnalysis = vi.fn();
     renderWorkbench({
       profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }, { ...profiles[1]!, capabilities: ['image_generation', 'image_edit'] }],
@@ -1997,16 +2431,17 @@ describe('SkillChatWorkbench', () => {
     expect(draftWorkflowFromAnalysis).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: '生成工作流' }));
-    expect(draftWorkflowFromAnalysis).toHaveBeenCalledWith({
-      analysis: '结构化反推结果',
-      generation: { kind: 'image', prompt: '@图片1 @图片2 反推图片并输出提示词', modelRoute: 'image/only', modelRouteDisplayName: 'Image only', parameters: {} },
-      modelRoute: 'chat/vision',
-      modelRouteDisplayName: 'Creative chat',
-      references: [
-        { assetId: 'a'.repeat(16), label: '产品参考', mention: '@图片1' },
-        { assetId: 'b'.repeat(16), label: '场景参考', mention: '@图片2' },
-      ],
+    expect(draftWorkflowFromAnalysis).toHaveBeenCalledOnce();
+    const workflowDraft = draftWorkflowFromAnalysis.mock.calls[0]?.[0];
+    expect(workflowDraft?.generation?.prompt).toBe('红色产品，浅色棚拍，柔和侧光，居中构图，浅景深');
+    expect(workflowDraft?.reverseAnalysis).toMatchObject({
+      runnable: true,
+      prompts: { zh: '红色产品，浅色棚拍，柔和侧光，居中构图，浅景深' },
     });
+    expect(workflowDraft?.references).toEqual([
+      { assetId: 'a'.repeat(16), label: '产品参考', mention: '@图片1' },
+      { assetId: 'b'.repeat(16), label: '场景参考', mention: '@图片2' },
+    ]);
   });
 
   it('shows structured reverse variants before creating the durable workflow plan', async () => {
@@ -2040,6 +2475,28 @@ describe('SkillChatWorkbench', () => {
     expect(screen.getByTestId('reverse-variant-list')).toHaveTextContent('调整背景');
   });
 
+  it('does not write an unstructured reverse response into an image node', async () => {
+    const chat = vi.fn(async () => ({ message: '结构化反推结果', modelRoute: 'chat/vision', sources: [] }));
+    const draftWorkflowFromAnalysis = vi.fn();
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }, { ...profiles[1]!, modelRoute: 'image/edit', capabilities: ['image_generation', 'image_edit'] }],
+      referenceImages: [{ assetId: 'a'.repeat(16), label: '产品参考', displayUrl: 'novus-project://asset/product' }],
+      chat,
+      draftWorkflowFromAnalysis,
+    });
+
+    window.dispatchEvent(new CustomEvent('novus:generated-image-to-agent', { detail: { assetId: 'a'.repeat(16) } }));
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent('产品参考'));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 反推这张图并输出提示词' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(await screen.findByText('是否基于本次反推生成工作流？')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '生成工作流' }));
+
+    expect(draftWorkflowFromAnalysis).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('没有返回可执行的生图提示词');
+  });
+
   it('sends an ordered referenced reverse request to visual chat instead of requiring a selected reverse node', async () => {
     const chat = vi.fn(async () => ({ message: '结构化反推结果', modelRoute: 'chat/vision', sources: [] }));
     renderWorkbench({
@@ -2051,7 +2508,7 @@ describe('SkillChatWorkbench', () => {
     });
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention 产品参考' }));
+    fireEvent.click(projectMention('产品参考'));
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@图片1 反推这张图并输出中文和英文提示词' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
@@ -2064,7 +2521,8 @@ describe('SkillChatWorkbench', () => {
   });
 
   it('asks before drafting a requested Codex workflow and keeps the selected model route', async () => {
-    const chat = vi.fn(async () => ({ message: '建议按输入、反推、生图和输出依次连接。', modelRoute: 'codex/gpt-5.6-sol', sources: [] }));
+    const analysis = JSON.stringify({ summary: '建议按输入、反推、生图和输出依次连接。', generation: { prompt: '产品居中构图，保持原有形状和 Logo，柔和侧光呈现金属细节，浅色背景。' } });
+    const chat = vi.fn(async () => ({ message: analysis, modelRoute: 'codex/gpt-5.6-sol', sources: [] }));
     const draftWorkflowFromAnalysis = vi.fn();
     const localSolProfile = {
       ...catalogAstraProfile,
@@ -2083,14 +2541,42 @@ describe('SkillChatWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     expect(await screen.findByText('是否基于本次方案生成工作流？')).toBeVisible();
+    expect(screen.getByText('建议按输入、反推、生图和输出依次连接。')).toBeVisible();
+    expect(screen.queryByText(analysis)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '生成工作流' }));
     expect(draftWorkflowFromAnalysis).toHaveBeenCalledWith({
-      analysis: '建议按输入、反推、生图和输出依次连接。',
-      generation: { kind: 'image', prompt: '为产品图创建一个反推后生图的工作流', modelRoute: 'image/only', modelRouteDisplayName: 'Image only', parameters: {} },
+      analysis,
+      generation: { kind: 'image', prompt: '产品居中构图，保持原有形状和 Logo，柔和侧光呈现金属细节，浅色背景。', modelRoute: 'image/only', modelRouteDisplayName: 'Image only', parameters: {} },
       references: [],
       modelRoute: 'codex/gpt-5.6-sol',
       modelRouteDisplayName: 'GPT-5.6 Sol',
     });
+  });
+
+  it('blocks a Codex workflow whose generation prompt is only a generic wrapper around the request', async () => {
+    const requestText = '为产品图创建一个反推后生图的工作流';
+    const analysis = JSON.stringify({
+      summary: '模型没有完成提示词分析',
+      generation: { prompt: `根据你的要求，${requestText}，请执行。` },
+    });
+    const chat = vi.fn(async () => ({ message: analysis, modelRoute: 'codex/gpt-5.6-sol', sources: [] }));
+    const draftWorkflowFromAnalysis = vi.fn();
+    const localSolProfile = {
+      ...catalogAstraProfile,
+      modelRoute: 'codex/gpt-5.6-sol' as const,
+      modelId: 'gpt-5.6-sol',
+      displayName: 'GPT-5.6 Sol',
+    };
+    renderWorkbench({ profiles: [profiles[1]!], codexProfiles: [localSolProfile], chat, draftWorkflowFromAnalysis });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: requestText } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(await screen.findByText('是否基于本次方案生成工作流？')).toBeVisible();
+    expect(screen.getByText('模型没有完成提示词分析')).toBeVisible();
+    expect(screen.queryByText(analysis)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '生成工作流' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('没有把需求改写成生图提示词');
+    expect(draftWorkflowFromAnalysis).not.toHaveBeenCalled();
   });
 
   it('offers a Codex workflow for a referenced product-refinement request without requiring the word workflow', async () => {
@@ -2117,6 +2603,88 @@ describe('SkillChatWorkbench', () => {
     expect(await screen.findByText('是否基于本次方案生成工作流？')).toBeVisible();
   });
 
+  it('keeps unrelated project images out of the default reference picker', () => {
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }],
+      referenceImages: [{ assetId: 'unrelated', label: '无关项目图片', displayUrl: 'novus-asset://unrelated' }],
+    });
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
+    expect(screen.getByRole('menu', { name: 'Reference images' })).toBeVisible();
+    expect(screen.queryByRole('menuitem', { name: 'Mention 无关项目图片' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '浏览项目图片' }));
+    expect(screen.getByRole('menuitem', { name: 'Mention 无关项目图片' })).toBeVisible();
+  });
+
+  it('numbers a newly pasted image from the conversation catalog and preserves its send mapping', async () => {
+    const projectImages = Array.from({ length: 69 }, (_, index) => ({
+      assetId: `project-image-${index + 1}`,
+      label: `Project image ${index + 1}`,
+      displayUrl: `novus-asset://project-image-${index + 1}`,
+    }));
+    const imported = {
+      assetId: 'pasted-only-image',
+      label: 'pasted-only.png',
+      displayUrl: 'novus-asset://pasted-only-image',
+    };
+    const onImportReferenceImage = vi.fn().mockResolvedValue(imported);
+    const chat = vi.fn(async (_request: SkillChatRequest) => ({ message: 'ok', modelRoute: 'chat/vision', sources: [] }));
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }, profiles[1]!],
+      referenceImages: projectImages,
+      onImportReferenceImage,
+      chat,
+    });
+    const composer = screen.getByTestId('agent-composer-input');
+    const pastedImage = new File([new Uint8Array([1, 2, 3])], imported.label, { type: 'image/png' });
+    fireEvent.paste(composer, {
+      clipboardData: { files: [pastedImage], items: [], getData: (type: string) => type === 'text/plain' ? '分析这张图' : '' },
+    });
+
+    await waitFor(() => expect(composer).toHaveValue('分析这张图 @图片1'));
+    expect(within(screen.getByLabelText('Selected image references')).getByRole('button', { name: 'Remove pasted-only.png media reference' })).toHaveTextContent('@图片1');
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledOnce());
+    expect(chat.mock.calls[0]![0]).toMatchObject({
+      referenceAssetIds: ['pasted-only-image'],
+      referenceMentions: [{ assetId: 'pasted-only-image', label: 'pasted-only.png', mention: '@图片1' }],
+    });
+
+    fireEvent.change(composer, { target: { value: '@' } });
+    expect(screen.queryByRole('menuitem', { name: 'Mention Project image 1' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '浏览项目图片' }));
+    const browsedProjectImage = screen.getByRole('menuitem', { name: 'Mention Project image 1' });
+    expect(browsedProjectImage).toHaveTextContent('@图片2');
+    fireEvent.click(browsedProjectImage);
+    expect(composer).toHaveValue('@图片2');
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledTimes(2));
+    expect(chat.mock.calls[1]![0]).toMatchObject({
+      referenceAssetIds: ['project-image-1'],
+      referenceMentions: [{ assetId: 'project-image-1', label: 'Project image 1', mention: '@图片2' }],
+    });
+  });
+
+  it('does not leak an imported reference into a newly created conversation', async () => {
+    const imported = { assetId: 'conversation-a-import', label: '任务A粘贴图.png', displayUrl: 'novus-asset://conversation-a-import' };
+    const onImportReferenceImage = vi.fn().mockResolvedValue(imported);
+    renderWorkbench({
+      profiles: [{ ...profiles[0]!, modelRoute: 'chat/vision', capabilities: ['chat', 'vision'] }, profiles[1]!],
+      onImportReferenceImage,
+    });
+    fireEvent.click(screen.getByRole('button', { name: '添加素材' }));
+    fireEvent.change(screen.getByTestId('agent-reference-file-input'), {
+      target: { files: [new File([new Uint8Array([1])], imported.label, { type: 'image/png' })] },
+    });
+    await waitFor(() => expect(screen.getByLabelText('Selected image references')).toHaveTextContent(imported.label));
+
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
+    fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
+
+    expect(screen.queryByRole('menuitem', { name: `Mention ${imported.label}` })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Selected image references')).not.toBeInTheDocument();
+  });
+
   it('renders the twentieth Agent image reference as a highlighted 图片20 mention chip', () => {
     const referenceImages = Array.from({ length: 20 }, (_, index) => ({
       assetId: `asset-${index + 1}`,
@@ -2130,7 +2698,7 @@ describe('SkillChatWorkbench', () => {
 
     fireEvent.change(screen.getByTestId('agent-composer-input'), { target: { value: '@' } });
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Mention Image 20' }));
+    fireEvent.click(projectMention('Image 20'));
     expect(screen.getByTestId('agent-composer-input')).toHaveValue('@图片20');
     const presentation = screen.getByRole('textbox', { name: '向 Agent 发送消息' });
     expect(within(presentation).getByText('图片20').closest('[data-token="@图片20"]')).toHaveAttribute('data-media-mention', 'image');
@@ -2337,6 +2905,32 @@ describe('SkillChatWorkbench', () => {
     });
 
     expect(composer).toHaveValue('保留原生粘贴');
+  });
+
+  it.each([{ types: [] }, { types: ['text/uri-list'] }, { types: ['Files'] }])('imports a native desktop image when clipboard files are hidden and formats are $types', async ({ types }) => {
+    const onImportReferenceImage = vi.fn().mockResolvedValue({ assetId: 'native-image', label: 'native.png', displayUrl: 'novus-asset://native-image' });
+    Object.defineProperty(window, 'novusDesktop', { configurable: true, value: {} });
+    try {
+      renderWorkbench({ profiles: [{ ...profiles[0]!, capabilities: ['chat', 'vision'] }], onImportReferenceImage });
+      fireEvent.paste(screen.getByTestId('agent-composer-input'), {
+        clipboardData: { files: [], items: types.includes('Files') ? [{ kind: 'file', getAsFile: () => null }] : [], types, getData: (type: string) => type === 'text/uri-list' ? 'file:///C:/reference.png' : '' },
+      });
+      await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(undefined, { fromClipboard: true }));
+      expect(screen.getByLabelText('Selected image references')).toHaveTextContent('native.png');
+    } finally {
+      delete window.novusDesktop;
+    }
+  });
+
+  it.each(['chat', 'original'] as const)('switches %s to a vision model after manual image import', async (mode) => {
+    const initialConversation = { ...createAgentConversation(1), mode, modelRoute: 'chat/creative' };
+    writeAgentConversationCollection('project-a', { version: 2, activeConversationId: initialConversation.id, conversations: [initialConversation] });
+    const image = new File(['image'], 'manual.png', { type: 'image/png' });
+    const onImportReferenceImage = vi.fn().mockResolvedValue({ assetId: 'manual-image', label: 'manual.png', displayUrl: 'novus-asset://manual-image' });
+    renderWorkbench({ profiles: [profiles[0]!, { ...profiles[0]!, modelRoute: 'chat/vision', displayName: 'Vision chat', capabilities: ['chat', 'vision'] }], onImportReferenceImage });
+    fireEvent.change(screen.getByTestId('agent-reference-file-input'), { target: { files: [image] } });
+    await waitFor(() => expect(screen.getByTestId('agent-model-trigger')).toHaveAttribute('data-selected-model', 'Vision chat'));
+    expect(screen.getByLabelText('Selected image references')).toHaveTextContent('manual.png');
   });
 
   it('keeps a media-only non-vision selection unchanged while reporting the capability error', async () => {
@@ -3068,7 +3662,7 @@ describe('SkillChatWorkbench', () => {
     });
 
     await waitFor(() => expect(onImportReferenceImage).toHaveBeenCalledWith(image));
-    expect(composer).toHaveValue('left X @图片3 right');
+    expect(composer).toHaveValue('left X @图片1 right');
   });
 
   it('shows a controlled error when managed reference import fails', async () => {

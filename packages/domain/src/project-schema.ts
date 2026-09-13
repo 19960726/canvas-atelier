@@ -197,6 +197,7 @@ export const canvasProjectSchema = z.object({
   graphVersion: z.literal(2).optional(),
   id: idSchema,
   name: z.string().min(1),
+  agentWorkflowSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   nodes: z.array(canvasNodeSchema),
   edges: z.array(canvasEdgeSchema),
   assets: z.array(projectAssetSchema).optional(),

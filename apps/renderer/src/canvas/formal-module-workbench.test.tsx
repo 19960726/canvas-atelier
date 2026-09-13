@@ -67,7 +67,7 @@ describe('formal module node presentation', () => {
     expect(screen.getByLabelText('生成摘要 / Generation summary')).not.toHaveTextContent('/ Mask');
     expect(screen.getByLabelText('Image generation model route')).toBeDisabled();
     expect(screen.getByLabelText('Image generation prompt')).toHaveValue('高端护肤产品，干净棚拍光线');
-    expect(screen.getByLabelText('Image generation aspect ratio')).toHaveValue('1:1');
+    expect(screen.getByLabelText('Image generation aspect ratio')).toHaveValue('4:5');
     expect(screen.getByLabelText('Image generation resolution')).toHaveValue('2K');
     expect(screen.getByLabelText('Image generation quantity')).toHaveValue('2');
     expect(screen.getByText('高级参数')).toBeVisible();

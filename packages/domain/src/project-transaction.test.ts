@@ -66,6 +66,21 @@ function makeEmptyProject(): CanvasProject {
 }
 
 describe('project transactions', () => {
+  it('persists an Agent workflow sequence and rejects moving the watermark backwards', () => {
+    const advanced = applyProjectTransaction(project, {
+      id: 'tx-agent-workflow-sequence',
+      label: 'advance Agent workflow sequence',
+      operations: [{ kind: 'set_agent_workflow_sequence', sequence: 3 }],
+    });
+
+    expect((advanced as CanvasProject & { agentWorkflowSequence?: number }).agentWorkflowSequence).toBe(3);
+    expect(() => applyProjectTransaction(advanced, {
+      id: 'tx-agent-workflow-sequence-backwards',
+      label: 'move Agent workflow sequence backwards',
+      operations: [{ kind: 'set_agent_workflow_sequence', sequence: 2 }],
+    })).toThrow(/sequence|backwards|monotonic/i);
+  });
+
   it('applies canvas, memory, and candidate changes atomically', () => {
     const transaction: ProjectTransaction = {
       id: 'tx-1',

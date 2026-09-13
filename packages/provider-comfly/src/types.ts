@@ -20,7 +20,7 @@ export interface ComflyFetchResponse {
 export interface ComflyFetchInit {
   readonly method?: string;
   readonly headers?: Record<string, string>;
-  readonly body?: string;
+  readonly body?: string | Uint8Array;
   readonly signal?: AbortSignal;
   readonly maxResponseBytes?: number;
   readonly timeoutMs?: number;
@@ -58,7 +58,7 @@ export interface ComflyImageGenerationRequest {
   /** Optional Comfly-compatible image controls. A provider may reject or ignore
    * controls it has not documented; callers must only expose them for configured
    * image-generation routes. */
-  readonly aspect_ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16';
+  readonly aspect_ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '4:5' | '5:4' | '16:9' | '9:16' | '21:9';
   /** GPT Image accepts any exact WxH size inside the provider's documented bounds. */
   readonly size?: string;
   readonly n?: 1 | 2 | 3 | 4;
@@ -68,8 +68,8 @@ export interface ComflyImageGenerationRequest {
 export interface ComflyVideoGenerationRequest {
   readonly model: string;
   readonly prompt: string;
-  readonly aspect_ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16';
-  readonly ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16';
+  readonly aspect_ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '4:5' | '5:4' | '16:9' | '9:16' | '21:9';
+  readonly ratio?: '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '4:5' | '5:4' | '16:9' | '9:16' | '21:9';
   readonly resolution?: '360p' | '480p' | '512p' | '540p' | '720p' | '768p' | '1080p' | '2k' | '4k' | '480P' | '720P' | '1080P' | '2K' | '4K';
   readonly size?: string;
   readonly duration?: number;
@@ -103,6 +103,7 @@ export interface ComflyCatalogModel {
   readonly provider: string;
   readonly tags: readonly string[];
   readonly apis: readonly string[];
+  readonly endpointTypes?: readonly string[];
   readonly description?: string;
   readonly parameterTable?: ComflyParameterTable;
   readonly capabilityStatus: 'complete' | 'incomplete';

@@ -3224,7 +3224,8 @@ describe('project optimization memory', () => {
     expect(submitImageJob).not.toHaveBeenCalled();
   });
 
-  it('preserves an explicit GPT 4K tier when a complete provider profile omits resolution metadata', async () => {
+  it('preserves GPT settings while dispatching a nine-image batch as independent one-image jobs', async () => {
+    replaceProjectPersistenceClientForTests(createMockClient({ ensureModelExecutionSession: async () => 'gpt-batch-session' }));
     const generation = createCanvasModuleNode('gpt-no-resolution-metadata-node', 'image_generation', { x: 0, y: 0 });
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-gpt-4k' }));
     window.novusDesktop = {
@@ -3248,21 +3249,30 @@ describe('project optimization memory', () => {
       prompt: 'Generate the requested native 4K image',
       aspectRatio: '16:9',
       resolution: '4K',
-      imageQuality: 'high',
-      outputCount: 1,
+      imageQuality: 'auto',
+      imageOutputFormat: 'webp',
+      imageBackground: 'transparent',
+      outputCount: 9,
     })).resolves.toBe(true);
-    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+    await waitForStore(() => submitImageJob.mock.calls.length > 0);
+    expect(useAppStore.getState().modelJobs).toHaveLength(9);
+    expect(useAppStore.getState().project.nodes[0]?.data).toMatchObject({ config: { outputCount: 9, imageQuality: 'auto', imageOutputFormat: 'webp', imageBackground: 'transparent' } });
 
     expect(useAppStore.getState().modelJobs[0]).toMatchObject({
       provider: '4dai',
       aspectRatio: '16:9',
       resolution: '4K',
-      imageQuality: 'high',
+      imageQuality: 'auto',
+      imageOutputFormat: 'webp',
+      imageBackground: 'transparent',
+      outputCount: 1,
     });
     expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
       aspectRatio: '16:9',
       resolution: '4K',
-      quality: 'high',
+      quality: 'auto',
+      imageOutputFormat: 'webp',
+      imageBackground: 'transparent',
     }));
   });
 
@@ -6118,7 +6128,7 @@ describe('project optimization memory', () => {
     });
   });
 
-  it('marks a persisted running reverse task cancelled during hydration', async () => {
+  it('marks a persisted running reverse task failed with an interruption reason during hydration', async () => {
     const reverse = createCanvasModuleNode('reverse-interrupted-on-startup', 'reverse_agent', { x: 0, y: 0 });
     reverse.data.config = {
       modelRoute: 'gemini-reverse',
@@ -6151,13 +6161,13 @@ describe('project optimization memory', () => {
 
     expect(useAppStore.getState().project.nodes.find((node) => node.id === reverse.id)).toMatchObject({
       data: { config: {
-        reverseAgentRunState: 'cancelled',
+        reverseAgentRunState: 'failed',
         reverseAgentCompletedAt: expect.any(String),
-        reverseAgentError: null,
+        reverseAgentError: '应用重启或画布重新载入中断了反推，请重新开始。',
       } },
     });
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({
-      transaction: expect.objectContaining({ label: 'Stop interrupted reverse Agent runs' }),
+      transaction: expect.objectContaining({ label: 'Fail interrupted reverse Agent runs' }),
     }));
   });
 
@@ -8476,6 +8486,7 @@ describe('stable module graph commits', () => {
             positivePrompt: 'Centered product hero shot with soft studio light.',
           },
           reverseAgentRunState: 'completed',
+          resultState: 'fresh',
         },
       },
     });
@@ -8992,6 +9003,7 @@ describe('stable module graph commits', () => {
       modelRoute: 'gemini-reverse',
       role: 'Commercial visual analyst',
       task: 'Analyze @image1 before the user presses Start.',
+      analysisDepth: 'deep',
       knowledgeBaseIds: [],
       referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
     })).resolves.toBe(true);
@@ -9004,6 +9016,7 @@ describe('stable module graph commits', () => {
         modelRoute: 'gemini-reverse',
         role: 'Commercial visual analyst',
         task: 'Analyze @image1 before the user presses Start.',
+        analysisDepth: 'deep',
         knowledgeBaseIds: [],
         referenceAssetIds: ['aaaaaaaaaaaaaaaa'],
       } },
@@ -9248,7 +9261,10 @@ describe('stable module graph commits', () => {
     expect(useAppStore.getState().projectCommitConflictCode).toBeNull();
   });
 
-  it('persists a display-safe reverse Agent failure instead of returning to a blank idle node', async () => {
+  it.each([
+    [undefined, 'Provider timeout'],
+    ['CORE_SCHEMA_INVALID', '模型返回内容缺少反推必填字段'],
+  ])('persists a display-safe reverse Agent failure (%s) instead of returning to a blank idle node', async (reason, expected) => {
     const reverse = createCanvasModuleNode('reverse-failed-run', 'reverse_agent', { x: 360, y: 0 });
     reverse.data.config = {
       modelRoute: 'gemini-reverse', role: 'Analyst', task: 'Analyze the cited image.',
@@ -9265,7 +9281,7 @@ describe('stable module graph commits', () => {
     });
     replaceProjectPersistenceClientForTests(createMockClient({
       analyzeReversePrompt: vi.fn(async () => {
-        throw Object.assign(new Error('Provider timeout at C:\\private\\request.json Authorization: Bearer secret'), { code: 'PROVIDER_TIMEOUT' });
+        throw Object.assign(new Error('Provider timeout at C:\\private\\request.json Authorization: Bearer secret'), { code: reason ? 'PROVIDER_INVALID_RESPONSE' : 'PROVIDER_TIMEOUT', reason });
       }),
     }));
     replaceKnowledgeClientForTests(createKnowledgeClient());
@@ -9283,7 +9299,7 @@ describe('stable module graph commits', () => {
     expect(failed).toMatchObject({ data: { config: {
       reverseAgentRunState: 'failed',
       reverseAgentCompletedAt: expect.any(String),
-      reverseAgentError: expect.stringContaining('Provider timeout'),
+      reverseAgentError: expect.stringContaining(expected),
     } } });
     expect(JSON.stringify(failed)).not.toMatch(/Authorization|Bearer|secret|C:\\private/iu);
   });
@@ -9725,7 +9741,7 @@ function knowledgeState(options: {
     lastRollbackAt: null,
   };
 }
-  it('advances the project revision atomically for an Agent reference before the next stable operation', async () => {
+  it.each(['picker', 'clipboard'] as const)('advances the project revision atomically for an Agent %s reference before the next stable operation', async (source) => {
     const importedAsset = {
       assetId: 'a'.repeat(16), byteSize: 16, displayUrl: 'novus-asset://imported', extension: 'png' as const,
       height: 10, label: 'reference.png', mediaType: 'image/png' as const, origin: 'imported' as const,
@@ -9742,7 +9758,11 @@ function knowledgeState(options: {
     replaceProjectPersistenceClientForTests(createMockClient({ commit, importProjectImage }));
     resetAppStoreForTests();
 
-    await expect(useAppStore.getState().importAgentReferenceImage()).resolves.toEqual(importedAsset);
+    await expect(source === 'clipboard'
+      ? useAppStore.getState().importAgentReferenceImage(undefined, { fromClipboard: true })
+      : useAppStore.getState().importAgentReferenceImage()
+    ).resolves.toEqual(importedAsset);
+    if (source === 'clipboard') expect(importProjectImage).toHaveBeenCalledWith({ kind: 'agent_reference' }, undefined, { fromClipboard: true });
 
     expect(useAppStore.getState()).toMatchObject({ desktopRevision: 3, project: resultProject, projectImages: [importedAsset] });
     await expect(useAppStore.getState().addModuleNode('text_prompt', { x: 24, y: 48 })).resolves.toBe(true);
@@ -9940,6 +9960,21 @@ describe('explicit project save', () => {
     });
   });
 
+  it('reports an untyped explicit-save failure as a durable write failure instead of an image error', async () => {
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const stablePoint = vi.fn(async () => { throw new Error('snapshot archive unavailable'); });
+    replaceProjectPersistenceClientForTests(createMockClient({ stablePoint }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'durable', saveStatus: 'pending' });
+
+    await expect(useAppStore.getState().saveProjectExplicitly()).resolves.toBe(false);
+
+    expect(useAppStore.getState()).toMatchObject({
+      saveErrorCode: 'DURABLE_WRITE_FAILED',
+      saveStatus: 'error',
+    });
+  });
+
   it('starts a fresh explicit save boundary when the user retries after a stable-point timeout', async () => {
     vi.useFakeTimers();
     const project = { ...createStarterProject(), nodes: [], edges: [] };
@@ -10049,6 +10084,24 @@ describe('explicit project save', () => {
       saveStatus: 'error',
     });
   });
+
+  it('reports an untyped autosave commit failure as a durable write failure instead of an image error', async () => {
+    vi.useFakeTimers();
+    const project = { ...createStarterProject(), nodes: [], edges: [] };
+    const commit = vi.fn(async () => { throw new Error('journal directory unavailable'); });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState({ project, projectLifecycle: 'durable', saveStatus: 'saved' });
+
+    useAppStore.getState().setProject({ ...project, name: '普通错误码测试' });
+    await vi.advanceTimersByTimeAsync(800);
+
+    expect(useAppStore.getState()).toMatchObject({
+      canRetryProjectCommit: true,
+      saveErrorCode: 'DURABLE_WRITE_FAILED',
+      saveStatus: 'error',
+    });
+  });
 });
 
 describe('agent generation model selection', () => {
@@ -10083,6 +10136,71 @@ describe('agent generation model selection', () => {
     ]));
     expect(useAppStore.getState().modelJobs).toHaveLength(0);
     expect(await state.ensureAgentGenerationNode('chosen-video', 'image_generation', [])).toBe(false);
+    expect(await state.ensureAgentGenerationNode('next-image', 'image_generation', [], { prompt: '柔光产品主图' })).toBe(true);
+    const first = useAppStore.getState().project.nodes.find((node) => node.id === 'chosen-video')!;
+    const second = useAppStore.getState().project.nodes.find((node) => node.id === 'next-image')!;
+    expect(second.position.x).toBeGreaterThan(first.position.x + 1200);
+    expect(second).toMatchObject({ data: { config: { agentWorkflowLabel: expect.stringContaining('柔光产品主图') } } });
+  });
+
+  it('does not reuse an Agent workflow sequence after an older workflow is deleted', async () => {
+    delete window.novusDesktop;
+    localStorage.clear();
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
+    replaceModelJobStorageForTests(createTestModelJobStorage());
+    resetAppStoreForTests();
+    const state = useAppStore.getState();
+    expect(await state.ensureAgentGenerationNode('agent-first', 'image_generation', [], { prompt: '第一张产品图' })).toBe(true);
+    expect(await state.ensureAgentGenerationNode('agent-second', 'image_generation', [], { prompt: '第二张产品图' })).toBe(true);
+    useAppStore.setState((current) => ({
+      project: {
+        ...current.project,
+        nodes: current.project.nodes.filter((node) => !node.id.startsWith('agent-first')),
+        edges: current.project.edges.filter((edge) => !edge.id.startsWith('agent-first')),
+      },
+    }));
+
+    expect(await state.ensureAgentGenerationNode('agent-third', 'image_generation', [], { prompt: '第三张产品图' })).toBe(true);
+    const labels = ['agent-second', 'agent-third'].map((id) => {
+      const node = useAppStore.getState().project.nodes.find((candidate) => candidate.id === id);
+      return node?.type === 'module' ? node.data.config.agentWorkflowLabel : undefined;
+    });
+    expect(labels).toEqual([
+      expect.stringMatching(/^方案 2 ·/u),
+      expect.stringMatching(/^方案 3 ·/u),
+    ]);
+  });
+  it('persists the next Agent workflow sequence after the newest workflow is deleted', async () => {
+    delete window.novusDesktop;
+    localStorage.clear();
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
+    replaceModelJobStorageForTests(createTestModelJobStorage());
+    resetAppStoreForTests();
+    const state = useAppStore.getState();
+    expect(await state.ensureAgentGenerationNode('agent-first', 'image_generation', [], { prompt: '第一张产品图' })).toBe(true);
+    expect(await state.ensureAgentGenerationNode('agent-second', 'image_generation', [], { prompt: '第二张产品图' })).toBe(true);
+    expect(await state.ensureAgentGenerationNode('agent-third', 'image_generation', [], { prompt: '第三张产品图' })).toBe(true);
+
+    const newestWorkflowNodeIds = useAppStore.getState().project.nodes.flatMap((node) => (
+      node.type === 'module' && typeof node.data.config.agentWorkflowLabel === 'string'
+        && /^方案 3 ·/u.test(node.data.config.agentWorkflowLabel)
+        ? [node.id]
+        : []
+    ));
+    expect(newestWorkflowNodeIds).toHaveLength(3);
+    expect(await state.deleteCanvasNodes(newestWorkflowNodeIds)).toBe(true);
+    expect(useAppStore.getState().project.edges.some((edge) => (
+      newestWorkflowNodeIds.includes(edge.source) || newestWorkflowNodeIds.includes(edge.target)
+    ))).toBe(false);
+
+    const persistedAfterDelete = loadPersistedProjectBundle()?.current;
+    expect(persistedAfterDelete).toBeDefined();
+    useAppStore.setState({ project: persistedAfterDelete! });
+    expect(await state.ensureAgentGenerationNode('agent-fourth', 'image_generation', [], { prompt: '第四张产品图' })).toBe(true);
+
+    const fourth = useAppStore.getState().project.nodes.find((node) => node.id === 'agent-fourth');
+    expect(fourth).toMatchObject({ data: { config: { agentWorkflowLabel: expect.stringMatching(/^方案 4 ·/u) } } });
+    expect((useAppStore.getState().project as CanvasProject & { agentWorkflowSequence?: number }).agentWorkflowSequence).toBe(4);
   });
   it('selects video profiles for video plans instead of silently falling back to image profiles', () => {
     const plan = {

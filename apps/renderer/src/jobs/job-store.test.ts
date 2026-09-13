@@ -781,6 +781,25 @@ describe('persistent model job store', () => {
     expect(commitProjectTransaction).toHaveBeenCalledTimes(2);
   });
 
+  it('retains all nine separately completed images in a durable batch node', async () => {
+    const storage = createInMemoryModelJobStorage();
+    const jobIds = Array.from({ length: 9 }, (_, index) => `nine-result-${index}`);
+    const imageModule = createCanvasModuleNode('nine-result-source', 'image_generation', { x: 120, y: 80 });
+    imageModule.data.config = { ...imageModule.data.config, lastResultJobId: jobIds[0], pendingResultJobIds: jobIds, resultAssetIds: [], resultState: 'pending', outputCount: 9 };
+    let project: CanvasProject = { ...createStarterProject(), nodes: [imageModule], edges: [] };
+    const store = createModelJobStore({ storage, executor: createExecutor({
+      poll: vi.fn(async (job) => ({ status: 'completed' as const, progress: 1, result: { assetId: `asset-${job.id}` } })),
+    }), commitProjectTransaction: async (build) => {
+      const materialization = build(project);
+      project = applyProjectTransaction(project, materialization.transaction);
+      return { committed: true, resultNodeId: materialization.resultNodeId };
+    }, getProject: () => project, now: fixedNow, pollIntervalMs: 0 });
+    await store.enqueueConfirmedJobs({ conversationId: 'nine-images', confirmedAt, requests: jobIds.map((id) => request({ id, promptNodeId: imageModule.id, referenceAssetIds: [] })) });
+    await store.run();
+    expect(project.nodes[0]).toMatchObject({ data: { config: { resultAssetIds: expect.arrayContaining(jobIds.map((id) => `asset-${id}`)), pendingResultJobIds: [] } } });
+    expect((await storage.list()).every((job) => job.status === 'completed')).toBe(true);
+  });
+
   it('materializes missing secondary assets when a formal multi-image primary already exists', async () => {
     const storage = createInMemoryModelJobStorage();
     const jobId = 'existing-primary-job';

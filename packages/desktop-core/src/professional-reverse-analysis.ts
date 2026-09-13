@@ -71,6 +71,7 @@ const REQUIRED_OUTPUT = {
   analysis: '完整中文结论摘要，必须覆盖空间、比例、材质、灯光、镜头、特效和产品适配',
   keywords: ['具体且可执行的中英文视觉关键词'],
   mediaResponsibilities: [{
+    mention: 'copy the matching mediaManifest mention exactly, e.g. @图片1 or @视频1; do not omit or put it only in label',
     sourceId: 'source asset id',
     label: 'source label',
     role: 'product_identity | composition | material_texture | lighting | model_pose | food_scale | camera_motion | effects',

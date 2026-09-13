@@ -105,6 +105,35 @@ describe('stable desktop user data', () => {
     )).toBe('{"name":"Stable project"}');
   });
 
+  it('migrates generation history when the stable product root is new', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'canvasforge-user-data-history-'));
+    temporaryRoots.push(root);
+    const stableRoot = join(root, 'Canvas Atelier');
+    const legacyRoot = join(root, 'CanvasForge');
+    await mkdir(stableRoot, { recursive: true });
+    await mkdir(join(legacyRoot, 'generation-history', 'originals'), { recursive: true });
+    await mkdir(join(legacyRoot, 'generation-history', 'recovery'), { recursive: true });
+    await writeFile(
+      join(legacyRoot, 'generation-history', '.novus-generation-history-root.json'),
+      '{"kind":"novus-generation-history","schemaVersion":1}\n',
+      'utf8',
+    );
+    await writeFile(
+      join(legacyRoot, 'generation-history', 'history.index.json'),
+      '{"schemaVersion":1,"revision":0,"records":[],"operations":[],"payloadSha256":""}\n',
+      'utf8',
+    );
+    await writeFile(join(legacyRoot, 'generation-history', 'originals', 'legacy.png'), 'legacy-history', 'utf8');
+
+    const result = await migrateLegacyUserData({ stableRoot, legacyRoots: [legacyRoot] });
+
+    expect(result.copied).toContain('generation-history');
+    await expect(readFile(join(stableRoot, 'generation-history', 'originals', 'legacy.png'), 'utf8'))
+      .resolves.toBe('legacy-history');
+    await expect(readFile(join(stableRoot, 'generation-history', '.novus-generation-history-root.json'), 'utf8'))
+      .resolves.toContain('novus-generation-history');
+  });
+
   it('rebases recent-project roots to the stable project directory after migration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'canvasforge-user-data-rebase-'));
     temporaryRoots.push(root);

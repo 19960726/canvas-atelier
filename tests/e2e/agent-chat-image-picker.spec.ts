@@ -25,6 +25,9 @@ for (const theme of ['light', 'dark'] as const) {
     await panel.getByTestId('agent-composer-input').fill('@');
     const menu = panel.getByRole('menu', { name: 'Reference images' });
     await expect(menu).toBeVisible();
+    await expect(menu.getByRole('menuitem')).toHaveCount(0);
+    await expect(menu).not.toContainText('Agent citation');
+    await menu.getByRole('button', { name: '浏览项目图片' }).click();
     const item = menu.getByRole('menuitem', { name: 'Mention Agent citation' });
     await expect(item.getByRole('img')).toBeVisible();
     await expect(item).toContainText('@图片1');

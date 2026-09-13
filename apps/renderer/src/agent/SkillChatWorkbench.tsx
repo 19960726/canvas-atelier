@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowUp, Bot, Copy, Diamond, Grid3X3, Plus, RotateCcw, SlidersHorizontal, X } from 'lucide-react';
 import type { ChatSkillBridgeResult, CodexCliProfile, CodexReasoningEffort, ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import type { KnowledgeBaseStateSummary } from '@agent-canvas/skill-store';
@@ -25,6 +26,7 @@ import {
 } from './agent-chat-paste-state';
 import { MediaMentionTextarea, type MediaMentionSelection } from '../mentions/MediaMentionTextarea';
 import {
+  addAgentConversation,
   createAgentConversation,
   deriveAgentConversationTitle,
   readAgentConversationCollection,
@@ -33,10 +35,11 @@ import {
   type StoredAgentConversation,
 } from './skill-chat-session-store';
 import { parseReverseAnalysisResponse, type ReverseAnalysisResult } from './reverse-workflow-contract';
+import { formatReverseTimelineContext, selectReverseTimelineContext } from './reverse-timeline-context';
 import { GenerationPreferencesSheet } from './GenerationPreferencesSheet';
 import { CodexReasoningPopover } from './CodexReasoningPopover';
 import { generationProfiles, readGenerationPreferences, writeGenerationPreferences, resolveGenerationPreference, type GenerationKind, type GenerationParameters, type GenerationPreferences } from './generation-preferences';
-import { constrainCreativePlanKind, creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
+import { assessCreativeGenerationPrompt, constrainCreativePlanKind, creativePlanningInstructions, creativeWorkflowSteps, parseCreativePlan, recoverEmptyCreativePlan, type CreativePlanOption } from './creative-plan';
 import { consumeQueuedGeneratedImageForAgent, listQueuedGeneratedImagesForAgent } from './generated-image-agent-transfer';
 
 type SkillMessage = {
@@ -44,6 +47,7 @@ type SkillMessage = {
   readonly role: 'user' | 'assistant';
   readonly content: string;
   readonly mode?: 'chat' | 'original' | 'codex';
+  readonly canvasNodeLabel?: string;
   readonly sources?: Readonly<ChatSkillBridgeResult['sources']>;
   readonly request?: SkillRequestSummary;
 };
@@ -54,6 +58,11 @@ type SkillRequestStatus = 'sending' | 'completed' | 'error';
 
 type SkillChatMentionReference = MentionableImageReference & {
   readonly kind: 'image' | 'video';
+  readonly mentionPosition: number;
+};
+
+type ConversationReferenceCatalogEntry = {
+  readonly assetId: string;
   readonly mentionPosition: number;
 };
 
@@ -107,6 +116,9 @@ const MEDIA_CAPABILITY_ERRORS = new Set([
 ]);
 const AGENT_REQUEST_TIMEOUT_MS = 195_000;
 const AGENT_VISUAL_REQUEST_TIMEOUT_MS = 315_000;
+const MAX_PROVIDER_SKILL_CHAT_MESSAGES = 48;
+const MAX_PROVIDER_SKILL_CHAT_MESSAGE_LENGTH = 8_000;
+const MAX_CODEX_SKILL_CHAT_MESSAGE_LENGTH = 16_000;
 const CODEX_REQUEST_TIMEOUTS_MS: Readonly<Record<CodexReasoningEffort, number>> = {
   low: 90_000,
   medium: 150_000,
@@ -138,10 +150,49 @@ export function codexAnalysisDelayHint(effort: CodexReasoningEffort, elapsedSeco
   return `${REASONING_EFFORT_LABELS[effort]} 深度推理耗时较长；需要更快结果时可停止并切换到“高”或“中”。`;
 }
 
+function isSafeProviderSkillChatHistoryText(value: string, maxLength: number): boolean {
+  return value.length <= maxLength
+    && !/(?:authorization\s*:|\bbearer\s+[a-z0-9._~+/=\-]{8,}|\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S{4,}|\bsk-[a-z0-9_-]{8,}|\b(?:https?|file):\/\/|[A-Za-z]:\\|\\\\[^\\\s]+\\|(?:^|\s)\/(?:Users|home|var|etc|opt|tmp|private)\/)/iu.test(value);
+}
+
+function providerSkillChatMessages(
+  messages: readonly SkillMessage[],
+  planningInstructions: string,
+  maxMessageLength = MAX_PROVIDER_SKILL_CHAT_MESSAGE_LENGTH,
+): SkillChatRequest['messages'] {
+  const latestIndex = messages.length - 1;
+  return messages.flatMap(({ role, content }, index) => {
+    const nextContent = index === latestIndex && planningInstructions.length > 0
+      ? `${content}\n\n${planningInstructions}`
+      : content;
+    if (index !== latestIndex && !isSafeProviderSkillChatHistoryText(nextContent, maxMessageLength)) return [];
+    return [{ role, content: nextContent }];
+  }).slice(-MAX_PROVIDER_SKILL_CHAT_MESSAGES);
+}
+
+function canvasResultNodeIds(messages: readonly Pick<SkillMessage, 'id'>[]): string[] {
+  const prefix = 'canvas-result:';
+  return [...new Set(messages.flatMap((message) => {
+    if (!message.id.startsWith(prefix)) return [];
+    const nodeId = message.id.slice(prefix.length).trim();
+    return nodeId.length > 0 ? [nodeId] : [];
+  }))];
+}
+
+function canvasResultNodeLabels(messages: readonly Pick<SkillMessage, 'id' | 'canvasNodeLabel'>[]): Record<string, string> {
+  const prefix = 'canvas-result:';
+  return Object.fromEntries(messages.flatMap((message) => {
+    if (!message.id.startsWith(prefix) || message.canvasNodeLabel === undefined) return [];
+    const nodeId = message.id.slice(prefix.length).trim();
+    return nodeId.length > 0 ? [[nodeId, message.canvasNodeLabel] as const] : [];
+  }));
+}
+
 export interface ReverseTimelineEntry {
   readonly nodeId: string;
   readonly title: string;
   readonly positivePrompt: string;
+  readonly completedAt?: string;
 }
 
 export interface SkillChatReferenceImage {
@@ -192,9 +243,10 @@ export interface SkillChatWorkbenchProps {
   readonly reverseTimeline: readonly ReverseTimelineEntry[];
   readonly referenceImages?: readonly SkillChatReferenceImage[];
   readonly referenceVideos?: readonly SkillChatReferenceVideo[];
-  readonly onImportReferenceImage?: (file?: File) => Promise<SkillChatReferenceImage | null>;
+  readonly onImportReferenceImage?: (file?: File, options?: { readonly fromClipboard: true }) => Promise<SkillChatReferenceImage | null>;
   readonly onImportReferenceVideo?: (file?: File) => Promise<SkillChatReferenceVideo | null>;
   readonly canvasActionTargets?: readonly SkillCanvasActionTarget[];
+  readonly canvasHasSelection?: boolean;
   readonly canvasActionResults?: readonly SkillCanvasActionResult[];
   readonly executeCanvasAction?: (request: SkillCanvasActionRequest) => Promise<boolean>;
   readonly draftWorkflowFromAnalysis?: (request: SkillWorkflowDraftRequest) => void;
@@ -225,6 +277,8 @@ export function SkillChatWorkbench({
   referenceImages = [],
   referenceVideos = [],
   onImportReferenceImage,
+  canvasActionTargets = [],
+  canvasHasSelection,
   canvasActionResults = [],
   executeCanvasAction,
   draftWorkflowFromAnalysis,
@@ -261,12 +315,17 @@ export function SkillChatWorkbench({
   const composerSelectionRef = useRef<MediaMentionSelection | null>(null);
   const pendingComposerCaretRef = useRef<number | null>(null);
   const [importedReferenceImages, setImportedReferenceImages] = useState<SkillChatReferenceImage[]>([]);
+  const referenceCatalog = useRef<ConversationReferenceCatalogEntry[]>(
+    createConversationReferenceCatalog(initialConversation.messages, referenceImages),
+  );
   const referenceFileInput = useRef<HTMLInputElement>(null);
   const [, setReferenceImportRevision] = useState(0);
   const draft = composer.text;
   const [contextExpanded, setContextExpanded] = useState(false);
   const [activePopover, dispatchPopover] = useReducer(reduceTransientPopover, null);
   const mentionOpen = activePopover === 'reference';
+  const [browseProjectImages, setBrowseProjectImages] = useState(false);
+  useEffect(() => { if (!mentionOpen) setBrowseProjectImages(false); }, [mentionOpen]);
   const routeSheetOpen = activePopover === 'model';
   const skillLibraryOpen = activePopover === 'knowledge';
   const [libraryQuery, setLibraryQuery] = useState('');
@@ -274,6 +333,10 @@ export function SkillChatWorkbench({
   const [status, setStatus] = useState<'idle' | 'sending'>('idle');
   const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const [agentMode, setAgentMode] = useState<'chat' | 'original' | 'codex'>(initialConversation.mode);
+  const activeReverseTimeline = useMemo(
+    () => agentMode === 'chat' ? [] : selectReverseTimelineContext(reverseTimeline, canvasActionTargets, canvasHasSelection),
+    [agentMode, canvasActionTargets, canvasHasSelection, reverseTimeline],
+  );
   const [reasoningEfforts, setReasoningEfforts] = useState(initialConversation.reasoningEfforts);
   const [reverseAnalysisDepth, setReverseAnalysisDepth] = useState<ReverseAnalysisDepth>(initialConversation.reverseAnalysisDepth);
   const reasoningEffort = reasoningEfforts[agentMode];
@@ -284,7 +347,8 @@ export function SkillChatWorkbench({
   const [selectedCreativeOptionKey, setSelectedCreativeOptionKey] = useState<string | null>(null);
   const [pendingCanvasModelRoute, setPendingCanvasModelRoute] = useState<string | undefined>(undefined);
   const [generationPreferences, setGenerationPreferences] = useState(() => readGenerationPreferences(projectId));
-  const [submittedNodeIds, setSubmittedNodeIds] = useState<string[]>([]);
+  const [submittedNodeIds, setSubmittedNodeIds] = useState<string[]>(() => canvasResultNodeIds(initialConversation.messages));
+  const [submittedNodeLabels, setSubmittedNodeLabels] = useState<Record<string, string>>(() => canvasResultNodeLabels(initialConversation.messages));
   const deliveredNodeTerminalSignatures = useRef(new Map<string, string>());
   const confirmationCardRef = useRef<HTMLElement>(null);
   const conversationEpoch = useRef(0);
@@ -298,6 +362,13 @@ export function SkillChatWorkbench({
   const [canvasActionRunning, setCanvasActionRunning] = useState(false);
   const [expandedReverseIds, setExpandedReverseIds] = useState<string[]>([]);
   const [dismissedWorkflowOfferIds, setDismissedWorkflowOfferIds] = useState<string[]>([]);
+  const [activeResultImage, setActiveResultImage] = useState<SkillChatReferenceImage | null>(null);
+  const [resultImageZoom, setResultImageZoom] = useState(1);
+  const messagesStreamRef = useRef<HTMLDivElement>(null);
+  const autoScrolledTerminalSignatures = useRef(new Map<string, string>());
+  const resultImagePanelRef = useRef<HTMLDivElement>(null);
+  const resultImageCloseRef = useRef<HTMLButtonElement>(null);
+  const resultImageOpenerRef = useRef<HTMLButtonElement | null>(null);
   const requestId = useRef(0);
   const activeLocalCodexRequestId = useRef<string | null>(null);
   const cancelChatRef = useRef(cancelChat);
@@ -371,6 +442,41 @@ export function SkillChatWorkbench({
       window.removeEventListener('keydown', closeOnEscape);
     };
   }, [activePopover]);
+  useEffect(() => {
+    if (activeResultImage === null) return undefined;
+    const opener = resultImageOpenerRef.current;
+    resultImageCloseRef.current?.focus();
+    const keepModalKeyboardFocus = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setActiveResultImage(null);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const panel = resultImagePanelRef.current;
+      if (panel === null) return;
+      const focusable = Array.from(panel.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (first === undefined || last === undefined) return;
+      if (!panel.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', keepModalKeyboardFocus, true);
+    return () => {
+      document.removeEventListener('keydown', keepModalKeyboardFocus, true);
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [activeResultImage]);
   const filteredKnowledge = useMemo(() => {
     const activeById = new Map(availableKnowledge.map((knowledgeBase) => [knowledgeBase.knowledgeBaseId, knowledgeBase]));
     const requiredKnowledgeChoices = REQUIRED_AGENT_KNOWLEDGE_CHOICES.map((item) => ({
@@ -401,17 +507,19 @@ export function SkillChatWorkbench({
   ], [allReferenceImages, allReferenceVideos]);
   const canonicalReferences = useRef({ images: allReferenceImages, videos: allReferenceVideos });
   canonicalReferences.current = { images: allReferenceImages, videos: allReferenceVideos };
-  const mentionReferences = useMemo<SkillChatMentionReference[]>(() => [
-    ...allReferenceImages.map((media, mentionPosition) => ({
-      assetId: media.assetId,
-      label: media.label,
-      displayUrl: media.displayUrl,
-      position: mentionPosition,
-      mentionPosition,
-      kind: 'image' as const,
-      role: 'product_identity' as const,
-    })),
-  ], [allReferenceImages]);
+  const mentionReferences: SkillChatMentionReference[] = canonicalMentionReferences(
+    canonicalReferences.current,
+    referenceCatalog.current,
+  );
+  const mentionMenuReferences = useMemo(() => {
+    if (browseProjectImages) return mentionReferences;
+    const activeIds = new Set([
+      ...importedReferenceImages.map((image) => image.assetId),
+      ...composer.citations.map((citation) => citation.assetId),
+      ...messages.flatMap((message) => message.request?.references.map((reference) => reference.assetId) ?? []),
+    ]);
+    return mentionReferences.filter((reference) => activeIds.has(reference.assetId));
+  }, [browseProjectImages, mentionReferences, importedReferenceImages, composer.citations, messages]);
   const mentionPreviews = useMemo(() => mentionReferences.map((reference) => ({
     token: skillChatMentionToken(reference.kind, reference.mentionPosition),
     label: reference.label,
@@ -420,6 +528,14 @@ export function SkillChatWorkbench({
   })), [mentionReferences]);
   const refreshReferenceImportState = () => {
     if (mounted.current) setReferenceImportRevision((current) => current + 1);
+  };
+  const extendReferenceCatalog = (assetIds: readonly string[]): ConversationReferenceCatalogEntry[] => {
+    const next = appendConversationReferenceCatalog(referenceCatalog.current, assetIds);
+    if (next !== referenceCatalog.current) {
+      referenceCatalog.current = next;
+      refreshReferenceImportState();
+    }
+    return next;
   };
   const beginManualReferenceImport = () => {
     const token = `manual-${importTokenSequence.current++}`;
@@ -516,7 +632,7 @@ export function SkillChatWorkbench({
       setError(imageMentionCapabilityError);
       return;
     }
-    if (mentionReferences.length > 0) {
+    if (allReferenceImages.length > 0) {
       setError(null);
       dispatchPopover({ type: 'open', id: 'reference' });
     }
@@ -543,6 +659,10 @@ export function SkillChatWorkbench({
         mentionPosition,
         role: 'product_identity',
       };
+      const currentMentionReferences = canonicalMentionReferences(
+        canonicalReferences.current,
+        referenceCatalog.current,
+      );
       const composerAtInsertion = existingCitation && insertionMarker !== undefined
         ? { ...current, text: current.text.replace(insertionMarker, '') }
         : current;
@@ -550,7 +670,7 @@ export function SkillChatWorkbench({
         composerAtInsertion,
         importedReference,
         existingCitation ? undefined : insertionMarker,
-        upsertPasteReferenceByAssetId(mentionReferences, importedReference),
+        upsertPasteReferenceByAssetId(currentMentionReferences, importedReference),
       );
     });
     setError(null);
@@ -570,20 +690,30 @@ export function SkillChatWorkbench({
     const manualImport = options?.fromClipboard === true ? undefined : beginManualReferenceImport();
     const generation = options?.generation ?? manualImport?.generation;
     try {
-      const imported = await importer(file);
+      const imported = file === undefined && options?.fromClipboard === true
+        ? await importer(undefined, { fromClipboard: true })
+        : await importer(file);
       if (imported === null) return false;
       if (generation === undefined || !isPasteGenerationCurrent(generation)) return false;
+      if (!pasteContext.current.supportsMedia && agentMode !== 'codex') {
+        const visionProfile = chatProfiles.find((profile) => supportsAgentMediaReferences(profile, agentMode));
+        if (visionProfile !== undefined) {
+          invalidateActivePlan();
+          setModelRoute(visionProfile.modelRoute);
+          pasteContext.current.supportsMedia = true;
+        }
+      }
       if (!pasteContext.current.supportsMedia) {
         setError(mediaCapabilityError);
         return false;
       }
       const media = canonicalReferences.current.images;
-      const existingPosition = media.findIndex((candidate) => candidate.assetId === imported.assetId);
-      const mentionPosition = existingPosition >= 0 ? existingPosition : media.length;
       canonicalReferences.current = {
         ...canonicalReferences.current,
         images: upsertPasteReferenceByAssetId(media, imported),
       };
+      const catalog = extendReferenceCatalog([imported.assetId]);
+      const mentionPosition = catalog.find((entry) => entry.assetId === imported.assetId)!.mentionPosition;
       setImportedReferenceImages((current) => upsertPasteReferenceByAssetId(current, imported));
       attachImportedReference(imported, mentionPosition, options?.insertionMarker ?? manualImport?.insertionMarker, generation);
       return true;
@@ -598,7 +728,7 @@ export function SkillChatWorkbench({
             ? reducePasteComposer(
               current,
               current.text.replace(manualImport.insertionMarker, ''),
-              canonicalMentionReferences(canonicalReferences.current),
+              canonicalMentionReferences(canonicalReferences.current, referenceCatalog.current),
             )
             : current);
         }
@@ -607,7 +737,7 @@ export function SkillChatWorkbench({
     }
   };
   const importPastedReferencesInOrder = async (
-    media: ReturnType<typeof readAgentChatClipboard>['media'],
+    media: readonly (ReturnType<typeof readAgentChatClipboard>['media'][number] | undefined)[],
     insertionMarker: string,
     generation: number,
   ) => {
@@ -616,7 +746,7 @@ export function SkillChatWorkbench({
     try {
       for (const item of media) {
         if (!isPasteGenerationCurrent(generation)) return;
-        const itemIsVideo = item.file.type.startsWith('video/') || /\.(?:mp4|webm|mov)$/iu.test(item.file.name);
+        const itemIsVideo = item?.kind === 'video';
         if (itemIsVideo) {
           hadUnsupportedVideo = true;
           continue;
@@ -625,7 +755,7 @@ export function SkillChatWorkbench({
           setError(mediaCapabilityError);
           return;
         }
-        const imported = await importReferenceFile(item.file, {
+        const imported = await importReferenceFile(item?.file, {
           fromClipboard: true,
           insertionMarker,
           generation,
@@ -639,7 +769,7 @@ export function SkillChatWorkbench({
       pendingPasteMarkers.current.delete(insertionMarker);
       if (!isPasteGenerationCurrent(generation)) return;
       setComposer((current) => current.text.includes(insertionMarker)
-        ? reducePasteComposer(current, current.text.replace(insertionMarker, ''), canonicalMentionReferences(canonicalReferences.current))
+        ? reducePasteComposer(current, current.text.replace(insertionMarker, ''), canonicalMentionReferences(canonicalReferences.current, referenceCatalog.current))
         : current);
       if (hadUnsupportedVideo) setError(videoMentionCapabilityError);
       else if (hadFailure) setError('\u7d20\u6750\u5bfc\u5165\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002');
@@ -652,13 +782,21 @@ export function SkillChatWorkbench({
   };
   const handleComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const payload = readAgentChatClipboard(event.clipboardData);
+    const useNativeClipboard = globalThis.window?.novusDesktop !== undefined
+      && onImportReferenceImage !== undefined
+      && payload.text.length === 0
+      && payload.media.length === 0
+      && (event.clipboardData.files?.length ?? 0) === 0
+      && !Array.from(event.clipboardData.items ?? []).some((item) => item.kind === 'file' && item.getAsFile() !== null)
+      && (Array.from(event.clipboardData.types ?? []).length === 0
+        || Array.from(event.clipboardData.types ?? []).some((type) => type === 'Files' || type === 'text/uri-list' || type.startsWith('image/')));
     const fallbackVisionProfile = pasteContext.current.supportsMedia || agentMode === 'codex'
       ? undefined
       : chatProfiles.find((profile) => supportsAgentMediaReferences(profile, agentMode));
     const action = resolveClipboardPasteAction({
       hasPlainText: event.clipboardData.getData('text/plain').length > 0,
       parsedText: payload.text,
-      hasMedia: payload.media.length > 0,
+      hasMedia: payload.media.length > 0 || useNativeClipboard,
       supportsMedia: pasteContext.current.supportsMedia || fallbackVisionProfile !== undefined,
     });
     if (action === 'native-text' || action === 'ignore') return;
@@ -712,7 +850,7 @@ export function SkillChatWorkbench({
     const previousQueue = pasteImportQueues.current.get(generation) ?? Promise.resolve();
     const nextQueue = previousQueue
       .catch(() => undefined)
-      .then(() => importPastedReferencesInOrder(payload.media, insertionMarker, generation))
+      .then(() => importPastedReferencesInOrder(useNativeClipboard ? [undefined] : payload.media, insertionMarker, generation))
       .finally(() => finishPastedReferenceImport(insertionMarker));
     pasteImportQueues.current.set(generation, nextQueue);
     void nextQueue.finally(() => {
@@ -751,7 +889,10 @@ export function SkillChatWorkbench({
 
   useEffect(() => {
     const receiveGeneratedImageAsset = (assetId: string): boolean => {
-      const reference = mentionReferences.find((candidate) => candidate.assetId === assetId);
+      if (!allReferenceImages.some((candidate) => candidate.assetId === assetId)) return false;
+      const catalog = extendReferenceCatalog([assetId]);
+      const currentMentionReferences = canonicalMentionReferences(canonicalReferences.current, catalog);
+      const reference = currentMentionReferences.find((candidate) => candidate.assetId === assetId);
       if (reference === undefined) return false;
       if (!supportsImageMentions) {
         const visualProfile = visibleChatProfiles.find((profile) => supportsAgentMediaReferences(profile, agentMode))
@@ -767,7 +908,7 @@ export function SkillChatWorkbench({
         if (current.citations.some((citation) => citation.assetId === reference.assetId)) return current;
         if (current.citations.length >= 20) return current;
         const mentionToken = skillChatMentionToken(reference.kind, reference.mentionPosition);
-        const insertion = replaceChatMentionAtSelection(current.text, mentionToken, mentionReferences, composerSelectionRef.current);
+        const insertion = replaceChatMentionAtSelection(current.text, mentionToken, currentMentionReferences, composerSelectionRef.current);
         pendingComposerCaretRef.current = insertion.caretOffset;
         composerSelectionRef.current = { start: insertion.caretOffset, end: insertion.caretOffset };
         return {
@@ -789,7 +930,7 @@ export function SkillChatWorkbench({
       if (receiveGeneratedImageAsset(assetId)) consumeQueuedGeneratedImageForAgent(assetId);
     }
     return () => globalThis.removeEventListener('novus:generated-image-to-agent', receiveGeneratedImage);
-  }, [agentMode, chatProfiles, imageMentionCapabilityError, mentionReferences, supportsImageMentions, visibleChatProfiles]);
+  }, [agentMode, allReferenceImages, chatProfiles, imageMentionCapabilityError, supportsImageMentions, visibleChatProfiles]);
 
   useLayoutEffect(() => {
     setConversationCollection((current) => {
@@ -846,17 +987,20 @@ export function SkillChatWorkbench({
     invalidatePastedReferences();
     requestId.current += 1;
     conversationEpoch.current += 1;
-    setSubmittedNodeIds([]);
+    setSubmittedNodeIds(canvasResultNodeIds(conversation.messages));
+    setSubmittedNodeLabels(canvasResultNodeLabels(conversation.messages));
     deliveredNodeTerminalSignatures.current.clear();
     setActiveConversationId(conversation.id);
     setModelRoute(conversation.modelRoute ?? chatProfiles.find((profile) => profile.modelRoute === 'chat-default')?.modelRoute ?? chatProfiles[0]?.modelRoute);
     setSelectedKnowledgeBaseIds([...conversation.knowledgeBaseIds]);
     setSelectedProjectMemoryIds(clampProjectMemoryIds(conversation.projectMemoryIds, availableProjectMemoryIds));
     setMessages([...conversation.messages]);
+    referenceCatalog.current = createConversationReferenceCatalog(conversation.messages, allReferenceImages);
     setAgentMode(conversation.mode);
     setReasoningEfforts(conversation.reasoningEfforts);
     setReverseAnalysisDepth(conversation.reverseAnalysisDepth);
     setComposer({ text: '', citations: [] });
+    setImportedReferenceImages([]);
     setStatus(cancellingCodex ? 'sending' : 'idle');
     setPendingCanvasAction(null);
     setSelectedCreativeOptionKey(null);
@@ -872,6 +1016,7 @@ export function SkillChatWorkbench({
     requestId.current += 1;
     conversationEpoch.current += 1;
     setSubmittedNodeIds([]);
+    setSubmittedNodeLabels({});
     deliveredNodeTerminalSignatures.current.clear();
     let now = Date.now();
     while (conversationCollection.conversations.some((conversation) => conversation.id === `conversation-${now}`)) now += 1;
@@ -880,11 +1025,7 @@ export function SkillChatWorkbench({
       ...(chatProfiles[0]?.modelRoute === undefined ? {} : { modelRoute: chatProfiles[0].modelRoute }),
       projectMemoryIds: [...availableProjectMemoryIds],
     };
-    const next = {
-      version: 2 as const,
-      activeConversationId: created.id,
-      conversations: [...conversationCollection.conversations, created],
-    };
+    const next = addAgentConversation(conversationCollection, created);
     writeAgentConversationCollection(projectId, next);
     setConversationCollection(next);
     setActiveConversationId(created.id);
@@ -892,10 +1033,12 @@ export function SkillChatWorkbench({
     setSelectedKnowledgeBaseIds([]);
     setSelectedProjectMemoryIds([...created.projectMemoryIds]);
     setMessages([]);
+    referenceCatalog.current = [];
     setAgentMode(created.mode);
     setReasoningEfforts(created.reasoningEfforts);
     setReverseAnalysisDepth(created.reverseAnalysisDepth);
     setComposer({ text: '', citations: [] });
+    setImportedReferenceImages([]);
     setStatus(cancellingCodex ? 'sending' : 'idle');
     setPendingCanvasAction(null);
     setSelectedCreativeOptionKey(null);
@@ -925,11 +1068,24 @@ export function SkillChatWorkbench({
     }
     const visualAnalysis = shouldUseVisualAnalysis(agentMode, content, selectedReferences.length);
     const planning = agentMode === 'original';
-    const planningInstructions = planning ? creativePlanningInstructions(generationPreferences, profiles, selectedReferences.length, reverseAnalysisDepth) : '';
-    if (content.length + planningInstructions.length + 2 > 16000) {
+    const workflowPlanning = agentMode === 'codex' && !isReverseAnalysisIntent(content)
+      && isWorkflowCreationIntent(content, selectedReferences.length);
+    const planningInstructions = planning ? creativePlanningInstructions(generationPreferences, profiles, selectedReferences.length, reverseAnalysisDepth)
+      : workflowPlanning ? '先分析用户需求和本次参考图，再编写可直接用于生成模型的完整提示词。明确主体、构图、材质、光照、保留项、修改项与禁止项；不要逐字复制用户原话，不要包含聊天口吻、画布操作或 @ 图片标记。只返回 JSON：{"summary":"方案说明","generation":{"prompt":"分析后编写的完整执行提示词"}}。无法形成方案时 generation.prompt 留空并在 summary 说明原因。' : '';
+    const maxMessageLength = selectedProfile.provider === 'codex'
+      ? MAX_CODEX_SKILL_CHAT_MESSAGE_LENGTH
+      : MAX_PROVIDER_SKILL_CHAT_MESSAGE_LENGTH;
+    const planningMessageLength = content.length + (planningInstructions.length > 0 ? planningInstructions.length + 2 : 0);
+    if (planningMessageLength > maxMessageLength) {
       setError('消息过长，请分段发送。');
       return;
     }
+    const reverseSeparatorLength = planningInstructions.length > 0 ? 2 : content.length > 0 ? 2 : 0;
+    const reverseContextInstructions = formatReverseTimelineContext(
+      activeReverseTimeline,
+      maxMessageLength - planningMessageLength - reverseSeparatorLength,
+    );
+    const providerInstructions = [planningInstructions, reverseContextInstructions].filter((item) => item.length > 0).join('\n\n');
     setPendingCanvasAction(null);
     setSelectedCreativeOptionKey(null);
     const requestSummary: SkillRequestSummary = {
@@ -967,17 +1123,12 @@ export function SkillChatWorkbench({
     setError(null);
     setStatus('sending');
     try {
-      const activeModeMessages = nextMessages.filter((message) => (message.mode ?? agentMode) === agentMode);
+      const activeModeMessages = nextMessages.filter((message) => (message.mode ?? agentMode) === agentMode && !message.id.startsWith('canvas-result:'));
       const result = await withProviderOperationTimeout(chat({
         provider: selectedProfile?.provider ?? 'comfly',
         modelRoute,
         ...(localCodexRequestId === undefined ? {} : { requestId: localCodexRequestId }),
-        messages: activeModeMessages.map(({ role, content: messageContent }, index) => ({
-          role,
-          content: planning && index === activeModeMessages.length - 1
-            ? messageContent + '\n\n' + planningInstructions
-            : messageContent,
-        })),
+        messages: providerSkillChatMessages(activeModeMessages, providerInstructions, maxMessageLength),
         context: {
           knowledgeBaseIds: selectedKnowledgeBaseIds.filter((knowledgeBaseId) => activeKnowledgeBaseIds.has(knowledgeBaseId)),
           projectMemoryIds: clampProjectMemoryIds(selectedProjectMemoryIds, availableProjectMemoryIds),
@@ -1028,8 +1179,21 @@ export function SkillChatWorkbench({
     }
   };
 
-  const chooseCreativeOption = (messageId: string, option: CreativePlanOption, references: readonly { assetId: string }[]) => {
+  const chooseCreativeOption = (messageId: string, option: CreativePlanOption, references: readonly { assetId: string }[], sourceRequest?: string) => {
     try {
+      const promptQuality = assessCreativeGenerationPrompt(option.prompt, sourceRequest);
+      if (!promptQuality.valid && promptQuality.reason === 'contains-mention') {
+        setError('Agent 返回的生图提示词仍包含 @图片 或 @视频标记，请重新分析后再执行。');
+        return;
+      }
+      if (!promptQuality.valid && promptQuality.reason === 'copied') {
+        setError('Agent 没有把需求改写成生图提示词，请重新分析后再执行。');
+        return;
+      }
+      if (!promptQuality.valid) {
+        setError('Agent 返回的生图提示词过于简略，需补充主体、构图、光线、材质、保留项和禁止项后再执行。');
+        return;
+      }
       const { profile, parameters } = resolveGenerationPreference(option.kind, generationPreferences, profiles, option.modelRoute, references.length);
       const kind = `${option.kind}_generation` as const;
       setPendingCanvasAction({ kind, nodeId: `agent-${option.kind}-${createMessageId()}`, createNode: true, createWorkflow: true, projectId, prompt: option.prompt, modelRoute: profile.modelRoute, parameters, referenceAssetIds: references.map((item) => item.assetId) });
@@ -1059,9 +1223,60 @@ export function SkillChatWorkbench({
         ? `生成已完成，${result.assetIds.length} 个结果已回写画布节点。`
         : result.status === 'cancelled' ? '生成已取消。'
           : result.status === 'failed' ? '生成失败，请查看画布节点中的错误信息。' : '任务结束，但未收到可展示的结果。';
-      setMessages((current) => [...current, { id: createMessageId(), role: 'assistant', content }]);
+      setMessages((current) => current.map((message) => message.id === `canvas-result:${nodeId}` ? { ...message, content } : message));
     }
   }, [canvasActionResults, submittedNodeIds]);
+
+  useEffect(() => {
+    let shouldScroll = false;
+    for (const nodeId of submittedNodeIds) {
+      const result = canvasActionResults.find((item) => item.nodeId === nodeId);
+      if (result === undefined || !['completed', 'failed', 'cancelled'].includes(result.status)) {
+        autoScrolledTerminalSignatures.current.delete(nodeId);
+        continue;
+      }
+      const signature = `${result.status}:${result.assetIds.join('\u0000')}`;
+      if (autoScrolledTerminalSignatures.current.get(nodeId) === signature) continue;
+      autoScrolledTerminalSignatures.current.set(nodeId, signature);
+      shouldScroll = true;
+    }
+    if (!shouldScroll) return;
+    window.requestAnimationFrame(() => {
+      const stream = messagesStreamRef.current;
+      if (stream === null) return;
+      if (typeof stream.scrollTo === 'function') stream.scrollTo({ top: stream.scrollHeight, behavior: 'smooth' });
+      else stream.scrollTop = stream.scrollHeight;
+    });
+  }, [canvasActionResults, submittedNodeIds]);
+
+  useEffect(() => {
+    const targetLabels = new Map(canvasActionTargets
+      .filter((target) => submittedNodeIds.includes(target.nodeId))
+      .map((target) => [target.nodeId, target.label] as const));
+    if (targetLabels.size === 0) return;
+    setSubmittedNodeLabels((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const [nodeId, label] of targetLabels) {
+        if (next[nodeId] === label) continue;
+        next[nodeId] = label;
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+    setMessages((current) => {
+      let changed = false;
+      const next = current.map((message) => {
+        if (!message.id.startsWith('canvas-result:')) return message;
+        const nodeId = message.id.slice('canvas-result:'.length);
+        const label = targetLabels.get(nodeId);
+        if (label === undefined || message.canvasNodeLabel === label) return message;
+        changed = true;
+        return { ...message, canvasNodeLabel: label };
+      });
+      return changed ? next : current;
+    });
+  }, [canvasActionTargets, submittedNodeIds]);
 
   const confirmCanvasAction = async () => {
     if (pendingCanvasAction === null || executeCanvasAction === undefined || canvasActionRunning || actionBusy.current) return;
@@ -1079,12 +1294,16 @@ export function SkillChatWorkbench({
         setError(`${canvasActionLabel(action.kind)}节点未能启动，请检查模型配置后重试。`);
         return;
       }
+      const canvasNodeLabel = `${canvasActionLabel(action.kind)} · ${action.prompt.replace(/\s+/gu, ' ').trim().slice(0, 28)}`;
       setMessages((current) => [...current, {
-        id: createMessageId(),
+        id: `canvas-result:${action.nodeId}`,
         role: 'assistant',
+        mode: agentMode,
         content: `${canvasActionLabel(action.kind)}节点已开始运行。`,
+        canvasNodeLabel,
       }]);
       setSubmittedNodeIds((current) => [...new Set([...current, action.nodeId])]);
+      setSubmittedNodeLabels((current) => ({ ...current, [action.nodeId]: canvasNodeLabel }));
       setPendingCanvasAction(null);
       setSelectedCreativeOptionKey(null);
       setPendingCanvasModelRoute(undefined);
@@ -1141,6 +1360,27 @@ export function SkillChatWorkbench({
   const pendingCanvasFixedRouteIsCompatible = pendingCanvasPreference?.mode !== 'fixed'
     || pendingCanvasActionProfiles.some((profile) => profile.modelRoute === pendingCanvasPreference.modelRoute);
   const pendingCanvasModelLocked = pendingCanvasPreference?.mode === 'fixed' && pendingCanvasFixedRouteIsCompatible;
+
+  const renderSubmittedResult = (nodeId: string) => {
+            const result = canvasActionResults.find((item) => item.nodeId === nodeId);
+            const target = canvasActionTargets.find((item) => item.nodeId === nodeId);
+            const nodeLabel = target?.label
+              ?? submittedNodeLabels[nodeId]
+              ?? `节点 ${nodeId.slice(0, 8)}`;
+            return <section key={nodeId} aria-label="生成执行进度" data-node-label={nodeLabel} className="creative-plan__progress"><span className="creative-plan__progress-node">{nodeLabel}</span><span>{result?.status === 'completed' && result.assetIds.length > 0 ? '结果已回写' : result?.status === 'completed' ? '结果已生成，但尚未回写画布' : result?.status === 'failed' ? '执行失败' : result?.status === 'cancelled' ? '已取消' : result === undefined && target === undefined ? '节点或结果已不存在' : '生成任务执行中'}</span>
+              {result?.assetIds.map((assetId) => {
+                const media = allReferenceMedia.find((item) => item.assetId === assetId);
+                if (media?.kind === 'video') return <video key={assetId} src={media.displayUrl} controls playsInline aria-label={`${media.label} video`} />;
+                if (!media) return null;
+                return <div key={assetId} className="creative-plan__result-media">
+                  <button type="button" className="creative-plan__result-preview" aria-label={`查看生成结果：${media.label}`} onClick={(event) => { resultImageOpenerRef.current = event.currentTarget; setActiveResultImage(media); setResultImageZoom(1); }}>
+                    <img src={media.displayUrl} alt={media.label} />
+                  </button>
+                  <button type="button" className="creative-plan__result-copy" aria-label={`复制生成图片：${media.label}`} title="复制生成图片" onClick={() => { void copySentImage(media.displayUrl); }}><Copy aria-hidden="true" size={14} /></button>
+                </div>;
+              })}
+            </section>;
+          };
 
   return (
     <section
@@ -1253,9 +1493,9 @@ export function SkillChatWorkbench({
           <footer>选择后会作为当前任务的上下文。</footer>
         </section>
       )}
-      <section className="skill-chat-workbench__context" aria-label="对话上下文">
+      <section className="skill-chat-workbench__context" aria-label="对话上下文" data-node-count={canvasActionTargets.length}>
         <button type="button" aria-expanded={contextExpanded} onClick={() => setContextExpanded((current) => !current)}>
-          {contextExpanded ? '收起上下文' : '展开上下文'}
+          {contextExpanded ? '收起上下文' : canvasActionTargets.length > 0 ? `展开上下文 · ${canvasActionTargets.length} 个画布节点` : '展开上下文'}
         </button>
         {contextExpanded && (
           <div className="skill-chat-workbench__context-detail">
@@ -1287,14 +1527,25 @@ export function SkillChatWorkbench({
                 </label>
               ))}
             </fieldset>
+            {canvasActionTargets && canvasActionTargets.length > 0 && (
+              <fieldset aria-label="画布节点上下文">
+                <legend>画布节点</legend>
+                {canvasActionTargets.map((target) => (
+                  <label key={target.nodeId} className="skill-chat-workbench__node-context">
+                    <span><b>{target.label}</b><small>{canvasActionLabel(target.kind)}</small></span>
+                    <em>{target.selected ? '当前选择' : '未选择'}</em>
+                  </label>
+                ))}
+              </fieldset>
+            )}
           </div>
         )}
       </section>
 
-      <div className="skill-chat-workbench__stream" aria-label="Agent 消息流" tabIndex={0}>
-        {agentMode !== 'chat' && reverseTimeline.length > 0 && (
+      <div ref={messagesStreamRef} className="skill-chat-workbench__stream" aria-label="Agent 消息流" tabIndex={0}>
+        {activeReverseTimeline.length > 0 && (
           <section className="skill-chat-workbench__reverse-timeline" aria-label="反推上下文事件">
-            {reverseTimeline.map((entry) => (
+            {activeReverseTimeline.map((entry) => (
               <article key={entry.nodeId} className="skill-chat-workbench__reverse-entry" aria-label={`节点反推结果：${entry.title}`}>
                 <span>反推结果已加入上下文</span>
                 <div className="skill-chat-workbench__reverse-entry-heading">
@@ -1314,7 +1565,7 @@ export function SkillChatWorkbench({
           </section>
         )}
         <section className="skill-chat-workbench__messages" aria-label="对话消息">
-          {messages.length === 0 && reverseTimeline.length === 0 && (
+          {messages.length === 0 && activeReverseTimeline.length === 0 && (
             <section className="skill-chat-workbench__empty-state" aria-label="Agent conversation empty state">
               {visibleChatProfiles.length === 0 ? (
                 <>
@@ -1397,10 +1648,20 @@ export function SkillChatWorkbench({
                 doNotCopy: [],
               })))
               : null;
+            const workflowSummary = message.role === 'assistant' && messageMode === 'codex'
+              ? parseWorkflowPlanningSummary(message.content)
+              : null;
+            const canvasResultNodeId = message.id.startsWith('canvas-result:')
+              ? message.id.slice('canvas-result:'.length)
+              : null;
+            const canvasResultOrphaned = canvasResultNodeId !== null
+              && !canvasActionTargets.some((target) => target.nodeId === canvasResultNodeId)
+              && !canvasActionResults.some((result) => result.nodeId === canvasResultNodeId);
             return (
             <article key={message.id} className={`skill-chat-workbench__message skill-chat-workbench__message--${message.role}${creativePlan ? ' skill-chat-workbench__message--creative-plan' : ''}`}>
               <span>{message.role === 'user' ? '你的请求' : 'Agent 建议'}</span>
-              <p>{creativePlan?.summary ?? message.content}</p>
+              <p>{canvasResultOrphaned ? '关联节点或结果已不存在。' : creativePlan?.summary ?? workflowSummary ?? message.content}</p>
+              {submittedNodeIds.filter((nodeId) => message.id === `canvas-result:${nodeId}`).map(renderSubmittedResult)}
               {creativePlan && <section className="creative-plan" aria-label="创作方案">
                 <section className="creative-plan__requirements" aria-label="需求分析">
                   <header><strong>需求分析</strong><span>已拆解为执行约束</span></header>
@@ -1420,7 +1681,7 @@ export function SkillChatWorkbench({
                   return <div key={option.id} className="creative-plan__option"><span className="creative-plan__kind">{option.kind === 'image' ? '图片工作流' : '视频工作流'}</span><strong>{option.title}</strong><p>{option.reason}</p>
                     <section className="creative-plan__workflow" aria-label={`工作流预览：${option.title}`}><b>工作流预览</b><ol>{workflowSteps.map((step, index) => <li key={`${step.title}-${index}`}><span>{index + 1}</span><div><strong>{step.title}</strong><p>{step.detail}</p></div></li>)}</ol></section>
                     <details><summary>查看完整执行提示词</summary><p>{option.prompt}</p></details>
-                    {messageMode !== 'chat' && <button type="button" className={`creative-plan__select${selected ? ' is-selected' : ''}`} aria-label={`选择方案：${option.title}`} aria-pressed={selected} disabled={canvasActionRunning || status === 'sending'} onClick={() => chooseCreativeOption(message.id, option, precedingMessage?.request?.references ?? [])}>{selected ? '✓ 已选择' : '选择此方案'}</button>}
+                    {messageMode !== 'chat' && <button type="button" className={`creative-plan__select${selected ? ' is-selected' : ''}`} aria-label={`选择方案：${option.title}`} aria-pressed={selected} disabled={canvasActionRunning || status === 'sending'} onClick={() => chooseCreativeOption(message.id, option, precedingMessage?.request?.references ?? [], precedingMessage?.content)}>{selected ? '✓ 已选择' : '选择此方案'}</button>}
                   </div>;
                 })}
                 {creativePlan.options.length === 0 && requestedGenerationKind !== undefined && (
@@ -1490,7 +1751,27 @@ export function SkillChatWorkbench({
                       try {
                         const kind = generationPreferences.kind;
                         const { profile, parameters } = resolveGenerationPreference(kind, generationPreferences, profiles, undefined, workflowReferences.length);
-                        generation = { kind, prompt: precedingMessage.content, modelRoute: profile.modelRoute, modelRouteDisplayName: profile.displayName, parameters };
+                        const prompt = reverseWorkflowOffer
+                          ? reverseAnalysis?.prompts.zh.trim() ?? ''
+                          : parseWorkflowGenerationPrompt(message.content);
+                        if (prompt.length === 0 || (reverseWorkflowOffer && reverseAnalysis?.runnable !== true)) {
+                          setError(reverseWorkflowOffer ? '本次反推没有返回可执行的生图提示词，请重新反推后再生成工作流。' : '本次方案没有返回可执行的生图提示词，请重新分析后再生成工作流。');
+                          return;
+                        }
+                        const promptQuality = assessCreativeGenerationPrompt(prompt, precedingMessage.content);
+                        if (!promptQuality.valid && promptQuality.reason === 'contains-mention') {
+                          setError('Agent 返回的生图提示词仍包含 @图片 或 @视频标记，请重新分析后再生成工作流。');
+                          return;
+                        }
+                        if (!promptQuality.valid && promptQuality.reason === 'copied') {
+                          setError('Agent 没有把需求改写成生图提示词，请重新分析后再生成工作流。');
+                          return;
+                        }
+                        if (!promptQuality.valid) {
+                          setError('Agent 返回的生图提示词过于简略，需补充主体、构图、光线、材质、保留项和禁止项后再生成工作流。');
+                          return;
+                        }
+                        generation = { kind, prompt, modelRoute: profile.modelRoute, modelRouteDisplayName: profile.displayName, parameters };
                       } catch (error) { setError(error instanceof Error ? error.message : '请配置生成模型'); return; }
                       draftWorkflowFromAnalysis?.({
                         generation,
@@ -1548,15 +1829,6 @@ export function SkillChatWorkbench({
               </section>
             </article>
           )}
-          {submittedNodeIds.map((nodeId) => {
-            const result = canvasActionResults.find((item) => item.nodeId === nodeId);
-            return <section key={nodeId} aria-label="生成执行进度" className="creative-plan__progress"><span>{result?.status === 'completed' && result.assetIds.length > 0 ? '结果已回写' : result?.status === 'completed' ? '结果已生成，但尚未回写画布' : result?.status === 'failed' ? '执行失败' : result?.status === 'cancelled' ? '已取消' : '生成任务执行中'}</span>
-              {result?.assetIds.map((assetId) => {
-                const media = allReferenceMedia.find((item) => item.assetId === assetId);
-                return media?.kind === 'video' ? <video key={assetId} src={media.displayUrl} controls playsInline /> : media ? <img key={assetId} src={media.displayUrl} alt="生成结果" /> : null;
-              })}
-            </section>;
-          })}
           {status === 'sending' && (
             <article className="skill-chat-workbench__message skill-chat-workbench__message--assistant skill-chat-workbench__message--thinking" aria-label="Agent 正在分析">
               <span>Agent</span>
@@ -1592,6 +1864,31 @@ export function SkillChatWorkbench({
             : sentImageCopyFeedback === 'source-error'
               ? '图片素材暂时无法读取，请重新打开项目后重试'
               : '无法复制图片，请检查系统剪贴板权限'}</p>
+        )}
+        {activeResultImage !== null && createPortal(
+          <div
+            className="skill-chat-workbench__image-lightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`生成结果预览：${activeResultImage.label}`}
+            onClick={() => setActiveResultImage(null)}
+          >
+            <div ref={resultImagePanelRef} className="skill-chat-workbench__image-lightbox-panel" onClick={(event) => event.stopPropagation()}>
+              <header>
+                <strong>{activeResultImage.label}</strong>
+                <button ref={resultImageCloseRef} type="button" aria-label="关闭图片预览" title="关闭图片预览" onClick={() => setActiveResultImage(null)}><X aria-hidden="true" size={16} /></button>
+              </header>
+              <div className="skill-chat-workbench__image-lightbox-canvas">
+                <img src={activeResultImage.displayUrl} alt={activeResultImage.label} style={{ transform: `scale(${resultImageZoom})` }} />
+              </div>
+              <footer>
+                <button type="button" aria-label="缩小预览" disabled={resultImageZoom <= 1} onClick={() => setResultImageZoom((current) => Math.max(1, Number((current - 0.25).toFixed(2))))}>缩小</button>
+                <span>{Math.round(resultImageZoom * 100)}%</span>
+                <button type="button" aria-label="放大预览" disabled={resultImageZoom >= 3} onClick={() => setResultImageZoom((current) => Math.min(3, Number((current + 0.25).toFixed(2))))}>放大</button>
+                <button type="button" aria-label={`复制生成图片：${activeResultImage.label}`} onClick={() => { void copySentImage(activeResultImage.displayUrl); }}><Copy aria-hidden="true" size={14} />复制</button>
+              </footer>
+            </div>
+          </div>, document.body
         )}
         {error && <p className="skill-chat-workbench__error" role="alert">{error}</p>}
       </div>
@@ -1636,8 +1933,13 @@ export function SkillChatWorkbench({
         <div className="skill-chat-workbench__composer-footer" data-agent-mode={agentMode}>
           {mentionOpen && (
             <div role="menu" aria-label="Reference images" className="skill-chat-workbench__mention-menu">
-              <header><strong>@ 图片引用</strong><span>{mentionReferences.length}</span></header>
-              {mentionReferences.map((reference) => (
+              <header><strong>@ 图片引用</strong><span>{mentionMenuReferences.length}</span></header>
+              {!browseProjectImages && <button type="button" onClick={() => {
+                extendReferenceCatalog(allReferenceImages.map((image) => image.assetId));
+                setBrowseProjectImages(true);
+              }}>浏览项目图片</button>}
+              {mentionMenuReferences.length === 0 && <p>粘贴图片或点击 + 添加本次素材。</p>}
+              {mentionMenuReferences.map((reference) => (
                 <button key={reference.assetId} type="button" role="menuitem" aria-label={`Mention ${reference.label}`} onClick={() => {
                   toggleImageMention(reference);
                   dispatchPopover({ type: 'close-external' });
@@ -1677,7 +1979,7 @@ export function SkillChatWorkbench({
             onClose={() => dispatchPopover({ type: 'close-external' })}
             onSelectModel={() => dispatchPopover({ type: 'open', id: 'model' })}
           />}
-          {supportsImageMentions && <div className="skill-chat-workbench__reverse-depth" role="group" aria-label="反推强度">
+          {supportsImageMentions && selectedProfile?.provider !== 'codex' && <div className="skill-chat-workbench__reverse-depth" role="group" aria-label="反推强度">
             {([['fast', '快速反推'], ['standard', '标准反推'], ['deep', '深度反推']] as const).map(([depth, label]) => <button
               key={depth}
               type="button"
@@ -1713,23 +2015,78 @@ export function resolveClipboardPasteAction(input: {
 function canonicalMentionReferences(references: {
   readonly images: readonly SkillChatReferenceImage[];
   readonly videos: readonly SkillChatReferenceVideo[];
-}): SkillChatMentionReference[] {
-  return [
-    ...references.images.map((media, mentionPosition) => ({
-      ...media,
-      position: mentionPosition,
-      mentionPosition,
-      kind: 'image' as const,
-      role: 'product_identity' as const,
-    })),
-    ...references.videos.map((media, mentionPosition) => ({
-      ...media,
-      position: references.images.length + mentionPosition,
-      mentionPosition,
-      kind: 'video' as const,
-      role: 'product_identity' as const,
-    })),
-  ];
+}, catalog: readonly ConversationReferenceCatalogEntry[]): SkillChatMentionReference[] {
+  const imagesByAssetId = new Map(references.images.map((image) => [image.assetId, image]));
+  return [...catalog]
+    .sort((left, right) => left.mentionPosition - right.mentionPosition)
+    .flatMap((entry) => {
+      const media = imagesByAssetId.get(entry.assetId);
+      if (media === undefined) return [];
+      return [{
+        ...media,
+        position: entry.mentionPosition,
+        mentionPosition: entry.mentionPosition,
+        kind: 'image' as const,
+        role: 'product_identity' as const,
+      }];
+    });
+}
+
+function createConversationReferenceCatalog(
+  messages: readonly SkillMessage[],
+  referenceImages: readonly SkillChatReferenceImage[],
+): ConversationReferenceCatalogEntry[] {
+  const catalog: ConversationReferenceCatalogEntry[] = [];
+  const usedAssetIds = new Set<string>();
+  const usedPositions = new Set<number>();
+  const projectPositionByAssetId = new Map(referenceImages.map((image, index) => [image.assetId, index]));
+  for (const message of messages) {
+    const references = message.request?.references ?? [];
+    const mentionedPositions = Array.from(message.content.matchAll(/@图片(\d+)(?!\d)/gu))
+      .map((match) => Number(match[1]) - 1)
+      .filter((position) => Number.isSafeInteger(position) && position >= 0);
+    references.forEach((reference, index) => {
+      if (usedAssetIds.has(reference.assetId)) return;
+      const fromMessage = mentionedPositions[index];
+      const fromProject = projectPositionByAssetId.get(reference.assetId);
+      const preferred = fromMessage !== undefined && !usedPositions.has(fromMessage)
+        ? fromMessage
+        : fromProject !== undefined && !usedPositions.has(fromProject)
+          ? fromProject
+          : nextConversationReferencePosition(usedPositions);
+      catalog.push({ assetId: reference.assetId, mentionPosition: preferred });
+      usedAssetIds.add(reference.assetId);
+      usedPositions.add(preferred);
+    });
+  }
+  return catalog.sort((left, right) => left.mentionPosition - right.mentionPosition);
+}
+
+function appendConversationReferenceCatalog(
+  current: readonly ConversationReferenceCatalogEntry[],
+  assetIds: readonly string[],
+): ConversationReferenceCatalogEntry[] {
+  const entries = [...current];
+  const usedAssetIds = new Set(entries.map((entry) => entry.assetId));
+  const usedPositions = new Set(entries.map((entry) => entry.mentionPosition));
+  let changed = false;
+  for (const assetId of assetIds) {
+    if (!assetId || usedAssetIds.has(assetId)) continue;
+    const mentionPosition = nextConversationReferencePosition(usedPositions);
+    entries.push({ assetId, mentionPosition });
+    usedAssetIds.add(assetId);
+    usedPositions.add(mentionPosition);
+    changed = true;
+  }
+  return changed
+    ? entries.sort((left, right) => left.mentionPosition - right.mentionPosition)
+    : current as ConversationReferenceCatalogEntry[];
+}
+
+function nextConversationReferencePosition(usedPositions: ReadonlySet<number>): number {
+  let position = 0;
+  while (usedPositions.has(position)) position += 1;
+  return position;
 }
 
 function skillChatMentionToken(kind: 'image' | 'video', position: number): string {
@@ -1905,6 +2262,26 @@ function isReverseAnalysisIntent(content: string): boolean {
   return /(?:反推|逆向|复刻|提取|还原).*(?:图片|图像|提示词|prompt)?|(?:reverse|reconstruct).*(?:image|prompt)?/iu.test(content);
 }
 
+function parseWorkflowPlanningSummary(content: string): string | null {
+  try {
+    const source = JSON.parse(content.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '')) as unknown;
+    if (!isRecord(source) || !isRecord(source.generation)) return null;
+    return typeof source.summary === 'string' && source.summary.trim().length > 0 && source.summary.length <= 2_000
+      ? source.summary.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseWorkflowGenerationPrompt(content: string): string {
+  try {
+    const source = JSON.parse(content.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, ''));
+    const prompt = source?.generation?.prompt;
+    return typeof prompt === 'string' && prompt.length <= 6000 ? prompt.trim() : '';
+  } catch { return ''; }
+}
+
 function isWorkflowCreationIntent(content: string, referenceCount = 0): boolean {
   if (/(?:创建|生成|制作|搭建|设计|建立|编排).*(?:工作流|流程|节点|连线)|(?:workflow|pipeline).*(?:create|build|design|generate)?/iu.test(content)) return true;
   return referenceCount > 0
@@ -1920,15 +2297,40 @@ function canvasActionLabel(kind: SkillCanvasActionKind): string {
 
 function canvasActionErrorMessage(caught: unknown, kind: SkillCanvasActionKind): string {
   const code = isRecord(caught) && typeof caught.code === 'string' ? caught.code : undefined;
+  const rawMessage = isRecord(caught) && typeof caught.message === 'string' ? caught.message : '';
   if (code === 'PERMISSION_DENIED') return '本地保存权限不足，生成节点未能保存或启动。请检查项目目录权限后重试。';
   if (code === 'RECOVERY_REQUIRED') return '项目需要先完成恢复，未创建生成节点。请恢复项目后重试。';
   if (code === 'PROJECT_SAVE_CONFLICT' || code === 'PROJECT_CONFIG_SAVE_FAILED') return '项目保存未完成，未创建生成节点。请先解决保存问题后重试。';
+  if (kind === 'reverse_agent') {
+    const timeout = rawMessage.match(/(?:timed out after|timeout|超时)[^\d]*(\d{1,9})?\s*(?:ms|秒)?/iu);
+    if (timeout !== null) return '反推等待超时，请减少素材、切换快速或标准反推，或更换模型后重试。';
+    const status = rawMessage.match(/\bstatus\s+(401|403|408|409|422|429|5\d\d)\b/iu);
+    if (status !== null) {
+      if (status[1] === '401' || status[1] === '403') return `反推模型拒绝了当前凭据（${status[1]}），请检查 API 密钥与模型权限。`;
+      if (status[1] === '429') return '反推模型请求过于频繁（429），请稍后重试。';
+      return `反推模型上游返回 ${status[1]}，当前路线暂时异常，请稍后重试或切换模型。`;
+    }
+    if (/所选模型没有明确声明反推能力|反推模型.*不可用|反推素材|可分析的媒体|Reverse analysis is unavailable/iu.test(rawMessage)) {
+      return rawMessage.length > 0 && rawMessage.length <= 180 ? rawMessage : '反推配置或素材不可用，请检查模型与已连接素材后重试。';
+    }
+  }
   return `${canvasActionLabel(kind)}节点执行失败，请检查模型配置后重试。`;
 }
 
 function skillChatErrorMessage(caught: unknown): string {
-  if (caught instanceof ProviderOperationTimeoutError) return '请求超时，请检查网络后重试。';
+  if (caught instanceof ProviderOperationTimeoutError) return formatAgentProviderTimeout(caught.timeoutMs);
   const code = isRecord(caught) && typeof caught.code === 'string' ? caught.code : undefined;
+  const message = isRecord(caught) && typeof caught.message === 'string' ? caught.message : '';
+  if (code === 'PROVIDER_UNAVAILABLE' || code === 'PROVIDER_ERROR' || code === 'PROVIDER_TIMEOUT') {
+    const timeout = message.match(/\btimed out after\s+(\d{1,9})\s*ms\b/iu);
+    if (timeout !== null) return formatAgentProviderTimeout(Number(timeout[1]));
+    const status = message.match(/\bstatus\s+(401|403|408|409|422|429|5\d\d)\b/iu);
+    if (status !== null) {
+      if (status[1] === '401' || status[1] === '403') return `模型服务拒绝了当前凭据（${status[1]}），请在设置中检查 API 密钥与模型权限。`;
+      if (status[1] === '429') return '模型服务请求过于频繁（429），请稍后重试。';
+      return `模型上游服务返回 ${status[1]}，当前路线暂时异常，请稍后重试或切换模型。`;
+    }
+  }
   switch (code) {
     case 'CREDENTIALS_LOCKED':
       return '模型密钥不可用，请在设置中重新配置。';
@@ -1968,6 +2370,11 @@ function skillChatErrorMessage(caught: unknown): string {
     default:
       return 'Agent 对话暂时不可用，请稍后重试。';
   }
+}
+
+function formatAgentProviderTimeout(timeoutMs: number): string {
+  const seconds = Math.max(1, Math.round(timeoutMs / 1_000));
+  return `模型分析已等待 ${seconds} 秒仍未返回，请减少图片数量、切换快速或标准反推，或更换模型后重试。`;
 }
 
 function didInsertMentionToken(previous: string, next: string): boolean {

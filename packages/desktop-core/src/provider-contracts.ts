@@ -1,6 +1,7 @@
 import { z, type ZodTypeAny } from 'zod';
 import {
   MAX_REVERSE_PROMPT_MP4_BYTES,
+  imageAspectRatioSchema,
   reversePromptResultSchema,
   reversePromptRunSchema,
 } from '@agent-canvas/domain';
@@ -93,7 +94,6 @@ export const ProviderSelectionBridgeRequestSchema = z.object({
 const contentAddressedAssetIdSchema = z.string().regex(/^[a-f0-9]{16}$/u, 'Asset id must be a content-addressed id');
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u, 'Asset hash must be a lowercase SHA-256 digest');
 const opaqueDesktopSessionIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/u, 'Session id must be opaque');
-const imageAspectRatioSchema = z.enum(['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16']);
 const imageResolutionSchema = z.enum(['1K', '2K', '4K']);
 const videoResolutionSchema = z.enum(['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K']);
 const imageOutputCountSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
@@ -261,7 +261,9 @@ export const SubmitImageJobBridgeRequestSchema = z.object({
   referenceAssetIds: z.array(nonEmptyStringSchema),
   aspectRatio: imageAspectRatioSchema.optional(),
   resolution: imageResolutionSchema.optional(),
-  quality: z.enum(['low', 'medium', 'high']).optional(),
+  quality: z.enum(['auto', 'low', 'medium', 'high']).optional(),
+  imageOutputFormat: z.enum(['png', 'jpeg', 'webp']).optional(),
+  imageBackground: z.enum(['auto', 'opaque', 'transparent']).optional(),
   outputCount: imageOutputCountSchema.optional(),
 }).strict().superRefine((value, context) => {
   addProtectedPayloadIssues(value, context, 'Provider bridge payload contains protected payload');

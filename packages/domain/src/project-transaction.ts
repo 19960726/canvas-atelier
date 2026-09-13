@@ -30,11 +30,17 @@ const setProjectAssetsOperationSchema = z.object({
   assets: z.array(projectAssetSchema),
 }).strict();
 
+const setAgentWorkflowSequenceOperationSchema = z.object({
+  kind: z.literal('set_agent_workflow_sequence'),
+  sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+}).strict();
+
 export const projectOperationSchema = z.discriminatedUnion('kind', [
   canvasOperationProjectSchema,
   appendProjectMemoryOperationSchema,
   setSkillCandidatesOperationSchema,
   setProjectAssetsOperationSchema,
+  setAgentWorkflowSequenceOperationSchema,
   replaceCanvasStateOperationSchema,
 ]);
 
@@ -108,6 +114,14 @@ export function applyProjectTransaction(
 
     if (operation.kind === 'set_project_assets') {
       draft = parseCanvasProject({ ...draft, assets: operation.assets });
+      continue;
+    }
+
+    if (operation.kind === 'set_agent_workflow_sequence') {
+      if (operation.sequence < (draft.agentWorkflowSequence ?? 0)) {
+        throw new Error('Agent workflow sequence must be monotonic');
+      }
+      draft = parseCanvasProject({ ...draft, agentWorkflowSequence: operation.sequence });
       continue;
     }
 

@@ -26,12 +26,12 @@ test('GPT image mode persists its dedicated quality choice and submits high qual
   expect(selectedModelRoute).toMatch(/^comfly-gpt-image-2/u);
   const quality = imageNode.getByRole('button', { name: 'Image generation quality' });
   await expect(quality).toBeVisible();
-  await expect(imageNode.locator('.module-node__generation-control-bar > *:visible')).toHaveCount(6);
+  await expect(imageNode.locator('.module-node__generation-control-bar > *:visible')).toHaveCount(8);
   await expect(quality).toHaveAttribute('value', '中');
   await quality.click();
   await imageNode
     .getByRole('menu', { name: 'Image generation quality options' })
-    .getByRole('menuitemradio', { name: '高' })
+    .getByRole('menuitemradio', { name: '高', exact: true })
     .click();
 
   const resolution = imageNode.getByRole('button', { name: 'Image generation resolution' });
@@ -45,7 +45,18 @@ test('GPT image mode persists its dedicated quality choice and submits high qual
   const controlTops = await imageNode
     .locator('.module-node__generation-control-bar > *:visible')
     .evaluateAll((controls) => controls.map((control) => Math.round(control.getBoundingClientRect().top)));
-  expect(Math.max(...controlTops) - Math.min(...controlTops)).toBeLessThanOrEqual(1);
+  expect(new Set(controlTops).size).toBe(2);
+  expect(controlTops.slice(0, 4).every((top) => top === controlTops[0])).toBe(true);
+  expect(controlTops.slice(4).every((top) => top === controlTops[4])).toBe(true);
+  expect(controlTops[4]! - controlTops[0]!).toBeGreaterThanOrEqual(42);
+  const geometry = await imageNode.evaluate((node) => {
+    const prompt = node.querySelector('.module-node__prompt-workspace')!.getBoundingClientRect();
+    const rail = node.querySelector('.module-node__generation-control-bar')!.getBoundingClientRect();
+    const bounds = node.getBoundingClientRect();
+    return { promptBottom: prompt.bottom, railTop: rail.top, railBottom: rail.bottom, nodeBottom: bounds.bottom };
+  });
+  expect(geometry.promptBottom).toBeLessThanOrEqual(geometry.railTop);
+  expect(geometry.railBottom).toBeLessThan(geometry.nodeBottom);
   await page.screenshot({ path: artifact('10-gpt-quality-high-4k-dark.png'), fullPage: true });
 
   await expect.poll(async () => {
@@ -80,6 +91,35 @@ test('GPT image mode persists its dedicated quality choice and submits high qual
   });
 });
 
+test('GPT screenshot controls expose complete menus and persist format and background', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  await page.addInitScript(() => localStorage.setItem('novus.theme.mode', 'light'));
+  await openEmptyApp(page);
+  await page.evaluate(async () => { await window.__NOVUS_E2E__!.createModule('image_generation', { x: 220, y: 120 }); });
+  const node = page.locator('[data-module-type="image_generation"]');
+  await node.getByRole('button', { name: 'Open image generation editor' }).click();
+  await node.getByRole('combobox', { name: 'Image generation model route' }).selectOption({ label: 'GPT Image 2' });
+  for (const [name, option] of [
+    ['aspect ratio', '3:4'], ['resolution', '4K'], ['batch count', '2张'],
+    ['quality', '自动'], ['format', 'WEBP'], ['background', '透明'],
+  ]) {
+    await node.getByRole('button', { name: `Image generation ${name}`, exact: true }).click();
+    const menu = node.getByRole('menu', { name: `Image generation ${name} options` });
+    await expect(menu).toBeVisible();
+    await page.screenshot({ path: artifact(`gpt-controls-${name!.replaceAll(' ', '-')}-light.png`) });
+    await menu.getByRole('menuitemradio', { name: option!, exact: true }).click();
+  }
+  await expect.poll(async () => (await e2eState(page)).durableImageGenerationConfigs[0]).toMatchObject({
+    aspectRatio: '3:4', resolution: '4K', outputCount: 2, imageQuality: 'auto', imageOutputFormat: 'webp', imageBackground: 'transparent',
+  });
+  await page.screenshot({ path: artifact('gpt-controls-complete-light.png') });
+  await page.evaluate(() => window.__NOVUS_E2E__!.reopenProject());
+  const expand = node.getByRole('button', { name: 'Open image generation editor' });
+  if (await expand.isVisible()) await expand.click();
+  await expect(node.getByRole('button', { name: 'Image generation format' })).toHaveAttribute('value', 'WEBP');
+  await expect(node.getByRole('button', { name: 'Image generation background' })).toHaveAttribute('value', '透明');
+});
+
 test('image and video generation expose the final ratio and clarity controls without submitting a paid task', async ({ page }) => {
   await page.setViewportSize({ width: 1680, height: 1050 });
   await page.addInitScript(() => localStorage.setItem('novus.theme.mode', 'dark'));
@@ -101,7 +141,7 @@ test('image and video generation expose the final ratio and clarity controls wit
   const imageRailLayout = await imageNode.evaluate((node) => {
     const model = node.querySelector<HTMLElement>('select[aria-label="Image generation model route"]');
     const ratio = node.querySelector<HTMLElement>('button[aria-label="Image generation aspect ratio"]');
-    const quantity = node.querySelector<HTMLElement>('select[aria-label="Image generation quantity"]');
+    const quantity = node.querySelector<HTMLElement>('button[aria-label="Image generation batch count"]');
     const modelRect = model?.getBoundingClientRect();
     const ratioRect = ratio?.getBoundingClientRect();
     const quantityRect = quantity?.getBoundingClientRect();

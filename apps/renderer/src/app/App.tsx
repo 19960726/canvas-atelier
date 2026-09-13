@@ -1,5 +1,5 @@
 import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
-import type { CanvasModuleNode } from '@agent-canvas/domain';
+import { normalizeImageOutputFormat, normalizeImageBackground, type CanvasModuleNode } from '@agent-canvas/domain';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
 import { useAppStore } from './app-store';
@@ -344,7 +344,9 @@ export async function runMcpCanvasNode(
       ...(normalizeImageQuality(config.imageQuality) === undefined
         ? {}
         : { imageQuality: normalizeImageQuality(config.imageQuality) }),
-      outputCount: readOutputCount(config.outputCount),
+      imageOutputFormat: normalizeImageOutputFormat(config.imageOutputFormat),
+      imageBackground: normalizeImageBackground(config.imageBackground),
+      outputCount: config.outputCount === 9 ? 9 : readOutputCount(config.outputCount),
       referenceAssetIds: readStringList(config.referenceAssetIds),
       ...(executionRoute === undefined ? {} : { executionRoute }),
     });

@@ -578,7 +578,6 @@
   border-color: #6574df !important;
 }
 
-.workspace--canvas-layout .topbar__actions .theme-control--compact,
 .workspace--canvas-layout .topbar-close-action {
   box-sizing: border-box !important;
   flex: 0 0 38px !important;
@@ -590,7 +589,6 @@
   border-radius: 10px !important;
 }
 
-.workspace--canvas-layout .topbar__actions .theme-control--compact,
 .workspace--canvas-layout .topbar-close-action {
   display: none !important;
 }
@@ -1653,11 +1651,15 @@
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__messages {
   display: flex !important;
   flex-direction: column !important;
+  flex: none !important;
+  overflow: visible !important;
+  min-height: 0 !important;
   gap: 12px !important;
   padding: 4px 2px 18px !important;
 }
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message {
   position: relative !important;
+  flex: none !important;
   width: fit-content !important;
   max-width: min(78%, 560px) !important;
   margin: 0 !important;
@@ -1704,6 +1706,40 @@
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--thinking .skill-chat-workbench__status i { width: 12px !important; height: 12px !important; border: 2px solid #9aacb0 !important; border-right-color: transparent !important; border-radius: 50% !important; animation: agent-thinking-spin .8s linear infinite !important; }
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__thinking-stop { margin-left: auto !important; min-height: 26px !important; padding: 3px 10px !important; border: 1px solid #b8cbce !important; border-radius: 8px !important; color: #43656c !important; background: #fff !important; font-size: 11px !important; cursor: pointer !important; }
 @keyframes agent-thinking-spin { to { transform: rotate(360deg); } }
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__context[data-node-count]:not([data-node-count='0']) {
+  display: block !important;
+  margin: 0 16px !important;
+  padding: 7px 10px !important;
+  color: var(--gate-text, var(--text)) !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+  border: 1px solid var(--gate-border, var(--border)) !important;
+  border-radius: 8px !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__context[data-node-count]:not([data-node-count='0']) > button {
+  width: 100% !important;
+  color: var(--gate-text, var(--text)) !important;
+  text-align: left !important;
+}
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__node-context > b,
+.workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__node-context > span { color: var(--gate-text, var(--text)) !important; }
+:root[data-theme='dark'] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--assistant {
+  color: var(--gate-text, var(--text)) !important;
+  background: var(--gate-card, var(--surface)) !important;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 22%) !important;
+}
+:root[data-theme='dark'] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--user {
+  color: var(--gate-text, var(--text)) !important;
+  background: color-mix(in srgb, var(--gate-accent, var(--accent)) 20%, var(--gate-card-muted, var(--surface-muted))) !important;
+  border: 1px solid color-mix(in srgb, var(--gate-accent, var(--accent)) 42%, var(--gate-border, var(--border))) !important;
+}
+:root[data-theme='dark'] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message > span,
+:root[data-theme='dark'] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--user > span {
+  color: var(--gate-muted, var(--text-secondary)) !important;
+}
+:root[data-theme='dark'] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__message--thinking {
+  color: var(--gate-muted, var(--text-secondary)) !important;
+  background: var(--gate-card-muted, var(--surface-muted)) !important;
+}
 .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__error {
   align-self: flex-start !important;
   max-width: min(82%, 560px) !important;
@@ -4566,9 +4602,54 @@ html body .workspace--canvas-layout .agent-panel--skill-chat :is(.creative-plan_
 }
 
 html body .workspace--canvas-layout .agent-panel--skill-chat :is(.creative-plan__select, .skill-chat-workbench__confirmation-actions > button):disabled {
-  opacity: .55 !important;
+  opacity: 1 !important;
+  color: var(--text-secondary) !important;
+  background: var(--surface-muted) !important;
+  border-color: var(--border) !important;
   cursor: wait !important;
   transform: none !important;
+}
+
+/* Agent actions use opaque theme colors so text stays readable in every state. */
+.agent-panel--skill-chat, .skill-chat-workbench__image-lightbox {
+  --agent-action: #0e7f77;
+  --agent-on-action: #ffffff;
+  --agent-action-soft: #e4f5f1;
+  --agent-action-text: #09685f;
+  --agent-action-border: #95c9bf;
+}
+:root[data-theme='dark'] :is(.agent-panel--skill-chat, .skill-chat-workbench__image-lightbox) {
+  --agent-action: #41c7b5;
+  --agent-on-action: #072c2a;
+  --agent-action-soft: #173c39;
+  --agent-action-text: #97f0df;
+  --agent-action-border: #367c74;
+}
+html body .workspace--canvas-layout .agent-panel--skill-chat .creative-plan__select:not(:disabled) {
+  color: var(--agent-action-text) !important;
+  background: var(--agent-action-soft) !important;
+  border-color: var(--agent-action-border) !important;
+}
+html body .workspace--canvas-layout .agent-panel--skill-chat .creative-plan__select:is(:hover, .is-selected):not(:disabled),
+html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__confirmation-actions .is-primary:not(:disabled) {
+  color: var(--agent-on-action) !important;
+  background: var(--agent-action) !important;
+  border-color: var(--agent-action) !important;
+}
+.agent-panel--skill-chat .creative-plan__kind,
+.agent-panel--skill-chat .creative-plan__workflow li > span {
+  color: var(--agent-action-text);
+  background: var(--agent-action-soft);
+}
+:root[data-theme='dark'] .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workbench__error {
+  color: #ffc3c6 !important;
+  background: #3a222a !important;
+  border-color: #804552 !important;
+}
+.skill-chat-workbench__image-lightbox-panel > footer button:hover {
+  color: var(--agent-action-text);
+  background: var(--agent-action-soft);
+  border-color: var(--agent-action-border);
 }
 
 /* COLLAPSED RESULT REFRESH HIT TARGET */
@@ -4733,4 +4814,100 @@ html body .workspace--canvas-layout .agent-panel--skill-chat .skill-chat-workben
   .skill-chat-workbench__composer-actions
 ) {
   grid-row: 3 !important;
+}
+
+/* GPT image options occupy two stable rows inside the existing bottom rail. */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality {
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  grid-template-rows: 38px 38px !important;
+  gap: 10px !important;
+  height: 106px !important;
+  min-height: 106px !important;
+  max-height: 106px !important;
+  padding-block: 10px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > * {
+  grid-row: 1 !important;
+  grid-column: auto !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  height: 38px !important;
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .module-node__video-model-picker { grid-column: 1 / 7 !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .generation-parameter-popover--ratio-grid { grid-column: 7 / 9 !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .generation-parameter-popover:nth-child(3) { grid-column: 9 / 11 !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .module-node__image-quantity { grid-column: 11 / 13 !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .module-node__image-quality { grid-column: 1 / 4 !important; grid-row: 2 !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .module-node__image-format { grid-column: 4 / 7 !important; grid-row: 2 !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .module-node__image-background { grid-column: 7 / 11 !important; grid-row: 2 !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality > .module-node__run-generation { grid-column: 11 / 13 !important; grid-row: 2 !important; }
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__image-quantity {
+  position: relative !important;
+  box-sizing: border-box !important;
+  align-self: center !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__generation-control-bar.has-image-quality) .module-node__summary--generation[data-editor-expanded='true'] .module-node__prompt-workspace {
+  top: auto !important;
+  bottom: 134px !important;
+}
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__image-native-quantity {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  opacity: 0 !important;
+  clip-path: inset(50%) !important;
+  pointer-events: none !important;
+}
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar :is(.generation-parameter-popover__trigger, .module-node__video-model-trigger, .module-node__run-generation) {
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  letter-spacing: 0 !important;
+  gap: 8px !important;
+}
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .generation-parameter-popover__label { flex: 0 0 auto !important; font-weight: 400 !important; }
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__run-generation::before,
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__run-generation::after { content: none !important; }
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__image-quantity > .generation-parameter-popover {
+  width: 100% !important;
+  height: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__image-quantity .generation-parameter-popover__trigger {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__video-model-name {
+  text-align: left !important;
+}
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-preview-gallery--9 {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(3, minmax(0, 1fr)) !important;
+}
+
+/* The expanded module library sits above the floating topbar so its close
+   control remains clickable at narrow desktop widths. Keep the toolrail above
+   the library so users can switch surfaces without first using Escape. */
+html body .workspace--canvas-layout .module-library[data-canvas-surface='module-library'] {
+  z-index: 160 !important;
+}
+html body .workspace--canvas-layout .toolrail--floating {
+  z-index: 170 !important;
 }

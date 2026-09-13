@@ -69,6 +69,7 @@ describe('provider model catalog', () => {
           parameterTable: { headers: ['分辨率', '视频时长'], rows: [['720P', '5秒'], ['1080P', '10秒'], ['2k(720p upscale)', '15秒'], ['4k(720p upscale)', '15秒']] },
         },
         { key: 'vision-chat', name: 'Vision Chat', provider: 'Google', tags: ['对话', '识图', '多模态'], apis: ['POST-/v1/chat/completions-4'], capabilityStatus: 'complete' },
+        { key: 'gemini-3.1-pro-preview-customtools', name: 'Gemini 3.1 Pro Preview Customtools', provider: 'Google', tags: ['对话', '推理', '多模态'], apis: ['POST-/v1/chat/completions-4'], endpointTypes: ['gemini', 'openai'], capabilityStatus: 'complete' },
         { key: 'mystery-video-name', name: 'Video Looking Name', provider: 'Other', tags: [], apis: [], capabilityStatus: 'incomplete' },
       ],
     };
@@ -80,6 +81,9 @@ describe('provider model catalog', () => {
     });
     expect(profiles.find((item) => item.modelId === 'veo3.1-fast')).toMatchObject({ capabilities: ['async_tasks'], constraints: { video: { resolutions: ['720p', '1080p', '2K', '4K'], duration: { mode: 'options', options: [5, 10, 15] }, outputCounts: [1] } } });
     expect(profiles.find((item) => item.modelId === 'vision-chat')).toMatchObject({ capabilities: ['chat', 'vision', 'reverse_prompt'] });
+    expect(profiles.find((item) => item.modelId === 'gemini-3.1-pro-preview-customtools')).toMatchObject({
+      capabilities: ['chat', 'vision', 'reverse_prompt', 'gemini_native'],
+    });
     expect(profiles.find((item) => item.modelId === 'mystery-video-name')).toMatchObject({ capabilities: [], capabilityStatus: 'incomplete' });
   });
 
@@ -151,6 +155,27 @@ describe('provider model catalog', () => {
       expect(profile?.capabilities).toEqual(['image_generation', 'image_edit']);
       expect(profile?.capabilities).not.toContain('chat');
     }
+  });
+
+  it('uses the documented Seedream v5 generations route for text and reference image generation', () => {
+    const [profile] = buildComflyModelProfiles({
+      version: 'catalog-seedream-v5-missing-edit-endpoint',
+      models: [{
+        key: 'seedream-v5-pro',
+        name: 'Seedream V5 Pro',
+        provider: 'ByteDance',
+        tags: ['绘图', '图像编辑', '对话'],
+        apis: ['/v1/images/generations'],
+        capabilityStatus: 'complete',
+      }],
+    });
+
+    expect(profile).toMatchObject({
+      modelId: 'seedream-v5-pro',
+      capabilities: ['image_generation', 'image_edit'],
+      constraints: { image: { resolutions: ['2K'] } },
+    });
+    expect(profile?.capabilities).not.toContain('chat');
   });
 
   it('does not infer Gemini image editing from editable routes, names, or unverified model ids', () => {

@@ -7,6 +7,8 @@ export interface GenerationJobDraftIdentity {
   readonly aspectRatio?: unknown;
   readonly resolution?: unknown;
   readonly imageQuality?: unknown;
+  readonly imageOutputFormat?: unknown;
+  readonly imageBackground?: unknown;
   readonly durationSeconds?: unknown;
   readonly audioEnabled?: unknown;
 }
@@ -24,6 +26,8 @@ export function modelJobMatchesGenerationDraft(
   const jobResolution = kind === 'video' ? job.videoResolution : job.resolution;
   if (!sameExplicitResolution(jobResolution, draft.resolution, kind)) return false;
   if (kind === 'image' && !sameExplicitString(job.imageQuality, draft.imageQuality)) return false;
+  if (kind === 'image' && !sameExplicitString(job.imageOutputFormat, draft.imageOutputFormat)) return false;
+  if (kind === 'image' && !sameExplicitString(job.imageBackground, draft.imageBackground)) return false;
   if (kind === 'video') {
     if (!sameExplicitNumber(job.durationSeconds, draft.durationSeconds)) return false;
     if (!sameExplicitBoolean(job.audioEnabled, draft.audioEnabled)) return false;
@@ -45,6 +49,8 @@ export function formalGenerationJobMatchesNodeDraft(
     aspectRatio: config.aspectRatio,
     resolution: config.resolution,
     imageQuality: config.imageQuality,
+    imageOutputFormat: config.imageOutputFormat,
+    imageBackground: config.imageBackground,
     durationSeconds: config.durationSeconds,
     audioEnabled: config.audioEnabled,
   });

@@ -7,13 +7,25 @@ export const modelJobProviderSchema = z.enum(['comfly', 'relayme', 'julun', '4da
 export type ModelJobProvider = z.infer<typeof modelJobProviderSchema>;
 export const modelJobKindSchema = z.enum(['image', 'video']);
 export type ModelJobKind = z.infer<typeof modelJobKindSchema>;
-export const imageAspectRatioSchema = z.enum(['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16']);
+export const imageAspectRatioSchema = z.enum(['1:1', '2:3', '3:2', '4:3', '3:4', '4:5', '5:4', '16:9', '9:16', '21:9']);
 export const imageResolutionTierSchema = z.enum(['1K', '2K', '4K']);
-export const imageQualitySchema = z.enum(['low', 'medium', 'high']);
+export const imageQualitySchema = z.enum(['auto', 'low', 'medium', 'high']);
+export const imageOutputFormatSchema = z.enum(['png', 'jpeg', 'webp']);
+export const imageBackgroundSchema = z.enum(['auto', 'opaque', 'transparent']);
 export const videoResolutionTierSchema = z.enum(['360p', '480p', '512p', '540p', '720p', '768p', '1080p', '2K', '4K']);
 export type ImageAspectRatio = z.infer<typeof imageAspectRatioSchema>;
 export type ImageResolutionTier = z.infer<typeof imageResolutionTierSchema>;
 export type ImageQuality = z.infer<typeof imageQualitySchema>;
+export type ImageOutputFormat = z.infer<typeof imageOutputFormatSchema>;
+export type ImageBackground = z.infer<typeof imageBackgroundSchema>;
+
+export function normalizeImageOutputFormat(value: unknown): ImageOutputFormat | undefined {
+  return imageOutputFormatSchema.safeParse(value).data;
+}
+
+export function normalizeImageBackground(value: unknown): ImageBackground | undefined {
+  return imageBackgroundSchema.safeParse(value).data;
+}
 export type VideoResolutionTier = z.infer<typeof videoResolutionTierSchema>;
 
 export function normalizeImageResolutionTier(value: unknown): ImageResolutionTier {
@@ -35,6 +47,9 @@ export function mapImageResolutionTier(
       '3:4': [768, 1024],
       '16:9': [1024, 576],
       '9:16': [576, 1024],
+      '4:5': [819, 1024],
+      '5:4': [1024, 819],
+      '21:9': [1024, 439],
     },
     '2K': {
       '1:1': [2048, 2048],
@@ -44,6 +59,9 @@ export function mapImageResolutionTier(
       '3:4': [1536, 2048],
       '16:9': [2048, 1152],
       '9:16': [1152, 2048],
+      '4:5': [1638, 2048],
+      '5:4': [2048, 1638],
+      '21:9': [2048, 878],
     },
     '4K': {
       '1:1': [4096, 4096],
@@ -53,6 +71,9 @@ export function mapImageResolutionTier(
       '3:4': [3072, 4096],
       '16:9': [3840, 2160],
       '9:16': [2160, 3840],
+      '4:5': [3277, 4096],
+      '5:4': [4096, 3277],
+      '21:9': [4096, 1755],
     },
   };
   const [width, height] = dimensions[tier][aspectRatio];
@@ -89,6 +110,8 @@ export const modelJobSchema = z.object({
   aspectRatio: imageAspectRatioSchema.optional(),
   resolution: hydratedImageResolutionTierSchema,
   imageQuality: imageQualitySchema.optional(),
+  imageOutputFormat: imageOutputFormatSchema.optional(),
+  imageBackground: imageBackgroundSchema.optional(),
   videoResolution: videoResolutionTierSchema.optional(),
   durationSeconds: z.number().int().min(1).max(60).optional(),
   audioEnabled: z.boolean().optional(),
@@ -129,6 +152,8 @@ export interface ConfirmedModelJobInput {
   aspectRatio?: ImageAspectRatio;
   resolution?: ImageResolutionTier;
   imageQuality?: ImageQuality;
+  imageOutputFormat?: ImageOutputFormat;
+  imageBackground?: ImageBackground;
   videoResolution?: VideoResolutionTier;
   durationSeconds?: number;
   audioEnabled?: boolean;

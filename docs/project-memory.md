@@ -1104,3 +1104,145 @@ Before producing an installer, verify at minimum:
 - 最新源码的聚焦剪贴板格式回归为 5/5；完整 Vitest 最终为 234 个文件通过、2 个按设计跳过，3522 项通过、2 项跳过；完整 workspace typecheck 与 production build 通过，构建输出 renderer JS 为 `index-CqoN03Pw.js`。第一次全量中的 MP4 失败来自新增单测把成功导入 mock 错写为 `null`，修正测试夹具后该项与一项安全扫描并发超时先聚焦 2/2 转绿，再完整复跑全部通过。
 - 最终待确认候选为 `apps/desktop-modern/dist-builder/desktop-modern-1.6.133-native-media-replacement-agent-zoom-confirmation-20260911-r5`。NSIS 安装包 103310185 字节、SHA-256 `41B1E81001496A993985548223946F31910BE2FD06480B1B93EFDE795B96E49D`；blockmap 109650 字节、SHA-256 `38163EDC8301D9B87A98C3ACB3E5B7DE348E4E0C0EE18A1FBD297102DB681A83`；`latest.yml` 375 字节、SHA-256 `317479555CC225498C9670EF48059A4BD0D5C470FDA22EFFB32DC5CE72036612`；候选 EXE SHA-256 `E3AABC4569DE6E36EE2A4BC6A2D5812FCB2484CCB12A3D73B74F754E7BD8060F`；`app.asar` SHA-256 `52BD956017CF65138B2F44B0145A53D9797D50F195F78C961AACE29AA1A65878`。安装包和候选 EXE 均为 `NotSigned`；安装包解包后的 12 个关键载荷与 `win-unpacked` 逐项一致。
 - 按用户要求，本候选未安装到日用目录、未发布 GitHub、未上传在线更新。现有脏工作区、未跟踪 QA 资产和两份用户既有 tracked 修改均保留，没有 reset、clean 或删除。
+# 2026-09-12 image, Agent clipboard and reverse repair checkpoint
+
+- Fixed the reproducible local causes behind the reported UI failures. GPT image references now use Comfly multipart edits with uploaded files and exact size mapping; generation options (`auto` quality, PNG/JPEG/WEBP, background) persist through node drafts, model jobs, retry identity and IPC. JPEG plus transparent is rejected before queueing. The image picker groups 1K/2K/4K variants into one visible model while preserving the exact route, and nine-image batches dispatch one-image jobs and retain all nine results.
+- Agent clipboard parsing now handles empty MIME, `application/octet-stream`, merged DataTransfer wrappers and native Electron clipboard fallback. Manual visual imports can route to an available vision profile in Chat/Original modes.
+- Reverse response handling ignores Gemini thought parts and sanitizes extra media-responsibility metadata before strict validation. This prevents thought text from corrupting JSON; it does not prove the historical live provider 503 was caused by this parser.
+- Verification: focused Vitest 11 files / 1041 tests passed; Playwright generation parameter suite 4/4 passed; `npm.cmd run typecheck` passed; `npm.cmd run build` passed. No paid provider submission, installer install, or publication was performed. Existing live evidence still contains Comfly HTTP 503 records, which remain an upstream/provider boundary.
+
+## 2026-09-12 1.6.133 GPT 生图、反推、Agent 剪贴板与主题安装版闭环
+
+- 主题切换并非功能缺失：`ThemeControl`、`system | light | dark` 持久化和亮暗 token 已存在，发布布局文件末尾却把 `.theme-control--compact` 与关闭按钮一起设为 `display: none !important`。现已把主题控件移出关闭按钮专属规则，并增加发布 CSS 回归。最终安装版中控件尺寸为 112 x 36，`浅色`、`深色`、`跟随系统` 均真实改变根节点主题，页面错误为空；证据为 `work/qa-installed-theme-switch-1.6.133-20260912/report.json`。
+- 老项目可能缺少 `recovery` 目录，写锁建立前的 operation guard 会因此失败并把项目静默降为只读，随后生图或反推在保存边界失败。`ProjectRepository.open(..., 'write')` 现在会先补建该目录再取得写锁；红测先复现 `read_only`，修复后项目仓库 46/46 通过。
+- 用户授权的一次真实 Comfly 生图已执行且成功：`comfly-gpt-image-2-5-sunburst`、1:1、1K、1 张、无参考图，任务 `model-job-v2-461ca537d7b375f4b832404a69e1e91f` 在约 15.5 秒完成，retryCount 0、error null；返图为 1024 x 1024 JPEG、326066 字节，Chromium 解码成功。报告为 `work/qa-live-generation-1.6.133-results/20260912T005224448Z-39784/report.json`，图片为同目录 `image-654ee7e5a32c90ce.jpg`。该 live 请求运行于当时安装的 1.6.133 `app.asar` 哈希 `0FD678A4BE9257408F534B26834520DD7D79EA375BEE75B76A3630E08DC9FE62`；之后只增加主题显示和老项目目录迁移并重新打包，没有发送第二次付费请求。
+- 最终安装版反推使用隔离零费用 provider 执行完整链：受管图片导入、反推节点创建、执行确认、provider analyze、完整结果回写与持久化均通过；请求和保存配置均精确包含 `analysisDepth: deep`，网络尝试 0，真实项目未触碰。证据为 `work/qa-installed-mcp-video-reverse-zero-cost-1.6.133-theme-final.json`。Gemini thought part 与额外 responsibility 字段的解析修复另有源代码回归覆盖；没有把零费用 fixture 写成真实上游反推成功。
+- 最终安装版 Agent 原生剪贴板链通过：Windows 文件剪贴板粘贴后出现 1 个受管引用和 `@图片1`，视觉模型收到精确引用，已发送缩略图可加载；复制回系统剪贴板显示“图片已复制”，native image 与原图一致，剪贴板随后恢复。证据为 `work/qa-installed-agent-image-chat-1.6.133-theme-final/report.json`。粘贴边界为单边不超过 8192 像素、总像素不超过 6400 万、转码 PNG 不超过 64 MiB；普通 1K/2K/4K 不会因尺寸本身被拒绝。此前间歇失败主要来自空 MIME、`application/octet-stream`、DataTransfer wrapper 与 Electron 原生剪贴板格式差异。
+- 最终 UI 安装版门禁确认生图节点为两行 8 个控件，质量改为“高”、清晰度改为 4K 后项目保存和进程重启仍保持；当前供应商为 Comfly 时选择器只显示 Comfly 路线。GPT Image 2.5 的 1K/2K/4K 内部路由在模型菜单合并为一个可见模型，由清晰度控件选择，不再列成三个模型。报告为 `work/qa-installed-gpt-multi-provider-1.6.133-theme-final-r4/report.json`。
+- 最终源码验证为聚焦 Vitest 7 文件 799/799、反推安装门禁 helper 8/8、全 workspace typecheck、production build 与 `git diff --check` 通过。NSIS 安装器为 `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.133.exe`，103312547 字节、SHA-256 `4F408490A695E317E66406A7FD02EED9A8C2B444F6B4FCB2B2ED5145D0E8848D`。正式安装目录 EXE 与候选同为 `BFE30FAD4EFFD3AAAEDCF50D2841230C11D16BCB51387D0062D1E8DFF41323EE`，`app.asar` 与候选同为 `05C0C831A22842A5462A4EEBD07297EA7E594E3491D72D6462D66F5489422CD7`。
+
+## 2026-09-12 1.6.133 GPT 2.5 精确路由与反推强度安装版修复
+
+- 对用户 09:28 的正式项目任务做只读取证：Flare 任务选中 4K、高画质、1:1、1 张，但提交路线仍是基础 `comfly-gpt-image-2-5-flare`，并在约 16 秒后收到 Comfly HTTP 502；同节点此前的 Flare、Sunburst 基础 4K 请求也收到 502，历史精确 `-4k` 路线另有 503。实时 Comfly 目录同时列出基础、2K、4K 路线，却没有静态审计目录中的 `constraints`，旧解析器因此无法按清晰度切到隐藏精确路线。
+- `image-resolution-routing` 现在会从模型 route/model id 的 `-1k`、`-2k`、`-4k`、`-512px` 后缀恢复分辨率能力；模型菜单继续把同族路线合并为一个可见模型，清晰度按钮负责选择内部精确路线。生图节点还会移除已经断开且提示词不再引用的旧 `referenceAssetIds`；用户截图节点视觉上只有一张输入，但旧任务曾把两张素材发给供应商。Comfly 502 现在显示上游暂时异常，不再误导为本地 API 配置错误。
+- 用户截图中的反推记录实际是约 148.6 秒后由用户取消，节点没有保存 provider error。10 张输入共 5,272,334 字节，最大 1448 x 1086，不属于图片过大；主要等待来自 `gemini-3.1-pro-preview-customtools`、深度结构化输出和十图视觉请求。快速、标准、深度现在分别使用 4096/8192/16384 输出 token 和 90/180/300 秒 provider 超时；Gemini native、chat completions、Responses 与创作 Agent 视觉分析都传递对应预算，强度按钮不再只改提示词。
+- 完整 Vitest 为 235 个文件通过、2 个性能文件按设计跳过，3556 项通过、2 项跳过、0 失败；workspace typecheck 与 production build 通过。新 NSIS 安装器 103312789 字节、SHA-256 `BA87D9D1095130D2EFEF138A0C5BFCE8C028CA4EDAC8F2A62880E4606F0035EC`，12/12 安装载荷一致。正式安装目录 EXE 与候选 SHA-256 均为 `036DF7986A58E4D026B5700D9A5907DC21E5C6CEA9D5EFE9E068FF84A8D76486`，`app.asar` 均为 `9D87D51AAB8F857DB391479D12D78E01276F80114C1F9880422E4E4DF46C87A6`，注册表版本为 1.6.133。
+- 新正式安装版门禁：`work/qa-installed-gpt25-resolution-route-1.6.133-final/report.json` 从 UI 选择 Flare 4K 并点击生成，菜单只显示一个 Flare，离线执行器实际收到 `comfly-gpt-image-2-5-flare-4k`、4K、高画质，网络尝试 0；主题、GPT 节点重启、反推完整链和 Agent 原生图片粘贴/复制分别由 `work/qa-installed-theme-switch-1.6.133-routing-final/report.json`、`work/qa-installed-gpt-multi-provider-1.6.133-routing-final/report.json`、`work/qa-installed-mcp-video-reverse-zero-cost-1.6.133-routing-final.json`、`work/qa-installed-agent-image-chat-1.6.133-routing-final/report.json` 通过。没有再次提交付费请求，因此用户同一密钥下精确 Flare 4K 参考图任务是否避开当前上游 502/503，仍需与供应商可用性分开判断。
+
+## 2026-09-12 1.6.134 Comfly Gemini 原生反推与真实错误提示修复
+
+- 用户正式项目中最近一次深度反推从 10:27:13 到 10:32:14，约 300 秒后失败；持久化层把实际 provider timeout/status 统一掩盖为 `Provider request failed`，应用重载又把所有运行中反推改成无错误的 `cancelled`，因此界面只看到“自动取消”或“模型服务暂时不可用”。现在安全保留超时毫秒数与 401/403/408/409/422/429/5xx 状态，节点和 Agent 转换成可操作的中文原因；重启中断保存为 `failed` 并明确提示重新执行，不再伪装成用户取消。
+- 当前公开 Comfly `/api/pricing` 明确给 `gemini-3.1-pro-preview-customtools` 声明 `gemini` 与 `openai` 两种 endpoint type，但目录解析此前丢弃该字段，导致十图反推和 Agent 视觉分析只能走 `/v1/chat/completions`。目录现在保留并合并 `supported_endpoint_types`；对非媒体输出、带多模态证据且模型 ID 为 Gemini 的路线增加 `gemini_native`，反推和 Agent 视觉请求改走 `/v1beta/models/{model}:generateContent`，图片按顺序放入 `inlineData`，深度按钮仍真实控制 4096/8192/16384 token 与 90/180/300 秒预算。
+- Comfly GPT Image 4K 遵循最大 8,294,400 像素限制，1:1 的精确映射是 2880 x 2880，与 3840 x 2160 同为约 8.29 百万像素。结果检查现在按 4K 像素面积接受该方图，不再用单边必须达到 3500 像素的错误规则提示“实际 2K”。这只修正清晰度判断，不会对供应商返回的图片进行虚假放大。
+- 回归位置：`packages/provider-comfly/src/client.test.ts` 固定 endpoint type 目录合并；`packages/desktop-core/src/provider-model-catalog.test.ts` 固定 Gemini 原生能力；`packages/desktop-core/src/provider-skill-chat.test.ts` 固定 Agent 原生多图请求；`packages/desktop-core/src/provider-bridge.test.ts` 覆盖反推原生请求与深度预算；`apps/renderer/src/app/desktop-persistence.test.ts`、`app-store.test.ts` 与 `canvas/ModuleNodeCard.test.tsx` 固定安全错误、重载状态、持久化中文提示和 2880 方图 4K 判定。聚焦 507/507 通过；完整 Vitest 为 235 个文件、3564 项通过，2 个性能用例按配置跳过，0 失败；全 workspace typecheck、production build、密钥/路径扫描、`git diff --check` 和 12/12 安装载荷比对通过。
+- 正式安装包为 `apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.134.exe`，103313703 字节，SHA-256 `7423007140A87E1609F979D929E67F5FFEE7E816E3741B38CDD71F611E3C1B25`；候选与独立安装目录 EXE SHA-256 均为 `65EE6F0174CA0E2602906A9A71B58A1EA645F2BD9417615E8C0025A1A957CD28`，`app.asar` 均为 `8AFB8CB93EDBD17388471273DCCC5DC0D385A712CCC538309C6CADEA9C7AAE29`。NSIS 实际安装到 `D:\CanvasAtelier-QA-1.6.134-20260912`，注册表、桌面和开始菜单均指向该 1.6.134 目录；日用目录中多个 WorkBuddy bundled MCP 进程仍在运行，因此没有强制覆盖或终止用户会话。
+- 安装版门禁全部使用 1.6.134 已安装 EXE。主题切换、GPT 2.5 单模型菜单与精确 `-4k` 路由、GPT 4K/高质量结果跨重启持久化、反推完整深度链、Agent 原生图片粘贴/发送/复制均通过，页面错误为 0；涉及 provider 的受控门禁网络尝试为 0、没有读取真实凭据或触碰真实项目。报告分别为 `work/qa-installed-theme-switch-1.6.134-final/report.json`、`work/qa-installed-gpt25-resolution-route-1.6.134-final/report.json`、`work/qa-installed-gpt-multi-provider-1.6.134-final-r2/report.json`、`work/qa-installed-mcp-video-reverse-zero-cost-1.6.134-final.json`、`work/qa-installed-agent-image-chat-1.6.134-final/report.json`。综合 GPT 脚本首轮在文件选择器持久化等待中偶发失败，未提交生成；同一安装包第二轮完整通过。此前授权的一次真实付费生图已用完，本轮没有再发真实付费生图、反推或 Agent 请求，所以原生 Gemini 上游在用户账号下的实时成功仍需用户实际操作验收。
+
+## 2026-09-12 1.6.135 Agent 提示词、返图、对话与配色修复
+
+- 根因：draftReverseAgentConfig 未保存 analysisDepth；普通 Codex 工作流仍用 precedingMessage.content 写入生成提示词；空创作方案由前端兜底成用户原话。补充失败回归后修复为持久化深度，并只采用模型返回的 option.prompt / 结构化反推 prompts.zh / Codex generation.prompt。空方案与原话回显不执行。保留确认后才创建和运行节点的边界。
+- 结果卡改为同一执行消息更新状态，关联节点摘要；终态提示不再作为下一次模型请求的需求内容。新方案在现有图右侧独立排布，节点带方案编号和摘要，参考输入就近创建且只连接明确选用的资产，不移动旧图或删除旧素材。
+- 默认引用菜单只展示粘贴、当前选中和本对话用过的素材，用户主动选择“浏览项目图片”才展开项目全部素材；传给 provider 的引用仍严格来自发送消息的 citations。
+- 返图支持全窗口 portal 预览、缩放和原生剪贴板复制。实际桌面复现过预览受侧栏限制及预览按钮被 composer 遮挡，修正 portal 层级；对话移除嵌套滚动，消息不再被 flex 压缩。深色消息气泡适配主题；方案按钮默认 #173c39 / #97f0df，选中 #41c7b5 / #072c2a，禁用不用整体透明度降低文字可读性。
+- 回归文件：SkillChatWorkbench.test.tsx、creative-plan.test.ts、CanvasWorkspace.test.tsx、ModuleNodeCard.test.tsx、app-store.test.ts。最终 renderer 95 文件 1762 测试通过；desktop-shells 包装/入口 2 文件 21 测试通过；npm.cmd run build 包含全 workspace 类型检查与全部生产构建，通过；git diff --check 通过。
+- 构建环境：根 package.json 错为 desktop manifest，先备份到 work/root-package-before-workspace-repair-20260912.json，再恢复与锁文件一致的 workspace manifest，解决 No workspaces found。根 node_modules/electron 实际为 22.3.27，现代包改用本地缓存 Electron 43.1.0。旧运行时候选未交付。最终安装包从通过 QA 的 win-unpacked 直接封装，载荷 11 文件一致。
+- 最终候选桌面验收：work/qa-agent-repair-1.6.135-release/report.json 通过默认/选中配色、气泡、全窗口图片预览、125% 缩放、原生剪贴板、方案提示词写入、结果回写、窄窗口与重启恢复；work/qa-agent-repair-reverse-1.6.135-release.json 深度反推受控链通过。所有实测均隔离项目、无付费 provider 调用、无页面错误。对象为候选 win-unpacked 程序，不能描述为日用安装副本已更新。
+- 交付：apps/desktop-modern/dist-builder/desktop-modern-1.6.135-agent-prompt-repair-release/CanvasAtelier-Win10-11-x64-1.6.135.exe，103315683 字节，SHA-256 4793C2A7C2FD61B2E8A66FBB4C051FDB5B9FBCCEF7FC780C987F097C0F555B0B。app.asar 为 E6B2071A0E69B850249201791B5C7B36E415ED901B6C261DD04F31272BA42F4C。本次未运行 NSIS、未覆盖日用安装目录、未改快捷方式。完整矩阵见 work/agent-repair-1.6.135-acceptance.md。
+- 证据纠正：此前只读诊断中的 502/503/余额错误属于 image jobs，不足以认定反推上游故障。真实用户模型的实时成功仍未验证。
+
+## 2026-09-12 GitHub v1.6.135 正式发布与后续反推诊断
+
+- 用户明确要求“发布GH”后，已将 v1.6.135 发布为 GitHub 正式 Latest：https://github.com/19960726/canvas-atelier/releases/tag/v1.6.135 。发布时间 2026-09-12T08:52:48Z，非 draft、非 prerelease。三个资产大小与 SHA-256 在公开前逐项匹配；latest.yml 内版本、EXE 路径、大小与 SHA-512 一致。发布回执 work/release-1.6.135-published.json，上传核对 work/release-1.6.135-uploaded-assets.json。
+- 本次沿用二进制发布，tag 指向远端 main 的 3bc58aeb911ced49eccddbf1be493df9798043fd；未把混合工作树批量提交。Release notes 明确 Source code 归档不代表安装包完整源码。未自动安装或覆盖用户日用副本。
+- 发布期间用户继续报告真实反推失败。只读检查确认当前运行进程来自 D:/CanvasAtelier-QA-1.6.134-20260912/Canvas Atelier/Canvas Atelier.exe。活动项目稳定快照 revision 747 中，对应节点 module-reverse_agent-1789119887483-1 的 modelRoute=comfly-gemini-3-1-pro-preview-customtools，analysisDepth=deep，startedAt=2026-09-12T08:51:16.662Z，completedAt=2026-09-12T08:52:18.892Z，failed，reverseAgentError=Provider request failed，无结果。没有读取凭据、改动项目或发起模型请求。
+- 截图“模型已返回内容，但反推结果格式无效”对应 PROVIDER_INVALID_RESPONSE 的兜底文案。上游响应 envelope 无效或反推结果校验失败均可能进入此路径；不能凭文案断言已获得完整可用分析，也不能断言是素材数量、超时或用户提示词导致。持久化错误缺少细分原因，尚未取得本次原始响应。1.6.135 的受控通过不构成本次真实失败已修复的证据。
+
+## 2026-09-12 反推失败原因传递修复与真实请求限制
+
+- 已复现的程序缺陷：desktop-persistence.createDisplaySafeProviderError 只保留 code/retryable，将后台 TRUNCATED、NO_TEXT、INVALID_JSON、CORE_SCHEMA_INVALID、IDENTITY_MISMATCH、MEDIA_RESPONSIBILITIES_INVALID 六种 reason 全部丢弃，app-store 再持久化为 Provider request failed。新增六项桌面边界回归均先失败；新增保存失败原因回归先失败。修复为只透传应用白名单 reason，使用共享 reverse-failure.ts 生成中文错误并持久化。ModuleNodeCard 即时与恢复后的错误说明一致；无明确 reason 时不再声称模型已经返回正文。
+- 真实验证遇到 ERR_CONNECTION_CLOSED 后，又补了先失败的桌面边界回归。现在连接关闭、重置、代理连接/隧道失败、DNS 失败可保留有限错误代码并显示中文说明；URL、密钥、任意上游文案仍不进入错误气泡。未更改严格 JSON、核心结果、运行身份和素材职责校验，未将无结果伪装为成功。
+- 用户先授权 1 次真实反推，隔离 UI 副本启动目标节点后主进程连接断开，没有取得可靠的请求/响应计数；work/reverse-real-20260912/intent.json 保存了提交意图，禁止重发。原项目没有写入，本次副本由 revision 747 克隆。不能宣称该次已计费，也不能宣称没有计费。
+- 随后用户明确追加授权 1 次。独立 Electron 43.1.0 探针先以原 10 图、原任务、deep 模式在离线 fixture 上验证捕获链；再调用同一 comfly-gemini-3-1-pro-preview-customtools 路线。当前配置是 chat/vision/reverse_prompt，通过 /v1/chat/completions 请求，max_tokens=16384，10 张图共 5272334 字节。work/reverse-probe-live-20260912/network-intent.json 记录唯一请求，result.json 为 PROVIDER_ERROR / net::ERR_CONNECTION_CLOSED，未收到正文、未生成 response.json。没有自动再调用。相关探针默认离线，live 标记和独占意图文件防止误调用。
+- 之后仅做未带凭据的 GET 连通性检查，系统代理与隔离 direct session 都得到 HTTP 401（work/reverse-network-preflight.json）。这只说明地址可达，不能证明 POST 生效或原格式失败已修复；没有修改系统代理。
+- 最终验证：renderer 95 文件 / 1770 测试通过（work/reverse-failure-renderer-final.log）；npm run build（全 workspace 类型检查及全部生产构建）通过（work/reverse-failure-build-final.log）；git diff --check 正常配置下通过。切勿用临时关闭 core.autocrlf 的结果将既有 CRLF 文件整体转换。
+- 本轮交付状态：源码错误传递/持久化修复完成；原截图那次模型正文的确切格式错误仍未知，真实反推成功未验证。本轮未制作新安装包、未覆盖安装副本、未更新 GitHub v1.6.135，不得标记为“反推彻底修复”。矩阵见 work/reverse-failure-20260912-acceptance.md。下一步需要实际反推响应作为固定离线回放样本；不可将本轮未成功捕获的请求偷偷重发或复用额度授权。
+
+## 2026-09-12 单次隔离直连验证结果
+
+- 在已明确说明“隔离直连、相同十图/任务/deep、只请求一次”的下一步后，用户回复“下一步”；按此范围执行一次，未修改系统代理、未额外重试。新请求目录 work/reverse-probe-direct-20260912，已有独占 network-intent.json，禁止覆盖后重新提交。
+- 请求开始 2026-09-12T09:53:33.186Z（北京时间 17:53:33），在 09:58:33Z / 北京时间 17:58:33 超时。结果为 PROVIDER_ERROR，Comfly request timed out after 300000ms，count=1；无 response.json 或 transport-response.json，未取得完整模型正文。模型仍是 gemini-3.1-pro-preview-customtools，10 图，deep，max_tokens=16384。
+- 系统代理路径曾返回 ERR_CONNECTION_CLOSED，本次隔离直连达到 300 秒超时：这是两个网络路径的观察结果，不能据此断言代理是唯一根因，也不能推断原截图的 JSON 解析问题已解决。计费情况无法由超时判断。
+- 新增 work/replay-reverse-response.ts 离线诊断工具，读取已经捕获的响应而不访问模型；本次无正文，未对本次运行该回放。work/reverse-provider-support-20260912.md 为可交给服务方的脱敏排查摘要，未发送给外部人员。本轮未更改生产代码、未发布或安装新版本；此前源代码测试/构建记录仍保持原有验证边界。
+
+## 2026-09-12 独立探针路由遗漏纠正
+
+- 发现验证程序缺陷：work/reverse-probe.ts 未启用正式 main.ts 使用的 discoverModelCatalog，导致前两个独立付费探针按旧持久配置走 Chat。之前“当前配置是 chat”仅描述持久配置，不能推断生产实际路由。原截图响应和当时路由仍未捕获，不能把 Chat 超时当作原生反推失败根因。
+- 只读审计 work/reverse-route-audit.ts 使用相同凭据存储和生产服务，在隔离 system/direct session 中调用 listAvailableModelIds 触发运行时目录发现（listProfiles 在已有配置时不会主动发现）。8 个 GET 均 200，两组运行时 profile 均有 gemini_native，当前正式路径应为 /v1beta/models/gemini-3.1-pro-preview-customtools:generateContent。证据 work/reverse-route-audit-20260912.json；本轮付费 POST 为 0。
+- 先添加 work/verify-reverse-probe.mjs，旧探针因 Chat 路径不等于原生路径失败。探针现启用生产目录发现，GET 仅放行三种目录路径，POST 前核对发现的原生能力与确切路径，live 必须显式提供已核对路径；已有 network-intent.json 时在重写 request.json 前退出，意图文件始终独占创建。GET 响应不会覆盖模型正文捕获。未改变生产请求/解析行为。
+- 零费用回归通过：原快照 10 张素材、deep、16384 输出预算、application/json、原生响应捕获及 thought 排除、再次启动拒绝且原请求证据不变。证据 work/reverse-probe-route-fixture-9em3UP；离线回放核心 schema 通过，缺少专业章节如实为 partial，不是完整深度成功。命令：设置隔离 REVERSE_QA_ROOT 后 node work/verify-reverse-probe.mjs；node work/replay-reverse-response.cjs work/reverse-probe-route-fixture-9em3UP。
+- 验收矩阵和本地服务方摘要已纠正路由范围，未对外发送。本轮没有新增付费请求、安装或发布；不得复用已用完的真实验证授权，也不得宣称原模型反推已彻底修复。
+- 本轮新验证：provider-model-catalog 与 provider-bridge 共 2 文件 / 158 测试通过，日志 work/reverse-route-regression-20260912.log；解析专项见 work/reverse-parser-regression-20260912.log；git diff --check 退出码 0。本轮仅修改诊断程序和记录，没有改变生产源码，未重新打包。
+
+## 2026-09-12 真实原生回复定位 mention 合同缺陷
+
+- 用户在明确说明单次原生调用范围后回复“下一步”，已执行这 1 次授权。work/reverse-probe-native-20260912/network-intent.json：10 张原图、deep、16384 输出预算、JSON MIME、原生 generateContent，2026-09-12T10:56:27.461Z 提交，11:01:10.060Z 收到 HTTP 200。count=1；无自动重试。原始脱敏 response.json 与初始失败 result.json 均保留。
+- 本次真实结束原因为 STOP，正文 16515 字符，JSON 和结果 schema 均通过，但 domain 校验抛 MEDIA_RESPONSIBILITIES_INVALID。10 个 sourceId 全部正确；模型把 @图片N 放在 label，没有 mention。根因是 professional-reverse-analysis.ts 的 REQUIRED_OUTPUT.mediaResponsibilities 漏了 mention，而 domain 的逐张覆盖校验要求 mention。不是用户未启用深度，也不是缺图或本次回复被截断。
+- 修复：输出模板明确要求复制 mediaManifest 的 mention；解析器仅在 mention 缺省且 sourceId 与本次 orderedMedia 唯一匹配时补齐编号。按素材 order 排序，图片/视频分别编号，不按回复数组顺序猜测。显式错误 mention、错误 ID、遗漏素材仍严格失败；重复 sourceId 的歧义不推断；不放宽运行身份和核心结构校验。
+- 回归先红后绿：professional-reverse-analysis.test.ts 检查输出合同，reverse-provider-result.test.ts 复现真实缺字段、验证乱序/混合媒体/重复 ID，以及显式错误不被掩盖。focused 25 项通过；扩大 desktop-core/domain/desktop-modern：120 文件通过、2 性能文件按默认跳过，1617 测试通过。全 workspace 类型检查与构建通过（work/reverse-mention-build-20260912.log）；首次构建暴露测试 fixture 的视频联合类型不完整，已修正为真实区分结构后重新通过。
+- 真实回复经新解析器离线回放成功，10 个 mention 全部恢复，正向提示词与分析保留；模型额外返回的 seedance25 视频章节结构不完整，completeness 仍如实为 partial，不影响可用图片结果。重放没有再次调用模型。可读恢复结果 work/reverse-restored-prompt-20260912.md。
+- 版本推进至 1.6.136；候选构建脚本 work/build-reverse-mention-20260912.mjs 使用 Electron 43.1.0、独立输出目录，不覆盖原 1.6.135 发布文件。程序内回放脚本 work/qa-packaged-reverse-real-response-20260912.mjs 只复制项目素材/原始稳定点，不复制真实凭据，使用假 token 与本地 transport fixture；已核实打包解析器、反推按钮、10 图映射、提示词界面通过。保存/重启以最终报告为准，不能从源码通过推断安装验收。
+
+## 2026-09-12 反推结果合同相邻边界收紧
+
+- 归一化器原先会把空的标准列表字段视为已经命中，导致后续有效的 `keyword`、`negativePrompt` 或 `checklist` 别名被遮蔽。现在逐个候选提取，只有得到至少一项有效文本才停止；已有非空标准字段仍优先。
+- 多素材运行现在必须返回 `mediaResponsibilities`，并与本次 `orderedMedia` 的图片/视频编号和 sourceId 一一对应；额外编号、重复编号、未知素材、无编号条目、错配和遗漏都会失败。单素材旧响应仍可省略该章节，真实响应中 mention 缺失时仍只按唯一 sourceId 恢复，不按回复顺序猜测。
+- `materialsAndTextures`、`subjectScaleAndPlacement`、视频运行的 `videoTimeline` 以及 `evidence.observations` 为空时，完整度会把对应章节列入 `invalidSections`，不能标为 complete。允许为空的特效、流体和不确定项没有被误判为缺失。
+- 若结果包含 Seedance 2.5 章节，其 `assetBindings` 必须对本次运行素材逐项且仅绑定一次；遗漏、重复或未知 sourceId 会沿用素材职责失败类型。未出现 Seedance 章节的旧结果不受影响。
+- TDD 证据：`work/reverse-contract-red-20260912.log` 记录旧实现 4 项失败；最小修复后 `work/reverse-contract-green-20260912.log` 为 2 个文件、43 项全部通过。扩大回归首次发现 4 个 provider bridge 成功 fixture 仍返回“多素材但无职责表”，只更新共享 fixture 后 `work/reverse-contract-provider-bridge-20260912.log` 为 124/124，最终 `work/reverse-contract-broad-green-20260912.log` 为 domain/desktop-core 109 个文件、1555 项通过，2 个性能文件按设计跳过；两包 typecheck 见 `work/reverse-contract-typecheck-20260912.log`。该轮没有修改版本和打包脚本，也没有发起真实 provider 请求。
+
+## 2026-09-12 Agent 返图预览键盘与缩放边界
+
+- 根因：全屏返图预览虽已使用 portal，但打开后焦点仍留在被遮挡的底层缩略图，没有为该 modal 绑定 Escape 关闭和 Tab 边界；数值虽夹在 100%-300%，到达边界后缩放按钮仍显示为可操作。
+- 保护行为：预览打开后焦点进入关闭按钮，Tab/Shift+Tab 不会逃出对话框；Escape、关闭按钮或背景关闭后均将焦点返还原缩略图。缩放仍以 25% 步进，并在 100%/300% 时禁用对应按钮；原生图片剪贴板复制路径不变。
+- 回归位置：`apps/renderer/src/agent/SkillChatWorkbench.test.tsx` 的生成结果预览用例。聚焦命令为 `npm.cmd exec -- vitest run --config vitest.config.ts apps/renderer/src/agent/SkillChatWorkbench.test.tsx -t "opens and copies a generated image"`；`npm.cmd exec -- tsc -p apps/renderer/tsconfig.json --noEmit` 通过。本项没有调用真实 provider。
+
+## 2026-09-12 Agent 深色对话运行时颜色门禁
+
+- 截图中的白色 Agent 方案消息来自发布布局层对 assistant 气泡的硬编码 `#fff`；当前末端深色主题覆盖已改用 `--gate-card`、`--gate-card-muted`、`--gate-text` 与 `--gate-muted`，并同时覆盖用户气泡和思考状态。真实 DOM 计算样式验收确认该覆盖位于最终导入顺序且实际生效，本项无需再增加 CSS 覆盖。
+- 新增 `tests/e2e/agent-dark-theme.spec.ts`，在本地存储注入包含用户消息和完整创作方案的对话，打开真实 Agent 面板后检查用户/assistant 气泡、要求卡、方案卡、流程卡及方案按钮的计算背景均为不透明深色；同时检查摘要、要求、观察、方案、流程、详情和按钮文字与逐层合成后的实际背景对比度均不低于 4.5:1。
+- 验证：Playwright `agent-dark-theme.spec.ts` 1/1 通过；`main.styles.test.ts`、`theme-tokens.test.ts`、`release-layout-contract.test.ts` 共 3 文件 88/88 通过。全部使用本地持久化 fixture，未调用 provider、未打包、未安装或发布。
+
+## 2026-09-12 Agent 上下文、提示词与长对话边界补强
+
+- 真实桌面聊天合同限制每条消息最多 8000 字，但工作台先前把用户正文、创作规划说明和最多 6000 字反推上下文拼接后只按 16000 字检查，mock 测试会通过而真实 bridge 会拒绝。现在先完整保留用户正文与必要规划说明，再按剩余额度生成反推上下文；最终请求由 `ChatSkillBridgeRequestSchema` 直接回归，保证最后一条消息不超过 8000 字。正文与必要规划本身超限时明确要求分段，不静默截断用户要求。
+- 反推上下文继续遵守选择边界：选中反推节点时最多使用三个；选中其他节点时不注入；无画布选择时只使用最近完成的一项。新的长度参数只压缩补充上下文，不改变可见节点筛选和完成时间排序。
+- Agent 方案与 Codex 工作流共用生成提示词质量门禁：去除 `@图片/@视频` 标记、空白和标点后检测原话完全复制、原话外包聊天套话和高重合微改；同时拒绝只有“产品图”一类缺少执行细节的短提示词。有效提示词需有足够信息量和多项执行细节，确认后写入生成节点的仍是模型分析后的 prompt，不使用用户原话兜底。结构化反推结果仍需先通过独立反推合同。
+- 手工导入或粘贴得到的默认图片引用在切换/新建任务时清空，其他任务的临时素材不会出现在新任务默认 `@图片` 菜单；项目全部图片仍只能由用户主动点“浏览项目图片”展开。已发送消息自己的引用快照仍随该对话保存。
+- 长对话裁剪不再简单丢掉最旧 48 条之前的所有记录。每个 `canvas-result:<nodeId>` 结果标记保留最新一份，再用最近普通消息补足 48 条；节点摘要以 `canvasNodeLabel` 随标记持久化。重启后即使画布节点已删除，也会显示原任务名称并明确标为“节点或结果已不存在”，不会假装一直运行。
+- TDD 证据：`work/reverse-boundary-red-20260912.log` 先稳定记录结果标记、提示词套话/过短、孤儿结果、跨任务素材六项失败；单独加长上下文后记录 8772 字真实合同失败。修复后 `work/reverse-boundary-green-20260912.log` 为 4 个文件 201 项通过，后续增加预算和纯函数断言后的最终聚焦日志以最新验证为准。本轮边界测试和修复均未调用真实 provider。
+
+## 2026-09-12 NewAPI 与 RelayMe 深度反推预算一致性
+
+- 根因：Comfly 的反推节点和 Agent 视觉分析已经按深度读取共享预算，但 4D/NewAPI 的反推节点把聊天超时固定为 180 秒且请求体没有 `max_tokens`；其 Agent `chatSkill` 分支又完全忽略 `visualAnalysis` 与 `reverseAnalysisDepth`。RelayMe 反推节点和 Agent 视觉分析虽固定使用 300 秒视觉超时，也都没有输出 token 预算；Agent 构造系统指令时还漏传了深度。用户选择“深度反推”后，这些独立 provider 路线因此没有完整使用 deep 档的 16384 token / 300 秒合同。
+- 保护行为：4D/NewAPI 与 RelayMe 的反推节点，以及 `visualAnalysis=true` 的 Agent 对话，现在都通过 `resolveReverseAnalysisBudget` 读取同一 fast/standard/deep 映射；deep 请求明确发送 `max_tokens: 16384` 并把单次传输超时设为 300000 ms。RelayMe 同时把 `reverseAnalysisDepth` 写入视觉分析系统指令。4D 非视觉普通聊天仍是既有 180 秒且不发送 `max_tokens`；RelayMe 非视觉普通聊天仍使用客户端默认 30 秒且不发送 `max_tokens`，普通带图但未启用视觉分析的路径继续保持既有视觉超时。
+- TDD 与验证：`packages/desktop-core/src/newapi-provider-service.test.ts` 和 `packages/desktop-core/src/relayme-provider-service.test.ts` 先分别复现反推节点的 180000 ms/缺少 `max_tokens`，随后又复现 Agent 深度视觉分析的两项 `max_tokens` 缺失；普通对话断言同时保护原预算。修复后连同 `newapi-client.test.ts`、`packages/provider-relayme/src/client.test.ts` 共 4 文件 150/150 通过。验证命令为 `npm.cmd exec -- vitest run --config vitest.config.ts packages/desktop-core/src/newapi-client.test.ts packages/desktop-core/src/newapi-provider-service.test.ts packages/desktop-core/src/relayme-provider-service.test.ts packages/provider-relayme/src/client.test.ts`；扩大到 desktop-core 和 provider-relayme 全套为 91 文件通过、2 个性能文件按设计跳过，1334 项通过、2 项跳过；两包 `tsc --noEmit` 均通过。全部响应来自本地 fixture，没有调用真实 provider、没有消耗额度，也没有改版本、打包、安装或发布。
+
+## 2026-09-13 1.6.136 反推、Agent 工作流与整理画布发布候选
+
+- 真实十图 Gemini 原生响应的失败根因已固定为 `mediaResponsibilities[].mention` 缺失：响应 HTTP 200、STOP、正文 16515 字符且 JSON/核心结构均有效，但严格素材职责校验拒绝了缺少编号的条目。解析器只在 `sourceId` 对当前有序素材唯一匹配时补齐 `@图片N/@视频N`，乱序、重复、错 ID、显式错误 mention 仍失败；离线回放不再重发模型。
+- 快速/标准/深度反推按钮现在分别使用 4096/8192/16384 token 与 90/180/300 秒预算，Comfly Gemini 原生、Comfly chat fallback、4D/NewAPI、RelayMe 和 Agent 视觉分析都读取共享预算；Codex 路线显示实际 reasoning effort，不伪造反推深度。所有反推模型目录通过能力选择与 provider 合同回归，未调用真实 provider。
+- Agent 创作对话先分析需求、参考证据、未知项、模型能力和验收标准，再生成 1 至 3 个有差异的方案；确认后只把模型生成的可执行 prompt 写入生图节点，不复制用户原话、聊天套话或 `@图片` 标记。默认引用只包括本次粘贴/导入、当前选择和本对话已用素材，浏览项目图片需用户主动展开；每个任务的引用编号独立从 `@图片1` 开始。节点按“方案 N · 摘要”命名，结果消息与节点一一对应，长对话不会把旧终态当作新需求。
+- Agent 结果预览使用全窗口 portal，支持 100%–300% 缩放、Escape/Tab 焦点管理和原生剪贴板复制；深色气泡、方案按钮和输入区使用一致的 gate token。终态返图出现后消息流自动滚到底部，长方案不会被底部输入框遮住。
+- 新增“整理画布”工具栏按钮：按连线依赖从左到右分层，断开节点和环也用稳定排序，所有节点含锁定节点都参与；一次点击生成单个可撤销事务并自动 fitView，位置持久化后重启保持。`auto-layout.test.ts` 覆盖 DAG、环和断开图，`visual-layout.spec.ts` 覆盖真实节点、撤销、保存和重开。
+- TDD/验证：整理画布单测 2/2；Agent/模型/反推规划单测 249/249（其中 `SkillChatWorkbench` 172/172）；源级 Playwright 42/42；全 workspace Vitest 237 个文件通过、2 个按设计跳过，3,622 项通过、2 项跳过；根目录全 workspace typecheck 及 production build 通过。候选安装态反推回放 `work/qa-reverse-mention-packaged-r12-20260913/report.json`、Agent `work/qa-agent-repair-1.6.136-final3/report.json`、GPT 多供应商 `work/qa-installed-gpt-multi-provider-1.6.136-final3/report.json`、GPT 2.5 精确 4K `work/qa-installed-gpt25-resolution-route-1.6.136-final3/report.json`、图片路由 `work/qa-packaged-image-route-result-1.6.136-final3/report.json` 均通过；所有候选 QA 网络尝试为 0、付费调用为 0、真实项目未触碰。
+- final3 候选位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.136-reverse-mention-repair-final3`。NSIS 安装器 `CanvasAtelier-Win10-11-x64-1.6.136.exe` 为 103320704 字节，SHA-256 `1CE03F62C07265FF3F0003C4EDD6531AA4B81DF9313CD2E8BAA465728AE2FF8`；blockmap 为 109646 字节，SHA-256 `6AD80129EE95720C9AFEF15063D3866313ABCC068BCEE2BD477663F66067CCEE`；`latest.yml` 为 375 字节，SHA-256 `FDC4E0B8BA2C766AAA0B66CE6E7CA4D0D6D36AEFA8D91177A1157C3EF57AC6F7`。安装器解包 11/11 载荷与 `win-unpacked` 一致，候选 EXE SHA-256 `272C314EAFB133FB94D66269E96205A1C92B426DF27D41FC2B1AB2B6C6CE1EAE`，`app.asar` SHA-256 `616B26E6A6AFB7D9F942AAAEB43F02FB44A8F0A0CD3084E96B45F5C9A81E1297`。
+- 发布范围沿用二进制-only：GitHub tag 将锚定远端 main `3bc58aeb911ced49eccddbf1be493df9798043fd`，不把混合工作区批量提交；Release notes 明确 GitHub Source code 归档不等于此安装包的完整源码。真实模型账号、实时供应商可用性和用户日用安装目录仍需独立验证，本轮不以离线 fixture 冒充 live 成功。
+- 已按用户“发布GH”要求发布 `v1.6.136` 为 GitHub 正式 Latest：<https://github.com/19960726/canvas-atelier/releases/tag/v1.6.136>。标签对象为远端 main 提交 `3bc58aeb911ced49eccddbf1be493df9798043fd`，非 draft、非 prerelease；安装器、blockmap、latest.yml 三项线上 digest 与本地 final3 完全一致。发布回执为 `work/release-1.6.136-published.json`，逐项上传核对为 `work/release-1.6.136-uploaded-assets.json`。未覆盖日用安装目录，未终止用户既有进程。
+
+## 2026-09-13 1.6.137 反推原生兜底与历史非阻塞修复
+
+- 用户截图来自仍在运行的 `D:\CanvasAtelier-QA-1.6.134-20260912\Canvas Atelier\Canvas Atelier.exe`。该版本早于 1.6.136 的真实 Gemini 响应 `mention` 恢复修复，因此截图中的失败不能用于判断新版仍失败。1.6.137 进一步修复旧缓存模型资料：当 Comfly 目录请求临时失败、持久 profile 尚未包含 `gemini_native` 时，精确模型 `gemini-3.1-pro-preview-customtools` 只要仍具备 vision/reverse_prompt 能力，就会恢复已验证的 Gemini 原生 generateContent 路由；不对其他模型做名称猜测。
+- 稳定用户目录的 `generation-history/history.index.json` 实际已有 78 条活动记录，其中 42 条成功记录及 42 个原图文件；最新的 GPT Image 2.5 Sunburst 任务为 2880×2880 且 availability=available。空窗口根因是渲染器把 `list()` 与会逐个审计/哈希原图的 `getCapacity()` 放在同一个 `Promise.all`：容量审计完成前 records 一直保持空数组。现在列表和容量独立加载，记录先显示、容量稍后更新；安装态夹具让容量 Promise 永久挂起时，记录在 170 ms 内出现且页面无错误。新稳定根不存在时也会迁移旧产品根的 generation-history 目录，已有稳定历史绝不覆盖。
+- GPT Image 2.5 的 `1:1 + 4K` 按供应商精确尺寸合同映射为 `2880x2880`，约 8.29 MP；`16:9 + 4K` 为 `3840x2160`。界面里的 4K 是同像素预算分档，不表示正方形必须为 3840×3840。本次真实本地历史也记录该任务实际为 2880×2880。
+- 验证：相关 6 文件 265/265，通过后全 workspace Vitest 为 237 个文件通过、2 个按设计跳过，3629 项通过、2 项跳过；全 workspace typecheck 与 production build 均通过。1.6.137 打包回放使用保存的真实十图回复和假 token，目录接口全部失败且 profile 故意不含 gemini_native 时，原生路由、深度 16384 token、10 图映射、结果提交、保存和重启恢复全部通过；GPT 2.5 4K 安装态路由通过，网络尝试 0；所有验证付费请求 0。
+- 候选位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.137-reverse-history-candidate`。安装器为 103320831 字节，SHA-256 `568D30044BBAAC4596E321993F40EC70606F00D1B86C72BDBF13FEF1326530DE`；blockmap 为 109786 字节，SHA-256 `FBAFB5D7DDFF3A1798B8CE4E9BF680854B3F95FCBAFE31F3403E841FF53882A9`；latest.yml 为 375 字节，SHA-256 `DB90C9514E2C7309015D89527705E47B425C283BCE4423FB69172E7DA360D76A`。候选 EXE SHA-256 `6C1FAD2FC3738922B20B2655C7630073FD5B4EB5C149EEA2663F5236ECF4E628`，app.asar SHA-256 `FA33BBED9B2DE808391B3F9864EEF3A92F075E39F088869ECF664B3E535B891E`；安装器解包 11/11 载荷一致。未覆盖或终止用户当前 1.6.134 进程。

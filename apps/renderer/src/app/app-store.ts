@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { reverseFailureMessage } from './reverse-failure';
 import type { Connection } from '@xyflow/react';
 import type {
   KnowledgeSyncStatusSummary,
@@ -11,6 +12,9 @@ import type {
 } from '@agent-canvas/desktop-core';
 import {
   adaptGenerationParameters,
+  imageAspectRatioSchema,
+  normalizeImageOutputFormat,
+  normalizeImageBackground,
   applyTransaction,
   appendProjectMemoryEntry,
   applyProjectTransaction,
@@ -93,6 +97,7 @@ import {
 import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
 import { formalGenerationJobMatchesNodeDraft, modelJobBelongsToProject } from '../jobs/project-model-jobs';
 import { withProviderOperationTimeout } from '../settings/provider-operation-timeout';
+import { arrangeCanvasNodePositions } from '../canvas/auto-layout';
 
 const REVERSE_AGENT_OPERATION_TIMEOUT_MS = 315_000;
 const PROJECT_PERSISTENCE_OPERATION_TIMEOUT_MS = 15_000;
@@ -231,6 +236,8 @@ interface ImageGenerationNodeInput {
   readonly aspectRatio?: string;
   readonly resolution?: string;
   readonly imageQuality?: ImageQuality;
+  readonly imageOutputFormat?: ModelJob['imageOutputFormat'];
+  readonly imageBackground?: ModelJob['imageBackground'];
   readonly outputCount?: number;
   readonly referenceAssetIds?: readonly string[];
   readonly executionRoute?: ConfirmedGenerationExecutionRoute;
@@ -255,7 +262,7 @@ interface VideoPreviewNodeInput {
   readonly audioEnabled: boolean;
   readonly executionRoute?: ConfirmedGenerationExecutionRoute;
 }
-type GenerationNodeDraftConfig = Pick<ImageGenerationNodeInput, 'prompt' | 'modelRoute' | 'aspectRatio' | 'resolution' | 'imageQuality' | 'outputCount'>
+type GenerationNodeDraftConfig = Pick<ImageGenerationNodeInput, 'prompt' | 'modelRoute' | 'aspectRatio' | 'resolution' | 'imageQuality' | 'imageOutputFormat' | 'imageBackground' | 'outputCount'>
   & Partial<Pick<VideoPreviewNodeInput, 'keyframe' | 'durationSeconds' | 'audioEnabled'>>;
 interface StoryboardNodeInput {
   readonly modelRoute: string;
@@ -322,6 +329,7 @@ interface AppState {
   connectModulePorts: (connection: Connection) => Promise<boolean>;
   commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
   commitNodePositions: (updates: readonly { readonly nodeId: string; readonly position: { readonly x: number; readonly y: number } }[]) => Promise<boolean>;
+  arrangeCanvas: () => Promise<boolean>;
   deleteCanvasNodes: (nodeIds: readonly string[]) => Promise<boolean>;
   deleteCanvasEdge: (edgeId: string) => Promise<boolean>;
   toggleNodeLock: (nodeId: string) => Promise<boolean>;
@@ -342,7 +350,7 @@ interface AppState {
   migrateLegacyStarterProjectToCanvasWorkbench: () => Promise<boolean>;
   newWorkflow: () => Promise<void>;
   importImageForModule: (nodeId: string, file?: File) => Promise<boolean>;
-  importAgentReferenceImage: (file?: File) => Promise<ProjectImageAssetSummary | null>;
+  importAgentReferenceImage: (file?: File, options?: { readonly fromClipboard: true }) => Promise<ProjectImageAssetSummary | null>;
   importAgentReferenceVideo: (file?: File) => Promise<ProjectVideoAssetSummary | null>;
   importVideoForModule: (nodeId: string, file?: File) => Promise<boolean>;
   runImageGenerationNode: (nodeId: string, input: ImageGenerationNodeInput) => Promise<boolean>;
@@ -501,6 +509,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const imageQuality = supportsGptParameters
       ? normalizeImageQuality(input.imageQuality) ?? 'medium'
       : undefined;
+    const imageOutputFormat = supportsGptParameters ? normalizeImageOutputFormat(input.imageOutputFormat) : undefined;
+    const imageBackground = supportsGptParameters ? normalizeImageBackground(input.imageBackground) : undefined;
+    if (imageOutputFormat === 'jpeg' && imageBackground === 'transparent') {
+      throw createGenerationStartError('GENERATION_PARAMETERS_UNSUPPORTED', 'JPEG does not support transparent backgrounds');
+    }
     const requestedImageOutputCount = normalizeImageOutputCount(input.outputCount);
     const imageConstraints = profile.constraints?.image;
     const supportedImageResolutions = imageConstraints?.resolutions?.filter((value): value is '1K' | '2K' | '4K' => value === '1K' || value === '2K' || value === '4K');
@@ -508,10 +521,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const imageOutputCount = requestedImageOutputCount ?? 1;
     if (usesVerifiedProviderDefaults
       && imageConstraints?.outputCounts !== undefined
-      && !imageConstraints.outputCounts.includes(imageOutputCount)) {
+      && !imageConstraints.outputCounts.includes(input.executionRoute === undefined ? 1 : imageOutputCount as 1 | 2 | 3 | 4)) {
       throw createGenerationStartError(
         'GENERATION_PARAMETERS_UNSUPPORTED',
-        `Selected image route does not support ${imageOutputCount} outputs`,
+        'Selected image route does not support one-image batch requests',
       );
     }
     if (usesVerifiedProviderDefaults && imageConstraints?.resolutions !== undefined && supportedImageResolutions?.length === 0) {
@@ -591,6 +604,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       aspectRatio: imageAspectRatio,
       resolution: imageResolution,
       imageQuality,
+      imageOutputFormat,
+      imageBackground,
       outputCount: 1 as const,
     }));
 
@@ -603,6 +618,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(imageResolution === undefined ? {} : { resolution: imageResolution }),
       ...(requestedImageResolution === undefined ? {} : { requestedResolution: requestedImageResolution }),
       ...(imageQuality === undefined ? {} : { imageQuality }),
+      ...(imageOutputFormat === undefined ? {} : { imageOutputFormat }),
+      ...(imageBackground === undefined ? {} : { imageBackground }),
       outputCount: imageOutputCount,
       providerDisplayName: profile.provider,
       referenceAssetIds,
@@ -613,6 +630,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       routeDisplayName: profile.displayName,
     };
     if (imageQuality === undefined) delete nextConfig.imageQuality;
+    if (imageOutputFormat === undefined) delete nextConfig.imageOutputFormat;
+    if (imageBackground === undefined) delete nextConfig.imageBackground;
     const nextNode = {
       ...node,
       data: {
@@ -1126,6 +1145,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         reverseAgentResult: parsedResult,
         reverseAgentRunState: 'completed',
         reverseAgentStartedAt: startedAt,
+        resultState: 'fresh',
       }, 'Store reverse Agent result');
       if (!persisted) throw new Error('Reverse analysis result could not be saved');
       return parsedResult;
@@ -1133,7 +1153,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!isReverseAgentRunActive(get, nodeId, runId)) throw createReverseRunCancelledError();
       await persistReverseAgentRunPatch(set, get, nodeId, {
         reverseAgentCompletedAt: new Date().toISOString(),
-        reverseAgentError: sanitizeModelJobError(error),
+        reverseAgentError: reverseFailureMessage(error) ?? sanitizeModelJobError(error),
         reverseAgentRunState: 'failed',
         reverseAgentStartedAt: startedAt,
       }, 'Store reverse Agent failure');
@@ -1234,29 +1254,50 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (project.nodes.some((node) => node.id === promptNodeId || node.id === outputNodeId)) return false;
     const assets = referenceAssetIds.map((assetId) => project.assets?.find((asset) => asset.assetId === assetId));
     if (new Set(referenceAssetIds).size !== referenceAssetIds.length || assets.some((asset) => !asset || !asset.mediaType.startsWith('image/'))) return false;
-    const baseY = 160 + project.nodes.length * 30;
-    const promptNode = createCanvasModuleNode(promptNodeId, 'text_prompt', { x: 120, y: baseY + Math.max(0, assets.length - 1) * 90 });
+    const baseX = project.nodes.reduce((right, candidate) => Math.max(right, candidate.position.x + 1600), 120);
+    const baseY = 160;
+    const generationNodeCount = project.nodes.filter((candidate) => candidate.type === 'module' && ['image_generation', 'video_generation'].includes(candidate.data.moduleType)).length;
+    const largestPersistedSequence = project.nodes.reduce((largest, candidate) => {
+      if (candidate.type !== 'module') return largest;
+      const label = candidate.data.config.agentWorkflowLabel;
+      if (typeof label !== 'string') return largest;
+      const parsed = Number(label.match(/^方案\s+(\d+)(?:\s*·|$)/u)?.[1]);
+      return Number.isSafeInteger(parsed) ? Math.max(largest, parsed) : largest;
+    }, 0);
+    const lastAssignedSequence = Math.max(
+      generationNodeCount,
+      largestPersistedSequence,
+      project.agentWorkflowSequence ?? 0,
+    );
+    if (lastAssignedSequence >= Number.MAX_SAFE_INTEGER) return false;
+    const sequence = lastAssignedSequence + 1;
+    const promptSummary = typeof initialConfig?.prompt === 'string' ? initialConfig.prompt.replace(/\s+/gu, ' ').trim().slice(0, 28) : '';
+    const agentWorkflowLabel = `方案 ${sequence}${promptSummary ? ` · ${promptSummary}` : ''}`;
+    const promptNode = createCanvasModuleNode(promptNodeId, 'text_prompt', { x: baseX + 380, y: baseY });
     promptNode.data.config = { ...promptNode.data.config, prompt: typeof initialConfig?.prompt === 'string' ? initialConfig.prompt : '' };
-    const node = createCanvasModuleNode(nodeId, moduleType, { x: 500, y: baseY });
+    promptNode.data.config.agentWorkflowLabel = agentWorkflowLabel;
+    const node = createCanvasModuleNode(nodeId, moduleType, { x: baseX + 800, y: baseY });
     node.data.config = {
       ...node.data.config,
       ...(initialConfig ?? {}),
       referenceAssetIds: [...referenceAssetIds],
+      agentWorkflowLabel,
     };
     const outputModuleType = moduleType === 'video_generation' ? 'video_result' : 'result_output';
-    const outputNode = createCanvasModuleNode(outputNodeId, outputModuleType, { x: 900, y: baseY });
+    const outputNode = createCanvasModuleNode(outputNodeId, outputModuleType, { x: baseX + 1560, y: baseY });
+    outputNode.data.config.agentWorkflowLabel = agentWorkflowLabel;
     const operations: ProjectTransaction['operations'] = [
       { kind: 'canvas', operation: { kind: 'create_node', node: promptNode } },
       { kind: 'canvas', operation: { kind: 'create_node', node } },
       { kind: 'canvas', operation: { kind: 'create_node', node: outputNode } },
       { kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-prompt`, source: promptNodeId, sourcePortId: 'prompt', target: nodeId, targetPortId: 'prompt', order: 0 } } },
       { kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-output`, source: nodeId, sourcePortId: 'result', target: outputNodeId, targetPortId: moduleType === 'video_generation' ? 'video' : 'result', order: 0 } } },
+      { kind: 'set_agent_workflow_sequence', sequence },
     ];
     assets.forEach((asset, index) => {
-      const source = project.nodes.find((candidate) => candidate.type === 'module' && ['image_input', 'upload_image'].includes(candidate.data.moduleType) && candidate.data.config.assetId === asset!.assetId);
-      const input = source ?? createCanvasModuleNode(`${nodeId}-ref-${index}`, 'image_input', { x: 100, y: 100 + index * 180 });
-      if (!source && input.type === 'module') {
-        input.data.config = { ...input.data.config, assetId: asset!.assetId, label: asset!.label };
+      const input = createCanvasModuleNode(`${nodeId}-ref-${index}`, 'image_input', { x: baseX, y: baseY + index * 380 });
+      if (input.type === 'module') {
+        input.data.config = { ...input.data.config, assetId: asset!.assetId, label: asset!.label, agentWorkflowLabel };
         operations.push({ kind: 'canvas', operation: { kind: 'create_node', node: input } });
       }
       operations.push({ kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-${index}`, source: input.id, sourcePortId: 'image', target: nodeId, targetPortId: moduleType === 'video_generation' ? 'media' : 'references', order: index } } });
@@ -1366,6 +1407,33 @@ export const useAppStore = create<AppState>((set, get) => ({
     const transaction: ProjectTransaction = {
       id: `move-canvas-nodes-${suffix}`,
       label: `Move ${movedNodes.length} canvas node${movedNodes.length === 1 ? '' : 's'}`,
+      operations: movedNodes.map((node) => ({ kind: 'canvas' as const, operation: { kind: 'update_node' as const, node } })),
+    };
+    try {
+      const nextProject = applyProjectTransaction(state.project, transaction);
+      return commitNow(transaction, { nextProject });
+    } catch {
+      return false;
+    }
+  }),
+  arrangeCanvas: () => enqueueStableProjectOperation(set, get, async (commitNow) => {
+    const state = get();
+    const moduleNodes = state.project.nodes.filter((node): node is CanvasModuleNode => node.type === 'module');
+    if (moduleNodes.length === 0) return false;
+    const updates = arrangeCanvasNodePositions(
+      moduleNodes.map((node) => ({ id: node.id, moduleType: node.data.moduleType, position: node.position })),
+      state.project.edges,
+    );
+    const nextPositions = new Map(updates.map((update) => [update.nodeId, update.position]));
+    const movedNodes = moduleNodes.flatMap((node) => {
+      const position = nextPositions.get(node.id);
+      if (position === undefined || (position.x === node.position.x && position.y === node.position.y)) return [];
+      return [{ ...node, position }];
+    });
+    if (movedNodes.length === 0) return true;
+    const transaction: ProjectTransaction = {
+      id: `arrange-canvas-${Date.now()}-${planSequence++}`,
+      label: 'Arrange all canvas nodes',
       operations: movedNodes.map((node) => ({ kind: 'canvas' as const, operation: { kind: 'update_node' as const, node } })),
     };
     try {
@@ -1542,8 +1610,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(node.data.moduleType === 'video_generation'
         ? { resolution: config.resolution ?? '1080P' }
         : config.resolution === undefined ? {} : { resolution: config.resolution }),
-      ...(node.data.moduleType === 'image_generation' ? { imageQuality: nextImageQuality } : {}),
-      outputCount: normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined) ?? 1,
+      ...(node.data.moduleType === 'image_generation' ? {
+        imageQuality: nextImageQuality,
+        imageOutputFormat: nextImageQuality === undefined ? undefined : normalizeImageOutputFormat(config.imageOutputFormat),
+        imageBackground: nextImageQuality === undefined ? undefined : normalizeImageBackground(config.imageBackground),
+      } : {}),
+      outputCount: normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined, node.data.moduleType === 'image_generation') ?? 1,
       ...(node.data.moduleType === 'video_generation' ? {
         keyframe: config.keyframe ?? 'auto',
         durationSeconds: config.durationSeconds ?? 5,
@@ -1554,6 +1626,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (JSON.stringify(currentDraft) === JSON.stringify(nextDraft)) return true;
     const nextConfig: Record<string, unknown> = { ...node.data.config, ...nextDraft };
     if (node.data.moduleType === 'image_generation' && nextImageQuality === undefined) delete nextConfig.imageQuality;
+    if (node.data.moduleType === 'image_generation' && nextImageQuality === undefined) {
+      delete nextConfig.imageOutputFormat;
+      delete nextConfig.imageBackground;
+    }
     if (node.data.config.modelRoute !== nextDraft.modelRoute) {
       delete nextConfig.providerDisplayName;
       delete nextConfig.modelDisplayName;
@@ -1591,6 +1667,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelRoute: config.modelRoute,
       role: config.role,
       task: config.task,
+      analysisDepth: config.analysisDepth ?? 'standard',
       knowledgeBaseIds: [...config.knowledgeBaseIds],
       referenceAssetIds: [...(config.referenceAssetIds ?? [])],
     };
@@ -1598,6 +1675,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelRoute: typeof node.data.config.modelRoute === 'string' ? node.data.config.modelRoute : '',
       role: typeof node.data.config.role === 'string' ? node.data.config.role : '',
       task: typeof node.data.config.task === 'string' ? node.data.config.task : '',
+      analysisDepth: node.data.config.analysisDepth ?? 'standard',
       knowledgeBaseIds: Array.isArray(node.data.config.knowledgeBaseIds)
         ? node.data.config.knowledgeBaseIds.filter(isNonEmptyString)
         : [],
@@ -2050,7 +2128,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return saved;
   }),
   importImageForModule: (nodeId, file) => importProjectImageWithTarget({ kind: 'module', nodeId }, file),
-  importAgentReferenceImage: (file) => importAgentReferenceImageIntoProject(file),
+  importAgentReferenceImage: (file, options) => importAgentReferenceImageIntoProject(file, options),
   importAgentReferenceVideo: (file) => importAgentReferenceVideoIntoProject(file),
   importVideoForModule: (nodeId, file) => importProjectVideoForModule(nodeId, file),
   pasteClipboardImage: (position) => pasteClipboardImageAt(position),
@@ -2113,7 +2191,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       return await flushPendingProjectSave(get, set, 'stable-boundary');
     } catch (error) {
-      set({ saveErrorCode: readErrorCode(error), saveStatus: 'error' });
+      set({ saveErrorCode: readErrorCode(error, 'DURABLE_WRITE_FAILED'), saveStatus: 'error' });
       return false;
     }
   },
@@ -2745,7 +2823,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
 const pristineAppStoreState = useAppStore.getState();
 
-async function importAgentReferenceImageIntoProject(file?: File): Promise<ProjectImageAssetSummary | null> {
+async function importAgentReferenceImageIntoProject(file?: File, options?: { readonly fromClipboard: true }): Promise<ProjectImageAssetSummary | null> {
   let importedAsset: ProjectImageAssetSummary | null = null;
   const completed = await enqueueStableProjectOperation(
     (partial) => useAppStore.setState(partial),
@@ -2768,7 +2846,9 @@ async function importAgentReferenceImageIntoProject(file?: File): Promise<Projec
         saveStatus: 'saving',
       });
       try {
-        const result = file === undefined
+        const result = options?.fromClipboard === true
+          ? await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget, undefined, options)
+          : file === undefined
           ? await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget)
           : await projectPersistenceClient.importProjectImage({ kind: 'agent_reference' } as unknown as ProjectImageImportTarget, file);
         if (generation !== projectPersistenceGeneration || useAppStore.getState().project.id !== before.project.id) return false;
@@ -3865,7 +3945,7 @@ async function executeProjectCommit(
         canReloadDurableProject: false,
         canRetryProjectCommit: retryable,
         project: retryable ? request.nextProject : request.previousProject,
-        saveErrorCode: readErrorCode(error),
+        saveErrorCode: readErrorCode(error, 'DURABLE_WRITE_FAILED'),
         saveStatus: 'error',
       });
     }
@@ -4073,8 +4153,8 @@ function createInterruptedReverseRunsTransaction(project: CanvasProject): {
         config: {
           ...node.data.config,
           reverseAgentCompletedAt: new Date().toISOString(),
-          reverseAgentError: null,
-          reverseAgentRunState: 'cancelled',
+          reverseAgentError: '应用重启或画布重新载入中断了反推，请重新开始。',
+          reverseAgentRunState: 'failed',
         },
       },
     }];
@@ -4082,7 +4162,7 @@ function createInterruptedReverseRunsTransaction(project: CanvasProject): {
   if (interrupted.length === 0) return null;
   const transaction: ProjectTransaction = {
     id: `stop-interrupted-reverse-runs-${Date.now()}-${planSequence++}`,
-    label: 'Stop interrupted reverse Agent runs',
+    label: 'Fail interrupted reverse Agent runs',
     operations: interrupted.map((node) => ({ kind: 'canvas' as const, operation: { kind: 'update_node' as const, node } })),
   };
   return { project: applyProjectTransaction(project, transaction), transaction };
@@ -4631,7 +4711,7 @@ export function buildModelJobRequests(
     const prompt = typeof config.prompt === 'string' ? config.prompt.trim() : '';
     if (!prompt || containsProtectedRendererPayload(prompt)) throw new Error('Generation plan has no executable prompt');
     const kind = node.data.moduleType === 'video_generation' ? 'video' : 'image';
-    const count = normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined) ?? 1;
+    const count = normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined, kind === 'image') ?? 1;
     const imageQuality = kind === 'image' && isGptImageQualityIdentity(profile.modelId, profile.modelRoute, profile.displayName)
       ? normalizeImageQuality(config.imageQuality) ?? 'medium'
       : undefined;
@@ -4643,7 +4723,10 @@ export function buildModelJobRequests(
       ...(kind === 'video' ? { videoResolution: normalizeVideoResolution(typeof config.resolution === 'string' ? config.resolution : undefined),
         durationSeconds: typeof config.durationSeconds === 'number' && config.durationSeconds > 0 ? config.durationSeconds : undefined,
         audioEnabled: typeof config.audioEnabled === 'boolean' ? config.audioEnabled : true }
-        : { resolution: normalizeImageResolution(typeof config.resolution === 'string' ? config.resolution : undefined), imageQuality }),
+        : {
+          resolution: normalizeImageResolution(typeof config.resolution === 'string' ? config.resolution : undefined), imageQuality,
+          ...(imageQuality === undefined ? {} : { imageOutputFormat: normalizeImageOutputFormat(config.imageOutputFormat), imageBackground: normalizeImageBackground(config.imageBackground) }),
+        }),
     }));
   });
   const promptNode = project.nodes.find((node) => node.type === 'prompt');
@@ -5151,11 +5234,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
 }
 
-function readErrorCode(error: unknown): string {
+function readErrorCode(error: unknown, fallback = 'PROJECT_IMAGE_UNAVAILABLE'): string {
   if (isRecord(error) && typeof error.code === 'string' && /^[A-Z0-9_]{1,64}$/u.test(error.code)) {
     return error.code;
   }
-  return 'PROJECT_IMAGE_UNAVAILABLE';
+  return fallback;
 }
 
 function readPersistenceRetryable(error: unknown): boolean {
@@ -5312,7 +5395,7 @@ function createCanvasInverseTransaction(
   transaction: ProjectTransaction,
 ): CanvasTransaction | null {
   const canvasOperations = transaction.operations.filter((operation): operation is Extract<ProjectOperation, { kind: 'canvas' }> => operation.kind === 'canvas');
-  if (canvasOperations.length !== transaction.operations.length) return null;
+  if (transaction.operations.some((operation) => operation.kind !== 'canvas' && operation.kind !== 'set_agent_workflow_sequence')) return null;
   const applied = applyTransaction(project, {
     id: transaction.id,
     label: transaction.label,
@@ -5714,10 +5797,8 @@ function collectExecutionReferences(project: CanvasProject): OrderedReference[] 
     : []).map((reference, position) => ({ ...reference, position }));
 }
 
-function normalizeImageAspectRatio(value: string | undefined): '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16' | undefined {
-  return value === '1:1' || value === '2:3' || value === '3:2' || value === '4:3' || value === '3:4' || value === '16:9' || value === '9:16'
-    ? value
-    : undefined;
+function normalizeImageAspectRatio(value: string | undefined): ModelJob['aspectRatio'] {
+  return imageAspectRatioSchema.safeParse(value).data;
 }
 
 function normalizeImageResolution(value: string | undefined): '1K' | '2K' | '4K' | undefined {
@@ -5730,8 +5811,8 @@ function normalizeImageResolution(value: string | undefined): '1K' | '2K' | '4K'
 function normalizeVideoResolution(value: string | undefined): '360p' | '480p' | '512p' | '540p' | '720p' | '768p' | '1080p' | '2K' | '4K' | undefined {
   return value === '360p' || value === '480p' || value === '512p' || value === '540p' || value === '720p' || value === '768p' || value === '1080p' || value === '2K' || value === '4K' ? value : undefined;
 }
-function normalizeImageOutputCount(value: number | undefined): 1 | 2 | 3 | 4 | undefined {
-  return value === 1 || value === 2 || value === 3 || value === 4 ? value : undefined;
+function normalizeImageOutputCount(value: number | undefined, allowNine = true): 1 | 2 | 3 | 4 | 9 | undefined {
+  return value === 1 || value === 2 || value === 3 || value === 4 || (allowNine && value === 9) ? value as 1 | 2 | 3 | 4 | 9 : undefined;
 }
 
 function collectImageGenerationReferenceAssetIds(project: CanvasProject, targetNodeId: string): string[] {

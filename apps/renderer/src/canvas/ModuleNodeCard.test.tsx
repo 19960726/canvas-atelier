@@ -119,6 +119,54 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByTestId('module-node-card')).toHaveClass('nowheel');
   });
 
+  it.each([
+    ['image_generation', 'prompt', '柔光红色产品主图', '生图节点 · 柔光红色产品主图 · #aaa111'],
+    ['video_generation', 'prompt', '三秒推进产品镜头', '视频生成节点 · 三秒推进产品镜头 · #bbb222'],
+    ['reverse_agent', 'task', '分析产品构图与灯光', '反推节点 · 分析产品构图与灯光 · #ccc333'],
+  ] as const)('shows a stable fallback workflow label for a legacy %s node', (moduleType, configKey, summary, expectedLabel) => {
+    const id = `legacy-${moduleType}-${expectedLabel.slice(-6)}`;
+    const node = createCanvasModuleNode(id, moduleType, { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, [configKey]: summary };
+
+    const { container } = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+
+    const workflowLabel = container.querySelector('.module-node__workflow-label');
+    expect(workflowLabel).toHaveTextContent(expectedLabel);
+    expect(workflowLabel).toHaveAttribute('title', expectedLabel);
+  });
+
+  it('distinguishes legacy nodes with the same prompt by their stable short ids', () => {
+    const first = createCanvasModuleNode('legacy-image-node-aaa111', 'image_generation', { x: 0, y: 0 });
+    const second = createCanvasModuleNode('legacy-image-node-bbb222', 'image_generation', { x: 400, y: 0 });
+    first.data.config = { ...first.data.config, prompt: '相同的产品主图提示词' };
+    second.data.config = { ...second.data.config, prompt: '相同的产品主图提示词' };
+
+    const { container } = render(<ReactFlowProvider><>
+      <ModuleNodeCard id={first.id} data={first.data} selected={false} />
+      <ModuleNodeCard id={second.id} data={second.data} selected={false} />
+    </></ReactFlowProvider>);
+
+    const labels = Array.from(container.querySelectorAll('.module-node__workflow-label')).map((label) => label.textContent);
+    expect(labels).toEqual([
+      '生图节点 · 相同的产品主图提示词 · #aaa111',
+      '生图节点 · 相同的产品主图提示词 · #bbb222',
+    ]);
+  });
+
+  it('keeps an explicit Agent workflow label ahead of the legacy fallback', () => {
+    const node = createCanvasModuleNode('legacy-image-node-ddd444', 'image_generation', { x: 0, y: 0 });
+    node.data.config = {
+      ...node.data.config,
+      prompt: '不应替代显式标签',
+      agentWorkflowLabel: '方案 7 · 红色产品早餐场景',
+    };
+
+    const { container } = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+
+    expect(container.querySelector('.module-node__workflow-label')).toHaveTextContent('方案 7 · 红色产品早餐场景');
+    expect(container.querySelector('.module-node__workflow-label')).not.toHaveTextContent('#ddd444');
+  });
+
   it('drafts image-generation text and parameters before Generate is pressed', async () => {
     const node = createCanvasModuleNode('image-draft-ui', 'image_generation', { x: 0, y: 0 });
     const draftGenerationNodeConfig = vi.fn(async () => true);
@@ -163,7 +211,7 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
 
-    expect(readGenerationParameterOptions('Image generation quality')).toEqual(['低', '中', '高']);
+    expect(readGenerationParameterOptions('Image generation quality')).toEqual(['自动', '低', '中', '高', '超高', '最高']);
     chooseGenerationParameterOption('Image generation quality', '高');
     fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'High quality product photo' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
@@ -174,6 +222,61 @@ describe('ModuleNodeCard', () => {
     await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
       imageQuality: 'high',
     })));
+  });
+
+  it('groups GPT resolution variants and persists output format and background with the exact route', async () => {
+    const node = createCanvasModuleNode('gpt-output-controls', 'image_generation', { x: 0, y: 0 });
+    const runImageGenerationNode = vi.fn(async () => true);
+    const draftGenerationNodeConfig = vi.fn(async () => true);
+    const routes = ['1K', '2K', '4K'].map((tier, index) => ({
+      provider: 'comfly', modelRoute: `sunburst-${tier}`, modelId: `gpt-image-2.5-sunburst${index ? `-${tier.toLowerCase()}` : ''}`,
+      displayName: `GPT Image 2.5 Sunburst${index ? ` ${tier}` : ''}`,
+      capabilities: ['image_generation', 'image_edit'], capabilityStatus: 'complete',
+      constraints: { image: { resolutions: [tier] } },
+    }));
+    const data = { ...node.data, imageGenerationRoutes: routes } as typeof node.data;
+    useAppStore.setState({ draftGenerationNodeConfig, runImageGenerationNode,
+      project: { ...useAppStore.getState().project, nodes: [{ ...node, data }], edges: [] },
+    } as never);
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.click(screen.getByRole('button', { name: '打开生图模型列表' }));
+    const items = within(screen.getByRole('listbox', { name: '生图模型' })).getAllByRole('menuitemradio');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toHaveTextContent('GPT Image 2.5 Sunburst');
+    expect(items[0]).not.toHaveTextContent('2K');
+    fireEvent.click(items[0]!);
+    expect(readGenerationParameterOptions('Image generation aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']);
+    chooseGenerationParameterOption('Image generation aspect ratio', '4:5');
+    chooseGenerationParameterOption('Image generation resolution', '4K');
+    chooseGenerationParameterOption('Image generation quality', '自动');
+    chooseGenerationParameterOption('Image generation format', 'WEBP');
+    chooseGenerationParameterOption('Image generation background', '透明');
+    chooseGenerationParameterOption('Image generation batch count', '9张');
+    fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'Product on transparent background' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
+    const expected = { modelRoute: 'sunburst-4K', aspectRatio: '4:5', resolution: '4K', imageQuality: 'auto', imageOutputFormat: 'webp', imageBackground: 'transparent', outputCount: 9 };
+    await waitFor(() => expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining(expected)));
+    await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining(expected)));
+    chooseGenerationParameterOption('Image generation format', 'JPEG');
+    expect(screen.getByRole('button', { name: 'Image generation background' })).toHaveTextContent('不透明');
+    const backgroundMenu = openGenerationParameterOptions('Image generation background');
+    expect(within(backgroundMenu).getByRole('menuitemradio', { name: '透明' })).toBeDisabled();
+  });
+
+  it('renders every result in a saved nine-image batch and can preview the ninth image', () => {
+    const node = createCanvasModuleNode('nine-image-gallery', 'image_generation', { x: 0, y: 0 });
+    const images = Array.from({ length: 9 }, (_, index) => ({ ...projectImage,
+      assetId: (index + 1).toString(16).padStart(16, '0'),
+      displayUrl: `novus-asset://project/session/${(index + 1).toString(16).padStart(16, '0')}`,
+    }));
+    node.data.config = { ...node.data.config, resultAssetIds: images.map((asset) => asset.assetId), resultState: 'fresh' };
+    useAppStore.setState({ projectImages: images, project: { ...useAppStore.getState().project, nodes: [node], edges: [] } } as never);
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    expect(screen.getAllByRole('img', { name: /Generated image preview/ })).toHaveLength(9);
+    openImageGenerationEditor();
+    fireEvent.doubleClick(screen.getByRole('button', { name: 'Generated image 9; double click to preview' }));
+    expect(screen.getByRole('img', { name: 'Generated image 9 full preview' })).toHaveAttribute('src', images[8]!.displayUrl);
   });
 
   it('shows both 4D Nano Banana routes with native image sizes and no GPT-only quality control', () => {
@@ -2035,6 +2138,52 @@ describe('ModuleNodeCard', () => {
     }));
   });
 
+  it('does not submit a stale saved reference that is no longer connected or mentioned', () => {
+    const staleImage = {
+      ...projectImage,
+      assetId: 'b'.repeat(16),
+      displayUrl: 'novus-asset://desktop-session-1/bbbbbbbbbbbbbbbb',
+      label: 'Stale reference',
+      sha256: 'b'.repeat(64),
+    };
+    const image = createCanvasModuleNode('visible-reference-source', 'image_input', { x: 0, y: 0 });
+    image.data.config = { assetId: projectImage.assetId };
+    const generation = createCanvasModuleNode('stale-reference-target', 'image_generation', { x: 420, y: 0 });
+    generation.data.config = {
+      ...generation.data.config,
+      prompt: 'Edit only the visible connected image',
+      referenceAssetIds: [projectImage.assetId, staleImage.assetId],
+    };
+    const data = {
+      ...generation.data,
+      imageGenerationRoutes: [{
+        provider: 'comfly',
+        modelRoute: 'image-edit',
+        displayName: 'Image Edit',
+        modelId: 'image-edit',
+        capabilities: ['image_generation', 'image_edit'],
+      }],
+    } as typeof generation.data;
+    const runImageGenerationNode = vi.fn(async () => true);
+    useAppStore.setState({
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [image, { ...generation, data }],
+        edges: [{ id: 'visible-reference-edge', source: image.id, sourcePortId: 'image', target: generation.id, targetPortId: 'references', order: 0 }],
+      },
+      projectImages: [projectImage, staleImage],
+      runImageGenerationNode,
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={generation.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
+
+    expect(runImageGenerationNode).toHaveBeenCalledWith(generation.id, expect.objectContaining({
+      referenceAssetIds: [projectImage.assetId],
+    }));
+  });
+
   it('blocks RelayMe reference-image generation before queueing instead of silently dropping the reference', () => {
     const image = createCanvasModuleNode('relayme-retry-source', 'image_input', { x: 0, y: 0 });
     image.data.config = { assetId: projectImage.assetId };
@@ -2641,7 +2790,7 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
 
-    expect(readGenerationParameterOptions('Image generation aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9']);
+    expect(readGenerationParameterOptions('Image generation aspect ratio')).toEqual(['AUTO', '1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']);
     expect(readGenerationParameterOptions('Image generation resolution')).toEqual(['1K', '2K', '4K']);
     expect(screen.getByRole('menuitemradio', { name: '2K' })).toBeEnabled();
     expect(screen.getByRole('menuitemradio', { name: '4K' })).toBeDisabled();
@@ -3577,6 +3726,24 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('img', { name: 'Generated image 1' })).toBeVisible();
   });
 
+  it('accepts the provider maximum-pixel square size as a 4K result', () => {
+    const node = createCanvasModuleNode('image-resolution-square-4k', 'image_generation', { x: 0, y: 0 });
+    node.data.config = {
+      ...node.data.config,
+      requestedResolution: '4K',
+      resultAssetIds: [projectImage.assetId],
+      resultState: 'fresh',
+    };
+    const returnedImage = { ...projectImage, origin: 'generated' as const, width: 2880, height: 2880 };
+    useAppStore.setState({ projectImages: [returnedImage], modelJobs: [] } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.queryByText(/供应商返回尺寸低于所选清晰度/u)).not.toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Generated image 1' })).toBeVisible();
+  });
+
   it('uses a true one-cell gallery only after one completed image exists', () => {
     const node = createCanvasModuleNode('image-one-result-grid', 'image_generation', { x: 0, y: 0 });
     useAppStore.setState({
@@ -3902,6 +4069,21 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('menuitem', { name: '发送到画布' })).toBeEnabled();
     expect(screen.getByRole('menuitem', { name: '复制图片' })).toBeEnabled();
     expect(screen.getByRole('menuitem', { name: '下载图片' })).toBeEnabled();
+  });
+
+  it.each(['jpg', 'webp'] as const)('downloads generated %s images using their actual format extension', (extension) => {
+    const node = createCanvasModuleNode('generated-download-format', 'image_generation', { x: 0, y: 0 });
+    const asset = { ...projectImage, extension, mediaType: extension === 'jpg' ? 'image/jpeg' : 'image/webp' };
+    useAppStore.setState({ projectImages: [asset], modelJobs: [{ id: 'download-format-job', promptNodeId: node.id, status: 'completed', resultAssetId: asset.assetId }] } as never);
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Generated image 1; double click to preview' }));
+    let filename = '';
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { filename = this.download; });
+    try {
+      fireEvent.click(screen.getByRole('menuitem', { name: '下载图片' }));
+      expect(filename).toBe(`${asset.label}.${extension}`);
+    } finally { click.mockRestore(); }
   });
 
   it('opens Agent before sending a generated image reference from the right-click menu', async () => {
@@ -4282,6 +4464,39 @@ describe('ModuleNodeCard', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('RelayMe 账户余额不足');
     expect(screen.getByRole('alert')).toHaveTextContent('充值或切换其他供应商模型');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('检查模型与 API 配置');
+  });
+
+  it('reports a Comfly 502 as an upstream service failure instead of an API configuration error', () => {
+    const node = createCanvasModuleNode('generator-comfly-502', 'image_generation', { x: 0, y: 0 });
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-gpt-image-2-5-flare',
+        displayName: 'GPT Image 2.5 Flare',
+        modelId: 'gpt-image-2.5-flare',
+        capabilities: ['image_generation'],
+      }],
+    } as typeof node.data;
+    useAppStore.setState({
+      modelJobs: [{
+        id: 'failed-comfly-502-image-job',
+        kind: 'image',
+        provider: 'comfly',
+        modelRoute: 'comfly-gpt-image-2-5-flare',
+        promptNodeId: node.id,
+        status: 'failed',
+        error: 'Comfly request failed with status 502 for [redacted] [model=gpt-image-2.5-flare]: Upstream service error',
+        updatedAt: '2026-09-12T01:28:44.714Z',
+      }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Comfly 上游服务暂时异常（502）');
+    expect(screen.getByRole('alert')).toHaveTextContent('稍后重试或切换其他生图模型');
     expect(screen.getByRole('alert')).not.toHaveTextContent('检查模型与 API 配置');
   });
 
@@ -4980,6 +5195,28 @@ describe('ModuleNodeCard', () => {
       analysisDepth: 'deep',
       knowledgeBaseIds: ['brand-rules', 'scene-skill', 'product-detail'],
     });
+  });
+
+  it('locks reverse intensity while a run is active and shows which intensity is running', async () => {
+    const node = createCanvasModuleNode('reverse-depth-running', 'reverse_agent', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, modelRoute: 'gemini-video', role: 'Visual analyst', task: 'Analyze the managed reference.' };
+    const runReverseAgentNode = vi.fn(() => new Promise<never>(() => undefined));
+    useAppStore.setState({ runReverseAgentNode } as never);
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: [{ provider: 'comfly', modelRoute: 'gemini-video', displayName: 'Gemini Video', modelId: 'gemini-video', capabilities: ['reverse_prompt', 'gemini_native'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+
+    fireEvent.click(screen.getByRole('button', { name: '深度反推' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start reverse analysis' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Start reverse analysis' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop reverse analysis' })).toBeVisible());
+    expect(screen.getByRole('button', { name: '深度反推' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '快速反推' })).toBeDisabled();
+    expect(screen.getByRole('status', { name: '当前反推强度' })).toHaveTextContent('深度反推');
   });
 
   it('sends edited reverse fields to the autosave draft before Start is pressed', async () => {
@@ -5892,13 +6129,14 @@ describe('ModuleNodeCard', () => {
   it.each([
     ['CREDENTIALS_LOCKED', 'The encrypted credential is locked.', 'API 密钥已锁定，请重新解锁后再反推。'],
     ['PROVIDER_UNAVAILABLE', 'Selected reverse route is unavailable.', '所选反推模型当前不可用，请重新选择模型。'],
-    ['PROVIDER_INVALID_RESPONSE', 'The provider answered with an unexpected body.', '模型已返回内容，但反推结果格式无效。'],
+    ['PROVIDER_INVALID_RESPONSE', 'The provider answered with an unexpected body.', '反推响应未通过格式校验，尚未取得可用结果。'],
     ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型输出达到长度上限而被截断，请减少素材或缩短任务后重试。', 'TRUNCATED'],
     ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型返回的内容不是有效 JSON，请重试或更换反推模型。', 'INVALID_JSON'],
     ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型返回内容缺少反推必填字段，请重试或更换反推模型。', 'CORE_SCHEMA_INVALID'],
     ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型返回结果不属于本次反推运行，已拒绝使用。', 'IDENTITY_MISMATCH'],
     ['PROVIDER_INVALID_RESPONSE', 'opaque', '模型没有完整说明每个素材的职责，请重试或减少素材。', 'MEDIA_RESPONSIBILITIES_INVALID'],
-    ['PROVIDER_TIMEOUT', 'Provider request timed out after 120000ms.', '反推等待超时，请重试或更换响应更快的模型。'],
+    ['PROVIDER_TIMEOUT', 'Provider request timed out after 120000ms.', '反推已等待 120 秒仍未返回，请减少素材、切换快速或标准反推，或更换模型后重试。'],
+    ['PROVIDER_ERROR', 'Provider request failed with status 503', '反推模型上游返回 503，当前路线暂时异常，请稍后重试或切换模型。'],
     ['MISSING_ASSET', 'Managed media read failed.', '反推素材读取失败，请重新连接素材。'],
     ['PROJECT_CONFIG_SAVE_FAILED', 'Reverse configuration could not be saved.', '反推配置保存失败，请先确认画布可以保存后重试。'],
   ])('shows a safe reverse-analysis error for %s', async (...args) => {
@@ -5930,6 +6168,30 @@ describe('ModuleNodeCard', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(expected));
     expect(screen.getByRole('alert')).not.toHaveTextContent(message);
+  });
+
+  it('localizes a persisted provider timeout after the node is reloaded', () => {
+    const node = createCanvasModuleNode('reverse-persisted-timeout', 'reverse_agent', { x: 0, y: 0 });
+    node.data.config = {
+      modelRoute: 'reverse-gemini',
+      role: 'Commercial visual analyst',
+      task: 'Analyze the connected managed image.',
+      knowledgeBaseIds: [],
+      reverseAgentRunState: 'failed',
+      reverseAgentError: 'Provider request timed out after 300000ms',
+    };
+    const data = {
+      ...node.data,
+      reverseAgentRoutes: [{
+        provider: 'comfly', modelRoute: 'reverse-gemini', displayName: 'Reverse Gemini', modelId: 'reverse-gemini',
+        capabilities: ['reverse_prompt', 'gemini_native'],
+      }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('反推已等待 300 秒仍未返回');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('300000ms');
   });
 
   it('sanitizes fallback reverse errors containing provider response, base64, token, and path-shaped data', async () => {

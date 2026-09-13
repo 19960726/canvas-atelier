@@ -17,6 +17,27 @@ describe('normalizeBaseUrl', () => {
 });
 
 describe('ComflyClient', () => {
+  it('submits GPT reference edits as multipart image files with exact size and generation timeout', async () => {
+    const fetch = vi.fn<ComflyFetch>(async () => jsonResponse({ task_id: 'edit-task' }));
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch, generationTimeoutMs: 180_000 });
+    await client.editImage({ model: 'gpt-image-2.5-sunburst-2k', prompt: 'Keep product geometry', async: true, size: '2K', aspect_ratio: '16:9', quality: 'auto', output_format: 'webp', background: 'transparent', image: [{ mediaType: 'image/png', bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]) }, { mediaType: 'image/jpeg', bytes: Uint8Array.from([0xff, 0xd8, 0xff]) }] });
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(url).toBe('https://ai.comfly.org/v1/images/edits');
+    expect(init?.timeoutMs).toBe(180_000);
+    expect(init?.headers?.['content-type']).toMatch(/^multipart\/form-data; boundary=/u);
+    expect(init?.body).toBeInstanceOf(Uint8Array);
+    const multipart = await new Response(new Blob([Uint8Array.from(init?.body as Uint8Array)]), { headers: { 'content-type': init!.headers!['content-type']! } }).formData();
+    expect(multipart.get('size')).toBe('2048x1152');
+    expect(multipart.get('quality')).toBe('auto');
+    expect(multipart.get('output_format')).toBe('webp');
+    expect(multipart.get('background')).toBe('transparent');
+    expect(multipart.has('aspect_ratio')).toBe(false);
+    expect(multipart.has('async')).toBe(false);
+    const images = multipart.getAll('image') as File[];
+    expect(images).toHaveLength(2);
+    expect(images.map((image) => image.type)).toEqual(['image/png', 'image/jpeg']);
+    expect(new Uint8Array(await images[0]!.arrayBuffer())).toEqual(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]));
+  });
   it('maps supported tiers by orientation and rejects unsupported native 4K', () => {
     expect(mapComflyImageResolutionTier('1K', '16:9')).toBe('1024x1024');
     expect(mapComflyImageResolutionTier('2K', '16:9')).toBe('1536x1024');
@@ -176,6 +197,7 @@ describe('ComflyClient', () => {
           { model_name: 'gpt-image-2-4k', tags: '绘图', supported_endpoint_types: ['openai'], apis: ['POST-/v1/images/generations-302915860'] },
           { model_name: 'gpt-image-2-4k', tags: '图像编辑', supported_endpoint_types: ['openai'], apis: ['POST-/v1/images/generations-302915860'] },
           { model_name: 'gpt-image-2-vip', tags: '绘图,图像编辑', supported_endpoint_types: ['openai'], apis: ['POST-/v1/images/generations-302915860'] },
+          { model_name: 'nano-banana-2', tags: '对话,识图,多模态', supported_endpoint_types: ['gemini', 'openai'], apis: [] },
           { model_name: 'hidden-public-image', supported_endpoint_types: ['image-generation'] },
           { model_name: 'case-sensitive-model', supported_endpoint_types: ['openai'], apis: [] },
         ] });
@@ -203,12 +225,37 @@ describe('ComflyClient', () => {
     expect(catalog.models.find((model) => model.key === 'gpt-image-2-4k')?.tags).toEqual(['绘图', '图像编辑']);
     expect(catalog.models.find((model) => model.key === 'nano-banana-2')).toMatchObject({
       capabilityStatus: 'complete',
+      endpointTypes: ['gemini', 'openai'],
       apis: expect.arrayContaining(['POST-/v1/images/generations-341817446']),
     });
     expect(catalog.models.find((model) => model.key === 'case-sensitive-model')).toMatchObject({
       name: 'case-sensitive-model', capabilityStatus: 'incomplete',
     });
     expect(catalog.models.some((model) => model.key === 'hidden-public-image')).toBe(false);
+  });
+
+  it('restores the documented Seedream v5 generations route when the pricing catalog omits apis', async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/models')) return jsonResponse({ data: [{ id: 'seedream-v5-pro' }] });
+      if (url.endsWith('/api/models/price')) return jsonResponse({ data: { version: 'seedream-v5', models: [] } });
+      if (url.endsWith('/api/pricing')) return jsonResponse({ data: [{
+        model_name: 'seedream-v5-pro',
+        tags: '绘图,图像编辑',
+        supported_endpoint_types: ['openai'],
+        apis: null,
+      }] });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    await expect(client.listAccessibleModelCatalog()).resolves.toEqual({
+      version: 'seedream-v5',
+      models: [expect.objectContaining({
+        key: 'seedream-v5-pro',
+        capabilityStatus: 'complete',
+        apis: ['/v1/images/generations'],
+      })],
+    });
   });
 
   it.each([

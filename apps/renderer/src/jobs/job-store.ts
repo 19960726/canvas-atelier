@@ -41,6 +41,8 @@ export interface ModelJobRequest {
   aspectRatio?: ImageAspectRatio;
   resolution?: '1K' | '2K' | '4K';
   imageQuality?: ImageQuality;
+  imageOutputFormat?: ModelJob['imageOutputFormat'];
+  imageBackground?: ModelJob['imageBackground'];
   videoResolution?: VideoResolutionTier;
   durationSeconds?: number;
   audioEnabled?: boolean;
@@ -359,6 +361,8 @@ export function createModelJobStore(options: ModelJobStoreOptions): ModelJobStor
           aspectRatio: job.aspectRatio,
           resolution: job.resolution,
           imageQuality: job.imageQuality,
+          imageOutputFormat: job.imageOutputFormat,
+          imageBackground: job.imageBackground,
           videoResolution: job.videoResolution,
           durationSeconds: job.durationSeconds,
           audioEnabled: job.audioEnabled,
@@ -723,9 +727,9 @@ function createResultMaterialization(
       : {
         ...previousConfig,
         resultAssetIds: [
-          ...readStoredImageResultAssetIds(previousConfig.resultAssetIds).filter((assetId) => !resultAssetIds(result).includes(assetId)),
+          ...readStoredImageResultAssetIds(previousConfig.resultAssetIds, previousConfig.outputCount === 9 ? 9 : 4).filter((assetId) => !resultAssetIds(result).includes(assetId)),
           ...resultAssetIds(result),
-        ].slice(-4),
+        ].slice(previousConfig.outputCount === 9 ? -9 : -4),
         resultState: 'fresh',
         ...(typeof result.width === 'number' && Number.isFinite(result.width) && result.width > 0
           ? { resultWidth: result.width }
@@ -974,7 +978,7 @@ function findExistingResult(project: CanvasProject | undefined, job: ModelJob, r
   if (sourceNode !== undefined) {
     const stored = job.kind === 'video'
       ? readStoredVideoResults(sourceNode.data.config.videoResults).some((item) => item.assetId === result.assetId)
-      : resultAssetIds(result).every((assetId) => readStoredImageResultAssetIds(sourceNode.data.config.resultAssetIds).includes(assetId));
+      : resultAssetIds(result).every((assetId) => readStoredImageResultAssetIds(sourceNode.data.config.resultAssetIds, sourceNode.data.config.outputCount === 9 ? 9 : 4).includes(assetId));
     const settled = !readPendingResultJobIds(sourceNode.data.config).includes(job.id);
     return stored && settled ? sourceNode : undefined;
   }
@@ -1021,9 +1025,9 @@ function findFormalGenerationSourceNode(
   return source.data.moduleType === 'image_generation' ? source : undefined;
 }
 
-function readStoredImageResultAssetIds(value: unknown): string[] {
+function readStoredImageResultAssetIds(value: unknown, limit = 4): string[] {
   if (!Array.isArray(value)) return [];
-  return [...new Set(value.filter((assetId): assetId is string => typeof assetId === 'string' && assetId.trim().length > 0))].slice(-4);
+  return [...new Set(value.filter((assetId): assetId is string => typeof assetId === 'string' && assetId.trim().length > 0))].slice(-limit);
 }
 
 function readStoredVideoResults(value: unknown): Array<{ assetId: string; durationMs: number; mediaType: string }> {

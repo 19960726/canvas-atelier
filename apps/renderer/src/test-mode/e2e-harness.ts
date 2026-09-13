@@ -79,6 +79,7 @@ interface RuntimeState {
   currentProject: CanvasProject;
   failNextProjectCommit: boolean;
   failNextModelJobEnqueue: boolean;
+  failNextReverseAnalysis: boolean;
   knowledgeListeners: Set<(states: KnowledgeBaseStateSummary[]) => void>;
   knowledgeStates: KnowledgeBaseStateSummary[];
   managedRules: Map<string, string>;
@@ -101,6 +102,13 @@ interface RuntimeState {
   projectImages: ProjectImageAssetSummary[];
   projectVideos: ProjectVideoAssetSummary[];
   providerProfiles: ProviderBridgeProfile[];
+  reverseAnalysisRequests: Array<{
+    analysisDepth: 'fast' | 'standard' | 'deep';
+    modelRoute: string;
+    provider: ProviderBridgeProfile['provider'];
+    referenceCount: number;
+    sessionId: string;
+  }>;
   revision: number;
   skillSyncWrites: Array<{
     candidateId: string;
@@ -137,6 +145,7 @@ export function installRendererE2EHarness(): void {
       runtime.commitLog = [];
       runtime.failNextProjectCommit = false;
       runtime.failNextModelJobEnqueue = false;
+      runtime.failNextReverseAnalysis = false;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
       runtime.modelCancellationMode = 'complete';
@@ -146,6 +155,7 @@ export function installRendererE2EHarness(): void {
       runtime.projectImages = [];
       runtime.projectVideos = [];
       runtime.providerProfiles = createE2EProviderProfiles();
+      runtime.reverseAnalysisRequests = [];
       runtime.skillSyncWrites = [];
       runtime.storage = createE2EModelJobStorage(runtime);
       runtime.updateRestartCount = 0;
@@ -165,6 +175,7 @@ export function installRendererE2EHarness(): void {
       runtime.commitLog = [];
       runtime.failNextProjectCommit = false;
       runtime.failNextModelJobEnqueue = false;
+      runtime.failNextReverseAnalysis = false;
       runtime.knowledgeStates = [];
       runtime.managedRules = new Map();
       runtime.modelCancellationMode = 'complete';
@@ -174,6 +185,7 @@ export function installRendererE2EHarness(): void {
       runtime.projectImages = [];
       runtime.projectVideos = [];
       runtime.providerProfiles = createE2EProviderProfiles();
+      runtime.reverseAnalysisRequests = [];
       runtime.skillSyncWrites = [];
       runtime.storage = createE2EModelJobStorage(runtime);
       runtime.updateRestartCount = 0;
@@ -201,6 +213,9 @@ export function installRendererE2EHarness(): void {
     },
     failNextModelJobEnqueue() {
       runtime.failNextModelJobEnqueue = true;
+    },
+    failNextReverseAnalysis() {
+      runtime.failNextReverseAnalysis = true;
     },
     failNextProjectCommit() {
       runtime.failNextProjectCommit = true;
@@ -368,6 +383,7 @@ export function installRendererE2EHarness(): void {
           displayUrl: asset.displayUrl,
           label: asset.label,
         })),
+        reverseAnalysisRequests: runtime.reverseAnalysisRequests.map((request) => ({ ...request })),
         durableProjectContainsTransientImageUrl: /(?:novus-asset:|\/__novus_e2e_asset\/|blob:|data:image)/u
           .test(JSON.stringify(state.project)),
         projectNodeTypes: state.project.nodes.map((node) => node.type),
@@ -389,6 +405,7 @@ function createRuntimeState(): RuntimeState {
     currentProject: createStarterProject(),
     failNextProjectCommit: false,
     failNextModelJobEnqueue: false,
+    failNextReverseAnalysis: false,
     knowledgeListeners: new Set(),
     knowledgeStates: [],
     managedRules: new Map(),
@@ -399,6 +416,7 @@ function createRuntimeState(): RuntimeState {
     projectImages: [],
     projectVideos: [],
     providerProfiles: createE2EProviderProfiles(),
+    reverseAnalysisRequests: [],
     revision: 0,
     skillSyncWrites: [],
     storage: createInMemoryModelJobStorage(),
@@ -817,16 +835,35 @@ function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesk
           ...profile,
           capabilities: [...profile.capabilities],
         })),
-      analyzeReversePrompt: async (input: { readonly run: ReversePromptRun }) => ({
-        sessionId: input.run.sessionId,
-        nonce: input.run.nonce,
-        knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
-        analysis: 'The managed reference resolves to a clean commercial composition with a centered product hero, a cool blue studio field, and a restrained editorial lighting hierarchy.',
-        keywords: ['commercial still life', 'centered product hero', 'cool studio lighting'],
-        positivePrompt: 'Cinematic commercial product still of the connected reference, centered hero object on a precise cool-blue studio field, premium editorial product photography, controlled soft key light, subtle rim separation, measured negative space, crisp material detail, realistic texture, balanced composition, and no incidental objects or visual clutter.',
-        negativeConstraints: ['Do not alter the product identity or introduce unreferenced logos.'],
-        executionChecklist: ['Verify the product silhouette remains faithful to the managed reference.'],
-      }),
+      analyzeReversePrompt: async (input: {
+        readonly provider?: ProviderBridgeProfile['provider'];
+        readonly run: ReversePromptRun;
+      }) => {
+        runtime.reverseAnalysisRequests.push({
+          analysisDepth: input.run.agentConfig?.analysisDepth ?? 'standard',
+          modelRoute: input.run.agentConfig?.modelRoute ?? '',
+          provider: input.provider ?? 'comfly',
+          referenceCount: input.run.orderedMedia.length,
+          sessionId: input.run.sessionId,
+        });
+        if (runtime.failNextReverseAnalysis) {
+          runtime.failNextReverseAnalysis = false;
+          throw Object.assign(new Error('E2E controlled reverse failure'), {
+            code: 'PROVIDER_ERROR',
+            retryable: true,
+          });
+        }
+        return {
+          sessionId: input.run.sessionId,
+          nonce: input.run.nonce,
+          knowledgeSnapshotVersion: input.run.knowledgeLease.versionKey,
+          analysis: 'The managed reference resolves to a clean commercial composition with a centered product hero, a cool blue studio field, and a restrained editorial lighting hierarchy.',
+          keywords: ['commercial still life', 'centered product hero', 'cool studio lighting'],
+          positivePrompt: 'Cinematic commercial product still of the connected reference, centered hero object on a precise cool-blue studio field, premium editorial product photography, controlled soft key light, subtle rim separation, measured negative space, crisp material detail, realistic texture, balanced composition, and no incidental objects or visual clutter.',
+          negativeConstraints: ['Do not alter the product identity or introduce unreferenced logos.'],
+          executionChecklist: ['Verify the product silhouette remains faithful to the managed reference.'],
+        };
+      },
       pollImageJob: async () => ({ status: 'running' as const, progress: 0.35 }),
       submitImageJob: async (request: SubmitImageJobBridgeRequest) => ({
         providerTaskId: `e2e-bridge-task-${request.jobId}`,
@@ -1528,6 +1565,13 @@ declare global {
         projectAssetIds: string[];
         projectImages: Array<Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;
         projectVideos: Array<Pick<ProjectVideoAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;
+        reverseAnalysisRequests: Array<{
+          analysisDepth: 'fast' | 'standard' | 'deep';
+          modelRoute: string;
+          provider: ProviderBridgeProfile['provider'];
+          referenceCount: number;
+          sessionId: string;
+        }>;
         projectNodeTypes: string[];
         skillSyncWrites: Array<{
           candidateId: string;
@@ -1538,6 +1582,7 @@ declare global {
         updateRestartCount: number;
       };
       failNextModelJobEnqueue(): void;
+      failNextReverseAnalysis(): void;
       failNextProjectCommit(): void;
       setModelCancellationMode(mode: 'complete' | 'hang'): void;
       publishUpdateState(state: UpdateState): void;

@@ -74,6 +74,8 @@ function toImageSubmitRequest(job: ModelJob) {
     ...(job.aspectRatio === undefined ? {} : { aspectRatio: job.aspectRatio }),
     ...(job.resolution === undefined ? {} : { resolution: job.resolution }),
     ...(job.imageQuality === undefined ? {} : { quality: job.imageQuality }),
+    ...(job.imageOutputFormat === undefined ? {} : { imageOutputFormat: job.imageOutputFormat }),
+    ...(job.imageBackground === undefined ? {} : { imageBackground: job.imageBackground }),
     ...(job.outputCount === undefined ? {} : { outputCount: job.outputCount }),
   };
 }

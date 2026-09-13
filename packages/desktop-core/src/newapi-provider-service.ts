@@ -19,12 +19,15 @@ import type { ProviderService } from './provider-service-types.js';
 import type {
   AnalyzeReversePromptBridgeRequest,
   AnalyzeReversePromptBridgeResult,
+  ChatSkillBridgeRequest,
+  ChatSkillBridgeResult,
   ProviderBridgeProfile,
   ProviderBridgeErrorCode,
   ProviderConfigurationStatus,
 } from './provider-contracts.js';
 import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
 import { parseReverseProviderResponse } from './reverse-provider-response.js';
+import { resolveReverseAnalysisBudget } from './reverse-analysis-budget.js';
 
 type ImageAspectRatio = '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '16:9' | '9:16';
 type ImageResolution = '1K' | '2K' | '4K';
@@ -68,13 +71,7 @@ export interface NewApiProviderService {
   pollVideoJob(request: NewApiTaskRequest): Promise<NewApiVideoPollResult>;
   cancelVideoJob(request: NewApiTaskRequest): Promise<NewApiVideoPollResult>;
   ackVideoJobTerminal(request: NewApiTaskRequest): Promise<{ acknowledged: true }>;
-  chat(request: {
-    readonly provider: NewApiProviderId;
-    readonly modelRoute: string;
-    readonly sessionId?: string;
-    readonly referenceAssetIds?: readonly string[];
-    readonly messages: readonly { readonly role: 'user' | 'assistant'; readonly content: string }[];
-  }): Promise<{ readonly message: string; readonly modelRoute: string; readonly sources: readonly [] }>;
+  chat(request: ChatSkillBridgeRequest): Promise<ChatSkillBridgeResult>;
   analyzeReversePrompt(request: AnalyzeReversePromptBridgeRequest): Promise<AnalyzeReversePromptBridgeResult>;
 }
 
@@ -89,7 +86,9 @@ interface NewApiImageJobRequest {
   readonly referenceAssetIds: readonly string[];
   readonly aspectRatio?: ImageAspectRatio;
   readonly resolution?: ImageResolution;
-  readonly quality?: 'low' | 'medium' | 'high';
+  readonly quality?: 'auto' | 'low' | 'medium' | 'high';
+  readonly imageOutputFormat?: 'png' | 'jpeg' | 'webp';
+  readonly imageBackground?: 'auto' | 'opaque' | 'transparent';
   readonly outputCount?: 1 | 2 | 3 | 4;
 }
 interface NewApiVideoJobRequest {
@@ -321,6 +320,8 @@ export function createNewApiProviderService(options: {
             prompt: request.prompt,
             n: 1,
             ...(request.quality === undefined ? {} : { quality: request.quality }),
+            ...(request.imageOutputFormat === undefined || request.imageOutputFormat === 'png' ? {} : { output_format: request.imageOutputFormat }),
+            ...(request.imageBackground === undefined || request.imageBackground === 'auto' ? {} : { background: request.imageBackground }),
             ...(size === undefined ? {} : { size }),
           });
         const publicTaskId = createPublicTaskId();
@@ -513,7 +514,14 @@ export function createNewApiProviderService(options: {
           ],
         };
       }
-      const message = await (await getClient()).createChatCompletion({ model: profile.modelId, messages });
+      const reverseBudget = request.visualAnalysis === true
+        ? resolveReverseAnalysisBudget(request.reverseAnalysisDepth)
+        : undefined;
+      const message = await (await getClient()).createChatCompletion({
+        model: profile.modelId,
+        messages,
+        ...(reverseBudget === undefined ? {} : { max_tokens: reverseBudget.maxOutputTokens }),
+      }, reverseBudget?.timeoutMs);
       return { message, modelRoute: request.modelRoute, sources: [] };
     },
     async analyzeReversePrompt(request) {
@@ -530,8 +538,10 @@ export function createNewApiProviderService(options: {
       if (options.readManagedReverseMedia === undefined) throw invalidRequest('Managed reverse media is unavailable');
       const media = await options.readManagedReverseMedia(request.sessionId, request.media);
       const knowledge = options.resolveReverseKnowledge === undefined ? [] : await options.resolveReverseKnowledge(request);
+      const reverseBudget = resolveReverseAnalysisBudget(request.run.agentConfig?.analysisDepth);
       const text = await (await getClient()).createChatCompletion({
         model: profile.modelId,
+        max_tokens: reverseBudget.maxOutputTokens,
         messages: [
           { role: 'system', content: 'Return only valid ReversePromptResult JSON.' },
           {
@@ -545,7 +555,7 @@ export function createNewApiProviderService(options: {
             ],
           },
         ],
-      });
+      }, reverseBudget.timeoutMs);
       return parseReverseProviderResponse({ text }, request.run);
     },
   };

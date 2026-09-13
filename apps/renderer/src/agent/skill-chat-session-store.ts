@@ -25,6 +25,7 @@ export interface StoredAgentMessage {
   readonly role: 'user' | 'assistant';
   readonly content: string;
   readonly mode?: AgentConversationMode;
+  readonly canvasNodeLabel?: string;
   readonly sources?: readonly StoredAgentMessageSource[];
   readonly request?: StoredAgentRequestSummary;
 }
@@ -79,8 +80,24 @@ export function createAgentConversation(now = Date.now()): StoredAgentConversati
 }
 
 export function deriveAgentConversationTitle(content: string): string {
-  const normalized = content.trim().replace(/\s+/gu, ' ');
+  const normalized = (readSafeMessageContent(content, MAX_TEXT_LENGTH) ?? '').replace(/\s+/gu, ' ');
   return Array.from(normalized).slice(0, 18).join('') || '新任务';
+}
+
+export function addAgentConversation(
+  collection: StoredAgentConversationCollection,
+  created: StoredAgentConversation,
+): StoredAgentConversationCollection {
+  const existing = collection.conversations.filter((conversation) => conversation.id !== created.id);
+  const retainedIds = new Set([...existing]
+    .sort((left, right) => right.updatedAt - left.updatedAt || right.createdAt - left.createdAt)
+    .slice(0, MAX_CONVERSATIONS - 1)
+    .map((conversation) => conversation.id));
+  return {
+    version: 2,
+    activeConversationId: created.id,
+    conversations: [...existing.filter((conversation) => retainedIds.has(conversation.id)), created],
+  };
 }
 
 export function readAgentConversationCollection(
@@ -144,14 +161,25 @@ function parseCollection(
   fallback: StoredAgentConversationCollection,
 ): StoredAgentConversationCollection {
   if (!isRecord(value) || value.version !== 2 || !Array.isArray(value.conversations)) return fallback;
-  if (value.conversations.length < 1 || value.conversations.length > MAX_CONVERSATIONS) return fallback;
-  const conversations = value.conversations.map(parseConversation);
+  if (value.conversations.length < 1) return fallback;
+  const activeConversationId = readSafeText(value.activeConversationId, 160);
+  if (activeConversationId === undefined) return fallback;
+  const recentConversations = value.conversations.length <= MAX_CONVERSATIONS
+    ? value.conversations
+    : retainActiveConversation(value.conversations, activeConversationId);
+  const conversations = recentConversations.map(parseConversation);
   if (conversations.some((conversation) => conversation === null)) return fallback;
   const safeConversations = conversations as StoredAgentConversation[];
   if (new Set(safeConversations.map((conversation) => conversation.id)).size !== safeConversations.length) return fallback;
-  const activeConversationId = readSafeText(value.activeConversationId, 160);
-  if (activeConversationId === undefined || !safeConversations.some((conversation) => conversation.id === activeConversationId)) return fallback;
+  if (!safeConversations.some((conversation) => conversation.id === activeConversationId)) return fallback;
   return { version: 2, activeConversationId, conversations: safeConversations };
+}
+
+function retainActiveConversation(value: readonly unknown[], activeConversationId: string): readonly unknown[] {
+  const recent = value.slice(-MAX_CONVERSATIONS);
+  if (recent.some((conversation) => isRecord(conversation) && conversation.id === activeConversationId)) return recent;
+  const active = value.find((conversation) => isRecord(conversation) && conversation.id === activeConversationId);
+  return active === undefined ? recent : [active, ...value.slice(-(MAX_CONVERSATIONS - 1))];
 }
 
 function parseConversation(value: unknown): StoredAgentConversation | null {
@@ -201,21 +229,48 @@ function parseLegacySession(value: unknown): LegacyStoredSkillChatSession | null
 }
 
 function parseMessages(value: unknown, fallbackMode: AgentConversationMode): StoredAgentMessage[] | null {
-  if (!Array.isArray(value) || value.length > MAX_MESSAGES) return null;
-  const messages = value.map((message) => parseMessage(message, fallbackMode));
-  return messages.some((message) => message === null) ? null : messages as StoredAgentMessage[];
+  if (!Array.isArray(value)) return null;
+  return selectMessagesForStorage(value)
+    .map((message) => parseMessage(message, fallbackMode))
+    .filter((message): message is StoredAgentMessage => message !== null);
+}
+
+function selectMessagesForStorage(value: readonly unknown[]): unknown[] {
+  if (value.length <= MAX_MESSAGES) return [...value];
+  const indexed = value.map((message, index) => ({ message, index }));
+  const regularMessages = indexed.filter(({ message }) => (
+    !isRecord(message) || typeof message.id !== 'string' || !message.id.startsWith('canvas-result:')
+  ));
+  const guaranteedRegularCount = Math.min(32, regularMessages.length);
+  const markerCapacity = MAX_MESSAGES - guaranteedRegularCount;
+  const newestResultMarkers: typeof indexed = [];
+  const seenMarkerIds = new Set<string>();
+  for (let index = indexed.length - 1; index >= 0 && newestResultMarkers.length < markerCapacity; index -= 1) {
+    const candidate = indexed[index]!;
+    if (!isRecord(candidate.message)) continue;
+    const id = candidate.message.id;
+    if (typeof id !== 'string' || !id.startsWith('canvas-result:') || seenMarkerIds.has(id)) continue;
+    seenMarkerIds.add(id);
+    newestResultMarkers.push(candidate);
+  }
+  const regularSlots = MAX_MESSAGES - newestResultMarkers.length;
+  const newestRegularMessages = regularMessages.slice(-regularSlots);
+  return [...newestResultMarkers, ...newestRegularMessages]
+    .sort((left, right) => left.index - right.index)
+    .map(({ message }) => message);
 }
 
 function parseMessage(value: unknown, fallbackMode: AgentConversationMode): StoredAgentMessage | null {
   if (!isRecord(value) || (value.role !== 'user' && value.role !== 'assistant')) return null;
   const id = readSafeText(value.id, 160);
-  const content = readSafeText(value.content, MAX_TEXT_LENGTH);
+  const content = readSafeMessageContent(value.content, MAX_TEXT_LENGTH);
   const mode = value.mode === undefined ? fallbackMode : parseMode(value.mode);
-  if (!id || !content || mode === null) return null;
+  const canvasNodeLabel = value.canvasNodeLabel === undefined ? undefined : readSafeText(value.canvasNodeLabel, 160);
+  if (!id || !content || mode === null || (value.canvasNodeLabel !== undefined && canvasNodeLabel === undefined)) return null;
   const sources = value.sources === undefined ? undefined : parseSources(value.sources);
   const request = value.request === undefined ? undefined : parseRequest(value.request);
   if (sources === null || request === null) return null;
-  return { id, role: value.role, content, mode, ...(sources === undefined ? {} : { sources }), ...(request === undefined ? {} : { request }) };
+  return { id, role: value.role, content, mode, ...(canvasNodeLabel === undefined ? {} : { canvasNodeLabel }), ...(sources === undefined ? {} : { sources }), ...(request === undefined ? {} : { request }) };
 }
 
 function parseSources(value: unknown): StoredAgentMessageSource[] | null {
@@ -300,6 +355,19 @@ function readSafeText(value: unknown, maxLength: number): string | undefined {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > maxLength || containsProtectedText(trimmed)) return undefined;
   return trimmed;
+}
+
+function readSafeMessageContent(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLength) return undefined;
+  const redacted = trimmed
+    .replace(/data:[^,\s;]+(?:;[^,\s;]+)*;base64,[a-z0-9+/=]+/giu, '[图片数据已省略]')
+    .replace(/(?:https?|file):\/\/[^\s<>"']+/giu, '[链接已省略]')
+    .replace(/[A-Za-z]:\\[^\s<>"']+/gu, '[本地路径已省略]')
+    .replace(/\\\\[^\\\s]+\\[^\s<>"']*/gu, '[网络路径已省略]')
+    .trim();
+  return redacted || '[受保护内容已省略]';
 }
 
 function containsProtectedText(value: string): boolean {

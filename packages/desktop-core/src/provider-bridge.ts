@@ -19,14 +19,16 @@ import {
 } from './provider-skill-chat.js';
 import { createStoryboardService } from './storyboard-service.js';
 import { buildProfessionalReverseRequest } from './professional-reverse-analysis.js';
+import { resolveReverseAnalysisBudget } from './reverse-analysis-budget.js';
 import type {
   GenerationHistoryDurableTerminal,
   GenerationHistoryFailureCode,
   GenerationHistoryProviderSinkContract,
 } from './generation-history-provider-sink.js';
 import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
-import { buildComflyModelProfiles, cloneProviderProfile, markProviderProfileSelections, mergeProviderModelProfiles, repairComflyImageEditCapability } from './provider-model-catalog.js';
+import { buildComflyModelProfiles, cloneProviderProfile, markProviderProfileSelections, mergeProviderModelProfiles, repairComflyGeminiNativeReverseCapability, repairComflyImageEditCapability } from './provider-model-catalog.js';
 import { createComflyVideoJobHandlers } from './comfly-video-jobs.js';
+import { submitComflyImage } from './comfly-image-submission.js';
 import { isPublicProviderAddress, parseSafeProviderResultUrl } from './provider-result-security.js';
 import type { ProviderService } from './provider-service-types.js';
 import { decodeProviderInlineImage } from './provider-inline-image.js';
@@ -80,7 +82,6 @@ export {
 export type { AckImageJobTerminalBridgeRequest, AckImageJobTerminalBridgeResult, AnalyzeReversePromptBridgeRequest, AnalyzeReversePromptBridgeResult, ChatSkillBridgeRequest, ChatSkillBridgeResult, CancelImageJobBridgeRequest, CancelImageJobBridgeResult, ConfigureProviderBridgeRequest, UpdateProviderProfilesBridgeRequest, ListProviderTasksBridgeRequest, ListProviderTasksBridgeResult, PollImageJobBridgeRequest, PollImageJobBridgeResult, ProviderBridgeBlockedReason, ProviderBridgeChannel, ProviderBridgeCapability, ProviderBridgeError, ProviderBridgeErrorCode, ProviderBridgeException, ProviderBridgeProfile, ProviderConfigurationStatus, ProviderConnectionCheckResult, ProviderImageJobResult, ManagedReversePromptMediaIdentity, RevealProviderCredentialBridgeResult, SubmitImageJobBridgeRequest, SubmitImageJobBridgeResult, UnlockProviderBridgeRequest } from './provider-contracts.js';
 export type { ProviderCredentialStore, SafeStorageAdapter } from './provider-credential-vault.js';
 const DEFAULT_COMFLY_BASE_URL = 'https://ai.comfly.org'; const DEFAULT_TERMINAL_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000; const CURRENT_GENERATION_JOB_ID_PREFIX = 'model-job-v2-';
-const REVERSE_PROVIDER_TIMEOUT_MS = 300_000;
 const PROVIDER_RESULT_DOWNLOAD_TIMEOUT_MS = 300_000;
 const PROVIDER_IMAGE_RESULT_MAX_BYTES = 256 * 1024 * 1024;
 const PROVIDER_VIDEO_RESULT_MAX_BYTES = 512 * 1024 * 1024;
@@ -266,6 +267,12 @@ export function createComflyProviderService(options: {
       const validated = parseProviderBridgeRequest(PROVIDER_BRIDGE_CHANNELS.submitImageJob, request) as SubmitImageJobBridgeRequest;
       const snapshot = await captureRuntimeSnapshot();
       const profile = selectProfile(snapshot.profiles, validated.provider, validated.modelRoute);
+      if (profile.modelId === 'seedream-v5-pro' && validated.referenceAssetIds.length > 10) {
+        throw createProviderBridgeError(
+          'INVALID_REQUEST',
+          'Seedream V5 Pro supports at most 10 reference images',
+        );
+      }
       const historyId = deriveGenerationHistoryId(validated.jobId);
       const existingMapping = await providerTaskMappings.findByHistoryId(historyId);
       if (existingMapping !== undefined) return { providerTaskId: existingMapping.publicTaskId };
@@ -349,17 +356,7 @@ export function createComflyProviderService(options: {
         } catch (error) { if (options.historySink !== undefined) await options.historySink.failed(historyId, historyFailureCode(error)); throw error; }
       }
       try {
-        const response = await translateProviderCall(() => createClient(snapshot, 'image').generateImage({
-          model: profile.modelId ?? profile.modelRoute,
-          prompt,
-          image: references.map((item) =>
-            `data:${item.mediaType};base64,${Buffer.from(item.bytes).toString('base64')}`),
-          ...(profile.capabilities.includes('async_tasks') ? { async: true } : {}),
-          ...(validated.aspectRatio === undefined ? {} : { aspect_ratio: validated.aspectRatio }),
-          ...(validated.resolution === undefined ? {} : { size: validated.resolution }),
-          ...(validated.quality === undefined ? {} : { quality: validated.quality }),
-          ...(validated.outputCount === undefined ? {} : { n: validated.outputCount as 1 | 2 | 3 | 4 }),
-        }));
+        const response = await translateProviderCall(() => submitComflyImage(createClient(snapshot, 'image'), profile, validated, prompt, references));
         assertProviderResponsePayload(response);
         let directResult = profile.capabilities.includes('async_tasks') ? undefined : parseDirectProviderImageResponse(response);
         let parsed: ReturnType<typeof parseImageTaskResponse> | undefined;
@@ -442,28 +439,30 @@ export function createComflyProviderService(options: {
       const media = await options.readManagedReverseMedia(validated.sessionId, validated.media);
       const knowledge = await readPinnedReverseKnowledge(managedKnowledgeStore, validated.run.knowledgeLease.snapshots);
       const reverseRequest = buildProfessionalReverseRequest(validated.run, knowledge);
+      const reverseBudget = resolveReverseAnalysisBudget(validated.run.agentConfig?.analysisDepth);
       let responseText: string | undefined;
       let finishReason: string | undefined;
       if (usesGeminiNative) {
-        const response = await createClient(snapshot, 'language').generateGeminiContent({
+        const response = await translateProviderCall(() => createClient(snapshot, 'language').generateGeminiContent({
           model: profile.modelId ?? profile.modelRoute,
-          generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 16_384 },
+          generationConfig: { responseMimeType: 'application/json', maxOutputTokens: reverseBudget.maxOutputTokens },
           contents: [{ role: 'user', parts: [
             { text: JSON.stringify(reverseRequest) },
             ...media.map((item) => ({ inlineData: { mimeType: item.mediaType, data: Buffer.from(item.bytes).toString('base64') } })),
           ] }],
-        }, REVERSE_PROVIDER_TIMEOUT_MS);
+        }, reverseBudget.timeoutMs));
         const candidate = response.candidates[0];
         finishReason = candidate?.finishReason;
         responseText = extractGeminiReverseText(candidate?.content?.parts);
       } else {
-        const response = await createClient(snapshot, 'language').chat({
+        const response = await translateProviderCall(() => createClient(snapshot, 'language').chat({
           model: profile.modelId ?? profile.modelRoute,
           messages: [{ role: 'system', content: `${reverseRequest.systemRole} Return only valid ReversePromptResult JSON that follows every required section and evidence rule.` }, { role: 'user', content: [
             { type: 'text', text: JSON.stringify(reverseRequest) },
             ...media.map((item) => ({ type: 'image_url', image_url: { url: `data:${item.mediaType};base64,${Buffer.from(item.bytes).toString('base64')}` } })),
           ] }],
-        }, REVERSE_PROVIDER_TIMEOUT_MS);
+          max_tokens: reverseBudget.maxOutputTokens,
+        }, reverseBudget.timeoutMs));
         const choice = response.choices[0];
         const content = choice?.message?.content;
         finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
@@ -800,7 +799,7 @@ function sanitizeProfiles(value: readonly ComflyModelRegistration[]): ProviderBr
       ...(profile.constraints === undefined ? {} : { constraints: profile.constraints }),
     };
   }));
-  return parsed.map(repairComflyImageEditCapability);
+  return parsed.map(repairComflyImageEditCapability).map(repairComflyGeminiNativeReverseCapability);
 }
 function mergeUpdatedProfiles(_existing: readonly ProviderBridgeProfile[], updates: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
   return parseProviderBridgeProfiles(updates);

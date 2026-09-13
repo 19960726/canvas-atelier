@@ -68,7 +68,9 @@ export interface NewApiClient {
     readonly model: string;
     readonly prompt: string;
     readonly n: number;
-    readonly quality?: 'low' | 'medium' | 'high';
+    readonly quality?: 'auto' | 'low' | 'medium' | 'high';
+    readonly output_format?: 'png' | 'jpeg' | 'webp';
+    readonly background?: 'auto' | 'opaque' | 'transparent';
     readonly size?: string;
   }): Promise<NewApiGeneratedImage>;
   generateGeminiImage(input: {
@@ -81,7 +83,14 @@ export interface NewApiClient {
       readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
     }[];
   }): Promise<NewApiGeneratedImage>;
-  createChatCompletion(input: { readonly model: string; readonly messages: readonly unknown[] }): Promise<string>;
+  createChatCompletion(
+    input: {
+      readonly model: string;
+      readonly messages: readonly unknown[];
+      readonly max_tokens?: number;
+    },
+    timeoutMs?: number,
+  ): Promise<string>;
 }
 
 export interface NewApiFetchInit {
@@ -241,13 +250,13 @@ export function createNewApiClient(options: {
       }
       throw invalidResponse('New API Gemini image response is invalid');
     },
-    async createChatCompletion(input) {
+    async createChatCompletion(input, requestTimeoutMs = 180_000) {
       if (options.provider !== '4dai') throw new Error('Chat is unavailable for this provider');
       const response = await authenticated('/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(input),
-        timeoutMs: 180_000,
+        timeoutMs: requestTimeoutMs,
       });
       assertOk(response.ok, response.status);
       const parsed = ChatResultSchema.safeParse(await readJson(response));

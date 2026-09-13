@@ -84,6 +84,8 @@ describe('professional reverse request', () => {
     expect(request.analysisMode).toBe('multi_reference');
     expect(request.userPreference).toBe('资深食品商业摄影指导');
     expect(request.mediaManifest.map((item) => item.mention)).toEqual(['@图片1', '@图片2']);
+    expect(request.requiredOutput).toHaveProperty('mediaResponsibilities.0.mention');
+    expect(JSON.stringify(request.requiredOutput)).toMatch(/mediaManifest.*mention/u);
     expect(serialized).toMatch(/逐张|职责|纹理|材质|继承|冲突|优先级|不得遗漏/u);
   });
 

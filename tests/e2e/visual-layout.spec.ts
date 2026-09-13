@@ -9,6 +9,7 @@ import {
   medianPanZoomFrameInterval,
   openAgentPanel,
   openApp,
+  openEmptyApp,
 } from './helpers/app';
 
 interface FocusStyleSnapshot {
@@ -44,7 +45,7 @@ for (const viewport of viewports) {
     if (viewport.width >= 760) {
       const toolRailBox = await toolRail.boundingBox();
       expect(toolRailBox).not.toBeNull();
-      expect(toolRailBox).toMatchObject({ x: 52, y: 142, width: 60, height: 390 });
+      expect(toolRailBox).toMatchObject({ x: 52, y: 142, width: 60, height: 442 });
     }
     await expectVisibleMainRegion(page, viewport.width < 760 ? 2 : 3);
     await captureLayoutScreenshot(page, testInfo, `renderer-default-${viewport.name}`);
@@ -150,6 +151,46 @@ for (const viewport of viewports) {
     }
   });
 }
+
+test('整理画布按连线层级排列全部节点并保存为一次可撤销事务', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openEmptyApp(page);
+  await page.evaluate(async () => {
+    const e2e = window.__NOVUS_E2E__!;
+    await e2e.createModule('image_input', { x: 980, y: 680 });
+    await e2e.createModule('reverse_agent', { x: 60, y: 80 });
+    await e2e.createModule('reverse_result', { x: 520, y: 520 });
+    await e2e.createModule('image_generation', { x: 90, y: 720 });
+    await e2e.connectModules('image_input', 'image', 'reverse_agent', 'references');
+    await e2e.connectModules('reverse_agent', 'analysis', 'reverse_result', 'analysis');
+  });
+
+  await expect(page.getByRole('button', { name: '整理画布' })).toBeVisible();
+  const before = await e2eState(page);
+  const beforeCommitCount = before.commitCount;
+  await page.getByRole('button', { name: '整理画布' }).click();
+
+  await expect.poll(async () => (await e2eState(page)).commitCount).toBe(beforeCommitCount + 1);
+  const after = await e2eState(page);
+  expect(after.modulePositions).toHaveLength(4);
+  expect(new Set(after.modulePositions.map((node) => `${node.position.x}:${node.position.y}`)).size).toBe(4);
+  const input = after.modulePositions.find((node) => node.moduleType === 'image_input')!;
+  const reverse = after.modulePositions.find((node) => node.moduleType === 'reverse_agent')!;
+  const result = after.modulePositions.find((node) => node.moduleType === 'reverse_result')!;
+  expect(input.position.x).toBeLessThan(reverse.position.x);
+  expect(reverse.position.x).toBeLessThan(result.position.x);
+  await expect(page.getByRole('button', { name: '撤销' })).toBeEnabled();
+  await page.getByRole('button', { name: '撤销' }).click();
+  await expect.poll(async () => (await e2eState(page)).commitCount).toBeGreaterThan(beforeCommitCount + 1);
+  expect((await e2eState(page)).modulePositions).toEqual(before.modulePositions);
+
+  await page.getByRole('button', { name: '整理画布' }).click();
+  await expect.poll(async () => (await e2eState(page)).commitCount).toBeGreaterThan(beforeCommitCount + 2);
+  const persisted = await e2eState(page);
+  await page.evaluate(() => window.__NOVUS_E2E__!.reopenProject());
+  const reloaded = await e2eState(page);
+  expect(reloaded.modulePositions).toEqual(persisted.modulePositions);
+});
 
 for (const theme of ['dark', 'light'] as const) {
   for (const viewport of viewports) {

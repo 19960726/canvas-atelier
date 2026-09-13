@@ -11,6 +11,8 @@ function projectWithGenerationNode(): CanvasProject {
     aspectRatio: '1:1',
     resolution: '2K',
     imageQuality: 'medium',
+    imageOutputFormat: 'png',
+    imageBackground: 'auto',
     lastResultJobId: 'legacy-owned-job',
     pendingResultJobIds: ['legacy-owned-sibling'],
     resultAssetIds: ['legacy-owned-asset'],
@@ -28,6 +30,8 @@ function modelJob(overrides: Partial<ModelJob> & { id: string }): ModelJob {
     aspectRatio: '1:1',
     resolution: '2K',
     imageQuality: 'medium',
+    imageOutputFormat: 'png',
+    imageBackground: 'auto',
     referenceAssetIds: [],
     retryCount: 0,
     status: 'running',
@@ -97,6 +101,8 @@ describe('project model job ownership', () => {
     ['aspect ratio', { aspectRatio: '16:9' }],
     ['resolution', { resolution: '4K' }],
     ['quality', { imageQuality: 'high' }],
+    ['output format', { imageOutputFormat: 'webp' }],
+    ['background', { imageBackground: 'transparent' }],
   ] as const)('omits an anchored failed job after the current node changes its %s', (_label, changedConfig) => {
     const project = projectWithGenerationNode();
     const source = project.nodes[0];

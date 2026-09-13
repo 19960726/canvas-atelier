@@ -78,6 +78,23 @@ describe('buildReverseResultSections', () => {
     expect(sections.find((section) => section.id === 'seedance-prompt-zh')).toMatchObject({ sendTarget: 'video_generation' });
   });
 
+  it('uses returned media mentions instead of response order for shuffled image and video responsibilities', () => {
+    const responsibilities: NonNullable<ReversePromptResult['mediaResponsibilities']> = [
+      { mention: '@图片2', sourceId: 'scene-image', label: '场景图', role: 'scene_composition', priority: 'secondary', inheritance: ['构图'], conflicts: [], usableElements: ['背景'] },
+      { mention: '@视频1', sourceId: 'motion-video', label: '运镜参考', role: 'camera_motion', priority: 'supporting', inheritance: ['运镜'], conflicts: [], usableElements: ['推进节奏'] },
+      { mention: '@图片1', sourceId: 'product-image', label: '产品图', role: 'subject_identity', priority: 'primary', inheritance: ['产品结构'], conflicts: [], usableElements: ['产品主体'] },
+    ];
+
+    const text = buildReverseResultSections({ ...legacyResult, mediaResponsibilities: responsibilities })
+      .find((section) => section.id === 'scene-responsibilities')?.text;
+
+    expect(text?.split('\n\n').map((block) => block.split('\n')[0])).toEqual([
+      '@图片2 · 场景图（scene-image）',
+      '@视频1 · 运镜参考（motion-video）',
+      '@图片1 · 产品图（product-image）',
+    ]);
+  });
+
   it('does not create empty Seedance headings for legacy results', () => {
     const sections = buildReverseResultSections(legacyResult);
     expect(sections.some((section) => section.id.startsWith('seedance-'))).toBe(false);

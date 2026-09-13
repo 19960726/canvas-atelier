@@ -1,15 +1,16 @@
 import type { ImageQuality } from '@agent-canvas/domain';
 
-export const IMAGE_QUALITY_OPTIONS = ['low', 'medium', 'high'] as const satisfies readonly ImageQuality[];
+export const IMAGE_QUALITY_OPTIONS = ['auto', 'low', 'medium', 'high'] as const satisfies readonly ImageQuality[];
 
 const IMAGE_QUALITY_LABELS: Readonly<Record<ImageQuality, string>> = {
+  auto: '自动',
   low: '低',
   medium: '中',
   high: '高',
 };
 
 export function normalizeImageQuality(value: unknown): ImageQuality | undefined {
-  return value === 'low' || value === 'medium' || value === 'high' ? value : undefined;
+  return value === 'auto' || value === 'low' || value === 'medium' || value === 'high' ? value : undefined;
 }
 
 export function imageQualityLabel(value: ImageQuality): string {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createConfirmedModelJob,
   getLegalModelJobTransitions,
+  imageAspectRatioSchema,
   mapImageResolutionTier,
   modelJobProviderSchema,
   modelJobSchema,
@@ -13,6 +14,20 @@ import {
 const confirmedAt = '2026-07-16T08:00:00.000Z';
 
 describe('model job domain contract', () => {
+  it.each(['4:5', '5:4', '21:9'] as const)('preserves screenshot ratio %s with valid dimensions at every tier', (ratio) => {
+    expect(imageAspectRatioSchema.parse(ratio)).toBe(ratio);
+    for (const tier of ['1K', '2K', '4K'] as const) {
+      const { width, height } = mapImageResolutionTier(tier, ratio);
+      const [x, y] = ratio.split(':').map(Number);
+      expect(width / height).toBeCloseTo(x! / y!, 2);
+      expect(Math.max(width, height)).toBeGreaterThanOrEqual(1024);
+    }
+  });
+  it('persists automatic quality, output format and background through queue hydration', () => {
+    const fields = { imageQuality: 'auto', imageOutputFormat: 'webp', imageBackground: 'transparent' };
+    const hydrated = modelJobSchema.parse({ id: 'format-job', modelId: 'gpt-image-2.5-flare', status: 'queued', promptNodeId: 'image-node', ...fields });
+    expect(modelJobSchema.parse(JSON.parse(JSON.stringify(hydrated)))).toMatchObject(fields);
+  });
   it.each(['comfly', 'relayme', 'julun', '4dai'] as const)(
     'persists the registered %s provider identity on a confirmed job',
     (provider) => {

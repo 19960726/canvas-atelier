@@ -38,7 +38,7 @@ describe('Comfly capability regressions', () => {
 
   it('keeps Nano Banana reference generation on the documented synchronous generations route', async () => {
     const appDataRoot = await makeTempRoot();
-    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string }) => jsonResponse({
+    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string | Uint8Array }) => jsonResponse({
       data: [{ b64_json: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64') }],
     }));
     const storeGeneratedImage = vi.fn(async () => ({ assetId: '1'.repeat(16), width: 1, height: 1 }));
@@ -76,7 +76,7 @@ describe('Comfly capability regressions', () => {
 
   it('submits managed reference images with Seedance-native parameter names', async () => {
     const appDataRoot = await makeTempRoot();
-    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string }) => jsonResponse({ task_id: 'seedance-task-1' }));
+    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string | Uint8Array }) => jsonResponse({ task_id: 'seedance-task-1' }));
     const readManagedGenerationImages = vi.fn(async () => [
       { bytes: Uint8Array.from([1, 2, 3]), mediaType: 'image/png' as const },
       { bytes: Uint8Array.from([4, 5, 6]), mediaType: 'image/jpeg' as const },
@@ -120,7 +120,7 @@ describe('Comfly capability regressions', () => {
 
   it('maps Wan text-to-video resolution and ratio to the documented size field', async () => {
     const appDataRoot = await makeTempRoot();
-    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string }) => jsonResponse({ task_id: 'wan-task-1' }));
+    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string | Uint8Array }) => jsonResponse({ task_id: 'wan-task-1' }));
     const service = await configuredService({
       appDataRoot,
       fetch,
@@ -168,7 +168,7 @@ describe('Comfly capability regressions', () => {
     ['Undocumented video families fail closed', 'grok-imagine-video-1.5', 0],
   ] as const)('%s before reading assets or calling the paid endpoint', async (_label, modelId, referenceCount) => {
     const appDataRoot = await makeTempRoot();
-    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string }) => jsonResponse({ task_id: 'must-not-submit' }));
+    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string | Uint8Array }) => jsonResponse({ task_id: 'must-not-submit' }));
     const readManagedGenerationImages = vi.fn(async (
       _sessionId: string,
       referenceAssetIds: readonly string[],
@@ -212,7 +212,7 @@ describe('Comfly capability regressions', () => {
     ['Veo text-to-video accepts no images', 'veo3.1', 0],
   ] as const)('%s', async (_label, modelId, referenceCount) => {
     const appDataRoot = await makeTempRoot();
-    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string }) => jsonResponse({ task_id: 'documented-video-task' }));
+    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string | Uint8Array }) => jsonResponse({ task_id: 'documented-video-task' }));
     const readManagedGenerationImages = vi.fn(async (
       _sessionId: string,
       referenceAssetIds: readonly string[],

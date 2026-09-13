@@ -26,6 +26,7 @@ import {
   validateRecoveredProject,
 } from './recovery';
 import { createUntitledProject } from './project-factory';
+import { readReverseFailureReason, readProviderNetworkFailure } from './reverse-failure';
 const BROWSER_ASSET_PREVIEW_STORAGE_KEY = 'novus.browser.asset-previews.v1';
 
 type BrowserAssetPreviewRecord = {
@@ -161,7 +162,7 @@ export interface ProjectPersistenceClient {
     readonly historyId: string;
     readonly operationId: string;
   }): Promise<ProjectHistoryCopyResult | null>;
-  importProjectImage(target: ProjectImageImportTarget, file?: File): Promise<ProjectImageImportResult | null>;
+  importProjectImage(target: ProjectImageImportTarget, file?: File, options?: { readonly fromClipboard: true }): Promise<ProjectImageImportResult | null>;
   importDroppedMedia?(input: {
     readonly file: File;
     readonly operationId: string;
@@ -632,11 +633,17 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       ) return null;
       return adoptSelectedSession(selected, { deferRecoveryRefresh: true });
     },
-    async importProjectImage(target, file) {
+    async importProjectImage(target, file, options) {
       const writableSessionId = await ensureWritableSession();
       if (writableSessionId === null) return null;
       const operationId = createDesktopDroppedMediaOperationId();
-      let result = file !== undefined && (target.kind === 'module' || target.kind === 'agent_reference')
+      const nativeAgentClipboard = options?.fromClipboard === true && target.kind === 'agent_reference';
+      let result = nativeAgentClipboard
+        ? await bridge.projectImages.pasteClipboardImage({
+            sessionId: writableSessionId,
+            target: { kind: 'agent_reference', operationId: createDesktopClipboardOperationId() },
+          })
+        : file !== undefined && (target.kind === 'module' || target.kind === 'agent_reference')
         ? await bridge.projectImages.importDroppedMedia({
             sessionId: writableSessionId,
             target: target.kind === 'module'
@@ -644,7 +651,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
               : { kind: 'agent_reference', operationId },
           }, file)
         : await bridge.projectImages.importImage({ sessionId: writableSessionId, target });
-      if (result === null && file !== undefined && (target.kind === 'module' || target.kind === 'agent_reference')) {
+      if (result === null && !nativeAgentClipboard && file !== undefined && (target.kind === 'module' || target.kind === 'agent_reference')) {
         result = await bridge.projectImages.pasteClipboardImage({
           sessionId: writableSessionId,
           target: target.kind === 'module'
@@ -1177,10 +1184,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function createDisplaySafeProviderError(error: unknown): Error & { code?: string; retryable?: boolean } {
-  const safe = new Error('Provider request failed') as Error & { code?: string; retryable?: boolean };
+function createDisplaySafeProviderError(error: unknown): Error & { code?: string; retryable?: boolean; reason?: string } {
+  const message = isRecord(error) && typeof error.message === 'string' ? error.message : '';
+  const timeout = message.match(/\btimed out after\s+(\d{1,9})\s*ms\b/iu);
+  const status = message.match(/\bstatus\s+(401|403|408|409|422|429|5\d\d)\b/iu);
+  const network = readProviderNetworkFailure(error);
+  const displayMessage = timeout !== null
+    ? `Provider request timed out after ${timeout[1]}ms`
+    : status !== null
+      ? `Provider request failed with status ${status[1]}`
+      : network !== undefined ? `Provider network request failed (${network})` : 'Provider request failed';
+  const safe = new Error(displayMessage) as Error & { code?: string; retryable?: boolean; reason?: string };
   if (isRecord(error) && typeof error.code === 'string') safe.code = error.code;
   if (isRecord(error) && typeof error.retryable === 'boolean') safe.retryable = error.retryable;
+  const reason = readReverseFailureReason(error);
+  if (reason !== undefined) safe.reason = reason;
   return safe;
 }
 
@@ -1238,6 +1256,10 @@ function createLegacyImportTransaction(project: CanvasProject): ProjectTransacti
         kind: 'set_skill_candidates' as const,
         candidates: project.skillPromotionCandidates,
       },
+      ...(project.agentWorkflowSequence === undefined ? [] : [{
+        kind: 'set_agent_workflow_sequence' as const,
+        sequence: project.agentWorkflowSequence,
+      }]),
     ],
   };
 }

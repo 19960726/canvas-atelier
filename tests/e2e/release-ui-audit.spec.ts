@@ -189,7 +189,7 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
   await expect(page.getByTestId('topbar')).toContainText('Canvas Atelier');
   await expect(page.getByTestId('topbar')).toContainText('保存项目');
   await expect(page.getByTestId('topbar')).toContainText('生图历史');
-  await expect(page.locator('.topbar__actions .theme-control')).toBeHidden();
+  await expect(page.locator('.topbar__actions .theme-control')).toBeVisible();
   await expect(page.getByRole('button', { name: '关闭应用', includeHidden: true })).toBeHidden();
   await expect(page.getByRole('button', { name: '打开 Agent 对话' })).toBeVisible();
   await expect(page.locator('.model-status')).toHaveCount(0);
@@ -272,7 +272,7 @@ test('captures the release UI audit set for dark and light themes', async ({ pag
   expect(agentPanelBounds).not.toBeNull();
   expect(toolrailBounds).not.toBeNull();
   expect(agentPanelBounds).toMatchObject({ x: 880, y: 0, width: 560, height: 900 });
-  expect(toolrailBounds).toMatchObject({ x: 52, y: 142, width: 60, height: 390 });
+  expect(toolrailBounds).toMatchObject({ x: 52, y: 142, width: 60, height: 442 });
   const newChatBounds = await page.getByTestId('agent-new-chat').boundingBox();
   const darkAgentTitleBounds = await page.getByTestId('agent-panel').locator('.skill-chat-workbench__header h2').boundingBox();
   const darkAgentCloseBounds = await page.getByRole('button', { name: '关闭 Codex Agent' }).boundingBox();
@@ -609,7 +609,7 @@ for (const theme of ['dark', 'light'] as const) {
     await page.keyboard.press('Enter');
     await expect(resolutionTrigger).toHaveAttribute('value', '4K');
     const generateImage = imageGeneration.getByRole('button', { name: 'Generate image' });
-    await expect(generateImage).toHaveCSS('font-size', '10px');
+    await expect(generateImage).toHaveCSS('font-size', '13px');
     expect(await generateImage.evaluate((element) => getComputedStyle(element, '::after').content)).toBe('none');
     const imageGenerationResult = imageGeneration.locator('[data-port-id="result"][data-port-direction="output"] .react-flow__handle');
     const [generationBox, resultBox] = await Promise.all([
