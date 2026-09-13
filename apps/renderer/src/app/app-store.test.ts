@@ -8551,13 +8551,13 @@ describe('stable module graph commits', () => {
     });
   });
 
-  it('terminates a reverse Agent request that never returns and persists a visible timeout failure', async () => {
+  it('keeps a deep reverse Agent request alive for ten minutes, then persists an outer timeout failure', async () => {
     vi.useFakeTimers();
     try {
       const reverse = createCanvasModuleNode('reverse-timeout-run', 'reverse_agent', { x: 360, y: 0 });
       reverse.data.config = {
         modelRoute: 'gemini-reverse', role: 'Analyst', task: 'Analyze the cited image.',
-        knowledgeBaseIds: [], referenceAssetIds: ['cccccccccccccccc'],
+        analysisDepth: 'deep', knowledgeBaseIds: [], referenceAssetIds: ['cccccccccccccccc'],
       };
       const project = parseCanvasProject({
         ...createStarterProject(),
@@ -8585,7 +8585,7 @@ describe('stable module graph commits', () => {
         () => { outcome = 'resolved'; },
         () => { outcome = 'rejected'; },
       );
-      await vi.advanceTimersByTimeAsync(300_000);
+      await vi.advanceTimersByTimeAsync(600_000);
       await Promise.resolve();
 
       expect(outcome).toBe('pending');

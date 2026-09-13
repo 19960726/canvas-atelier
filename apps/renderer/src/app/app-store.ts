@@ -98,8 +98,8 @@ import { createDesktopModelJobExecutor } from '../jobs/desktop-model-executor';
 import { formalGenerationJobMatchesNodeDraft, modelJobBelongsToProject } from '../jobs/project-model-jobs';
 import { withProviderOperationTimeout } from '../settings/provider-operation-timeout';
 import { arrangeCanvasNodePositions } from '../canvas/auto-layout';
+import { resolveReverseAnalysisOperationTimeoutMs } from './reverse-analysis-operation-budget';
 
-const REVERSE_AGENT_OPERATION_TIMEOUT_MS = 315_000;
 const PROJECT_PERSISTENCE_OPERATION_TIMEOUT_MS = 15_000;
 import { createModelJobRunId } from '../jobs/model-job-identity';
 import { advanceOfflineVideoPreview, createOfflineVideoPreview } from '../jobs/video-preview-mock';
@@ -1135,7 +1135,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       const result = await withProviderOperationTimeout(
         analyzeReversePrompt({ provider: reverseProfile?.provider ?? 'comfly', run: analysisRun, media: resolvedMedia.media }),
-        REVERSE_AGENT_OPERATION_TIMEOUT_MS,
+        resolveReverseAnalysisOperationTimeoutMs(configuredAgentConfig.analysisDepth),
       );
       const parsedResult = parseReversePromptResult(result, analysisRun);
       if (!isReverseAgentRunActive(get, nodeId, runId)) throw createReverseRunCancelledError();

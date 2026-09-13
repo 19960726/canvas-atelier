@@ -6,6 +6,7 @@ const canvasRailOrder = [
   'tool-add-node',
   'tool-modules',
   'tool-undo',
+  'tool-arrange',
   'agent-toggle',
   'history-toggle',
   'settings-toggle',
@@ -16,6 +17,7 @@ const canvasRailIcons = [
   'add-node',
   'modules',
   'undo',
+  'arrange',
   'agent',
   'history',
   'settings',
@@ -24,18 +26,18 @@ const canvasRailIcons = [
 // UI Gate 425:152 uses these glyphs, not the generic icon-library drawings.
 // Keeping the actual rendered glyphs in the assertion prevents the legacy
 // Lucide rail from returning while the dimensions still happen to match.
-const canvasRailGlyphs = ['⌖', '＋', '▦', '↶', '✦', '◷', null] as const;
+const canvasRailGlyphs = ['⌖', '＋', '▦', '↶', null, '✦', '◷', null] as const;
 
 for (const theme of ['dark', 'light'] as const) {
-  test(`matches the Canvas seven-action left rail in ${theme}`, async ({ page }, testInfo) => {
+  test(`matches the Canvas eight-action left rail in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.addInitScript((nextTheme) => localStorage.setItem('novus.theme.mode', nextTheme), theme);
     await openEmptyApp(page);
 
     const rail = page.getByTestId('toolrail');
     await expect(rail).toHaveJSProperty('offsetWidth', 60);
-    await expect(rail).toHaveJSProperty('offsetHeight', 390);
-    await expect(rail.locator(':scope > button:visible')).toHaveCount(7);
+    await expect(rail).toHaveJSProperty('offsetHeight', 442);
+    await expect(rail.locator(':scope > button:visible')).toHaveCount(8);
     await expect(rail.locator(':scope > .toolrail__spacer')).toHaveCount(0);
     await expect(page.getByTestId('tool-upload')).toHaveCount(0);
     await expect(page.getByTestId('tool-placement')).toBeHidden();

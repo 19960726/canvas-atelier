@@ -767,7 +767,7 @@ describe('secure New API provider service', () => {
     const deepPayload = JSON.parse(chatCalls[0]!.init!.body as string) as { max_tokens?: number; messages: unknown[] };
     expect(JSON.stringify(deepPayload.messages)).toContain('data:image/png;base64,iVBORw==');
     expect(deepPayload.max_tokens).toBe(16_384);
-    expect(chatCalls[0]!.init!.timeoutMs).toBe(300_000);
+    expect(chatCalls[0]!.init!.timeoutMs).toBe(600_000);
     const ordinaryPayload = JSON.parse(chatCalls[1]!.init!.body as string) as { max_tokens?: number };
     expect(ordinaryPayload.max_tokens).toBeUndefined();
     expect(chatCalls[1]!.init!.timeoutMs).toBe(180_000);
@@ -996,7 +996,7 @@ describe('secure New API provider service', () => {
     })).resolves.toMatchObject(providerResult);
     expect(calls[calls.length - 1]!.url).toBe('https://api.4dai.cc/v1/chat/completions');
     expect(calls[calls.length - 1]!.init!.body).toContain('data:image/png;base64,iVBORw==');
-    expect(calls[calls.length - 1]!.init!.timeoutMs).toBe(300_000);
+    expect(calls[calls.length - 1]!.init!.timeoutMs).toBe(600_000);
     expect(JSON.parse(String(calls[calls.length - 1]!.init!.body))).toMatchObject({
       max_tokens: 16_384,
     });

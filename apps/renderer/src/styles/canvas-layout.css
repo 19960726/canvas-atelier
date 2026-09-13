@@ -4506,6 +4506,93 @@
   .generated-image-action-menu { width: min(300px, calc(100vw - 24px)); }
 }
 
+.workspace--canvas-layout .canvas-arrange-button {
+  position: absolute;
+  z-index: 85;
+  top: 150px;
+  left: 124px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 13px;
+  color: var(--gate-text, var(--text));
+  background: color-mix(in srgb, var(--gate-card, var(--surface)) 94%, transparent);
+  border: 1px solid var(--gate-border-strong, var(--border-strong));
+  border-radius: 10px;
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 13%, transparent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+}
+
+.workspace--canvas-layout .canvas-arrange-button:hover {
+  color: var(--gate-accent, var(--accent));
+  border-color: var(--gate-accent, var(--accent));
+  background: var(--gate-accent-soft, var(--accent-soft));
+}
+
+.generated-image-lightbox__header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.generated-image-lightbox__dimensions {
+  min-width: max-content;
+  padding: 6px 9px;
+  color: var(--gate-text, var(--text));
+  background: var(--gate-card-muted, var(--surface-muted));
+  border: 1px solid var(--gate-border, var(--border));
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.generated-image-lightbox__copy-status {
+  min-width: max-content;
+  color: var(--gate-accent, var(--accent));
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.generated-image-lightbox__copy-status.is-failed { color: var(--danger, #dc5a62); }
+
+.generated-image-lightbox .generated-image-lightbox__header-actions > button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  color: var(--gate-text, var(--text));
+  background: var(--gate-card-muted, var(--surface-muted));
+  border: 1px solid var(--gate-border, var(--border));
+  border-radius: 10px;
+}
+
+.generated-image-lightbox .generated-image-lightbox__header-actions > .generated-image-lightbox__copy {
+  display: inline-flex;
+  width: auto;
+  min-width: 104px;
+  padding: 0 13px;
+  gap: 7px;
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .workspace--canvas-layout .canvas-arrange-button { top: 136px; left: 76px; }
+  .generated-image-lightbox__header { align-items: flex-start; }
+  .generated-image-lightbox__header-actions { flex-wrap: wrap; }
+  .generated-image-lightbox__copy-status { order: 3; width: 100%; text-align: right; }
+}
+
 /* Absolute final override for Canvas 9:2.  Keep this at EOF: older delivery
    blocks above still target the same nodes for compatibility, but the live
    canvas must follow the current Canvas layer contract. */

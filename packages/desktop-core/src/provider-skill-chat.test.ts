@@ -150,7 +150,7 @@ describe('executeSkillChat', () => {
     expect(String(system)).toContain('@图片1（产品参考）');
     expect(String(system)).toContain('@图片2（场景参考）');
     expect(String(system)).toContain('中文提示词、英文提示词、负面约束、执行清单');
-    expect(chat).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 4_096 }), 90_000);
+    expect(chat).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 4_096 }), 180_000);
   });
 
   it('uses the Gemini-native endpoint for a visual Agent request when the catalog declares it', async () => {
@@ -197,7 +197,7 @@ describe('executeSkillChat', () => {
           { inlineData: { mimeType: 'image/png', data: 'AQID' } },
         ]),
       })],
-    }), 90_000);
+    }), 180_000);
     expect(chat).not.toHaveBeenCalled();
   });
 
@@ -382,7 +382,7 @@ describe('executeSkillChat', () => {
           ]),
         }),
       ]),
-    }), 180_000);
+    }), 360_000);
   });
 
   it('rejects managed images for a Codex Responses route without an explicit vision capability', async () => {

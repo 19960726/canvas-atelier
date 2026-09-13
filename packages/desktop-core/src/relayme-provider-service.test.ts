@@ -893,7 +893,7 @@ describe('RelayMe provider service', () => {
       readonly mock: { readonly calls: readonly (readonly [string, { readonly body?: unknown; readonly timeoutMs?: number } | undefined])[] };
     }).mock.calls.find(([url]) => url.endsWith('/chat/completions'));
     const body = JSON.parse(String(chatCall?.[1]?.body));
-    expect(chatCall?.[1]?.timeoutMs).toBe(300_000);
+    expect(chatCall?.[1]?.timeoutMs).toBe(600_000);
     expect(body.max_tokens).toBe(16_384);
     expect(body.messages[0].content).toContain('使用深度反推');
     expect(body.messages.at(-1)).toEqual({
@@ -903,7 +903,7 @@ describe('RelayMe provider service', () => {
         { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw==' } },
       ],
     });
-    expect(chatSpy).toHaveBeenCalledWith(expect.any(Object), 300_000);
+    expect(chatSpy).toHaveBeenCalledWith(expect.any(Object), 600_000);
   });
 
   it('sends selected project memory and Codex reasoning strength to the RelayMe chat request', async () => {
@@ -1033,10 +1033,10 @@ describe('RelayMe provider service', () => {
       expect.objectContaining({
         method: 'POST',
         body: expect.stringMatching(/seedance-2-5-reverse[\s\S]*2026-08-21\.1[\s\S]*@图片1[\s\S]*data:image\/png;base64,iVBORw==/u),
-        timeoutMs: 300_000,
+        timeoutMs: 600_000,
       }),
     );
-    expect(chatSpy).toHaveBeenCalledWith(expect.any(Object), 300_000);
+    expect(chatSpy).toHaveBeenCalledWith(expect.any(Object), 600_000);
   });
 
   it('rejects a response-only RelayMe reverse profile before reading media or calling chat completions', async () => {

@@ -54,6 +54,7 @@ import { useCanvasDraft } from './use-canvas-draft';
 import { useViewportCulling } from './use-viewport-culling';
 import { initialGenerationEditorState, reduceGenerationEditorState } from './generation-editor-state';
 import { CONNECTED_MEDIA_DRAG_MIME, decodeConnectedMediaDragPayload } from './connected-media-drag';
+import { ProjectImageLightbox } from './ProjectImageLightbox';
 
 type PlacementNode = Extract<CanvasNode, { type: 'placement_preview' }>;
 
@@ -1047,6 +1048,7 @@ export function CanvasWorkspace() {
   const [activeFlowEdgeIds, setActiveFlowEdgeIds] = useState<string[]>([]);
   const [batchRoutingNotice, setBatchRoutingNotice] = useState<string | null>(null);
   const [modulePlacementNotice, setModulePlacementNotice] = useState<string | null>(null);
+  const [canvasImagePreviewIndex, setCanvasImagePreviewIndex] = useState<number | null>(null);
   useEffect(() => {
     setMcpCanvasSelection({ nodeIds: selectedFlowNodeIds, edgeIds: activeFlowEdgeIds });
     return () => resetMcpCanvasSelection();
@@ -1619,6 +1621,17 @@ export function CanvasWorkspace() {
 
   const handlePaneDoubleClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
     if (!(event.target instanceof Element)) return;
+    const image = event.target.closest('img');
+    if (image instanceof HTMLImageElement) {
+      const source = image.getAttribute('src') ?? image.currentSrc;
+      const previewIndex = projectImages.findIndex((asset) => asset.displayUrl === source || asset.displayUrl === image.currentSrc);
+      if (previewIndex >= 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        setCanvasImagePreviewIndex(previewIndex);
+        return;
+      }
+    }
     // React Flow's dotted background and SVG layers can be the actual event
     // target, even though the user double-clicked empty canvas. Treat every
     // descendant of the pane as blank canvas unless it belongs to a node,
@@ -1633,7 +1646,7 @@ export function CanvasWorkspace() {
     ].join(', '));
     if (blankCanvasLayer === null || !event.currentTarget.contains(blankCanvasLayer)) return;
     openQuickInsertAtScreenPosition({ x: event.clientX, y: event.clientY });
-  }, [openQuickInsertAtScreenPosition]);
+  }, [openQuickInsertAtScreenPosition, projectImages]);
 
   const handleCanvasDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
     const types = Array.from(event.dataTransfer.types);
@@ -2072,7 +2085,9 @@ export function CanvasWorkspace() {
           title="整理画布"
           onClick={() => { void handleArrangeCanvas(); }}
         >
-          <LayoutTemplate size={18} aria-hidden="true" />
+          <span className="toolrail__glyph" data-rail-icon="arrange" aria-hidden="true">
+            <LayoutTemplate size={18} />
+          </span>
         </button>
         {/* Retained as a non-rendered compatibility hook for persisted
             placement workflows; it is intentionally not part of the Canvas
@@ -2149,6 +2164,16 @@ export function CanvasWorkspace() {
           }
         }}
       >
+        <button
+          type="button"
+          className="canvas-arrange-button nodrag nopan"
+          data-testid="canvas-arrange-button"
+          title="自动整理并显示全部节点"
+          onClick={() => { void handleArrangeCanvas(); }}
+        >
+          <LayoutTemplate size={16} aria-hidden="true" />
+          <span>整理画布</span>
+        </button>
         <ReactFlow
           colorMode={theme.resolvedTheme}
           // Keep React Flow from mounting node/edge renderers that are outside
@@ -2289,6 +2314,16 @@ export function CanvasWorkspace() {
               setModuleLibraryOpen(true);
             }}
             onClose={() => setQuickInsert(null)}
+          />
+        )}
+        {canvasImagePreviewIndex !== null && projectImages[canvasImagePreviewIndex] !== undefined && (
+          <ProjectImageLightbox
+            asset={projectImages[canvasImagePreviewIndex]!}
+            index={canvasImagePreviewIndex}
+            total={projectImages.length}
+            onClose={() => setCanvasImagePreviewIndex(null)}
+            onPrevious={() => setCanvasImagePreviewIndex((current) => current === null ? null : (current + projectImages.length - 1) % projectImages.length)}
+            onNext={() => setCanvasImagePreviewIndex((current) => current === null ? null : (current + 1) % projectImages.length)}
           />
         )}
         <div className="canvas-context">

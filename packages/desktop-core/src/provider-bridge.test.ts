@@ -845,7 +845,7 @@ describe('Comfly provider service', () => {
     }
   });
 
-  it('keeps standard Gemini-native reverse alive after 30 seconds and forwards its three minute timeout', async () => {
+  it('keeps standard Gemini-native reverse alive after 30 seconds and forwards its six minute timeout', async () => {
     vi.useFakeTimers();
     const appDataRoot = await makeTempRoot();
     try {
@@ -876,7 +876,7 @@ describe('Comfly provider service', () => {
 
       const pending = service.analyzeReversePrompt!(request);
       await fetchStarted;
-      expect(capturedTimeoutMs).toBe(180_000);
+      expect(capturedTimeoutMs).toBe(360_000);
       await vi.advanceTimersByTimeAsync(30_001);
       expect(capturedSignal?.aborted).toBe(false);
       resolveFetch(jsonResponse({

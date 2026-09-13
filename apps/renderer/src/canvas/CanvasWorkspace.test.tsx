@@ -1213,6 +1213,48 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('quick-insert')).toBeVisible();
   });
 
+  it('keeps an obvious text-labelled arrange action visible over the canvas', () => {
+    const arrangeCanvas = vi.fn(async () => true);
+    useAppStore.setState({ arrangeCanvas } as never);
+    render(<CanvasWorkspace />);
+
+    const arrange = screen.getByTestId('canvas-arrange-button');
+    expect(arrange).toBeVisible();
+    expect(arrange).toHaveTextContent('整理画布');
+    fireEvent.click(arrange);
+    expect(arrangeCanvas).toHaveBeenCalledOnce();
+  });
+
+  it('opens a connected reverse material from any canvas thumbnail on double click', () => {
+    const asset = {
+      assetId: 'abababababababab', byteSize: 42,
+      displayUrl: 'novus-asset://project/session/abababababababab', extension: 'png' as const,
+      height: 1600, label: 'Reverse material', mediaType: 'image/png' as const,
+      origin: 'imported' as const, sha256: 'a'.repeat(64), usageCount: 1, width: 2400,
+    };
+    const source = createCanvasModuleNode('preview-source', 'image_input', { x: 80, y: 180 });
+    source.data.config = { assetId: asset.assetId };
+    const reverse = createCanvasModuleNode('preview-reverse', 'reverse_agent', { x: 420, y: 180 });
+    const state = useAppStore.getState();
+    useAppStore.setState({
+      projectImages: [asset],
+      project: {
+        ...state.project,
+        nodes: [source, reverse],
+        edges: [{ id: 'preview-edge', source: source.id, sourcePortId: 'image', target: reverse.id, targetPortId: 'references', order: 0 }],
+      },
+    } as never);
+
+    render(<CanvasWorkspace />);
+    const reverseNode = document.querySelector<HTMLElement>('.react-flow__node[data-id="preview-reverse"]')!;
+    const reverseThumbnail = reverseNode.querySelector<HTMLImageElement>(`img[src="${asset.displayUrl}"]`);
+    expect(reverseThumbnail).not.toBeNull();
+    fireEvent.doubleClick(reverseThumbnail!);
+
+    expect(screen.getByRole('dialog', { name: 'Generated image preview' })).toBeVisible();
+    expect(screen.getByLabelText('图片尺寸')).toHaveTextContent('2400 × 1600 px');
+  });
+
   it('matches the Canvas rail with visible actions and a topbar save affordance', () => {
     render(<CanvasWorkspace />);
 

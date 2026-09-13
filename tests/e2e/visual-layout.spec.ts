@@ -165,10 +165,12 @@ test('整理画布按连线层级排列全部节点并保存为一次可撤销�
     await e2e.connectModules('reverse_agent', 'analysis', 'reverse_result', 'analysis');
   });
 
-  await expect(page.getByRole('button', { name: '整理画布' })).toBeVisible();
+  const arrangeCanvasButton = page.getByTestId('canvas-arrange-button');
+  await expect(arrangeCanvasButton).toBeVisible();
+  await expect(arrangeCanvasButton).toContainText('整理画布');
   const before = await e2eState(page);
   const beforeCommitCount = before.commitCount;
-  await page.getByRole('button', { name: '整理画布' }).click();
+  await arrangeCanvasButton.click();
 
   await expect.poll(async () => (await e2eState(page)).commitCount).toBe(beforeCommitCount + 1);
   const after = await e2eState(page);
@@ -184,7 +186,7 @@ test('整理画布按连线层级排列全部节点并保存为一次可撤销�
   await expect.poll(async () => (await e2eState(page)).commitCount).toBeGreaterThan(beforeCommitCount + 1);
   expect((await e2eState(page)).modulePositions).toEqual(before.modulePositions);
 
-  await page.getByRole('button', { name: '整理画布' }).click();
+  await arrangeCanvasButton.click();
   await expect.poll(async () => (await e2eState(page)).commitCount).toBeGreaterThan(beforeCommitCount + 2);
   const persisted = await e2eState(page);
   await page.evaluate(() => window.__NOVUS_E2E__!.reopenProject());

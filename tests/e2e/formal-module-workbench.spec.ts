@@ -29,7 +29,7 @@ for (const theme of ['light', 'dark'] as const) {
     const imageWorkbench = page.locator('[data-module-type="image_generation"]');
     expect((await imageWorkbench.boundingBox())?.x).toBe(340);
     await expect(page.getByTestId('toolrail')).toHaveJSProperty('offsetWidth', 60);
-    await expect(page.getByTestId('toolrail')).toHaveJSProperty('offsetHeight', 390);
+    await expect(page.getByTestId('toolrail')).toHaveJSProperty('offsetHeight', 442);
     await expect(page.getByTestId('toolrail')).toHaveCSS('left', '52px');
     expect((await page.getByTestId('toolrail').boundingBox())?.y).toBe(142);
     await openAgentPanel(page);

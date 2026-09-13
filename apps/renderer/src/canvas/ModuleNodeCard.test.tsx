@@ -2056,6 +2056,32 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('img', { name: 'Generated image 1 full preview' })).toHaveAttribute('src', projectImage.displayUrl);
   });
 
+  it('shows exact dimensions and copies the image directly from the detail viewer', async () => {
+    const node = createCanvasModuleNode('image-lightbox-copy', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, resultState: 'fresh' };
+    const writeClipboardImage = vi.fn(async () => true);
+    window.novusDesktop = {
+      ...createPhotoshopDesktopBridge(vi.fn()),
+      projectImages: {
+        ...createPhotoshopDesktopBridge(vi.fn()).projectImages,
+        writeClipboardImage,
+      },
+    } as never;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(['image'], { type: 'image/png' }))));
+    useAppStore.setState({
+      projectImages: [projectImage],
+      modelJobs: [{ id: 'completed-copy-job', promptNodeId: node.id, status: 'completed', resultAssetId: projectImage.assetId }],
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    fireEvent.doubleClick(screen.getByRole('button', { name: 'Open image generation editor' }));
+
+    expect(screen.getByLabelText('图片尺寸')).toHaveTextContent('2 × 3 px');
+    fireEvent.click(screen.getByRole('button', { name: '复制图片' }));
+    await waitFor(() => expect(writeClipboardImage).toHaveBeenCalledOnce());
+    expect(screen.getByText('图片已复制，可直接粘贴使用')).toBeVisible();
+  });
+
   it('zooms the generated-image lightbox with the mouse wheel and resets the detail view', () => {
     const node = createCanvasModuleNode('image-lightbox-zoom', 'image_generation', { x: 0, y: 0 });
     node.data.config = { ...node.data.config, resultState: 'fresh' };
@@ -4805,6 +4831,18 @@ describe('ModuleNodeCard', () => {
     expect(document.querySelector('input[type="file"]')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '更换图像 / Replace image' }));
     expect(importImageForModule).toHaveBeenCalledWith('image-input');
+  });
+
+  it('opens an image-input material in the shared detail viewer on double click', () => {
+    const node = createCanvasModuleNode('image-input-preview', 'image_input', { x: 0, y: 0 });
+    node.data.config = { assetId: projectImage.assetId };
+    useAppStore.setState({ projectImages: [projectImage] } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    fireEvent.doubleClick(screen.getByRole('img', { name: projectImage.label }));
+
+    expect(screen.getByRole('dialog', { name: 'Generated image preview' })).toBeVisible();
+    expect(screen.getByLabelText('图片尺寸')).toHaveTextContent('2 × 3 px');
   });
 
   it('opens a real browser image picker in manual acceptance mode even when the desktop bridge is mocked', () => {

@@ -147,6 +147,8 @@ test('a completed generated image is visible inside its generation node', async 
   const lightbox = page.getByRole('dialog', { name: 'Generated image preview' });
   const detailViewer = page.getByLabel('Generated image detail viewer');
   await expect(lightbox).toBeVisible();
+  await expect(lightbox.getByLabel('图片尺寸')).toHaveText('1024 × 1024 px');
+  await expect(lightbox.getByRole('button', { name: '复制图片' })).toBeVisible();
   await expect(detailViewer).toHaveAttribute('data-zoomed', 'false');
   expect(await detailViewer.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe('rgb(16, 22, 28)');
 
@@ -160,6 +162,30 @@ test('a completed generated image is visible inside its generation node', async 
 
   await lightbox.getByRole('button', { name: 'Reset generated image zoom' }).click();
   await expect(lightbox.getByLabel('Generated image zoom level')).toHaveText('100%');
+});
+
+test('double-clicking a canvas material opens the shared detail viewer with exact dimensions', async ({ page }) => {
+  await openEmptyApp(page);
+  await page.evaluate(async () => {
+    await window.__NOVUS_E2E__!.createModule('image_input', { x: 260, y: 140 });
+  });
+  await queueProjectImageImport(page, makeReferenceImage(
+    'Material detail.png',
+    [74, 116, 92, 255],
+    { width: 2400, height: 1600 },
+  ));
+
+  const imageInput = page.locator('[data-module-type="image_input"]');
+  await imageInput.getByRole('button', { name: /Import image/u }).click();
+  await imageInput.getByRole('img', { name: 'Material detail' }).dblclick();
+
+  const lightbox = page.getByRole('dialog', { name: 'Generated image preview' });
+  await expect(lightbox).toBeVisible();
+  await expect(lightbox.getByLabel('图片尺寸')).toHaveText('2400 × 1600 px');
+  await expect(lightbox.getByRole('button', { name: '复制图片' })).toBeVisible();
+  await expect(lightbox).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(lightbox).toBeHidden();
 });
 
 test('a newly completed image returns to the result-only gallery without a prompt', async ({ page }) => {

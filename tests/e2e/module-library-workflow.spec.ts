@@ -402,9 +402,9 @@ test('pastes a clipboard image as one managed media node transaction', async ({ 
   expect(after.durableProjectContainsTransientImageUrl).toBe(false);
 });
 
-test('does not expose the retired hand tool in the seven-action Canvas rail', async ({ page }) => {
+test('does not expose the retired hand tool in the eight-action Canvas rail', async ({ page }) => {
   await openEmptyApp(page);
-  await expect(page.getByTestId('toolrail').locator('button:visible')).toHaveCount(7);
+  await expect(page.getByTestId('toolrail').locator('button:visible')).toHaveCount(8);
   await expect(page.getByTestId('tool-hand')).toHaveCount(0);
   await expect(page.getByTestId('tool-placement')).toBeHidden();
 });
