@@ -36,4 +36,22 @@ describe('arrangeCanvasNodePositions', () => {
     expect(first).toHaveLength(nodes.length);
     expect(first.every((entry) => Number.isFinite(entry.position.x) && Number.isFinite(entry.position.y))).toBe(true);
   });
+
+  it('packs a large source layer into a near-square grid before its dependent node', () => {
+    const sources = Array.from({ length: 10 }, (_, index) => (
+      node(`source-${String(index + 1).padStart(2, '0')}`, 'image_input', 20, index * 400)
+    ));
+    const agent = node('agent', 'reverse_agent', 1_200, 120);
+    const positions = arrangeCanvasNodePositions(
+      [...sources, agent],
+      sources.map((source, index) => ({ source: source.id, target: agent.id, order: index })),
+    );
+    const byId = new Map(positions.map((entry) => [entry.nodeId, entry.position]));
+    const sourcePositions = sources.map((source) => byId.get(source.id)!);
+
+    expect(new Set(sourcePositions.map((position) => position.x)).size).toBe(4);
+    expect(new Set(sourcePositions.map((position) => position.y)).size).toBe(3);
+    expect(new Set(sourcePositions.map((position) => `${position.x}:${position.y}`)).size).toBe(10);
+    expect(Math.max(...sourcePositions.map((position) => position.x))).toBeLessThan(byId.get(agent.id)!.x);
+  });
 });

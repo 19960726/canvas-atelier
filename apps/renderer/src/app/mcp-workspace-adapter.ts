@@ -441,6 +441,40 @@ function planWorkflow(
       pendingPaidJobs.delete(requestId);
       mcpUiConfirmationStore.dismiss(requestId);
     }
+    const executeResolvedRun = async (projectId: string): Promise<CanvasMcpResponse> => {
+      const run = resolvedRoute === undefined
+        ? await source.runNode(nodeId)
+        : await source.runNode(nodeId, {
+          projectId,
+          expectedRevision,
+          provider: resolvedRoute.provider,
+          modelRoute: resolvedRoute.modelRoute,
+        });
+      if (!run.started || run.jobIds.length === 0) return error('JOB_START_FAILED', 'Canvas Atelier could not start a trackable managed model job.', {
+        nodeId,
+        jobKind,
+        outputCount,
+        ...(provider === undefined ? {} : { provider }),
+        modelRoute,
+      });
+      return success({
+        started: true,
+        nodeId,
+        jobKind,
+        outputCount,
+        ...(provider === undefined ? {} : { provider }),
+        modelRoute,
+        jobIds: [...run.jobIds],
+      });
+    };
+    if (jobKind === 'image') {
+      for (const [requestId, candidate] of pendingPaidJobs) {
+        if (candidate.projectId !== expectedProjectId || candidate.nodeId !== nodeId || candidate.jobKind !== 'image') continue;
+        pendingPaidJobs.delete(requestId);
+        mcpUiConfirmationStore.dismiss(requestId);
+      }
+      return executeResolvedRun(expectedProjectId);
+    }
     let pending = [...pendingPaidJobs.values()].find((candidate) => candidate.projectId === expectedProjectId
       && candidate.nodeId === nodeId
       && candidate.expectedRevision === expectedRevision
@@ -518,30 +552,7 @@ function planWorkflow(
     });
     pendingPaidJobs.delete(pending.requestId);
     mcpUiConfirmationStore.dismiss(pending.requestId);
-    const run = resolvedRoute === undefined
-      ? await source.runNode(nodeId)
-      : await source.runNode(nodeId, {
-        projectId: pending.projectId,
-        expectedRevision,
-        provider: resolvedRoute.provider,
-        modelRoute: resolvedRoute.modelRoute,
-      });
-    if (!run.started || run.jobIds.length === 0) return error('JOB_START_FAILED', 'Canvas Atelier could not start a trackable managed model job.', {
-      nodeId,
-      jobKind,
-      outputCount,
-      ...(provider === undefined ? {} : { provider }),
-      modelRoute,
-    });
-    return success({
-      started: true,
-      nodeId,
-      jobKind,
-      outputCount,
-      ...(provider === undefined ? {} : { provider }),
-      modelRoute,
-      jobIds: [...run.jobIds],
-    });
+    return executeResolvedRun(pending.projectId);
   }
 
 function confirmPlan(planId: string): McpConfirmationGrant {
@@ -800,7 +811,10 @@ function paidJobOutputCount(
   value: unknown,
 ): PaidJobConfirmationSubject['outputCount'] {
   if (jobKind === 'reverse') return 1;
-  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4
+  const supportsOutputCount = typeof value === 'number'
+    && Number.isInteger(value)
+    && (value >= 1 && value <= 4 || jobKind === 'image' && value === 9);
+  return supportsOutputCount
     ? value as PaidJobConfirmationSubject['outputCount']
     : 1;
 }

@@ -220,7 +220,7 @@ export class JournalWriter {
     if (existing !== undefined) {
       if (existing.requestSha256 !== requestSha256) {
         throw createPersistenceError(
-          'CORRUPT_JOURNAL',
+          'INVALID_REQUEST',
           false,
           'Transaction id was already committed with different content',
         );
@@ -896,7 +896,7 @@ function normalizeCommitRequest(request: CommitRequest, projectId: string): Comm
     request.baseRevision < 0 ||
     !isJournalTransactionKind(request.kind)
   ) {
-    throw corruptJournal('Commit request schema is invalid');
+    throw createPersistenceError('INVALID_REQUEST', false, 'Commit request schema is invalid');
   }
 
   try {
@@ -907,7 +907,7 @@ function normalizeCommitRequest(request: CommitRequest, projectId: string): Comm
       transaction: projectTransactionSchema.parse(request.transaction),
     };
   } catch (error) {
-    throw corruptJournal('Commit transaction schema is invalid', error);
+    throw createPersistenceError('INVALID_REQUEST', false, 'Commit transaction schema is invalid', error);
   }
 }
 

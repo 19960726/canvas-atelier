@@ -115,7 +115,9 @@ export function App() {
       void useAppStore.getState().saveProjectExplicitly();
     };
     const handleUndoShortcut = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || (!event.ctrlKey && !event.metaKey) || event.altKey || event.key.toLowerCase() !== 'z') return;
+      const standardUndo = (event.ctrlKey || event.metaKey) && !event.altKey;
+      const alternateUndo = event.altKey && !event.ctrlKey && !event.metaKey;
+      if (event.defaultPrevented || (!standardUndo && !alternateUndo) || event.shiftKey || event.key.toLowerCase() !== 'z') return;
       if (event.repeat || isEditableShortcutTarget(event.target)) return;
       event.preventDefault();
       void useAppStore.getState().undo();

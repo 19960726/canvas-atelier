@@ -427,8 +427,28 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     expect(source.commitProjectTransaction).not.toHaveBeenCalled();
   });
 
-  it('requires separate paid confirmation before running image, video, or reverse nodes', async () => {
-    const first = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
+  it('starts Codex image generation directly without publishing a UI confirmation', async () => {
+    await expect(adapter.handle({
+      tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1',
+    })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        started: true,
+        nodeId: 'image-1',
+        jobKind: 'image',
+        outputCount: 1,
+        jobIds: ['job-started-1'],
+      },
+    });
+    expect(source.runNode).toHaveBeenCalledOnce();
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+  });
+
+  it('requires separate paid confirmation before running video nodes', async () => {
+    const video = createCanvasModuleNode('video-1', 'video_generation', { x: 320, y: 0 });
+    video.data.config = { prompt: 'Studio product video', modelRoute: 'video-default' };
+    project = parseCanvasProject({ ...project, nodes: [video], edges: [] });
+    const first = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'video-1' });
     expect(first).toMatchObject({
       ok: false,
       error: {
@@ -439,12 +459,15 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     });
     const requestId = readErrorDetailString(first, 'requestId');
     const grant = adapter.confirmPaidJob(requestId);
-    await expect(adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1', confirmationToken: grant.token })).resolves.toMatchObject({ ok: true, result: { started: true, jobIds: ['job-started-1'] } });
-    expect(source.runNode).toHaveBeenCalledWith('image-1');
+    await expect(adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'video-1', confirmationToken: grant.token })).resolves.toMatchObject({ ok: true, result: { started: true, jobIds: ['job-started-1'] } });
+    expect(source.runNode).toHaveBeenCalledWith('video-1');
   });
 
   it('returns a one-time paid approval code after Canvas Atelier confirmation and accepts it on the final retry', async () => {
-    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'image-1' };
+    const video = createCanvasModuleNode('video-1', 'video_generation', { x: 320, y: 0 });
+    video.data.config = { prompt: 'Studio product video', modelRoute: 'video-default' };
+    project = parseCanvasProject({ ...project, nodes: [video], edges: [] });
+    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'video-1' };
     const first = await adapter.handle(request);
     const requestId = readErrorDetailString(first, 'requestId');
     expect(first).toMatchObject({
@@ -453,7 +476,7 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     });
 
     expect(mcpUiConfirmationStore.getSnapshot()).toEqual([
-      expect.objectContaining({ id: requestId, kind: 'paid_job', nodeId: 'image-1', outputCount: 1 }),
+      expect.objectContaining({ id: requestId, kind: 'paid_job', nodeId: 'video-1', outputCount: 1 }),
     ]);
     mcpUiConfirmationStore.confirm(requestId);
 
@@ -469,7 +492,7 @@ it('returns the one-time workflow token when the approved plan is retried exactl
 
     await expect(adapter.handle({ ...request, confirmationToken: approvalCode })).resolves.toMatchObject({
       ok: true,
-      result: { started: true, nodeId: 'image-1', jobKind: 'image', jobIds: ['job-started-1'] },
+      result: { started: true, nodeId: 'video-1', jobKind: 'video', jobIds: ['job-started-1'] },
     });
     expect(source.runNode).toHaveBeenCalledOnce();
     expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
@@ -477,37 +500,48 @@ it('returns the one-time workflow token when the approved plan is retried exactl
 
   it.each([
     { moduleType: 'image_generation' as const, jobKind: 'image', configuredOutputCount: 3, outputCount: 3 },
+    { moduleType: 'image_generation' as const, jobKind: 'image', configuredOutputCount: 9, outputCount: 9 },
     { moduleType: 'video_generation' as const, jobKind: 'video', configuredOutputCount: 4, outputCount: 4 },
     { moduleType: 'reverse_agent' as const, jobKind: 'reverse', configuredOutputCount: 4, outputCount: 1 },
     { moduleType: 'image_generation' as const, jobKind: 'image', configuredOutputCount: 5, outputCount: 1 },
     { moduleType: 'video_generation' as const, jobKind: 'video', configuredOutputCount: 2.5, outputCount: 1 },
-  ])('normalizes $moduleType paid output quantity before confirmation', async ({ moduleType, jobKind, configuredOutputCount, outputCount }) => {
+  ])('normalizes $moduleType output quantity before direct execution or confirmation', async ({ moduleType, jobKind, configuredOutputCount, outputCount }) => {
     const paidNode = createCanvasModuleNode('paid-1', moduleType, { x: 320, y: 0 });
     paidNode.data.config = { modelRoute: 'paid-route', outputCount: configuredOutputCount };
     project = parseCanvasProject({ ...project, nodes: [paidNode], edges: [] });
 
     const response = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'paid-1' });
-    expect(response).toMatchObject({
-      ok: false,
-      error: {
-        code: 'PAID_CONFIRMATION_REQUIRED',
-        details: { nodeId: 'paid-1', jobKind, outputCount },
-      },
-    });
-    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([
-      expect.objectContaining({ nodeId: 'paid-1', jobKind, outputCount }),
-    ]);
+    if (jobKind === 'image') {
+      expect(response).toMatchObject({
+        ok: true,
+        result: { started: true, nodeId: 'paid-1', jobKind, outputCount },
+      });
+      expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
+    } else {
+      expect(response).toMatchObject({
+        ok: false,
+        error: {
+          code: 'PAID_CONFIRMATION_REQUIRED',
+          details: { nodeId: 'paid-1', jobKind, outputCount },
+        },
+      });
+      expect(mcpUiConfirmationStore.getSnapshot()).toEqual([
+        expect.objectContaining({ nodeId: 'paid-1', jobKind, outputCount }),
+      ]);
+    }
   });
 
-  it('rejects a paid approval when the image output quantity changes', async () => {
-    const image = project.nodes.find((node) => node.id === 'image-1');
-    if (image?.type !== 'module') throw new Error('image node missing');
-    image.data.config = { ...image.data.config, outputCount: 2 };
-    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'image-1' };
+  it('rejects a paid approval when the video output quantity changes', async () => {
+    const video = createCanvasModuleNode('video-1', 'video_generation', { x: 320, y: 0 });
+    video.data.config = { prompt: 'Studio product video', modelRoute: 'video-default', outputCount: 2 };
+    project = parseCanvasProject({ ...project, nodes: [video], edges: [] });
+    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'video-1' };
     const first = await adapter.handle(request);
     const requestId = readErrorDetailString(first, 'requestId');
     const grant = adapter.confirmPaidJob(requestId);
-    image.data.config = { ...image.data.config, outputCount: 3 };
+    const currentVideo = project.nodes.find((node) => node.id === 'video-1');
+    if (currentVideo?.type !== 'module') throw new Error('video node missing');
+    currentVideo.data.config = { ...currentVideo.data.config, outputCount: 3 };
 
     await expect(adapter.handle({ ...request, confirmationToken: grant.token })).resolves.toMatchObject({
       ok: false,
@@ -519,7 +553,7 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     expect(source.runNode).not.toHaveBeenCalled();
   });
 
-  it('binds paid confirmation to the provider route that runtime will actually execute', async () => {
+  it('binds direct Codex image execution to the provider route that runtime will actually execute', async () => {
     const image = project.nodes.find((node) => node.id === 'image-1');
     if (image?.type !== 'module') throw new Error('image node missing');
     image.data.config = { prompt: 'Studio product image', resolution: '4K' };
@@ -527,34 +561,16 @@ it('returns the one-time workflow token when the approved plan is retried exactl
       resolvePaidJobRoute: vi.fn(async () => ({ provider: '4dai', modelRoute: '4dai-gpt-image-1-5' })),
     });
 
-    const first = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
-    expect(first).toMatchObject({
-      ok: false,
-      error: {
-        code: 'PAID_CONFIRMATION_REQUIRED',
-        details: {
-          provider: '4dai',
-          modelRoute: '4dai-gpt-image-1-5',
-        },
-      },
-    });
-    const requestId = readErrorDetailString(first, 'requestId');
-    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([
-      expect.objectContaining({
-        id: requestId,
-        kind: 'paid_job',
+    const response = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
+    expect(response).toMatchObject({
+      ok: true,
+      result: {
+        started: true,
         provider: '4dai',
         modelRoute: '4dai-gpt-image-1-5',
-      }),
-    ]);
-
-    const grant = adapter.confirmPaidJob(requestId);
-    await expect(adapter.handle({
-      tool: 'canvas_run_node',
-      expectedRevision: 4,
-      nodeId: 'image-1',
-      confirmationToken: grant.token,
-    })).resolves.toMatchObject({ ok: true, result: { started: true } });
+      },
+    });
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
     expect(source.runNode).toHaveBeenCalledWith('image-1', {
       projectId: 'project-1',
       expectedRevision: 4,
@@ -608,13 +624,10 @@ it('returns the one-time workflow token when the approved plan is retried exactl
         });
       },
     },
-  ])('does not consume or run an approved paid job after a same-revision $label change during route resolution', async ({ changeProject }) => {
+  ])('does not run direct image generation after a same-revision $label change during route resolution', async ({ changeProject }) => {
     const route = { provider: '4dai' as const, modelRoute: '4dai-gpt-image-1-5' };
-    let deferRoute = false;
     let releaseRoute: ((value: typeof route) => void) | undefined;
-    const resolvePaidJobRoute = vi.fn(() => deferRoute
-      ? new Promise<typeof route>((resolve) => { releaseRoute = resolve; })
-      : Promise.resolve(route));
+    const resolvePaidJobRoute = vi.fn(() => new Promise<typeof route>((resolve) => { releaseRoute = resolve; }));
     Object.assign(source, { resolvePaidJobRoute });
     const confirmations = createMcpConfirmationStore({
       now: () => 10_000,
@@ -625,22 +638,19 @@ it('returns the one-time workflow token when the approved plan is retried exactl
       getPermissions: () => ({ ...DEFAULT_MCP_PERMISSION_FLAGS, dangerousOperations: true, externalFileAccess: true }),
     });
     const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'image-1' };
-    const first = await adapter.handle(request);
-    const grant = adapter.confirmPaidJob(readErrorDetailString(first, 'requestId'));
-
-    deferRoute = true;
-    const approvedRetry = adapter.handle({ ...request, confirmationToken: grant.token });
-    expect(resolvePaidJobRoute).toHaveBeenCalledTimes(2);
+    const directRun = adapter.handle(request);
+    expect(resolvePaidJobRoute).toHaveBeenCalledTimes(1);
     project = changeProject(project);
     if (releaseRoute === undefined) throw new Error('paid route resolver was not deferred');
     releaseRoute(route);
 
-    await expect(approvedRetry).resolves.toMatchObject({
+    await expect(directRun).resolves.toMatchObject({
       ok: false,
       error: { code: 'PROJECT_REVISION_CONFLICT', details: { currentRevision: 4 } },
     });
     expect(source.runNode).not.toHaveBeenCalled();
     expect(consumePaidJob).not.toHaveBeenCalled();
+    expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
   });
 
   it('does not create a paid confirmation for another project that reuses the same revision and node id', async () => {
@@ -667,16 +677,16 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     expect(mcpUiConfirmationStore.getSnapshot()).toEqual([]);
   });
 
-  it('requires a fresh paid confirmation when the resolved provider route changes', async () => {
-    const image = project.nodes.find((node) => node.id === 'image-1');
-    if (image?.type !== 'module') throw new Error('image node missing');
-    image.data.config = { prompt: 'Studio product image', resolution: '4K' };
+  it('requires a fresh paid confirmation when the resolved video provider route changes', async () => {
+    const video = createCanvasModuleNode('video-1', 'video_generation', { x: 320, y: 0 });
+    video.data.config = { prompt: 'Studio product video', modelRoute: 'video-default' };
+    project = parseCanvasProject({ ...project, nodes: [video], edges: [] });
     let resolvedRoute = { provider: '4dai', modelRoute: '4dai-gpt-image-1-5' };
     Object.assign(source, {
       resolvePaidJobRoute: vi.fn(async () => resolvedRoute),
     });
 
-    const first = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
+    const first = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'video-1' });
     const oldRequestId = readErrorDetailString(first, 'requestId');
     const oldGrant = adapter.confirmPaidJob(oldRequestId);
     resolvedRoute = { provider: 'comfly', modelRoute: 'comfly-gpt-image-2' };
@@ -684,7 +694,7 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     await expect(adapter.handle({
       tool: 'canvas_run_node',
       expectedRevision: 4,
-      nodeId: 'image-1',
+      nodeId: 'video-1',
       confirmationToken: oldGrant.token,
     })).resolves.toMatchObject({
       ok: false,
@@ -692,7 +702,7 @@ it('returns the one-time workflow token when the approved plan is retried exactl
     });
     expect(source.runNode).not.toHaveBeenCalled();
 
-    const refreshed = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'image-1' });
+    const refreshed = await adapter.handle({ tool: 'canvas_run_node', expectedRevision: 4, nodeId: 'video-1' });
     expect(refreshed).toMatchObject({
       ok: false,
       error: {
@@ -708,7 +718,10 @@ it('returns the one-time workflow token when the approved plan is retried exactl
 
   it('creates a fresh paid confirmation after an approved run fails to start', async () => {
     vi.mocked(source.runNode).mockResolvedValueOnce({ started: false, jobIds: [] });
-    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'image-1' };
+    const video = createCanvasModuleNode('video-1', 'video_generation', { x: 320, y: 0 });
+    video.data.config = { prompt: 'Studio product video', modelRoute: 'video-default' };
+    project = parseCanvasProject({ ...project, nodes: [video], edges: [] });
+    const request = { tool: 'canvas_run_node' as const, expectedRevision: 4, nodeId: 'video-1' };
     const first = await adapter.handle(request);
     const firstRequestId = readErrorDetailString(first, 'requestId');
     const grant = adapter.confirmPaidJob(firstRequestId);

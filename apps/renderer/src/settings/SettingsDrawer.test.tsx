@@ -1199,6 +1199,7 @@ describe('SettingsDrawer', () => {
     expect(confirmation).toBeVisible();
     expect(confirmation).toHaveTextContent('只写入 Canvas Atelier 这一项');
     expect(confirmation).toHaveTextContent('canvas_atelier');
+    expect(confirmation).toHaveTextContent('MCP 生图节点直接执行；视频、反推与受保护工作流分别确认');
     expect(confirmation).not.toHaveTextContent(/CanvasForge|canvasforge/u);
     fireEvent.click(screen.getByRole('button', { name: 'Confirm WorkBuddy config write' }));
     await waitFor(() => expect(connect).toHaveBeenCalledWith('workbuddy'));
@@ -1292,6 +1293,8 @@ it('keeps safe permission defaults and the workflow capability summary below the
     expect(screen.getByRole('checkbox', { name: '外部文件读写' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: '危险操作' })).not.toBeChecked();
     expect(screen.getByText('本机工作流协议 v1')).toBeVisible();
+    expect(screen.getByText('权限保存在本机，并可由 MCP 画布执行层读取；MCP 生图节点直接执行，视频、反推与删除仍需单独确认。')).toBeVisible();
+    expect(screen.getByText('MCP 生图节点直接执行；受保护工作流先预览确认')).toBeVisible();
     expect(screen.getByTestId('settings-mcp-card')).not.toHaveTextContent(/CanvasForge|canvasforge/u);
   });
 

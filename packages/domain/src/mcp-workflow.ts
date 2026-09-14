@@ -319,7 +319,7 @@ export const CANVAS_MCP_TOOL_DEFINITIONS: readonly CanvasMcpToolDefinition[] = O
   tool('canvas_connect_nodes', 'Connect nodes', 'Connect compatible source and target ports.', connectNodesRequestSchema),
   tool('canvas_move_nodes', 'Move nodes', 'Move one or more nodes in one transaction.', moveNodesRequestSchema),
   tool('canvas_delete_selection', 'Delete selection', 'Delete the current confirmed selection.', deleteSelectionRequestSchema),
-  tool('canvas_run_node', 'Run node', 'Run one node after any paid-job confirmation.', runNodeRequestSchema),
+  tool('canvas_run_node', 'Run node', 'Run an image node directly, or a video or reverse node after paid-job confirmation.', runNodeRequestSchema),
   tool('canvas_cancel_job', 'Cancel job', 'Cancel one managed Canvas Atelier job.', cancelJobRequestSchema),
   tool('canvas_import_media', 'Import media', 'Ask Canvas Atelier to open its own image or video picker.', importMediaRequestSchema),
 ]);

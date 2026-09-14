@@ -101,13 +101,21 @@ export function arrangeCanvasNodePositions(
   let x = START_X;
   for (const layerIndex of [...layers.keys()].sort((left, right) => left - right)) {
     const layer = layers.get(layerIndex)!;
-    const columnWidth = Math.max(...layer.map((node) => (NODE_SIZES[node.moduleType] ?? FALLBACK_NODE_SIZE).width));
-    let y = START_Y;
-    for (const node of layer) {
-      positions.push({ nodeId: node.id, position: { x, y } });
-      y += (NODE_SIZES[node.moduleType] ?? FALLBACK_NODE_SIZE).height + ROW_GAP;
+    const columnCount = Math.ceil(Math.sqrt(layer.length));
+    const cellWidth = Math.max(...layer.map((node) => (NODE_SIZES[node.moduleType] ?? FALLBACK_NODE_SIZE).width));
+    const cellHeight = Math.max(...layer.map((node) => (NODE_SIZES[node.moduleType] ?? FALLBACK_NODE_SIZE).height));
+    for (const [index, node] of layer.entries()) {
+      const column = index % columnCount;
+      const row = Math.floor(index / columnCount);
+      positions.push({
+        nodeId: node.id,
+        position: {
+          x: x + column * (cellWidth + COLUMN_GAP),
+          y: START_Y + row * (cellHeight + ROW_GAP),
+        },
+      });
     }
-    x += columnWidth + COLUMN_GAP;
+    x += columnCount * cellWidth + columnCount * COLUMN_GAP;
   }
   return positions;
 }

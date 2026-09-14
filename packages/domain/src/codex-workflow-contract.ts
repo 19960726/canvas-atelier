@@ -65,8 +65,9 @@ export function createCodexWorkflowContract(): CodexWorkflowContract {
     permissions: DEFAULT_MCP_PERMISSION_FLAGS,
     safetyRules: Object.freeze([
       'never expose provider API keys or credential material',
-      'generate workflow plans for user confirmation before mutating the canvas',
-      'do not execute paid image, video, or reverse-prompt jobs without explicit user confirmation',
+      'use direct non-destructive canvas mutations under the configured edit permission',
+      'MCP image generation may execute directly when executeAiGeneration is enabled',
+      'do not execute paid video or reverse-prompt jobs without explicit user confirmation',
       'external file access and destructive operations are disabled by default',
     ]),
     workflowPlanFormat: Object.freeze({

@@ -9,6 +9,22 @@ afterEach(() => {
 });
 
 describe('renderer E2E harness', () => {
+  it('round-trips a bounded MCP request through the renderer acceptance bridge', async () => {
+    installRendererE2EHarness();
+    window.novusDesktop!.mcpRuntime.onRequest(({ requestId, request }) => {
+      expect(request).toEqual({ tool: 'canvas_read_workflow' });
+      window.novusDesktop!.mcpRuntime.respond({
+        requestId,
+        response: { ok: true, result: { protocol: 'e2e', revision: 0 } },
+      });
+    });
+
+    await expect(window.__NOVUS_E2E__!.invokeMcp({ tool: 'canvas_read_workflow' })).resolves.toEqual({
+      ok: true,
+      result: { protocol: 'e2e', revision: 0 },
+    });
+  });
+
   it('binds a generated image fixture job to the active project and source node', async () => {
     installRendererE2EHarness();
     await window.__NOVUS_E2E__!.resetEmpty();

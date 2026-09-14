@@ -47,6 +47,7 @@ type E2EState = {
     id: string;
     imageQuality?: 'low' | 'medium' | 'high';
     modelRoute: string;
+    outputCount?: 1 | 2 | 3 | 4;
     provider?: 'comfly' | 'relayme' | 'julun' | '4dai';
     resolution?: '1K' | '2K' | '4K';
     retryCount: number;

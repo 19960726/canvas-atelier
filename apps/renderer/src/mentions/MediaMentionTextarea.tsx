@@ -1,5 +1,7 @@
 import {
+  forwardRef,
   useLayoutEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -27,11 +29,15 @@ export interface MediaMentionTextareaProps extends Omit<TextareaHTMLAttributes<H
   readonly onCanonicalSelectionChange?: (selection: MediaMentionSelection) => void;
 }
 
+export interface MediaMentionTextareaHandle {
+  applyEdit(nextValue: string, selection?: MediaMentionSelection): void;
+}
+
 type CanonicalSelection = MediaMentionSelection;
 
 const BLOCK_ELEMENTS = new Set(['ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DIV', 'FOOTER', 'HEADER', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'MAIN', 'NAV', 'P', 'PRE', 'SECTION']);
 
-export function MediaMentionTextarea({
+export const MediaMentionTextarea = forwardRef<MediaMentionTextareaHandle, MediaMentionTextareaProps>(function MediaMentionTextarea({
   value,
   mentions = [],
   onCanonicalSelectionChange,
@@ -49,7 +55,7 @@ export function MediaMentionTextarea({
   style,
   tabIndex,
   ...textareaAttributes
-}: MediaMentionTextareaProps) {
+}: MediaMentionTextareaProps, forwardedRef) {
   const editorRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const lastEmittedValueRef = useRef(value);
@@ -89,6 +95,26 @@ export function MediaMentionTextarea({
     lastCanonicalSelectionRef.current = selection;
     onCanonicalSelectionChangeRef.current?.(selection);
   };
+  const pushUndoValue = (previousValue: string) => {
+    if (undoStackRef.current[undoStackRef.current.length - 1] !== previousValue) undoStackRef.current.push(previousValue);
+    if (undoStackRef.current.length > 100) undoStackRef.current.splice(0, undoStackRef.current.length - 100);
+  };
+
+  useImperativeHandle(forwardedRef, () => ({
+    applyEdit(nextValue, requestedSelection) {
+      const editor = editorRef.current;
+      if (editor === null || disabledRef.current || readOnlyRef.current) return;
+      const previousValue = lastEmittedValueRef.current;
+      const selection = requestedSelection ?? { start: nextValue.length, end: nextValue.length };
+      if (nextValue !== previousValue) pushUndoValue(previousValue);
+      rebuildEditor(editor, nextValue, previewsRef.current, setActiveToken);
+      lastEmittedValueRef.current = nextValue;
+      editor.focus();
+      restoreCanonicalSelection(editor, selection);
+      publishCanonicalSelection(editor);
+      if (nextValue !== previousValue) emitTextareaChange(onChangeRef.current, nextValue);
+    },
+  }), []);
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
@@ -141,11 +167,7 @@ export function MediaMentionTextarea({
   const emitValue = (editor: HTMLDivElement, recordUndo = true) => {
     const nextValue = serializeEditor(editor);
     if (nextValue === lastEmittedValueRef.current) return;
-    if (recordUndo) {
-      const previousValue = lastEmittedValueRef.current;
-      if (undoStackRef.current[undoStackRef.current.length - 1] !== previousValue) undoStackRef.current.push(previousValue);
-      if (undoStackRef.current.length > 100) undoStackRef.current.splice(0, undoStackRef.current.length - 100);
-    }
+    if (recordUndo) pushUndoValue(lastEmittedValueRef.current);
     lastEmittedValueRef.current = nextValue;
     emitTextareaChange(onChange, nextValue);
   };
@@ -169,7 +191,9 @@ export function MediaMentionTextarea({
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     onKeyDown?.(event as unknown as KeyboardEvent<HTMLTextAreaElement>);
     if (event.defaultPrevented || disabled || readOnly || composingRef.current) return;
-    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLocaleLowerCase() === 'z') {
+    const standardUndo = (event.ctrlKey || event.metaKey) && !event.altKey;
+    const alternateUndo = event.altKey && !event.ctrlKey && !event.metaKey;
+    if ((standardUndo || alternateUndo) && !event.shiftKey && event.key.toLocaleLowerCase() === 'z') {
       const previousValue = undoStackRef.current.pop();
       if (previousValue === undefined) return;
       event.preventDefault();
@@ -210,6 +234,7 @@ export function MediaMentionTextarea({
       aria-multiline="true"
       aria-disabled={disabled || undefined}
       aria-readonly={readOnly || undefined}
+      aria-keyshortcuts="Control+Z Meta+Z Alt+Z"
       contentEditable={!disabled && !readOnly}
       suppressContentEditableWarning
       className={`media-mention-textarea__editor${className ? ` ${className}` : ''}`}
@@ -230,7 +255,7 @@ export function MediaMentionTextarea({
       <span><strong>{activeSegment.text}</strong><small>{activePreview.label}</small></span>
     </aside>}
   </div>;
-}
+});
 
 function emitTextareaChange(
   onChange: MediaMentionTextareaProps['onChange'],

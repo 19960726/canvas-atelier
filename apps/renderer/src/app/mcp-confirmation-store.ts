@@ -15,7 +15,7 @@ export interface WorkflowConfirmationSubject {
   readonly mutationHash: string;
 }
 
-export type PaidJobOutputCount = 1 | 2 | 3 | 4;
+export type PaidJobOutputCount = 1 | 2 | 3 | 4 | 9;
 
 export interface PaidJobConfirmationSubject {
   readonly nodeId: string;

@@ -9,10 +9,15 @@ const closers: Array<() => Promise<void>> = [];
 afterEach(async () => { await Promise.all(closers.splice(0).map((close) => close())); });
 
 describe('Canvas Atelier stdio MCP server contract', () => {
-  it('instructs clients to retry confirmed workflow and paid requests to retrieve one-time approval codes', () => {
+  it('instructs clients to edit and generate images directly while confirming guarded workflows and paid video or reverse jobs', () => {
+    expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('prefer the direct canvas_create_node, canvas_update_node, canvas_connect_nodes, and canvas_move_nodes tools');
+    expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('do not require a workflow confirmation');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('retry the exact same canvas_plan_workflow request');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('approvalCode');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('canvas_apply_workflow.confirmationToken');
+    expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('first canvas_run_node call for an image_generation node starts the job directly');
+    expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('without a confirmationToken or an in-app confirmation');
+    expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('Video and reverse paid job confirmation');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('retry the same canvas_run_node request without confirmationToken');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('call canvas_run_node again with confirmationToken set to approvalCode');
     expect(CANVAS_ATELIER_MCP_INSTRUCTIONS).toContain('jobIds');

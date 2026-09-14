@@ -2042,6 +2042,26 @@ describe('CanvasWorkspace', () => {
     await waitFor(() => expect(useAppStore.getState().project.nodes.map((item) => item.id)).toEqual([selectedNode.id]));
   });
 
+  it('restores a node deleted from the canvas when Alt+Z is pressed', async () => {
+    const selectedNode = createCanvasModuleNode('undo-delete-with-alt-z', 'text_prompt', { x: 80, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [selectedNode] },
+      undoStack: [],
+    }));
+    render(<CanvasWorkspace />);
+    const node = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(node).not.toBeNull();
+
+    fireEvent.click(node!);
+    fireEvent.keyDown(window, { key: 'Delete' });
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+
+    fireEvent.keyDown(window, { key: 'z', altKey: true });
+
+    await waitFor(() => expect(useAppStore.getState().project.nodes.map((item) => item.id)).toEqual([selectedNode.id]));
+  });
+
   it('keeps Ctrl+Z inside an editable field instead of undoing the background canvas', async () => {
     const selectedNode = createCanvasModuleNode('undo-delete-editable', 'text_prompt', { x: 80, y: 120 });
     resetAppStoreForTests({ project: 'empty' });
@@ -2062,6 +2082,29 @@ describe('CanvasWorkspace', () => {
 
     expect(useAppStore.getState().project.nodes).toHaveLength(0);
     expect(useAppStore.getState().undoStack).toHaveLength(1);
+  });
+
+  it('keeps Alt+Z inside an editable field instead of undoing the background canvas', async () => {
+    const selectedNode = createCanvasModuleNode('undo-alt-z-editable', 'text_prompt', { x: 80, y: 120 });
+    resetAppStoreForTests({ project: 'empty' });
+    useAppStore.setState((state) => ({
+      project: { ...state.project, nodes: [selectedNode] },
+      undoStack: [],
+    }));
+    render(<CanvasWorkspace />);
+    const node = document.querySelector<HTMLElement>('.react-flow__node');
+    expect(node).not.toBeNull();
+    fireEvent.click(node!);
+    fireEvent.keyDown(window, { key: 'Delete' });
+    await waitFor(() => expect(useAppStore.getState().project.nodes).toHaveLength(0));
+
+    const editor = document.createElement('textarea');
+    document.body.append(editor);
+    fireEvent.keyDown(editor, { key: 'z', altKey: true });
+
+    expect(useAppStore.getState().project.nodes).toHaveLength(0);
+    expect(useAppStore.getState().undoStack).toHaveLength(1);
+    editor.remove();
   });
 
   it('deletes a selected node after a read-only session is automatically promoted', async () => {

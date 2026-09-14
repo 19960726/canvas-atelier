@@ -1,7 +1,8 @@
+import { createRef } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MediaMentionTextarea } from './MediaMentionTextarea';
+import { MediaMentionTextarea, type MediaMentionTextareaHandle } from './MediaMentionTextarea';
 
 afterEach(() => cleanup());
 
@@ -169,6 +170,37 @@ describe('MediaMentionTextarea', () => {
 
     expect(eventValue(onChange)).toBe('原文');
     expect(editor).toHaveTextContent('原文');
+  });
+
+  it('uses Alt+Z to undo the latest prompt edit without routing to the canvas', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<MediaMentionTextarea aria-label="Prompt" value="保留原文" onChange={onChange} />);
+    const editor = screen.getByRole('textbox', { name: 'Prompt' });
+    setCaret(editor.firstChild ?? editor, 4);
+
+    editor.textContent = '保留原文 @图片1';
+    fireEvent.input(editor, { inputType: 'insertText', data: '@图片1' });
+    rerender(<MediaMentionTextarea aria-label="Prompt" value="保留原文 @图片1" onChange={onChange} />);
+
+    fireEvent.keyDown(editor, { key: 'z', altKey: true });
+
+    expect(eventValue(onChange)).toBe('保留原文');
+    expect(editor).toHaveTextContent('保留原文');
+  });
+
+  it('keeps picker-applied edits in the same undo history as typed prompt text', () => {
+    const onChange = vi.fn();
+    const editorRef = createRef<MediaMentionTextareaHandle>();
+    render(<MediaMentionTextarea ref={editorRef} aria-label="Prompt" value="原有方案文案" onChange={onChange} />);
+    const editor = screen.getByRole('textbox', { name: 'Prompt' });
+
+    editorRef.current?.applyEdit('原有方案文案 @图片1', { start: 13, end: 13 });
+    expect(eventValue(onChange)).toBe('原有方案文案 @图片1');
+
+    fireEvent.keyDown(editor, { key: 'z', altKey: true });
+
+    expect(eventValue(onChange)).toBe('原有方案文案');
+    expect(editor).toHaveTextContent('原有方案文案');
   });
 
   it('does not emit during composition and emits once on composition end', () => {

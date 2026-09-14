@@ -15,6 +15,8 @@ import {
   skillPromotionCandidateSchema,
   type CanvasModuleType,
   type CanvasModuleExecutionState,
+  type CanvasMcpRequest,
+  type CanvasMcpResponse,
   type CanvasProject,
   type CanvasModuleNode,
   type ModelJob,
@@ -70,6 +72,11 @@ const e2eVerifiedComflyVideoModelIds = new Set([
   'wan2.2-t2v-plus',
 ]);
 
+type E2eMcpRequestListener = (request: {
+  readonly requestId: string;
+  readonly request: CanvasMcpRequest;
+}) => void | Promise<void>;
+
 interface RuntimeState {
   activeProvider: ProviderBridgeProfile['provider'] | null;
   assetSequence: number;
@@ -83,8 +90,11 @@ interface RuntimeState {
   knowledgeListeners: Set<(states: KnowledgeBaseStateSummary[]) => void>;
   knowledgeStates: KnowledgeBaseStateSummary[];
   managedRules: Map<string, string>;
+  mcpListeners: Set<E2eMcpRequestListener>;
+  mcpPendingResponses: Map<string, (response: CanvasMcpResponse) => void>;
+  mcpRequestSequence: number;
   modelCancellationMode: 'complete' | 'hang';
-  modelSubmissions: Array<Pick<ModelJob, 'aspectRatio' | 'conversationId' | 'id' | 'imageQuality' | 'modelRoute' | 'provider' | 'resolution' | 'retryCount'>>;
+  modelSubmissions: Array<Pick<ModelJob, 'aspectRatio' | 'conversationId' | 'id' | 'imageQuality' | 'modelRoute' | 'outputCount' | 'provider' | 'resolution' | 'retryCount'>>;
   pendingImageImports: Array<{
     byteSize: number;
     height: number;
@@ -136,6 +146,27 @@ export function installRendererE2EHarness(): void {
 
   window.__NOVUS_E2E__ = {
     nonce: e2eNonce,
+    async invokeMcp(request) {
+      const listeners = [...runtime.mcpListeners];
+      const listener = listeners[listeners.length - 1];
+      if (listener === undefined) throw new Error('E2E MCP renderer listener is unavailable');
+      const requestId = `e2e-mcp-request-${++runtime.mcpRequestSequence}`;
+      return new Promise<CanvasMcpResponse>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          runtime.mcpPendingResponses.delete(requestId);
+          reject(new Error('E2E MCP renderer response timed out'));
+        }, 5_000);
+        runtime.mcpPendingResponses.set(requestId, (response) => {
+          window.clearTimeout(timer);
+          resolve(response);
+        });
+        void Promise.resolve(listener({ requestId, request })).catch((error) => {
+          window.clearTimeout(timer);
+          runtime.mcpPendingResponses.delete(requestId);
+          reject(error);
+        });
+      });
+    },
     async reset() {
       runtime.currentProject = createStarterProject();
       runtime.assetSequence = 0;
@@ -409,6 +440,9 @@ function createRuntimeState(): RuntimeState {
     knowledgeListeners: new Set(),
     knowledgeStates: [],
     managedRules: new Map(),
+    mcpListeners: new Set(),
+    mcpPendingResponses: new Map(),
+    mcpRequestSequence: 0,
     modelCancellationMode: 'complete',
     modelSubmissions: [],
     pendingImageImports: [],
@@ -804,6 +838,20 @@ async function seedModuleStressGraph(runtime: RuntimeState, nodeCount: number, e
 
 function createE2EProviderBridge(runtime: RuntimeState): typeof window.novusDesktop {
   return {
+    mcpRuntime: {
+      getStatus: async () => ({ state: 'running' as const, rendererConnected: true, serverVersion: 'e2e', toolCount: 14 as const, lastError: null }),
+      onRequest: (listener: E2eMcpRequestListener) => {
+        runtime.mcpListeners.add(listener);
+        return () => runtime.mcpListeners.delete(listener);
+      },
+      respond: ({ requestId, response }: { readonly requestId: string; readonly response: CanvasMcpResponse }) => {
+        const resolve = runtime.mcpPendingResponses.get(requestId);
+        if (resolve === undefined) return false;
+        runtime.mcpPendingResponses.delete(requestId);
+        resolve(response);
+        return true;
+      },
+    },
     projectImages: {
       importToPhotoshop: async () => ({ ok: true as const, layerName: 'Browser Photoshop mock' }),
     },
@@ -1335,6 +1383,7 @@ function createModelExecutor(runtime: RuntimeState): ModelJobExecutor {
         id: job.id,
         imageQuality: job.imageQuality,
         modelRoute: job.modelRoute,
+        outputCount: job.outputCount,
         provider: job.provider,
         resolution: job.resolution,
         retryCount: job.retryCount,
@@ -1546,6 +1595,7 @@ declare global {
         config?: Record<string, unknown>;
         execution?: { state: CanvasModuleExecutionState; latestExecutionId?: string };
       }): Promise<boolean>;
+      invokeMcp(request: CanvasMcpRequest): Promise<CanvasMcpResponse>;
       seedGeneratedImageResult(outputCount?: 1 | 2 | 3 | 4): Promise<boolean>;
       getState(): {
         commitCount: number;
@@ -1561,7 +1611,7 @@ declare global {
           position: { x: number; y: number };
         }>;
         modelJobs: Array<Pick<ModelJob, 'conversationId' | 'id' | 'modelRoute' | 'retryCount' | 'status'>>;
-        modelSubmissions: Array<Pick<ModelJob, 'aspectRatio' | 'conversationId' | 'id' | 'imageQuality' | 'modelRoute' | 'provider' | 'resolution' | 'retryCount'>>;
+        modelSubmissions: Array<Pick<ModelJob, 'aspectRatio' | 'conversationId' | 'id' | 'imageQuality' | 'modelRoute' | 'outputCount' | 'provider' | 'resolution' | 'retryCount'>>;
         projectAssetIds: string[];
         projectImages: Array<Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;
         projectVideos: Array<Pick<ProjectVideoAssetSummary, 'assetId' | 'displayUrl' | 'label'>>;

@@ -40,7 +40,7 @@ import { readVideoGenerationResults } from './video-generation-results';
 import { supportsGenerationReferences } from '../agent/generation-preferences';
 import { AspectRatioPopover, ClarityPopover } from './GenerationParameterPopover';
 import { buildReverseResultSections, formatReverseResultDocument } from './reverse-result-sections';
-import { MediaMentionTextarea, type MediaMentionPreview, type MediaMentionSelection } from '../mentions/MediaMentionTextarea';
+import { MediaMentionTextarea, type MediaMentionPreview, type MediaMentionSelection, type MediaMentionTextareaHandle } from '../mentions/MediaMentionTextarea';
 import { selectSavedProviderModelDefault } from '../settings/provider-model-defaults';
 import { copyProjectImageToClipboard, ProjectImageLightbox } from './ProjectImageLightbox';
 
@@ -810,6 +810,7 @@ function VideoGenerationSummary({
   const mentionPreviews = useMemo(() => buildMediaMentionPreviews(connectedImages, projectVideos.filter((asset) => connectedMedia.some((item) => item.kind === 'video' && item.assetId === asset.assetId))), [connectedImages, connectedMedia, projectVideos]);
   const [prompt, setPrompt] = useExternallyHydratedDraftState(readNonEmptyString(config.prompt) ?? '');
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
+  const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>(() => readStringArray(config.referenceAssetIds));
@@ -1062,6 +1063,7 @@ function VideoGenerationSummary({
               <span>提示词</span>
             </div>
             <MediaMentionTextarea
+              ref={promptEditorRef}
               className="module-node__prompt-editor"
               data-mention-context="video"
               aria-label="Video preview prompt"
@@ -1084,9 +1086,8 @@ function VideoGenerationSummary({
             />
             {mentionPickerOpen && <PromptImageMentionMenu images={connectedImages} prompt={prompt} selection={promptSelectionRef.current} onSelect={(asset, position) => {
               const token = imageMentionTokenAt(position);
-              const nextPrompt = insertImageMention(prompt, token, connectedImages, promptSelectionRef.current);
-              setPrompt(nextPrompt);
-              void persistVideoPromptDraft(nextPrompt);
+              const edit = createImageMentionEdit(prompt, token, connectedImages, promptSelectionRef.current);
+              promptEditorRef.current?.applyEdit(edit.value, edit.selection);
               setMentionedReferenceAssetIds((current) => mergeAssetIds(current, [asset.assetId]));
               setMentionPickerOpen(false);
             }} />}
@@ -1243,6 +1244,7 @@ function ImageGenerationSummary({
   const mentionPreviews = useMemo(() => buildMediaMentionPreviews(connectedImages, projectVideos.filter((asset) => connectedMedia.some((item) => item.kind === 'video' && item.assetId === asset.assetId))), [connectedImages, connectedMedia, projectVideos]);
   const [prompt, setPrompt] = useExternallyHydratedDraftState(readNonEmptyString(config.prompt) ?? '');
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
+  const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>([]);
@@ -1623,6 +1625,7 @@ function ImageGenerationSummary({
           <section className="module-node__prompt-workspace nodrag nopan" aria-label="Image generation prompt workspace" onPointerDown={stopCanvasPointer}>
             <span>提示词</span>
             <MediaMentionTextarea
+              ref={promptEditorRef}
               className="module-node__prompt-editor"
               data-mention-context="image"
               aria-label="Image generation prompt"
@@ -1650,9 +1653,8 @@ function ImageGenerationSummary({
                 selection={promptSelectionRef.current}
                 onSelect={(asset, position) => {
                   const token = imageMentionTokenAt(position);
-                  const nextPrompt = insertImageMention(prompt, token, connectedImages, promptSelectionRef.current);
-                  setPrompt(nextPrompt);
-                  void persistImagePromptDraft(nextPrompt);
+                  const edit = createImageMentionEdit(prompt, token, connectedImages, promptSelectionRef.current);
+                  promptEditorRef.current?.applyEdit(edit.value, edit.selection);
                   setMentionedReferenceAssetIds((current) => mergeAssetIds(current, [asset.assetId]));
                   setMentionPickerOpen(false);
                 }}
@@ -1890,9 +1892,9 @@ function PromptImageMentionMenu({
   </div>;
 }
 
-// Mentions may be typed anywhere in a sentence. Stop at whitespace or Chinese
-// punctuation so `前文@，后文` is still an active empty-query mention.
-const IMAGE_MENTION_CANDIDATE_PATTERN = /@[^\s@，。！？；：、（）【】《》“”‘’「」『』]*/gu;
+// Mentions may be typed anywhere in a sentence. Stop at whitespace or common
+// punctuation so `前文@，后文` and `Use @, keep lighting` remain empty-query mentions.
+const IMAGE_MENTION_CANDIDATE_PATTERN = /@[^\s@,，.。!！?？;；:：、()（）\[\]【】<>《》"“”'‘’「」『』]*/gu;
 
 function imageMentionCandidates(prompt: string): RegExpMatchArray[] {
   return Array.from(prompt.matchAll(IMAGE_MENTION_CANDIDATE_PATTERN));
@@ -1904,7 +1906,7 @@ function isImageMentionQueryActive(
   selection?: MediaMentionSelection | null,
 ): boolean {
   if (selection !== undefined && selection !== null) {
-    return unresolvedImageMentionAtSelection(prompt, images, selection) !== undefined;
+    if (unresolvedImageMentionAtSelection(prompt, images, selection) !== undefined) return true;
   }
   const canonicalTokens = new Set(images.map((_, position) => imageMentionTokenAt(position)));
   return imageMentionCandidates(prompt).some((match) => !canonicalTokens.has(match[0]));
@@ -1935,10 +1937,17 @@ function unresolvedImageMentionAtSelection(
       && !knownTokens.has(candidate[0]));
   const match = candidates[candidates.length - 1];
   if (match === undefined || match.index === undefined) return undefined;
-  const queryEnd = Math.max(match.index + 1, Math.min(normalized.end, match.index + match[0].length));
+  const matchEnd = match.index + match[0].length;
+  const queryEnd = Math.max(match.index + 1, Math.min(normalized.end, matchEnd));
+  // With no punctuation or whitespace after the caret, the regex cannot know
+  // whether the remaining characters are query text or ordinary prose. Treat
+  // the real caret as the replacement boundary at end of input so later prose
+  // is never deleted. A delimited candidate keeps the established whole-token
+  // replacement behavior even when the caret sits inside its query.
+  const replacementEnd = matchEnd === prompt.length && queryEnd < matchEnd ? queryEnd : matchEnd;
   return {
     start: match.index,
-    end: match.index + match[0].length,
+    end: replacementEnd,
     text: match[0],
     query: prompt.slice(match.index + 1, queryEnd),
   };
@@ -1964,29 +1973,36 @@ function readImageMentionQuery(
   return selectedMatch?.query ?? lastUnresolvedImageMentionCandidate(prompt, images)?.[0].slice(1) ?? '';
 }
 
-function insertImageMention(
+function createImageMentionEdit(
   prompt: string,
   mention: string,
   images: readonly ProjectImageAssetSummary[] = [],
   selection?: MediaMentionSelection | null,
-): string {
+): { readonly value: string; readonly selection: MediaMentionSelection } {
   const token = mention.startsWith('@') ? mention : `@${mention}`;
   const normalizedSelection = normalizeMediaMentionSelection(prompt, selection);
   const selectedMatch = normalizedSelection === null
     ? undefined
     : unresolvedImageMentionAtSelection(prompt, images, normalizedSelection);
   if (selectedMatch !== undefined) {
-    return `${prompt.slice(0, selectedMatch.start)}${token}${prompt.slice(selectedMatch.end)}`;
+    const value = `${prompt.slice(0, selectedMatch.start)}${token}${prompt.slice(selectedMatch.end)}`;
+    const caret = selectedMatch.start + token.length;
+    return { value, selection: { start: caret, end: caret } };
   }
-  if (normalizedSelection !== null) {
-    return `${prompt.slice(0, normalizedSelection.start)}${token}${prompt.slice(normalizedSelection.end)}`;
+  if (normalizedSelection !== null && normalizedSelection.start === normalizedSelection.end) {
+    const value = `${prompt.slice(0, normalizedSelection.start)}${token}${prompt.slice(normalizedSelection.end)}`;
+    const caret = normalizedSelection.start + token.length;
+    return { value, selection: { start: caret, end: caret } };
   }
   const match = lastUnresolvedImageMentionCandidate(prompt, images);
   if (!match || typeof match.index !== 'number') {
     const trimmed = prompt.trimEnd();
-    return `${trimmed}${trimmed.length > 0 ? ' ' : ''}${token}`;
+    const value = `${trimmed}${trimmed.length > 0 ? ' ' : ''}${token}`;
+    return { value, selection: { start: value.length, end: value.length } };
   }
-  return `${prompt.slice(0, match.index)}${token}${prompt.slice(match.index + match[0].length)}`;
+  const value = `${prompt.slice(0, match.index)}${token}${prompt.slice(match.index + match[0].length)}`;
+  const caret = match.index + token.length;
+  return { value, selection: { start: caret, end: caret } };
 }
 
 function imageMentionToken(images: readonly ProjectImageAssetSummary[], assetId: string): string {
@@ -2261,6 +2277,7 @@ function ReverseAgentSummary({
     config.analysisDepth === 'fast' || config.analysisDepth === 'deep' ? config.analysisDepth : 'standard'
   ));
   const taskSelectionRef = useRef<MediaMentionSelection | null>(null);
+  const taskEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const reverseTextEdited = useRef(false);
   const setRoleDraft: typeof setRole = (nextRole) => {
     reverseTextEdited.current = true;
@@ -2502,7 +2519,7 @@ function ReverseAgentSummary({
               const nextRole = event.target.value;
               setRoleDraft(nextRole);
             }} /></label>
-            <label><span>反推任务</span><MediaMentionTextarea data-mention-context="reverse" aria-label="Analysis task" value={task} mentions={mentionPreviews} onCanonicalSelectionChange={(selection) => { taskSelectionRef.current = selection; }} rows={5} placeholder="提取构图、材质、镜头与提示词" onChange={(event) => {
+            <label><span>反推任务</span><MediaMentionTextarea ref={taskEditorRef} data-mention-context="reverse" aria-label="Analysis task" value={task} mentions={mentionPreviews} onCanonicalSelectionChange={(selection) => { taskSelectionRef.current = selection; }} rows={5} placeholder="提取构图、材质、镜头与提示词" onChange={(event) => {
               const nextTask = event.target.value;
               setTaskDraft(nextTask);
               setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextTask, connectedImages));
@@ -2514,9 +2531,9 @@ function ReverseAgentSummary({
              {mentionPickerOpen && (
                <PromptImageMentionMenu images={connectedImages} prompt={task} selection={taskSelectionRef.current} onSelect={(asset, position) => {
                   const token = imageMentionTokenAt(position);
-                 const nextTask = insertImageMention(task, token, connectedImages, taskSelectionRef.current);
+                 const edit = createImageMentionEdit(task, token, connectedImages, taskSelectionRef.current);
                  const nextReferenceAssetIds = mergeAssetIds(mentionedReferenceAssetIds, [asset.assetId]);
-                 setTaskDraft(nextTask);
+                 taskEditorRef.current?.applyEdit(edit.value, edit.selection);
                  setMentionedReferenceAssetIds(nextReferenceAssetIds);
                  setMentionPickerOpen(false);
                }} />

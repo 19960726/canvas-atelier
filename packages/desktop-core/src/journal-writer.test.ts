@@ -68,7 +68,8 @@ describe('JournalWriter', () => {
   it('rejects a duplicate transaction id with a different payload without appending', async () => {
     const { activeJournal, writer } = await createWriter(tempRoots);
     const request = makeRequest('tx-conflicting-duplicate');
-    await writer.commit(request);
+    const originalAck = await writer.commit(request);
+    const originalJournal = await readFile(activeJournal, 'utf8');
 
     await expect(
       writer.commit({
@@ -78,17 +79,73 @@ describe('JournalWriter', () => {
           label: 'different payload',
         },
       }),
-    ).rejects.toMatchObject({ code: 'CORRUPT_JOURNAL' });
+    ).rejects.toMatchObject({ code: 'INVALID_REQUEST', retryable: false });
 
-    expect((await readValidJournal(activeJournal)).records).toHaveLength(1);
+    expect(await readFile(activeJournal, 'utf8')).toBe(originalJournal);
+    await expect(writer.commit(request)).resolves.toEqual(originalAck);
+    await expect(writer.commit(makeRequest('tx-after-conflicting-duplicate', 1))).resolves.toMatchObject({
+      revision: 2,
+      sequence: 2,
+    });
+    expect((await readValidJournal(activeJournal, { committedOnly: true })).records
+      .map((record) => record.transactionId)).toEqual([
+      'tx-conflicting-duplicate',
+      'tx-after-conflicting-duplicate',
+    ]);
   });
 
-  it('rejects a stale base revision without appending', async () => {
+  it.each<[string, (request: CommitRequest) => CommitRequest]>([
+    ['wrong project id', (request) => ({ ...request, projectId: 'previous-project' })],
+    ['negative base revision', (request) => ({ ...request, baseRevision: -1 })],
+    ['fractional base revision', (request) => ({ ...request, baseRevision: 0.5 })],
+    ['invalid kind', (request) => ({ ...request, kind: 'invalid-kind' as CommitRequest['kind'] })],
+    ['empty transaction id', (request) => ({ ...request, transaction: { ...request.transaction, id: '' } })],
+    ['empty transaction label', (request) => ({ ...request, transaction: { ...request.transaction, label: '' } })],
+    ['empty transaction operations', (request) => ({ ...request, transaction: { ...request.transaction, operations: [] } })],
+  ])('rejects %s as an invalid request and keeps the writer usable', async (_name, makeInvalidRequest) => {
     const { activeJournal, writer } = await createWriter(tempRoots);
-    const request = makeRequest('tx-stale', 9);
+    const originalRequest = makeRequest('tx-before-invalid');
+    const originalAck = await writer.commit(originalRequest);
+    const originalJournal = await readFile(activeJournal, 'utf8');
+    const originalBoundary = await readFile(`${activeJournal}.commit.json`, 'utf8');
+    const validRequest = makeRequest('tx-after-invalid', 1);
 
-    await expect(writer.commit(request)).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
-    expect(await readFile(activeJournal, 'utf8')).toBe('');
+    await expect(writer.commit(makeInvalidRequest(validRequest))).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+      retryable: false,
+    });
+
+    expect(await readFile(activeJournal, 'utf8')).toBe(originalJournal);
+    expect(await readFile(`${activeJournal}.commit.json`, 'utf8')).toBe(originalBoundary);
+    await expect(writer.commit(originalRequest)).resolves.toEqual(originalAck);
+    await expect(writer.commit(validRequest)).resolves.toMatchObject({
+      projectId: 'project-journal',
+      transactionId: 'tx-after-invalid',
+      revision: 2,
+      sequence: 2,
+    });
+    const read = await readValidJournal(activeJournal, { committedOnly: true });
+    const replayed = replayJournal(makeProject(), 0, read.records);
+    expect(replayed.revision).toBe(2);
+    expect(replayed.project.nodes.map((node) => node.id)).toEqual([
+      'prompt-tx-before-invalid',
+      'prompt-tx-after-invalid',
+    ]);
+  });
+
+  it.each([0, 2])('rejects conflicting base revision %i without blocking a corrected request', async (baseRevision) => {
+    const { activeJournal, writer } = await createWriter(tempRoots);
+    await writer.commit(makeRequest('tx-before-stale'));
+    const originalJournal = await readFile(activeJournal, 'utf8');
+    const request = makeRequest('tx-stale', baseRevision);
+
+    await expect(writer.commit(request)).rejects.toMatchObject({ code: 'REVISION_CONFLICT', retryable: true });
+    expect(await readFile(activeJournal, 'utf8')).toBe(originalJournal);
+    await expect(writer.commit({ ...request, baseRevision: 1 })).resolves.toMatchObject({
+      transactionId: 'tx-stale',
+      revision: 2,
+      sequence: 2,
+    });
   });
 
   it('serializes concurrent commits by sequence and revision', async () => {

@@ -521,7 +521,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const imageOutputCount = requestedImageOutputCount ?? 1;
     if (usesVerifiedProviderDefaults
       && imageConstraints?.outputCounts !== undefined
-      && !imageConstraints.outputCounts.includes(input.executionRoute === undefined ? 1 : imageOutputCount as 1 | 2 | 3 | 4)) {
+      && !imageConstraints.outputCounts.includes(1)) {
       throw createGenerationStartError(
         'GENERATION_PARAMETERS_UNSUPPORTED',
         'Selected image route does not support one-image batch requests',

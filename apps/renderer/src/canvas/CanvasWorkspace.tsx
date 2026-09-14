@@ -1745,14 +1745,16 @@ export function CanvasWorkspace() {
 
   useEffect(() => {
     const handleCanvasKeyboardShortcut = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.altKey) return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      if (event.defaultPrevented) return;
+      const standardUndo = (event.ctrlKey || event.metaKey) && !event.altKey;
+      const alternateUndo = event.altKey && !event.ctrlKey && !event.metaKey;
+      if ((standardUndo || alternateUndo) && !event.shiftKey && event.key.toLowerCase() === 'z') {
         if (event.repeat || isEditableKeyboardTarget(event.target)) return;
         event.preventDefault();
         void undo();
         return;
       }
-      if (event.ctrlKey || event.metaKey) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.key === 'Delete' || event.key === 'Backspace') {
         if (isEditableKeyboardTarget(event.target) || event.repeat) return;
         cancelClipboardImageImportBatch();

@@ -2540,6 +2540,94 @@ describe('ModuleNodeCard', () => {
     expect(editor).toHaveValue('开头 @图片1 保留  @另一个候选  结尾');
   });
 
+  it('preserves existing prompt prose when the image picker opens from a stale text selection', () => {
+    const node = createCanvasModuleNode('generator-stale-selection', 'image_generation', { x: 0, y: 0 });
+    const source = createCanvasModuleNode('generator-stale-selection-source', 'image_input', { x: -320, y: 0 });
+    source.data.config = { assetId: projectImage.assetId };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [source, node],
+        edges: [{ id: 'generator-stale-selection-edge', source: source.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 0 }],
+      },
+    } as never);
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'image-gen', displayName: 'Image Gen', modelId: 'image-gen', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    const editor = screen.getByLabelText('Image generation prompt');
+    fireEvent.change(editor, { target: { value: '必须保留的完整文案' } });
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+
+    fireEvent.keyDown(editor, { key: '@' });
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+
+    expect(editor).toHaveValue('必须保留的完整文案 @图片1');
+  });
+
+  it('keeps two distinct image citations in the prompt and sends both references', () => {
+    const secondImage = {
+      ...projectImage,
+      assetId: 'fedcba0123456789',
+      displayUrl: 'novus-asset://project/session/fedcba0123456789',
+      label: 'Scene reference',
+      sha256: 'fedcba0123456789fedcba0123456789fedcba0123456789fedcba0123456789',
+    };
+    const node = createCanvasModuleNode('generator-two-mentions', 'image_generation', { x: 0, y: 0 });
+    const firstSource = createCanvasModuleNode('generator-two-mentions-first', 'image_input', { x: -320, y: 0 });
+    firstSource.data.config = { assetId: projectImage.assetId };
+    const secondSource = createCanvasModuleNode('generator-two-mentions-second', 'image_input', { x: -320, y: 380 });
+    secondSource.data.config = { assetId: secondImage.assetId };
+    const runImageGenerationNode = vi.fn(async () => true);
+    useAppStore.setState({
+      projectImages: [projectImage, secondImage],
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [firstSource, secondSource, node],
+        edges: [
+          { id: 'generator-two-mentions-edge-1', source: firstSource.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 0 },
+          { id: 'generator-two-mentions-edge-2', source: secondSource.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 1 },
+        ],
+      },
+      runImageGenerationNode,
+    } as never);
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'image-gen', displayName: 'Image Gen', modelId: 'image-gen', capabilities: ['image_generation', 'image_edit'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    const editor = screen.getByLabelText('Image generation prompt');
+    fireEvent.change(editor, { target: { value: '@' } });
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+
+    editor.append(document.createTextNode('，继续参考 @'));
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.input(editor);
+    fireEvent.click(screen.getByRole('menuitem', { name: secondImage.label }));
+
+    expect(editor).toHaveValue('@图片1，继续参考 @图片2');
+    fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
+    expect(runImageGenerationNode).toHaveBeenCalledWith(node.id, expect.objectContaining({
+      referenceAssetIds: [projectImage.assetId, secondImage.assetId],
+    }));
+  });
+
   it('replaces the whole unresolved token when the caret is inside its query', () => {
     const node = createCanvasModuleNode('generator-inner-query-caret', 'image_generation', { x: 0, y: 0 });
     const source = createCanvasModuleNode('generator-inner-query-caret-source', 'image_input', { x: -320, y: 0 });
@@ -5634,26 +5722,45 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
 
     const editor = screen.getByLabelText('Analysis task');
+    const inputAtCaret = (value: string, caretOffset: number) => {
+      editor.textContent = value;
+      editor.focus();
+      // Replacing textContent does not move the DOM caret as browser typing does.
+      const range = document.createRange();
+      range.setStart(editor.firstChild!, caretOffset);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      fireEvent.input(editor, { inputType: 'insertText' });
+    };
     fireEvent.keyDown(editor, { key: '@' });
     expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
-    fireEvent.input(editor, { target: { textContent: '@' } });
+    inputAtCaret('@', 1);
 
     expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
-      fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
-      expect(editor).toHaveTextContent('图片1');
-      expect((editor as HTMLDivElement & { value?: string }).value).toBe('@图片1');
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+    expect(editor).toHaveTextContent('图片1');
+    expect((editor as HTMLDivElement & { value?: string }).value).toBe('@图片1');
 
-      fireEvent.input(editor, { target: { textContent: '前文@，后文' } });
-      expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
-      fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
-      expect((editor as HTMLDivElement & { value?: string }).value).toBe('前文@图片1，后文');
+    inputAtCaret('前文@，后文', '前文@'.length);
+    expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+    expect((editor as HTMLDivElement & { value?: string }).value).toBe('前文@图片1，后文');
 
-      fireEvent.input(editor, { target: { textContent: '前文@摄像机焦距还有后文' } });
-      expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+    inputAtCaret('前文@摄像机焦距还有后文', '前文@摄像机焦距'.length);
+    expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+    expect((editor as HTMLDivElement & { value?: string }).value).toBe('前文@图片1还有后文');
 
-      fireEvent.input(editor, { target: { textContent: '在已有引用前新增@，后面保留@图片1' } });
-      expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
-    });
+    inputAtCaret('Use @, keep lighting', 'Use @'.length);
+    expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+    expect((editor as HTMLDivElement & { value?: string }).value).toBe('Use @图片1, keep lighting');
+
+    inputAtCaret('在已有引用前新增@，后面保留@图片1', '在已有引用前新增@'.length);
+    expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+  });
 
   it('inserts a reverse-node reference at its real caret and leaves later unresolved mentions intact', () => {
     const image = createCanvasModuleNode('reverse-caret-source', 'image_input', { x: 0, y: 0 });

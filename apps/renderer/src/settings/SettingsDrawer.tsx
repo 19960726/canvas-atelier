@@ -140,7 +140,7 @@ const MCP_PERMISSION_ITEMS: readonly {
   { key: 'readCanvas', label: '读取画布', description: '读取公开节点、连线、选中项和受管任务状态；不返回密钥或本地路径。' },
   { key: 'editCanvas', label: '编辑画布', description: '创建、更新、连接和移动受支持的画布节点。' },
   { key: 'manageCanvas', label: '管理画布', description: '预留权限；当前 MCP 没有新建、切换、重命名或复制整张画布的工具。' },
-  { key: 'executeAiGeneration', label: '执行 AI 生成', description: '运行反推、生图和视频节点；付费任务仍需在画布中单独确认。' },
+  { key: 'executeAiGeneration', label: '执行 AI 生成', description: '运行反推、生图和视频节点；MCP 生图节点直接执行，视频与反推仍需在画布中单独确认。' },
   { key: 'exportFiles', label: '导出文件', description: '预留权限；当前 MCP 没有导出文件工具。' },
   { key: 'externalFileAccess', label: '外部文件读写', description: '只能打开 Canvas Atelier 自己的图片或视频选择器；MCP 不能读写任意外部路径。' },
   { key: 'dangerousOperations', label: '危险操作', description: '允许请求删除当前选中内容；仍需一次性确认，不提供覆盖文件或恢复快照。', tone: 'danger' },
@@ -1210,7 +1210,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
                 {formatMcpRuntimeState(mcpRuntimeStatus?.state)}
               </b>
             </header>
-            <p>让 Codex 与 WorkBuddy 读取节点能力、规划工作流，并在 Canvas Atelier 内完成确认后写入画布。</p>
+            <p>让 Codex 与 WorkBuddy 读取节点能力并直接完成常规编辑；受保护工作流在 Canvas Atelier 内确认后写入。</p>
 
             <article className="settings-mcp-server" role="region" aria-label="Canvas Atelier MCP server">
               <div className="settings-mcp-server__identity">
@@ -1276,7 +1276,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
                 <div><dt>服务名</dt><dd>canvas_atelier</dd></div>
                 <div><dt>传输</dt><dd>stdio</dd></div>
                 <div><dt>工具</dt><dd>14</dd></div>
-                <div><dt>授权</dt><dd>工作流写入与付费任务分别确认</dd></div>
+                <div><dt>授权</dt><dd>MCP 生图节点直接执行；视频、反推与受保护工作流分别确认</dd></div>
               </dl>
               <div>
                 <button type="button" className="settings-section__secondary" onClick={() => setPendingMcpConnect(null)}>取消</button>
@@ -1290,7 +1290,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
                 <ShieldCheck size={15} />
                 <div>
                   <strong id="mcp-permissions-title">MCP 权限中心</strong>
-                  <small>权限保存在本机，并可由 MCP 画布执行层读取；付费任务与删除仍需单独确认。</small>
+                  <small>权限保存在本机，并可由 MCP 画布执行层读取；MCP 生图节点直接执行，视频、反推与删除仍需单独确认。</small>
                 </div>
               </header>
               <div className="settings-mcp-permission-grid">
@@ -1306,7 +1306,7 @@ const updateMcpClientStatus = (status: McpClientStatus) => {
             <dl className="settings-mcp-contract-summary" aria-label="Codex 节点能力摘要">
               <div><dt>协议</dt><dd>本机工作流协议 v1</dd></div>
               <div><dt>节点能力</dt><dd>{codexWorkflowContract.modules.length} 个模块</dd></div>
-              <div><dt>执行规则</dt><dd>生成工作流先预览确认</dd></div>
+              <div><dt>执行规则</dt><dd>MCP 生图节点直接执行；受保护工作流先预览确认</dd></div>
             </dl>
             {message && <p role="status">{message}</p>}
           </section>

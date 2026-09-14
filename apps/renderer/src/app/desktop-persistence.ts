@@ -958,6 +958,15 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
     request: ProjectCommitRequest,
     allowRevisionRefresh = true,
   ): Promise<ProjectCommitResult> {
+    // A queued save keeps its original project identity across session switches.
+    // Never retarget an old canvas transaction to the newly opened project.
+    if (
+      request.previousProject.id !== request.projectId
+      || request.nextProject.id !== request.projectId
+      || (projectId !== null && request.projectId !== projectId)
+    ) {
+      return { code: 'INVALID_REQUEST', ok: false, project: currentProject, retryable: false, revision };
+    }
     let materializedProject: CanvasProject | null = null;
     if (sessionId === null || projectId === null) {
       // The first autosave establishes the current canvas on disk. Keeping
@@ -970,6 +979,9 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       const writableSession = await ensureWritableSessionResolution();
       if (writableSession === null || sessionId === null || projectId === null) {
         return { code: 'DURABLE_WRITE_FAILED', ok: false, project: currentProject, retryable: true, revision };
+      }
+      if (request.projectId !== projectId) {
+        return { code: 'INVALID_REQUEST', ok: false, project: currentProject, retryable: false, revision };
       }
       materializedProject = writableSession.materializedProject;
       // createProject writes the complete canvas as revision 0. Replaying the
@@ -1036,6 +1048,7 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         && allowRevisionRefresh
         && sessionId === commitSessionId
         && projectId === commitProjectId
+        && clientGeneration === commitGeneration
       ) {
         try {
           const refreshed = await bridge.refreshProject({ sessionId: commitSessionId });
@@ -1043,8 +1056,17 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
             refreshed.sessionId === commitSessionId
             && refreshed.projectId === commitProjectId
             && refreshed.mode === 'write'
+            && refreshed.recoveryRequired !== true
+            && sessionId === commitSessionId
+            && projectId === commitProjectId
+            && clientGeneration === commitGeneration
           ) {
             await adoptSelectedSession(refreshed, { deferRecoveryRefresh: true });
+            if (
+              sessionId !== commitSessionId
+              || projectId !== commitProjectId
+              || clientGeneration !== commitGeneration + 1
+            ) return { code, ok: false, project: currentProject, retryable: false, revision };
             const rebasedProject = applyProjectTransaction(currentProject, request.transaction);
             return desktopCommit({
               ...request,
@@ -1062,11 +1084,24 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
       // arriving after the first one was acknowledged). Refresh the session
       // and surface it as a revision conflict so the renderer offers a
       // deliberate reload instead of retrying the stale transaction forever.
-      if (code === 'INVALID_REQUEST' && sessionId === commitSessionId && projectId === commitProjectId) {
+      if (
+        code === 'INVALID_REQUEST'
+        && sessionId === commitSessionId
+        && projectId === commitProjectId
+        && clientGeneration === commitGeneration
+      ) {
         try {
           const refreshed = await bridge.refreshProject({ sessionId: commitSessionId });
-          if (refreshed.sessionId === commitSessionId && refreshed.projectId === commitProjectId && refreshed.mode === 'write') {
-            await adoptSelectedSession(refreshed);
+          if (
+            refreshed.sessionId === commitSessionId
+            && refreshed.projectId === commitProjectId
+            && refreshed.mode === 'write'
+            && refreshed.recoveryRequired !== true
+            && sessionId === commitSessionId
+            && projectId === commitProjectId
+            && clientGeneration === commitGeneration
+          ) {
+            await adoptSelectedSession(refreshed, { deferRecoveryRefresh: true });
             return { code: 'REVISION_CONFLICT', ok: false, project: currentProject, retryable: false, revision };
           }
         } catch {

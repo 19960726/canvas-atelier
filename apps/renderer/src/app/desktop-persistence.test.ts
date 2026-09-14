@@ -1173,6 +1173,78 @@ describe('desktop persistence', () => {
     },
   );
 
+  it.each(['projectId', 'previousProject', 'nextProject'] as const)(
+    'rejects a delayed foreign %s before IPC and keeps the active project writable',
+    async (foreignField) => {
+      const firstProject = { ...createStarterProject(), id: 'foreign-project' };
+      const activeProject = { ...createStarterProject(), id: 'active-project' };
+      const commit = vi.fn(async (request) => ({
+        committedAt: '2026-09-14T01:00:00.000Z', projectId: request.projectId,
+        revision: 8, sequence: 8, transactionId: request.transaction.id,
+      }));
+      const bridge = {
+        closeProject: vi.fn(async () => undefined), commit,
+        getRecoveryPlan: vi.fn(),
+        openProject: vi.fn()
+          .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3))
+          .mockResolvedValueOnce(createDesktopSession(activeProject, 'active-session', 7)),
+      };
+      const client = createDesktopPersistenceClient(bridge as never);
+      await client.openProject?.();
+      await client.openProject?.();
+      const request = {
+        baseRevision: 7, kind: 'canvas' as const,
+        projectId: activeProject.id, previousProject: activeProject, nextProject: activeProject,
+        transaction: { id: 'foreign-save', label: 'Delayed save', operations: [] },
+        [foreignField]: foreignField === 'projectId' ? firstProject.id : firstProject,
+      };
+
+      await expect(client.commit(request)).resolves.toMatchObject({
+        ok: false, code: 'INVALID_REQUEST', retryable: false, project: activeProject, revision: 7,
+      });
+      expect(commit).not.toHaveBeenCalled();
+      await expect(client.commit({
+        baseRevision: 7, kind: 'canvas', projectId: activeProject.id,
+        previousProject: activeProject, nextProject: { ...activeProject, name: 'Valid active edit' },
+        transaction: { id: 'active-save', label: 'Active save', operations: [] },
+      })).resolves.toMatchObject({ ok: true, revision: 8, project: { id: 'active-project', name: 'Valid active edit' } });
+      expect(commit).toHaveBeenCalledOnce();
+      expect(commit).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'active-project', sessionId: 'active-session' }));
+    },
+  );
+
+  it.each(['REVISION_CONFLICT', 'INVALID_REQUEST'] as const)(
+    'does not adopt a delayed %s refresh after switching projects',
+    async (code) => {
+      const firstProject = { ...createStarterProject(), id: 'first-project' };
+      const activeProject = { ...createStarterProject(), id: 'active-project' };
+      let resolveRefresh!: (value: ReturnType<typeof createDesktopSession>) => void;
+      const refreshProject = vi.fn(() => new Promise<ReturnType<typeof createDesktopSession>>((resolve) => { resolveRefresh = resolve; }));
+      const commit = vi.fn().mockResolvedValueOnce({ ok: false, error: { code, retryable: true } });
+      const bridge = {
+        closeProject: vi.fn(async () => undefined), commit, refreshProject, getRecoveryPlan: vi.fn(),
+        openProject: vi.fn()
+          .mockResolvedValueOnce(createDesktopSession(firstProject, 'first-session', 3))
+          .mockResolvedValueOnce(createDesktopSession(activeProject, 'active-session', 7)),
+      };
+      const client = createDesktopPersistenceClient(bridge as never);
+      await client.openProject?.();
+      const saving = client.commit({
+        baseRevision: 3, kind: 'canvas', projectId: firstProject.id,
+        previousProject: firstProject, nextProject: firstProject,
+        transaction: { id: 'delayed-conflict', label: 'Delayed conflict', operations: [] },
+      });
+      await vi.waitFor(() => expect(refreshProject).toHaveBeenCalledOnce());
+      await client.openProject?.();
+      resolveRefresh(createDesktopSession(firstProject, 'first-session', 4));
+      await saving;
+
+      expect(client.getSessionId?.()).toBe('active-session');
+      expect(commit).toHaveBeenCalledOnce();
+      await expect(client.hydrate()).resolves.toMatchObject({ project: activeProject, revision: 7 });
+    },
+  );
+
   it('refreshes the current writable lease in place before the next commit', async () => {
     const project = { ...createStarterProject(), name: 'Reload writable project' };
     const openProject = vi.fn(async () => createDesktopSession(project, 'first-session', 3));

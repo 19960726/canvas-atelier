@@ -9,9 +9,11 @@ import {
 
 export const CANVAS_ATELIER_MCP_INSTRUCTIONS = [
   'Describe and read the current canvas before planning or editing.',
-  'Workflow confirmation: call canvas_plan_workflow. When confirmationRequired is true, wait for the user to confirm the preview inside Canvas Atelier, then retry the exact same canvas_plan_workflow request. Read approvalCode from that retry and pass it as canvas_apply_workflow.confirmationToken.',
+  'For ordinary non-destructive MCP client edits, prefer the direct canvas_create_node, canvas_update_node, canvas_connect_nodes, and canvas_move_nodes tools; they do not require a workflow confirmation.',
+  'Workflow confirmation: use canvas_plan_workflow for a planned or batched workflow that needs a preview. When confirmationRequired is true, wait for the user to confirm the preview inside Canvas Atelier, then retry the exact same canvas_plan_workflow request. Read approvalCode from that retry and pass it as canvas_apply_workflow.confirmationToken.',
   'canvas_delete_selection returns a workflow plan for the current UI selection; apply it through the same confirmation and canvas_apply_workflow flow.',
-  'Paid job confirmation: first call canvas_run_node without confirmationToken. Wait for the user to confirm inside Canvas Atelier, retry the same canvas_run_node request without confirmationToken, read approvalCode, then call canvas_run_node again with confirmationToken set to approvalCode.',
+  'Image generation: when executeAiGeneration is enabled, the first canvas_run_node call for an image_generation node starts the job directly without a confirmationToken or an in-app confirmation.',
+  'Video and reverse paid job confirmation: first call canvas_run_node without confirmationToken. Wait for the user to confirm inside Canvas Atelier, retry the same canvas_run_node request without confirmationToken, read approvalCode, then call canvas_run_node again with confirmationToken set to approvalCode.',
   'A successful canvas_run_node returns jobIds. Poll each id with canvas_get_job_status until completed, failed, or cancelled, then call canvas_read_workflow to read persisted managed result ids.',
   'canvas_import_media brings Canvas Atelier to the foreground and returns immediately only when pickerOpened is true; then ask the user to finish choosing a file inside the app and read the workflow again. If the tool returns an error, do not claim that a picker opened.',
   'Approval codes are one-time, request-specific, project-specific, and must never be reused after a project switch or revision change.',

@@ -3242,7 +3242,14 @@ describe('project optimization memory', () => {
         submitImageJob,
       },
     } as unknown as typeof window.novusDesktop;
-    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [] } });
+    const project = { ...createStarterProject(), id: 'mcp-gpt-nine-image-project', nodes: [generation], edges: [] };
+    useAppStore.setState({ project });
+    const executionRoute = {
+      projectId: project.id,
+      expectedRevision: useAppStore.getState().desktopRevision,
+      provider: '4dai' as const,
+      modelRoute: 'gpt-image-2',
+    };
 
     await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
       modelRoute: 'gpt-image-2',
@@ -3253,6 +3260,7 @@ describe('project optimization memory', () => {
       imageOutputFormat: 'webp',
       imageBackground: 'transparent',
       outputCount: 9,
+      executionRoute,
     })).resolves.toBe(true);
     await waitForStore(() => submitImageJob.mock.calls.length > 0);
     expect(useAppStore.getState().modelJobs).toHaveLength(9);
@@ -3524,7 +3532,7 @@ describe('project optimization memory', () => {
     });
   });
 
-  it('rejects a confirmed 4D image batch larger than the complete route allows', async () => {
+  it('dispatches a confirmed multi-image total as independent one-image jobs', async () => {
     const submit = vi.fn(async (job: ModelJob) => ({ providerTaskId: `provider-${job.id}` }));
     replaceModelJobExecutorForTests({
       submit,
@@ -3558,15 +3566,17 @@ describe('project optimization memory', () => {
 
     await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
       modelRoute: '4dai-gpt-image-1-5',
-      prompt: 'Do not silently expand a paid one-output route',
+      prompt: 'Create four independently tracked images',
       aspectRatio: '1:1',
       resolution: '2K',
       outputCount: 4,
       executionRoute,
-    })).rejects.toMatchObject({ code: 'GENERATION_PARAMETERS_UNSUPPORTED' });
+    })).resolves.toBe(true);
 
-    expect(useAppStore.getState().modelJobs).toEqual([]);
-    expect(submit).not.toHaveBeenCalled();
+    await waitForStore(() => submit.mock.calls.length === 4);
+    expect(useAppStore.getState().modelJobs).toHaveLength(4);
+    expect(submit).toHaveBeenCalledTimes(4);
+    expect(submit.mock.calls.every(([job]) => job.outputCount === 1)).toBe(true);
   });
 
   it('rejects a confirmed image route when the project revision changes while profiles load', async () => {
