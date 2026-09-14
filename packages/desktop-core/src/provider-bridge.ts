@@ -26,7 +26,7 @@ import type {
   GenerationHistoryProviderSinkContract,
 } from './generation-history-provider-sink.js';
 import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
-import { buildComflyModelProfiles, cloneProviderProfile, markProviderProfileSelections, mergeProviderModelProfiles, repairComflyGeminiNativeReverseCapability, repairComflyImageEditCapability } from './provider-model-catalog.js';
+import { buildComflyModelProfiles, cloneProviderProfile, markProviderProfileSelections, mergeProviderModelProfiles, repairComflyGeminiNativeReverseCapability, repairComflyGptImage25AsyncCapability, repairComflyImageEditCapability } from './provider-model-catalog.js';
 import { createComflyVideoJobHandlers } from './comfly-video-jobs.js';
 import { submitComflyImage } from './comfly-image-submission.js';
 import { isPublicProviderAddress, parseSafeProviderResultUrl } from './provider-result-security.js';
@@ -799,7 +799,7 @@ function sanitizeProfiles(value: readonly ComflyModelRegistration[]): ProviderBr
       ...(profile.constraints === undefined ? {} : { constraints: profile.constraints }),
     };
   }));
-  return parsed.map(repairComflyImageEditCapability).map(repairComflyGeminiNativeReverseCapability);
+  return parsed.map(repairComflyImageEditCapability).map(repairComflyGptImage25AsyncCapability).map(repairComflyGeminiNativeReverseCapability);
 }
 function mergeUpdatedProfiles(_existing: readonly ProviderBridgeProfile[], updates: readonly ProviderBridgeProfile[]): ProviderBridgeProfile[] {
   return parseProviderBridgeProfiles(updates);

@@ -1413,6 +1413,49 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
+  it('repairs cached GPT Image 2.5 profiles to use Comfly async task submission', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async () => jsonResponse({ task_id: 'gpt-image-25-task' }));
+    const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });
+    const service = createComflyProviderService({
+      appDataRoot,
+      credentialStore,
+      fetch,
+      profiles: [{
+        provider: 'comfly',
+        modelRoute: 'comfly-gpt-image-2-5-sunburst-4k',
+        modelId: 'gpt-image-2.5-sunburst-4k',
+        displayName: 'GPT Image 2.5 Sunburst 4K',
+        capabilities: ['image_generation', 'image_edit'],
+        capabilityStatus: 'complete',
+      }],
+    });
+    await service.configure({ token });
+
+    await expect(service.listProfiles()).resolves.toEqual([
+      expect.objectContaining({
+        modelRoute: 'comfly-gpt-image-2-5-sunburst-4k',
+        capabilities: expect.arrayContaining(['image_generation', 'image_edit', 'async_tasks']),
+      }),
+    ]);
+    await expect(service.submitImageJob({
+      jobId: 'model-job-v2-gpt-image-25-async',
+      provider: 'comfly',
+      modelRoute: 'comfly-gpt-image-2-5-sunburst-4k',
+      prompt: 'A compact product composition',
+      conversationId: 'conversation-gpt-image-25-async',
+      referenceAssetIds: [],
+      aspectRatio: '1:1',
+      resolution: '4K',
+      outputCount: 1,
+    })).resolves.toEqual({ providerTaskId: expect.stringMatching(/^provider-job-/u) });
+    expect(fetch).toHaveBeenCalledWith(
+      'https://ai.comfly.org/v1/images/generations?async=true',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    await cleanupTempRoot(appDataRoot);
+  });
+
   it('keeps an incomplete cached Gemini 3.1 image profile unavailable for reference editing', async () => {
     const appDataRoot = await makeTempRoot();
     const credentialStore = createSecureProviderCredentialStore({ appDataRoot, safeStorage: createFakeSafeStorage() });

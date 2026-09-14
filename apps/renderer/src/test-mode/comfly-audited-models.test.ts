@@ -24,6 +24,9 @@ describe('audited Comfly offline catalog', () => {
       constraints: { image: { resolutions: ['1K', '2K'] } },
     });
     expect(byId.get('gpt-image-2.5-flare-4k')?.constraints?.image?.resolutions).toEqual(['4K']);
+    for (const modelId of expected.slice(0, 6)) {
+      expect(byId.get(modelId)?.capabilities).toContain('async_tasks');
+    }
     expect(byId.get('nano-banana-2-4k')?.constraints?.image?.resolutions).toEqual(['4K']);
   });
 });
