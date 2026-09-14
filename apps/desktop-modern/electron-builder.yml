@@ -16,6 +16,8 @@ extraResources:
     to: renderer/dist
   - from: build/icon.ico
     to: icon.ico
+  - from: build/app-update.yml
+    to: app-update.yml
   - from: dist/mcp
     to: mcp
   - from: dist/photoshop

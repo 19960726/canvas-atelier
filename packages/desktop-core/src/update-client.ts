@@ -84,7 +84,9 @@ export class UpdateClient {
       try {
         await this.driver.checkForUpdates();
       } catch {
-        this.setState({ status: 'error', message: 'Unable to check for updates.' });
+        if (this.state.status !== 'error') {
+          this.setState({ status: 'error', message: 'Unable to check for updates.' });
+        }
       }
       return { state: this.getState() };
     }

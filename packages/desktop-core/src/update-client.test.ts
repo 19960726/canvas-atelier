@@ -32,6 +32,25 @@ describe('UpdateClient', () => {
     unsubscribe();
   });
 
+  it('keeps a driver error message when the check promise also rejects', async () => {
+    let listener: ((event: UpdateDriverEvent) => void) | undefined;
+    const driver: UpdateDriver = {
+      subscribe(next) { listener = next; return () => { listener = undefined; }; },
+      checkForUpdates: vi.fn(async () => {
+        listener?.({ type: 'error', message: 'ENOENT: app-update.yml not found' });
+        throw new Error('ENOENT: app-update.yml not found');
+      }),
+      downloadUpdate: vi.fn(async () => undefined),
+      quitAndInstall: vi.fn(),
+    };
+    const client = new UpdateClient({ driver });
+
+    expect((await client.check()).state).toMatchObject({
+      status: 'error',
+      message: 'ENOENT: app-update.yml not found',
+    });
+  });
+
   it('accepts only a newer signed stable mock release and moves through download readiness without installing', async () => {
     const client = new UpdateClient({
       currentVersion: '1.4.0',

@@ -30,4 +30,21 @@ describe('electron updater adapter', () => {
     driver.quitAndInstall();
     expect(updater.quitAndInstall).toHaveBeenCalledOnce();
   });
+
+  it('preserves a useful updater error message for diagnostics', () => {
+    const updater = Object.assign(new EventEmitter(), {
+      autoDownload: true,
+      autoInstallOnAppQuit: true,
+      checkForUpdates: vi.fn(async () => undefined),
+      downloadUpdate: vi.fn(async () => undefined),
+      quitAndInstall: vi.fn(),
+    });
+    const driver = createElectronUpdaterDriver(updater);
+    const events: unknown[] = [];
+    driver.subscribe((event) => events.push(event));
+
+    updater.emit('error', new Error('ENOENT: app-update.yml not found'));
+
+    expect(events).toEqual([{ type: 'error', message: 'ENOENT: app-update.yml not found' }]);
+  });
 });

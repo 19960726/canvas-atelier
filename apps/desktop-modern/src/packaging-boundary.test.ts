@@ -26,7 +26,7 @@ function isPathInside(parentPath: string, candidatePath: string): boolean {
 }
 
 describe('desktop packaging boundary', () => {
-  it('keeps the 1.6.140 modern installer in its own builder output and excludes legacy output', async () => {
+  it('keeps the 1.6.141 modern installer in its own builder output and excludes legacy output', async () => {
     const modernRoot = join(process.cwd(), 'apps', 'desktop-modern');
     const packageJson = JSON.parse(await readFile(
       join(modernRoot, 'package.json'),
@@ -37,7 +37,7 @@ describe('desktop packaging boundary', () => {
       'utf8',
     )) as BuilderConfig;
 
-    expect(packageJson.version).toBe('1.6.140');
+    expect(packageJson.version).toBe('1.6.141');
     expect(builderConfig.directories?.output).toBe('dist-builder/desktop-modern');
     expect(builderConfig.artifactName).toBe('CanvasAtelier-Win10-11-x64-${version}.exe');
 
@@ -53,7 +53,7 @@ describe('desktop packaging boundary', () => {
       modernRoot,
       'dist-builder',
       'desktop-modern',
-      'CanvasAtelier-Win10-11-x64-1.6.140.exe',
+      'CanvasAtelier-Win10-11-x64-1.6.141.exe',
     ));
     expect(isPathInside(modernOutputRoot, installerPath)).toBe(true);
     expect(isPathInside(legacyOutputRoot, installerPath)).toBe(false);
@@ -78,6 +78,20 @@ describe('desktop packaging boundary', () => {
     expect(builderConfig.extraResources).toEqual(expect.arrayContaining([
       { from: 'dist/photoshop', to: 'photoshop' },
     ]));
+  });
+
+  it('ships the GitHub updater configuration in packaged resources', async () => {
+    const modernRoot = join(process.cwd(), 'apps', 'desktop-modern');
+    const builderConfig = load(await readFile(
+      join(modernRoot, 'electron-builder.yml'),
+      'utf8',
+    )) as BuilderConfig;
+
+    expect(builderConfig.extraResources).toEqual(expect.arrayContaining([
+      { from: 'build/app-update.yml', to: 'app-update.yml' },
+    ]));
+    expect(await readFile(join(modernRoot, 'build', 'app-update.yml'), 'utf8'))
+      .toContain('provider: github');
   });
 
   it('excludes renderer source maps from the distributable package', async () => {

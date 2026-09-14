@@ -34,7 +34,7 @@ export function createElectronUpdaterDriver(
     version: safeVersion(info.version),
     notes: safeReleaseNotes(info.releaseNotes),
   }));
-  updater.on('error', () => emit({ type: 'error', message: 'Desktop update failed.' }));
+  updater.on('error', (error: unknown) => emit({ type: 'error', message: safeUpdaterError(error) }));
 
   return {
     subscribe(listener) {
@@ -58,4 +58,15 @@ function safeReleaseNotes(value: unknown): string {
     ? value.map((item) => typeof item === 'object' && item !== null && 'note' in item ? String(item.note) : '').join('\n')
     : typeof value === 'string' ? value : '';
   return text.replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 4_000);
+}
+
+function safeUpdaterError(value: unknown): string {
+  const message = value instanceof Error
+    ? value.message
+    : typeof value === 'string'
+      ? value
+      : value !== null && typeof value === 'object' && 'message' in value
+        ? String(value.message)
+        : '';
+  return message.replace(/\s+/gu, ' ').trim().slice(0, 180) || 'Desktop update failed.';
 }

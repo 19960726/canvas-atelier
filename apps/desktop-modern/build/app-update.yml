@@ -1,0 +1,5 @@
+provider: github
+owner: 19960726
+repo: canvas-atelier
+releaseType: release
+updaterCacheDirName: canvas-atelier-updater
