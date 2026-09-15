@@ -68,9 +68,11 @@ describe('modern desktop close coordinator', () => {
     const source = await readFile(join(process.cwd(), 'apps/desktop-modern/src/main.ts'), 'utf8');
 
     expect(source).toContain('protocol.registerSchemesAsPrivileged');
+    expect(source).toContain('corsEnabled: true');
+    expect(source).toMatch(/scheme: 'novus-history'[\s\S]*?corsEnabled: true/u);
     expect(source).toContain("protocol.handle('novus-asset'");
     expect(source).toContain("protocol.handle('novus-history'");
-    expect(source).toContain('net.fetch(pathToFileURL(path).toString()');
+    expect(source).toContain("Readable.toWeb(createReadStream(path))");
     expect(source).toContain('resolveProtocolFile(request, handlers.resolveProjectImagePath)');
     expect(source).toContain('async chooseProjectImage()');
     expect(source).toContain("properties: ['openFile']");

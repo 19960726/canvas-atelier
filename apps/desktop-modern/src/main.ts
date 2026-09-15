@@ -1,6 +1,8 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -131,10 +133,11 @@ if (protocol !== undefined) {
     },
     {
       scheme: 'novus-history',
-      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
-    },    {
+      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true, corsEnabled: true },
+    },
+    {
       scheme: 'novus-recent-project',
-      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true },
+      privileges: { secure: true, standard: true, supportFetchAPI: true, stream: true, corsEnabled: true },
     },
   ]);
 }
@@ -972,7 +975,18 @@ async function resolveProtocolFile(
   try {
     const path = await resolvePath(request.url);
     if (path === null) return new Response(null, { status: 404 });
-    return net.fetch(pathToFileURL(path).toString(), { headers: request.headers });
+    const metadata = await stat(path);
+    if (!metadata.isFile()) return new Response(null, { status: 404 });
+    const contentType = path.toLocaleLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/png';
+    const stream = Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>;
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'content-length': String(metadata.size),
+        'content-type': contentType,
+        'cache-control': 'private, max-age=31536000, immutable',
+      },
+    });
   } catch {
     return new Response(null, { status: 404 });
   }
