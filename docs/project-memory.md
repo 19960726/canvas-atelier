@@ -1315,8 +1315,27 @@ Before producing an installer, verify at minimum:
 
 - R2 取代上节早期 1.6.144 候选。画布性能参考视频的可验证目标被固定为大画布原生滚轮缩放时保持连续帧、侧栏稳定且节点细节随视口变化；独立安装版实际采样 90 帧，P50 16.7 ms、P95 16.8 ms、最大 16.8 ms、超过 34 ms 的帧为 0，画布变换从 1x 到 2.5x，未以静态页面冒充流畅度。
 - 素材图片上传慢的本地根因是 `importProjectImage` 在素材复制、哈希和 journal commit 之后仍同步等待完整项目 snapshot。现在导入在受管素材与 journal 获得 durable acknowledgement 后立即把结果返回 renderer，snapshot 进入同一 session maintenance tail 后台执行；关闭项目仍等待该 tail，故没有牺牲退出前耐久性。回归测试先证明旧实现会被 snapshot gate 阻塞，修复后导入先完成、close 继续等待；安装版上传到预览为 53 ms。
-- 图片生成四结果固定为紧凑正方形 2x2，四张图均完整包含且不被节点下方区域裁切。节点头部与图片细节预览都提供同一颜色校正参数、预设、重置和点击保持的原图/校正图对比；复制校正图会烘焙当前参数。`@图片N` 选择、失焦或 Escape 后立即关闭，延迟到达的同值 change 不能重新打开旧引用栏。
+- 图片生成四结果固定为紧凑正方形 2x2，缩略图用 `cover` 填满四个方格；横图/竖图的完整原图在节点详情查看器中继续用 `contain` 保留。节点头部与图片细节预览都提供同一颜色校正参数、预设、重置和点击保持的原图/校正图对比；复制校正图会烘焙当前参数。`@图片N` 选择、失焦或 Escape 后立即关闭，延迟到达的同值 change 不能重新打开旧引用栏。
 - 最终安装态历史使用 180 条真实历史隔离副本：默认 30 条 IPC 0.8 ms，抽屉打开第一帧 14.9 ms 已有 30 张卡片和 25 个图片元素，加载状态结束；容量随后异步得到 808.2 MB，页面错误与请求失败均为 0。图槽 20 项、38 次快速换位只产生 1 次自动保存，重开顺序逐项一致。
 - 最终源码门禁为 242 个测试文件通过、2 个按设计跳过，3707 项通过、2 项跳过；production build 与 `git diff --check` 通过。R2 候选和独立安装目录的 85 个 payload 文件逐项同哈希；候选/安装 EXE SHA-256 为 `A389937BF509A05CE4F6EEE06BF436091AD0F194881A863BFB252615B0A18AFC`，`app.asar` 为 `A9DA616D953E9BBD6490F60454B66A539003D459ED5861273D0DEB559D3B246C`。
 - R2 产物位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.144-slot-history-autosave-r2`。安装器 103329030 字节、SHA-256 `F58C93893CDF6363DE59A38923434A0CE8B71AD8981CB36CD24B7A0374FFDA47`；blockmap 109749 字节、SHA-256 `760636D38630DFB87F5F45AB1111777D8CF0D75E2B08640B846AE04F6A3FC7AC`；`latest.yml` 375 字节、SHA-256 `E2F8186700E32F01F72E95A05011E77E741DD7B7132353ADC681EDC87CE7EBAC`。独立安装目录为 `D:\CanvasAtelier-QA-1.6.144-20260916-R2`。
 - R2 自动验收阻断全部外网请求，没有提交真实付费 RelayMe、Comfly 或 4D 任务，也没有执行 Photoshop COM 写入；目录/能力/提交参数 fixture 通过只证明本地路由合同，不等于上游账号此刻可用。GitHub 正式发布及远端 digest 仍在下一发布步骤核对。
+
+## 2026-09-16 1.6.145 真实项目性能与正式安装修复
+
+- 接续 `E:\画布项目\canvas-atelier-1.6.145-formal-install-handoff-2026-09-16.md`，使用 142 节点、127 连线、190 素材真实项目的隔离副本。生产项目只读，校验原始 manifest 字节不变；隔离根目录启用 formal QA 外网拦截，不复制供应商凭据、不发付费请求。
+- 引用栏根因是关闭状态仅比较整个 canonical value。contenteditable 的空白、选择区或正文规范化会让同一旧查询重新打开。现在以未解析 @ 查询及出现次数识别新意图；选择、Escape、失焦后的规范化保持关闭，新增/粘贴/编辑 @ 查询仍可打开。回归：`ModuleNodeCard.mentions.test.tsx` 27 项，旧版隔离真实项目也复现选择后 NBSP 规范化重开。
+- 颜色默认从未标记的旧中性 original 升级为 auto，显式恢复原图用 version=1 保留选择。每张图片至多采样 96×96 像素，128 项参数缓存共享预览和导出；依据低饱和中性色估计红紫偏色，不再固定套用 -6/-10。中性、暖色、饱和或含糊场景保持原样，无实际调整时不挂 CSS filter。独立审查发现纯白背景被排除会误改浅粉商品，新增失败回归后把高亮中性区域作为否决证据。测试在 image-color-correction.test.ts 和 ImageColorCorrectionImage.test.tsx。
+- 性能第一层根因是自定义逐帧裁剪与 React Flow 原生可见性裁剪重叠，屏外节点从 graph/minimap 消失，并在缩放中反复挂载。CanvasWorkspace 现在传完整且稳定的节点/边数组，原生 onlyRenderVisibleElements 负责 DOM；视口放入 ref，连接吸附半径由内部小组件订阅 zoom。实际 React Flow 回归确认完整 nodeLookup、小地图、连线端点和视口变化时数组稳定，large-canvas 集成同步完整图契约。
+- 安装态真实项目进一步暴露复杂卡片在缩放中批量挂载图片、颜色处理与编辑控件，造成 DOM/GC 峰值：优化前 214 帧 P95 50 ms、最大 383.4 ms、11 帧超过 34 ms、7 个长任务。现在低于 45% 且未选中、未展开的节点只渲染标题、状态和端口轻量壳；选中、展开或放大立即恢复完整卡片。候选真实项目 142 节点、127 连线采样为 P95 16.7 ms、最大 16.8 ms、0 慢帧、0 长任务；小地图仍为 142 节点，原项目 manifest 字节不变。
+- 真实四图验收使用生成过的方图、横图、竖图、长竖图，未用四色 SVG 代替真实图。四格缩略图改为 `cover`，以紧凑正方形 2×2 铺满可用区域；图片细节查看器继续使用 `contain` 显示完整原图。候选对 11 种比例的展开/收起共 23 个状态逐项检查，四张图均解码成功、两行完整、祖先可视交集完整、无尺寸提示遮挡；对齐的 2K 夹具不再显示伪 4K 警告。
+- 已通过持久化性能 `npm.cmd run perf:persistence`：10,000 条事务 85.3 ms。真实源码交互已覆盖缩放、平移、拖动、输入、引用、21 次换位、autosave 和正常关闭重启；安装版最终指标与精确哈希见本轮正式验收报告，不能以此源码结果替代安装证据。
+- 验证命令：`npm.cmd test`、`npm.cmd run build`（包含全 workspace typecheck）、`npm.cmd run perf:persistence`；真实项目运行器 `work/qa-real-project-145.mjs`；独立构建脚本 `work/build-formal-1.6.145.mjs` 输出到 desktop-modern-1.6.145-formal，不触碰原有 dirty latest.yml。仅在全部门禁通过后安装正式目录和发布。
+- 候选包截图复核进一步发现尺寸不足的黄色提示条使用 absolute bottom 布局，覆盖了四图第二行；旧几何断言只看祖先裁剪，漏掉了此类遮挡。运行器增加提示条与每张图的交集断言后在 `work/qa-four-warning-145-red/report.json` 得到明确 RED。修复现有 canvas-layout.css 规则，让提示条参与独立 grid 行，图片区域按剩余高度缩放；没有删除尺寸告知。正式矩阵会同时检查裁剪和提示遮挡。
+- 实际照片诊断派生图的截图像素门禁发现旧 `imageColorCorrectionMatrix` 只有 19 项（SVG 要求 20 项），浏览器忽略矩阵；补齐 alpha 行，并在像素一致性单测断言矩阵长度及 alpha 行。原截图平均色差 24.03，补齐后降到 4.60（约 80.9%），原图对比和返回校正的截图字节一致。诊断图明确区别于真实四个生成结果。
+- 同一端到端校色门禁发现 CanvasWorkspace 的双击捕获会抢先打开通用原图查看器，导致生成图自己的校色查看器失效。新增展开/收起两项实际 CanvasWorkspace 回归先 RED，再让结果画廊交由节点处理，通用素材双击继续保留；portal 事件不会再被画布捕获重新替换。
+- 最终像素门禁 `work/qa-adaptive-color-145-dist-r13/report.json` 通过：默认自动校正无需点击，显示色差从 24.03 降到 4.60（80.9%）；预览与导出的平均通道误差 0.83，复制与下载 PNG 像素完全一致。显式恢复原图写入 `version: 1`，正常关闭后 `cleanClose: true`，重启仍为原图且对比按钮禁用。三次退出均为正常 code 0，原始 manifest、snapshot、照片逐字节不变，外网请求 0。
+- 最终安装版性能复跑使用 `D:\CanvasAtelier\Canvas Atelier\Canvas Atelier.exe`，报告 `work/qh145/report.json`：142 节点、127 连线、190 素材；低缩放总览 103 帧，P50/P95/最大值为 16.7/16.8/16.8 ms，超过 34 ms 的帧和长任务均为 0；可见 DOM 节点 77、节点图片 0、小地图节点 142，页面错误为空、网络拦截尝试为 0、退出码 0。并发运行导致的一次关闭超时已单独复跑排除。
+- 最终正式目录 `D:\CanvasAtelier\Canvas Atelier` 与候选逐项核对为 85/85 文件同 SHA-256；安装版 EXE `59D543EAC2CFF388BC456F598E5B581748CF1789E462813F1301AA4D70764DCD`，`app.asar` `1E88C54C2F8E7EC60800C9C89EB49988897EB3A1EC8E93562105D5520BDC4D05`。注册表只有 1.6.145，公共桌面与开始菜单快捷方式均指向该目录。NSIS UAC 交互在本机被取消，因此本轮对已有正式目录做了候选资源的精确同步并完成同哈希验收，不能写成重新运行安装器成功。
+- 正式安装版四宫格报告 `work/qg145/report.json` 通过：真实方图、横图、竖图、长竖图在初始/AUTO/1:1 至 21:9 的展开和收起共 23 状态均保持 2×2、`cover`、无祖先裁切和无 4K 尺寸提示；源项目字节不变，外网请求为 0，退出码 0。黄色“实际 2048x2048”提示的根因是旧 QA fixture 保留了 `requestedResolution=4K`，不是生产尺寸判断错误；fixture 已改为与注入 2K 图片一致并增加无提示断言。
+- 最终 NSIS 产物位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.145-formal`：安装器 103329591 字节、SHA-256 `3B01B5F2DB0729AB9C851B9A8697A3199B510D312DE18BEB89D2B058B0975026`；blockmap 109718 字节、SHA-256 `0AE3AAF34FFAFBFCE94DB001E06CD80363BB49F85AEADFB3FBA14DC46BCFC768`；`latest.yml` 375 字节、SHA-256 `3694F4B1F8EEE190980983942505151FA915CAB2E61BEACE3D43186F04035694`。全量 Vitest 244 文件、3760 项通过、2 项跳过；typecheck、production build、持久化性能和安装版验收通过。未发送真实付费供应商任务、未执行 Photoshop COM 写入。

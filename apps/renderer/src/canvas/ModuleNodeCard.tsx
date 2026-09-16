@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { reverseFailureMessage } from '../app/reverse-failure';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, useStore } from '@xyflow/react';
 import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, Send, Video, Volume2, X } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
@@ -44,10 +44,9 @@ import { MediaMentionTextarea, type MediaMentionPreview, type MediaMentionSelect
 import { selectSavedProviderModelDefault } from '../settings/provider-model-defaults';
 import { copyProjectImageToClipboard, ProjectImageLightbox } from './ProjectImageLightbox';
 import { ImageColorCorrectionControls } from './ImageColorCorrectionControls';
+import { ImageColorCorrectionImage } from './ImageColorCorrectionImage';
+import { useImageColorCorrection } from '../app/use-image-color-correction';
 import {
-  DEFAULT_IMAGE_COLOR_CORRECTION,
-  imageColorCorrectionFilter,
-  imageColorCorrectionMatrix,
   normalizeImageColorCorrection,
   renderImageColorCorrectionBlob,
   type ImageColorCorrection,
@@ -148,7 +147,9 @@ function useMentionPickerGuard(value: string) {
     images: readonly ProjectImageAssetSummary[],
     selection?: MediaMentionSelection | null,
   ) => {
-    if (dismissedValueRef.current === nextValue) {
+    if (dismissedValueRef.current !== null
+      && !hasNewImageMentionQuery(dismissedValueRef.current, nextValue, images)) {
+      dismissedValueRef.current = nextValue;
       setOpen(false);
       return;
     }
@@ -263,6 +264,47 @@ interface ModuleNodeCardProps {
     connectedPortKeys?: readonly string[];
   };
   selected?: boolean;
+}
+
+const MODULE_OVERVIEW_ZOOM_THRESHOLD = 0.45;
+
+function isFoundationModuleType(moduleType: CanvasModuleNodeData['moduleType']): boolean {
+  return moduleType === 'image_input'
+    || moduleType === 'upload_image'
+    || moduleType === 'video_input'
+    || moduleType === 'canvas_library'
+    || moduleType === 'result_output'
+    || moduleType === 'video_result'
+    || moduleType === 'reverse_result';
+}
+
+function isProfessionalWorkbenchType(moduleType: CanvasModuleNodeData['moduleType']): boolean {
+  return moduleType === 'image_generation'
+    || moduleType === 'video_generation'
+    || moduleType === 'reverse_agent'
+    || moduleType === 'storyboard_sheet'
+    || moduleType === 'music_generation'
+    || moduleType === 'speech_generation';
+}
+
+function visibleModulePorts(
+  definition: CanvasModuleDefinition,
+  moduleType: CanvasModuleNodeData['moduleType'],
+): { inputs: CanvasModulePortDefinition[]; outputs: CanvasModulePortDefinition[] } {
+  const inputs = definition.ports.filter((port) => port.direction === 'input');
+  const outputs = definition.ports.filter((port) => port.direction === 'output');
+  return {
+    inputs: moduleType === 'image_generation'
+      ? inputs.filter((port) => port.id === 'references')
+      : moduleType === 'video_generation'
+        ? inputs.filter((port) => port.id === 'media')
+        : moduleType === 'reverse_agent'
+          ? inputs.filter((port) => port.id === 'references')
+          : inputs,
+    outputs: moduleType === 'reverse_agent'
+      ? outputs.filter((port) => port.id === 'analysis')
+      : outputs,
+  };
 }
 
 interface ReverseAgentRouteSummary {
@@ -383,7 +425,93 @@ function durationOptions(constraint: NonNullable<NonNullable<ProviderBridgeProfi
   return values.length > 0 ? values : [constraint.defaultValue ?? constraint.min];
 }
 
-export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected }: ModuleNodeCardProps) {
+export const ModuleNodeCard = memo(function ModuleNodeCard(props: ModuleNodeCardProps) {
+  const lowZoomOverview = useStore((state) => state.transform[2] < MODULE_OVERVIEW_ZOOM_THRESHOLD);
+  const renderFullCard = !lowZoomOverview
+    || props.selected === true
+    || props.data.generationEditorExpanded === true
+    || props.data.resultOutputMenuOpen === true;
+  return renderFullCard ? <DetailedModuleNodeCard {...props} /> : <ModuleNodeOverview {...props} />;
+});
+
+const ModuleNodeOverview = memo(function ModuleNodeOverview({ id, data, selected }: ModuleNodeCardProps) {
+  const definition = getCanvasModuleDefinition(data.moduleType);
+  const workflowLabel = resolveNodeWorkflowLabel(id, data.moduleType, data.config);
+  const Icon = resolveCanvasModuleIcon(definition.type);
+  const { inputs: visibleInputs, outputs: visibleOutputs } = visibleModulePorts(definition, data.moduleType);
+  const connectedPortIds = new Set(data.connectedPortIds ?? []);
+  const connectedPortKeys = new Set(data.connectedPortKeys ?? []);
+  const isPortConnected = (port: CanvasModulePortDefinition) => (
+    data.connectedPortKeys === undefined
+      ? connectedPortIds.has(port.id)
+      : connectedPortKeys.has(`${port.direction}:${port.id}`)
+  );
+  const isFoundationNode = isFoundationModuleType(data.moduleType);
+  const isProfessionalWorkbench = isProfessionalWorkbenchType(data.moduleType);
+  const hasImageControls = data.moduleType === 'image_input'
+    || data.moduleType === 'upload_image'
+    || data.moduleType === 'canvas_library';
+  const hasMediaControls = hasImageControls || data.moduleType === 'video_input';
+  const hasSelectedMedia = (data.moduleType === 'image_input'
+    || data.moduleType === 'upload_image'
+    || data.moduleType === 'video_input')
+    && typeof data.config.assetId === 'string';
+  const generationResultCount = Array.isArray(data.config.resultAssetIds)
+    ? data.config.resultAssetIds.length
+    : Array.isArray(data.config.results)
+      ? data.config.results.length
+      : 0;
+
+  return (
+    <article
+      className={`module-node module-node--overview nowheel${hasMediaControls ? ' module-node--media-controls' : ''}${hasImageControls ? ' module-node--image-controls' : ''}${hasSelectedMedia ? ' module-node--has-media' : ''}${isFoundationNode ? ' module-node--foundation' : ''}${data.moduleType === 'reverse_agent' ? ' module-node--reverse' : data.moduleType === 'image_generation' ? ' module-node--image-generation' : data.moduleType === 'video_generation' ? ' module-node--video-generation' : isProfessionalWorkbench ? ' module-node--workbench' : ''}${selected ? ' is-selected' : ''}`}
+      data-testid="module-node-card"
+      data-module-type={definition.type}
+      data-port-label-mode={isProfessionalWorkbench ? 'interactive' : 'always'}
+      data-render-detail="overview"
+    >
+      {(data.moduleType === 'image_generation' || data.moduleType === 'video_generation') && (
+        <div
+          aria-hidden="true"
+          className="module-node__summary module-node__summary--generation module-node__overview-surface"
+          data-editor-expanded="false"
+          data-has-result={generationResultCount > 0 ? 'true' : 'false'}
+          data-result-count={generationResultCount}
+        />
+      )}
+      <div className="module-node__overview-content">
+        <span className="module-node__icon" data-icon-category={definition.category} aria-hidden="true">
+          <Icon size={18} strokeWidth={1.8} />
+        </span>
+        <span className="module-node__heading">
+          <strong>{definition.primaryName}</strong>
+          <small>{workflowLabel ?? definition.secondaryName}</small>
+        </span>
+        <b data-execution-state={data.execution.state}>{formatExecutionState(data.execution.state)}</b>
+      </div>
+      <div
+        className={`module-node__ports${visibleInputs.length > 0 ? ' has-inputs' : ''}${visibleOutputs.length > 0 ? ' has-outputs' : ''}`}
+        aria-label="模块端口 / Module ports"
+      >
+        <div className="module-node__ports-column module-node__ports-column--inputs">
+          {visibleInputs.map((port) => (
+            <ModulePort
+              key={`${port.direction}:${port.id}`}
+              port={port}
+              priority={portPriority(data.moduleType, port)}
+              connected={isPortConnected(port)}
+            />
+          ))}
+        </div>
+        <div className="module-node__ports-column module-node__ports-column--outputs">
+          {visibleOutputs.map((port) => <ModulePort key={`${port.direction}:${port.id}`} port={port} connected={isPortConnected(port)} />)}
+        </div>
+      </div>
+    </article>
+  );
+});
+
+const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, selected }: ModuleNodeCardProps) {
   const definition = getCanvasModuleDefinition(data.moduleType);
   const workflowLabel = resolveNodeWorkflowLabel(id, data.moduleType, data.config);
   const connectedPortIds = new Set(data.connectedPortIds ?? []);
@@ -394,18 +522,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       : connectedPortKeys.has(`${port.direction}:${port.id}`)
   );
   const Icon = resolveCanvasModuleIcon(definition.type);
-  const inputs = definition.ports.filter((port) => port.direction === 'input');
-  const outputs = definition.ports.filter((port) => port.direction === 'output');
-  const visibleInputs = data.moduleType === 'image_generation'
-    ? inputs.filter((port) => port.id === 'references')
-    : data.moduleType === 'video_generation'
-      ? inputs.filter((port) => port.id === 'media')
-      : data.moduleType === 'reverse_agent'
-        ? inputs.filter((port) => port.id === 'references')
-        : inputs;
-  const visibleOutputs = data.moduleType === 'reverse_agent'
-    ? outputs.filter((port) => port.id === 'analysis')
-    : outputs;
+  const { inputs: visibleInputs, outputs: visibleOutputs } = visibleModulePorts(definition, data.moduleType);
   const projectImages = useAppStore((state) => state.projectImages);
   const projectVideos = useAppStore((state) => state.projectVideos);
   const projectImageError = useAppStore((state) => state.projectImageError);
@@ -461,19 +578,8 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
     || data.moduleType === 'upload_image'
     || data.moduleType === 'canvas_library';
   const hasMediaControls = hasImageControls || data.moduleType === 'video_input';
-  const isFoundationNode = data.moduleType === 'image_input'
-    || data.moduleType === 'upload_image'
-    || data.moduleType === 'video_input'
-    || data.moduleType === 'canvas_library'
-    || data.moduleType === 'result_output'
-    || data.moduleType === 'video_result'
-    || data.moduleType === 'reverse_result';
-  const isProfessionalWorkbench = data.moduleType === 'image_generation'
-    || data.moduleType === 'video_generation'
-    || data.moduleType === 'reverse_agent'
-    || data.moduleType === 'storyboard_sheet'
-    || data.moduleType === 'music_generation'
-    || data.moduleType === 'speech_generation';
+  const isFoundationNode = isFoundationModuleType(data.moduleType);
+  const isProfessionalWorkbench = isProfessionalWorkbenchType(data.moduleType);
   const filteredProjectImages = useMemo(() => {
     const query = libraryQuery.trim().toLocaleLowerCase();
     return query.length === 0
@@ -592,6 +698,7 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
       data-testid="module-node-card"
       data-module-type={definition.type}
       data-port-label-mode={isProfessionalWorkbench ? 'interactive' : 'always'}
+      data-render-detail="full"
       style={mediaNodeStyle}
     >
       <header className="module-node__header">
@@ -1551,6 +1658,7 @@ function ImageGenerationSummary({
     .map((assetId) => projectImages.find((asset) => asset.assetId === assetId))
     .filter((asset): asset is ProjectImageAssetSummary => asset !== undefined && isRenderableManagedImageUrl(asset.displayUrl, asset.assetId)), [persistedResultAssetIds, projectImages]);
   const previewItems = durablePreviewAssets.length > 0 ? durablePreviewAssets : generatedPreviewAssets;
+  const primaryColorCorrection = useImageColorCorrection(previewItems[0]?.displayUrl, colorCorrection);
   const requestedResultResolution = readImageResolutionTier(config.requestedResolution);
   const undersizedResult = requestedResultResolution === undefined
     ? undefined
@@ -1616,7 +1724,6 @@ function ImageGenerationSummary({
   };
   const imageGenerationError = runError ?? failedJobError;
   const colorCorrectionFilterId = `image-color-correction-${id.replace(/[^a-z0-9_-]/giu, '-')}`;
-  const previewColorCorrection = showOriginalForComparison ? DEFAULT_IMAGE_COLOR_CORRECTION : colorCorrection;
   return (
     <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 9) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
       <TaskTimingBadge
@@ -1625,11 +1732,6 @@ function ImageGenerationSummary({
         status={localGenerationStartedAt === null ? undefined : 'queued'}
         startedAt={localGenerationStartedAt ?? undefined}
       />
-      <svg aria-hidden="true" width="0" height="0" className="module-node__color-correction-filter">
-        <filter id={colorCorrectionFilterId} colorInterpolationFilters="sRGB">
-          <feColorMatrix type="matrix" values={imageColorCorrectionMatrix(colorCorrection)} />
-        </filter>
-      </svg>
       {!expanded && <section className="module-node__generation-collapsed-shell nopan" aria-label="Image generation preview">
         <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nopan" aria-label="Open image generation editor" aria-expanded={expanded} title="点击展开" {...collapsedActivation} onContextMenu={(event) => {
           if (!hasCompletedImageResult || previewItems[0] === undefined) return;
@@ -1648,7 +1750,7 @@ function ImageGenerationSummary({
           {hasCompletedImageResult && previewItems.length > 0 ? <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${previewItems.length > 4 ? 9 : previewItems.length} module-node__generation-preview-gallery--collapsed`}>
             {previewItems.slice(0, 9).map((asset, index) => (
               <div key={asset.assetId} className="module-node__generation-preview-item" aria-label={`Generated image preview ${index + 1}`}>
-                  <img src={asset.displayUrl} alt={`Generated image preview ${index + 1}`} draggable={false} loading="lazy" decoding="async" style={{ filter: imageColorCorrectionFilter(previewColorCorrection, colorCorrectionFilterId) }} />
+                  <ImageColorCorrectionImage src={asset.displayUrl} alt={`Generated image preview ${index + 1}`} draggable={false} loading="lazy" decoding="async" correction={colorCorrection} comparingOriginal={showOriginalForComparison} filterId={`${colorCorrectionFilterId}-${index}`} />
                 <span aria-hidden="true">{index + 1}</span>
               </div>
             ))}
@@ -1677,7 +1779,7 @@ function ImageGenerationSummary({
         status={statusLabel}
         configuration={<>
           {hasCompletedImageResult && previewItems.length > 0 && <section className="module-node__generation-editor-preview nodrag nopan" aria-label="Image generation preview" onPointerDown={stopCanvasPointer}>
-            <ImageColorCorrectionControls value={colorCorrection} comparingOriginal={showOriginalForComparison} onChange={setColorCorrection} onCompareChange={setShowOriginalForComparison} />
+            <ImageColorCorrectionControls value={primaryColorCorrection} comparingOriginal={showOriginalForComparison} onChange={setColorCorrection} onCompareChange={setShowOriginalForComparison} />
             <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${previewItems.length > 4 ? 9 : previewItems.length}`}>
               {previewItems.slice(0, 9).map((asset, index) => <button
                 key={asset.assetId}
@@ -1705,7 +1807,7 @@ function ImageGenerationSummary({
                   }
                 }}
               >
-                  <img src={asset.displayUrl} alt={`Generated image ${index + 1}`} draggable={false} loading="lazy" decoding="async" style={{ filter: imageColorCorrectionFilter(previewColorCorrection, colorCorrectionFilterId) }} />
+                  <ImageColorCorrectionImage src={asset.displayUrl} alt={`Generated image ${index + 1}`} draggable={false} loading="lazy" decoding="async" correction={colorCorrection} comparingOriginal={showOriginalForComparison} filterId={`${colorCorrectionFilterId}-${index}`} />
                 <span aria-hidden="true">{index + 1}</span>
               </button>)}
             </div>
@@ -2038,6 +2140,39 @@ function imageMentionCandidates(prompt: string): RegExpMatchArray[] {
   return Array.from(prompt.matchAll(IMAGE_MENTION_CANDIDATE_PATTERN));
 }
 
+function unresolvedImageMentionCandidates(
+  prompt: string,
+  images: readonly ProjectImageAssetSummary[],
+): RegExpMatchArray[] {
+  const canonicalTokens = new Set(images.map((_, position) => imageMentionTokenAt(position)));
+  return imageMentionCandidates(prompt).filter((match) => {
+    // A rendered reference chip can touch following prose. That prose does not
+    // turn its canonical token back into a query (nor make 图片1 match 图片10).
+    const token = /^@图片[0-9]+/u.exec(match[0])?.[0];
+    return token === undefined || !canonicalTokens.has(token);
+  });
+}
+
+function hasNewImageMentionQuery(
+  previousValue: string,
+  nextValue: string,
+  images: readonly ProjectImageAssetSummary[],
+): boolean {
+  // Dismiss queries, not a complete editor serialization: whitespace changes,
+  // chip rebuilds and caret restoration must not revive an older query. Counts
+  // still distinguish a second typed/pasted @ from an identical dismissed one.
+  const remaining = new Map<string, number>();
+  for (const match of unresolvedImageMentionCandidates(previousValue, images)) {
+    remaining.set(match[0], (remaining.get(match[0]) ?? 0) + 1);
+  }
+  return unresolvedImageMentionCandidates(nextValue, images).some((match) => {
+    const count = remaining.get(match[0]) ?? 0;
+    if (count === 0) return true;
+    remaining.set(match[0], count - 1);
+    return false;
+  });
+}
+
 function isImageMentionQueryActive(
   prompt: string,
   images: readonly ProjectImageAssetSummary[] = [],
@@ -2046,8 +2181,7 @@ function isImageMentionQueryActive(
   if (selection !== undefined && selection !== null) {
     if (unresolvedImageMentionAtSelection(prompt, images, selection) !== undefined) return true;
   }
-  const canonicalTokens = new Set(images.map((_, position) => imageMentionTokenAt(position)));
-  return imageMentionCandidates(prompt).some((match) => !canonicalTokens.has(match[0]));
+  return unresolvedImageMentionCandidates(prompt, images).length > 0;
 }
 
 function normalizeMediaMentionSelection(
@@ -2067,12 +2201,10 @@ function unresolvedImageMentionAtSelection(
 ): { readonly start: number; readonly end: number; readonly text: string; readonly query: string } | undefined {
   const normalized = normalizeMediaMentionSelection(prompt, selection);
   if (normalized === null) return undefined;
-  const knownTokens = new Set(images.map((_, position) => imageMentionTokenAt(position)));
-  const candidates = imageMentionCandidates(prompt)
+  const candidates = unresolvedImageMentionCandidates(prompt, images)
     .filter((candidate) => candidate.index !== undefined
       && candidate.index <= normalized.end
-      && normalized.start <= candidate.index + candidate[0].length
-      && !knownTokens.has(candidate[0]));
+      && normalized.start <= candidate.index + candidate[0].length);
   const match = candidates[candidates.length - 1];
   if (match === undefined || match.index === undefined) return undefined;
   const matchEnd = match.index + match[0].length;
@@ -2095,8 +2227,7 @@ function lastUnresolvedImageMentionCandidate(
   prompt: string,
   images: readonly ProjectImageAssetSummary[],
 ): RegExpMatchArray | undefined {
-  const canonicalTokens = new Set(images.map((_, position) => imageMentionTokenAt(position)));
-  const candidates = imageMentionCandidates(prompt).filter((match) => !canonicalTokens.has(match[0]));
+  const candidates = unresolvedImageMentionCandidates(prompt, images);
   return candidates[candidates.length - 1];
 }
 

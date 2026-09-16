@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createAgentKnowledgeLease, createCanvasModuleNode, type CanvasProject, type PlacementObject, type ProjectMemoryEntry, type ReversePromptRun } from '@agent-canvas/domain';
-import type { Edge } from '@xyflow/react';
+import { createAgentKnowledgeLease, createCanvasModuleNode, type CanvasModuleNode, type CanvasProject, type PlacementObject, type ProjectMemoryEntry, type ReversePromptRun } from '@agent-canvas/domain';
+import { Position, ReactFlowProvider, useStoreApi, type Edge, type Viewport } from '@xyflow/react';
 import {
   createStarterProject,
   replaceKnowledgeClientForTests,
@@ -44,6 +44,97 @@ afterEach(() => {
 });
 
 describe('CanvasWorkspace', () => {
+  async function renderLargeGraph() {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 600, height: 600, left: 0, right: 800, top: 0, width: 800, x: 0, y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const nodes = Array.from({ length: 42 }, (_, index) => createCanvasModuleNode(
+      `viewport-node-${index}`,
+      index % 2 === 0 ? 'image_input' : 'image_generation',
+      { x: index < 2 ? index * 350 : 5000 + index * 600, y: 20 },
+    ));
+    const edges = Array.from({ length: 21 }, (_, index) => ({
+      id: `viewport-edge-${index}`,
+      source: nodes[index * 2]!.id,
+      sourcePortId: 'image',
+      target: nodes[index * 2 + 1]!.id,
+      targetPortId: 'references',
+      order: 0,
+    }));
+    useAppStore.getState().setProject({
+      version: 1, id: 'viewport-graph', name: 'Viewport Graph', nodes, edges,
+      projectMemory: [], skillPromotionCandidates: [],
+    });
+    let flowStore: ReturnType<typeof useStoreApi> | undefined;
+    function StoreProbe() {
+      flowStore = useStoreApi();
+      return null;
+    }
+    render(<ReactFlowProvider><CanvasWorkspace /><StoreProbe /></ReactFlowProvider>);
+    if (flowStore === undefined) throw new Error('React Flow store was not mounted');
+    const store = flowStore;
+    act(() => store.getState().onNodesChange?.(nodes.map((node) => ({
+      id: node.id, type: 'dimensions', dimensions: { width: 250, height: 240 }, setAttributes: true,
+    }))));
+    // Happy DOM has no layout observer. Supply the measured handles that the
+    // browser records before React Flow can hide initialized node renderers.
+    act(() => store.setState((state) => ({
+      nodeLookup: new Map([...state.nodeLookup].map(([id, node]) => [id, {
+        ...node,
+        internals: {
+          ...node.internals,
+          handleBounds: {
+            source: [{ id: 'image', nodeId: id, type: 'source' as const, position: Position.Right, x: 245, y: 110, width: 10, height: 10 }],
+            target: [{ id: 'references', nodeId: id, type: 'target' as const, position: Position.Left, x: -5, y: 110, width: 10, height: 10 }],
+          },
+        },
+      }])),
+    })));
+    const moveViewport = async (viewport: Viewport) => {
+      await act(async () => {
+        store.setState({ transform: [viewport.x, viewport.y, viewport.zoom], width: 800, height: 600 });
+        store.getState().onMove?.(null, viewport);
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      });
+    };
+    await moveViewport({ x: 0, y: 0, zoom: 1 });
+    return { store, nodes, edges, moveViewport };
+  }
+
+  it('retains the complete graph and minimap when native visibility culling hides distant node renderers', async () => {
+    const { store, nodes, edges } = await renderLargeGraph();
+
+    expect(store.getState().nodes.map((node) => node.id)).toEqual(nodes.map((node) => node.id));
+    expect(store.getState().edges.map((edge) => edge.id)).toEqual(edges.map((edge) => edge.id));
+    expect(document.querySelectorAll('.react-flow__minimap-node')).toHaveLength(nodes.length);
+    expect(document.querySelectorAll('.react-flow__node').length).toBeLessThan(nodes.length);
+    expect(store.getState().nodeLookup.has('viewport-node-41')).toBe(true);
+  });
+
+  it('does not replace controlled graph arrays or workspace callbacks on each viewport frame', async () => {
+    const { store, moveViewport } = await renderLargeGraph();
+    const before = store.getState();
+
+    await moveViewport({ x: -20, y: 10, zoom: 0.8 });
+    await moveViewport({ x: -50, y: 20, zoom: 0.6 });
+
+    expect(store.getState().nodes).toBe(before.nodes);
+    expect(store.getState().edges).toBe(before.edges);
+    expect(store.getState().onNodeDragStop).toBe(before.onNodeDragStop);
+  });
+
+  it('keeps zoom-scaled connection snapping live without pruning offscreen endpoints', async () => {
+    const { store, moveViewport } = await renderLargeGraph();
+
+    for (const zoom of [0.5, 0.08, 2.5]) {
+      await moveViewport({ x: 0, y: 0, zoom });
+      expect(store.getState().connectionRadius).toBeCloseTo(48 / zoom);
+    }
+    expect(store.getState().nodeLookup.has('viewport-node-41')).toBe(true);
+    expect(store.getState().edges.some((edge) => edge.target === 'viewport-node-41')).toBe(true);
+  });
+
   it('offers only compatible modules when a source port is released on blank canvas', () => {
     const source = createCanvasModuleNode('image-source', 'image_input', { x: 0, y: 0 });
 
@@ -1270,6 +1361,36 @@ describe('CanvasWorkspace', () => {
 
     expect(screen.getByRole('dialog', { name: 'Generated image preview' })).toBeVisible();
     expect(screen.getByLabelText('图片尺寸')).toHaveTextContent('2400 × 1600 px');
+  });
+
+  it.each([false, true])('retains generation color controls when a result image is double clicked (expanded=%s)', async (expanded) => {
+    const asset = { assetId: 'abababababababab', byteSize: 42,
+      displayUrl: 'novus-asset://project/session/abababababababab', extension: 'png' as const,
+      height: 1600, label: 'Generated photo', mediaType: 'image/png' as const,
+      origin: 'generated' as const, sha256: 'a'.repeat(64), usageCount: 1, width: 2400 };
+    const node: CanvasModuleNode = createCanvasModuleNode('corrected-generation', 'image_generation', { x: 80, y: 180 });
+    node.data.execution = { state: 'completed' };
+    node.data.config = { resultAssetIds: [asset.assetId], resultState: 'fresh',
+      colorCorrection: {version: 1, mode: 'custom', temperature: -3, tint: -18, saturation: 100, contrast: 100, brightness: 100} };
+    useAppStore.setState({ projectImages: [asset], project: { ...useAppStore.getState().project, nodes: [node], edges: [] } } as never);
+    render(<CanvasWorkspace />);
+    await waitFor(() => expect(document.querySelector('.react-flow__node[data-id="corrected-generation"] .module-node__generation-preview-gallery img')).not.toBeNull());
+    const flowNode = document.querySelector<HTMLElement>('.react-flow__node[data-id="corrected-generation"]')!;
+    const isExpanded = flowNode.querySelector('[data-editor-expanded="true"]') !== null;
+    if (expanded !== isExpanded) {
+      const stateButton = flowNode.querySelector<HTMLButtonElement>(expanded
+        ? '.module-node__generation-collapsed-open'
+        : '.module-node__collapse-editor');
+      expect(stateButton).not.toBeNull();
+      fireEvent.click(stateButton!);
+    }
+    await waitFor(() => expect(flowNode.querySelector(`[data-editor-expanded="${String(expanded)}"]`)).not.toBeNull());
+    const image = flowNode.querySelector<HTMLImageElement>('.module-node__generation-preview-gallery img')!;
+    expect(image).not.toBeNull();
+    fireEvent.doubleClick(image);
+    const preview = screen.getByRole('dialog', {name:'Generated image preview'});
+    expect(within(preview).getByRole('button',{name:'图片颜色校正'})).toHaveTextContent('自定义');
+    expect(within(preview).getByRole('button',{name:'切换原图对比'})).toBeEnabled();
   });
 
   it('matches the Canvas rail with visible actions and a topbar save affordance', () => {

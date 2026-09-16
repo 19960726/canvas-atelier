@@ -110,13 +110,13 @@ describe('renderer stylesheet precedence', () => {
     expect(release).toMatch(/\.module-node__generation-preview-item > :is\(img, video\),[\s\S]*?\.module-node__video-output-stage > :is\(img, video\) \{[\s\S]*?object-fit: contain !important;/);
   });
 
-  it('keeps completed four-image galleries inside two explicit visible rows', () => {
+  it('keeps completed four-image galleries inside two explicit edge-to-edge rows', () => {
     const release = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/release-layout-contract.css'));
     const contract = release.slice(release.lastIndexOf('FINAL FOUR-UP RESULT CONTRACT'));
 
     expect(contract).toMatch(/data-result-count='4'[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\) !important;[\s\S]*?grid-template-rows: repeat\(2, minmax\(0, 1fr\)\) !important;/);
     expect(contract).toContain('grid-auto-rows: minmax(0, 1fr) !important;');
-    expect(contract).toContain('object-fit: contain !important;');
+    expect(contract).toContain('object-fit: cover !important;');
   });
 
   it('loads the UI Gate after the legacy application stylesheet', () => {

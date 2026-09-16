@@ -9514,6 +9514,49 @@
   transform: none !important;
 }
 
+/* Low-zoom nodes keep their measured shell and connector geometry without
+   mounting image previews, editors, or other expensive controls. */
+.workspace--canvas-layout .module-node.module-node--overview {
+  contain: layout paint style;
+  overflow: hidden;
+}
+
+.workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-content {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-content: start;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--gate-card) 92%, transparent);
+}
+
+.workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-content .module-node__heading {
+  min-width: 0;
+}
+
+.workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-content .module-node__heading > :is(strong, small) {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-content > b {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workspace--canvas-layout .module-node.module-node--overview > .module-node__overview-surface {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* Final four-result gallery and color-correction placement. Keep this after
    the historical generation geometry so all four results remain visible. */
 .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-editor-preview {
@@ -9544,7 +9587,11 @@
 .workspace--canvas-layout .module-node__generation-preview-gallery--4 .module-node__generation-preview-item > img {
   width: 100% !important;
   height: 100% !important;
-  object-fit: contain !important;
+  object-fit: cover !important;
+}
+
+.workspace--canvas-layout .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--4 .module-node__generation-preview-item > img {
+  object-fit: cover !important;
 }
 
 .workspace--canvas-layout .module-node__generation-editor-preview > .module-node__color-correction {
@@ -9769,11 +9816,9 @@
 }
 
 .workspace--canvas-layout .module-node__resolution-warning {
-  position: absolute;
-  z-index: 3;
-  right: 14px;
-  bottom: 12px;
-  left: 14px;
+  position: static;
+  justify-self: stretch;
+  width: 100%;
   box-sizing: border-box;
   margin: 0;
   padding: 7px 10px;
@@ -9785,6 +9830,11 @@
   font-size: 10px;
   line-height: 1.45;
   text-align: center;
+}
+
+/* Reserve a row for the size notice instead of covering the bottom photos. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-editor-preview:has(> .module-node__resolution-warning) {
+  grid-template-rows: auto minmax(0, 1fr) auto !important;
 }
 
 :root[data-theme='dark'] .workspace--canvas-layout .module-node__resolution-warning {

@@ -4913,9 +4913,8 @@ html body .workspace--canvas-layout .toolrail--floating {
 }
 
 /* FINAL FOUR-UP RESULT CONTRACT
-   A completed four-image batch must use an explicit two-row track. Older
-   gallery rules allowed intrinsic image heights to expand the first row and
-   pushed the second row below the collapsed result surface. */
+   A completed four-image batch uses an explicit two-row track and consistent
+   edge-to-edge thumbnails. Full images remain available in the detail viewer. */
 html body .workspace--canvas-layout .module-node:is([data-module-type='image_generation'], [data-module-type='video_generation']):has(
   .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
 ) .module-node__generation-preview-gallery--collapsed {
@@ -4946,6 +4945,6 @@ html body .workspace--canvas-layout .module-node:is([data-module-type='image_gen
   height: 100% !important;
   max-width: none !important;
   max-height: none !important;
-  object-fit: contain !important;
+  object-fit: cover !important;
   object-position: center !important;
 }

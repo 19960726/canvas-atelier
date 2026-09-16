@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ChevronDown, Eye, Palette, WandSparkles } from 'lucide-react';
 import {
   AUTO_IMAGE_COLOR_CORRECTION,
-  DEFAULT_IMAGE_COLOR_CORRECTION,
+  ORIGINAL_IMAGE_COLOR_CORRECTION,
   imageColorCorrectionLabel,
   type ImageColorCorrection,
 } from '../app/image-color-correction';
@@ -25,7 +25,7 @@ export function ImageColorCorrectionControls({
   const update = (patch: Partial<ImageColorCorrection>) => onChange({ ...value, ...patch, mode: 'custom' });
   const reset = () => {
     onCompareChange(false);
-    onChange(DEFAULT_IMAGE_COLOR_CORRECTION);
+    onChange(ORIGINAL_IMAGE_COLOR_CORRECTION);
   };
 
   useEffect(() => {

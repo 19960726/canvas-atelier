@@ -1,13 +1,15 @@
 import { readFileSync } from 'node:fs';
+import { useLayoutEffect, type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ReactFlowProvider } from '@xyflow/react';
+import { ReactFlowProvider, useStoreApi } from '@xyflow/react';
 import { createCanvasModuleNode } from '@agent-canvas/domain';
 import { ModuleNodeCard, promptContainsImageMention, resolveAutomaticVideoAspectRatio } from './ModuleNodeCard';
 import { resetAppStoreForTests, useAppStore } from '../app/app-store';
 import { createProjectPersistenceClient } from '../app/desktop-persistence';
 import { PROVIDER_MODEL_DEFAULTS_STORAGE_KEY, writeProviderModelDefaults } from '../settings/provider-model-defaults';
+import { ORIGINAL_IMAGE_COLOR_CORRECTION } from '../app/image-color-correction';
 
 const originalDesktop = window.novusDesktop;
 
@@ -54,6 +56,14 @@ afterEach(() => {
 
 function openImageGenerationEditor() {
   fireEvent.click(screen.getByRole('button', { name: 'Open image generation editor' }));
+}
+
+function FlowZoom({ children, zoom }: { children: ReactNode; zoom: number }) {
+  const store = useStoreApi();
+  useLayoutEffect(() => {
+    store.setState({ transform: [0, 0, zoom] });
+  }, [store, zoom]);
+  return children;
 }
 
 function openVideoGenerationEditor() {
@@ -117,6 +127,26 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
     expect(screen.getByTestId('module-node-card')).toHaveClass('nowheel');
+  });
+
+  it('uses a lightweight node shell in a low-zoom overview and restores full controls when zoomed in', async () => {
+    const node = createCanvasModuleNode('overview-image-node', 'image_input', { x: 0, y: 0 });
+    const view = render(<ReactFlowProvider><FlowZoom zoom={0.2}><ModuleNodeCard id={node.id} data={node.data} selected={false} /></FlowZoom></ReactFlowProvider>);
+
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+    expect(screen.queryByRole('button', { name: '锁定位置 / Lock position' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('模块端口 / Module ports')).toBeInTheDocument();
+
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.2}><ModuleNodeCard id={node.id} data={node.data} selected /></FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'full'));
+    expect(screen.getByRole('button', { name: '锁定位置 / Lock position' })).toBeInTheDocument();
+
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.2}><ModuleNodeCard id={node.id} data={node.data} selected={false} /></FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'overview'));
+
+    view.rerender(<ReactFlowProvider><FlowZoom zoom={0.7}><ModuleNodeCard id={node.id} data={node.data} selected={false} /></FlowZoom></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByTestId('module-node-card')).toHaveAttribute('data-render-detail', 'full'));
+    expect(screen.getByRole('button', { name: '锁定位置 / Lock position' })).toBeInTheDocument();
   });
 
   it.each([
@@ -280,11 +310,21 @@ describe('ModuleNodeCard', () => {
   });
 
   it('offers provider-independent color correction above completed image results and persists it', async () => {
+    vi.stubGlobal('Image', class {
+      naturalWidth = 96;
+      naturalHeight = 96;
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: vi.fn(),
+      getImageData: () => ({ data: new Uint8ClampedArray(Array.from({ length: 64 }, () => [204, 180, 204, 255]).flat()) }),
+    } as never);
     const node = createCanvasModuleNode('color-correction-results', 'image_generation', { x: 0, y: 0 });
     node.data.config = { ...node.data.config, resultAssetIds: [projectImage.assetId], resultState: 'fresh' };
     const draftGenerationNodeConfig = vi.fn(async () => true);
     useAppStore.setState({
-      projectImages: [projectImage],
+      projectImages: [{ ...projectImage, displayUrl: 'novus-asset://project/color-persist/0123456789abcdef' }],
       project: { ...useAppStore.getState().project, nodes: [node], edges: [] },
       draftGenerationNodeConfig,
     } as never);
@@ -296,17 +336,17 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(within(panel).getByRole('button', { name: '自动中和红紫偏色' }));
 
     const result = screen.getByRole('img', { name: 'Generated image 1' });
-    expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results")');
+    await waitFor(() => expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results-0")'));
     const compare = screen.getByRole('button', { name: '切换原图对比' });
     expect(compare).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(compare);
     expect(result.style.filter).toBe('none');
     expect(compare).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(compare);
-    expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results")');
+    expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results-0")');
     expect(compare).toHaveAttribute('aria-pressed', 'false');
     await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
-      colorCorrection: expect.objectContaining({ mode: 'auto', temperature: -6, tint: -10 }),
+      colorCorrection: expect.objectContaining({ mode: 'auto', version: 1, temperature: 0, tint: 0 }),
     })));
     expect(screen.getByRole('button', { name: '图片颜色校正' })).toHaveTextContent('自动中和');
 
@@ -322,7 +362,7 @@ describe('ModuleNodeCard', () => {
     const lightboxCorrection = within(lightbox).getByRole('dialog', { name: '图片颜色校正' });
     fireEvent.change(within(lightboxCorrection).getByRole('slider', { name: '色温' }), { target: { value: '-18' } });
     const lightboxImage = within(lightbox).getByRole('img', { name: 'Generated image 1 full preview' });
-    expect(lightboxImage.style.filter).toContain('url("#image-color-correction-color-correction-results")');
+    expect(lightboxImage.style.filter).toContain('url("#image-color-correction-color-correction-results-lightbox")');
     fireEvent.click(within(lightbox).getByRole('button', { name: '切换原图对比' }));
     expect(lightboxImage.style.filter).toBe('none');
     await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
@@ -351,6 +391,10 @@ describe('ModuleNodeCard', () => {
     expect(terminalRule).toMatch(/module-node__generation-preview-gallery--4[\s\S]*?aspect-ratio:\s*1\s*\/\s*1/);
     expect(terminalRule).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
     expect(terminalRule).toMatch(/grid-template-rows:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    expect(terminalRule).toMatch(/module-node__generation-preview-gallery--4[\s\S]*?module-node__generation-preview-item\s*>\s*img[\s\S]*?object-fit:\s*cover/);
+    const releaseCss = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const finalFourUpRule = releaseCss.slice(releaseCss.lastIndexOf('FINAL FOUR-UP RESULT CONTRACT'));
+    expect(finalFourUpRule).toMatch(/data-result-count='4'[\s\S]*?module-node__generation-preview-item\s*>\s*:is\(img,\s*video\)[\s\S]*?object-fit:\s*cover/);
   });
 
   it('shows both 4D Nano Banana routes with native image sizes and no GPT-only quality control', () => {
@@ -2132,7 +2176,7 @@ describe('ModuleNodeCard', () => {
 
   it('shows exact dimensions and copies the image directly from the detail viewer', async () => {
     const node = createCanvasModuleNode('image-lightbox-copy', 'image_generation', { x: 0, y: 0 });
-    node.data.config = { ...node.data.config, resultState: 'fresh' };
+    node.data.config = { ...node.data.config, resultState: 'fresh', colorCorrection: ORIGINAL_IMAGE_COLOR_CORRECTION };
     const writeClipboardImage = vi.fn(async () => true);
     window.novusDesktop = {
       ...createPhotoshopDesktopBridge(vi.fn()),
@@ -4328,6 +4372,7 @@ describe('ModuleNodeCard', () => {
 
   it.each(['jpg', 'webp'] as const)('downloads generated %s images using their actual format extension', (extension) => {
     const node = createCanvasModuleNode('generated-download-format', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, colorCorrection: ORIGINAL_IMAGE_COLOR_CORRECTION };
     const asset = { ...projectImage, extension, mediaType: extension === 'jpg' ? 'image/jpeg' : 'image/webp' };
     useAppStore.setState({ projectImages: [asset], modelJobs: [{ id: 'download-format-job', promptNodeId: node.id, status: 'completed', resultAssetId: asset.assetId }] } as never);
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} /></ReactFlowProvider>);

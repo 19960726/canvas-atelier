@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Copy, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
-import { DEFAULT_IMAGE_COLOR_CORRECTION, imageColorCorrectionFilter, renderImageColorCorrectionBlob, type ImageColorCorrection } from '../app/image-color-correction';
+import { ORIGINAL_IMAGE_COLOR_CORRECTION, renderImageColorCorrectionBlob, type ImageColorCorrection } from '../app/image-color-correction';
+import { useImageColorCorrection } from '../app/use-image-color-correction';
 import { ImageColorCorrectionControls } from './ImageColorCorrectionControls';
+import { ImageColorCorrectionImage } from './ImageColorCorrectionImage';
 
 export async function copyProjectImageToClipboard(asset: ProjectImageAssetSummary, colorCorrection?: ImageColorCorrection): Promise<boolean> {
   try {
@@ -108,7 +110,7 @@ export function ProjectImageLightbox({
   const dimensionLabel = asset.width === null || asset.height === null
     ? '尺寸不可用'
     : `${asset.width} × ${asset.height} px`;
-  const previewColorCorrection = showOriginalForComparison ? DEFAULT_IMAGE_COLOR_CORRECTION : colorCorrection;
+  const resolvedColorCorrection = useImageColorCorrection(asset.displayUrl, colorCorrection ?? ORIGINAL_IMAGE_COLOR_CORRECTION);
   const hasColorCorrectionControls = colorCorrection !== undefined && onColorCorrectionChange !== undefined;
   const dialog = (
     <div className="generated-image-lightbox" role="presentation" onPointerDown={onClose}>
@@ -138,7 +140,7 @@ export function ProjectImageLightbox({
         </header>
         {hasColorCorrectionControls && <div className="generated-image-lightbox__correction-toolbar">
           <ImageColorCorrectionControls
-            value={colorCorrection}
+            value={resolvedColorCorrection}
             comparingOriginal={showOriginalForComparison}
             onChange={onColorCorrectionChange}
             onCompareChange={setShowOriginalForComparison}
@@ -187,12 +189,14 @@ export function ProjectImageLightbox({
             }
           }}
         >
-          <img
+          <ImageColorCorrectionImage
             src={asset.displayUrl}
+            correction={colorCorrection ?? ORIGINAL_IMAGE_COLOR_CORRECTION}
+            comparingOriginal={showOriginalForComparison}
+            filterId={colorCorrectionFilterId === undefined ? undefined : `${colorCorrectionFilterId}-lightbox`}
             alt={`Generated image ${index + 1} full preview`}
             draggable={false}
             style={{
-              filter: previewColorCorrection === undefined ? undefined : imageColorCorrectionFilter(previewColorCorrection, colorCorrectionFilterId),
               transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})`,
             }}
           />

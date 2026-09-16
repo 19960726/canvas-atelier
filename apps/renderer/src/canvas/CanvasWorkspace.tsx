@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Background, BackgroundVariant, ConnectionLineType, ConnectionMode, Controls, MiniMap, ReactFlow, SelectionMode, useStore, useUpdateNodeInternals } from '@xyflow/react';
+import { Background, BackgroundVariant, ConnectionLineType, ConnectionMode, Controls, MiniMap, ReactFlow, SelectionMode, useStore, useStoreApi, useUpdateNodeInternals } from '@xyflow/react';
 import type { Connection, Edge, Node, OnConnectEnd, OnConnectStart, Viewport } from '@xyflow/react';
 import type { CodexCliProfile, ProviderBridgeProfile, ProviderConfigurationStatus } from '@agent-canvas/desktop-core';
 import type {
@@ -51,7 +51,6 @@ import { nodeTypes, reconcileFlowEdges, reconcileFlowNodes, toFlowEdges, toFlowN
 import { CanvasBezierEdge, CANVAS_BEZIER_EDGE_TYPE } from './CanvasBezierEdge';
 import { useInteractionQuality } from './use-interaction-quality';
 import { useCanvasDraft } from './use-canvas-draft';
-import { useViewportCulling } from './use-viewport-culling';
 import { initialGenerationEditorState, reduceGenerationEditorState } from './generation-editor-state';
 import { CONNECTED_MEDIA_DRAG_MIME, decodeConnectedMediaDragPayload } from './connected-media-drag';
 import { ProjectImageLightbox } from './ProjectImageLightbox';
@@ -97,6 +96,17 @@ interface CanvasFlowInstance {
   screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
   setCenter: (x: number, y: number, options?: { zoom?: number; duration?: number }) => void;
   fitView: (options?: { padding?: number; duration?: number; nodes?: { id: string }[] }) => void;
+}
+
+function ConnectionRadiusUpdater() {
+  const store = useStoreApi();
+  const zoom = useStore((state) => state.transform[2]);
+  useEffect(() => {
+    // Keep a 48px screen-space snap target without subscribing the entire
+    // workspace (and its controlled graph) to every pan/zoom frame.
+    store.setState({ connectionRadius: 48 / Math.max(0.08, zoom) });
+  }, [store, zoom]);
+  return null;
 }
 
 function EdgeEndpointInternalsUpdater({ edges, nodes }: { readonly edges: readonly Edge[]; readonly nodes: readonly Node[] }) {
@@ -747,6 +757,7 @@ export function CanvasWorkspace() {
   const [referenceUploadError, setReferenceUploadError] = useState<string | null>(null);
   const canvasStageRef = useRef<HTMLElement | null>(null);
   const flowInstanceRef = useRef<CanvasFlowInstance | null>(null);
+  const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
   const clipboardImageImportBatchRef = useRef(0);
   const [moduleLibraryOpen, setModuleLibraryOpen] = useState(false);
   const newProjectInFlightRef = useRef(false);
@@ -1071,48 +1082,21 @@ export function CanvasWorkspace() {
     return () => resetMcpCanvasSelection();
   }, [activeFlowEdgeIds, selectedFlowNodeIds]);
 
-  const alwaysRenderedOutputNodeIds = useMemo(() => {
-    const outputNodeIds = new Set(draftNodes.flatMap((node) => {
-      const moduleType = (node.data as { moduleType?: CanvasModuleType }).moduleType;
-      return moduleType === 'video_result' || moduleType === 'reverse_result' ? [node.id] : [];
-    }));
-    if (outputNodeIds.size === 0) return [] as string[];
-    const connectedNodeIds = new Set(outputNodeIds);
-    for (const edge of flowEdges) {
-      if (outputNodeIds.has(edge.source) || outputNodeIds.has(edge.target)) {
-        connectedNodeIds.add(edge.source);
-        connectedNodeIds.add(edge.target);
-      }
-    }
-    return [...connectedNodeIds];
-  }, [draftNodes, flowEdges]);
   const lastFocusedWorkbenchNodeRef = useRef<string | null>(null);
   const lastCanvasPointerRef = useRef<{ x: number; y: number } | null>(null);
   const interactionQuality = useInteractionQuality(runtimeProfile);
-  const viewportCulling = useViewportCulling({
-    activeNodeIds: alwaysRenderedOutputNodeIds,
-    activeEdgeIds: activeFlowEdgeIds,
-    enabled: enableReactFlowVisibilityCulling,
-    edges: flowEdges,
-    ghostEdgeIds: flowEdgeState.ghostEdgeIds,
-    ghostNodeIds: flowNodeState.ghostNodeIds,
-    nodes: draftNodes,
-    overscan: interactionQuality.isInteracting ? 72 : 192,
-    selectedNodeIds: selectedFlowNodeIds,
-  });
   const interactionNodes = useMemo(
     () => activeTool === 'hand'
-      ? viewportCulling.nodes.map((node) => ({ ...node, draggable: false, selectable: false }))
-      : viewportCulling.nodes,
-    [activeTool, viewportCulling.nodes],
+      ? draftNodes.map((node) => ({ ...node, draggable: false, selectable: false }))
+      : draftNodes,
+    [activeTool, draftNodes],
   );
   const markInteraction = interactionQuality.markInteraction;
-  const handleViewportChange = viewportCulling.handleViewportChange;
-  const handleViewportInteraction = useCallback((event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+  const handleViewportInteraction = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
     globalThis.performance?.mark?.('novus-pan-zoom-frame');
-    handleViewportChange(event, viewport);
+    viewportRef.current = viewport;
     markInteraction();
-  }, [handleViewportChange, markInteraction]);
+  }, [markInteraction]);
   const placementNode = useMemo(() => project.nodes.find(isPlacementNode), [project.nodes]);
   const managedImagesByAssetId = useMemo(
     () => new Map(projectImages.map((asset) => [asset.assetId, asset])),
@@ -1247,13 +1231,12 @@ export function CanvasWorkspace() {
 
   const handleCanvasStageRef = useCallback((element: HTMLElement | null) => {
     canvasStageRef.current = element;
-    viewportCulling.containerRef(element);
-  }, [viewportCulling.containerRef]);
+  }, []);
 
   const handleReactFlowInit = useCallback((instance: CanvasFlowInstance) => {
     flowInstanceRef.current = instance;
-    viewportCulling.handleViewportInitialized(instance);
-  }, [viewportCulling.handleViewportInitialized]);
+    viewportRef.current = instance.getViewport();
+  }, []);
 
   const handleArrangeCanvas = useCallback(async () => {
     const arranged = await arrangeCanvas();
@@ -1269,7 +1252,7 @@ export function CanvasWorkspace() {
     const stage = canvasStageRef.current;
     if (!stage) return null;
     const rect = stage.getBoundingClientRect();
-    const viewport = viewportCulling.viewport;
+    const viewport = viewportRef.current;
     const left = Number.isFinite(rect.left) ? rect.left : 0;
     const top = Number.isFinite(rect.top) ? rect.top : 0;
     const x = Number.isFinite(viewport.x) ? viewport.x : 0;
@@ -1279,7 +1262,7 @@ export function CanvasWorkspace() {
       x: (position.x - left - x) / zoom,
       y: (position.y - top - y) / zoom,
     };
-  }, [viewportCulling.viewport]);
+  }, []);
 
   const getModulePlacementBounds = useCallback(() => {
     const stage = canvasStageRef.current;
@@ -1644,6 +1627,10 @@ export function CanvasWorkspace() {
 
   const handlePaneDoubleClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
     if (!(event.target instanceof Element)) return;
+    if (!event.currentTarget.contains(event.target)) return;
+    // Generated results own a preview with per-node color correction. Let
+    // their handler run instead of replacing it with the generic asset viewer.
+    if (event.target.closest('[data-module-type="image_generation"] .module-node__generation-preview-gallery')) return;
     const image = event.target.closest('img');
     if (image instanceof HTMLImageElement) {
       const source = image.getAttribute('src') ?? image.currentSrc;
@@ -2201,17 +2188,15 @@ export function CanvasWorkspace() {
         </button>
         <ReactFlow
           colorMode={theme.resolvedTheme}
-          // Keep React Flow from mounting node/edge renderers that are outside
-          // the current viewport. Our data-level culling above preserves
-          // selection/connection semantics; this second guard prevents the
-          // renderer itself from doing work for large image-heavy canvases.
+          // Keep the complete graph in React Flow for its minimap, measurements
+          // and offscreen connections. Only renderer visibility is culled;
+          // viewport motion must not remove/reinsert controlled graph entries.
           onlyRenderVisibleElements={enableReactFlowVisibilityCulling}
           nodes={interactionNodes}
-          edges={viewportCulling.edges}
+          edges={flowEdges}
           nodeTypes={nodeTypes}
           edgeTypes={canvasEdgeTypes}
           connectionMode={ConnectionMode.Loose}
-          connectionRadius={48 / Math.max(0.08, viewportCulling.viewport.zoom)}
           connectionLineType={formalCanvasNodeCount >= 200 ? ConnectionLineType.Straight : ConnectionLineType.Bezier}
           minZoom={0.08}
           maxZoom={2.5}
@@ -2257,7 +2242,8 @@ export function CanvasWorkspace() {
           }}
           proOptions={{ hideAttribution: true }}
         >
-          <EdgeEndpointInternalsUpdater edges={viewportCulling.edges} nodes={interactionNodes} />
+          <ConnectionRadiusUpdater />
+          <EdgeEndpointInternalsUpdater edges={flowEdges} nodes={interactionNodes} />
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--canvas-grid)" />
           {generationEditorState.expandedNodeId === null && (
             <MiniMap pannable zoomable nodeColor="var(--minimap-node)" maskColor="var(--minimap-mask)" />
