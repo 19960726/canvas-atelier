@@ -557,9 +557,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (adaptation.status === 'unsupported' || adaptation.actual?.kind !== 'image') {
         throw createGenerationStartError('GENERATION_PARAMETERS_UNSUPPORTED', 'Selected image parameters are unsupported');
       }
+      // A complete provider profile may omit an aspect-ratio table even though
+      // its generation transport still accepts the canonical `aspect_ratio`
+      // field. Preserve the user's selection in that case; dropping it here
+      // makes routes such as Comfly Nano Banana silently fall back to square.
       imageAspectRatio = imageConstraints?.aspectRatios?.length
         ? adaptation.actual.aspectRatio
-        : supportsGptParameters ? requestedImageAspectRatio : undefined;
+        : requestedImageAspectRatio;
       imageResolution = supportedImageResolutions?.length
         ? adaptation.actual.resolution
         : requestedImageResolution;

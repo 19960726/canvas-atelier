@@ -26,6 +26,7 @@ import type {
   GenerationHistoryProviderSinkContract,
 } from './generation-history-provider-sink.js';
 import { deriveGenerationHistoryId } from './generation-history-provider-sink.js';
+import { buildImageGenerationHistorySubmission } from './generation-history-submission.js';
 import { buildComflyModelProfiles, cloneProviderProfile, markProviderProfileSelections, mergeProviderModelProfiles, repairComflyGeminiNativeReverseCapability, repairComflyGptImage25AsyncCapability, repairComflyImageEditCapability } from './provider-model-catalog.js';
 import { createComflyVideoJobHandlers } from './comfly-video-jobs.js';
 import { submitComflyImage } from './comfly-image-submission.js';
@@ -315,8 +316,7 @@ export function createComflyProviderService(options: {
         );
       }
       const reservation = await options.historySink?.reserveSubmission({
-        jobId: validated.jobId,
-        modelDisplayName: profile.displayName,
+        jobId: validated.jobId, ...buildImageGenerationHistorySubmission(profile, validated),
       });
       if (reservation !== undefined && reservation.historyId !== historyId) {
         throw createProviderBridgeError('PROVIDER_INVALID_RESPONSE', 'Generation history reservation identity is invalid');

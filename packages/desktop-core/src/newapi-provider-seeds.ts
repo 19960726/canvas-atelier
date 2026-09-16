@@ -33,6 +33,7 @@ export const NEW_API_PROVIDER_SEEDS: Readonly<Record<NewApiProviderId, readonly 
     incompleteImage('gpt-image-2', '4dai-gpt-image-2'),
     incompleteImage('gpt-image-2-2k', '4dai-gpt-image-2-2k'),
     incompleteImage('gpt-image-2-4k', '4dai-gpt-image-2-4k'),
+    incompleteImage('gpt-image-2.5', '4dai-gpt-image-2-5'),
     incompleteImage('gpt-image-2.5-flare', '4dai-gpt-image-2-5-flare'),
     incompleteImage('gpt-image-2.5-sunburst', '4dai-gpt-image-2-5-sunburst'),
     incompleteImage('grok-imagine-image-2.0', '4dai-grok-imagine-image-2-0'),

@@ -41,12 +41,18 @@ export interface GenerationHistoryProviderSinkContract {
     readonly jobId: string;
     readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
+    readonly modelId?: string;
+    readonly modelRoute?: string;
+    readonly parameters?: GenerationHistoryRecord['parameters'];
     readonly provider?: ProviderBridgeProvider;
   }): Promise<GenerationHistorySubmissionReservation>;
   queued(input: {
     readonly jobId: string;
     readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
+    readonly modelId?: string;
+    readonly modelRoute?: string;
+    readonly parameters?: GenerationHistoryRecord['parameters'];
     readonly provider?: ProviderBridgeProvider;
   }): Promise<string>;
   running(historyId: string): Promise<void>;
@@ -92,6 +98,9 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
     readonly jobId: string;
     readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
+    readonly modelId?: string;
+    readonly modelRoute?: string;
+    readonly parameters?: GenerationHistoryRecord['parameters'];
     readonly provider?: ProviderBridgeProvider;
   }): Promise<GenerationHistorySubmissionReservation> {
     const identities = deriveHistoryIdentities(input.jobId);
@@ -111,10 +120,12 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
       provider: {
         displayName: providerDisplayName(provider),
         modelDisplayName: input.modelDisplayName,
+        ...(input.modelId === undefined ? {} : { modelId: input.modelId }),
+        ...(input.modelRoute === undefined ? {} : { modelRoute: input.modelRoute }),
         capabilityRevision: HISTORY_CAPABILITY_REVISIONS[kind],
       },
       promptSummary: HISTORY_PROMPT_SUMMARIES[kind],
-      parameters: {},
+      parameters: input.parameters ?? {},
       output: null,
       favorite: false,
       tags: [],
@@ -139,6 +150,9 @@ export class GenerationHistoryProviderSink implements GenerationHistoryProviderS
     readonly jobId: string;
     readonly kind?: 'image' | 'video';
     readonly modelDisplayName: string;
+    readonly modelId?: string;
+    readonly modelRoute?: string;
+    readonly parameters?: GenerationHistoryRecord['parameters'];
     readonly provider?: ProviderBridgeProvider;
   }): Promise<string> {
     return (await this.reserveSubmission(input)).historyId;

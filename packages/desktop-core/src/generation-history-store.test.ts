@@ -513,6 +513,33 @@ describe('generation history pagination', () => {
     expect(pageTwo.records[0]!.output?.availability).toBe('missing');
     expect(pageTwo.revision).toBe(3);
   });
+
+  it('returns the default first page without waiting for original integrity hashes', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const record = historyRecord('history_fast_first_page', pngBytes);
+    await new Store(harness).ingest({ operationId: 'operation_ingest_fast_first', record, source: chunks(pngBytes) });
+    const releaseHash = deferred<void>();
+    let hashCalls = 0;
+    const slow = new Store({
+      ...harness,
+      hashFile: async () => {
+        hashCalls += 1;
+        await releaseHash.promise;
+        return record.output!.sha256;
+      },
+    });
+    const listing = slow.list({ pageSize: 50 });
+    const completed = await Promise.race([
+      listing.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+    releaseHash.resolve();
+    await listing;
+    expect(completed).toBe(true);
+    expect(hashCalls).toBe(0);
+  });
 });
 
 describe('generation history concurrent lifecycle', () => {

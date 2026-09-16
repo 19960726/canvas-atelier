@@ -1,5 +1,16 @@
 # Canvas Atelier project memory
 
+## 2026-09-15 多供应商模型目录复核与 4D 漏项修复
+
+- 四供应商实现均已重新核对：Comfly、RelayMe、巨轮 API 和 4D AI 都在 provider contract、主进程注册、设置页卡片和 renderer 目录路由中；设置页按供应商独立加载，不会因为当前优先供应商而隐藏其他站点。巨轮只暴露 `openai-video` 视频模型，4D 只暴露已通过端点证据的生图、视觉反推和对话模型。
+- 发现 4D 公开目录快照包含精确 `gpt-image-2.5`，但目录候选识别和静态种子此前只覆盖 `gpt-image-2.5-flare/sunburst`，导致该模型可能完全不显示。现补入 4D 候选和稳定 route；由于它当前只有 OpenAI endpoint、没有已验证的图片传输证据，仍标记 `incomplete`，不会进入可执行模型、默认模型或付费提交路径。未把 `gpt-image-2.5-2k/4k`、Gemini 4K 别名或未证实的视觉模型强行标为可运行。
+- Comfly Nano Banana 变体的根因是目录归一化先按可见名称、后按模型家族去重，把 `nano-banana-2`、`nano-banana-2-2k`、`nano-banana-2-4k`（以及 Pro 对应变体）折叠成一条；现在去重键保留 1K/2K/4K 变体，桥接和 Comfly 客户端都用精确 `model`、`aspect_ratio` 与 `image_size`，不会把 Nano Banana 2 偷换成 Nano Banana Pro 2K。完整 profile 缺失比例约束时仍保留用户选择的 `9:16` 等比例。
+- 生图历史原来只保存可见模型名并把历史协议路径的非 MP4 文件一律声明为 PNG，导致 JPEG/WebP/GIF 缩略图可能空白，且首屏异步校验期间会短暂显示 `0`。现在记录保存精确 `modelId/modelRoute`、比例、分辨率和张数；首屏显示加载态；modern/legacy 资源 MIME 按扩展名返回；解码失败显示明确缩略图错误。详情页可核对 `Nano Banana 2 · nano-banana-2 · 9:16 · 2K`，历史缩略图仍复用受管资产，不复制大文件。
+- 当前用户目录只持久化了 Comfly 460 个完整 profile，其中 47 个为生图/视频路由；RelayMe 配置 profile 为空，4D 与巨轮 provider 配置目录为空。这是当前机器的凭据/目录状态，不代表供应商全网没有模型；RelayMe、巨轮和 4D 需要配置凭据后点击连接检测/重新检测模型，服务会以认证 `/v1/models` 与公开价格目录交集动态刷新，不以静态 seed 冒充可用。
+- 同轮保留并验证画布修复：完整 profile 缺少比例表时仍保留用户选择的 `aspect_ratio`，历史先显示记录再异步容量审计，保存冲突自动采用最新 revision 后重试，引用/提示词写入合并为最新值并关闭长期 picker，重排采用 latest-only 队列，四宫格使用固定 2×2 且 `contain` 防裁切。
+- 验证：供应商目录、服务、客户端、桥接、注册、历史 MIME/详情和 renderer provider 回归通过；画布、历史、保存、样式、队列和比例回归 437/437；workspace typecheck 通过；全量 Vitest 241 文件通过、2 个性能测试按设计跳过，3682/3684 测试通过。未读取 4D/RelayMe 密钥，未发起任何真实生图、视频或反推请求，不能把本轮静态/fixture 验证写成账号已在线可用。
+- 生产候选：`apps/desktop-modern/dist-builder/desktop-modern/CanvasAtelier-Win10-11-x64-1.6.142.exe` 已由 electron-builder 26.0.12 生成，103324612 字节，SHA-256 `D52AB8BA8192CCD35A21CE13B07DBA9AE3E401417503312BC8813BA400E0E9FC`；解包 `app.asar` 为 6077563 字节，包含 `1.6.142` 与历史协议 MIME 修复。候选只在工作区生成，未上传 GitHub、未覆盖日用安装目录、未执行 NSIS 安装，也未发起真实供应商任务。
+
 ## 2026-09-10 1.6.127 4D Nano Banana、关闭生命周期与正式安装目录验收
 
 - 4D 模型根因与修复：公开 `/api/pricing` 中真正同时声明 OpenAI 与 Gemini endpoint family 的精确模型是 `gemini-3.1-flash-image-preview`（Nano Banana 2）和 `gemini-3-pro-image-preview`（Nano Banana Pro）。目录归类现在先识别这两个精确 ID，再处理宽泛 Gemini/图片别名；只有公开价格目录、认证后的模型列表和 Gemini endpoint 证据三者相交才标为可执行，静态 seed 继续保持 incomplete。请求走 Gemini 原生 `POST /v1beta/models/{model}:generateContent`，比例与 1K/2K/4K 写入 `imageConfig`，参考图使用 `inlineData`，返回图从候选 part 的 `inlineData` 落入受管项目素材。仅声明 OpenAI endpoint 的 `gemini-3-pro-image-preview-4k` 与 special 4K 别名仍 fail closed，避免把未证明的接口显示成可用。
@@ -1281,3 +1292,10 @@ Before producing an installer, verify at minimum:
 - 1.6.140 候选位于 `apps/desktop-modern/dist-builder/desktop-modern-1.6.140-workflow-async`。NSIS 安装器 103323120 字节、SHA-256 `75A78905D95406E1368132736E845DBF888D3205351BEC2B24055F4D4F6CD64D`；blockmap 109768 字节、SHA-256 `F277A3840A41C023BDCC854BFEA5E86D09C3808BF90DCDDE253C8DAAA831E299`；`latest.yml` 375 字节、SHA-256 `62FA81F5A72BBF6F395C5E6A93E14A6410B08C93D7D514C2E6360AE2ABF40009`。候选 EXE SHA-256 `D3DECBD676CE8CB62178A522C8DD18C2C15F2CB547A39554AD3D65FB84D97AC2`，`app.asar` SHA-256 `A4FA44D2EF8E941EB0D8521D166FAE84130EB89DED5C4C5CC7BF5467DECBCB4F`；安装器与候选 EXE 均为 `NotSigned`。
 - 候选离线验收 `work/qa-packaged-workflow-async-1.6.140-candidate-r2/report.json` 与独立安装版 `work/qa-packaged-workflow-async-1.6.140-installed-r1/report.json` 均为 `passed`：两条素材-生成-结果工作流整体不交错、组内依赖顺序正确、无重叠、撤销和保存重开通过，六个 GPT Image 2.5 profile 全部含 `async_tasks`。外网尝试 0、页面错误 0、付费请求 0。安装目录 `D:\CanvasAtelier-QA-1.6.140-20260914` 与候选 84/84 文件逐项同哈希，0 缺失、0 不一致、0 额外，另有正常卸载器。GitHub 提交和正式 Release 尚待完成。
 - 已发布 GitHub 正式 Latest `v1.6.140`：<https://github.com/19960726/canvas-atelier/releases/tag/v1.6.140>。注释标签剥离后指向已验收源码提交 `1ecd48b6d3f241acb2369cd873969648f436f581`，非 draft、非 prerelease；安装器、blockmap 与 `latest.yml` 三项远端资产状态均为 `uploaded`，大小和 GitHub SHA-256 digest 与本地产物逐项一致。发布后仅追加本条项目记录，没有移动或强制覆盖公开标签。
+
+## 2026-09-16 1.6.143 生图历史首屏与引用菜单修复
+
+- 根因：历史抽屉首屏列表与容量审计在调用链上同时等待，默认 50 条记录会先逐个读取并 SHA-256 校验原始媒体，导致 UI 长时间停留在“正在校验本地素材”；引用选择后，节点状态更新又可能让旧的素材选择菜单继续挂在 DOM 上。竞品的快速体验本质是先返回可渲染的元数据，再异步校验媒体，而不是首屏阻塞完整文件审计。
+- 修复：`GenerationHistoryStore.list()` 对默认活动记录首屏直接返回索引元数据，容量统计和协议媒体解析继续在后台/按需做完整存在性、大小、哈希校验；显式“可用/缺失/损坏”筛选仍先完成全量审计，保证筛选语义不变。图片、视频、反推节点在规范化 `@图片N` 引用写回后立即收起过期选择菜单，保留键盘输入 `@` 时的正常菜单。
+- 回归：新增列表不等待原图哈希的锁定测试；引用菜单测试确认选择后不再存在。聚焦 `ModuleNodeCard` 为 277/277，历史抽屉与 store 为 55/55；全 workspace Vitest 为 241 个文件、3683 项通过、2 项跳过；typecheck 与 production build 通过。
+- 安装态证据：1.6.143 候选直接列表从 1.6.142 的约 2012 ms 降至 275 ms；独立安装目录 `D:\CanvasAtelier-QA-1.6.143-20260916` 的实际运行版本为 1.6.143，列表为 316 ms。两轮首个 50 条记录均在 1 秒采样内可见，容量审计最终 576.3 MB、0 异常，页面错误和请求失败均为 0；安装版 EXE 与候选 EXE 的 SHA-256 同为 `3A9C8EF23F777772E595C2156AFB778D004FD11A277FA251A09C584CA6E3FB1D`，`app.asar` SHA-256 为 `77661EB3FEC044333CDBB89AC7E921CC3D5F1353E2CED2E7CA9D3BF63DF1E3D1`。安装器 `CanvasAtelier-Win10-11-x64-1.6.143.exe` 为 103324810 字节、SHA-256 `D25A17BDD41461A89FEEA1851511B17015A7DD8DED4191959FB33EF437D365CE`；blockmap SHA-256 `43F0CDB8E771F8F6CDA7FF6731747C31277C7883D4DE752F4918E6BA88834566`；`latest.yml` SHA-256 `8FC6C886A02673EFF382D1D5C880C6ADD2594773ADD183926A5217AF0EA58B09`。安装器和安装版 EXE 均为 `NotSigned`，未调用真实付费 provider。

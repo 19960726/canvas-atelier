@@ -360,6 +360,8 @@ describe('canvas provider route sets', () => {
     expect(routes.imageGeneration.map((profile) => profile.modelId).sort()).toEqual([
       'grok-imagine-image-2.0',
       'nano-banana-2',
+      'nano-banana-2-2k',
+      'nano-banana-2-4k',
     ]);
     expect(routes.videoGeneration.map((profile) => profile.modelId).sort()).toEqual([
       'grok-imagine-video-1.5',
@@ -382,6 +384,39 @@ describe('canvas provider route sets', () => {
       'gemini-3.1-flash-lite-image',
       'volcv-v1',
     ]));
+  });
+
+  it('keeps Nano Banana 2 and Pro resolution variants as separate exact Canvas routes', () => {
+    const profiles: ProviderBridgeProfile[] = [
+      ...['nano-banana-2', 'nano-banana-2-2k', 'nano-banana-2-4k', 'nano-banana-pro', 'nano-banana-pro-2k', 'nano-banana-pro-4k'].map((modelId) => ({
+        provider: 'comfly' as const,
+        modelRoute: `comfly-${modelId}`,
+        modelId,
+        displayName: modelId,
+        capabilities: ['image_generation' as const, 'image_edit' as const, 'chat' as const],
+        capabilityStatus: 'complete' as const,
+      })),
+    ];
+
+    const filtered = filterProviderCatalogProfiles(profiles);
+    const routes = buildCanvasProviderRouteSets(profiles);
+
+    expect(filtered.map((profile) => profile.modelId).sort()).toEqual([
+      'nano-banana-2',
+      'nano-banana-2-2k',
+      'nano-banana-2-4k',
+      'nano-banana-pro',
+      'nano-banana-pro-2k',
+      'nano-banana-pro-4k',
+    ]);
+    expect(routes.imageGeneration.map((profile) => profile.modelRoute).sort()).toEqual([
+      'comfly-nano-banana-2',
+      'comfly-nano-banana-2-2k',
+      'comfly-nano-banana-2-4k',
+      'comfly-nano-banana-pro',
+      'comfly-nano-banana-pro-2k',
+      'comfly-nano-banana-pro-4k',
+    ]);
   });
 });
 

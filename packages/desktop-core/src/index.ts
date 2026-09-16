@@ -155,6 +155,7 @@ export type {
 } from './approved-snapshot-pull.js';
 export { NodeFileSystem, writeAtomic } from './file-system.js';
 export { GenerationHistoryStore } from './generation-history-store.js';
+export { protocolContentTypeForPath } from './protocol-content-type.js';
 export {
   GENERATION_HISTORY_ASSET_SCHEME,
   createGenerationHistoryAssetUrl,

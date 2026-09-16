@@ -43,6 +43,7 @@ import { buildReverseResultSections, formatReverseResultDocument } from './rever
 import { MediaMentionTextarea, type MediaMentionPreview, type MediaMentionSelection, type MediaMentionTextareaHandle } from '../mentions/MediaMentionTextarea';
 import { selectSavedProviderModelDefault } from '../settings/provider-model-defaults';
 import { copyProjectImageToClipboard, ProjectImageLightbox } from './ProjectImageLightbox';
+import { createLatestOnlyAsyncQueue, type LatestOnlyAsyncQueue } from './latest-only-async-queue';
 
 const executionStateLabels: Record<CanvasModuleNodeData['execution']['state'], string> = {
   idle: '空闲',
@@ -56,6 +57,72 @@ const executionStateLabels: Record<CanvasModuleNodeData['execution']['state'], s
   failed: '失败',
   cancelled: '已取消',
 };
+
+const DRAFT_PERSIST_DEBOUNCE_MS = 180;
+
+/** Coalesce high-frequency text edits without losing the last draft on blur/unmount. */
+function useDebouncedDraft<T>(value: T, persist: (nextValue: T) => void, delayMs = DRAFT_PERSIST_DEBOUNCE_MS, enabled = true): () => void {
+  const latestValueRef = useRef(value);
+  latestValueRef.current = value;
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+  const timerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const pendingRef = useRef(false);
+
+  useEffect(() => {
+    if (timerRef.current !== null) globalThis.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    if (!enabled) {
+      pendingRef.current = false;
+      return;
+    }
+    pendingRef.current = true;
+    timerRef.current = globalThis.setTimeout(() => {
+      timerRef.current = null;
+      pendingRef.current = false;
+      persistRef.current(latestValueRef.current);
+    }, delayMs);
+    return () => {
+      if (timerRef.current !== null) {
+        globalThis.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [delayMs, enabled, value]);
+
+  useEffect(() => () => {
+    if (timerRef.current !== null) globalThis.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    if (pendingRef.current) {
+      pendingRef.current = false;
+      persistRef.current(latestValueRef.current);
+    }
+  }, []);
+
+  return () => {
+    if (!pendingRef.current) return;
+    if (timerRef.current !== null) globalThis.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    pendingRef.current = false;
+    persistRef.current(latestValueRef.current);
+  };
+}
+
+function useDismissibleMentionPicker(open: boolean, close: () => void): void {
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    if (!open) return undefined;
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('[role="menu"][aria-label="Select reference image"]')) return;
+      closeRef.current();
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+}
 
 function formatExecutionState(state: CanvasModuleNodeData['execution']['state']): string {
   return executionStateLabels[state];
@@ -334,21 +401,28 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const knowledgeBases = useAppStore((state) => state.knowledgeBases);
   const toggleNodeLock = useAppStore((state) => state.toggleNodeLock);
   const reorderModuleInput = useAppStore((state) => state.reorderModuleInput);
-  const reorderModuleInputDurably = async (targetNodeId: string, targetPortId: string, edgeIds: string[]) => {
+  const reorderQueueRef = useRef<LatestOnlyAsyncQueue<{ targetNodeId: string; targetPortId: string; edgeIds: string[] }> | null>(null);
+  if (reorderQueueRef.current === null) {
+    reorderQueueRef.current = createLatestOnlyAsyncQueue(async ({ targetNodeId, targetPortId, edgeIds }) => {
+      const completeOrder = () => {
+        const displayed = new Set(edgeIds);
+        const remaining = useAppStore.getState().project.edges
+          .filter(edge => edge.target === targetNodeId && edge.targetPortId === targetPortId && !displayed.has(edge.id))
+          .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+          .map(edge => edge.id);
+        return [...edgeIds, ...remaining];
+      };
+      if (await reorderModuleInput(targetNodeId, targetPortId, completeOrder())) return true;
+      const current = useAppStore.getState();
+      if (!current.canReloadDurableProject || !await current.reloadDurableProject()) return false;
+      return useAppStore.getState().reorderModuleInput(targetNodeId, targetPortId, completeOrder());
+    });
+  }
+  useEffect(() => () => reorderQueueRef.current?.dispose(), []);
+  const reorderModuleInputDurably = (targetNodeId: string, targetPortId: string, edgeIds: string[]) => {
     // A tray may show only the first 20 references. Keep the remaining edges
     // in the transaction so a visible reorder is still an exact permutation.
-    const completeOrder = () => {
-      const displayed = new Set(edgeIds);
-      const remaining = useAppStore.getState().project.edges
-        .filter(edge => edge.target === targetNodeId && edge.targetPortId === targetPortId && !displayed.has(edge.id))
-        .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
-        .map(edge => edge.id);
-      return [...edgeIds, ...remaining];
-    };
-    if (await reorderModuleInput(targetNodeId, targetPortId, completeOrder())) return true;
-    const current = useAppStore.getState();
-    if (!current.canReloadDurableProject || !await current.reloadDurableProject()) return false;
-    return useAppStore.getState().reorderModuleInput(targetNodeId, targetPortId, completeOrder());
+    return reorderQueueRef.current!.enqueue({ targetNodeId, targetPortId, edgeIds: [...edgeIds] });
   };
   const [libraryQuery, setLibraryQuery] = useState('');
   const hasImageControls = data.moduleType === 'image_input'
@@ -813,6 +887,12 @@ function VideoGenerationSummary({
   const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
+  useDismissibleMentionPicker(mentionPickerOpen, () => setMentionPickerOpen(false));
+  useEffect(() => {
+    if (mentionPickerOpen && prompt.includes('@') && !isImageMentionQueryActive(prompt, connectedImages, promptSelectionRef.current)) {
+      setMentionPickerOpen(false);
+    }
+  }, [connectedImages, mentionPickerOpen, prompt]);
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>(() => readStringArray(config.referenceAssetIds));
   const referenceAssetIds = connectedMedia.filter((item) => item.kind === 'image').map((item) => item.assetId);
   const sourceVideoAssetId = connectedMedia.find((item) => item.kind === 'video')?.assetId;
@@ -884,21 +964,8 @@ function VideoGenerationSummary({
       ? current
       : compatibleRoutes[0]?.modelRoute ?? '');
   }, [compatibleRoutes, effectiveReferenceAssetIds.length, sourceVideoAssetId, videoGenerationRoutes.length]);
-  useEffect(() => {
-    const draft = {
-      prompt,
-      modelRoute,
-      aspectRatio,
-      keyframe,
-      durationSeconds,
-      resolution,
-      outputCount,
-      audioEnabled: effectiveAudioEnabled,
-    };
-    void persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, draft));
-  }, [aspectRatio, draftGenerationNodeConfig, durationSeconds, effectiveAudioEnabled, id, keyframe, modelRoute, outputCount, prompt, resolution]);
-  const persistVideoPromptDraft = (nextPrompt: string) => persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, {
-    prompt: nextPrompt,
+  const videoDraft = useMemo(() => ({
+    prompt,
     modelRoute,
     aspectRatio,
     keyframe,
@@ -906,7 +973,10 @@ function VideoGenerationSummary({
     resolution,
     outputCount,
     audioEnabled: effectiveAudioEnabled,
-  }));
+  }), [aspectRatio, effectiveAudioEnabled, durationSeconds, id, keyframe, modelRoute, outputCount, prompt, resolution]);
+  const flushVideoDraft = useDebouncedDraft(videoDraft, (draft) => {
+    void persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, draft));
+  });
   const videoDraftIdentity: GenerationJobDraftIdentity = {
     kind: 'video', prompt, modelRoute, aspectRatio, resolution, durationSeconds, audioEnabled: effectiveAudioEnabled,
   };
@@ -1075,10 +1145,10 @@ function VideoGenerationSummary({
               onChange={(event) => {
                 const nextPrompt = event.target.value;
                 setPrompt(nextPrompt);
-                void persistVideoPromptDraft(nextPrompt);
                 setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextPrompt, connectedImages));
                 setMentionPickerOpen(isImageMentionQueryActive(nextPrompt, connectedImages, promptSelectionRef.current));
               }}
+              onBlur={flushVideoDraft}
               onKeyDown={(event) => {
                 if (event.key === '@' && connectedImages.length > 0) setMentionPickerOpen(true);
                 if (event.key === 'Escape') setMentionPickerOpen(false);
@@ -1247,6 +1317,12 @@ function ImageGenerationSummary({
   const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
+  useDismissibleMentionPicker(mentionPickerOpen, () => setMentionPickerOpen(false));
+  useEffect(() => {
+    if (mentionPickerOpen && prompt.includes('@') && !isImageMentionQueryActive(prompt, connectedImages, promptSelectionRef.current)) {
+      setMentionPickerOpen(false);
+    }
+  }, [connectedImages, mentionPickerOpen, prompt]);
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>([]);
   const connectedReferenceAssetIds = connectedMedia.filter((item) => item.kind === 'image').map((item) => item.assetId);
   const activeMentionedReferenceAssetIds = retainMentionedAssetIds(mentionedReferenceAssetIds, prompt, connectedImages);
@@ -1340,21 +1416,8 @@ function ImageGenerationSummary({
   useEffect(() => {
     if (activeJobId !== undefined) setLocalGenerationStartedAt(null);
   }, [activeJobId]);
-  useEffect(() => {
-    const draft = {
-      prompt,
-      modelRoute,
-      aspectRatio,
-      resolution: effectiveImageResolution,
-      imageQuality: effectiveImageQuality,
-      imageOutputFormat: effectiveImageOutputFormat,
-      imageBackground: effectiveImageBackground,
-      outputCount,
-    };
-    void persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, draft));
-  }, [aspectRatio, draftGenerationNodeConfig, effectiveImageQuality, effectiveImageOutputFormat, effectiveImageBackground, effectiveImageResolution, id, modelRoute, outputCount, prompt]);
-  const persistImagePromptDraft = (nextPrompt: string) => persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, {
-    prompt: nextPrompt,
+  const imageDraft = useMemo(() => ({
+    prompt,
     modelRoute,
     aspectRatio,
     resolution: effectiveImageResolution,
@@ -1362,7 +1425,10 @@ function ImageGenerationSummary({
     imageOutputFormat: effectiveImageOutputFormat,
     imageBackground: effectiveImageBackground,
     outputCount,
-  }));
+  }), [aspectRatio, effectiveImageBackground, effectiveImageOutputFormat, effectiveImageQuality, effectiveImageResolution, modelRoute, outputCount, prompt]);
+  const flushImageDraft = useDebouncedDraft(imageDraft, (draft) => {
+    void persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, draft));
+  });
   const imageDraftIdentity: GenerationJobDraftIdentity = {
     kind: 'image', prompt, modelRoute, aspectRatio, resolution: effectiveImageResolution, imageQuality: effectiveImageQuality,
     imageOutputFormat: effectiveImageOutputFormat, imageBackground: effectiveImageBackground,
@@ -1637,10 +1703,10 @@ function ImageGenerationSummary({
               onChange={(event) => {
                 const nextPrompt = event.target.value;
                 setPrompt(nextPrompt);
-                void persistImagePromptDraft(nextPrompt);
-                 setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextPrompt, connectedImages));
+                setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextPrompt, connectedImages));
                 setMentionPickerOpen(isImageMentionQueryActive(nextPrompt, connectedImages, promptSelectionRef.current));
               }}
+              onBlur={flushImageDraft}
               onKeyDown={(event) => {
                 if (event.key === '@' && connectedImages.length > 0) setMentionPickerOpen(true);
                 if (event.key === 'Escape') setMentionPickerOpen(false);
@@ -2349,7 +2415,6 @@ function ReverseAgentSummary({
     knowledgeBaseIds: selected,
     referenceAssetIds: mentionedReferenceAssetIds,
   }), [analysisDepth, mentionedReferenceAssetIds, modelRoute, role, selected, task]);
-  const draftConfigKey = useMemo(() => JSON.stringify(draftConfig), [draftConfig]);
   const latestReverseDraftRef = useRef(draftConfig);
   latestReverseDraftRef.current = draftConfig;
   const reverseDraftWriteTailRef = useRef<Promise<boolean>>(Promise.resolve(true));
@@ -2380,14 +2445,20 @@ function ReverseAgentSummary({
     reverseDraftWriteTailRef.current = queuedWrite;
     return queuedWrite;
   };
-  useEffect(() => {
-    if (compatibleRoutes.length > 0 && !routeAvailable) return;
-    if (!reverseTextEdited.current && (role !== externalRole || task !== externalTask)) return;
-    void persistReverseDraft(draftConfig);
-  }, [compatibleRoutes.length, draftConfigKey, draftReverseAgentConfig, externalRole, externalTask, id, role, routeAvailable, task]);
+  const reverseDraftEnabled = (compatibleRoutes.length === 0 || routeAvailable)
+    && (reverseTextEdited.current || (role === externalRole && task === externalTask));
+  const flushReverseDraft = useDebouncedDraft(draftConfig, (draft) => {
+    void persistReverseDraft(draft);
+  }, DRAFT_PERSIST_DEBOUNCE_MS, reverseDraftEnabled);
   const [isApplying, setIsApplying] = useState(false);
   const [isRunningLocally, setIsRunningLocally] = useState(false);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
+  useDismissibleMentionPicker(mentionPickerOpen, () => setMentionPickerOpen(false));
+  useEffect(() => {
+    if (mentionPickerOpen && task.includes('@') && !isImageMentionQueryActive(task, connectedImages, taskSelectionRef.current)) {
+      setMentionPickerOpen(false);
+    }
+  }, [connectedImages, mentionPickerOpen, task]);
   const [knowledgePickerOpen, setKnowledgePickerOpen] = useState(false);
   const [knowledgeQuery, setKnowledgeQuery] = useState('');
   const [knowledgeCategory, setKnowledgeCategory] = useState<'common' | 'favorite' | 'mine'>('common');
@@ -2515,11 +2586,11 @@ function ReverseAgentSummary({
               >{depthLabel}</button>)}
             </div>
             {isRunning && <p className="module-node__agent-depth-status" role="status" aria-label="当前反推强度">本次运行：{analysisDepth === 'fast' ? '快速反推' : analysisDepth === 'deep' ? '深度反推' : '标准反推'}。停止后可切换强度。</p>}
-            <label><span>角色</span><input aria-label="Role positioning" value={role} placeholder="例如：产品视觉分析师" onChange={(event) => {
+            <label><span>角色</span><input aria-label="Role positioning" value={role} placeholder="例如：产品视觉分析师" onBlur={flushReverseDraft} onChange={(event) => {
               const nextRole = event.target.value;
               setRoleDraft(nextRole);
             }} /></label>
-            <label><span>反推任务</span><MediaMentionTextarea ref={taskEditorRef} data-mention-context="reverse" aria-label="Analysis task" value={task} mentions={mentionPreviews} onCanonicalSelectionChange={(selection) => { taskSelectionRef.current = selection; }} rows={5} placeholder="提取构图、材质、镜头与提示词" onChange={(event) => {
+            <label><span>反推任务</span><MediaMentionTextarea ref={taskEditorRef} data-mention-context="reverse" aria-label="Analysis task" value={task} mentions={mentionPreviews} onCanonicalSelectionChange={(selection) => { taskSelectionRef.current = selection; }} rows={5} placeholder="提取构图、材质、镜头与提示词" onBlur={flushReverseDraft} onChange={(event) => {
               const nextTask = event.target.value;
               setTaskDraft(nextTask);
               setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextTask, connectedImages));
@@ -3154,6 +3225,9 @@ function generationJobTimestamp(job: ModelJob): string {
 function formatGenerationJobError(job: ModelJob | undefined, kind: 'image' | 'video' = 'image'): string | null {
   if (job === undefined) return null;
   const error = String(job.error ?? '').toLowerCase();
+  if (error.includes('provider_unavailable') || error.includes('provider unavailable') || error.includes('模型服务不可用')) {
+    return `${kind === 'video' ? '视频' : '生图'}上游模型服务暂时不可用，本次没有重复提交任务，请稍后重试或切换模型。`;
+  }
   if (error.includes('模型不可用') || error.includes('能力不匹配')) {
     const providerLabel = job.provider === 'relayme' || error.includes('relayme')
       ? 'RelayMe'
@@ -3257,6 +3331,7 @@ function formatGenerationStartError(error: unknown, kind: 'image' | 'video'): st
   const message = error instanceof Error ? error.message : String(error ?? '');
   if (code === 'MODEL_ROUTE_UNAVAILABLE') return '当前选择的模型已失效，请重新选择模型后再试。';
   if (code === 'PROVIDER_BRIDGE_UNAVAILABLE') return '模型服务尚未连接，请重启应用后再试。';
+  if (code === 'PROVIDER_UNAVAILABLE') return `${kind === 'video' ? '视频' : '生图'}上游模型服务暂时不可用，本次没有重复提交任务，请稍后重试或切换模型。`;
   if (code === 'CAPABILITY_UNSUPPORTED' && kind === 'video' && /RelayMe/iu.test(message)) {
     return 'RelayMe 当前视频接口不支持参考图片或视频，请移除素材后再生成。';
   }

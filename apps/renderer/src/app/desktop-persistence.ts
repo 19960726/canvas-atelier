@@ -868,8 +868,27 @@ export function createDesktopPersistenceClient(bridge: DesktopBridgeApi): Projec
         }
       } else if (mode === 'write') {
         const stableSessionId = sessionId;
-        const stableGeneration = clientGeneration;
-        const result = await bridge.createStablePoint({ sessionId: stableSessionId });
+        let stableGeneration = clientGeneration;
+        let result: Awaited<ReturnType<DesktopBridgeApi['createStablePoint']>>;
+        try {
+          result = await bridge.createStablePoint({ sessionId: stableSessionId });
+        } catch (error) {
+          if (readErrorCode(error) !== 'REVISION_CONFLICT') throw error;
+          const refreshed = await bridge.refreshProject({ sessionId: stableSessionId });
+          if (
+            sessionId !== stableSessionId
+            || clientGeneration !== stableGeneration
+            || refreshed.sessionId !== stableSessionId
+            || refreshed.mode !== 'write'
+            || refreshed.recoveryRequired === true
+          ) throw error;
+          await adoptSelectedSession(refreshed, { deferRecoveryRefresh: true });
+          // Refreshing the writable lease adopts a new client generation. The
+          // retry belongs to that new live session, so its acknowledgement is
+          // allowed to advance the in-memory revision.
+          stableGeneration = clientGeneration;
+          result = await bridge.createStablePoint({ sessionId: stableSessionId });
+        }
         // Stable-point acknowledgement is the durability boundary. Recovery
         // scanning can inspect dozens of snapshots and must never hold the
         // save timeout open. Refresh the opaque candidate map in the

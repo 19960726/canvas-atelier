@@ -45,4 +45,37 @@ describe('GenerationHistoryProviderSink provider identity', () => {
       }),
     ]);
   });
+
+  it('persists exact image model route and generation parameters for history recovery', async () => {
+    const ownedRoot = await mkdtemp(join(tmpdir(), 'generation-history-image-metadata-'));
+    temporaryRoots.push(ownedRoot);
+    const store = new GenerationHistoryStore({
+      historyRoot: join(ownedRoot, 'generation-history'),
+      ownedRoot,
+      now: () => Date.parse('2026-09-09T08:00:00.000Z'),
+    });
+    const sink = new GenerationHistoryProviderSink({
+      store,
+      trustedImageDecoder: async () => true,
+      now: () => Date.parse('2026-09-09T08:00:00.000Z'),
+    });
+
+    const reservation = await sink.reserveSubmission({
+      jobId: 'job-nano-banana-2-history',
+      kind: 'image',
+      modelDisplayName: 'Nano Banana 2',
+      modelId: 'nano-banana-2',
+      modelRoute: 'comfly-nano-banana-2-2k',
+      parameters: { aspectRatio: '9:16', resolution: '2K', outputCount: 1 },
+      provider: 'comfly',
+    });
+
+    const record = (await store.getRecords([reservation.historyId]))[0]!;
+    expect(record.provider).toMatchObject({
+      modelDisplayName: 'Nano Banana 2',
+      modelId: 'nano-banana-2',
+      modelRoute: 'comfly-nano-banana-2-2k',
+    });
+    expect(record.parameters).toMatchObject({ aspectRatio: '9:16', resolution: '2K', outputCount: 1 });
+  });
 });

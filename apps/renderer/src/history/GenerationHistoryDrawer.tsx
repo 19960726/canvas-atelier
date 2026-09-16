@@ -300,7 +300,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
       <header className="surface-drawer__header">
         <div className="surface-drawer__title" data-testid="history-drawer-heading">
           <span aria-hidden="true"><History size={17} /></span>
-          <div><strong>生图历史</strong><small>统一生成历史 ({total})　支持图片与视频筛选</small></div>
+          <div><strong>生图历史</strong><small>{loading && records.length === 0 ? '统一生成历史（正在加载…）' : `统一生成历史 (${total})`}　支持图片与视频筛选</small></div>
         </div>
         <div className="history-canvas-toolbar" aria-label="History actions">
           <button type="button" aria-label="Toggle history sort" onClick={() => setSort((current) => current === 'newest' ? 'oldest' : 'newest')}>{sort === 'newest' ? '↑ 时间降序' : '↓ 时间升序'}</button>
@@ -407,6 +407,13 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
               </div>
             </div>
             {error && <p className="history-error" role="status">{error}</p>}
+            {loading && records.length === 0 && !error && (
+              <section className="history-loading" role="status" aria-label="加载生成历史" aria-live="polite">
+                <History size={24} strokeWidth={1.5} aria-hidden="true" />
+                <strong>正在加载历史记录</strong>
+                <span>正在校验本地素材，请稍候…</span>
+              </section>
+            )}
             {!loading && records.length === 0 ? (
               <section className="history-empty"><History size={24} strokeWidth={1.5} /><strong>暂无生成记录</strong><span>完成的图片生成会安全地出现在这里。</span></section>
             ) : (
@@ -493,10 +500,15 @@ function historyFailureMessage(record: GenerationHistoryRecord): string | null {
 
 function HistoryMedia({ alt, output }: { readonly alt: string; readonly output: NonNullable<GenerationHistoryRecord['output']> }) {
   const src = historyAssetUrl(output.historyAssetId);
-  if (output.mediaType === 'video/mp4') {
-    return <video className="history-video-preview" aria-label={alt} muted playsInline preload="metadata" src={src} />;
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  if (failed) {
+    return <span className="history-media__unavailable" role="status"><ImageOff size={22} /><b>缩略图加载失败</b></span>;
   }
-  return <img src={src} alt={alt} />;
+  if (output.mediaType === 'video/mp4') {
+    return <video className="history-video-preview" aria-label={alt} muted playsInline preload="metadata" src={src} onError={() => setFailed(true)} />;
+  }
+  return <img src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
 function groupHistoryRecordsByDate(records: readonly GenerationHistoryRecord[]): readonly (readonly [string, readonly GenerationHistoryRecord[]])[] {
@@ -548,6 +560,8 @@ function HistoryDetail({
       <section className="history-detail__prompt"><small>提示词摘要</small><p>{record.promptSummary}</p></section>
       <dl className="history-detail__facts">
         <div><dt>模型</dt><dd>{record.provider.modelDisplayName}</dd></div>
+        <div><dt>模型 ID</dt><dd title={record.provider.modelRoute}>{record.provider.modelId ?? record.provider.modelRoute ?? '—'}</dd></div>
+        <div><dt>生成参数</dt><dd>{historyParameterLabel(record)}</dd></div>
         <div><dt>尺寸</dt><dd>{output ? `${output.width} × ${output.height}` : '无结果'}</dd></div>
         <div><dt>格式</dt><dd>{output?.format.toUpperCase() ?? '—'}</dd></div>
         <div><dt>项目</dt><dd>{record.project?.displayLabel ?? '未绑定项目'}</dd></div>
@@ -573,6 +587,11 @@ function HistoryDetail({
       </div>
     </article>
   );
+}
+
+function historyParameterLabel(record: GenerationHistoryRecord): string {
+  const values = [record.parameters.aspectRatio, record.parameters.resolution].filter((value): value is string => value !== undefined);
+  return values.length > 0 ? values.join(' · ') : '—';
 }
 
 function HistoryComparison({ descriptors, onBack }: { descriptors: GenerationHistoryComparisonBridgeResult; onBack: () => void }) {

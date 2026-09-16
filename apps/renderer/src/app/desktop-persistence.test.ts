@@ -1843,6 +1843,30 @@ describe('desktop persistence', () => {
     expect(createStablePoint).toHaveBeenCalledWith({ sessionId: 'desktop-session' });
   });
 
+  it('refreshes once and retries a stable point after a revision conflict', async () => {
+    const durableProject = createStarterProject();
+    const createStablePoint = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('stale stable point'), { code: 'REVISION_CONFLICT' }))
+      .mockResolvedValueOnce({ path: 'redacted-path', reason: 'stable_point' as const, revision: 5, snapshotId: 'stable-5' });
+    const refreshProject = vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 4));
+    const bridge = {
+      closeProject: vi.fn(async () => {}),
+      commit: vi.fn(),
+      createStablePoint,
+      getRecoveryPlan: vi.fn(async () => createRecoveryPlan(durableProject.id, 'stable-4', 'candidate-4', 4)),
+      openProject: vi.fn(async () => createDesktopSession(durableProject, 'desktop-session', 3)),
+      refreshProject,
+      projectImages: { importImage: vi.fn(), list: vi.fn(async () => []) },
+      restore: vi.fn(),
+    };
+    const client = createDesktopPersistenceClient(bridge as never);
+    await client.openProject?.();
+
+    await expect(client.stablePoint()).resolves.toMatchObject({ revision: 5, project: durableProject });
+    expect(refreshProject).toHaveBeenCalledWith({ sessionId: 'desktop-session' });
+    expect(createStablePoint).toHaveBeenCalledTimes(2);
+  });
+
   it('does not apply a late stable-point acknowledgement to a replacement project', async () => {
     const firstProject = createStarterProject();
     const secondProject = { ...createStarterProject(), id: 'second-stable-project', name: 'Replacement project' };

@@ -48,8 +48,48 @@ describe('GenerationHistoryDrawer', () => {
     expect(screen.getByTestId('history-drawer-close')).toBeEnabled();
   });
 
+  it('shows a visible loading state while the history list is validating media', async () => {
+    let resolveList!: (value: { nextCursor: null; records: never[]; revision: number; total: number }) => void;
+    const list = vi.fn(() => new Promise<{ nextCursor: null; records: never[]; revision: number; total: number }>((resolve) => {
+      resolveList = resolve;
+    }));
+    installHistoryBridge({ list });
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    expect(screen.getByRole('status', { name: '加载生成历史' })).toHaveTextContent('正在加载历史记录');
+    resolveList({ nextCursor: null, records: [], revision: 1, total: 0 });
+    await waitFor(() => expect(screen.getByText('暂无生成记录')).toBeVisible());
+  });
+
+  it('does not report zero history while the first page is still loading', async () => {
+    let resolveList: ((value: { records: readonly GenerationHistoryRecord[]; total: number; nextCursor: null }) => void) | undefined;
+    const list = vi.fn(() => new Promise<{ records: readonly GenerationHistoryRecord[]; total: number; nextCursor: null }>((resolve) => {
+      resolveList = resolve;
+    }));
+    installHistoryBridge({ list, getCapacity: vi.fn(async () => ({ activeBytes: 0, activeCount: 0, missingOrCorruptCount: 0, trashBytes: 0, trashCount: 0 })) });
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('正在加载');
+    expect(screen.getByTestId('history-drawer-heading')).not.toHaveTextContent('统一生成历史 (0)');
+
+    resolveList?.({ records: [], total: 0, nextCursor: null });
+    await waitFor(() => expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('统一生成历史 (0)'));
+  });
+
   it('loads an all-project gallery and opens a safe record detail', async () => {
-    const available = historyRecord('history_availableaaaaaa', 'available');
+    const available = {
+      ...historyRecord('history_availableaaaaaa', 'available'),
+      provider: {
+        displayName: 'Comfly',
+        modelDisplayName: 'Nano Banana 2',
+        modelId: 'nano-banana-2',
+        modelRoute: 'comfly-nano-banana-2-2k',
+        capabilityRevision: 'image-generation-v1',
+      },
+      parameters: { aspectRatio: '9:16', resolution: '2K' as const, outputCount: 1 },
+    } satisfies GenerationHistoryRecord;
     const corrupt = historyRecord('history_corruptaaaaaaaa', 'corrupt');
     const list = vi.fn(async () => ({ nextCursor: null, records: [available, corrupt], revision: 7, total: 2 }));
     installHistoryBridge({ list });
@@ -77,6 +117,20 @@ describe('GenerationHistoryDrawer', () => {
     expect(screen.getByRole('heading', { name: '生成详情' })).toBeVisible();
     expect(screen.getByText(available.promptSummary)).toBeVisible();
     expect(screen.getByText('2048 × 2048')).toBeVisible();
+    expect(screen.getByText('nano-banana-2')).toBeVisible();
+    expect(screen.getByText('9:16 · 2K')).toBeVisible();
+  });
+
+  it('shows a visible fallback when a history thumbnail cannot decode', async () => {
+    const record = historyRecord('history_decode_failed', 'available');
+    installHistoryBridge({ list: vi.fn(async () => ({ nextCursor: null, records: [record], revision: 1, total: 1 })) });
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    const image = await screen.findByRole('img', { name: record.promptSummary });
+    fireEvent.error(image);
+
+    expect(await screen.findByText('缩略图加载失败')).toBeVisible();
   });
 
   it('shows history records without waiting for the full capacity audit', async () => {

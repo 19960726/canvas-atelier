@@ -107,7 +107,7 @@ export function buildAuthenticatedNewApiCatalog(options: {
 }
 
 function isNamed4daiImageCandidate(modelId: string): boolean {
-  return /^(?:gpt-image-2(?:-(?:2k|4k)|\.5-(?:flare|sunburst))?|grok-imagine-image-(?:2\.0|quality)|gemini-3-pro-image-[a-z0-9._-]+|gemini-3\.1-flash-image-[a-z0-9._-]+)$/iu.test(modelId);
+  return /^(?:gpt-image-2(?:-(?:2k|4k)|\.5(?:-(?:flare|sunburst))?)?|grok-imagine-image-(?:2\.0|quality)|gemini-3-pro-image-[a-z0-9._-]+|gemini-3\.1-flash-image-[a-z0-9._-]+)$/iu.test(modelId);
 }
 
 const AUDITED_4DAI_GPT_IMAGE_25_MODELS = new Set([

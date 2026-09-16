@@ -80,6 +80,7 @@ import {
   type McpRuntimeService,
   type SnapshotWorkerInput,
   type SnapshotWorkerOutput,
+  protocolContentTypeForPath,
 } from '@agent-canvas/desktop-core';
 import { createElectronUpdaterDriver } from './electron-updater-adapter';
 import { resolveRendererHtmlPath } from './renderer-path';
@@ -977,7 +978,7 @@ async function resolveProtocolFile(
     if (path === null) return new Response(null, { status: 404 });
     const metadata = await stat(path);
     if (!metadata.isFile()) return new Response(null, { status: 404 });
-    const contentType = path.toLocaleLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/png';
+    const contentType = protocolContentTypeForPath(path);
     const stream = Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>;
     return new Response(stream, {
       status: 200,

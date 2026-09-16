@@ -2496,6 +2496,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('button', { name: 'Reference image' })).not.toBeInTheDocument();
     fireEvent.click(item);
     expect(screen.getByLabelText('Image generation prompt')).toHaveValue('@图片1');
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
     const presentation = screen.getByRole('textbox', { name: /prompt/i });
     expect(within(presentation).getByText('图片1').closest('[data-token="@图片1"]')).toHaveAttribute('data-media-mention', 'image');
     expect(presentation).not.toHaveTextContent('@');
@@ -5757,6 +5758,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
     fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
     expect((editor as HTMLDivElement & { value?: string }).value).toBe('Use @图片1, keep lighting');
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
 
     inputAtCaret('在已有引用前新增@，后面保留@图片1', '在已有引用前新增@'.length);
     expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();

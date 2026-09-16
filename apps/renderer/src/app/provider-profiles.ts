@@ -205,7 +205,10 @@ export function dedupeProviderProfilesByVisibleName(
 ): ProviderBridgeProfile[] {
   const unique = new Map<string, ProviderBridgeProfile>();
   for (const profile of profiles) {
-    const key = `${profile.provider}::${normalizedProviderDisplayName(profile)}`;
+    const resolutionKey = profile.capabilities.includes('image_generation')
+      ? `::${imageResolutionVariant(profile)}`
+      : '';
+    const key = `${profile.provider}::${normalizedProviderDisplayName(profile)}${resolutionKey}`;
     if (!unique.has(key)) unique.set(key, profile);
   }
   return [...unique.values()];
@@ -315,6 +318,9 @@ function catalogProfileFamilyKey(profile: ProviderBridgeProfile): string {
   const popularFamily = popularImageFamily(profile);
   if (popularFamily === 'gpt-image-2.5-flare' || popularFamily === 'gpt-image-2.5-sunburst') {
     return `${profile.provider}:popular-image:${providerProfileIdentity(profile)}`;
+  }
+  if (popularFamily === 'nano-banana-2' || popularFamily === 'nano-banana-pro') {
+    return `${profile.provider}:popular-image:${popularFamily}:${imageResolutionVariant(profile)}`;
   }
   if (popularFamily !== null) return `${profile.provider}:popular-image:${popularFamily}`;
   return `${profile.provider}:${providerProfileIdentity(profile)
@@ -433,6 +439,17 @@ function providerProfileIdentity(profile: ProviderBridgeProfile): string {
     .toLocaleLowerCase()
     .replace(/^(?:comfly|relayme|julun|4dai)[\s:/_-]+/u, '')
     .replace(/[\s_]+/gu, '-');
+}
+
+function imageResolutionVariant(profile: ProviderBridgeProfile): 'base' | '1k' | '2k' | '4k' {
+  const identity = `${profile.modelId ?? ''} ${profile.modelRoute} ${profile.displayName}`
+    .trim()
+    .toLocaleLowerCase();
+  const match = identity.match(/(?:^|[-_\s])(512px|1k|2k|4k)(?:$|[-_\s])/u);
+  if (match?.[1] === '512px' || match?.[1] === '1k') return '1k';
+  if (match?.[1] === '2k') return '2k';
+  if (match?.[1] === '4k') return '4k';
+  return 'base';
 }
 
 type PopularImageFamily = 'gpt-image-2' | 'gpt-image-2.5-flare' | 'gpt-image-2.5-sunburst' | 'nano-banana-2' | 'nano-banana-pro';

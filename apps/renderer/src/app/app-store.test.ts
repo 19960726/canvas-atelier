@@ -3335,6 +3335,46 @@ describe('project optimization memory', () => {
     expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({ resolution: '2K' }));
   });
 
+  it('keeps a selected aspect ratio when a complete Nano Banana profile has no ratio table', async () => {
+    const generation = createCanvasModuleNode('comfly-nano-ratio-node', 'image_generation', { x: 0, y: 0 });
+    const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-nano-ratio' }));
+    window.novusDesktop = {
+      provider: {
+        listProfiles: vi.fn(async () => [{
+          provider: 'comfly' as const,
+          modelRoute: 'comfly-nano-banana-pro',
+          displayName: 'Nano Banana Pro',
+          modelId: 'nano-banana-pro',
+          capabilities: ['image_generation' as const],
+          capabilityStatus: 'complete' as const,
+          constraints: { image: { resolutions: ['2K' as const], outputCounts: [1 as const] } },
+        }]),
+        submitImageJob,
+      },
+    } as unknown as typeof window.novusDesktop;
+    useAppStore.setState({ project: { ...createStarterProject(), nodes: [generation], edges: [], assets: [] } });
+
+    await expect(useAppStore.getState().runImageGenerationNode(generation.id, {
+      modelRoute: 'comfly-nano-banana-pro',
+      prompt: 'Vertical product hero image',
+      aspectRatio: '9:16',
+      resolution: '2K',
+      outputCount: 1,
+    })).resolves.toBe(true);
+    await waitForStore(() => submitImageJob.mock.calls.length === 1);
+
+    expect(useAppStore.getState().modelJobs[0]).toMatchObject({
+      modelId: 'nano-banana-pro',
+      aspectRatio: '9:16',
+      resolution: '2K',
+    });
+    expect(submitImageJob).toHaveBeenCalledWith(expect.objectContaining({
+      modelRoute: 'comfly-nano-banana-pro',
+      aspectRatio: '9:16',
+      resolution: '2K',
+    }));
+  });
+
   it('routes a requested Nano Banana 4K run to the matching family variant before enqueueing', async () => {
     const generation = createCanvasModuleNode('nano-family-four-k-node', 'image_generation', { x: 0, y: 0 });
     const submitImageJob = vi.fn(async () => ({ providerTaskId: 'provider-job-nano-family-4k' }));

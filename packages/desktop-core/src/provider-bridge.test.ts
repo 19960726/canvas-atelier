@@ -2396,6 +2396,8 @@ describe('Comfly provider service', () => {
     const fetch = vi.fn(async (_url, init) => {
       expect(JSON.parse(String(init.body))).toMatchObject({
         model: 'nano-banana-2',
+        aspect_ratio: '9:16',
+        image_size: '2K',
         prompt: [
           '@1 is the authoritative scene: preserve its composition, camera, lighting, and background.',
           '@2 is the authoritative replacement product: preserve its identity, proportions, material, color, and logo.',
@@ -2415,6 +2417,20 @@ describe('Comfly provider service', () => {
         { bytes: Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), mediaType: 'image/jpeg' as const },
       ])
       .mockRejectedValueOnce(new Error('project is no longer open'));
+    const historySink = {
+      queued: vi.fn(async (input: { readonly jobId: string }) => deriveGenerationHistoryId(input.jobId)),
+      reserveSubmission: vi.fn(async (input: { readonly jobId: string }) => ({
+        created: true,
+        historyId: deriveGenerationHistoryId(input.jobId),
+        status: 'queued' as const,
+        terminal: null,
+      })),
+      running: vi.fn(async () => undefined),
+      succeeded: vi.fn(async () => ({ status: 'succeeded' as const, width: 1, height: 1 })),
+      failed: vi.fn(async () => ({ status: 'failed' as const })),
+      cancelled: vi.fn(async () => ({ status: 'cancelled' as const })),
+      getTerminal: vi.fn(async () => null),
+    };
     const appDataRoot = await makeTempRoot();
     const credentialStore = createSecureProviderCredentialStore({
       appDataRoot,
@@ -2425,6 +2441,7 @@ describe('Comfly provider service', () => {
       appDataRoot,
       credentialStore,
       fetch,
+      historySink: historySink as never,
       readManagedGenerationImages,
       profiles: [{
         provider: 'comfly',
@@ -2443,6 +2460,9 @@ describe('Comfly provider service', () => {
       conversationId: 'conversation-reference-order',
       sessionId: 'desktop-session-1',
       referenceAssetIds: ['1'.repeat(16), '2'.repeat(16)],
+      aspectRatio: '9:16',
+      resolution: '2K',
+      outputCount: 1,
     } satisfies SubmitImageJobBridgeRequest;
 
     const first = await service.submitImageJob(request);
@@ -2454,6 +2474,14 @@ describe('Comfly provider service', () => {
     );
     expect(readManagedGenerationImages).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(historySink.reserveSubmission).toHaveBeenCalledWith({
+      jobId: request.jobId,
+      modelDisplayName: 'Nano Banana 2',
+      modelId: 'nano-banana-2',
+      modelRoute: 'nano-banana-2',
+      parameters: { aspectRatio: '9:16', resolution: '2K', outputCount: 1 },
+      provider: 'comfly',
+    });
     await cleanupTempRoot(appDataRoot);
   });
 

@@ -37,6 +37,7 @@ export const generationHistoryParameterSchema = z.object({
   negativePromptSummary: safeOptionalTextSchema(240),
   outputCount: z.number().int().min(1).max(8).optional(),
   quality: z.enum(['standard', 'high']).optional(),
+  resolution: z.enum(['1K', '2K', '4K']).optional(),
   seed: z.number().int().nonnegative().max(0x7fffffff).optional(),
   steps: z.number().int().min(1).max(200).optional(),
   stylePreset: safeOptionalTextSchema(80),
@@ -55,6 +56,8 @@ const jobIdentitySchema = z.object({
 const providerIdentitySchema = z.object({
   displayName: safeTextSchema(80),
   modelDisplayName: safeTextSchema(120),
+  modelId: safeOptionalTextSchema(160),
+  modelRoute: safeOptionalTextSchema(200),
   capabilityRevision: safeTextSchema(80),
 }).strict();
 

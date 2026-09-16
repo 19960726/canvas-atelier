@@ -459,6 +459,25 @@ describe('ComflyClient', () => {
     expect(requestBody).not.toHaveProperty('size');
   });
 
+  it('keeps Nano Banana 2 model identity, aspect ratio, and resolution tier intact', async () => {
+    let postedBody: string | undefined;
+    const fetch: ComflyFetch = vi.fn(async (_url, init) => {
+      postedBody = init?.body;
+      return jsonResponse({ taskId: 'task-nano-banana-2', status: 'queued' });
+    });
+    const client = new ComflyClient({ baseUrl: 'https://ai.comfly.org', tokenSupplier: async () => 'secret-token', fetch });
+
+    await expect(client.generateImage({
+      model: 'nano-banana-2', prompt: 'portrait product image', async: true, aspect_ratio: '9:16', size: '2K',
+    })).resolves.toMatchObject({ taskId: 'task-nano-banana-2' });
+
+    const requestBody = JSON.parse(String(postedBody));
+    expect(requestBody).toMatchObject({
+      model: 'nano-banana-2', aspect_ratio: '9:16', image_size: '2K',
+    });
+    expect(requestBody).not.toHaveProperty('size');
+  });
+
   it.each([
     'gemini-3.1-flash-image-preview',
     'gemini-3.1-flash-image-preview-512px',

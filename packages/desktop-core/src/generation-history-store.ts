@@ -27,6 +27,10 @@ const MAX_HISTORY_OPERATIONS = 5_000;
 const MAX_HISTORY_MUTATION_BATCH = 100;
 const MAX_HISTORY_AVAILABILITY_AUDIT_CONCURRENCY = 4;
 const MAX_STALE_TEMP_CLEANUP = 64;
+// The history drawer requests the default 50-record first page.  Returning
+// its metadata without hashing every original keeps the drawer interactive;
+// the concurrent capacity audit and lazy media resolver still verify files.
+const HISTORY_FAST_FIRST_PAGE_SIZE = 50;
 const HISTORY_LOCK_ACQUIRE_TIMEOUT_MS = 5_000;
 const HISTORY_LOCK_ACQUIRE_RETRY_MS = 10;
 
@@ -397,7 +401,16 @@ export class GenerationHistoryStore {
       throw historyError('HISTORY_INVALID_REQUEST', false, 'Generation history query is invalid');
     }
     return this.withLockedIndex(async (current, currentRaw) => {
-      const sorted = filterAndSortGenerationHistory(current.records, parsedRequest);
+      // Availability filters need authoritative states before filtering,
+      // otherwise a missing file persisted as "available" would disappear
+      // from the matching view.  The normal active/all first page is kept
+      // metadata-only so the UI can render immediately while getCapacity()
+      // performs the complete audit in parallel.
+      const availabilityFiltered = parsedRequest.filters.availability !== 'all';
+      const auditedForFilter = availabilityFiltered
+        ? await this.refreshAvailabilityForIdsUnlocked(current, currentRaw, current.records.map((record) => record.id))
+        : current;
+      const sorted = filterAndSortGenerationHistory(auditedForFilter.records, parsedRequest);
       let startIndex = 0;
       if (parsedRequest.cursor !== undefined) {
         const cursor = parseHistoryCursor(parsedRequest.cursor);
@@ -417,11 +430,16 @@ export class GenerationHistoryStore {
         startIndex = cursorIndex + 1;
       }
       const selectedPage = sorted.slice(startIndex, startIndex + parsedRequest.pageSize);
-      const refreshed = await this.refreshAvailabilityForIdsUnlocked(
-        current,
-        currentRaw,
-        selectedPage.map((record) => record.id),
-      );
+      const fastFirstPage = !availabilityFiltered
+        && parsedRequest.filters.trashState === 'active'
+        && parsedRequest.pageSize >= HISTORY_FAST_FIRST_PAGE_SIZE;
+      const refreshed = fastFirstPage || availabilityFiltered
+        ? auditedForFilter
+        : await this.refreshAvailabilityForIdsUnlocked(
+          current,
+          currentRaw,
+          selectedPage.map((record) => record.id),
+        );
       const pageRecords = selectedPage.map((record) => (
         refreshed.records.find((candidate) => candidate.id === record.id) ?? record
       ));
