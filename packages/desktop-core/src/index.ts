@@ -159,6 +159,7 @@ export { protocolContentTypeForPath } from './protocol-content-type.js';
 export {
   GENERATION_HISTORY_ASSET_SCHEME,
   createGenerationHistoryAssetUrl,
+  createGenerationHistoryPreviewUrl,
   parseGenerationHistoryAssetUrl,
 } from './generation-history-asset-url.js';
 export type { GenerationHistoryAssetUrlIdentity } from './generation-history-asset-url.js';

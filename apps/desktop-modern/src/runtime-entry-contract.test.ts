@@ -327,6 +327,18 @@ function spawnArtifactLoad(entryPath: string) {
 }
 
 describe('desktop runtime entry contract', () => {
+  it('warms generation history before either desktop window becomes visible', async () => {
+    const [modernMain, legacyMain] = await Promise.all([
+      readFile(join(workspaceRoot, 'apps', 'desktop-modern', 'src', 'main.ts'), 'utf8'),
+      readFile(join(workspaceRoot, 'apps', 'desktop-legacy', 'src', 'main.ts'), 'utf8'),
+    ]);
+
+    for (const source of [modernMain, legacyMain]) {
+      expect(source).toContain('const generationHistoryWarmup = generationHistoryStore.warm()');
+      expect(source.indexOf('await generationHistoryWarmup;')).toBeGreaterThan(source.indexOf('const generationHistoryWarmup'));
+      expect(source.indexOf('await createMainWindow();')).toBeGreaterThan(source.indexOf('await generationHistoryWarmup;'));
+    }
+  });
   it('registers isolated Julun video and 4D image services in both desktop entry points', async () => {
     for (const shell of desktopShells) {
       const mainSource = await readFile(join(workspaceRoot, shell.appDir, 'src', 'main.ts'), 'utf8');
@@ -346,12 +358,12 @@ describe('desktop runtime entry contract', () => {
     }
   });
 
-  it('modern 1.6.143 resolves only the modern renderer entry', async () => {
+  it('modern 1.6.144 resolves only the modern renderer entry', async () => {
     const shell = desktopShells[0]!;
     const packageJson = await readPackageJson(shell);
     const rendererEntry = resolveRendererHtmlPath(join(workspaceRoot, shell.appDir, 'dist'));
 
-    expect(packageJson.version).toBe('1.6.143');
+    expect(packageJson.version).toBe('1.6.144');
     expect(rendererEntry).toBe(resolve(workspaceRoot, 'apps', 'renderer', 'dist', 'index.html'));
     expect(rendererEntry).not.toContain('desktop-legacy');
   });

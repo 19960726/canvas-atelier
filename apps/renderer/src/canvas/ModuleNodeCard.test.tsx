@@ -279,6 +279,80 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('img', { name: 'Generated image 9 full preview' })).toHaveAttribute('src', images[8]!.displayUrl);
   });
 
+  it('offers provider-independent color correction above completed image results and persists it', async () => {
+    const node = createCanvasModuleNode('color-correction-results', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, resultAssetIds: [projectImage.assetId], resultState: 'fresh' };
+    const draftGenerationNodeConfig = vi.fn(async () => true);
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: { ...useAppStore.getState().project, nodes: [node], edges: [] },
+      draftGenerationNodeConfig,
+    } as never);
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    fireEvent.click(screen.getByRole('button', { name: '图片颜色校正' }));
+    const panel = screen.getByRole('dialog', { name: '图片颜色校正' });
+    fireEvent.click(within(panel).getByRole('button', { name: '自动中和红紫偏色' }));
+
+    const result = screen.getByRole('img', { name: 'Generated image 1' });
+    expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results")');
+    const compare = screen.getByRole('button', { name: '切换原图对比' });
+    expect(compare).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(compare);
+    expect(result.style.filter).toBe('none');
+    expect(compare).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(compare);
+    expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results")');
+    expect(compare).toHaveAttribute('aria-pressed', 'false');
+    await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
+      colorCorrection: expect.objectContaining({ mode: 'auto', temperature: -6, tint: -10 }),
+    })));
+    expect(screen.getByRole('button', { name: '图片颜色校正' })).toHaveTextContent('自动中和');
+
+    fireEvent.click(within(panel).getByRole('button', { name: '自定义颜色校正' }));
+    fireEvent.change(within(panel).getByRole('slider', { name: '洋红绿色' }), { target: { value: '-14' } });
+    await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
+      colorCorrection: expect.objectContaining({ mode: 'custom', tint: -14 }),
+    })));
+
+    fireEvent.doubleClick(screen.getByRole('button', { name: 'Generated image 1; double click to preview' }));
+    const lightbox = screen.getByRole('dialog', { name: 'Generated image preview' });
+    fireEvent.click(within(lightbox).getByRole('button', { name: '图片颜色校正' }));
+    const lightboxCorrection = within(lightbox).getByRole('dialog', { name: '图片颜色校正' });
+    fireEvent.change(within(lightboxCorrection).getByRole('slider', { name: '色温' }), { target: { value: '-18' } });
+    const lightboxImage = within(lightbox).getByRole('img', { name: 'Generated image 1 full preview' });
+    expect(lightboxImage.style.filter).toContain('url("#image-color-correction-color-correction-results")');
+    fireEvent.click(within(lightbox).getByRole('button', { name: '切换原图对比' }));
+    expect(lightboxImage.style.filter).toBe('none');
+    await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
+      colorCorrection: expect.objectContaining({ mode: 'custom', temperature: -18, tint: -14 }),
+    })));
+  });
+
+  it('keeps a four-result batch in an unobscured square two-by-two gallery', () => {
+    const node = createCanvasModuleNode('four-image-gallery', 'image_generation', { x: 0, y: 0 });
+    const images = Array.from({ length: 4 }, (_, index) => ({
+      ...projectImage,
+      assetId: (index + 41).toString(16).padStart(16, '0'),
+      displayUrl: `novus-asset://project/session/${(index + 41).toString(16).padStart(16, '0')}`,
+    }));
+    node.data.config = { ...node.data.config, resultAssetIds: images.map((asset) => asset.assetId), resultState: 'fresh' };
+    useAppStore.setState({ projectImages: images, project: { ...useAppStore.getState().project, nodes: [node], edges: [] } } as never);
+
+    const { container } = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    const gallery = container.querySelector('.module-node__generation-preview-gallery--4');
+    expect(gallery).not.toBeNull();
+    expect(within(gallery as HTMLElement).getAllByRole('button', { name: /Generated image/u })).toHaveLength(4);
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const terminalRule = css.slice(css.lastIndexOf('Final four-result gallery and color-correction placement'));
+    expect(terminalRule).toMatch(/module-node__generation-preview-gallery--4[\s\S]*?aspect-ratio:\s*1\s*\/\s*1/);
+    expect(terminalRule).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    expect(terminalRule).toMatch(/grid-template-rows:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  });
+
   it('shows both 4D Nano Banana routes with native image sizes and no GPT-only quality control', () => {
     const node = createCanvasModuleNode('4d-nano-banana-ui', 'image_generation', { x: 0, y: 0 });
     const imageConstraints = {
@@ -2541,6 +2615,71 @@ describe('ModuleNodeCard', () => {
     expect(editor).toHaveValue('开头 @图片1 保留  @另一个候选  结尾');
   });
 
+  it('closes the image mention picker when the prompt editor loses focus', () => {
+    const node = createCanvasModuleNode('generator-mention-blur', 'image_generation', { x: 0, y: 0 });
+    const source = createCanvasModuleNode('generator-mention-blur-source', 'image_input', { x: -320, y: 0 });
+    source.data.config = { assetId: projectImage.assetId };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [source, node],
+        edges: [{ id: 'generator-mention-blur-edge', source: source.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 0 }],
+      },
+    } as never);
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'image-gen', displayName: 'Image Gen', modelId: 'image-gen', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    const editor = screen.getByLabelText('Image generation prompt');
+    fireEvent.change(editor, { target: { value: '@' } });
+    expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+
+    fireEvent.blur(editor);
+
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
+
+    fireEvent.change(editor, { target: { value: '@' } });
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
+
+    fireEvent.change(editor, { target: { value: '@产' } });
+    expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+  });
+
+  it('does not reopen a dismissed mention picker for a delayed duplicate editor event', () => {
+    const node = createCanvasModuleNode('generator-mention-delayed-change', 'image_generation', { x: 0, y: 0 });
+    const source = createCanvasModuleNode('generator-mention-delayed-change-source', 'image_input', { x: -320, y: 0 });
+    source.data.config = { assetId: projectImage.assetId };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [source, node],
+        edges: [{ id: 'generator-mention-delayed-change-edge', source: source.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 0 }],
+      },
+    } as never);
+    const data = {
+      ...node.data,
+      imageGenerationRoutes: [{ provider: 'comfly', modelRoute: 'image-gen', displayName: 'Image Gen', modelId: 'image-gen', capabilities: ['image_generation'] }],
+    } as typeof node.data;
+
+    render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+    const editor = screen.getByLabelText('Image generation prompt');
+    fireEvent.change(editor, { target: { value: '@稍后处理 @' } });
+    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+    const selectedValue = (editor as HTMLDivElement & { value?: string }).value;
+    expect(selectedValue).toBe('@稍后处理 @图片1');
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
+
+    fireEvent.change(editor, { target: { value: selectedValue } });
+
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
+  });
+
   it('preserves existing prompt prose when the image picker opens from a stale text selection', () => {
     const node = createCanvasModuleNode('generator-stale-selection', 'image_generation', { x: 0, y: 0 });
     const source = createCanvasModuleNode('generator-stale-selection-source', 'image_input', { x: -320, y: 0 });
@@ -2736,6 +2875,7 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
 
     expect(editor).toHaveValue('镜头从  @图片1  推进，末尾保留 @另一个');
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
   });
 
   it('removes an @ image mention from the generation prompt without crashing the renderer', () => {
@@ -5740,9 +5880,12 @@ describe('ModuleNodeCard', () => {
     inputAtCaret('@', 1);
 
     expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
-    fireEvent.click(screen.getByRole('menuitem', { name: projectImage.label }));
+    const firstItem = screen.getByRole('menuitem', { name: projectImage.label });
+    expect(fireEvent.pointerDown(firstItem)).toBe(false);
+    fireEvent.click(firstItem);
     expect(editor).toHaveTextContent('图片1');
     expect((editor as HTMLDivElement & { value?: string }).value).toBe('@图片1');
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
 
     inputAtCaret('前文@，后文', '前文@'.length);
     expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
@@ -5762,6 +5905,9 @@ describe('ModuleNodeCard', () => {
 
     inputAtCaret('在已有引用前新增@，后面保留@图片1', '在已有引用前新增@'.length);
     expect(screen.getByRole('menu', { name: 'Select reference image' })).toBeVisible();
+
+    fireEvent.blur(editor);
+    expect(screen.queryByRole('menu', { name: 'Select reference image' })).not.toBeInTheDocument();
   });
 
   it('inserts a reverse-node reference at its real caret and leaves later unresolved mentions intact', () => {

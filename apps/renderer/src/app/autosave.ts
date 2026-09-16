@@ -39,17 +39,17 @@ export function createAutosaveController<TProject>({
   const flush = (reason: AutosaveFlushReason): Promise<boolean> => {
     clearTimer();
     if (inFlightFlush !== null) return inFlightFlush;
-    const draft = pendingDraft;
-    pendingDraft = null;
-    if (draft === null || isReadOnly()) return Promise.resolve(false);
-    const flushPromise = Promise.resolve(commit(draft, reason))
-      .then(async (saved) => {
-        if (pendingDraft === null || isReadOnly()) return saved;
-        const nextDraft = pendingDraft;
+    if (pendingDraft === null || isReadOnly()) return Promise.resolve(false);
+    const flushPromise = (async () => {
+      let allSaved = true;
+      while (pendingDraft !== null && !isReadOnly()) {
+        const draft = pendingDraft;
         pendingDraft = null;
-        const nextSaved = await commit(nextDraft, reason);
-        return saved && nextSaved;
-      })
+        const saved = await commit(draft, reason);
+        allSaved = allSaved && saved;
+      }
+      return allSaved;
+    })()
       .finally(() => {
         if (inFlightFlush === flushPromise) inFlightFlush = null;
       });

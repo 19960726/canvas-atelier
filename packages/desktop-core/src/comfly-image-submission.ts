@@ -1,6 +1,19 @@
 import type { ComflyClient } from '@agent-canvas/provider-comfly';
 import type { ProviderBridgeProfile, SubmitImageJobBridgeRequest } from './provider-contracts.js';
 
+// Comfly currently exposes Flux Pro 1.1 through its DALL-E-compatible edits
+// transport (the public model row has an edits API but no generations API).
+// Keep the exception exact so a generic model label cannot silently redirect
+// an otherwise valid generation request to a different paid endpoint.
+const COMFLY_EDIT_TRANSPORT_IMAGE_MODELS = new Set([
+  'flux-pro-1.1-ultra',
+  'flux-schnell',
+]);
+
+export function usesComflyImageEditTransport(modelId: string): boolean {
+  return COMFLY_EDIT_TRANSPORT_IMAGE_MODELS.has(modelId.trim().toLocaleLowerCase());
+}
+
 export function submitComflyImage(
   client: ComflyClient,
   profile: ProviderBridgeProfile,
@@ -10,6 +23,7 @@ export function submitComflyImage(
 ) {
   const model = profile.modelId ?? profile.modelRoute;
   const usesGptEdits = references.length > 0 && /^gpt-image-2(?:-(?:all|2k|4k|vip)|\.5-(?:flare|sunburst)(?:-(?:2k|4k))?)?$/u.test(model);
+  const usesEditTransport = usesGptEdits || usesComflyImageEditTransport(model);
   const request = {
     model,
     prompt,
@@ -23,7 +37,10 @@ export function submitComflyImage(
     ...(input.imageBackground === undefined || input.imageBackground === 'auto' ? {} : { background: input.imageBackground }),
     ...(input.outputCount === undefined ? {} : { n: input.outputCount }),
   };
-  return usesGptEdits
-    ? client.editImage({ ...request, image: references })
-    : client.generateImage(request);
+  if (!usesEditTransport) return client.generateImage(request);
+  if (usesGptEdits) return client.editImage({ ...request, image: references });
+  return client.editImage({
+    ...request,
+    image: references.length === 0 ? undefined : request.image,
+  });
 }

@@ -4,11 +4,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GenerationHistoryRecord } from '@agent-canvas/domain';
 
 import { GenerationHistoryDrawer } from './GenerationHistoryDrawer';
+import {
+  preloadGenerationHistoryFirstPage,
+  resetGenerationHistoryFirstPageCacheForTests,
+} from './history-first-page-cache';
 
 const originalDesktop = window.novusDesktop;
 
 afterEach(() => {
   cleanup();
+  resetGenerationHistoryFirstPageCacheForTests();
   window.novusDesktop = originalDesktop;
 });
 
@@ -78,6 +83,19 @@ describe('GenerationHistoryDrawer', () => {
     await waitFor(() => expect(screen.getByTestId('history-drawer-heading')).toHaveTextContent('统一生成历史 (0)'));
   });
 
+  it('renders the startup-preloaded first page synchronously when history opens', async () => {
+    const record = historyRecord('history_preloaded_fast', 'available');
+    installHistoryBridge({
+      list: vi.fn(async () => ({ nextCursor: null, records: [record], revision: 1, total: 1 })),
+    });
+    await preloadGenerationHistoryFirstPage();
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: `查看 ${record.promptSummary}` })).toBeVisible();
+    expect(screen.queryByRole('status', { name: '加载生成历史' })).not.toBeInTheDocument();
+  });
+
   it('loads an all-project gallery and opens a safe record detail', async () => {
     const available = {
       ...historyRecord('history_availableaaaaaa', 'available'),
@@ -97,7 +115,7 @@ describe('GenerationHistoryDrawer', () => {
     render(<GenerationHistoryDrawer onClose={vi.fn()} />);
 
     await waitFor(() => expect(list).toHaveBeenCalledWith({
-      pageSize: 50,
+      pageSize: 30,
       sort: 'newest',
       filters: {
         kind: 'all',
@@ -108,8 +126,11 @@ describe('GenerationHistoryDrawer', () => {
     }));
     expect(screen.getByRole('img', { name: available.promptSummary })).toHaveAttribute(
       'src',
-      `novus-history://asset/${available.output!.historyAssetId}`,
+      `novus-history://preview/${available.output!.historyAssetId}`,
     );
+    expect(screen.getByRole('img', { name: available.promptSummary })).toHaveAttribute('loading', 'lazy');
+    expect(screen.getByRole('img', { name: available.promptSummary })).toHaveAttribute('decoding', 'async');
+    expect(screen.getByTestId(`history-preview-skeleton-${available.output!.historyAssetId}`)).toBeInTheDocument();
     expect(screen.getByText('文件损坏')).toBeVisible();
     expect(screen.getByText('0 B 回收站')).toBeVisible();
 
@@ -119,6 +140,23 @@ describe('GenerationHistoryDrawer', () => {
     expect(screen.getByText('2048 × 2048')).toBeVisible();
     expect(screen.getByText('nano-banana-2')).toBeVisible();
     expect(screen.getByText('9:16 · 2K')).toBeVisible();
+    expect(screen.getByRole('img', { name: available.promptSummary })).toHaveAttribute(
+      'src',
+      `novus-history://asset/${available.output!.historyAssetId}`,
+    );
+  });
+
+  it('removes the stable preview skeleton only after the derived image decodes', async () => {
+    const record = historyRecord('history_preview_loaded', 'available');
+    installHistoryBridge({ list: vi.fn(async () => ({ nextCursor: null, records: [record], revision: 1, total: 1 })) });
+
+    render(<GenerationHistoryDrawer onClose={vi.fn()} />);
+
+    const image = await screen.findByRole('img', { name: record.promptSummary });
+    const skeletonId = `history-preview-skeleton-${record.output!.historyAssetId}`;
+    expect(screen.getByTestId(skeletonId)).toBeVisible();
+    fireEvent.load(image);
+    expect(screen.queryByTestId(skeletonId)).not.toBeInTheDocument();
   });
 
   it('shows a visible fallback when a history thumbnail cannot decode', async () => {

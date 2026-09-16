@@ -96,7 +96,7 @@ interface CanvasFlowInstance {
   getViewport: () => Viewport;
   screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
   setCenter: (x: number, y: number, options?: { zoom?: number; duration?: number }) => void;
-  fitView: (options?: { padding?: number; duration?: number }) => void;
+  fitView: (options?: { padding?: number; duration?: number; nodes?: { id: string }[] }) => void;
 }
 
 function EdgeEndpointInternalsUpdater({ edges, nodes }: { readonly edges: readonly Edge[]; readonly nodes: readonly Node[] }) {
@@ -680,6 +680,7 @@ export function CanvasWorkspace() {
   const undoStack = useAppStore((state) => state.undoStack);
   const modelJobs = useAppStore((state) => state.modelJobs);
   const persistenceMode = useAppStore((state) => state.persistenceMode);
+  const persistenceReady = useAppStore((state) => state.persistenceReady);
   const activeProjectSessionId = persistenceMode === 'desktop' ? getActiveProjectSessionId() : null;
   const projectModelJobs = useMemo(
     () => filterModelJobsForProject(modelJobs, project, activeProjectSessionId),
@@ -1029,6 +1030,22 @@ export function CanvasWorkspace() {
     onCommitPositions: commitNodePositions,
   });
   const draftNodes = canvasDraft.nodes;
+  const changeDraftNodes = canvasDraft.onNodesChange;
+  const [pendingAgentWorkflowFocus, setPendingAgentWorkflowFocus] = useState<readonly string[] | null>(null);
+  useEffect(() => {
+    if (pendingAgentWorkflowFocus === null
+      || !pendingAgentWorkflowFocus.every((nodeId) => draftNodes.some((node) => node.id === nodeId))) return;
+    const focusIds = new Set(pendingAgentWorkflowFocus);
+    changeDraftNodes(draftNodes.map((node) => ({ type: 'select' as const, id: node.id, selected: focusIds.has(node.id) })));
+    window.requestAnimationFrame(() => {
+      flowInstanceRef.current?.fitView({
+        nodes: pendingAgentWorkflowFocus.map((id) => ({ id })),
+        padding: 0.24,
+        duration: 320,
+      });
+    });
+    setPendingAgentWorkflowFocus(null);
+  }, [changeDraftNodes, draftNodes, pendingAgentWorkflowFocus]);
   const validateCanvasConnection = useMemo(
     () => createCanvasConnectionValidator(draftNodes, flowEdges),
     [draftNodes, flowEdges],
@@ -1124,9 +1141,10 @@ export function CanvasWorkspace() {
   }), [project.nodes, selectedFlowNodeIds]);
   const executeAgentCanvasAction = useCallback(async (request: SkillCanvasActionRequest) => {
     if (request.projectId !== undefined && request.projectId !== useAppStore.getState().project.id) return false;
+    let workflowNodeIds: readonly string[] = [request.nodeId];
     if (request.createNode) {
       if (request.kind === 'reverse_agent') return false;
-      if (!await useAppStore.getState().ensureAgentGenerationNode(
+      const placement = await useAppStore.getState().ensureAgentGenerationNode(
         request.nodeId,
         request.kind,
         request.referenceAssetIds ?? [],
@@ -1135,13 +1153,16 @@ export function CanvasWorkspace() {
           ...(request.modelRoute === undefined ? {} : { modelRoute: request.modelRoute }),
           ...(request.parameters ?? {}),
         },
-      )) {
+      );
+      if (!placement) {
         const saveErrorCode = useAppStore.getState().saveErrorCode;
         if (saveErrorCode !== null) {
           throw Object.assign(new Error('Agent generation node could not be saved.'), { code: saveErrorCode });
         }
         return false;
       }
+      workflowNodeIds = placement.workflowNodeIds;
+      setPendingAgentWorkflowFocus(workflowNodeIds);
       if (request.projectId !== useAppStore.getState().project.id) return false;
     }
     const node = useAppStore.getState().project.nodes.find((candidate) => candidate.id === request.nodeId && candidate.type === 'module');
@@ -1161,7 +1182,7 @@ export function CanvasWorkspace() {
     };
     if (request.kind === 'image_generation') {
       try {
-        return await runImageGenerationNode(request.nodeId, {
+        const started = await runImageGenerationNode(request.nodeId, {
           prompt: request.prompt,
           ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
           ...(typeof config.aspectRatio === 'string' ? { aspectRatio: config.aspectRatio } : {}),
@@ -1172,6 +1193,7 @@ export function CanvasWorkspace() {
           ...(typeof config.outputCount === 'number' ? { outputCount: config.outputCount } : {}),
           referenceAssetIds,
         });
+        return { started, generationNodeId: request.nodeId, workflowNodeIds };
       } catch (caught) {
         return rethrowGenerationSaveError(caught);
       }
@@ -1185,7 +1207,7 @@ export function CanvasWorkspace() {
       const configuredOutputCount = typeof config.outputCount === 'number' ? config.outputCount : 1;
       const outputCount = ([1, 2, 3, 4] as const).find((value) => value === configuredOutputCount) ?? 1;
       try {
-        return await runVideoPreviewNode(request.nodeId, {
+        const started = await runVideoPreviewNode(request.nodeId, {
           prompt: request.prompt,
           ...(requestedModelRoute ? { modelRoute: requestedModelRoute } : {}),
           referenceAssetIds,
@@ -1196,6 +1218,7 @@ export function CanvasWorkspace() {
           outputCount,
           audioEnabled: typeof config.audioEnabled === 'boolean' ? config.audioEnabled : true,
         });
+        return { started, generationNodeId: request.nodeId, workflowNodeIds };
       } catch (caught) {
         return rethrowGenerationSaveError(caught);
       }
@@ -1946,13 +1969,13 @@ export function CanvasWorkspace() {
               className="topbar-canvas-action topbar-canvas-action--primary save-project-control__main"
               type="button"
               data-node-id="809:4"
-              aria-label={saveStatus === 'saving' ? '正在保存项目' : '保存项目'}
-              title={saveStatus === 'saving' ? '正在保存项目' : '保存项目'}
-              disabled={saveStatus === 'saving' || saveStatus === 'read_only' || recoveryRequired}
+              aria-label={!persistenceReady ? '正在加载项目' : saveStatus === 'saving' ? '正在自动保存项目' : '保存项目'}
+              title={!persistenceReady ? '正在加载项目' : saveStatus === 'saving' ? '正在自动保存项目' : '保存项目'}
+              disabled={!persistenceReady || saveStatus === 'saving' || saveStatus === 'read_only' || recoveryRequired}
               onClick={() => { void workspaceApi.save(); }}
             >
               <Save size={18} aria-hidden="true" />
-              <span>{saveStatus === 'saving' ? '保存中…' : '保存项目'}</span>
+              <span>{!persistenceReady ? '加载中…' : saveStatus === 'saving' ? '自动保存中…' : '保存项目'}</span>
             </button>
             <button
               className="save-project-control__toggle"
@@ -1982,7 +2005,7 @@ export function CanvasWorkspace() {
               aria-live="polite"
               data-save-state={saveStatus}
             >
-              {saveStatusLabel(saveStatus, saveErrorCode)}
+              {saveStatusLabel(saveStatus, saveErrorCode, persistenceReady)}
             </span>
             {saveManagerOpen && (
               <ProjectManagerPopover
@@ -2492,7 +2515,7 @@ export function CanvasWorkspace() {
         canRetrySave={canRetryProjectCommit}
         jobs={taskStripJobs}
         saveState={saveStatus}
-        saveLabel={saveStatusLabel(saveStatus, saveErrorCode)}
+        saveLabel={saveStatusLabel(saveStatus, saveErrorCode, persistenceReady)}
         onReloadSave={() => { void reloadDurableProject(); }}
         onRetrySave={() => { void retryFailedProjectCommit(); }}
         onRetry={(jobId) => { void retryModelJob(jobId); }}
@@ -2591,8 +2614,9 @@ function isPlanPreviewVisible(state: AgentPlanState): boolean {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'read_only', errorCode: string | null): string {
-  if (status === 'saved') return '本地稳定点已保存';
+function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'read_only', errorCode: string | null, persistenceReady = true): string {
+  if (!persistenceReady) return '正在加载上次画布';
+  if (status === 'saved') return '所有修改已自动保存';
   if (errorCode === 'RECOVERY_REQUIRED') return '需要先恢复或放弃恢复预览';
   if (errorCode === 'REVISION_CONFLICT') return '桌面项目已被其他版本更新，请点击重新载入';
   if (errorCode === 'CONCURRENT_WRITER') return '项目正在由另一窗口写入，请关闭另一窗口后重新载入';
@@ -2604,7 +2628,8 @@ function saveStatusLabel(status: 'pending' | 'saving' | 'saved' | 'error' | 'rea
   if (errorCode === 'PERMISSION_DENIED') return '保存文件被系统短暂占用，请重试；持续失败请检查项目目录权限';
   if (status === 'read_only') return '只读模式，等待当前写入者释放';
   if (status === 'error') return errorCode ? `本地保存失败（${errorCode}）` : '本地保存失败';
-  return '等待本地稳定点保存';
+  if (status === 'saving') return '正在自动保存';
+  return '有未保存修改，正在等待自动保存';
 }
 function sameStringList(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);

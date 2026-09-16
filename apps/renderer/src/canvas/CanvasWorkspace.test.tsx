@@ -435,7 +435,7 @@ describe('CanvasWorkspace', () => {
       useAppStore.setState({ saveStatus: 'saved', saveErrorCode: null });
       return true;
     });
-    useAppStore.setState({ flushProjectSave, saveProjectExplicitly, saveStatus: 'pending' } as never);
+    useAppStore.setState({ flushProjectSave, persistenceReady: true, saveProjectExplicitly, saveStatus: 'pending' } as never);
 
     render(<CanvasWorkspace />);
 
@@ -443,10 +443,27 @@ describe('CanvasWorkspace', () => {
     expect(save).toHaveAccessibleName('保存项目');
     fireEvent.click(save);
     await waitFor(() => expect(saveProjectExplicitly).toHaveBeenCalledOnce());
-    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('本地稳定点已保存');
+    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('所有修改已自动保存');
     expect(flushProjectSave).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog', { name: '画布管理' })).not.toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: '确认新建项目' })).not.toBeInTheDocument();
+  });
+
+  it('separates startup loading from pending and active automatic saves', () => {
+    useAppStore.setState({ persistenceReady: false, saveStatus: 'pending' } as never);
+    const { rerender } = render(<CanvasWorkspace />);
+
+    expect(screen.getByRole('button', { name: '正在加载项目' })).toBeDisabled();
+    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('正在加载上次画布');
+
+    useAppStore.setState({ persistenceReady: true, saveStatus: 'pending' } as never);
+    rerender(<CanvasWorkspace />);
+    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('有未保存修改，正在等待自动保存');
+
+    useAppStore.setState({ saveStatus: 'saving' });
+    rerender(<CanvasWorkspace />);
+    expect(screen.getByRole('button', { name: '正在自动保存项目' })).toBeDisabled();
+    expect(screen.getByRole('status', { name: '画布保存状态' })).toHaveTextContent('正在自动保存');
   });
 
   it('keeps an explicit failed save visible beside the topbar save action', async () => {
@@ -584,10 +601,10 @@ describe('CanvasWorkspace', () => {
 
     render(<CanvasWorkspace />);
 
-    const save = screen.getByRole('button', { name: '正在保存项目' });
+    const save = screen.getByRole('button', { name: '正在自动保存项目' });
     expect(save).toBeDisabled();
-    expect(save).toHaveTextContent('保存中');
-    expect(save).toHaveAttribute('title', '正在保存项目');
+    expect(save).toHaveTextContent('自动保存中');
+    expect(save).toHaveAttribute('title', '正在自动保存项目');
   });
 
   it('switches from Agent to the module library on a narrow canvas instead of overlapping both surfaces', () => {
@@ -3730,6 +3747,7 @@ describe('CanvasWorkspace', () => {
         }),
       }),
     ]));
+    await waitFor(() => expect(document.querySelector<HTMLElement>(`.react-flow__node[data-id="${createdNodeId}"]`)).toHaveClass('selected'));
   });
 
   it('forwards the persisted GPT quality preference through Agent node creation into image generation', async () => {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,7 +26,12 @@ afterEach(async () => {
 describe('generation history narrow desktop bridge', () => {
   it('exposes safe list/reuse/comparison/export handlers and rejects unknown path-bearing requests', async () => {
     const harness = await createHarness();
-    const store = new GenerationHistoryStore(harness);
+    const store = new GenerationHistoryStore({
+      ...harness,
+      createImagePreview: async (_sourcePath, destinationPath) => {
+        await writeFile(destinationPath, Buffer.from('derived-preview'));
+      },
+    });
     const record = historyRecord();
     await store.ingest({ operationId: 'operation_ingest_aaaaaaaa', record, source: chunks(pngBytes) });
     const service = new GenerationHistoryService({ store });
@@ -71,6 +76,11 @@ describe('generation history narrow desktop bridge', () => {
       harness.historyRoot,
       'originals',
       `${record.output!.historyAssetId}.png`,
+    ));
+    await expect(resolveHistoryImage(`novus-history://preview/${record.output!.historyAssetId}`)).resolves.toBe(join(
+      harness.historyRoot,
+      'previews',
+      `${record.output!.historyAssetId}.jpg`,
     ));
     await expect(resolveHistoryImage('novus-history://asset/../private')).resolves.toBeNull();
     expect(JSON.stringify({ listed, reusable, exported })).not.toMatch(

@@ -234,6 +234,12 @@ export interface SkillCanvasActionResult {
   assetIds: string[];
 }
 
+export interface SkillCanvasActionExecutionResult {
+  readonly started: boolean;
+  readonly generationNodeId: string;
+  readonly workflowNodeIds: readonly string[];
+}
+
 export interface SkillChatWorkbenchProps {
   readonly projectId: string;
   readonly profiles: readonly ProviderBridgeProfile[];
@@ -248,7 +254,7 @@ export interface SkillChatWorkbenchProps {
   readonly canvasActionTargets?: readonly SkillCanvasActionTarget[];
   readonly canvasHasSelection?: boolean;
   readonly canvasActionResults?: readonly SkillCanvasActionResult[];
-  readonly executeCanvasAction?: (request: SkillCanvasActionRequest) => Promise<boolean>;
+  readonly executeCanvasAction?: (request: SkillCanvasActionRequest) => Promise<boolean | SkillCanvasActionExecutionResult>;
   readonly draftWorkflowFromAnalysis?: (request: SkillWorkflowDraftRequest) => void;
   readonly onClose?: () => void;
   readonly chat: (request: SkillChatRequest) => Promise<ChatSkillBridgeResult>;
@@ -346,6 +352,7 @@ export function SkillChatWorkbench({
   const [pendingCanvasAction, setPendingCanvasAction] = useState<SkillCanvasActionRequest | null>(null);
   const [selectedCreativeOptionKey, setSelectedCreativeOptionKey] = useState<string | null>(null);
   const [pendingCanvasModelRoute, setPendingCanvasModelRoute] = useState<string | undefined>(undefined);
+  const [pendingCanvasResolution, setPendingCanvasResolution] = useState('');
   const [generationPreferences, setGenerationPreferences] = useState(() => readGenerationPreferences(projectId));
   const [submittedNodeIds, setSubmittedNodeIds] = useState<string[]>(() => canvasResultNodeIds(initialConversation.messages));
   const [submittedNodeLabels, setSubmittedNodeLabels] = useState<Record<string, string>>(() => canvasResultNodeLabels(initialConversation.messages));
@@ -1199,6 +1206,7 @@ export function SkillChatWorkbench({
       setPendingCanvasAction({ kind, nodeId: `agent-${option.kind}-${createMessageId()}`, createNode: true, createWorkflow: true, projectId, prompt: option.prompt, modelRoute: profile.modelRoute, parameters, referenceAssetIds: references.map((item) => item.assetId) });
       setSelectedCreativeOptionKey(`${messageId}:${option.id}`);
       setPendingCanvasModelRoute(profile.modelRoute);
+      setPendingCanvasResolution(typeof parameters.resolution === 'string' ? parameters.resolution : '');
       setError(null);
     } catch (error) { setError(error instanceof Error ? error.message : '请检查生成偏好。'); }
   };
@@ -1288,25 +1296,31 @@ export function SkillChatWorkbench({
     try {
       const kind = action.kind === 'video_generation' ? 'video' : 'image';
       const resolved = resolveGenerationPreference(kind, generationPreferences, profiles, pendingCanvasModelRoute, action.referenceAssetIds?.length ?? 0);
-      const started = await executeCanvasAction({ ...action, modelRoute: resolved.profile.modelRoute, parameters: resolved.parameters });
+      const parameters: GenerationParameters = { ...resolved.parameters };
+      if (pendingCanvasResolution.length > 0) parameters.resolution = pendingCanvasResolution;
+      else delete parameters.resolution;
+      const execution = await executeCanvasAction({ ...action, modelRoute: resolved.profile.modelRoute, parameters });
       if (!mounted.current || epoch !== conversationEpoch.current) return;
+      const started = typeof execution === 'boolean' ? execution : execution.started;
+      const generationNodeId = typeof execution === 'boolean' ? action.nodeId : execution.generationNodeId;
       if (!started) {
         setError(`${canvasActionLabel(action.kind)}节点未能启动，请检查模型配置后重试。`);
         return;
       }
       const canvasNodeLabel = `${canvasActionLabel(action.kind)} · ${action.prompt.replace(/\s+/gu, ' ').trim().slice(0, 28)}`;
       setMessages((current) => [...current, {
-        id: `canvas-result:${action.nodeId}`,
+        id: `canvas-result:${generationNodeId}`,
         role: 'assistant',
         mode: agentMode,
         content: `${canvasActionLabel(action.kind)}节点已开始运行。`,
         canvasNodeLabel,
       }]);
-      setSubmittedNodeIds((current) => [...new Set([...current, action.nodeId])]);
-      setSubmittedNodeLabels((current) => ({ ...current, [action.nodeId]: canvasNodeLabel }));
+      setSubmittedNodeIds((current) => [...new Set([...current, generationNodeId])]);
+      setSubmittedNodeLabels((current) => ({ ...current, [generationNodeId]: canvasNodeLabel }));
       setPendingCanvasAction(null);
       setSelectedCreativeOptionKey(null);
       setPendingCanvasModelRoute(undefined);
+      setPendingCanvasResolution('');
     } catch (caught) {
       if (mounted.current && epoch === conversationEpoch.current) setError(canvasActionErrorMessage(caught, action.kind));
     } finally {
@@ -1360,6 +1374,12 @@ export function SkillChatWorkbench({
   const pendingCanvasFixedRouteIsCompatible = pendingCanvasPreference?.mode !== 'fixed'
     || pendingCanvasActionProfiles.some((profile) => profile.modelRoute === pendingCanvasPreference.modelRoute);
   const pendingCanvasModelLocked = pendingCanvasPreference?.mode === 'fixed' && pendingCanvasFixedRouteIsCompatible;
+  const pendingCanvasSelectedProfile = pendingCanvasActionProfiles.find((profile) => profile.modelRoute === pendingCanvasModelRoute);
+  const pendingCanvasResolutionOptions = pendingCanvasAction?.kind === 'video_generation'
+    ? pendingCanvasSelectedProfile?.constraints?.video?.resolutions ?? []
+    : pendingCanvasAction?.kind === 'image_generation'
+      ? pendingCanvasSelectedProfile?.constraints?.image?.resolutions ?? []
+      : [];
 
   const renderSubmittedResult = (nodeId: string) => {
             const result = canvasActionResults.find((item) => item.nodeId === nodeId);
@@ -1804,15 +1824,33 @@ export function SkillChatWorkbench({
             <article ref={confirmationCardRef} className="skill-chat-workbench__message skill-chat-workbench__message--assistant skill-chat-workbench__confirmation" aria-label="待确认画布操作">
               <span>等待确认</span>
               <p>{pendingCanvasAction.createWorkflow
-                ? `将创建${(pendingCanvasAction.referenceAssetIds?.length ?? 0) + 3}个节点：${pendingCanvasAction.referenceAssetIds?.length ? '参考素材 → ' : ''}提示词 → ${canvasActionLabel(pendingCanvasAction.kind)} → 结果，并执行已确认方案。`
+                ? `${pendingCanvasAction.referenceAssetIds?.length ? `将使用${pendingCanvasAction.referenceAssetIds.length}个参考素材连接` : '将创建'}1个${canvasActionLabel(pendingCanvasAction.kind)}节点；提示词与结果保留在生成节点内，并执行已确认方案。`
                 : pendingCanvasAction.createNode ? `将新建独立节点并执行${canvasActionLabel(pendingCanvasAction.kind)}` : `将在节点 ${pendingCanvasAction.nodeId} 执行${canvasActionLabel(pendingCanvasAction.kind)}`}。</p>
               <details><summary>查看执行提示词与参数</summary><p>{pendingCanvasAction.prompt}</p><p>{Object.entries(pendingCanvasAction.parameters ?? {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || '使用模型默认参数'}</p></details>
               {pendingCanvasActionProfiles.length > 0 && (
-                <label className="skill-chat-workbench__action-model">使用模型
-                  <select aria-label={`选择${canvasActionLabel(pendingCanvasAction.kind)}模型`} disabled={pendingCanvasModelLocked} value={pendingCanvasModelRoute ?? ''} onChange={(event) => setPendingCanvasModelRoute(event.target.value)}>
-                    {pendingCanvasActionProfiles.map((profile) => <option key={profile.modelRoute} value={profile.modelRoute}>{profile.displayName}</option>)}
-                  </select>
-                </label>
+                <div className="skill-chat-workbench__action-controls">
+                  <label className="skill-chat-workbench__action-model">使用模型
+                    <select aria-label={`选择${canvasActionLabel(pendingCanvasAction.kind)}模型`} disabled={pendingCanvasModelLocked} value={pendingCanvasModelRoute ?? ''} onChange={(event) => {
+                      const modelRoute = event.target.value;
+                      setPendingCanvasModelRoute(modelRoute);
+                      const profile = pendingCanvasActionProfiles.find((candidate) => candidate.modelRoute === modelRoute);
+                      const resolutions = pendingCanvasAction.kind === 'video_generation'
+                        ? profile?.constraints?.video?.resolutions
+                        : profile?.constraints?.image?.resolutions;
+                      setPendingCanvasResolution((current) => resolutions?.includes(current as never) ? current : '');
+                    }}>
+                      {pendingCanvasActionProfiles.map((profile) => <option key={profile.modelRoute} value={profile.modelRoute}>{profile.displayName}</option>)}
+                    </select>
+                  </label>
+                  {pendingCanvasAction.kind !== 'reverse_agent' && pendingCanvasResolutionOptions.length > 0 && (
+                    <label className="skill-chat-workbench__action-model">清晰度
+                      <select aria-label={`选择${canvasActionLabel(pendingCanvasAction.kind)}清晰度`} value={pendingCanvasResolution} onChange={(event) => setPendingCanvasResolution(event.target.value)}>
+                        <option value="">模型默认</option>
+                        {pendingCanvasResolutionOptions.map((resolution) => <option key={resolution} value={resolution}>{resolution}</option>)}
+                      </select>
+                    </label>
+                  )}
+                </div>
               )}
               {pendingCanvasActionNeedsReferences && pendingCanvasPreference?.mode === 'fixed' && !pendingCanvasFixedRouteIsCompatible && pendingCanvasActionProfiles.length > 0 && (
                 <p className="skill-chat-workbench__status" role="status">固定模型不支持参考素材，已自动切换到兼容路线；你可以在这里选择其他兼容模型。</p>

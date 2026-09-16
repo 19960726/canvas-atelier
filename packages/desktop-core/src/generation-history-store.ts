@@ -26,11 +26,13 @@ const MAX_HISTORY_ORIGINAL_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_HISTORY_OPERATIONS = 5_000;
 const MAX_HISTORY_MUTATION_BATCH = 100;
 const MAX_HISTORY_AVAILABILITY_AUDIT_CONCURRENCY = 4;
+const MAX_HISTORY_PREVIEW_CONCURRENCY = 2;
+const MAX_HISTORY_PREVIEW_BYTES = 16 * 1024 * 1024;
 const MAX_STALE_TEMP_CLEANUP = 64;
 // The history drawer requests the default 50-record first page.  Returning
 // its metadata without hashing every original keeps the drawer interactive;
 // the concurrent capacity audit and lazy media resolver still verify files.
-const HISTORY_FAST_FIRST_PAGE_SIZE = 50;
+const HISTORY_FAST_FIRST_PAGE_SIZE = 30;
 const HISTORY_LOCK_ACQUIRE_TIMEOUT_MS = 5_000;
 const HISTORY_LOCK_ACQUIRE_RETRY_MS = 10;
 
@@ -51,6 +53,7 @@ export interface GenerationHistoryStoreError extends Error {
 }
 
 export interface GenerationHistoryStoreOptions {
+  readonly createImagePreview?: (sourcePath: string, destinationPath: string) => Promise<void>;
   readonly fileSystem?: FileSystem;
   readonly forbiddenRoots?: readonly string[];
   readonly historyRoot: string;
@@ -157,6 +160,8 @@ interface HistoryCursorPayload {
 }
 
 export class GenerationHistoryStore {
+  private cachedIndex: { readonly payload: HistoryIndexPayload; readonly raw: string } | null = null;
+  private readonly createImagePreview: GenerationHistoryStoreOptions['createImagePreview'];
   private readonly fileSystem: FileSystem;
   private readonly forbiddenRoots: readonly string[];
   private readonly historyRoot: string;
@@ -165,9 +170,13 @@ export class GenerationHistoryStore {
   private readonly now: () => number;
   private readonly ownedRoot: string;
   private operationTail: Promise<void> = Promise.resolve();
+  private previewActiveCount = 0;
+  private readonly previewTasks = new Map<string, Promise<string | null>>();
+  private readonly previewWaiters: Array<() => void> = [];
   private rootIdentity: HistoryRootIdentity | null = null;
 
   constructor(options: GenerationHistoryStoreOptions) {
+    this.createImagePreview = options.createImagePreview;
     this.fileSystem = options.fileSystem ?? new NodeFileSystem();
     this.historyRoot = resolve(options.historyRoot);
     this.hashFile = options.hashFile ?? sha256File;
@@ -176,6 +185,10 @@ export class GenerationHistoryStore {
     this.isNetworkPath = options.isNetworkPath ?? defaultIsNetworkPath;
     this.now = options.now ?? Date.now;
     this.assertLexicalRootConfiguration();
+  }
+
+  async warm(): Promise<void> {
+    await this.withLockedIndex(async () => undefined);
   }
 
   async ingest(input: IngestGenerationHistoryInput): Promise<GenerationHistoryRecord> {
@@ -399,6 +412,10 @@ export class GenerationHistoryStore {
       parsedRequest = parseGenerationHistoryListRequest(request);
     } catch {
       throw historyError('HISTORY_INVALID_REQUEST', false, 'Generation history query is invalid');
+    }
+    const cachedIndex = this.cachedIndex;
+    if (cachedIndex !== null && isFastMetadataListRequest(parsedRequest)) {
+      return createMetadataListResult(cachedIndex.payload, parsedRequest);
     }
     return this.withLockedIndex(async (current, currentRaw) => {
       // Availability filters need authoritative states before filtering,
@@ -653,6 +670,22 @@ export class GenerationHistoryStore {
         ? path
         : null;
     });
+  }
+
+  async resolveAvailablePreviewPath(historyAssetId: string): Promise<string | null> {
+    let assetId: string;
+    try {
+      assetId = parseOpaqueId(historyAssetId, 'History asset identity is invalid');
+    } catch {
+      return null;
+    }
+    const existing = this.previewTasks.get(assetId);
+    if (existing !== undefined) return existing;
+    const task = this.withPreviewSlot(() => this.createOrResolvePreview(assetId))
+      .catch(() => null)
+      .finally(() => this.previewTasks.delete(assetId));
+    this.previewTasks.set(assetId, task);
+    return task;
   }
 
   async withAvailableAsset<T>(
@@ -994,6 +1027,83 @@ export class GenerationHistoryStore {
     }
   }
 
+  private async createOrResolvePreview(historyAssetId: string): Promise<string | null> {
+    if (this.createImagePreview === undefined) return null;
+    const previewPath = join(this.historyRoot, 'previews', `${historyAssetId}.jpg`);
+    const cachedIndex = this.cachedIndex;
+    const source = cachedIndex === null
+      ? await this.withLockedIndex(async (current) => this.findPreviewSource(current, historyAssetId))
+      : this.findPreviewSource(cachedIndex.payload, historyAssetId);
+    if (source === null) return null;
+    if (await this.isUsablePreview(previewPath)) return previewPath;
+    await this.assertConfinedPathForRead(source.sourcePath);
+    const sourceStats = await this.requireLstat(source.sourcePath).catch(() => null);
+    if (sourceStats === null || !isRegularFile(sourceStats) || sourceStats.size !== source.byteSize) return null;
+
+    const tempPath = join(
+      this.historyRoot,
+      'previews',
+      `.history-preview-${historyAssetId}-${randomBytes(6).toString('hex')}.tmp`,
+    );
+    try {
+      await this.assertConfinedPathForWrite(tempPath);
+      await this.createImagePreview(source.sourcePath, tempPath);
+      if (!await this.isUsablePreview(tempPath)) return null;
+      await this.assertConfinedPathForWrite(previewPath);
+      try {
+        await this.fileSystem.rename(tempPath, previewPath);
+      } catch (error) {
+        if (!await this.isUsablePreview(previewPath)) throw error;
+      }
+      return await this.isUsablePreview(previewPath) ? previewPath : null;
+    } finally {
+      await this.fileSystem.rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private findPreviewSource(
+    current: HistoryIndexPayload,
+    historyAssetId: string,
+  ): { readonly byteSize: number; readonly sourcePath: string } | null {
+    const record = current.records.find((candidate) => (
+      candidate.trash === null
+      && candidate.output?.historyAssetId === historyAssetId
+      && candidate.output.availability === 'available'
+      && candidate.output.mediaType.startsWith('image/')
+    ));
+    if (record?.output === null || record?.output === undefined) return null;
+    return {
+      byteSize: record.output.byteSize,
+      sourcePath: this.recordAssetPath(record),
+    };
+  }
+
+  private async isUsablePreview(path: string): Promise<boolean> {
+    try {
+      await this.assertConfinedPathForRead(path);
+      const stats = await this.requireLstat(path);
+      return isRegularFile(stats)
+        && typeof stats.size === 'number'
+        && stats.size > 0
+        && stats.size <= MAX_HISTORY_PREVIEW_BYTES;
+    } catch {
+      return false;
+    }
+  }
+
+  private async withPreviewSlot<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.previewActiveCount >= MAX_HISTORY_PREVIEW_CONCURRENCY) {
+      await new Promise<void>((resolveWaiter) => this.previewWaiters.push(resolveWaiter));
+    }
+    this.previewActiveCount += 1;
+    try {
+      return await operation();
+    } finally {
+      this.previewActiveCount -= 1;
+      this.previewWaiters.shift()?.();
+    }
+  }
+
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.operationTail.then(operation, operation);
     this.operationTail = result.then(() => undefined, () => undefined);
@@ -1030,7 +1140,7 @@ export class GenerationHistoryStore {
     }
     await this.ensureRootMarker();
 
-    for (const directoryName of ['originals', 'trash', 'recovery'] as const) {
+    for (const directoryName of ['originals', 'trash', 'recovery', 'previews'] as const) {
       const directoryPath = join(this.historyRoot, directoryName);
       try {
         await this.fileSystem.mkdir(directoryPath);
@@ -1079,7 +1189,9 @@ export class GenerationHistoryStore {
     try {
       await this.assertConfinedPathForRead(indexPath);
       const raw = await this.fileSystem.readFile(indexPath, 'utf8');
-      return { payload: parseHistoryIndex(raw), raw };
+      const result = { payload: parseHistoryIndex(raw), raw };
+      this.cachedIndex = result;
+      return result;
     } catch (error) {
       if (!isErrno(error, 'ENOENT')) {
         if (isHistoryError(error)) throw error;
@@ -1090,7 +1202,9 @@ export class GenerationHistoryStore {
       if (recoveredRaw !== null) {
         const recovered = parseHistoryIndex(recoveredRaw);
         await this.writeAtomicConfined(indexPath, recoveredRaw);
-        return { payload: recovered, raw: recoveredRaw };
+        const result = { payload: recovered, raw: recoveredRaw };
+        this.cachedIndex = result;
+        return result;
       }
       if (!await this.isPristineIndexlessRoot()) {
         throw historyError('HISTORY_INDEX_CORRUPT', false, 'Generation history index is missing');
@@ -1103,7 +1217,9 @@ export class GenerationHistoryStore {
       };
       await this.writeIndexUnlocked(empty, null);
       const raw = serializeHistoryIndex(empty);
-      return { payload: empty, raw };
+      const result = { payload: empty, raw };
+      this.cachedIndex = result;
+      return result;
     }
   }
 
@@ -1127,6 +1243,7 @@ export class GenerationHistoryStore {
       }
     }
     await this.writeAtomicConfined(indexPath, nextRaw);
+    this.cachedIndex = { payload: next, raw: nextRaw };
     try {
       await this.writeAtomicConfined(lkgPath, nextRaw);
     } catch {
@@ -1713,6 +1830,55 @@ function hasBlockingProjectReference(record: GenerationHistoryRecord): boolean {
 
 function historyFilterSha256(request: GenerationHistoryListRequest): string {
   return sha256Canonical({ filters: request.filters, sort: request.sort });
+}
+
+function isFastMetadataListRequest(request: GenerationHistoryListRequest): boolean {
+  return request.filters.availability === 'all'
+    && request.filters.trashState === 'active'
+    && request.pageSize >= HISTORY_FAST_FIRST_PAGE_SIZE;
+}
+
+function createMetadataListResult(
+  current: HistoryIndexPayload,
+  request: GenerationHistoryListRequest,
+): GenerationHistoryListResult {
+  const sorted = filterAndSortGenerationHistory(current.records, request);
+  let startIndex = 0;
+  if (request.cursor !== undefined) {
+    const cursor = parseHistoryCursor(request.cursor);
+    if (
+      cursor.revision !== current.revision
+      || cursor.sort !== request.sort
+      || cursor.filterSha256 !== historyFilterSha256(request)
+    ) {
+      throw historyError('HISTORY_INVALID_REQUEST', false, 'Generation history cursor is stale or mismatched');
+    }
+    const cursorIndex = sorted.findIndex((record) => (
+      record.id === cursor.recordId && record.createdAt === cursor.createdAt
+    ));
+    if (cursorIndex < 0) {
+      throw historyError('HISTORY_INVALID_REQUEST', false, 'Generation history cursor target is unavailable');
+    }
+    startIndex = cursorIndex + 1;
+  }
+  const records = sorted.slice(startIndex, startIndex + request.pageSize);
+  const hasNextPage = startIndex + records.length < sorted.length;
+  const lastRecord = records[records.length - 1];
+  return Object.freeze({
+    nextCursor: hasNextPage && lastRecord !== undefined
+      ? createHistoryCursor({
+        schemaVersion: 1,
+        revision: current.revision,
+        sort: request.sort,
+        filterSha256: historyFilterSha256(request),
+        createdAt: lastRecord.createdAt,
+        recordId: lastRecord.id,
+      })
+      : null,
+    records: Object.freeze(records),
+    revision: current.revision,
+    total: sorted.length,
+  });
 }
 
 function createHistoryCursor(payload: HistoryCursorPayload): string {

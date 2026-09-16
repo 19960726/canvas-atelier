@@ -1167,6 +1167,8 @@ describe('project image bridge', () => {
     const picker = deferred<string | null>();
     const stageGate = deferred<void>();
     const stageEntered = deferred<void>();
+    const flushGate = deferred<void>();
+    const flushEntered = deferred<void>();
     const closeGate = deferred<void>();
     const closeEntered = deferred<void>();
     const events: string[] = [];
@@ -1191,6 +1193,8 @@ describe('project image bridge', () => {
     });
     const flush = vi.fn(async () => {
       events.push('flush');
+      flushEntered.resolve();
+      await flushGate.promise;
       return {
         path: 'snapshots/image-import.json.gz',
         reason: 'agent_transaction' as const,
@@ -1246,7 +1250,14 @@ describe('project image bridge', () => {
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30)),
       ]);
       stageGate.resolve();
+      await flushEntered.promise;
+      const importSettledBeforeSnapshot = await Promise.race([
+        importing.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30)),
+      ]);
+      flushGate.resolve();
       const result = await importing;
+      expect.soft(importSettledBeforeSnapshot).toBe(true);
       closeGate.resolve();
       await closing;
 
@@ -1255,6 +1266,7 @@ describe('project image bridge', () => {
       expect.soft(events).toEqual(['stage', 'writer', 'flush', 'close']);
     } finally {
       stageGate.resolve();
+      flushGate.resolve();
       closeGate.resolve();
       await handlers.closeAllProjects().catch(() => undefined);
       releaseJournalState(join(projectRoot, 'journal', 'active.ndjson'), 'image-project');

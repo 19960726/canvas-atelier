@@ -37,6 +37,7 @@ const profiles: ProviderBridgeProfile[] = [
     modelId: 'image-only',
     displayName: 'Image only',
     capabilities: ['image_generation'],
+    constraints: { image: { resolutions: ['1K', '2K', '4K'] } },
   },
 ];
 
@@ -312,7 +313,11 @@ describe('SkillChatWorkbench', () => {
     expect(option).toHaveTextContent('已选择');
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
     expect(executeCanvasAction).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('将创建3个节点：提示词 → 生图 → 结果');
+    expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('将创建1个生图节点');
+    expect(screen.getByLabelText('待确认画布操作')).toHaveTextContent('提示词与结果保留在生成节点内');
+    const claritySelect = screen.getByRole('combobox', { name: '选择生图清晰度' });
+    expect(claritySelect).toHaveValue('');
+    fireEvent.change(claritySelect, { target: { value: '4K' } });
     expect(screen.getByLabelText('待确认画布操作')).toHaveClass('skill-chat-workbench__confirmation');
     fireEvent.click(screen.getByRole('button', { name: '确认执行生图' }));
     await waitFor(() => expect(executeCanvasAction).toHaveBeenCalledWith(expect.objectContaining({
@@ -321,6 +326,7 @@ describe('SkillChatWorkbench', () => {
       nodeId: expect.stringMatching(/^agent-image-/u),
       modelRoute: 'image/only',
       prompt: '产品居中构图，保持产品比例与 Logo，柔和棚灯突出材质，纯净浅色背景，高清商业摄影。',
+      parameters: expect.objectContaining({ resolution: '4K' }),
     })));
     const actionCall = (executeCanvasAction.mock.calls as unknown as Array<[SkillCanvasActionRequest]>)[0]!;
     expect(actionCall[0].nodeId).not.toBe('image-node');

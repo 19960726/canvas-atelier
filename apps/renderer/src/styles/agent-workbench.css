@@ -290,3 +290,24 @@
   .codex-reasoning__fill { background: Highlight; }
   .codex-reasoning__track input::-webkit-slider-thumb { background: ButtonFace; border-color: ButtonText; }
 }
+.skill-chat-workbench__action-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(92px, 0.42fr);
+  gap: 8px;
+  align-items: end;
+}
+
+.skill-chat-workbench__action-controls .skill-chat-workbench__action-model {
+  min-width: 0;
+}
+
+.skill-chat-workbench__action-controls select {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 560px) {
+  .skill-chat-workbench__action-controls {
+    grid-template-columns: 1fr;
+  }
+}

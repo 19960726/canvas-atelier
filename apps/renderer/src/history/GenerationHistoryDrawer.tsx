@@ -21,6 +21,10 @@ import type {
   GenerationHistoryComparisonBridgeResult,
   GenerationHistoryReusableBridgeResult,
 } from '@agent-canvas/desktop-core';
+import {
+  readGenerationHistoryFirstPage,
+  rememberGenerationHistoryFirstPage,
+} from './history-first-page-cache';
 
 interface GenerationHistoryDrawerProps {
   onAddToCanvas?: (historyId: string, operationId: string) => Promise<boolean>;
@@ -44,10 +48,11 @@ type RelayMeTaskSummary = {
 export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParameters }: GenerationHistoryDrawerProps) {
   const bridge = window.novusDesktop?.history;
   const providerBridge = window.novusDesktop?.provider;
-  const [records, setRecords] = useState<readonly GenerationHistoryRecord[]>([]);
+  const initialFirstPage = readGenerationHistoryFirstPage(bridge);
+  const [records, setRecords] = useState<readonly GenerationHistoryRecord[]>(initialFirstPage?.records ?? []);
   const [capacity, setCapacity] = useState<GenerationHistoryCapacityBridgeResult | null>(null);
-  const [total, setTotal] = useState(0);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState(initialFirstPage?.total ?? 0);
+  const [nextCursor, setNextCursor] = useState<string | null>(initialFirstPage?.nextCursor ?? null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [textQuery, setTextQuery] = useState('');
   const [kind, setKind] = useState<HistoryKindFilter>('all');
@@ -59,7 +64,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
   const [projectId, setProjectId] = useState('all');
   const [modelDisplayName, setModelDisplayName] = useState('all');
   const [status, setStatus] = useState<StatusFilter>('all');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(initialFirstPage === null);
   const [error, setError] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<readonly string[]>([]);
   const [comparison, setComparison] = useState<GenerationHistoryComparisonBridgeResult | null>(null);
@@ -74,7 +79,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
   const groupedRecords = useMemo(() => groupHistoryRecordsByDate(records), [records]);
 
   const request = useMemo(() => ({
-    pageSize: 50,
+    pageSize: 30,
     sort,
     filters: {
       kind,
@@ -98,7 +103,8 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const cachedFirstPage = readGenerationHistoryFirstPage(bridge);
+    setLoading(cachedFirstPage === null);
     setError(null);
     const canListHistory = typeof bridge?.list === 'function' && typeof bridge?.getCapacity === 'function';
     if (!canListHistory) {
@@ -113,6 +119,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
     void bridge.list(request)
       .then((result) => {
         if (cancelled) return;
+        rememberGenerationHistoryFirstPage(bridge, request, result);
         setRecords(result.records);
         setTotal(result.total);
         setNextCursor(result.nextCursor);
@@ -411,7 +418,7 @@ export function GenerationHistoryDrawer({ onAddToCanvas, onClose, onReuseParamet
               <section className="history-loading" role="status" aria-label="加载生成历史" aria-live="polite">
                 <History size={24} strokeWidth={1.5} aria-hidden="true" />
                 <strong>正在加载历史记录</strong>
-                <span>正在校验本地素材，请稍候…</span>
+                <span>正在读取本地历史索引，请稍候…</span>
               </section>
             )}
             {!loading && records.length === 0 ? (
@@ -475,7 +482,7 @@ function HistoryCard({ record, onFavorite, onOpen }: { record: GenerationHistory
     <article className="history-card" data-history-status={record.status}>
       <button className="history-card__preview" type="button" aria-label={`查看 ${record.promptSummary}`} onClick={onOpen}>
         {available && output
-          ? <HistoryMedia output={output} alt={record.promptSummary} />
+          ? <HistoryMedia output={output} alt={record.promptSummary} preview />
           : <span className="history-card__unavailable"><ImageOff size={22} /><b>{failedMessage === null ? availabilityLabel(output?.availability) : '生成失败'}</b>{failedMessage && <small>{failedMessage}</small>}</span>}
         <span className="history-card__status">{statusLabel(record.status)}</span>
       </button>
@@ -498,17 +505,49 @@ function historyFailureMessage(record: GenerationHistoryRecord): string | null {
   return '生成任务未完成';
 }
 
-function HistoryMedia({ alt, output }: { readonly alt: string; readonly output: NonNullable<GenerationHistoryRecord['output']> }) {
-  const src = historyAssetUrl(output.historyAssetId);
+function HistoryMedia({
+  alt,
+  output,
+  preview = false,
+}: {
+  readonly alt: string;
+  readonly output: NonNullable<GenerationHistoryRecord['output']>;
+  readonly preview?: boolean;
+}) {
+  const usePreview = preview && output.mediaType !== 'video/mp4';
+  const src = usePreview ? historyPreviewUrl(output.historyAssetId) : historyAssetUrl(output.historyAssetId);
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [src]);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+    setLoaded(false);
+  }, [src]);
   if (failed) {
     return <span className="history-media__unavailable" role="status"><ImageOff size={22} /><b>缩略图加载失败</b></span>;
   }
   if (output.mediaType === 'video/mp4') {
     return <video className="history-video-preview" aria-label={alt} muted playsInline preload="metadata" src={src} onError={() => setFailed(true)} />;
   }
-  return <img src={src} alt={alt} onError={() => setFailed(true)} />;
+  return (
+    <>
+      {usePreview && !loaded && (
+        <span
+          className="history-media__skeleton"
+          data-testid={`history-preview-skeleton-${output.historyAssetId}`}
+          aria-hidden="true"
+        />
+      )}
+      <img
+        className={usePreview && !loaded ? 'is-loading' : undefined}
+        src={src}
+        alt={alt}
+        loading={usePreview ? 'lazy' : undefined}
+        decoding={usePreview ? 'async' : undefined}
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+      />
+    </>
+  );
 }
 
 function groupHistoryRecordsByDate(records: readonly GenerationHistoryRecord[]): readonly (readonly [string, readonly GenerationHistoryRecord[]])[] {
@@ -613,6 +652,10 @@ function HistoryComparison({ descriptors, onBack }: { descriptors: GenerationHis
 
 function historyAssetUrl(historyAssetId: string): string {
   return /^[a-z][a-z0-9_-]{7,95}$/u.test(historyAssetId) ? `novus-history://asset/${historyAssetId}` : '';
+}
+
+function historyPreviewUrl(historyAssetId: string): string {
+  return /^[a-z][a-z0-9_-]{7,95}$/u.test(historyAssetId) ? `novus-history://preview/${historyAssetId}` : '';
 }
 
 function createOperationId(action: string): string {

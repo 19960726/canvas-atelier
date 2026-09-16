@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Copy, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type { ProjectImageAssetSummary } from '@agent-canvas/desktop-core';
+import { DEFAULT_IMAGE_COLOR_CORRECTION, imageColorCorrectionFilter, renderImageColorCorrectionBlob, type ImageColorCorrection } from '../app/image-color-correction';
+import { ImageColorCorrectionControls } from './ImageColorCorrectionControls';
 
-export async function copyProjectImageToClipboard(asset: ProjectImageAssetSummary): Promise<boolean> {
+export async function copyProjectImageToClipboard(asset: ProjectImageAssetSummary, colorCorrection?: ImageColorCorrection): Promise<boolean> {
   try {
-    const response = await fetch(asset.displayUrl);
-    const blob = await response.blob();
+    const blob = colorCorrection === undefined
+      ? await fetch(asset.displayUrl).then((response) => response.blob())
+      : await renderImageColorCorrectionBlob(asset.displayUrl, colorCorrection);
     const nativeWrite = globalThis.window?.novusDesktop?.projectImages.writeClipboardImage;
     if (nativeWrite) {
       const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -25,6 +28,9 @@ export async function copyProjectImageToClipboard(asset: ProjectImageAssetSummar
 
 export function ProjectImageLightbox({
   asset,
+  colorCorrection,
+  colorCorrectionFilterId,
+  onColorCorrectionChange,
   index,
   total,
   onClose,
@@ -32,6 +38,9 @@ export function ProjectImageLightbox({
   onNext,
 }: {
   asset: ProjectImageAssetSummary;
+  colorCorrection?: ImageColorCorrection;
+  colorCorrectionFilterId?: string;
+  onColorCorrectionChange?: (value: ImageColorCorrection) => void;
   index: number;
   total: number;
   onClose: () => void;
@@ -41,6 +50,7 @@ export function ProjectImageLightbox({
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+  const [showOriginalForComparison, setShowOriginalForComparison] = useState(false);
   const dialogRef = useRef<HTMLElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const dragStart = useRef<{ pointerId: number; clientX: number; clientY: number; x: number; y: number } | null>(null);
@@ -63,6 +73,7 @@ export function ProjectImageLightbox({
     setView({ scale: 1, x: 0, y: 0 });
     setDragging(false);
     setCopyState('idle');
+    setShowOriginalForComparison(false);
     dragStart.current = null;
   }, [asset.assetId]);
 
@@ -89,7 +100,7 @@ export function ProjectImageLightbox({
   const copyImage = async () => {
     if (copyState === 'copying') return;
     setCopyState('copying');
-    const copied = await copyProjectImageToClipboard(asset);
+    const copied = await copyProjectImageToClipboard(asset, colorCorrection);
     setCopyState(copied ? 'copied' : 'failed');
     if (!copied) globalThis.window?.dispatchEvent(new CustomEvent('novus:clipboard-image-error'));
   };
@@ -97,11 +108,13 @@ export function ProjectImageLightbox({
   const dimensionLabel = asset.width === null || asset.height === null
     ? '尺寸不可用'
     : `${asset.width} × ${asset.height} px`;
+  const previewColorCorrection = showOriginalForComparison ? DEFAULT_IMAGE_COLOR_CORRECTION : colorCorrection;
+  const hasColorCorrectionControls = colorCorrection !== undefined && onColorCorrectionChange !== undefined;
   const dialog = (
     <div className="generated-image-lightbox" role="presentation" onPointerDown={onClose}>
       <section
         ref={dialogRef}
-        className="generated-image-lightbox__dialog"
+        className={`generated-image-lightbox__dialog${hasColorCorrectionControls ? ' has-color-correction' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-label="Generated image preview"
@@ -123,6 +136,15 @@ export function ProjectImageLightbox({
             <button type="button" aria-label="Close generated image preview" onClick={onClose}><X aria-hidden="true" size={18} /></button>
           </div>
         </header>
+        {hasColorCorrectionControls && <div className="generated-image-lightbox__correction-toolbar">
+          <ImageColorCorrectionControls
+            value={colorCorrection}
+            comparingOriginal={showOriginalForComparison}
+            onChange={onColorCorrectionChange}
+            onCompareChange={setShowOriginalForComparison}
+            placement="lightbox"
+          />
+        </div>}
         <div
           className="generated-image-lightbox__stage"
           aria-label="Generated image detail viewer"
@@ -169,7 +191,10 @@ export function ProjectImageLightbox({
             src={asset.displayUrl}
             alt={`Generated image ${index + 1} full preview`}
             draggable={false}
-            style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})` }}
+            style={{
+              filter: previewColorCorrection === undefined ? undefined : imageColorCorrectionFilter(previewColorCorrection, colorCorrectionFilterId),
+              transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})`,
+            }}
           />
         </div>
         <footer className="generated-image-lightbox__footer">

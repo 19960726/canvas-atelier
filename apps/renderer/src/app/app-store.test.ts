@@ -23,6 +23,7 @@ import type {
   ProjectPersistenceClient,
 } from './desktop-persistence';
 import { PROJECT_STORAGE_KEY, loadPersistedProjectBundle } from './project-persistence';
+import { AUTOSAVE_IDLE_MS } from './autosave';
 
 describe('project optimization memory', () => {
   afterEach(() => vi.useRealTimers());
@@ -3284,7 +3285,7 @@ describe('project optimization memory', () => {
     }));
   });
 
-  it('drafts a Codex generation request as a visible prompt-generation-result workflow', () => {
+  it('drafts a Codex generation request as one visible generation node', () => {
     useAppStore.getState().draftAgentPlan('生成 8 秒产品环绕视频', {
       modelRoute: 'video/seedance',
       modelRouteDisplayName: 'Seedance 2.5',
@@ -3298,8 +3299,8 @@ describe('project optimization memory', () => {
         ? [operation.node.data.moduleType]
         : []
     ));
-    expect(moduleTypes).toEqual(expect.arrayContaining(['text_prompt', 'video_generation', 'video_result']));
-    expect(plan.transaction.operations.filter((operation) => operation.kind === 'create_edge')).toHaveLength(2);
+    expect(moduleTypes).toEqual(['video_generation']);
+    expect(plan.transaction.operations.filter((operation) => operation.kind === 'create_edge')).toHaveLength(0);
     expect(plan).toMatchObject({ modelRoute: 'video/seedance', modelRouteDisplayName: 'Seedance 2.5', jobCount: 1 });
   });
 
@@ -8321,6 +8322,7 @@ describe('stable module graph commits', () => {
   });
 
   it('reorders a many-input module port and rejects non-permutations without persistence', async () => {
+    vi.useFakeTimers();
     const commit = vi.fn(async ({ nextProject }: ProjectCommitRequest): Promise<ProjectCommitResult> => ({
       ok: true,
       project: nextProject,
@@ -8331,6 +8333,8 @@ describe('stable module graph commits', () => {
 
     expect(await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-b', 'edge-a'])).toBe(true);
     expect(await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-a'])).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_IDLE_MS);
     expect(commit).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().project.edges.filter((edge) => edge.target === 'reverse').map((edge) => [edge.id, edge.order])).toEqual([
       ['edge-a', 1],
@@ -8338,7 +8342,93 @@ describe('stable module graph commits', () => {
     ]);
   });
 
+  it('coalesces twenty rapid media-slot moves and explicitly saves only the final order', async () => {
+    const imageNodes = Array.from({ length: 20 }, (_, index) => (
+      createCanvasModuleNode(`stress-image-${index + 1}`, 'image_input', { x: 0, y: index * 40 })
+    ));
+    const target = createCanvasModuleNode('stress-reverse', 'reverse_agent', { x: 480, y: 0 });
+    const project = parseCanvasProject({
+      ...createStarterProject(),
+      nodes: [...imageNodes, target],
+      edges: imageNodes.map((node, index) => ({
+        id: `stress-edge-${index + 1}`,
+        source: node.id,
+        sourcePortId: 'image',
+        target: target.id,
+        targetPortId: 'references',
+        order: index,
+      })),
+    });
+    let durableProject = project;
+    let revision = 4;
+    const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+      durableProject = request.nextProject;
+      revision += 1;
+      return { ok: true, project: durableProject, revision };
+    });
+    const stablePoint = vi.fn(async () => ({
+      availableSnapshotIds: ['slot-reorder-stable'],
+      project: durableProject,
+      revision,
+    }));
+    replaceProjectPersistenceClientForTests(createMockClient({ commit, stablePoint }));
+    useAppStore.setState({ desktopRevision: revision, project, saveStatus: 'saved' });
+    const originalOrder = project.edges.map((edge) => edge.id);
+    let finalOrder = originalOrder;
+
+    for (let index = 1; index <= 20; index += 1) {
+      const offset = index % originalOrder.length;
+      finalOrder = [...originalOrder.slice(offset), ...originalOrder.slice(0, offset)];
+      await expect(useAppStore.getState().reorderModuleInput(target.id, 'references', finalOrder)).resolves.toBe(true);
+    }
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(useAppStore.getState().saveStatus).toBe('pending');
+    await expect(useAppStore.getState().saveProjectExplicitly()).resolves.toBe(true);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(stablePoint).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0]![0].nextProject.edges
+      .filter((edge) => edge.target === target.id)
+      .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+      .map((edge) => edge.id)).toEqual(finalOrder);
+    expect(useAppStore.getState().saveStatus).toBe('saved');
+  });
+
+  it('persists a newer media-slot order that arrives while the prior autosave is in flight', async () => {
+    vi.useFakeTimers();
+    const project = moduleGraphProjectWithReferences();
+    const firstAck = deferred<ProjectCommitResult>();
+    let revision = 6;
+    let durableProject = project;
+    const commit = vi.fn()
+      .mockImplementationOnce(() => firstAck.promise)
+      .mockImplementation(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => {
+        durableProject = request.nextProject;
+        revision = request.baseRevision + 1;
+        return { ok: true, project: durableProject, revision };
+      });
+    replaceProjectPersistenceClientForTests(createMockClient({ commit }));
+    useAppStore.setState({ desktopRevision: revision, project, saveStatus: 'saved' });
+
+    await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-b', 'edge-a']);
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_IDLE_MS);
+    expect(commit).toHaveBeenCalledTimes(1);
+
+    await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-a', 'edge-b']);
+    const firstRequest = commit.mock.calls[0]![0] as ProjectCommitRequest;
+    firstAck.resolve({ ok: true, project: firstRequest.nextProject, revision: 7 });
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    await vi.runAllTimersAsync();
+
+    expect(durableProject.edges
+      .filter((edge) => edge.target === 'reverse')
+      .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+      .map((edge) => edge.id)).toEqual(['edge-a', 'edge-b']);
+    expect(useAppStore.getState()).toMatchObject({ desktopRevision: 8, saveStatus: 'saved' });
+  });
+
   it('atomically reorders mixed image and video edges connected to an Agent media input', async () => {
+    vi.useFakeTimers();
     const imageInput = createCanvasModuleNode('mixed-reorder-image', 'image_input', { x: 0, y: 0 });
     imageInput.data.config = { assetId: '1111111111111111' };
     const firstVideo = createCanvasModuleNode('mixed-reorder-video-a', 'video_input', { x: 0, y: 100 });
@@ -8369,6 +8459,8 @@ describe('stable module graph commits', () => {
     expect(await useAppStore.getState().reorderModuleInput(reverse.id, 'references', [
       'mixed-video-b-edge', 'mixed-image-edge', 'mixed-video-a-edge',
     ])).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_IDLE_MS);
     expect(commit).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().project.edges
       .filter((edge) => edge.target === reverse.id)
@@ -9098,12 +9190,14 @@ describe('stable module graph commits', () => {
 
     await expect(useAppStore.getState().draftGenerationNodeConfig(generation.id, {
       prompt: 'Durable image prompt', modelRoute: 'image-route', aspectRatio: '4:5', resolution: '2K', outputCount: 2,
+      colorCorrection: { mode: 'custom', temperature: -8, tint: -12, saturation: 94, contrast: 103, brightness: 99 },
     })).resolves.toBe(true);
     await expect(useAppStore.getState().flushProjectSave('blur')).resolves.toBe(true);
 
     expect(commit).toHaveBeenCalledOnce();
     expect(durableProject.nodes.find((node) => node.id === generation.id)).toMatchObject({
-      data: { config: { prompt: 'Durable image prompt', modelRoute: 'image-route', aspectRatio: '4:5', resolution: '2K', outputCount: 2 } },
+      data: { config: { prompt: 'Durable image prompt', modelRoute: 'image-route', aspectRatio: '4:5', resolution: '2K', outputCount: 2,
+        colorCorrection: { mode: 'custom', temperature: -8, tint: -12, saturation: 94, contrast: 103, brightness: 99 } } },
     });
     const durableConfig = (durableProject.nodes.find((node) => node.id === generation.id) as typeof generation | undefined)?.data.config;
     expect(durableConfig).not.toHaveProperty('providerDisplayName');
@@ -10166,31 +10260,57 @@ describe('agent generation model selection', () => {
     expect(requests.map((request) => [request.promptNodeId, request.prompt, request.kind])).toEqual([['variant-A', 'A', 'image'], ['variant-B', 'B', 'image']]);
     expect(requests.every((request) => request.aspectRatio === '3:4')).toBe(true);
   });
-  it('creates a connected prompt-generation-result workflow durably and idempotently without submitting jobs', async () => {
+  it('creates a lean generation workflow durably and idempotently without redundant prompt or result nodes', async () => {
     delete window.novusDesktop;
     localStorage.clear();
     replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
     replaceModelJobStorageForTests(createTestModelJobStorage());
     resetAppStoreForTests();
     const state = useAppStore.getState();
-    expect(await state.ensureAgentGenerationNode('chosen-video', 'video_generation', [])).toBe(true);
-    expect(await state.ensureAgentGenerationNode('chosen-video', 'video_generation', [])).toBe(true);
+    await expect(state.ensureAgentGenerationNode('chosen-video', 'video_generation', [])).resolves.toEqual({
+      generationNodeId: 'chosen-video',
+      workflowNodeIds: ['chosen-video'],
+    });
+    await expect(state.ensureAgentGenerationNode('chosen-video', 'video_generation', [])).resolves.toEqual({
+      generationNodeId: 'chosen-video',
+      workflowNodeIds: ['chosen-video'],
+    });
     expect(useAppStore.getState().project.nodes.filter((node) => node.id === 'chosen-video')).toHaveLength(1);
-    expect(useAppStore.getState().project.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'chosen-video-prompt', type: 'module', data: expect.objectContaining({ moduleType: 'text_prompt' }) }),
-      expect.objectContaining({ id: 'chosen-video-output', type: 'module', data: expect.objectContaining({ moduleType: 'video_result' }) }),
-    ]));
-    expect(useAppStore.getState().project.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ source: 'chosen-video-prompt', sourcePortId: 'prompt', target: 'chosen-video', targetPortId: 'prompt' }),
-      expect.objectContaining({ source: 'chosen-video', sourcePortId: 'result', target: 'chosen-video-output', targetPortId: 'video' }),
-    ]));
+    expect(useAppStore.getState().project.nodes.some((node) => node.id === 'chosen-video-prompt' || node.id === 'chosen-video-output')).toBe(false);
+    expect(useAppStore.getState().project.edges.some((edge) => edge.source === 'chosen-video' || edge.target === 'chosen-video')).toBe(false);
     expect(useAppStore.getState().modelJobs).toHaveLength(0);
     expect(await state.ensureAgentGenerationNode('chosen-video', 'image_generation', [])).toBe(false);
-    expect(await state.ensureAgentGenerationNode('next-image', 'image_generation', [], { prompt: '柔光产品主图' })).toBe(true);
+    await expect(state.ensureAgentGenerationNode('next-image', 'image_generation', [], { prompt: '柔光产品主图' })).resolves.toEqual({
+      generationNodeId: 'next-image',
+      workflowNodeIds: ['next-image'],
+    });
     const first = useAppStore.getState().project.nodes.find((node) => node.id === 'chosen-video')!;
     const second = useAppStore.getState().project.nodes.find((node) => node.id === 'next-image')!;
-    expect(second.position.x).toBeGreaterThan(first.position.x + 1200);
+    expect(second.position.x).toBeGreaterThan(first.position.x);
+    expect(second.position.x).toBeLessThanOrEqual(first.position.x + 400);
     expect(second).toMatchObject({ data: { config: { agentWorkflowLabel: expect.stringContaining('柔光产品主图') } } });
+  });
+
+  it('reuses an existing reference node when creating a lean Agent workflow', async () => {
+    delete window.novusDesktop;
+    localStorage.clear();
+    replaceProjectPersistenceClientForTests(createImmediateBrowserClient());
+    resetAppStoreForTests();
+    const asset = { assetId: 'aaaaaaaaaaaaaaaa', byteSize: 42, extension: 'png' as const, height: 100, label: '产品参考', mediaType: 'image/png' as const, origin: 'imported' as const, sha256: 'a'.repeat(64), width: 100 };
+    const reference = createCanvasModuleNode('existing-reference', 'image_input', { x: 100, y: 100 });
+    reference.data.config = { ...reference.data.config, assetId: asset.assetId, label: asset.label };
+    useAppStore.setState((current) => ({ project: { ...current.project, nodes: [reference], edges: [], assets: [asset] } }));
+
+    await expect(useAppStore.getState().ensureAgentGenerationNode('lean-image', 'image_generation', [asset.assetId], { prompt: '保持产品结构' })).resolves.toEqual({
+      generationNodeId: 'lean-image',
+      workflowNodeIds: ['existing-reference', 'lean-image'],
+    });
+    expect(useAppStore.getState().project.nodes.map((node) => node.id)).toEqual(['existing-reference', 'lean-image']);
+    expect(useAppStore.getState().project.edges).toEqual([expect.objectContaining({
+      source: 'existing-reference',
+      target: 'lean-image',
+      targetPortId: 'references',
+    })]);
   });
 
   it('does not reuse an Agent workflow sequence after an older workflow is deleted', async () => {
@@ -10200,8 +10320,8 @@ describe('agent generation model selection', () => {
     replaceModelJobStorageForTests(createTestModelJobStorage());
     resetAppStoreForTests();
     const state = useAppStore.getState();
-    expect(await state.ensureAgentGenerationNode('agent-first', 'image_generation', [], { prompt: '第一张产品图' })).toBe(true);
-    expect(await state.ensureAgentGenerationNode('agent-second', 'image_generation', [], { prompt: '第二张产品图' })).toBe(true);
+    expect(await state.ensureAgentGenerationNode('agent-first', 'image_generation', [], { prompt: '第一张产品图' })).toBeTruthy();
+    expect(await state.ensureAgentGenerationNode('agent-second', 'image_generation', [], { prompt: '第二张产品图' })).toBeTruthy();
     useAppStore.setState((current) => ({
       project: {
         ...current.project,
@@ -10210,7 +10330,7 @@ describe('agent generation model selection', () => {
       },
     }));
 
-    expect(await state.ensureAgentGenerationNode('agent-third', 'image_generation', [], { prompt: '第三张产品图' })).toBe(true);
+    expect(await state.ensureAgentGenerationNode('agent-third', 'image_generation', [], { prompt: '第三张产品图' })).toBeTruthy();
     const labels = ['agent-second', 'agent-third'].map((id) => {
       const node = useAppStore.getState().project.nodes.find((candidate) => candidate.id === id);
       return node?.type === 'module' ? node.data.config.agentWorkflowLabel : undefined;
@@ -10227,9 +10347,9 @@ describe('agent generation model selection', () => {
     replaceModelJobStorageForTests(createTestModelJobStorage());
     resetAppStoreForTests();
     const state = useAppStore.getState();
-    expect(await state.ensureAgentGenerationNode('agent-first', 'image_generation', [], { prompt: '第一张产品图' })).toBe(true);
-    expect(await state.ensureAgentGenerationNode('agent-second', 'image_generation', [], { prompt: '第二张产品图' })).toBe(true);
-    expect(await state.ensureAgentGenerationNode('agent-third', 'image_generation', [], { prompt: '第三张产品图' })).toBe(true);
+    expect(await state.ensureAgentGenerationNode('agent-first', 'image_generation', [], { prompt: '第一张产品图' })).toBeTruthy();
+    expect(await state.ensureAgentGenerationNode('agent-second', 'image_generation', [], { prompt: '第二张产品图' })).toBeTruthy();
+    expect(await state.ensureAgentGenerationNode('agent-third', 'image_generation', [], { prompt: '第三张产品图' })).toBeTruthy();
 
     const newestWorkflowNodeIds = useAppStore.getState().project.nodes.flatMap((node) => (
       node.type === 'module' && typeof node.data.config.agentWorkflowLabel === 'string'
@@ -10237,7 +10357,7 @@ describe('agent generation model selection', () => {
         ? [node.id]
         : []
     ));
-    expect(newestWorkflowNodeIds).toHaveLength(3);
+    expect(newestWorkflowNodeIds).toHaveLength(1);
     expect(await state.deleteCanvasNodes(newestWorkflowNodeIds)).toBe(true);
     expect(useAppStore.getState().project.edges.some((edge) => (
       newestWorkflowNodeIds.includes(edge.source) || newestWorkflowNodeIds.includes(edge.target)
@@ -10246,7 +10366,7 @@ describe('agent generation model selection', () => {
     const persistedAfterDelete = loadPersistedProjectBundle()?.current;
     expect(persistedAfterDelete).toBeDefined();
     useAppStore.setState({ project: persistedAfterDelete! });
-    expect(await state.ensureAgentGenerationNode('agent-fourth', 'image_generation', [], { prompt: '第四张产品图' })).toBe(true);
+    expect(await state.ensureAgentGenerationNode('agent-fourth', 'image_generation', [], { prompt: '第四张产品图' })).toBeTruthy();
 
     const fourth = useAppStore.getState().project.nodes.find((node) => node.id === 'agent-fourth');
     expect(fourth).toMatchObject({ data: { config: { agentWorkflowLabel: expect.stringMatching(/^方案 4 ·/u) } } });

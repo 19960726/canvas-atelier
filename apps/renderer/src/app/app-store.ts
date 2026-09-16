@@ -116,6 +116,7 @@ import { resolveImageResolutionRoute } from './image-resolution-routing';
 import { buildReverseAgentCanvasPlan } from '../agent/reverse-workflow-proposal';
 import type { ReverseAnalysisResult } from '../agent/reverse-workflow-contract';
 import { supportsGenerationReferences, type GenerationParameters } from '../agent/generation-preferences';
+import type { ImageColorCorrection } from './image-color-correction';
 
 let planSequence = 0;
 let stableProjectCommitTail: Promise<void> | null = null;
@@ -263,7 +264,12 @@ interface VideoPreviewNodeInput {
   readonly executionRoute?: ConfirmedGenerationExecutionRoute;
 }
 type GenerationNodeDraftConfig = Pick<ImageGenerationNodeInput, 'prompt' | 'modelRoute' | 'aspectRatio' | 'resolution' | 'imageQuality' | 'imageOutputFormat' | 'imageBackground' | 'outputCount'>
-  & Partial<Pick<VideoPreviewNodeInput, 'keyframe' | 'durationSeconds' | 'audioEnabled'>>;
+  & Partial<Pick<VideoPreviewNodeInput, 'keyframe' | 'durationSeconds' | 'audioEnabled'>>
+  & { readonly colorCorrection?: ImageColorCorrection };
+export interface AgentGenerationWorkflowPlacement {
+  readonly generationNodeId: string;
+  readonly workflowNodeIds: readonly string[];
+}
 interface StoryboardNodeInput {
   readonly modelRoute: string;
   readonly script: string;
@@ -285,6 +291,7 @@ interface AppState {
   projectImageError: string | null;
   projectImageImportingNodeId: string | null;
   persistenceMode: 'browser' | 'desktop';
+  persistenceReady: boolean;
   desktopRevision: number;
   canvasDraftResetKey: number;
   availableSnapshotIds: string[];
@@ -324,7 +331,7 @@ interface AppState {
     moduleType: 'image_generation' | 'video_generation',
     referenceAssetIds: readonly string[],
     initialConfig?: GenerationNodeDraftConfig,
-  ) => Promise<boolean>;
+  ) => Promise<false | AgentGenerationWorkflowPlacement>;
   addProjectImageInput: (assetId: string, position: { x: number; y: number }) => Promise<boolean>;
   connectModulePorts: (connection: Connection) => Promise<boolean>;
   commitNodePosition: (nodeId: string, position: { x: number; y: number }) => Promise<boolean>;
@@ -1248,17 +1255,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       operations: [{ kind: 'canvas', operation: { kind: 'create_node', node } }],
     });
   }),
-  ensureAgentGenerationNode: (nodeId, moduleType, referenceAssetIds, initialConfig) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+  ensureAgentGenerationNode: async (nodeId, moduleType, referenceAssetIds, initialConfig) => {
+    let placement: AgentGenerationWorkflowPlacement | null = null;
+    const committed = await enqueueStableProjectOperation(set, get, async (commitNow) => {
     const project = get().project;
     if (!/^[A-Za-z0-9_-]{1,160}$/u.test(nodeId) || !['image_generation', 'video_generation'].includes(moduleType) || referenceAssetIds.length > 20) return false;
     const existing = project.nodes.find((node) => node.id === nodeId);
-    if (existing) return existing.type === 'module' && existing.data.moduleType === moduleType;
-    const promptNodeId = `${nodeId}-prompt`;
-    const outputNodeId = `${nodeId}-output`;
-    if (project.nodes.some((node) => node.id === promptNodeId || node.id === outputNodeId)) return false;
+    if (existing) {
+      if (existing.type !== 'module' || existing.data.moduleType !== moduleType) return false;
+      const referenceNodeIds = project.edges
+        .filter((edge) => edge.target === nodeId && edge.targetPortId === (moduleType === 'video_generation' ? 'media' : 'references'))
+        .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+        .map((edge) => edge.source);
+      placement = { generationNodeId: nodeId, workflowNodeIds: [...new Set([...referenceNodeIds, nodeId])] };
+      return true;
+    }
     const assets = referenceAssetIds.map((assetId) => project.assets?.find((asset) => asset.assetId === assetId));
     if (new Set(referenceAssetIds).size !== referenceAssetIds.length || assets.some((asset) => !asset || !asset.mediaType.startsWith('image/'))) return false;
-    const baseX = project.nodes.reduce((right, candidate) => Math.max(right, candidate.position.x + 1600), 120);
+    const rightmostX = project.nodes.reduce((right, candidate) => Math.max(right, candidate.position.x), 120);
+    const baseX = rightmostX + 240;
     const baseY = 160;
     const generationNodeCount = project.nodes.filter((candidate) => candidate.type === 'module' && ['image_generation', 'video_generation'].includes(candidate.data.moduleType)).length;
     const largestPersistedSequence = project.nodes.reduce((largest, candidate) => {
@@ -1277,37 +1292,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sequence = lastAssignedSequence + 1;
     const promptSummary = typeof initialConfig?.prompt === 'string' ? initialConfig.prompt.replace(/\s+/gu, ' ').trim().slice(0, 28) : '';
     const agentWorkflowLabel = `方案 ${sequence}${promptSummary ? ` · ${promptSummary}` : ''}`;
-    const promptNode = createCanvasModuleNode(promptNodeId, 'text_prompt', { x: baseX + 380, y: baseY });
-    promptNode.data.config = { ...promptNode.data.config, prompt: typeof initialConfig?.prompt === 'string' ? initialConfig.prompt : '' };
-    promptNode.data.config.agentWorkflowLabel = agentWorkflowLabel;
-    const node = createCanvasModuleNode(nodeId, moduleType, { x: baseX + 800, y: baseY });
+    const node = createCanvasModuleNode(nodeId, moduleType, { x: baseX + (assets.length > 0 ? 380 : 0), y: baseY });
     node.data.config = {
       ...node.data.config,
       ...(initialConfig ?? {}),
       referenceAssetIds: [...referenceAssetIds],
       agentWorkflowLabel,
     };
-    const outputModuleType = moduleType === 'video_generation' ? 'video_result' : 'result_output';
-    const outputNode = createCanvasModuleNode(outputNodeId, outputModuleType, { x: baseX + 1560, y: baseY });
-    outputNode.data.config.agentWorkflowLabel = agentWorkflowLabel;
     const operations: ProjectTransaction['operations'] = [
-      { kind: 'canvas', operation: { kind: 'create_node', node: promptNode } },
       { kind: 'canvas', operation: { kind: 'create_node', node } },
-      { kind: 'canvas', operation: { kind: 'create_node', node: outputNode } },
-      { kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-prompt`, source: promptNodeId, sourcePortId: 'prompt', target: nodeId, targetPortId: 'prompt', order: 0 } } },
-      { kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-output`, source: nodeId, sourcePortId: 'result', target: outputNodeId, targetPortId: moduleType === 'video_generation' ? 'video' : 'result', order: 0 } } },
       { kind: 'set_agent_workflow_sequence', sequence },
     ];
+    const workflowNodeIds: string[] = [];
     assets.forEach((asset, index) => {
-      const input = createCanvasModuleNode(`${nodeId}-ref-${index}`, 'image_input', { x: baseX, y: baseY + index * 380 });
-      if (input.type === 'module') {
+      const existingSource = project.nodes.find((candidate) => candidate.type === 'module'
+        && ['image_input', 'upload_image'].includes(candidate.data.moduleType)
+        && candidate.data.config.assetId === asset!.assetId);
+      const input = existingSource ?? createCanvasModuleNode(`${nodeId}-ref-${index}`, 'image_input', { x: baseX, y: baseY + index * 220 });
+      if (existingSource === undefined && input.type === 'module') {
         input.data.config = { ...input.data.config, assetId: asset!.assetId, label: asset!.label, agentWorkflowLabel };
         operations.push({ kind: 'canvas', operation: { kind: 'create_node', node: input } });
       }
+      workflowNodeIds.push(input.id);
       operations.push({ kind: 'canvas', operation: { kind: 'create_edge', edge: { id: `${nodeId}-edge-${index}`, source: input.id, sourcePortId: 'image', target: nodeId, targetPortId: moduleType === 'video_generation' ? 'media' : 'references', order: index } } });
     });
-    return commitNow({ id: `agent-create-${nodeId}`, label: 'Create confirmed Agent generation node', operations });
-  }),
+    const saved = await commitNow({ id: `agent-create-${nodeId}`, label: 'Create confirmed Agent generation node', operations });
+    if (saved) placement = { generationNodeId: nodeId, workflowNodeIds: [...new Set([...workflowNodeIds, nodeId])] };
+    return saved;
+    });
+    return committed && placement !== null ? placement : false;
+  },
   addModuleNode: (moduleType, position) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const suffix = `${Date.now()}-${planSequence++}`;
     const node = createCanvasModuleNode(`module-${moduleType}-${suffix}`, moduleType, position);
@@ -1502,8 +1516,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const nextProject = applyProjectTransaction(state.project, transaction);
     return commitNow(transaction, { nextProject });
   }),
-  reorderModuleInput: (targetNodeId, targetPortId, edgeIds) => enqueueStableProjectOperation(set, get, async (commitNow) => {
+  reorderModuleInput: async (targetNodeId, targetPortId, edgeIds) => {
     const state = get();
+    if (
+      state.saveStatus === 'read_only'
+      || state.recoveryRequired
+      || state.projectCommitConflictCode !== null
+      || pendingFailedProjectCommit !== null
+    ) return false;
     if (!isNonEmptyString(targetNodeId) || !isNonEmptyString(targetPortId)
       || !edgeIds.every(isNonEmptyString)) return false;
     const targetNode = getModuleNode(state.project.nodes, targetNodeId);
@@ -1543,11 +1563,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     try {
       const nextProject = applyProjectTransaction(state.project, transaction);
-      return commitNow(transaction, { nextProject });
+      set({
+        canReloadDurableProject: false,
+        project: nextProject,
+        projectCommitConflictCode: null,
+        saveErrorCode: null,
+        saveStatus: 'pending',
+      });
+      scheduleProjectSave(get);
+      return true;
     } catch {
       return false;
     }
-  }),
+  },
   selectProjectImageForModule: (nodeId, assetId) => enqueueStableProjectOperation(set, get, async (commitNow) => {
     const state = get();
     const node = getModuleNode(state.project.nodes, nodeId);
@@ -1618,6 +1646,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         imageQuality: nextImageQuality,
         imageOutputFormat: nextImageQuality === undefined ? undefined : normalizeImageOutputFormat(config.imageOutputFormat),
         imageBackground: nextImageQuality === undefined ? undefined : normalizeImageBackground(config.imageBackground),
+        ...(config.colorCorrection === undefined ? {} : { colorCorrection: config.colorCorrection }),
       } : {}),
       outputCount: normalizeImageOutputCount(typeof config.outputCount === 'number' ? config.outputCount : undefined, node.data.moduleType === 'image_generation') ?? 1,
       ...(node.data.moduleType === 'video_generation' ? {
@@ -1909,6 +1938,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       canRetryProjectCommit: false,
       desktopRevision: hydrated.revision,
       persistenceMode: hydrated.mode,
+      persistenceReady: true,
       project: hydrated.project,
       projectLifecycle: hydrated.lifecycle,
       projectCommitConflictCode: null,
@@ -4098,7 +4128,7 @@ function createIdleSyncTransaction(project: CanvasProject): ProjectTransaction {
   };
 }
 
-function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectVideos' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'desktopRevision' | 'canvasDraftResetKey' | 'availableSnapshotIds' | 'canReloadDurableProject' | 'canRetryProjectCommit' | 'projectCommitConflictCode' | 'recoveryRequired' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
+function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | 'projectImages' | 'projectVideos' | 'projectImageError' | 'projectImageImportingNodeId' | 'persistenceMode' | 'persistenceReady' | 'desktopRevision' | 'canvasDraftResetKey' | 'availableSnapshotIds' | 'canReloadDurableProject' | 'canRetryProjectCommit' | 'projectCommitConflictCode' | 'recoveryRequired' | 'knowledgeBases' | 'knowledgeSyncStatuses' | 'saveStatus' | 'saveErrorCode' | 'agentPanelCollapsed' | 'activeTool' | 'agentPlan' | 'undoStack' | 'confirmedModelJobs' | 'modelJobs'> {
   const desktopMode = isDesktopBridgeAvailable();
   return {
     activeTool: 'select',
@@ -4114,6 +4144,7 @@ function createInitialState(): Pick<AppState, 'project' | 'projectLifecycle' | '
     knowledgeSyncStatuses: [],
     modelJobs: [],
     persistenceMode: desktopMode ? 'desktop' : 'browser',
+    persistenceReady: !desktopMode,
     project: createUntitledProject(),
     projectCommitConflictCode: null,
     recoveryRequired: false,
@@ -4769,18 +4800,14 @@ function buildGeneralAgentGenerationWorkflow(
   const assets = referenceAssetIds.map((assetId) => project.assets?.find((asset) => asset.assetId === assetId));
   if (assets.some((asset) => asset === undefined || !asset.mediaType.startsWith('image/'))) return null;
 
-  const promptNodeId = `agent-workflow-prompt-${suffix}`;
   const generationNodeId = `agent-workflow-${generation.kind}-${suffix}`;
-  const outputNodeId = `agent-workflow-output-${suffix}`;
-  const reservedIds = new Set([promptNodeId, generationNodeId, outputNodeId]);
+  const reservedIds = new Set([generationNodeId]);
   if (project.nodes.some((node) => reservedIds.has(node.id))) return null;
   const rightmostX = project.nodes.reduce((maximum, node) => Math.max(maximum, node.position.x), 80);
   const baseX = rightmostX + 180;
   const baseY = Math.max(120, project.nodes.reduce((minimum, node) => Math.min(minimum, node.position.y), 120));
-  const promptNode = createCanvasModuleNode(promptNodeId, 'text_prompt', { x: baseX, y: baseY + referenceAssetIds.length * 110 });
-  promptNode.data.config = { ...promptNode.data.config, prompt };
   const generationModuleType = generation.kind === 'video' ? 'video_generation' : 'image_generation';
-  const generationNode = createCanvasModuleNode(generationNodeId, generationModuleType, { x: baseX + 380, y: baseY });
+  const generationNode = createCanvasModuleNode(generationNodeId, generationModuleType, { x: baseX + (referenceAssetIds.length > 0 ? 380 : 0), y: baseY });
   generationNode.data.config = {
     ...generationNode.data.config,
     ...(generation.parameters ?? {}),
@@ -4789,14 +4816,8 @@ function buildGeneralAgentGenerationWorkflow(
     ...(options.modelRouteDisplayName === undefined ? {} : { modelDisplayName: options.modelRouteDisplayName, routeDisplayName: options.modelRouteDisplayName }),
     referenceAssetIds,
   };
-  const outputModuleType = generation.kind === 'video' ? 'video_result' : 'result_output';
-  const outputNode = createCanvasModuleNode(outputNodeId, outputModuleType, { x: baseX + 780, y: baseY });
   const operations: CanvasOperation[] = [
-    { kind: 'create_node', node: promptNode },
     { kind: 'create_node', node: generationNode },
-    { kind: 'create_node', node: outputNode },
-    { kind: 'create_edge', edge: { id: `agent-workflow-prompt-edge-${suffix}`, source: promptNodeId, sourcePortId: 'prompt', target: generationNodeId, targetPortId: 'prompt', order: 0 } },
-    { kind: 'create_edge', edge: { id: `agent-workflow-output-edge-${suffix}`, source: generationNodeId, sourcePortId: 'result', target: outputNodeId, targetPortId: generation.kind === 'video' ? 'video' : 'result', order: 0 } },
   ];
   assets.forEach((asset, index) => {
     const existingSource = project.nodes.find((node) => node.type === 'module'

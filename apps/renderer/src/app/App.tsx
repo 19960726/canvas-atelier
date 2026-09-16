@@ -2,6 +2,7 @@ import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
 import { normalizeImageOutputFormat, normalizeImageBackground, type CanvasModuleNode } from '@agent-canvas/domain';
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
 import { CanvasWorkspace } from '../canvas/CanvasWorkspace';
+import { preloadGenerationHistoryFirstPage } from '../history/history-first-page-cache';
 import { useAppStore } from './app-store';
 import { getActiveProjectSessionId } from './desktop-persistence';
 import { getMcpCanvasSelection, resetMcpCanvasSelection } from './mcp-canvas-selection';
@@ -37,9 +38,16 @@ export function App() {
   useEffect(() => {
     if (hydrationStarted) return;
     hydrationStarted = true;
-    hydrationReady = hydratePersistence().then(() => undefined).catch(() => undefined);
+    hydrationReady = hydratePersistence()
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => useAppStore.setState({ persistenceReady: true }));
     void initializeKnowledge();
   }, [hydratePersistence, initializeKnowledge]);
+
+  useEffect(() => {
+    void preloadGenerationHistoryFirstPage();
+  }, []);
 
   useEffect(() => {
     const previousProjectId = activeMcpProjectId;

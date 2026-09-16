@@ -74,6 +74,44 @@ describe('Comfly capability regressions', () => {
     expect(storeGeneratedImage).toHaveBeenCalledOnce();
   });
 
+  it('routes Flux Pro image generation through Comfly edits transport', async () => {
+    const appDataRoot = await makeTempRoot();
+    const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string | Uint8Array }) => jsonResponse({
+      created: 1721121600,
+      data: [{ b64_json: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64') }],
+    }));
+    const storeGeneratedImage = vi.fn(async () => ({ assetId: '2'.repeat(16), width: 1, height: 1 }));
+    const service = await configuredService({
+      appDataRoot,
+      fetch,
+      profiles: [profile('flux-pro-1.1-ultra', ['image_generation', 'image_edit'])],
+      storeGeneratedImage,
+    });
+
+    await service.submitImageJob({
+      jobId: 'model-job-v2-comfly-flux-edit-transport',
+      provider: 'comfly',
+      modelRoute: 'flux-pro-1.1-ultra',
+      prompt: 'Generate a clean product image.',
+      conversationId: 'conversation-flux-edit-transport',
+      referenceAssetIds: [],
+      aspectRatio: '16:9',
+      resolution: '2K',
+      outputCount: 1,
+    });
+
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]?.[0]).toBe('https://ai.comfly.org/v1/images/edits');
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: 'flux-pro-1.1-ultra',
+      prompt: 'Generate a clean product image.',
+      aspect_ratio: '16:9',
+      size: '2K',
+      n: 1,
+    });
+    expect(storeGeneratedImage).toHaveBeenCalledOnce();
+  });
+
   it('submits managed reference images with Seedance-native parameter names', async () => {
     const appDataRoot = await makeTempRoot();
     const fetch = vi.fn(async (_url: string, _init?: { readonly body?: string | Uint8Array }) => jsonResponse({ task_id: 'seedance-task-1' }));

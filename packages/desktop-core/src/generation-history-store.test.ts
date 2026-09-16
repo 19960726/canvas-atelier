@@ -42,6 +42,7 @@ interface HistoryStoreLike {
     readonly total: number;
     readonly nextCursor: string | null;
   }>;
+  warm(): Promise<void>;
   permanentlyDelete(input: { readonly historyIds: readonly string[]; readonly operationId: string }): Promise<unknown>;
   purgeExpired(input: { readonly operationId: string }): Promise<{
     readonly protectedIds: readonly string[];
@@ -53,6 +54,7 @@ interface HistoryStoreLike {
     readonly referenceIds: readonly string[];
   }): Promise<unknown>;
   resolveAvailableAssetPath(historyAssetId: string): Promise<string | null>;
+  resolveAvailablePreviewPath(historyAssetId: string): Promise<string | null>;
   restore(input: { readonly historyIds: readonly string[]; readonly operationId: string }): Promise<unknown>;
   setFavorite(input: {
     readonly favorite: boolean;
@@ -102,6 +104,7 @@ describe('generation history media resolution', () => {
 });
 
 type HistoryStoreConstructor = new (options: {
+  readonly createImagePreview?: (sourcePath: string, destinationPath: string) => Promise<void>;
   readonly fileSystem?: FileSystem;
   readonly forbiddenRoots?: readonly string[];
   readonly hashFile?: (path: string) => Promise<string>;
@@ -124,6 +127,74 @@ afterEach(async () => {
 });
 
 describe('durable generation history store', () => {
+  it('deduplicates derived previews without hashing the original on the card path', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    let previewCreates = 0;
+    let hashReads = 0;
+    const store = new Store({
+      ...harness,
+      createImagePreview: async (_sourcePath, destinationPath) => {
+        previewCreates += 1;
+        await writeFile(destinationPath, Buffer.from('derived-preview'));
+      },
+      hashFile: async (path) => {
+        hashReads += 1;
+        return createHash('sha256').update(await readFile(path)).digest('hex');
+      },
+    });
+    const record = historyRecord('history_previewaaaaaaaa', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_previewaaa', record, source: chunks(pngBytes) });
+    hashReads = 0;
+
+    const [first, second] = await Promise.all([
+      store.resolveAvailablePreviewPath(record.output!.historyAssetId),
+      store.resolveAvailablePreviewPath(record.output!.historyAssetId),
+    ]);
+
+    expect(first).toBe(join(harness.historyRoot, 'previews', `${record.output!.historyAssetId}.jpg`));
+    expect(second).toBe(first);
+    expect(previewCreates).toBe(1);
+    expect(hashReads).toBe(0);
+    expect(await readFile(first!)).toEqual(Buffer.from('derived-preview'));
+  });
+
+  it('serves an existing derived preview without reopening the history index', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const store = new Store({
+      ...harness,
+      createImagePreview: async (_sourcePath, destinationPath) => {
+        await writeFile(destinationPath, Buffer.from('derived-preview'));
+      },
+    });
+    const record = historyRecord('history_previewfastaaaa', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_previewfast', record, source: chunks(pngBytes) });
+    const previewPath = await store.resolveAvailablePreviewPath(record.output!.historyAssetId);
+    await rm(join(harness.historyRoot, 'history.index.json'));
+
+    await expect(store.resolveAvailablePreviewPath(record.output!.historyAssetId)).resolves.toBe(previewPath);
+  });
+
+  it('returns no preview for trashed, unknown, or non-image history assets', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const store = new Store({
+      ...harness,
+      createImagePreview: async (_sourcePath, destinationPath) => {
+        await writeFile(destinationPath, Buffer.from('derived-preview'));
+      },
+    });
+    const record = historyRecord('history_previewbbbbbbbb', pngBytes);
+    await store.ingest({ operationId: 'operation_ingest_previewbbb', record, source: chunks(pngBytes) });
+    await expect(store.resolveAvailablePreviewPath('history_asset_unknownxx')).resolves.toBeNull();
+    await store.softDelete({ historyIds: [record.id], operationId: 'operation_trash_previewbbbb' });
+    await expect(store.resolveAvailablePreviewPath(record.output!.historyAssetId)).resolves.toBeNull();
+  });
+
   it('creates an owned immutable original and restarts from an atomic checksummed index', async () => {
     const Store = requireHistoryStore();
     if (Store === null) return;
@@ -146,6 +217,7 @@ describe('durable generation history store', () => {
       '.novus-generation-history-root.json',
       'history.index.json',
       'originals',
+      'previews',
       'recovery',
       'trash',
     ]);
@@ -539,6 +611,24 @@ describe('generation history pagination', () => {
     await listing;
     expect(completed).toBe(true);
     expect(hashCalls).toBe(0);
+  });
+
+  it('serves the default first page from a startup-warmed in-memory index', async () => {
+    const Store = requireHistoryStore();
+    if (Store === null) return;
+    const harness = await createHarness();
+    const record = historyRecord('history_warmed_firstpage', pngBytes);
+    await new Store(harness).ingest({ operationId: 'operation_ingest_warmed_page', record, source: chunks(pngBytes) });
+    const warmed = new Store(harness);
+
+    await warmed.warm();
+    await rm(join(harness.historyRoot, 'history.index.json'));
+
+    await expect(warmed.list({ pageSize: 30 })).resolves.toMatchObject({
+      records: [record],
+      revision: 1,
+      total: 1,
+    });
   });
 });
 

@@ -897,6 +897,9 @@ textarea:focus-visible {
 .history-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 12px; }
 .history-card { position: relative; min-width: 0; overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; }
 .history-card__preview { position: relative; width: 100%; aspect-ratio: 1 / 1; display: block; padding: 0; overflow: hidden; background: var(--surface-muted); border: 0; cursor: pointer; }
+.history-media__skeleton { position: absolute; inset: 0; display: block; background: var(--surface-muted); animation: history-preview-pulse 1.1s ease-in-out infinite alternate; }
+.history-card__preview img.is-loading { opacity: 0; }
+@keyframes history-preview-pulse { from { opacity: 0.55; } to { opacity: 1; } }
 .history-card__preview img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .history-card__preview .history-video-preview { width: 100%; height: 100%; display: block; object-fit: cover; background: #05070b; }
 .history-card__unavailable { width: 100%; height: 100%; display: grid; place-items: center; align-content: center; gap: 7px; color: var(--muted); }

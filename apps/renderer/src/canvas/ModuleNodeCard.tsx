@@ -43,7 +43,15 @@ import { buildReverseResultSections, formatReverseResultDocument } from './rever
 import { MediaMentionTextarea, type MediaMentionPreview, type MediaMentionSelection, type MediaMentionTextareaHandle } from '../mentions/MediaMentionTextarea';
 import { selectSavedProviderModelDefault } from '../settings/provider-model-defaults';
 import { copyProjectImageToClipboard, ProjectImageLightbox } from './ProjectImageLightbox';
-import { createLatestOnlyAsyncQueue, type LatestOnlyAsyncQueue } from './latest-only-async-queue';
+import { ImageColorCorrectionControls } from './ImageColorCorrectionControls';
+import {
+  DEFAULT_IMAGE_COLOR_CORRECTION,
+  imageColorCorrectionFilter,
+  imageColorCorrectionMatrix,
+  normalizeImageColorCorrection,
+  renderImageColorCorrectionBlob,
+  type ImageColorCorrection,
+} from '../app/image-color-correction';
 
 const executionStateLabels: Record<CanvasModuleNodeData['execution']['state'], string> = {
   idle: '空闲',
@@ -122,6 +130,37 @@ function useDismissibleMentionPicker(open: boolean, close: () => void): void {
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [open]);
+}
+
+function useMentionPickerGuard(value: string) {
+  const [open, setOpen] = useState(false);
+  const dismissedValueRef = useRef<string | null>(null);
+  const dismiss = (dismissedValue = value) => {
+    dismissedValueRef.current = dismissedValue;
+    setOpen(false);
+  };
+  const show = () => {
+    dismissedValueRef.current = null;
+    setOpen(true);
+  };
+  const update = (
+    nextValue: string,
+    images: readonly ProjectImageAssetSummary[],
+    selection?: MediaMentionSelection | null,
+  ) => {
+    if (dismissedValueRef.current === nextValue) {
+      setOpen(false);
+      return;
+    }
+    dismissedValueRef.current = null;
+    setOpen(isImageMentionQueryActive(nextValue, images, selection));
+  };
+  const toggle = () => {
+    if (open) dismiss();
+    else show();
+  };
+  useDismissibleMentionPicker(open, dismiss);
+  return { dismiss, open, show, toggle, update };
 }
 
 function formatExecutionState(state: CanvasModuleNodeData['execution']['state']): string {
@@ -401,28 +440,21 @@ export const ModuleNodeCard = memo(function ModuleNodeCard({ id, data, selected 
   const knowledgeBases = useAppStore((state) => state.knowledgeBases);
   const toggleNodeLock = useAppStore((state) => state.toggleNodeLock);
   const reorderModuleInput = useAppStore((state) => state.reorderModuleInput);
-  const reorderQueueRef = useRef<LatestOnlyAsyncQueue<{ targetNodeId: string; targetPortId: string; edgeIds: string[] }> | null>(null);
-  if (reorderQueueRef.current === null) {
-    reorderQueueRef.current = createLatestOnlyAsyncQueue(async ({ targetNodeId, targetPortId, edgeIds }) => {
-      const completeOrder = () => {
-        const displayed = new Set(edgeIds);
-        const remaining = useAppStore.getState().project.edges
-          .filter(edge => edge.target === targetNodeId && edge.targetPortId === targetPortId && !displayed.has(edge.id))
-          .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
-          .map(edge => edge.id);
-        return [...edgeIds, ...remaining];
-      };
-      if (await reorderModuleInput(targetNodeId, targetPortId, completeOrder())) return true;
-      const current = useAppStore.getState();
-      if (!current.canReloadDurableProject || !await current.reloadDurableProject()) return false;
-      return useAppStore.getState().reorderModuleInput(targetNodeId, targetPortId, completeOrder());
-    });
-  }
-  useEffect(() => () => reorderQueueRef.current?.dispose(), []);
-  const reorderModuleInputDurably = (targetNodeId: string, targetPortId: string, edgeIds: string[]) => {
+  const reorderModuleInputDurably = async (targetNodeId: string, targetPortId: string, edgeIds: string[]) => {
     // A tray may show only the first 20 references. Keep the remaining edges
     // in the transaction so a visible reorder is still an exact permutation.
-    return reorderQueueRef.current!.enqueue({ targetNodeId, targetPortId, edgeIds: [...edgeIds] });
+    const completeOrder = () => {
+      const displayed = new Set(edgeIds);
+      const remaining = useAppStore.getState().project.edges
+        .filter(edge => edge.target === targetNodeId && edge.targetPortId === targetPortId && !displayed.has(edge.id))
+        .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+        .map(edge => edge.id);
+      return [...edgeIds, ...remaining];
+    };
+    if (await reorderModuleInput(targetNodeId, targetPortId, completeOrder())) return true;
+    const current = useAppStore.getState();
+    if (!current.canReloadDurableProject || !await current.reloadDurableProject()) return false;
+    return useAppStore.getState().reorderModuleInput(targetNodeId, targetPortId, completeOrder());
   };
   const [libraryQuery, setLibraryQuery] = useState('');
   const hasImageControls = data.moduleType === 'image_input'
@@ -886,13 +918,12 @@ function VideoGenerationSummary({
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
   const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
-  const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
-  useDismissibleMentionPicker(mentionPickerOpen, () => setMentionPickerOpen(false));
+  const mentionPicker = useMentionPickerGuard(prompt);
   useEffect(() => {
-    if (mentionPickerOpen && prompt.includes('@') && !isImageMentionQueryActive(prompt, connectedImages, promptSelectionRef.current)) {
-      setMentionPickerOpen(false);
+    if (mentionPicker.open && prompt.includes('@') && !isImageMentionQueryActive(prompt, connectedImages, promptSelectionRef.current)) {
+      mentionPicker.dismiss(prompt);
     }
-  }, [connectedImages, mentionPickerOpen, prompt]);
+  }, [connectedImages, mentionPicker.open, prompt]);
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>(() => readStringArray(config.referenceAssetIds));
   const referenceAssetIds = connectedMedia.filter((item) => item.kind === 'image').map((item) => item.assetId);
   const sourceVideoAssetId = connectedMedia.find((item) => item.kind === 'video')?.assetId;
@@ -1146,20 +1177,23 @@ function VideoGenerationSummary({
                 const nextPrompt = event.target.value;
                 setPrompt(nextPrompt);
                 setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextPrompt, connectedImages));
-                setMentionPickerOpen(isImageMentionQueryActive(nextPrompt, connectedImages, promptSelectionRef.current));
+                mentionPicker.update(nextPrompt, connectedImages, promptSelectionRef.current);
               }}
-              onBlur={flushVideoDraft}
+              onBlur={() => {
+                mentionPicker.dismiss(prompt);
+                flushVideoDraft();
+              }}
               onKeyDown={(event) => {
-                if (event.key === '@' && connectedImages.length > 0) setMentionPickerOpen(true);
-                if (event.key === 'Escape') setMentionPickerOpen(false);
+                if (event.key === '@' && connectedImages.length > 0) mentionPicker.show();
+                if (event.key === 'Escape') mentionPicker.dismiss(prompt);
               }}
             />
-            {mentionPickerOpen && <PromptImageMentionMenu images={connectedImages} prompt={prompt} selection={promptSelectionRef.current} onSelect={(asset, position) => {
+            {mentionPicker.open && <PromptImageMentionMenu images={connectedImages} prompt={prompt} selection={promptSelectionRef.current} onSelect={(asset, position) => {
               const token = imageMentionTokenAt(position);
               const edit = createImageMentionEdit(prompt, token, connectedImages, promptSelectionRef.current);
+              mentionPicker.dismiss(edit.value);
               promptEditorRef.current?.applyEdit(edit.value, edit.selection);
               setMentionedReferenceAssetIds((current) => mergeAssetIds(current, [asset.assetId]));
-              setMentionPickerOpen(false);
             }} />}
           </section>
 
@@ -1316,13 +1350,12 @@ function ImageGenerationSummary({
   const promptSelectionRef = useRef<MediaMentionSelection | null>(null);
   const promptEditorRef = useRef<MediaMentionTextareaHandle>(null);
   const [runError, setRunError] = useState<string | null>(null);
-  const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
-  useDismissibleMentionPicker(mentionPickerOpen, () => setMentionPickerOpen(false));
+  const mentionPicker = useMentionPickerGuard(prompt);
   useEffect(() => {
-    if (mentionPickerOpen && prompt.includes('@') && !isImageMentionQueryActive(prompt, connectedImages, promptSelectionRef.current)) {
-      setMentionPickerOpen(false);
+    if (mentionPicker.open && prompt.includes('@') && !isImageMentionQueryActive(prompt, connectedImages, promptSelectionRef.current)) {
+      mentionPicker.dismiss(prompt);
     }
-  }, [connectedImages, mentionPickerOpen, prompt]);
+  }, [connectedImages, mentionPicker.open, prompt]);
   const [mentionedReferenceAssetIds, setMentionedReferenceAssetIds] = useState<string[]>([]);
   const connectedReferenceAssetIds = connectedMedia.filter((item) => item.kind === 'image').map((item) => item.assetId);
   const activeMentionedReferenceAssetIds = retainMentionedAssetIds(mentionedReferenceAssetIds, prompt, connectedImages);
@@ -1362,6 +1395,9 @@ function ImageGenerationSummary({
   const [imageOutputFormat, setImageOutputFormat] = useExternallyHydratedDraftState<ImageOutputFormat>(config.imageOutputFormat === 'jpeg' || config.imageOutputFormat === 'webp' ? config.imageOutputFormat : 'png');
   const [imageBackground, setImageBackground] = useExternallyHydratedDraftState<ImageBackground>(config.imageBackground === 'opaque' || config.imageBackground === 'transparent' ? config.imageBackground : 'auto');
   const [outputCount, setOutputCount] = useExternallyHydratedDraftState(config.outputCount === 9 ? 9 : readSupportedImageCount(config.outputCount));
+  const configuredColorCorrection = useMemo(() => normalizeImageColorCorrection(config.colorCorrection), [config.colorCorrection]);
+  const [colorCorrection, setColorCorrection] = useExternallyHydratedDraftState<ImageColorCorrection>(configuredColorCorrection);
+  const [showOriginalForComparison, setShowOriginalForComparison] = useState(false);
   const draftGenerationNodeConfig = useAppStore((state) => state.draftGenerationNodeConfig);
   const selectedImageRoute = compatibleRoutes.find((route) => route.modelRoute === modelRoute);
   const hasGptImageQuality = supportsGptImageQuality(selectedImageRoute)
@@ -1425,7 +1461,8 @@ function ImageGenerationSummary({
     imageOutputFormat: effectiveImageOutputFormat,
     imageBackground: effectiveImageBackground,
     outputCount,
-  }), [aspectRatio, effectiveImageBackground, effectiveImageOutputFormat, effectiveImageQuality, effectiveImageResolution, modelRoute, outputCount, prompt]);
+    colorCorrection,
+  }), [aspectRatio, colorCorrection, effectiveImageBackground, effectiveImageOutputFormat, effectiveImageQuality, effectiveImageResolution, modelRoute, outputCount, prompt]);
   const flushImageDraft = useDebouncedDraft(imageDraft, (draft) => {
     void persistDraftWithBoundaryRetry(() => draftGenerationNodeConfig(id, draft));
   });
@@ -1578,6 +1615,8 @@ function ImageGenerationSummary({
     });
   };
   const imageGenerationError = runError ?? failedJobError;
+  const colorCorrectionFilterId = `image-color-correction-${id.replace(/[^a-z0-9_-]/giu, '-')}`;
+  const previewColorCorrection = showOriginalForComparison ? DEFAULT_IMAGE_COLOR_CORRECTION : colorCorrection;
   return (
     <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 9) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
       <TaskTimingBadge
@@ -1586,6 +1625,11 @@ function ImageGenerationSummary({
         status={localGenerationStartedAt === null ? undefined : 'queued'}
         startedAt={localGenerationStartedAt ?? undefined}
       />
+      <svg aria-hidden="true" width="0" height="0" className="module-node__color-correction-filter">
+        <filter id={colorCorrectionFilterId} colorInterpolationFilters="sRGB">
+          <feColorMatrix type="matrix" values={imageColorCorrectionMatrix(colorCorrection)} />
+        </filter>
+      </svg>
       {!expanded && <section className="module-node__generation-collapsed-shell nopan" aria-label="Image generation preview">
         <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nopan" aria-label="Open image generation editor" aria-expanded={expanded} title="点击展开" {...collapsedActivation} onContextMenu={(event) => {
           if (!hasCompletedImageResult || previewItems[0] === undefined) return;
@@ -1604,7 +1648,7 @@ function ImageGenerationSummary({
           {hasCompletedImageResult && previewItems.length > 0 ? <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${previewItems.length > 4 ? 9 : previewItems.length} module-node__generation-preview-gallery--collapsed`}>
             {previewItems.slice(0, 9).map((asset, index) => (
               <div key={asset.assetId} className="module-node__generation-preview-item" aria-label={`Generated image preview ${index + 1}`}>
-                  <img src={asset.displayUrl} alt={`Generated image preview ${index + 1}`} draggable={false} loading="lazy" decoding="async" />
+                  <img src={asset.displayUrl} alt={`Generated image preview ${index + 1}`} draggable={false} loading="lazy" decoding="async" style={{ filter: imageColorCorrectionFilter(previewColorCorrection, colorCorrectionFilterId) }} />
                 <span aria-hidden="true">{index + 1}</span>
               </div>
             ))}
@@ -1633,6 +1677,7 @@ function ImageGenerationSummary({
         status={statusLabel}
         configuration={<>
           {hasCompletedImageResult && previewItems.length > 0 && <section className="module-node__generation-editor-preview nodrag nopan" aria-label="Image generation preview" onPointerDown={stopCanvasPointer}>
+            <ImageColorCorrectionControls value={colorCorrection} comparingOriginal={showOriginalForComparison} onChange={setColorCorrection} onCompareChange={setShowOriginalForComparison} />
             <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${previewItems.length > 4 ? 9 : previewItems.length}`}>
               {previewItems.slice(0, 9).map((asset, index) => <button
                 key={asset.assetId}
@@ -1660,7 +1705,7 @@ function ImageGenerationSummary({
                   }
                 }}
               >
-                  <img src={asset.displayUrl} alt={`Generated image ${index + 1}`} draggable={false} loading="lazy" decoding="async" />
+                  <img src={asset.displayUrl} alt={`Generated image ${index + 1}`} draggable={false} loading="lazy" decoding="async" style={{ filter: imageColorCorrectionFilter(previewColorCorrection, colorCorrectionFilterId) }} />
                 <span aria-hidden="true">{index + 1}</span>
               </button>)}
             </div>
@@ -1704,15 +1749,18 @@ function ImageGenerationSummary({
                 const nextPrompt = event.target.value;
                 setPrompt(nextPrompt);
                 setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextPrompt, connectedImages));
-                setMentionPickerOpen(isImageMentionQueryActive(nextPrompt, connectedImages, promptSelectionRef.current));
+                mentionPicker.update(nextPrompt, connectedImages, promptSelectionRef.current);
               }}
-              onBlur={flushImageDraft}
+              onBlur={() => {
+                mentionPicker.dismiss(prompt);
+                flushImageDraft();
+              }}
               onKeyDown={(event) => {
-                if (event.key === '@' && connectedImages.length > 0) setMentionPickerOpen(true);
-                if (event.key === 'Escape') setMentionPickerOpen(false);
+                if (event.key === '@' && connectedImages.length > 0) mentionPicker.show();
+                if (event.key === 'Escape') mentionPicker.dismiss(prompt);
               }}
             />
-            {mentionPickerOpen && (
+            {mentionPicker.open && (
               <PromptImageMentionMenu
                 images={connectedImages}
                 prompt={prompt}
@@ -1720,9 +1768,9 @@ function ImageGenerationSummary({
                 onSelect={(asset, position) => {
                   const token = imageMentionTokenAt(position);
                   const edit = createImageMentionEdit(prompt, token, connectedImages, promptSelectionRef.current);
+                  mentionPicker.dismiss(edit.value);
                   promptEditorRef.current?.applyEdit(edit.value, edit.selection);
                   setMentionedReferenceAssetIds((current) => mergeAssetIds(current, [asset.assetId]));
-                  setMentionPickerOpen(false);
                 }}
               />
             )}
@@ -1828,6 +1876,9 @@ function ImageGenerationSummary({
       {activePreviewAsset !== undefined && (
         <ProjectImageLightbox
           asset={activePreviewAsset}
+          colorCorrection={colorCorrection}
+          colorCorrectionFilterId={colorCorrectionFilterId}
+          onColorCorrectionChange={setColorCorrection}
           index={previewIndex ?? 0}
           total={previewItems.length}
           onClose={() => setPreviewIndex(null)}
@@ -1838,6 +1889,7 @@ function ImageGenerationSummary({
       {previewActionMenu !== null && actionPreviewAsset !== undefined && (
         <GeneratedImageActionMenu
           asset={actionPreviewAsset}
+          colorCorrection={colorCorrection}
           left={previewActionMenu.x}
           top={previewActionMenu.y}
           onSendToAgent={sendPreviewToAgent}
@@ -1850,12 +1902,14 @@ function ImageGenerationSummary({
 
 function GeneratedImageActionMenu({
   asset,
+  colorCorrection,
   left,
   top,
   onSendToAgent,
   onClose,
 }: {
   asset: ProjectImageAssetSummary;
+  colorCorrection: ImageColorCorrection;
   left: number;
   top: number;
   onSendToAgent: (asset: ProjectImageAssetSummary) => void;
@@ -1866,7 +1920,7 @@ function GeneratedImageActionMenu({
   const [copyError, setCopyError] = useState(false);
   const photoshopAvailability = getPhotoshopImportAvailability(asset, getActiveProjectSessionId());
   const copyImage = async () => {
-    const copied = await copyProjectImageToClipboard(asset);
+    const copied = await copyProjectImageToClipboard(asset, colorCorrection);
     if (copied) {
       onClose();
       return;
@@ -1874,12 +1928,27 @@ function GeneratedImageActionMenu({
     setCopyError(true);
     window.dispatchEvent(new CustomEvent('novus:clipboard-image-error'));
   };
-  const downloadImage = () => {
-    const link = document.createElement('a');
-    link.href = asset.displayUrl;
-    link.download = `${asset.label || 'generated-image'}.${asset.extension}`;
-    link.click();
-    onClose();
+  const downloadImage = async () => {
+    if (colorCorrection.mode === 'original') {
+      const link = document.createElement('a');
+      link.href = asset.displayUrl;
+      link.download = `${asset.label || 'generated-image'}.${asset.extension}`;
+      link.click();
+      onClose();
+      return;
+    }
+    try {
+      const blob = await renderImageColorCorrectionBlob(asset.displayUrl, colorCorrection);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${asset.label || 'generated-image'}-corrected.png`;
+      link.click();
+      URL.revokeObjectURL(url);
+      onClose();
+    } catch {
+      setCopyError(true);
+    }
   };
   const importToPhotoshop = async () => {
     if (photoshopBusy || !photoshopAvailability.available) return;
@@ -1911,7 +1980,7 @@ function GeneratedImageActionMenu({
         {photoshopBusy ? '正在导入…' : '导入 Photoshop（智能对象）'}
       </button>
       <button type="button" role="menuitem" onClick={() => { void copyImage(); }}><Copy aria-hidden="true" size={17} />复制图片</button>
-      <button type="button" role="menuitem" onClick={downloadImage}><Download aria-hidden="true" size={17} />下载图片</button>
+      <button type="button" role="menuitem" onClick={() => { void downloadImage(); }}><Download aria-hidden="true" size={17} />下载图片</button>
       {photoshopResult !== null && (
         <p className={`generated-image-action-menu__notice is-${photoshopResult.kind}`} role={photoshopResult.kind === 'success' ? 'status' : 'alert'}>
           {photoshopResult.message}
@@ -1951,7 +2020,10 @@ function PromptImageMentionMenu({
   if (candidates.length === 0) return null;
 
   return <div className="module-node__image-mention-picker nowheel" role="menu" aria-label="Select reference image" onWheel={(event) => event.stopPropagation()}>
-    {candidates.map(({ asset, position }) => <button key={asset.assetId} type="button" role="menuitem" aria-label={asset.label} onPointerDown={stopCanvasPointer} onClick={() => onSelect(asset, position)}>
+    {candidates.map(({ asset, position }) => <button key={asset.assetId} type="button" role="menuitem" aria-label={asset.label} onPointerDown={(event) => {
+      event.preventDefault();
+      stopCanvasPointer(event);
+    }} onClick={() => onSelect(asset, position)}>
         {isRenderableManagedImageUrl(asset.displayUrl, asset.assetId) && <img src={asset.displayUrl} alt={asset.label} loading="lazy" decoding="async" />}
       <span>{asset.label}</span><small>{imageMentionTokenAt(position)}</small>
     </button>)}
@@ -2452,13 +2524,12 @@ function ReverseAgentSummary({
   }, DRAFT_PERSIST_DEBOUNCE_MS, reverseDraftEnabled);
   const [isApplying, setIsApplying] = useState(false);
   const [isRunningLocally, setIsRunningLocally] = useState(false);
-  const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
-  useDismissibleMentionPicker(mentionPickerOpen, () => setMentionPickerOpen(false));
+  const mentionPicker = useMentionPickerGuard(task);
   useEffect(() => {
-    if (mentionPickerOpen && task.includes('@') && !isImageMentionQueryActive(task, connectedImages, taskSelectionRef.current)) {
-      setMentionPickerOpen(false);
+    if (mentionPicker.open && task.includes('@') && !isImageMentionQueryActive(task, connectedImages, taskSelectionRef.current)) {
+      mentionPicker.dismiss(task);
     }
-  }, [connectedImages, mentionPickerOpen, task]);
+  }, [connectedImages, mentionPicker.open, task]);
   const [knowledgePickerOpen, setKnowledgePickerOpen] = useState(false);
   const [knowledgeQuery, setKnowledgeQuery] = useState('');
   const [knowledgeCategory, setKnowledgeCategory] = useState<'common' | 'favorite' | 'mine'>('common');
@@ -2561,7 +2632,7 @@ function ReverseAgentSummary({
                 const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
                 if (edgeIds.length === next.length) void onReorderMedia(edgeIds);
               }}
-              onAdd={() => setMentionPickerOpen((open) => !open)}
+              onAdd={mentionPicker.toggle}
               addAriaLabel="添加反推素材"
             />
           </section> : <section className="module-node__agent-media-empty-hint nodrag nopan" aria-label="Reverse media workspace" data-agent-region="media-empty" onPointerDown={stopCanvasPointer}>
@@ -2590,23 +2661,26 @@ function ReverseAgentSummary({
               const nextRole = event.target.value;
               setRoleDraft(nextRole);
             }} /></label>
-            <label><span>反推任务</span><MediaMentionTextarea ref={taskEditorRef} data-mention-context="reverse" aria-label="Analysis task" value={task} mentions={mentionPreviews} onCanonicalSelectionChange={(selection) => { taskSelectionRef.current = selection; }} rows={5} placeholder="提取构图、材质、镜头与提示词" onBlur={flushReverseDraft} onChange={(event) => {
+            <label><span>反推任务</span><MediaMentionTextarea ref={taskEditorRef} data-mention-context="reverse" aria-label="Analysis task" value={task} mentions={mentionPreviews} onCanonicalSelectionChange={(selection) => { taskSelectionRef.current = selection; }} rows={5} placeholder="提取构图、材质、镜头与提示词" onBlur={() => {
+              mentionPicker.dismiss(task);
+              flushReverseDraft();
+            }} onChange={(event) => {
               const nextTask = event.target.value;
               setTaskDraft(nextTask);
               setMentionedReferenceAssetIds((current) => retainMentionedAssetIds(current, nextTask, connectedImages));
-              setMentionPickerOpen(isImageMentionQueryActive(nextTask, connectedImages, taskSelectionRef.current));
+              mentionPicker.update(nextTask, connectedImages, taskSelectionRef.current);
             }} onKeyDown={(event) => {
-              if (event.key === '@' && connectedImages.length > 0) setMentionPickerOpen(true);
-              if (event.key === 'Escape') setMentionPickerOpen(false);
+              if (event.key === '@' && connectedImages.length > 0) mentionPicker.show();
+              if (event.key === 'Escape') mentionPicker.dismiss(task);
             }} /></label>
-             {mentionPickerOpen && (
+             {mentionPicker.open && (
                <PromptImageMentionMenu images={connectedImages} prompt={task} selection={taskSelectionRef.current} onSelect={(asset, position) => {
                   const token = imageMentionTokenAt(position);
                  const edit = createImageMentionEdit(task, token, connectedImages, taskSelectionRef.current);
                  const nextReferenceAssetIds = mergeAssetIds(mentionedReferenceAssetIds, [asset.assetId]);
+                 mentionPicker.dismiss(edit.value);
                  taskEditorRef.current?.applyEdit(edit.value, edit.selection);
                  setMentionedReferenceAssetIds(nextReferenceAssetIds);
-                 setMentionPickerOpen(false);
                }} />
              )}
            </section>

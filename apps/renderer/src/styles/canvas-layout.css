@@ -9514,6 +9514,237 @@
   transform: none !important;
 }
 
+/* Final four-result gallery and color-correction placement. Keep this after
+   the historical generation geometry so all four results remain visible. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-editor-preview {
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  align-items: stretch !important;
+  justify-items: center !important;
+  gap: 8px !important;
+  overflow: visible !important;
+}
+
+.workspace--canvas-layout .module-node__generation-preview-gallery--4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+  width: auto !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  aspect-ratio: 1 / 1;
+  gap: 3px !important;
+  justify-self: center !important;
+}
+
+.workspace--canvas-layout .module-node__generation-preview-gallery--4 .module-node__generation-preview-item {
+  border-radius: 5px !important;
+}
+
+.workspace--canvas-layout .module-node__generation-preview-gallery--4 .module-node__generation-preview-item > img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+}
+
+.workspace--canvas-layout .module-node__generation-editor-preview > .module-node__color-correction {
+  z-index: 4;
+  align-self: start;
+  justify-self: center;
+  width: max-content;
+  max-width: 100%;
+  margin: 0;
+}
+
+.workspace--canvas-layout .module-node__generation-editor-preview > .module-node__color-correction .module-node__color-correction-panel {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 50%;
+  box-sizing: border-box;
+  width: min(520px, calc(100vw - 48px));
+  transform: translateX(-50%);
+}
+
+.module-node__color-correction-compare[aria-pressed='true'] {
+  color: var(--gate-accent, var(--accent));
+  border-color: var(--gate-accent, var(--accent));
+  background: var(--gate-accent-soft, var(--accent-soft));
+}
+
+.generated-image-lightbox__dialog.has-color-correction {
+  grid-template-rows: auto auto minmax(280px, 1fr) auto;
+}
+
+.generated-image-lightbox__correction-toolbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 24px 10px;
+}
+
+.generated-image-lightbox .module-node__color-correction {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.generated-image-lightbox .module-node__color-correction-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.generated-image-lightbox .module-node__color-correction-bar > button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--gate-text, var(--text));
+  background: var(--gate-card-muted, var(--surface-muted));
+  border: 1px solid var(--gate-border, var(--border));
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.generated-image-lightbox .module-node__color-correction-trigger small {
+  color: var(--gate-muted, var(--text-secondary));
+  font-size: 11px;
+}
+
+.generated-image-lightbox .module-node__color-correction-bar > button:hover:not(:disabled),
+.generated-image-lightbox .module-node__color-correction-trigger[aria-expanded='true'] {
+  color: var(--gate-accent, var(--accent));
+  border-color: var(--gate-accent, var(--accent));
+}
+
+.generated-image-lightbox .module-node__color-correction-bar > button:disabled {
+  cursor: default;
+  opacity: .5;
+}
+
+.generated-image-lightbox .module-node__color-correction-panel {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 6px);
+  right: 0;
+  box-sizing: border-box;
+  display: grid;
+  gap: 9px;
+  width: min(520px, calc(100vw - 64px));
+  padding: 12px;
+  color: var(--gate-text, var(--text));
+  background: var(--gate-card, var(--surface));
+  border: 1px solid var(--gate-border-strong, var(--border-strong));
+  border-radius: 9px;
+  box-shadow: var(--shadow-panel);
+}
+
+.generated-image-lightbox .module-node__color-correction-panel > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.generated-image-lightbox .module-node__color-correction-panel > header span {
+  color: var(--gate-muted, var(--text-secondary));
+  font-size: 10px;
+}
+
+.generated-image-lightbox .module-node__color-correction-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.generated-image-lightbox .module-node__color-correction-presets button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 9px;
+  color: var(--gate-muted, var(--text-secondary));
+  background: transparent;
+  border: 1px solid var(--gate-border, var(--border));
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.generated-image-lightbox .module-node__color-correction-presets button.is-selected {
+  color: var(--gate-accent, var(--accent));
+  border-color: var(--gate-accent, var(--accent));
+  background: var(--gate-accent-soft, var(--accent-soft));
+}
+
+.generated-image-lightbox .module-node__color-correction-sliders {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.generated-image-lightbox .module-node__color-correction-sliders label {
+  display: grid;
+  gap: 3px;
+  color: var(--gate-muted, var(--text-secondary));
+  font-size: 11px;
+}
+
+.generated-image-lightbox .module-node__color-correction-sliders label > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.generated-image-lightbox .module-node__color-correction-sliders input[type='range'] {
+  width: 100%;
+  accent-color: var(--gate-accent, var(--accent));
+}
+
+@media (max-width: 640px) {
+  .generated-image-lightbox__correction-toolbar { padding-right: 16px; padding-left: 16px; }
+  .generated-image-lightbox .module-node__color-correction-sliders { grid-template-columns: 1fr; }
+  .generated-image-lightbox .module-node__color-correction-panel { width: min(420px, calc(100vw - 40px)); }
+}
+
+/* Generated images keep a compact, non-obscuring correction toolbar above the gallery. */
+.workspace--canvas-layout .module-node__color-correction-filter { position: absolute; width: 0; height: 0; pointer-events: none; }
+.workspace--canvas-layout .module-node__color-correction { position: relative; display: grid; gap: 6px; margin: 0 0 8px; }
+.workspace--canvas-layout .module-node__color-correction-bar { display: flex; align-items: center; gap: 6px; min-height: 28px; }
+.workspace--canvas-layout .module-node__color-correction-trigger,
+.workspace--canvas-layout .module-node__color-correction-compare,
+.workspace--canvas-layout .module-node__color-correction-reset { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 8px; color: var(--gate-text); background: var(--gate-card-muted); border: 1px solid var(--gate-border); border-radius: 7px; cursor: pointer; font: inherit; font-size: 11px; }
+.workspace--canvas-layout .module-node__color-correction-trigger:hover,
+.workspace--canvas-layout .module-node__color-correction-trigger[aria-expanded='true'],
+.workspace--canvas-layout .module-node__color-correction-compare:hover:not(:disabled),
+.workspace--canvas-layout .module-node__color-correction-reset:hover { color: var(--gate-accent); border-color: var(--gate-accent); background: var(--gate-card); }
+.workspace--canvas-layout .module-node__color-correction-compare:disabled { cursor: default; opacity: .5; }
+.workspace--canvas-layout .module-node__color-correction-trigger small { color: var(--gate-muted); font-size: 10px; }
+.workspace--canvas-layout .module-node__color-correction-panel { display: grid; gap: 9px; padding: 10px; color: var(--gate-text); background: var(--gate-card); border: 1px solid var(--gate-border-strong); border-radius: 9px; box-shadow: var(--shadow-panel); }
+.workspace--canvas-layout .module-node__color-correction-panel > header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.workspace--canvas-layout .module-node__color-correction-panel > header strong { font-size: 12px; }
+.workspace--canvas-layout .module-node__color-correction-panel > header span { color: var(--gate-muted); font-size: 10px; }
+.workspace--canvas-layout .module-node__color-correction-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.workspace--canvas-layout .module-node__color-correction-presets button { display: inline-flex; align-items: center; gap: 4px; min-height: 27px; padding: 0 8px; color: var(--gate-muted); background: transparent; border: 1px solid var(--gate-border); border-radius: 6px; cursor: pointer; font: inherit; font-size: 10px; }
+.workspace--canvas-layout .module-node__color-correction-presets button:hover,
+.workspace--canvas-layout .module-node__color-correction-presets button.is-selected { color: var(--gate-text); border-color: var(--gate-accent); background: var(--gate-accent-soft); }
+.workspace--canvas-layout .module-node__color-correction-sliders { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+.workspace--canvas-layout .module-node__color-correction-sliders label { display: grid; gap: 3px; min-width: 0; color: var(--gate-muted); font-size: 10px; }
+.workspace--canvas-layout .module-node__color-correction-sliders label > span { display: flex; justify-content: space-between; gap: 8px; }
+.workspace--canvas-layout .module-node__color-correction-sliders output { color: var(--gate-text); font-variant-numeric: tabular-nums; }
+.workspace--canvas-layout .module-node__color-correction-sliders input[type='range'] { width: 100%; accent-color: var(--gate-accent); }
+@media (max-width: 560px) {
+  .workspace--canvas-layout .module-node__color-correction-panel > header { display: grid; gap: 2px; }
+  .workspace--canvas-layout .module-node__color-correction-sliders { grid-template-columns: 1fr; }
+}
+
 /* Capability-aware image output controls and returned-size feedback. */
 .workspace--canvas-layout .module-node__provider-default-resolution {
   box-sizing: border-box;

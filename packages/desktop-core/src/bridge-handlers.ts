@@ -1025,7 +1025,7 @@ export function createDesktopBridgeHandlers(
     try {
       const sourcePath = await dialogs.chooseProjectImage();
       if (sourcePath === null) return null;
-      return enqueueSessionMaintenance(session, async () => {
+      const acknowledged = await enqueueSessionAcknowledgedMaintenance(session, async () => {
         const currentSession = requireWritableSession(sessions, validated.sessionId);
         if (currentSession !== session || currentSession.writer !== openedWriter || currentSession.session.root !== openedRoot) {
           throw createPersistenceError('INVALID_SESSION', false, 'Desktop session changed before image import');
@@ -1068,7 +1068,6 @@ export function createDesktopBridgeHandlers(
           throw invalidRequest('Image import did not reach its durable commit boundary');
         }
         currentSession.assets.set(committed.asset.assetId, committed.asset);
-        await flushScheduledSnapshotAfterCommit(currentSession, committed.ack, 'canvas');
         const summary = createProjectImageSummary(
           committed.asset,
           currentSession.sessionId,
@@ -1080,8 +1079,11 @@ export function createDesktopBridgeHandlers(
           project: committed.project,
         };
         assertPublicBridgePayload(result);
-        return result;
+        return { ack: committed.ack, result };
+      }, async ({ ack }) => {
+        await flushScheduledSnapshotAfterCommit(session, ack, 'canvas');
       });
+      return acknowledged.result;
     } finally {
       session.imageImportInFlight = false;
     }
@@ -1685,7 +1687,9 @@ export function createDesktopBridgeHandlers(
   async function resolveGenerationHistoryImagePath(displayUrl: string): Promise<string | null> {
     const identity = parseGenerationHistoryAssetUrl(displayUrl);
     if (identity === null) return null;
-    return historyStore.resolveAvailableAssetPath(identity.historyAssetId);
+    return identity.variant === 'preview'
+      ? historyStore.resolveAvailablePreviewPath(identity.historyAssetId)
+      : historyStore.resolveAvailableAssetPath(identity.historyAssetId);
   }
 
   async function listGenerationHistory(

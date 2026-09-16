@@ -225,11 +225,13 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.send(BRIDGE_CHANNELS.updates.stateChanged, { ...state, currentVersion: app.getVersion() });
   });
   const generationHistoryStore = new GenerationHistoryStore({
+    createImagePreview: createGenerationHistoryPreview,
     historyRoot: join(appDataRoot, 'generation-history'),
     ownedRoot: appDataRoot,
     fileSystem,
     isNetworkPath: isHistoryNetworkPath,
   });
+  const generationHistoryWarmup = generationHistoryStore.warm().catch(() => undefined);
   const snapshotScheduler = new SnapshotScheduler({
     fileSystem,
     worker: createBundledSnapshotWorkerRunner(snapshotWorkerEntryPath),
@@ -483,6 +485,7 @@ app.whenReady().then(async () => {
     outbox: approvedSnapshotOutbox,
   });
   await approvedSnapshotDrainHandle.drainNow();
+  await generationHistoryWarmup;
   await createMainWindow();
   await startMcpRuntime();
 
@@ -967,6 +970,23 @@ function registerProjectImageProtocol(handlers: DesktopBridgeHandlers): void {
   protocol.handle('novus-asset', (request) => resolveProtocolFile(request, handlers.resolveProjectImagePath));
   protocol.handle('novus-history', (request) => resolveProtocolFile(request, handlers.resolveGenerationHistoryImagePath));
   protocol.handle('novus-recent-project', (request) => resolveProtocolFile(request, handlers.resolveRecentProjectPreviewPath));
+}
+
+async function createGenerationHistoryPreview(sourcePath: string, destinationPath: string): Promise<void> {
+  const source = nativeImage.createFromPath(sourcePath);
+  if (source.isEmpty()) throw new Error('Generation history preview source cannot be decoded');
+  const size = source.getSize();
+  const longestEdge = Math.max(size.width, size.height);
+  if (longestEdge <= 0) throw new Error('Generation history preview source has invalid dimensions');
+  const scale = Math.min(1, 512 / longestEdge);
+  const preview = scale < 1
+    ? source.resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale)),
+        quality: 'good',
+      })
+    : source;
+  await writeFile(destinationPath, preview.toJPEG(78));
 }
 
 async function resolveProtocolFile(

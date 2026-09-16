@@ -2,11 +2,17 @@ export const GENERATION_HISTORY_ASSET_SCHEME = 'novus-history';
 
 export interface GenerationHistoryAssetUrlIdentity {
   readonly historyAssetId: string;
+  readonly variant?: 'preview';
 }
 
 export function createGenerationHistoryAssetUrl(historyAssetId: string): string {
   if (!isOpaqueHistoryAssetId(historyAssetId)) throw new Error('Generation history asset URL identity is invalid');
   return `${GENERATION_HISTORY_ASSET_SCHEME}://asset/${historyAssetId}`;
+}
+
+export function createGenerationHistoryPreviewUrl(historyAssetId: string): string {
+  if (!isOpaqueHistoryAssetId(historyAssetId)) throw new Error('Generation history preview URL identity is invalid');
+  return `${GENERATION_HISTORY_ASSET_SCHEME}://preview/${historyAssetId}`;
 }
 
 export function parseGenerationHistoryAssetUrl(value: string): GenerationHistoryAssetUrlIdentity | null {
@@ -18,7 +24,7 @@ export function parseGenerationHistoryAssetUrl(value: string): GenerationHistory
   }
   if (
     parsed.protocol !== `${GENERATION_HISTORY_ASSET_SCHEME}:`
-    || parsed.hostname !== 'asset'
+    || (parsed.hostname !== 'asset' && parsed.hostname !== 'preview')
     || parsed.port !== ''
     || parsed.username !== ''
     || parsed.password !== ''
@@ -27,7 +33,9 @@ export function parseGenerationHistoryAssetUrl(value: string): GenerationHistory
   ) return null;
   const parts = parsed.pathname.split('/').filter(Boolean);
   if (parts.length !== 1 || !isOpaqueHistoryAssetId(parts[0]!)) return null;
-  return { historyAssetId: parts[0]! };
+  return parsed.hostname === 'preview'
+    ? { historyAssetId: parts[0]!, variant: 'preview' }
+    : { historyAssetId: parts[0]! };
 }
 
 function isOpaqueHistoryAssetId(value: string): boolean {
