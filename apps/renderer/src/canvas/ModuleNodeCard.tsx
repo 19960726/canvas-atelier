@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type C
 import { createPortal } from 'react-dom';
 import { reverseFailureMessage } from '../app/reverse-failure';
 import { Handle, Position, useStore } from '@xyflow/react';
-import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, LockKeyhole, LockOpen, Play, Send, Video, Volume2, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, ImageUp, Images, LoaderCircle, LockKeyhole, LockOpen, Play, Send, Video, Volume2, X } from 'lucide-react';
 import {
   getCanvasModuleDefinition,
   MAX_GENERATION_REFERENCES,
@@ -1235,6 +1235,7 @@ function VideoGenerationSummary({
           projectVideos={projectVideos}
           title="素材输入"
           showPending
+          emptySlotAriaLabel="Video preview reference slot pending"
           onReorder={(next) => {
             const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
             if (edgeIds.length === next.length) void onReorderMedia(edgeIds);
@@ -1260,6 +1261,7 @@ function VideoGenerationSummary({
             projectVideos={projectVideos}
             title="素材输入"
             showPending
+            emptySlotAriaLabel="Video preview reference slot pending"
             pendingKind={sourceVideoAssetId === undefined ? 'image' : 'video'}
             onReorder={(next) => {
               const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
@@ -1725,7 +1727,7 @@ function ImageGenerationSummary({
   const imageGenerationError = runError ?? failedJobError;
   const colorCorrectionFilterId = `image-color-correction-${id.replace(/[^a-z0-9_-]/giu, '-')}`;
   return (
-    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 9) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
+    <section className={`module-node__summary module-node__summary--compact module-node__summary--generation ${hasConnectedReference ? 'is-reference-connected' : 'is-reference-empty'}${activeJobId !== undefined ? ' is-generating' : ''}`} data-editor-expanded={expanded ? 'true' : 'false'} data-has-result={hasCompletedImageResult && previewItems.length > 0 ? 'true' : 'false'} data-result-count={previewItems.length > 0 ? Math.min(previewItems.length, 9) : undefined} data-result-orientation={previewItems.length > 0 ? completedImageOrientation : undefined} aria-label="生成摘要 / Generation summary">
       <TaskTimingBadge
         ariaLabel="Image generation task timing"
         job={imageTimingJob}
@@ -1763,18 +1765,6 @@ function ImageGenerationSummary({
           <span>{missingResultRecord ? '返图记录缺失，请重新加载；不会重复提交生成任务。' : '返图加载失败，请重新加载；不会重复提交生成任务。'}</span>
           <button type="button" aria-label="重新加载返图" onClick={(event) => { event.stopPropagation(); retryResultRefresh(); }}>重新加载返图</button>
         </div>}
-        {!expanded && !(hasCompletedImageResult && previewItems.length > 0) && hasConnectedReference && <ConnectedMediaSlots
-          ariaLabel="Image generation reference slots"
-          media={connectedMedia}
-          projectImages={projectImages}
-          projectVideos={projectVideos}
-          title="素材输入"
-          showPending
-          onReorder={(next) => {
-            const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
-            if (edgeIds.length === next.length) void onReorderMedia(edgeIds);
-          }}
-        />}
       </section>}
       {expanded && <button type="button" className="module-node__collapse-editor nodrag nopan" aria-label="折叠图片生成节点" onPointerDown={stopCanvasPointer} onClick={() => onRequestCollapse()}>收起</button>}
       {expanded && <ExecutableNodeWorkbench
@@ -1820,29 +1810,28 @@ function ImageGenerationSummary({
             ) : null}
           </section>}
           {!(hasCompletedImageResult && previewItems.length > 0) && <section className="module-node__generation-editor-preview module-node__generation-editor-preview--empty nodrag nopan" aria-label="Image generation preview" onPointerDown={stopCanvasPointer}>
-            <div className="module-node__generation-empty-stage">
-              <span aria-hidden="true"><ImageIcon size={30} strokeWidth={1.7} /></span>
-              <strong>图片生成V2</strong>
+            <div className="module-node__generation-empty-stage" data-generation-state={activeJobId !== undefined ? 'running' : 'idle'}>
+              <span aria-hidden="true">{activeJobId !== undefined ? <LoaderCircle size={28} strokeWidth={1.8} /> : <ImageIcon size={28} strokeWidth={1.6} />}</span>
+              <strong>{activeJobId !== undefined ? '正在生成' : '图片生成 V2'}</strong>
             </div>
           </section>}
           {resultRecoveryFailed && <div className="module-node__generation-error nodrag nopan" role="alert" onPointerDown={stopCanvasPointer}>
             <span>{missingResultRecord ? '返图记录缺失，请重新加载；不会重复提交生成任务。' : '返图加载失败，请重新加载；不会重复提交生成任务。'}</span>
             <button type="button" aria-label="重新加载返图" onClick={retryResultRefresh}>重新加载返图</button>
           </div>}
-          {hasConnectedReference && (
-            <ConnectedMediaSlots
-              ariaLabel="Image generation reference slots"
-              media={connectedMedia}
-              projectImages={projectImages}
-              projectVideos={projectVideos}
-              title="素材输入"
-              showPending
-              onReorder={(next) => {
-                const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
-                if (edgeIds.length === next.length) void onReorderMedia(edgeIds);
-              }}
-            />
-          )}
+          <ConnectedMediaSlots
+            ariaLabel="Image generation reference slots"
+            media={connectedMedia}
+            projectImages={projectImages}
+            projectVideos={projectVideos}
+            title="素材输入"
+            showPending
+            emptySlotAriaLabel="Image generation reference slot pending"
+            onReorder={(next) => {
+              const edgeIds = next.flatMap((item) => item.edgeId ? [item.edgeId] : []);
+              if (edgeIds.length === next.length) void onReorderMedia(edgeIds);
+            }}
+          />
           <section className="module-node__prompt-workspace nodrag nopan" aria-label="Image generation prompt workspace" onPointerDown={stopCanvasPointer}>
             <span>提示词</span>
             <MediaMentionTextarea
@@ -1937,9 +1926,7 @@ function ImageGenerationSummary({
               label="画质"
               ariaLabel="Image generation quality"
               value={imageQualityLabel(imageQuality)}
-              options={[...IMAGE_QUALITY_OPTIONS.map(imageQualityLabel), '超高', '最高']}
-              disabledOptions={['超高', '最高']}
-              disabledReason="当前供应商只支持自动、低、中、高画质"
+              options={IMAGE_QUALITY_OPTIONS.map(imageQualityLabel)}
               onChange={(value) => setImageQuality(imageQualityFromLabel(value) ?? 'medium')}
             />}
             {hasGptImageQuality && <ClarityPopover className="module-node__image-format" label="格式" ariaLabel="Image generation format" value={imageOutputFormat.toUpperCase()} options={['PNG', 'JPEG', 'WEBP']} onChange={(value) => setImageOutputFormat(value.toLowerCase() as ImageOutputFormat)} />}
@@ -3027,6 +3014,7 @@ function ConnectedMediaSlots({
   title,
   showPending = false,
   pendingKind = 'image',
+  emptySlotAriaLabel = 'Media reference slot pending',
   slotRowAriaLabel,
   onAddReference,
   onReorder,
@@ -3038,6 +3026,7 @@ function ConnectedMediaSlots({
   title: string;
   showPending?: boolean;
   pendingKind?: 'image' | 'video';
+  emptySlotAriaLabel?: string;
   slotRowAriaLabel?: string;
   onAddReference?: () => void;
   onReorder?: (media: ConnectedAgentMediaSlotItem[]) => void;
@@ -3063,7 +3052,7 @@ function ConnectedMediaSlots({
     title={title}
     slotRowAriaLabel={slotRowAriaLabel}
     emptySlotKind={items.length === 0 && showPending ? pendingKind : undefined}
-    emptySlotAriaLabel="Video preview reference slot pending"
+    emptySlotAriaLabel={emptySlotAriaLabel}
     // The connected-material tray is a status/ordering surface.  A single
     // add affordance belongs to the node input itself; rendering another
     // decorative plus at the far right makes empty trays look like they have

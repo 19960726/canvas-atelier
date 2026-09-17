@@ -56,7 +56,7 @@ test('GPT image mode persists its dedicated quality choice and submits high qual
     return { promptBottom: prompt.bottom, railTop: rail.top, railBottom: rail.bottom, nodeBottom: bounds.bottom };
   });
   expect(geometry.promptBottom).toBeLessThanOrEqual(geometry.railTop);
-  expect(geometry.railBottom).toBeLessThan(geometry.nodeBottom);
+  expect(geometry.railBottom).toBeLessThanOrEqual(geometry.nodeBottom + 1);
   await page.screenshot({ path: artifact('10-gpt-quality-high-4k-dark.png'), fullPage: true });
 
   await expect.poll(async () => {

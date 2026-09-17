@@ -165,9 +165,10 @@ test('整理画布按连线层级排列全部节点并保存为一次可撤销�
     await e2e.connectModules('reverse_agent', 'analysis', 'reverse_result', 'analysis');
   });
 
-  const arrangeCanvasButton = page.getByTestId('canvas-arrange-button');
+  await expect(page.getByTestId('canvas-arrange-button')).toHaveCount(0);
+  const arrangeCanvasButton = page.getByTestId('tool-arrange');
   await expect(arrangeCanvasButton).toBeVisible();
-  await expect(arrangeCanvasButton).toContainText('整理画布');
+  await expect(arrangeCanvasButton).toHaveAccessibleName('整理画布');
   const before = await e2eState(page);
   const beforeCommitCount = before.commitCount;
   await arrangeCanvasButton.click();

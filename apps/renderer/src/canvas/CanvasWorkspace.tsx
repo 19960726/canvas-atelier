@@ -2176,16 +2176,6 @@ export function CanvasWorkspace() {
           }
         }}
       >
-        <button
-          type="button"
-          className="canvas-arrange-button nodrag nopan"
-          data-testid="canvas-arrange-button"
-          title="自动整理并显示全部节点"
-          onClick={() => { void handleArrangeCanvas(); }}
-        >
-          <LayoutTemplate size={16} aria-hidden="true" />
-          <span>整理画布</span>
-        </button>
         <ReactFlow
           colorMode={theme.resolvedTheme}
           // Keep the complete graph in React Flow for its minimap, measurements

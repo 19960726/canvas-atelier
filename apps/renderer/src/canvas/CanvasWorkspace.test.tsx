@@ -1321,14 +1321,15 @@ describe('CanvasWorkspace', () => {
     expect(screen.getByTestId('quick-insert')).toBeVisible();
   });
 
-  it('keeps an obvious text-labelled arrange action visible over the canvas', () => {
+  it('keeps arrange canvas in the tool rail without a duplicate floating action', () => {
     const arrangeCanvas = vi.fn(async () => true);
     useAppStore.setState({ arrangeCanvas } as never);
     render(<CanvasWorkspace />);
 
-    const arrange = screen.getByTestId('canvas-arrange-button');
+    expect(screen.queryByTestId('canvas-arrange-button')).toBeNull();
+    const arrange = screen.getByTestId('tool-arrange');
     expect(arrange).toBeVisible();
-    expect(arrange).toHaveTextContent('整理画布');
+    expect(arrange).toHaveAccessibleName('整理画布');
     fireEvent.click(arrange);
     expect(arrangeCanvas).toHaveBeenCalledOnce();
   });

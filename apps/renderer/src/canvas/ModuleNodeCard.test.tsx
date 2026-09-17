@@ -241,7 +241,7 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={data} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
 
-    expect(readGenerationParameterOptions('Image generation quality')).toEqual(['自动', '低', '中', '高', '超高', '最高']);
+    expect(readGenerationParameterOptions('Image generation quality')).toEqual(['自动', '低', '中', '高']);
     chooseGenerationParameterOption('Image generation quality', '高');
     fireEvent.change(screen.getByLabelText('Image generation prompt'), { target: { value: 'High quality product photo' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate image' }));
@@ -305,6 +305,18 @@ describe('ModuleNodeCard', () => {
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
     expect(screen.getAllByRole('img', { name: /Generated image preview/ })).toHaveLength(9);
     openImageGenerationEditor();
+    const canvasCss = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const stateAwareRule = canvasCss.slice(canvasCss.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
+    expect(stateAwareRule).toMatch(/generation-preview-gallery--9[\s\S]*?generation-preview-item\s*>\s*img[\s\S]*?object-fit:\s*cover/);
+    const releaseCss = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const releaseStateAwareRule = releaseCss.slice(releaseCss.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
+    expect(releaseStateAwareRule).toMatch(/generation-preview-gallery--9[\s\S]*?generation-preview-item\s*>\s*img[\s\S]*?object-fit:\s*cover/);
+    const collapsedRule = canvasCss.slice(canvasCss.lastIndexOf('COLLAPSED IMAGE RESULT SQUARE CONTRACT'));
+    expect(collapsedRule).toMatch(/data-editor-expanded='false'\]\[data-has-result='true'\][\s\S]*?width:\s*448px\s*!important[\s\S]*?height:\s*448px\s*!important/);
+    expect(collapsedRule).toMatch(/generation-preview-gallery--9[\s\S]*?grid-template-columns:\s*repeat\(3,[\s\S]*?grid-template-rows:\s*repeat\(3,/);
+    const releaseCollapsedRule = releaseCss.slice(releaseCss.lastIndexOf('COLLAPSED IMAGE RESULT SQUARE CONTRACT'));
+    expect(releaseCollapsedRule).toMatch(/data-editor-expanded='false'\]\[data-has-result='true'\][\s\S]*?width:\s*448px\s*!important[\s\S]*?height:\s*448px\s*!important/);
+    expect(releaseCollapsedRule).toMatch(/generation-preview-gallery--9[\s\S]*?grid-template-columns:\s*repeat\(3,[\s\S]*?grid-template-rows:\s*repeat\(3,/);
     fireEvent.doubleClick(screen.getByRole('button', { name: 'Generated image 9; double click to preview' }));
     expect(screen.getByRole('img', { name: 'Generated image 9 full preview' })).toHaveAttribute('src', images[8]!.displayUrl);
   });
@@ -394,6 +406,7 @@ describe('ModuleNodeCard', () => {
     expect(terminalRule).toMatch(/module-node__generation-preview-gallery--4[\s\S]*?module-node__generation-preview-item\s*>\s*img[\s\S]*?object-fit:\s*cover/);
     const releaseCss = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
     const finalFourUpRule = releaseCss.slice(releaseCss.lastIndexOf('FINAL FOUR-UP RESULT CONTRACT'));
+    expect(finalFourUpRule).toMatch(/data-result-count='4'[\s\S]*?module-node__workbench-header\s*\{[^}]*?left:\s*156px\s*!important/);
     expect(finalFourUpRule).toMatch(/data-result-count='4'[\s\S]*?module-node__generation-preview-item\s*>\s*:is\(img,\s*video\)[\s\S]*?object-fit:\s*cover/);
   });
 
@@ -421,13 +434,22 @@ describe('ModuleNodeCard', () => {
     expect(terminalRule).toMatch(/data-result-count='4'[\s\S]*?background:\s*transparent\s*!important/);
     expect(terminalRule).toMatch(/generation-preview-gallery--4[\s\S]*?width:\s*448px\s*!important[\s\S]*?height:\s*448px\s*!important/);
     expect(terminalRule).toMatch(/generation-preview-gallery--4[\s\S]*?gap:\s*2px\s*!important/);
+    expect(terminalRule).toMatch(/module-node__workbench-header\s*\{[^}]*?left:\s*156px\s*!important/);
     expect(terminalRule).toMatch(/generation-result-toolbar[\s\S]*?top:\s*-44px\s*!important/);
-    expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?top:\s*648px\s*!important/);
+    expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?top:\s*600px\s*!important/);
     expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?bottom:\s*auto\s*!important/);
     const stateAwareContract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
-    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*478px/);
-    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*648px/);
+    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*526px/);
+    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*662px/);
     expect(stateAwareContract).toMatch(/generation-control-bar\.has-image-quality[\s\S]*?height:\s*106px\s*!important/);
+    const fourPromptRule = stateAwareContract.match(/data-result-count='4'\]\s*\n\) \.module-node__prompt-workspace\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(fourPromptRule).toMatch(/height:\s*136px\s*!important/);
+    expect(fourPromptRule).toMatch(/min-height:\s*136px\s*!important/);
+    expect(fourPromptRule).toMatch(/max-height:\s*136px\s*!important/);
+    const fourPromptEditorRule = stateAwareContract.match(/data-result-count='4'\]\s*\n\) \.module-node__prompt-editor\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(fourPromptEditorRule).toMatch(/height:\s*76px\s*!important/);
+    expect(fourPromptEditorRule).toMatch(/max-height:\s*76px\s*!important/);
+    expect(fourPromptEditorRule).toMatch(/overflow-y:\s*auto\s*!important/);
   });
 
   it('keeps a square generation stage above the prompt before the first result', () => {
@@ -441,15 +463,35 @@ describe('ModuleNodeCard', () => {
     expect(summary).toHaveAttribute('data-editor-expanded', 'true');
     expect(summary).toHaveAttribute('data-has-result', 'false');
     expect(container.querySelector('.module-node__generation-editor-preview--empty')).not.toBeNull();
-    expect(screen.getByText('图片生成V2')).toBeInTheDocument();
+    expect(screen.getByText('图片生成 V2')).toBeInTheDocument();
 
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
-    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-prompt-top:\s*478px/);
-    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-control-top:\s*648px/);
-    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-height:\s*708px/);
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-prompt-top:\s*526px/);
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-control-top:\s*662px/);
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-height:\s*722px/);
+    expect(contract).toMatch(/module-node__workbench-header\s*\{[^}]*?left:\s*156px\s*!important/);
     expect(contract).toMatch(/generation-editor-preview--empty[\s\S]*?width:\s*448px[\s\S]*?height:\s*448px/);
     expect(contract).toMatch(/generation-empty-stage[\s\S]*?place-items:\s*center/);
+    expect(contract).toMatch(/module-node__prompt-workspace[\s\S]*?height:\s*136px\s*!important/);
+    expect(contract).toMatch(/module-node__prompt-editor[\s\S]*?height:\s*76px\s*!important/);
+    expect(contract).toMatch(/module-node__prompt-workspace[\s\S]*?border-radius:\s*12px\s+12px\s+0\s+0\s*!important/);
+    expect(contract).toMatch(/module-node__generation-control-bar[\s\S]*?border-radius:\s*0\s+0\s+12px\s+12px\s*!important/);
+    expect(contract).toMatch(/ports-column--inputs[\s\S]*?left:\s*156px\s*!important/);
+    expect(contract).toMatch(/ports-column--outputs[\s\S]*?right:\s*156px\s*!important/);
+    const releaseCss = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
+    const releaseContract = releaseCss.slice(releaseCss.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
+    expect(releaseContract).toMatch(/module-node__workbench-header\s*\{[^}]*?left:\s*156px\s*!important/);
+    expect(releaseContract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-control-top:\s*662px/);
+    expect(releaseContract).toMatch(/ports-column--inputs[\s\S]*?left:\s*156px\s*!important/);
+    const collapsedEmptyContract = css.slice(css.lastIndexOf('COLLAPSED EMPTY IMAGE SQUARE CONTRACT'));
+    expect(collapsedEmptyContract).toMatch(/data-editor-expanded='false'\]\[data-has-result='false'\][\s\S]*?width:\s*448px\s*!important[\s\S]*?height:\s*448px\s*!important/);
+    expect(collapsedEmptyContract).toMatch(/generation-collapsed-preview[\s\S]*?place-items:\s*center\s*!important/);
+    expect(collapsedEmptyContract).toMatch(/ports-column[\s\S]*?top:\s*224px\s*!important/);
+    const releaseCollapsedEmptyContract = releaseCss.slice(releaseCss.lastIndexOf('COLLAPSED EMPTY IMAGE SQUARE CONTRACT'));
+    expect(releaseCollapsedEmptyContract).toMatch(/data-editor-expanded='false'\]\[data-has-result='false'\][\s\S]*?width:\s*448px\s*!important[\s\S]*?height:\s*448px\s*!important/);
+    expect(releaseCollapsedEmptyContract).toMatch(/generation-collapsed-preview[\s\S]*?place-items:\s*center\s*!important/);
+    expect(releaseCollapsedEmptyContract).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?generation-empty-stage\[data-generation-state='running'\][\s\S]*?animation:\s*none\s*!important/);
   });
 
   it('constrains a single result to the compact preview stage without covering the editor', () => {
@@ -469,8 +511,8 @@ describe('ModuleNodeCard', () => {
 
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
-    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*478px/);
-    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*648px/);
+    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*526px/);
+    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*662px/);
     expect(contract).toMatch(/generation-editor-preview[\s\S]*?width:\s*448px[\s\S]*?height:\s*448px/);
     expect(contract).toMatch(/generation-preview-gallery--1[\s\S]*?module-node__generation-preview-item\s*>\s*img[\s\S]*?object-fit:\s*contain/);
   });
@@ -497,9 +539,9 @@ describe('ModuleNodeCard', () => {
 
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
-    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-reference-top:\s*458px/);
-    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*522px/);
-    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-control-top:\s*692px/);
+    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-reference-top:\s*464px/);
+    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*526px/);
+    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-control-top:\s*662px/);
   });
 
   it('shows both 4D Nano Banana routes with native image sizes and no GPT-only quality control', () => {
@@ -1994,7 +2036,7 @@ describe('ModuleNodeCard', () => {
       'conflict-edge-image',
     ]);
   });
-  it('keeps all image reference controls out of the Canvas image node until media is connected', () => {
+  it('keeps the image slot inside the expanded editor even before media is connected', () => {
     const node = createCanvasModuleNode('image-empty-media', 'image_generation', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
@@ -2002,16 +2044,23 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('button', { name: 'Reference slot 1 empty' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add image reference' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Image generation prompt workspace')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Image generation reference slots')).not.toBeInTheDocument();
     openImageGenerationEditor();
     expect(screen.getByLabelText('Image generation prompt workspace').closest('.module-node__summary')).toHaveClass('is-reference-empty');
+    expect(screen.getByLabelText('Image generation reference slots')).toHaveTextContent('0 / 20');
+    expect(screen.getByLabelText('Image generation reference slot pending')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Generate image' })).toHaveTextContent('生成');
   });
 
-  it('keeps the Canvas image media tray absent before an image edge is connected', () => {
+  it('hides the empty image slot again when the editor is collapsed', () => {
     const node = createCanvasModuleNode('image-empty-reference-summary', 'image_generation', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
+    expect(screen.queryByLabelText('Image generation reference slots')).not.toBeInTheDocument();
+    openImageGenerationEditor();
+    expect(screen.getByLabelText('Image generation reference slots')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '折叠图片生成节点' }));
     expect(screen.queryByLabelText('Image generation reference slots')).not.toBeInTheDocument();
   });
 
@@ -2109,19 +2158,19 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={generation.id} data={generation.data} selected={false} /></ReactFlowProvider>);
 
-    const collapsedTray = screen.getByLabelText('Image generation reference slots');
-    expect(collapsedTray.querySelector('video')).toHaveAttribute('src', projectVideo.displayUrl);
-    expect(within(collapsedTray).getByRole('img', { name: projectImage.label })).toHaveAttribute('src', projectImage.displayUrl);
-    expect(collapsedTray).toHaveTextContent('2 / 20');
-    expect(collapsedTray).toHaveClass('connected-agent-media-slots');
-    fireEvent.click(within(collapsedTray).getByRole('button', { name: `Move ${projectImage.label} left` }));
+    expect(screen.queryByLabelText('Image generation reference slots')).toBeNull();
+
+    openImageGenerationEditor();
+    const expandedTray = screen.getByLabelText('Image generation reference slots');
+    expect(expandedTray.querySelector('video')).toHaveAttribute('src', projectVideo.displayUrl);
+    expect(within(expandedTray).getByRole('img', { name: projectImage.label })).toHaveAttribute('src', projectImage.displayUrl);
+    expect(expandedTray).toHaveTextContent('2 / 20');
+    expect(expandedTray).toHaveClass('connected-agent-media-slots');
+    fireEvent.click(within(expandedTray).getByRole('button', { name: `Move ${projectImage.label} left` }));
     expect(reorderModuleInput).toHaveBeenCalledWith(generation.id, 'references', [
       'universal-image-edge',
       'universal-video-edge',
     ]);
-
-    openImageGenerationEditor();
-    const expandedTray = screen.getByLabelText('Image generation reference slots');
     const prompt = screen.getByLabelText('Image generation prompt workspace');
     expect(expandedTray.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -2183,7 +2232,7 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('button', { name: accessibleName })).not.toBeInTheDocument();
     if (moduleType === 'image_generation') {
       expect(screen.getByLabelText('Image generation preview')).toBeVisible();
-      expect(screen.getByText('图片生成V2')).toBeVisible();
+      expect(screen.getByText('图片生成 V2')).toBeVisible();
     } else {
       expect(screen.queryByLabelText('Video generation preview')).not.toBeInTheDocument();
     }
@@ -2380,8 +2429,7 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={generation.id} data={data} selected={false} /></ReactFlowProvider>);
 
-    expect(screen.getByLabelText('Image generation reference slots')).toBeVisible();
-    expect(within(screen.getByLabelText('Image generation reference slots')).getByRole('img', { name: projectImage.label })).toHaveAttribute('src', projectImage.displayUrl);
+    expect(screen.queryByLabelText('Image generation reference slots')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add image reference' })).not.toBeInTheDocument();
     openImageGenerationEditor();
     expect(within(screen.getByLabelText('Image generation reference slots')).getByRole('img', { name: projectImage.label })).toHaveAttribute('src', projectImage.displayUrl);
@@ -2390,6 +2438,8 @@ describe('ModuleNodeCard', () => {
     expect(runImageGenerationNode).toHaveBeenCalledWith('image-slot-target', expect.objectContaining({
       referenceAssetIds: [projectImage.assetId],
     }));
+    fireEvent.click(screen.getByRole('button', { name: '折叠图片生成节点' }));
+    expect(screen.queryByLabelText('Image generation reference slots')).toBeNull();
   });
 
   it('does not submit a stale saved reference that is no longer connected or mentioned', () => {
@@ -3076,13 +3126,13 @@ describe('ModuleNodeCard', () => {
 
     openImageGenerationEditor();
     expect(screen.getByLabelText('Image generation prompt workspace')).toContainElement(screen.getByLabelText('Image generation prompt'));
-    expect(screen.queryByLabelText('Image generation reference slots')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Image generation reference slots')).toHaveTextContent('0 / 20');
     expect(screen.queryByLabelText('Image generation connected references')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Reference slot \d+$/u })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add image reference' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Image generation control bar')).toBeVisible();
     expect(screen.getByLabelText('Image generation preview')).toBeVisible();
-    expect(screen.getByText('图片生成V2')).toBeVisible();
+    expect(screen.getByText('图片生成 V2')).toBeVisible();
     expect(screen.queryByRole('button', { name: '引用图片' })).not.toBeInTheDocument();
 
     expect(screen.queryByLabelText('图片生成 节点结果')).not.toBeInTheDocument();
@@ -4115,7 +4165,7 @@ describe('ModuleNodeCard', () => {
     openImageGenerationEditor();
     expect(screen.getByLabelText('Image generation preview')).toHaveClass('module-node__generation-editor-preview--empty');
     expect(document.querySelector('.module-node__generation-preview-gallery')).toBeNull();
-    expect(screen.getByText('图片生成V2')).toBeVisible();
+    expect(screen.getByText('图片生成 V2')).toBeVisible();
     expect(screen.getByLabelText('Image generation prompt workspace')).toBeVisible();
   });
 
@@ -5187,6 +5237,9 @@ describe('ModuleNodeCard', () => {
     );
 
     openImageGenerationEditor();
+    expect(screen.getByLabelText('生成摘要 / Generation summary')).toHaveClass('is-generating');
+    expect(screen.getByText('正在生成')).toBeVisible();
+    expect(document.querySelector('.module-node__generation-empty-stage[data-generation-state="running"] .lucide-loader-circle')).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '停止生成' }));
 
     expect(cancelModelJob).toHaveBeenCalledWith('node-job');

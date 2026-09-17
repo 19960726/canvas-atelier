@@ -358,12 +358,12 @@ describe('desktop runtime entry contract', () => {
     }
   });
 
-  it('modern 1.6.147 resolves only the modern renderer entry', async () => {
+  it('modern 1.6.148 resolves only the modern renderer entry', async () => {
     const shell = desktopShells[0]!;
     const packageJson = await readPackageJson(shell);
     const rendererEntry = resolveRendererHtmlPath(join(workspaceRoot, shell.appDir, 'dist'));
 
-    expect(packageJson.version).toBe('1.6.147');
+    expect(packageJson.version).toBe('1.6.148');
     expect(rendererEntry).toBe(resolve(workspaceRoot, 'apps', 'renderer', 'dist', 'index.html'));
     expect(rendererEntry).not.toContain('desktop-legacy');
   });

@@ -80,12 +80,19 @@ describe('image color correction', () => {
     expect(analyzeImageColorCorrection(sample)).toEqual(AUTO_IMAGE_COLOR_CORRECTION);
   });
 
-  it('preserves a pale pink product on a clipped white studio background', () => {
-    const colors = [...Array.from({ length: 65 }, () => [255, 255, 255, 255]),
+  it.each([
+    [255, 255, 255, 255],
+    [250, 250, 250, 255],
+    [250, 247, 249, 255],
+    [248, 248, 248, 255],
+    [245, 242, 244, 255],
+  ])('preserves a pale pink product on a neutral white or near-white studio background (%s,%s,%s)', (red, green, blue, alpha) => {
+    const colors = [...Array.from({ length: 65 }, () => [red, green, blue, alpha]),
       ...Array.from({ length: 35 }, () => [230, 198, 222, 255])];
     const sample = pixels(colors, 1);
     const correction = analyzeImageColorCorrection(sample);
     expect(correction).toEqual(AUTO_IMAGE_COLOR_CORRECTION);
+    expect(imageColorCorrectionFilter(correction, 'white-studio')).toBe('none');
     expect(applyImageColorCorrectionToPixels(sample, correction)).toEqual(sample);
   });
 
