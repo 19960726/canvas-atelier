@@ -1542,8 +1542,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         return false;
       }
     }
+    let reorderedEdges: ReturnType<typeof reorderCanvasInputEdges>;
     try {
-      reorderCanvasInputEdges(state.project.edges, targetNodeId, targetPortId, edgeIds);
+      reorderedEdges = reorderCanvasInputEdges(state.project.edges, targetNodeId, targetPortId, edgeIds);
     } catch {
       return false;
     }
@@ -1556,13 +1557,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       .map(({ edge }) => edge.id);
     if (sameStringList(currentOrder, edgeIds)) return true;
 
-    const transaction: ProjectTransaction = {
-      id: `reorder-module-${targetNodeId}-${targetPortId}`,
-      label: 'Reorder module input',
-      operations: [{ kind: 'canvas', operation: { kind: 'reorder_input_edges', targetNodeId, targetPortId, edgeIds: [...edgeIds] } }],
-    };
     try {
-      const nextProject = applyProjectTransaction(state.project, transaction);
+      const nextProject = { ...state.project, edges: reorderedEdges };
       set({
         canReloadDurableProject: false,
         project: nextProject,

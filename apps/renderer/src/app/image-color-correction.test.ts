@@ -23,10 +23,12 @@ function chroma(pixel: ArrayLike<number>): number {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('image color correction', () => {
-  it('enables image analysis for new projects and legacy untouched original defaults', () => {
-    expect(normalizeImageColorCorrection(undefined).mode).toBe('auto');
-    expect(DEFAULT_IMAGE_COLOR_CORRECTION.mode).toBe('auto');
-    expect(normalizeImageColorCorrection({ mode: 'original', temperature: 0, tint: 0, saturation: 100, contrast: 100, brightness: 100 }).mode).toBe('auto');
+  it('keeps new and legacy untouched results on their original pixels until the user opts in', () => {
+    expect(normalizeImageColorCorrection(undefined).mode).toBe('original');
+    expect(DEFAULT_IMAGE_COLOR_CORRECTION.mode).toBe('original');
+    expect(normalizeImageColorCorrection({ mode: 'original', temperature: 0, tint: 0, saturation: 100, contrast: 100, brightness: 100 }).mode).toBe('original');
+    expect(normalizeImageColorCorrection({ ...AUTO_IMAGE_COLOR_CORRECTION, version: 1 }).mode).toBe('original');
+    expect(normalizeImageColorCorrection(AUTO_IMAGE_COLOR_CORRECTION).mode).toBe('auto');
   });
 
   it('retains an explicit original choice through a save and reload', () => {

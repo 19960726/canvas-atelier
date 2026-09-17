@@ -8329,11 +8329,22 @@ describe('stable module graph commits', () => {
       revision: 1,
     }));
     replaceProjectPersistenceClientForTests(createMockClient({ commit }));
-    useAppStore.setState({ project: moduleGraphProjectWithReferences(), saveStatus: 'saved' });
+    const project = moduleGraphProjectWithReferences();
+    const originalNodes = project.nodes;
+    const originalAssets = project.assets;
+    const unrelatedEdges = project.edges.filter((edge) => edge.target !== 'reverse');
+    useAppStore.setState({ project, saveStatus: 'saved' });
 
     expect(await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-b', 'edge-a'])).toBe(true);
     expect(await useAppStore.getState().reorderModuleInput('reverse', 'references', ['edge-a'])).toBe(false);
     expect(commit).not.toHaveBeenCalled();
+    const reorderedProject = useAppStore.getState().project;
+    expect(reorderedProject.nodes).toBe(originalNodes);
+    expect(reorderedProject.assets).toBe(originalAssets);
+    expect(reorderedProject.edges.filter((edge) => edge.target !== 'reverse')).toEqual(unrelatedEdges);
+    for (const edge of unrelatedEdges) {
+      expect(reorderedProject.edges.find((candidate) => candidate.id === edge.id)).toBe(edge);
+    }
     await vi.advanceTimersByTimeAsync(AUTOSAVE_IDLE_MS);
     expect(commit).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().project.edges.filter((edge) => edge.target === 'reverse').map((edge) => [edge.id, edge.order])).toEqual([

@@ -35,9 +35,9 @@ function mockImageSamples() {
 }
 
 describe('analyzed image previews', () => {
-  it('applies default correction to a legacy node result without a preset click', async () => {
+  it('keeps a legacy untouched result original until the user chooses a correction', async () => {
     resetAppStoreForTests();
-    const { finish } = mockImageSamples();
+    const { loads, finish } = mockImageSamples();
     const node = createCanvasModuleNode('legacy-auto-color', 'image_generation', { x: 0, y: 0 });
     const asset = {
       assetId: '0123456789abcdef', byteSize: 42, displayUrl: 'novus-asset://project/red-node/0123456789abcdef',
@@ -49,13 +49,13 @@ describe('analyzed image previews', () => {
     useAppStore.setState({ projectImages: [asset], project: { ...useAppStore.getState().project, nodes: [node], edges: [] } } as never);
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
     await finish();
-    expect(screen.getByRole('img', { name: 'Generated image preview 1' }).style.filter).toContain('url(');
+    expect(screen.getByRole('img', { name: 'Generated image preview 1' }).style.filter).toBe('none');
     fireEvent.click(screen.getByRole('button', { name: 'Open image generation editor' }));
     await finish();
-    expect(screen.getByRole('img', { name: 'Generated image 1' }).style.filter).toContain('url(');
-    expect(screen.getByRole('button', { name: '切换原图对比' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: '切换原图对比' }));
     expect(screen.getByRole('img', { name: 'Generated image 1' }).style.filter).toBe('none');
+    expect(screen.getByRole('button', { name: '图片颜色校正' })).toHaveTextContent('原图');
+    expect(screen.getByRole('button', { name: '切换原图对比' })).toBeDisabled();
+    expect(loads).toHaveLength(0);
   });
 
   it('keeps separate corrections for four results and never repeats sampling on interaction renders', async () => {

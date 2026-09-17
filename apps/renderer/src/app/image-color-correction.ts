@@ -1,8 +1,8 @@
 export type ImageColorCorrectionMode = 'original' | 'auto' | 'custom';
 
 export interface ImageColorCorrection {
-  /** Distinguishes an explicit original choice from the old untouched default. */
-  readonly version?: 1;
+  /** Version 2 distinguishes a user-selected correction from the old automatic default. */
+  readonly version?: 1 | 2;
   readonly mode: ImageColorCorrectionMode;
   readonly temperature: number;
   readonly tint: number;
@@ -12,7 +12,7 @@ export interface ImageColorCorrection {
 }
 
 export const AUTO_IMAGE_COLOR_CORRECTION: ImageColorCorrection = {
-  version: 1,
+  version: 2,
   mode: 'auto',
   temperature: 0,
   tint: 0,
@@ -21,12 +21,12 @@ export const AUTO_IMAGE_COLOR_CORRECTION: ImageColorCorrection = {
   brightness: 100,
 };
 
-export const DEFAULT_IMAGE_COLOR_CORRECTION = AUTO_IMAGE_COLOR_CORRECTION;
-
 export const ORIGINAL_IMAGE_COLOR_CORRECTION: ImageColorCorrection = {
   ...AUTO_IMAGE_COLOR_CORRECTION,
   mode: 'original',
 };
+
+export const DEFAULT_IMAGE_COLOR_CORRECTION = ORIGINAL_IMAGE_COLOR_CORRECTION;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -41,17 +41,11 @@ function boundedNumber(value: unknown, fallback: number, minimum: number, maximu
 export function normalizeImageColorCorrection(value: unknown): ImageColorCorrection {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return DEFAULT_IMAGE_COLOR_CORRECTION;
   const input = value as Record<string, unknown>;
-  const untouchedLegacyOriginal = input.mode === 'original' && input.version !== 1
-    && (input.temperature === undefined || input.temperature === 0)
-    && (input.tint === undefined || input.tint === 0)
-    && (input.saturation === undefined || input.saturation === 100)
-    && (input.contrast === undefined || input.contrast === 100)
-    && (input.brightness === undefined || input.brightness === 100);
   const mode: ImageColorCorrectionMode = input.mode === 'custom' ? 'custom'
-    : input.mode === 'original' && !untouchedLegacyOriginal ? 'original' : 'auto';
+    : input.mode === 'auto' && input.version === 2 ? 'auto' : 'original';
   const defaults = AUTO_IMAGE_COLOR_CORRECTION;
   return {
-    version: 1,
+    version: 2,
     mode,
     temperature: boundedNumber(input.temperature, defaults.temperature, -30, 30),
     tint: boundedNumber(input.tint, defaults.tint, -30, 30),

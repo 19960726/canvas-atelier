@@ -343,13 +343,18 @@ describe('ModuleNodeCard', () => {
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
     openImageGenerationEditor();
+    const result = screen.getByRole('img', { name: 'Generated image 1' });
+    const correctionTrigger = screen.getByRole('button', { name: '图片颜色校正' });
+    const compare = screen.getByRole('button', { name: '切换原图对比' });
+    expect(result.style.filter).toBe('none');
+    expect(correctionTrigger).toHaveTextContent('原图');
+    expect(compare).toBeDisabled();
+
     fireEvent.click(screen.getByRole('button', { name: '图片颜色校正' }));
     const panel = screen.getByRole('dialog', { name: '图片颜色校正' });
     fireEvent.click(within(panel).getByRole('button', { name: '自动中和红紫偏色' }));
 
-    const result = screen.getByRole('img', { name: 'Generated image 1' });
     await waitFor(() => expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results-0")'));
-    const compare = screen.getByRole('button', { name: '切换原图对比' });
     expect(compare).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(compare);
     expect(result.style.filter).toBe('none');
@@ -358,9 +363,9 @@ describe('ModuleNodeCard', () => {
     expect(result.style.filter).toContain('url("#image-color-correction-color-correction-results-0")');
     expect(compare).toHaveAttribute('aria-pressed', 'false');
     await waitFor(() => expect(draftGenerationNodeConfig).toHaveBeenLastCalledWith(node.id, expect.objectContaining({
-      colorCorrection: expect.objectContaining({ mode: 'auto', version: 1, temperature: 0, tint: 0 }),
+      colorCorrection: expect.objectContaining({ mode: 'auto', version: 2, temperature: 0, tint: 0 }),
     })));
-    expect(screen.getByRole('button', { name: '图片颜色校正' })).toHaveTextContent('自动中和');
+    expect(correctionTrigger).toHaveTextContent('自动中和');
 
     fireEvent.click(within(panel).getByRole('button', { name: '自定义颜色校正' }));
     fireEvent.change(within(panel).getByRole('slider', { name: '洋红绿色' }), { target: { value: '-14' } });
