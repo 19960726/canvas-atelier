@@ -10090,6 +10090,370 @@
   transform: none !important;
 }
 
+/* REFERENCE-STYLE FOUR-UP RESULT SURFACE
+   Completed image batches use the same compact, borderless canvas surface as
+   the reference screenshots. The editor remains a full node below the gallery;
+   only the generated result surface is allowed to escape the card chrome. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) {
+  position: relative !important;
+  box-sizing: border-box !important;
+  width: 760px !important;
+  min-width: 760px !important;
+  height: 820px !important;
+  min-height: 820px !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) > .module-node__summary {
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__workbench {
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  background: transparent !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__workbench-header {
+  position: absolute !important;
+  display: block !important;
+  top: -27px !important;
+  left: 0 !important;
+  width: 448px !important;
+  height: 18px !important;
+  min-height: 18px !important;
+  padding: 0 !important;
+  color: var(--gate-text) !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__workbench-header > span {
+  display: block !important;
+  color: var(--gate-text) !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  line-height: 18px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__workbench-header > span::after {
+  display: none !important;
+  content: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-result-toolbar {
+  position: absolute !important;
+  z-index: 220 !important;
+  top: -44px !important;
+  left: 50% !important;
+  display: block !important;
+  width: max-content !important;
+  max-width: calc(100% - 20px) !important;
+  margin: 0 !important;
+  transform: translateX(-50%) !important;
+  pointer-events: auto !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-result-toolbar > .module-node__color-correction {
+  margin: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-editor-preview {
+  position: absolute !important;
+  top: 0 !important;
+  left: 156px !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-rows: 448px !important;
+  grid-template-columns: 448px !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-width: 448px !important;
+  min-height: 448px !important;
+  gap: 2px !important;
+  aspect-ratio: 1 / 1 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: var(--gate-card-muted) !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item:first-child {
+  border-top-left-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item:nth-child(2) {
+  border-top-right-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item:nth-child(3) {
+  border-bottom-left-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item:last-child {
+  border-bottom-right-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item > img {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover !important;
+  object-position: center !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item > span {
+  top: 8px !important;
+  left: 8px !important;
+  width: 22px !important;
+  height: 22px !important;
+  color: #fff !important;
+  background: rgb(14 20 30 / 78%) !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__prompt-workspace {
+  top: 478px !important;
+  right: 0 !important;
+  left: 0 !important;
+  box-sizing: border-box !important;
+  width: 760px !important;
+  height: 170px !important;
+  min-height: 170px !important;
+  padding: 14px 18px !important;
+  background: var(--gate-card) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__prompt-editor {
+  width: 100% !important;
+  height: 112px !important;
+  min-height: 112px !important;
+  padding: 10px 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-control-bar {
+  /* Keep the generation controls attached to the prompt editor. The prompt
+     occupies 478-648px in this reference surface, so both the compact rail
+     and the two-row quality rail start at its bottom edge. */
+  top: 648px !important;
+  right: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  width: 760px !important;
+  max-width: none !important;
+}
+
+/* Collapsed result nodes keep the reference's title-above-gallery rhythm. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) {
+  position: relative !important;
+  box-sizing: border-box !important;
+  width: 448px !important;
+  min-width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) > .module-node__summary {
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-shell {
+  position: relative !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  display: block !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-title {
+  position: absolute !important;
+  top: -27px !important;
+  left: 0 !important;
+  z-index: 2 !important;
+  display: block !important;
+  color: var(--gate-text) !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  line-height: 18px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-title::before {
+  display: none !important;
+  content: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed {
+  display: grid !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-width: 448px !important;
+  min-height: 448px !important;
+  padding: 0 !important;
+  gap: 2px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item {
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item:first-child {
+  border-top-left-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item:nth-child(2) {
+  border-top-right-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item:nth-child(3) {
+  border-bottom-left-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item:last-child {
+  border-bottom-right-radius: 12px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item > img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover !important;
+  object-position: center !important;
+}
+
 .workspace--canvas-layout .module-node .module-node__unified-media-slots,
 .workspace--canvas-layout .module-node[data-module-type='reverse_agent'] .module-node__agent-media-slots {
   min-width: 0 !important;
@@ -11412,4 +11776,31 @@
   inset-block-end: 18px !important;
   margin: 0 !important;
   transform: none !important;
+}
+
+/* PROMPT-ADJACENT IMAGE CONTROLS (terminal)
+   Include the quality variant so its more-specific two-row rule cannot move
+   the controls back to the node bottom. */
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality {
+  top: 648px !important;
+  right: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  width: 760px !important;
+  max-width: none !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']):has(.module-node__generation-control-bar.has-image-quality) .module-node__prompt-workspace {
+  top: 478px !important;
+  right: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  width: 760px !important;
+}
+
+.workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']) .module-node__generation-control-bar.has-image-quality {
+  height: 106px !important;
+  min-height: 106px !important;
+  max-height: 106px !important;
 }

@@ -397,6 +397,38 @@ describe('ModuleNodeCard', () => {
     expect(finalFourUpRule).toMatch(/data-result-count='4'[\s\S]*?module-node__generation-preview-item\s*>\s*:is\(img,\s*video\)[\s\S]*?object-fit:\s*cover/);
   });
 
+  it('uses the reference-style borderless four-up surface and keeps correction controls outside the preview', () => {
+    const node = createCanvasModuleNode('reference-style-four-up', 'image_generation', { x: 0, y: 0 });
+    const images = Array.from({ length: 4 }, (_, index) => ({
+      ...projectImage,
+      assetId: (index + 61).toString(16).padStart(16, '0'),
+      displayUrl: `novus-asset://project/reference-style/${(index + 61).toString(16).padStart(16, '0')}`,
+    }));
+    node.data.config = { ...node.data.config, resultAssetIds: images.map((asset) => asset.assetId), resultState: 'fresh' };
+    useAppStore.setState({ projectImages: images, project: { ...useAppStore.getState().project, nodes: [node], edges: [] } } as never);
+
+    const { container } = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    const correction = screen.getByRole('button', { name: '图片颜色校正' }).closest('.module-node__color-correction');
+    expect(correction).not.toBeNull();
+    expect(correction?.closest('.module-node__generation-editor-preview')).toBeNull();
+    expect(correction?.parentElement).toHaveClass('module-node__generation-result-toolbar');
+
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const terminalRule = css.slice(css.lastIndexOf('REFERENCE-STYLE FOUR-UP RESULT SURFACE'));
+    expect(terminalRule).toMatch(/data-result-count='4'[\s\S]*?width:\s*760px\s*!important/);
+    expect(terminalRule).toMatch(/data-result-count='4'[\s\S]*?background:\s*transparent\s*!important/);
+    expect(terminalRule).toMatch(/generation-preview-gallery--4[\s\S]*?width:\s*448px\s*!important[\s\S]*?height:\s*448px\s*!important/);
+    expect(terminalRule).toMatch(/generation-preview-gallery--4[\s\S]*?gap:\s*2px\s*!important/);
+    expect(terminalRule).toMatch(/generation-result-toolbar[\s\S]*?top:\s*-44px\s*!important/);
+    expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?top:\s*648px\s*!important/);
+    expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?bottom:\s*auto\s*!important/);
+    expect(css).toMatch(/PROMPT-ADJACENT IMAGE CONTROLS[\s\S]*?generation-control-bar\.has-image-quality[\s\S]*?top:\s*648px\s*!important/);
+    expect(css).toMatch(/generation-control-bar\.has-image-quality[\s\S]*?height:\s*106px\s*!important/);
+    expect(css).toMatch(/data-result-count='4'[\s\S]*?has-image-quality[\s\S]*?prompt-workspace[\s\S]*?top:\s*478px\s*!important/);
+  });
+
   it('shows both 4D Nano Banana routes with native image sizes and no GPT-only quality control', () => {
     const node = createCanvasModuleNode('4d-nano-banana-ui', 'image_generation', { x: 0, y: 0 });
     const imageConstraints = {

@@ -1732,6 +1732,9 @@ function ImageGenerationSummary({
         status={localGenerationStartedAt === null ? undefined : 'queued'}
         startedAt={localGenerationStartedAt ?? undefined}
       />
+      {expanded && hasCompletedImageResult && previewItems.length > 0 && <div className="module-node__generation-result-toolbar nodrag nopan" aria-label="Image result tools" onPointerDown={stopCanvasPointer}>
+        <ImageColorCorrectionControls value={primaryColorCorrection} comparingOriginal={showOriginalForComparison} onChange={setColorCorrection} onCompareChange={setShowOriginalForComparison} />
+      </div>}
       {!expanded && <section className="module-node__generation-collapsed-shell nopan" aria-label="Image generation preview">
         <button type="button" className="module-node__generation-collapsed-preview module-node__generation-collapsed-open nopan" aria-label="Open image generation editor" aria-expanded={expanded} title="点击展开" {...collapsedActivation} onContextMenu={(event) => {
           if (!hasCompletedImageResult || previewItems[0] === undefined) return;
@@ -1779,7 +1782,6 @@ function ImageGenerationSummary({
         status={statusLabel}
         configuration={<>
           {hasCompletedImageResult && previewItems.length > 0 && <section className="module-node__generation-editor-preview nodrag nopan" aria-label="Image generation preview" onPointerDown={stopCanvasPointer}>
-            <ImageColorCorrectionControls value={primaryColorCorrection} comparingOriginal={showOriginalForComparison} onChange={setColorCorrection} onCompareChange={setShowOriginalForComparison} />
             <div className={`module-node__generation-preview-gallery module-node__generation-preview-gallery--${previewItems.length > 4 ? 9 : previewItems.length}`}>
               {previewItems.slice(0, 9).map((asset, index) => <button
                 key={asset.assetId}

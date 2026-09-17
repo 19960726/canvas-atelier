@@ -4948,3 +4948,306 @@ html body .workspace--canvas-layout .module-node:is([data-module-type='image_gen
   object-fit: cover !important;
   object-position: center !important;
 }
+
+/* REFERENCE-STYLE FOUR-UP RESULT SURFACE
+   Keep the release contract aligned with the canvas layout contract. This
+   terminal block intentionally wins over older fixed 864px preview rules. */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) {
+  box-sizing: border-box !important;
+  width: 760px !important;
+  min-width: 760px !important;
+  height: 820px !important;
+  min-height: 820px !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) > .module-node__summary {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__workbench,
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) > .module-node__summary {
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__workbench-header {
+  position: absolute !important;
+  display: block !important;
+  top: -27px !important;
+  left: 0 !important;
+  width: 448px !important;
+  height: 18px !important;
+  min-height: 18px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__workbench-header > span {
+  display: block !important;
+  color: var(--gate-text) !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  line-height: 18px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__workbench-header > span::after {
+  display: none !important;
+  content: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-result-toolbar {
+  position: absolute !important;
+  z-index: 220 !important;
+  top: -44px !important;
+  left: 50% !important;
+  width: max-content !important;
+  max-width: calc(100% - 20px) !important;
+  margin: 0 !important;
+  transform: translateX(-50%) !important;
+  pointer-events: auto !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-editor-preview {
+  position: absolute !important;
+  top: 0 !important;
+  left: 156px !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-rows: 448px !important;
+  grid-template-columns: 448px !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-width: 448px !important;
+  min-height: 448px !important;
+  gap: 2px !important;
+  aspect-ratio: 1 / 1 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-preview-gallery--4 > .module-node__generation-preview-item > img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover !important;
+  object-position: center !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__prompt-workspace {
+  top: 478px !important;
+  right: 0 !important;
+  left: 0 !important;
+  width: 760px !important;
+  height: 170px !important;
+  min-height: 170px !important;
+  padding: 14px 18px !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__prompt-editor {
+  width: 100% !important;
+  height: 112px !important;
+  min-height: 112px !important;
+  padding: 10px 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-control-bar {
+  /* Keep the generation controls attached to the prompt editor. The prompt
+     occupies 478-648px in this reference surface, so both the compact rail
+     and the two-row quality rail start at its bottom edge. */
+  top: 648px !important;
+  right: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  width: 760px !important;
+  max-width: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) {
+  box-sizing: border-box !important;
+  width: 448px !important;
+  min-width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-shell {
+  position: relative !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  display: block !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-title {
+  position: absolute !important;
+  top: -27px !important;
+  left: 0 !important;
+  z-index: 2 !important;
+  display: block !important;
+  color: var(--gate-text) !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  line-height: 18px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-title::before {
+  display: none !important;
+  content: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed {
+  width: 448px !important;
+  height: 448px !important;
+  min-width: 448px !important;
+  min-height: 448px !important;
+  padding: 0 !important;
+  gap: 2px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item {
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='false'][data-result-count='4']
+) .module-node__generation-collapsed-preview .module-node__generation-preview-gallery--collapsed .module-node__generation-preview-item > img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover !important;
+  object-position: center !important;
+}
+
+/* PROMPT-ADJACENT IMAGE CONTROLS (terminal)
+   Include the quality variant so its more-specific two-row rule cannot move
+   the controls back to the node bottom. */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality {
+  top: 648px !important;
+  right: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  width: 760px !important;
+  max-width: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']):has(.module-node__generation-control-bar.has-image-quality) .module-node__prompt-workspace {
+  top: 478px !important;
+  right: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  width: 760px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']) .module-node__generation-control-bar.has-image-quality {
+  height: 106px !important;
+  min-height: 106px !important;
+  max-height: 106px !important;
+}
