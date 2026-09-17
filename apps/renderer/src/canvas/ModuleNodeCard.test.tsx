@@ -424,9 +424,82 @@ describe('ModuleNodeCard', () => {
     expect(terminalRule).toMatch(/generation-result-toolbar[\s\S]*?top:\s*-44px\s*!important/);
     expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?top:\s*648px\s*!important/);
     expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?bottom:\s*auto\s*!important/);
-    expect(css).toMatch(/PROMPT-ADJACENT IMAGE CONTROLS[\s\S]*?generation-control-bar\.has-image-quality[\s\S]*?top:\s*648px\s*!important/);
-    expect(css).toMatch(/generation-control-bar\.has-image-quality[\s\S]*?height:\s*106px\s*!important/);
-    expect(css).toMatch(/data-result-count='4'[\s\S]*?has-image-quality[\s\S]*?prompt-workspace[\s\S]*?top:\s*478px\s*!important/);
+    const stateAwareContract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
+    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*478px/);
+    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*648px/);
+    expect(stateAwareContract).toMatch(/generation-control-bar\.has-image-quality[\s\S]*?height:\s*106px\s*!important/);
+  });
+
+  it('keeps a square generation stage above the prompt before the first result', () => {
+    const node = createCanvasModuleNode('compact-empty-image-editor', 'image_generation', { x: 0, y: 0 });
+    useAppStore.setState({ project: { ...useAppStore.getState().project, nodes: [node], edges: [] } } as never);
+
+    const { container } = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    const summary = container.querySelector('.module-node__summary--generation');
+    expect(summary).toHaveAttribute('data-editor-expanded', 'true');
+    expect(summary).toHaveAttribute('data-has-result', 'false');
+    expect(container.querySelector('.module-node__generation-editor-preview--empty')).not.toBeNull();
+    expect(screen.getByText('图片生成V2')).toBeInTheDocument();
+
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-prompt-top:\s*478px/);
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-control-top:\s*648px/);
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-height:\s*708px/);
+    expect(contract).toMatch(/generation-editor-preview--empty[\s\S]*?width:\s*448px[\s\S]*?height:\s*448px/);
+    expect(contract).toMatch(/generation-empty-stage[\s\S]*?place-items:\s*center/);
+  });
+
+  it('constrains a single result to the compact preview stage without covering the editor', () => {
+    const node = createCanvasModuleNode('compact-single-image-editor', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, resultAssetIds: [projectImage.assetId], resultState: 'fresh' };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: { ...useAppStore.getState().project, nodes: [node], edges: [] },
+    } as never);
+
+    const { container } = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(container.querySelector('.module-node__summary--generation')).toHaveAttribute('data-result-count', '1');
+    expect(container.querySelector('.module-node__generation-preview-gallery--1')).not.toBeNull();
+    expect(screen.getByRole('img', { name: 'Generated image 1' })).toBeInTheDocument();
+
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
+    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*478px/);
+    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*648px/);
+    expect(contract).toMatch(/generation-editor-preview[\s\S]*?width:\s*448px[\s\S]*?height:\s*448px/);
+    expect(contract).toMatch(/generation-preview-gallery--1[\s\S]*?module-node__generation-preview-item\s*>\s*img[\s\S]*?object-fit:\s*contain/);
+  });
+
+  it('reserves a separate row for connected material between a result and the prompt', () => {
+    const source = createCanvasModuleNode('compact-result-reference-source', 'image_input', { x: -420, y: 0 });
+    source.data.config = { assetId: projectImage.assetId };
+    const node = createCanvasModuleNode('compact-result-reference-target', 'image_generation', { x: 0, y: 0 });
+    node.data.config = { ...node.data.config, resultAssetIds: [projectImage.assetId], resultState: 'fresh' };
+    useAppStore.setState({
+      projectImages: [projectImage],
+      project: {
+        ...useAppStore.getState().project,
+        nodes: [source, node],
+        edges: [{ id: 'compact-result-reference-edge', source: source.id, sourcePortId: 'image', target: node.id, targetPortId: 'references', order: 0 }],
+      },
+    } as never);
+
+    const { container } = render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
+    openImageGenerationEditor();
+
+    expect(container.querySelector('.module-node__summary--generation')).toHaveClass('is-reference-connected');
+    expect(screen.getByLabelText('Image generation reference slots')).toBeInTheDocument();
+
+    const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
+    const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
+    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-reference-top:\s*458px/);
+    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*522px/);
+    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-control-top:\s*692px/);
   });
 
   it('shows both 4D Nano Banana routes with native image sizes and no GPT-only quality control', () => {
@@ -2108,7 +2181,12 @@ describe('ModuleNodeCard', () => {
     fireEvent.click(opener);
     expect(summary).toHaveAttribute('data-editor-expanded', 'true');
     expect(screen.queryByRole('button', { name: accessibleName })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(moduleType === 'image_generation' ? 'Image generation preview' : 'Video generation preview')).not.toBeInTheDocument();
+    if (moduleType === 'image_generation') {
+      expect(screen.getByLabelText('Image generation preview')).toBeVisible();
+      expect(screen.getByText('图片生成V2')).toBeVisible();
+    } else {
+      expect(screen.queryByLabelText('Video generation preview')).not.toBeInTheDocument();
+    }
     expect(screen.getByLabelText(moduleType === 'image_generation' ? 'Image generation prompt workspace' : 'Video preview prompt workspace')).toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: moduleType === 'image_generation' ? '折叠图片生成节点' : '折叠视频生成节点' }));
@@ -3003,7 +3081,8 @@ describe('ModuleNodeCard', () => {
     expect(screen.queryByRole('button', { name: /^Reference slot \d+$/u })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add image reference' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Image generation control bar')).toBeVisible();
-    expect(screen.queryByLabelText('Image generation preview')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Image generation preview')).toBeVisible();
+    expect(screen.getByText('图片生成V2')).toBeVisible();
     expect(screen.queryByRole('button', { name: '引用图片' })).not.toBeInTheDocument();
 
     expect(screen.queryByLabelText('图片生成 节点结果')).not.toBeInTheDocument();
@@ -4028,14 +4107,15 @@ describe('ModuleNodeCard', () => {
     expect(screen.getByRole('button', { name: 'Generated image 1; double click to preview' })).toBeInTheDocument();
   });
 
-  it('does not render a separate empty image preview when the generation editor opens', () => {
+  it('renders a square empty image stage without inventing result tiles', () => {
     const node = createCanvasModuleNode('image-preview-empty', 'image_generation', { x: 0, y: 0 });
 
     render(<ReactFlowProvider><ModuleNodeCard id={node.id} data={node.data} selected={false} /></ReactFlowProvider>);
 
     openImageGenerationEditor();
-    expect(screen.queryByLabelText('Image generation preview')).not.toBeInTheDocument();
-    expect(document.querySelector('.module-node__generation-editor-preview')).toBeNull();
+    expect(screen.getByLabelText('Image generation preview')).toHaveClass('module-node__generation-editor-preview--empty');
+    expect(document.querySelector('.module-node__generation-preview-gallery')).toBeNull();
+    expect(screen.getByText('图片生成V2')).toBeVisible();
     expect(screen.getByLabelText('Image generation prompt workspace')).toBeVisible();
   });
 

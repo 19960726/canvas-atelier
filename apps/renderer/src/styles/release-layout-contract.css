@@ -5225,12 +5225,353 @@ html body .workspace--canvas-layout .module-node.module-node[data-module-type='i
   object-position: center !important;
 }
 
-/* PROMPT-ADJACENT IMAGE CONTROLS (terminal)
-   Include the quality variant so its more-specific two-row rule cannot move
-   the controls back to the node bottom. */
-html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar,
-html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true']) .module-node__generation-control-bar.has-image-quality {
-  top: 648px !important;
+/* STATE-AWARE IMAGE EDITOR LAYOUT
+   This loaded-last contract mirrors canvas-layout.css so packaged builds keep
+   the same compact empty, single-result and connected-material geometry. */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) {
+  --image-editor-reference-top: 0px;
+  --image-editor-prompt-top: 478px;
+  --image-editor-control-top: 648px;
+  --image-editor-height: 708px;
+  position: relative !important;
+  box-sizing: border-box !important;
+  width: 760px !important;
+  min-width: 760px !important;
+  height: var(--image-editor-height) !important;
+  min-height: var(--image-editor-height) !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='false']
+) {
+  --image-editor-prompt-top: 478px;
+  --image-editor-control-top: 648px;
+  --image-editor-height: 708px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation.is-reference-connected[data-editor-expanded='true'][data-has-result='false']
+) {
+  --image-editor-reference-top: 458px;
+  --image-editor-prompt-top: 522px;
+  --image-editor-control-top: 692px;
+  --image-editor-height: 752px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) {
+  --image-editor-prompt-top: 478px;
+  --image-editor-control-top: 648px;
+  --image-editor-height: 708px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation.is-reference-connected[data-editor-expanded='true'][data-has-result='true']
+) {
+  --image-editor-reference-top: 458px;
+  --image-editor-prompt-top: 522px;
+  --image-editor-control-top: 692px;
+  --image-editor-height: 752px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='false']
+):has(.module-node__generation-control-bar.has-image-quality) {
+  --image-editor-height: 754px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation.is-reference-connected[data-editor-expanded='true'][data-has-result='false']
+):has(.module-node__generation-control-bar.has-image-quality) {
+  --image-editor-height: 798px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+):has(.module-node__generation-control-bar.has-image-quality) {
+  --image-editor-height: 754px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation.is-reference-connected[data-editor-expanded='true'][data-has-result='true']
+):has(.module-node__generation-control-bar.has-image-quality) {
+  --image-editor-height: 798px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) > .module-node__summary,
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__workbench {
+  position: relative !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__workbench-header {
+  position: absolute !important;
+  top: -27px !important;
+  left: 0 !important;
+  display: block !important;
+  width: 448px !important;
+  height: 18px !important;
+  min-height: 18px !important;
+  padding: 0 !important;
+  color: var(--gate-text) !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__workbench-header > span {
+  display: block !important;
+  color: var(--gate-text) !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  line-height: 18px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__workbench-header > span::after {
+  display: none !important;
+  content: none !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__collapse-editor {
+  top: -44px !important;
+  right: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) .module-node__generation-result-toolbar {
+  position: absolute !important;
+  z-index: 220 !important;
+  top: -44px !important;
+  left: 50% !important;
+  display: block !important;
+  width: max-content !important;
+  max-width: calc(100% - 100px) !important;
+  margin: 0 !important;
+  transform: translateX(-50%) !important;
+  pointer-events: auto !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) .module-node__generation-result-toolbar > .module-node__color-correction {
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__generation-editor-preview {
+  position: absolute !important;
+  top: 0 !important;
+  left: 156px !important;
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-columns: 448px !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  place-items: stretch !important;
+  width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='false']
+) .module-node__generation-editor-preview--empty {
+  width: 448px !important;
+  height: 448px !important;
+  min-height: 448px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='false']
+) .module-node__generation-empty-stage {
+  box-sizing: border-box !important;
+  display: grid !important;
+  place-items: center !important;
+  align-content: center !important;
+  gap: 12px !important;
+  width: 100% !important;
+  height: 100% !important;
+  color: var(--gate-text) !important;
+  background: var(--gate-card-muted) !important;
+  border: 1px dashed var(--gate-border-strong) !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-empty-stage > span {
+  display: grid !important;
+  place-items: center !important;
+  width: 54px !important;
+  height: 54px !important;
+  color: var(--gate-muted) !important;
+  background: var(--gate-card) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation'] .module-node__generation-empty-stage > strong {
+  color: var(--gate-text) !important;
+  font-size: 16px !important;
+  font-weight: 650 !important;
+  line-height: 22px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) .module-node__generation-editor-preview:has(> .module-node__resolution-warning) {
+  grid-template-rows: minmax(0, 1fr) auto !important;
+  gap: 8px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) .module-node__generation-preview-gallery {
+  width: 448px !important;
+  height: 100% !important;
+  min-width: 448px !important;
+  min-height: 0 !important;
+  gap: 2px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) .module-node__generation-preview-item {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  background: var(--gate-card-muted) !important;
+  border: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) .module-node__generation-preview-gallery--1 > .module-node__generation-preview-item {
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) .module-node__generation-preview-gallery--1 > .module-node__generation-preview-item > img {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: contain !important;
+  object-position: center !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-has-result='true']
+) :is(
+  .module-node__generation-preview-gallery--2,
+  .module-node__generation-preview-gallery--3,
+  .module-node__generation-preview-gallery--4
+) > .module-node__generation-preview-item > img {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover !important;
+  object-position: center !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation.is-reference-connected[data-editor-expanded='true']
+) .module-node__unified-media-slots {
+  position: absolute !important;
+  top: var(--image-editor-reference-top) !important;
+  right: 0 !important;
+  left: 0 !important;
+  box-sizing: border-box !important;
+  width: 760px !important;
+  height: 54px !important;
+  min-height: 54px !important;
+  margin: 0 !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation.is-reference-connected[data-editor-expanded='true'][data-has-result='true']
+) {
+  --image-editor-reference-top: 458px;
+  --image-editor-prompt-top: 522px;
+  --image-editor-control-top: 692px;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__prompt-workspace,
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+):has(.module-node__generation-control-bar.has-image-quality) .module-node__prompt-workspace {
+  position: absolute !important;
+  top: var(--image-editor-prompt-top) !important;
+  right: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  box-sizing: border-box !important;
+  width: 760px !important;
+  height: 170px !important;
+  min-height: 170px !important;
+  margin: 0 !important;
+  padding: 14px 18px !important;
+  overflow: visible !important;
+  background: var(--gate-card) !important;
+  border: 1px solid var(--gate-border) !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__prompt-editor {
+  width: 100% !important;
+  height: 112px !important;
+  min-height: 112px !important;
+  padding: 10px 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__generation-control-bar,
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__generation-control-bar.has-image-quality {
+  position: absolute !important;
+  top: var(--image-editor-control-top) !important;
   right: 0 !important;
   bottom: auto !important;
   left: 0 !important;
@@ -5238,16 +5579,46 @@ html body .workspace--canvas-layout .module-node.module-node[data-module-type='i
   max-width: none !important;
 }
 
-html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']):has(.module-node__generation-control-bar.has-image-quality) .module-node__prompt-workspace {
-  top: 478px !important;
-  right: 0 !important;
-  bottom: auto !important;
-  left: 0 !important;
-  width: 760px !important;
-}
-
-html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(.module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']) .module-node__generation-control-bar.has-image-quality {
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) .module-node__generation-control-bar.has-image-quality {
   height: 106px !important;
   min-height: 106px !important;
   max-height: 106px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true']
+) > .module-node__ports .module-node__ports-column {
+  top: 224px !important;
+  bottom: auto !important;
+  transform: translateY(-50%) !important;
+}
+
+/* Match the higher-specificity legacy four-result selectors to the state
+   variables used by empty and single-result editors. */
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) {
+  height: var(--image-editor-height) !important;
+  min-height: var(--image-editor-height) !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-editor-preview {
+  overflow: hidden !important;
+  border-radius: 12px !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__prompt-workspace {
+  top: var(--image-editor-prompt-top) !important;
+}
+
+html body .workspace--canvas-layout .module-node.module-node[data-module-type='image_generation']:has(
+  .module-node__summary--generation[data-editor-expanded='true'][data-result-count='4']
+) .module-node__generation-control-bar {
+  top: var(--image-editor-control-top) !important;
 }

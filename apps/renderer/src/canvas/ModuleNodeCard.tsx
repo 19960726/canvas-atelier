@@ -1819,6 +1819,12 @@ function ImageGenerationSummary({
               </p>
             ) : null}
           </section>}
+          {!(hasCompletedImageResult && previewItems.length > 0) && <section className="module-node__generation-editor-preview module-node__generation-editor-preview--empty nodrag nopan" aria-label="Image generation preview" onPointerDown={stopCanvasPointer}>
+            <div className="module-node__generation-empty-stage">
+              <span aria-hidden="true"><ImageIcon size={30} strokeWidth={1.7} /></span>
+              <strong>图片生成V2</strong>
+            </div>
+          </section>}
           {resultRecoveryFailed && <div className="module-node__generation-error nodrag nopan" role="alert" onPointerDown={stopCanvasPointer}>
             <span>{missingResultRecord ? '返图记录缺失，请重新加载；不会重复提交生成任务。' : '返图加载失败，请重新加载；不会重复提交生成任务。'}</span>
             <button type="button" aria-label="重新加载返图" onClick={retryResultRefresh}>重新加载返图</button>
