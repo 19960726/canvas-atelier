@@ -489,6 +489,18 @@ describe('renderer stylesheet precedence', () => {
     expect(terminalGate).toMatch(/\.module-node\[data-module-type='image_generation'\]:has\(\.module-node__summary--generation\[data-editor-expanded='true'\]\) > \.module-node__ports \.module-node__ports-column \{[\s\S]*?top: 50% !important;[\s\S]*?transform: translateY\(-50%\) !important;/);
   });
 
+  it('joins the image reference tray, prompt and controls into one editor surface', () => {
+    const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/canvas-layout.css'));
+    const terminal = hybrid.slice(hybrid.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
+
+    expect(terminal).toContain('--image-editor-reference-top: 464px;');
+    expect(terminal).toContain('--image-editor-prompt-top: 518px;');
+    expect(terminal).toContain('--image-editor-control-top: 654px;');
+    expect(terminal).toMatch(/\.module-node__unified-media-slots \{[\s\S]*?height: 54px !important;[\s\S]*?border-radius: 12px 12px 0 0 !important;/);
+    expect(terminal).toMatch(/\.module-node__prompt-workspace,[\s\S]*?border-top: 0 !important;[\s\S]*?border-radius: 0 !important;/);
+    expect(terminal).toMatch(/\.module-node__generation-control-bar,[\s\S]*?border-top: 0 !important;[\s\S]*?border-radius: 0 0 12px 12px !important;/);
+  });
+
   it('uses the reference four-part video rail with every native fallback hidden', () => {
     const hybrid = readNormalizedFile(resolve(process.cwd(), 'apps/renderer/src/styles/canvas-layout.css'));
     const terminalRail = hybrid.slice(hybrid.lastIndexOf('/* FINAL GENERIC VIDEO VISIBLE RAIL CONTRACT'));

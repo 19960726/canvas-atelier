@@ -444,13 +444,15 @@ describe('ModuleNodeCard', () => {
     expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?top:\s*600px\s*!important/);
     expect(terminalRule).toMatch(/generation-control-bar[\s\S]*?bottom:\s*auto\s*!important/);
     const stateAwareContract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
-    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*526px/);
-    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*662px/);
+    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*518px/);
+    expect(stateAwareContract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*654px/);
     expect(stateAwareContract).toMatch(/generation-control-bar\.has-image-quality[\s\S]*?height:\s*106px\s*!important/);
     const fourPromptRule = stateAwareContract.match(/data-result-count='4'\]\s*\n\) \.module-node__prompt-workspace\s*\{([^}]*)\}/)?.[1] ?? '';
     expect(fourPromptRule).toMatch(/height:\s*136px\s*!important/);
     expect(fourPromptRule).toMatch(/min-height:\s*136px\s*!important/);
     expect(fourPromptRule).toMatch(/max-height:\s*136px\s*!important/);
+    expect(fourPromptRule).toMatch(/border-top:\s*0\s*!important/);
+    expect(fourPromptRule).toMatch(/border-radius:\s*0\s*!important/);
     const fourPromptEditorRule = stateAwareContract.match(/data-result-count='4'\]\s*\n\) \.module-node__prompt-editor\s*\{([^}]*)\}/)?.[1] ?? '';
     expect(fourPromptEditorRule).toMatch(/height:\s*76px\s*!important/);
     expect(fourPromptEditorRule).toMatch(/max-height:\s*76px\s*!important/);
@@ -472,22 +474,23 @@ describe('ModuleNodeCard', () => {
 
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
-    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-prompt-top:\s*526px/);
-    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-control-top:\s*662px/);
-    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-height:\s*722px/);
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-prompt-top:\s*518px/);
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-control-top:\s*654px/);
+    expect(contract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-height:\s*714px/);
     expect(contract).toMatch(/module-node__workbench-header\s*\{[^}]*?left:\s*156px\s*!important/);
     expect(contract).toMatch(/generation-editor-preview--empty[\s\S]*?width:\s*448px[\s\S]*?height:\s*448px/);
     expect(contract).toMatch(/generation-empty-stage[\s\S]*?place-items:\s*center/);
     expect(contract).toMatch(/module-node__prompt-workspace[\s\S]*?height:\s*136px\s*!important/);
     expect(contract).toMatch(/module-node__prompt-editor[\s\S]*?height:\s*76px\s*!important/);
-    expect(contract).toMatch(/module-node__prompt-workspace[\s\S]*?border-radius:\s*12px\s+12px\s+0\s+0\s*!important/);
+    expect(contract).toMatch(/module-node__unified-media-slots[\s\S]*?border-radius:\s*12px\s+12px\s+0\s+0\s*!important/);
+    expect(contract).toMatch(/module-node__prompt-workspace[\s\S]*?border-top:\s*0\s*!important[\s\S]*?border-radius:\s*0\s*!important/);
     expect(contract).toMatch(/module-node__generation-control-bar[\s\S]*?border-radius:\s*0\s+0\s+12px\s+12px\s*!important/);
     expect(contract).toMatch(/ports-column--inputs[\s\S]*?left:\s*156px\s*!important/);
     expect(contract).toMatch(/ports-column--outputs[\s\S]*?right:\s*156px\s*!important/);
     const releaseCss = readFileSync('apps/renderer/src/styles/release-layout-contract.css', 'utf8');
     const releaseContract = releaseCss.slice(releaseCss.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
     expect(releaseContract).toMatch(/module-node__workbench-header\s*\{[^}]*?left:\s*156px\s*!important/);
-    expect(releaseContract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-control-top:\s*662px/);
+    expect(releaseContract).toMatch(/data-has-result='false'[\s\S]*?--image-editor-control-top:\s*654px/);
     expect(releaseContract).toMatch(/ports-column--inputs[\s\S]*?left:\s*156px\s*!important/);
     const collapsedEmptyContract = css.slice(css.lastIndexOf('COLLAPSED EMPTY IMAGE SQUARE CONTRACT'));
     expect(collapsedEmptyContract).toMatch(/data-editor-expanded='false'\]\[data-has-result='false'\][\s\S]*?width:\s*448px\s*!important[\s\S]*?height:\s*448px\s*!important/);
@@ -516,8 +519,8 @@ describe('ModuleNodeCard', () => {
 
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
-    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*526px/);
-    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*662px/);
+    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*518px/);
+    expect(contract).toMatch(/data-has-result='true'[\s\S]*?--image-editor-control-top:\s*654px/);
     expect(contract).toMatch(/generation-editor-preview[\s\S]*?width:\s*448px[\s\S]*?height:\s*448px/);
     expect(contract).toMatch(/generation-preview-gallery--1[\s\S]*?module-node__generation-preview-item\s*>\s*img[\s\S]*?object-fit:\s*contain/);
   });
@@ -545,8 +548,8 @@ describe('ModuleNodeCard', () => {
     const css = readFileSync('apps/renderer/src/styles/canvas-layout.css', 'utf8');
     const contract = css.slice(css.lastIndexOf('STATE-AWARE IMAGE EDITOR LAYOUT'));
     expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-reference-top:\s*464px/);
-    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*526px/);
-    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-control-top:\s*662px/);
+    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-prompt-top:\s*518px/);
+    expect(contract).toMatch(/is-reference-connected[^}]*data-has-result='true'[\s\S]*?--image-editor-control-top:\s*654px/);
   });
 
   it('shows both 4D Nano Banana routes with native image sizes and no GPT-only quality control', () => {
