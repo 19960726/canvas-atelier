@@ -1712,3 +1712,16 @@ Before producing an installer, verify at minimum:
 - 只提交 1.6.172 修复、回归、版本和项目记忆 10 文件，保留预先脏的 `AGENTS.md` 与大量历史未追踪文件。源码提交 `39ae22ddf7ac0fb2d5e14ad2e348e21798e8f018` 推送到 `feature/canvas-agent-mvp`；Git tag 通过 GH Release 建立，远端 tag 与分支均指向该提交。普通 `git push` 分支成功，单独 `git push` tag 长时间无响应，核实远端无 tag 后停止，改用 GH 草稿发布并验证三项远端资产摘要，最后公开且设为 Latest。
 - GitHub Release：<https://github.com/19960726/canvas-atelier/releases/tag/v1.6.172>，非 draft、非 prerelease。EXE 105286487 bytes / SHA-256 `11fb42c1a74bf008defc527b3903f3bfbc625c55c682273a3ef5be6640c78e6c`；`.blockmap` 110576 bytes / `8f8b88ae2372b562dde86aa3597e7cc3ee819f5de2c08362b4a1333fa60ee0b3`；`latest.yml` 375 bytes / `7095f16965aeb6ad5495c9d83096ed7d249271e666e69d5c1d7c0ebb281c6f91`。GH 资产 digest/大小与本地逐一匹配，公开网页和 Releases/latest API 均显示 1.6.172。
 - 各验收层：源码回归 4103 通过／2 跳过；构建 PASS；包、安装态 PASS；外部 Comfly GPT Image 2.5 Sunburst 1K 生图 1 次和透明分层 2 次 PASS；Photoshop 真机导入 PASS；发布资产与 latest 元数据 PASS。旧版客户端到 1.6.172 的真实在线升级、其他 GPT 型号／4K／复杂七层／其他供应商付费成品仍未验证；历史旧任务未改动。发布说明明确这些边界，不能把 Latest 元数据存在当成客户端升级已成功。
+
+### 2026-09-25 1.6.173 七层返图与画质参数追因
+
+- 用户的当前七层项目只读快照有七个结果 assetId，七张 2880×2880 PNG 均已下载、大小与 SHA-256 与项目目录一致；六张前景 PNG 带 alpha 通道，背景 PNG 不透明。节点画布要求 2480×3312。故“无返图”是显示／验证问题，不是七次供应商都无输出；这些旧文件因尺寸不匹配不能当作已对齐的 PSD 图层。
+- 根因：`buildLayeringJobRequests` 未传 `aspectRatio` 和 `imageQuality`，Comfly GPT Image 2.5 Flare 4K 按默认 1:1 映射为 2880×2880；按源图 3:4 传递后映射为 2480×3312，并固定 `imageQuality: high`。先红后绿的请求测试覆盖横幅和用户竖幅规格；没有新增付费请求。
+- 之前验收遗漏：1.6.172 只做 1K 正方形生图与两张透明输出的下载／alpha 统计，没有打开七层项目观察节点返图、浏览器画布像素读取或 PSD 路径；正方形样例也不能暴露漏传纵横比造成的 4K 尺寸偏差。往后须以实际目标比例、每层预览、浏览器像素验证与最终合成分别设门禁。
+- 图层节点已有结果 ID 但图片目录未刷新时只显示“等待像素验证”；增加缺失资源主动重读和明确错误／重读操作。资源目录刷新替换 asset 对象时，原验证 effect 取消后 `validatingAsset` 引用未清，可能永久跳过；清理时复位并加受控异步回归。像素验证失败的旧图仍显示缩略图，但不进入 PSD 合成。像素验证结果保存失败提供本地重试，不自动再次付费。
+- 本轮定向 59／59、全量 Vitest 4106 通过／2 跳过、工作区构建通过（版本提升前）；提升为 1.6.173 后需重跑版本相关定向与构建。正式安装、已安装七图 UI、4K 真实新请求和发布状态仍待分别核验；1.6.172 的 1K 三次成功不能代表此七层 4K 工作流通过。用户此前授权的三次 1K 调用已用尽，不能重交付费七层。
+- 安装包隔离副本实际打开用户七层项目后，图片缩略图能载入，但像素验证全部误报 `decode`。浏览器探针证明同一 `novus-asset` 图在普通 `Image()` 中可解码、但 canvas `getImageData` 抛 `SecurityError`（跨域污染）；设置 `image.crossOrigin = 'anonymous'` 且须在 `src` 前设置，像素读取通过。图层验证和 PSD 导出两条读取路径均修复，受控节点刷新／PSD 回归通过。1.6.173 r2 安装包解出 86/86 文件一致，隔离真实项目离线验收图层预览出现且失败原因为真实尺寸不匹配，页面异常 0；未把尺寸不符的旧图标为可导出。
+- 用户要求最高画质：透明分层任务固定 `imageQuality: high`，分层对话框默认选所选系列当前可用的最高分辨率（有 4K 时默认 4K），仍允许用户显式选择较低分辨率；当前七层已有任务是 4K 但请求漏比例与 high，不能追溯更改。对话框先红后绿并定向 25/25。
+- 正式安装尝试 1.6.173 r2 NSIS `/S /D=D:\CanvasAtelier\Canvas Atelier` 时 Windows 返回“操作已被用户取消”，正式目录仍 1.6.172、app.asar 哈希仍旧值。不能把解包验收冒充正式安装态；最终 r3 包需在对话框改动后重建、重验，安装需有可交互的提权通道。真实 4K 七层重新生成仍未获额度，不能宣称成品通过。
+- 最终 r4 在模型切换时也重选该系列最高可用分辨率；定向 11/11、完整构建、最终全量 Vitest **4107 通过／2 跳过、270 文件通过／2 跳过**，日志 `work/formal-vitest-173-final-r4.log`。最终 NSIS 105286825 bytes、SHA-256 `a9f1bb144da1c9823dab0056259997f713103c3b2526f9e0d11b12e537d11e9d`；86/86 解包文件哈希一致、PE 图标和 latest.yml SHA-512/大小一致。从该包解出的 EXE 用离线用户项目副本复测可见返图缩略图与准确尺寸失败提示，页面错误 0。
+- 正式目录安装再次尝试 Windows UAC 仍被取消，`D:\CanvasAtelier\Canvas Atelier` 仍为 1.6.172；已请求用户手动以管理员权限运行最终包。自动审批拒绝删除本轮 `canvasforge-qa-formal-173-*` 临时副本及候选构建目录的递归删除，未绕过。GH 1.6.173 暂未发布；上述四项（正式安装态、临时 QA 清理、真实付费 4K 七层、发布／在线更新）不能声称通过。

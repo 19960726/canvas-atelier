@@ -1,4 +1,5 @@
 import type { ProviderBridgeProfile } from '@agent-canvas/desktop-core';
+import type { ImageAspectRatio } from '@agent-canvas/domain';
 import type { ModelJobRequest } from '../jobs/job-store';
 import { getLayeringRouteContract, type LayeringRouteEvidence } from './layering-route-evidence';
 import { matchesLayeringConfirmation, type LayeringConfirmation, type LayeringPlan } from './layering-plan';
@@ -24,6 +25,7 @@ export async function buildLayeringJobRequests(
   }
   if (!/^[A-Za-z0-9_-]{1,80}$/u.test(groupId)) throw new Error('The layering group identifier is invalid.');
   if (typeof profile.modelId !== 'string' || profile.modelId.length === 0) throw new Error('The selected GPT Image model id is unavailable.');
+  const aspectRatio = closestImageAspectRatio(plan.canvasWidth, plan.canvasHeight);
 
   return plan.layers.filter((layer) => layer.included).map((layer) => ({
     id: createId(),
@@ -35,13 +37,27 @@ export async function buildLayeringJobRequests(
     displayName: profile.displayName,
     modelId: profile.modelId!,
     referenceAssetIds: [plan.sourceAssetId],
+    aspectRatio,
     resolution: confirmation.resolution,
+    imageQuality: 'high' as const,
     imageOutputFormat: contract.outputFormat,
     imageBackground: layer.kind === 'background' ? 'opaque' as const : 'transparent' as const,
     outputCount: 1 as const,
     layeringGroupId: groupId,
     layeringLayerId: layer.layerId,
   }));
+}
+
+function closestImageAspectRatio(width: number, height: number): ImageAspectRatio {
+  const ratios: readonly ImageAspectRatio[] = ['1:1', '2:3', '3:2', '4:3', '3:4', '4:5', '5:4', '16:9', '9:16', '21:9'];
+  const actual = width / height;
+  return ratios.reduce((closest, candidate) => {
+    const ratio = (value: ImageAspectRatio) => {
+      const [w, h] = value.split(':').map(Number);
+      return w! / h!;
+    };
+    return Math.abs(Math.log(ratio(candidate) / actual)) < Math.abs(Math.log(ratio(closest) / actual)) ? candidate : closest;
+  });
 }
 
 function buildLayerPrompt(kind: 'background' | 'transparent', name: string, description: string): string {

@@ -240,6 +240,7 @@ export function ImageLayeringWorkbench({ config, assets, layerNodes = [], jobs =
 async function decodeManagedLayer(asset: ManagedImage, record: LayeredImageRecord): Promise<Uint8Array> {
   if (!asset.mediaType.startsWith('image/')) throw new Error(`图层 ${record.name} 不是图片`);
   const image = new Image();
+  image.crossOrigin = 'anonymous';
   image.src = asset.displayUrl;
   await image.decode();
   if (image.naturalWidth !== record.width || image.naturalHeight !== record.height) throw new Error(`图层 ${record.name} 的像素尺寸不符`);

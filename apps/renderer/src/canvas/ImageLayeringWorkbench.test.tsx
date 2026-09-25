@@ -49,6 +49,41 @@ describe('image layering workbench', () => {
     expect(screen.getByRole('button', { name: '在 Photoshop 中打开' })).toBeEnabled();
   });
 
+  it('reads managed layer pixels with CORS enabled before opening the PSD', async () => {
+    class TestImage {
+      naturalWidth = 2;
+      naturalHeight = 2;
+      crossOrigin = '';
+      private source = '';
+      set src(value: string) {
+        if (this.crossOrigin !== 'anonymous') throw new Error('Managed image would taint the pixel canvas');
+        this.source = value;
+      }
+      get src() { return this.source; }
+      decode() { return Promise.resolve(); }
+    }
+    vi.stubGlobal('Image', TestImage);
+    let currentSource = '';
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: (image: TestImage) => { currentSource = image.src; },
+      getImageData: () => ({ data: Uint8ClampedArray.from(Array.from({ length: 4 }, (_, index) =>
+        currentSource.includes(subject) && index === 0 ? [0, 0, 0, 0] : [40, 90, 130, 255]).flat()) }),
+    } as never);
+    const previousDesktop = window.novusDesktop;
+    const open = vi.fn(async () => ({ ok: true as const }));
+    Object.defineProperty(window, 'novusDesktop', { configurable: true, value: { projectImages: { openLayeredPsdInPhotoshop: open } } });
+    try {
+      render(<ImageLayeringWorkbench config={{ canvasWidth: 2, canvasHeight: 2, layers: layers.slice(0, 2) }} assets={assets} onLayersChange={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: '在 Photoshop 中打开' }));
+      await waitFor(() => expect(open).toHaveBeenCalledOnce());
+      expect(screen.queryByText(/无法解码图层像素/u)).not.toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, 'novusDesktop', { configurable: true, value: previousDesktop });
+      context.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('builds the composite from completed independent layer nodes while the default layers array is empty', () => {
     const planLayers = [
       { layerId: 'base', kind: 'background', name: 'Background', order: 0 },

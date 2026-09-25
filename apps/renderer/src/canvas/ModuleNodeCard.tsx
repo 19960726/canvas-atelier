@@ -592,6 +592,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
   const Icon = resolveCanvasModuleIcon(definition.type);
   const { inputs: visibleInputs, outputs: visibleOutputs } = visibleModulePorts(definition, data.moduleType);
   const projectImages = useAppStore((state) => state.projectImages);
+  const refreshProjectImages = useAppStore((state) => state.refreshProjectImages);
   const projectVideos = useAppStore((state) => state.projectVideos);
   const projectImageError = useAppStore((state) => state.projectImageError);
   const importingNodeId = useAppStore((state) => state.projectImageImportingNodeId);
@@ -843,6 +844,7 @@ const DetailedModuleNodeCard = memo(function DetailedModuleNodeCard({ id, data, 
           asset={projectImages.find((asset) => asset.assetId === data.config.resultAssetId)}
           job={modelJobs.find((job) => job.id === data.config.jobId)}
           onQualityResult={(assetId, verdict) => persistImageLayerQuality(id, assetId, verdict)}
+          onRefreshAsset={refreshProjectImages}
           onVisibilityChange={(visible) => persistImageLayerVisibility(id, visible)}
         />
       ) : data.moduleType === 'image_layering' ? (

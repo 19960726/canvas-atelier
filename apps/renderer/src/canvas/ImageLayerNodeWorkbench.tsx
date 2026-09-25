@@ -6,15 +6,19 @@ import { validateLayerPixels, type LayerQualityVerdict } from '../app/layering-q
 
 type ManagedImage = Pick<ProjectImageAssetSummary, 'assetId' | 'displayUrl' | 'mediaType' | 'width' | 'height'>;
 
-export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityResult, onVisibilityChange }: {
+export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityResult, onVisibilityChange, onRefreshAsset }: {
   nodeId: string;
   config: Readonly<Record<string, unknown>>;
   asset?: ManagedImage;
   job?: ModelJob;
   onQualityResult: (assetId: string, verdict: LayerQualityVerdict) => void | Promise<void>;
   onVisibilityChange: (visible: boolean) => void | Promise<void>;
+  onRefreshAsset?: () => void | Promise<void>;
 }) {
   const [validation, setValidation] = useState<'idle' | 'checking' | 'complete'>('idle');
+  const [assetLoadFailed, setAssetLoadFailed] = useState(false);
+  const [validationSaveFailed, setValidationSaveFailed] = useState(false);
+  const [retryValidation, setRetryValidation] = useState(0);
   const validatingAsset = useRef<string | null>(null);
   const onQualityResultRef = useRef(onQualityResult);
   onQualityResultRef.current = onQualityResult;
@@ -25,25 +29,39 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
   const visible = config.visible !== false;
 
   useEffect(() => {
+    if (!resultAssetId || asset || !onRefreshAsset) return;
+    let cancelled = false;
+    setAssetLoadFailed(false);
+    void Promise.resolve().then(onRefreshAsset).then(() => {
+      if (!cancelled) setAssetLoadFailed(true);
+    }).catch(() => {
+      if (!cancelled) setAssetLoadFailed(true);
+    });
+    return () => { cancelled = true; };
+  }, [asset, onRefreshAsset, resultAssetId]);
+
+  useEffect(() => {
     if (!asset || resultAssetId !== asset.assetId || qualityStatus !== 'pending' || validatingAsset.current === asset.assetId) return;
     validatingAsset.current = asset.assetId;
     let cancelled = false;
+    setValidationSaveFailed(false);
     setValidation('checking');
     void readManagedPixels(asset).then(async ({ width, height, rgba }) => {
       if (cancelled) return;
       const expectedWidth = typeof config.canvasWidth === 'number' ? config.canvasWidth : width;
       const expectedHeight = typeof config.canvasHeight === 'number' ? config.canvasHeight : height;
-      const verdict = await validateLayerPixels(layerKind, asset.mediaType, width, height, rgba, expectedWidth, expectedHeight);
-      if (cancelled) return;
+      return validateLayerPixels(layerKind, asset.mediaType, width, height, rgba, expectedWidth, expectedHeight);
+    }).catch((): LayerQualityVerdict => ({ ok: false, reason: 'decode' })).then(async (verdict) => {
+      if (cancelled || verdict === undefined) return;
       setValidation('complete');
-      await onQualityResultRef.current(asset.assetId, verdict);
-    }).catch(async () => {
-      if (cancelled) return;
-      setValidation('complete');
-      await onQualityResultRef.current(asset.assetId, { ok: false, reason: 'decode' });
+      try { await onQualityResultRef.current(asset.assetId, verdict); }
+      catch { if (!cancelled) setValidationSaveFailed(true); }
     });
-    return () => { cancelled = true; };
-  }, [asset, config.canvasHeight, config.canvasWidth, layerKind, qualityStatus, resultAssetId]);
+    return () => {
+      cancelled = true;
+      if (validatingAsset.current === asset.assetId) validatingAsset.current = null;
+    };
+  }, [asset, config.canvasHeight, config.canvasWidth, layerKind, qualityStatus, resultAssetId, retryValidation]);
 
   const status = job?.status === 'failed' || job?.status === 'cancelled' ? job.status
     : qualityStatus === 'failed' ? 'failed'
@@ -52,7 +70,8 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
           : job?.status === 'queued' || config.status === 'queued' ? 'queued'
             : job?.status === 'completed' || config.status === 'validating' ? 'validating' : 'planned';
   const statusText = status === 'planned' ? '等待任务' : status === 'queued' ? '排队中' : status === 'running' ? '生成中'
-    : status === 'validating' ? (validation === 'checking' ? '验证像素…' : '等待像素验证')
+    : status === 'validating' ? !asset && resultAssetId ? assetLoadFailed ? '图片读取失败' : '图片已返回，正在读取'
+      : validationSaveFailed ? '验证结果保存失败' : validation === 'checking' ? '检查透明像素…' : '检查透明像素'
       : status === 'completed' ? '像素验证通过' : status === 'cancelled' ? '任务已取消' : '需要检查';
   const qualityReason = typeof config.qualityReason === 'string' ? qualityReasonLabel(config.qualityReason) : undefined;
   const jobError = typeof job?.error === 'string' ? job.error : undefined;
@@ -68,6 +87,8 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
       <div className="image-layer-node__heading"><strong title={layerName}>{layerName}</strong><span aria-live="polite" data-status={status}>{statusText}</span></div>
       {status === 'running' && job?.progress !== undefined && <div className="image-layer-node__progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress * 100)}><span style={{ width: `${Math.round(job.progress * 100)}%` }} /></div>}
       {(jobError || qualityReason) && <p className="image-layer-node__error" role="status">{qualityReason ?? jobError}</p>}
+      {assetLoadFailed && !asset && resultAssetId && <button type="button" onClick={() => { setAssetLoadFailed(false); void onRefreshAsset?.(); }}>重新读取图片</button>}
+      {validationSaveFailed && <button type="button" onClick={() => { validatingAsset.current = null; setRetryValidation((value) => value + 1); }}>重试本地验证</button>}
       <button className="image-layer-node__visibility" type="button" aria-pressed={visible} aria-label={`${visible ? '隐藏' : '显示'}图层 ${layerName}`} title={visible ? '隐藏图层' : '显示图层'} onClick={() => { void onVisibilityChange(!visible); }}><span>{visible ? <Eye size={14} /> : <EyeOff size={14} />}</span>{visible ? '可见' : '隐藏'}</button>
     </div>
   </section>;
@@ -76,6 +97,7 @@ export function ImageLayerNodeWorkbench({ nodeId, config, asset, job, onQualityR
 async function readManagedPixels(asset: ManagedImage): Promise<{ width: number; height: number; rgba: Uint8Array }> {
   if (!asset.mediaType.startsWith('image/')) throw new Error('Not an image');
   const image = new Image();
+  image.crossOrigin = 'anonymous';
   image.src = asset.displayUrl;
   await image.decode();
   const width = image.naturalWidth;

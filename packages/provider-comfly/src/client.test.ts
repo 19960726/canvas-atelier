@@ -78,6 +78,7 @@ describe('ComflyClient', () => {
   it('uses the documented common 4K landscape and portrait sizes for GPT Image', () => {
     expect(mapComflyGptImageExactSize('4K', '16:9')).toBe('3840x2160');
     expect(mapComflyGptImageExactSize('4K', '9:16')).toBe('2160x3840');
+    expect(mapComflyGptImageExactSize('4K', '3:4')).toBe('2480x3312');
   });
 
   afterEach(() => {

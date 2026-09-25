@@ -76,7 +76,7 @@ describe('LayeringDialog', () => {
     expect(within(modelSelect).getAllByRole('option')).toHaveLength(1);
     expect(within(modelSelect).getByRole('option', { name: 'GPT Image 2.5 Flare · comfly' })).toBeInTheDocument();
     expect(within(screen.getByRole('combobox', { name: '输出分辨率' })).getByRole('option', { name: '4K' })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('combobox', { name: '输出分辨率' }), { target: { value: '4K' } });
+    expect(screen.getByRole('combobox', { name: '输出分辨率' })).toHaveValue('4K');
     expect(within(screen.getByRole('region', { name: '生成确认摘要' })).getByText('GPT Image 2.5 Flare')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '确认生成 3 层' }));
     await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ confirmation: expect.objectContaining({ modelRoute: 'comfly-gpt-image-2-5-flare-4k', resolution: '4K' }) })));

@@ -44,7 +44,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
   const [profileError, setProfileError] = useState<string | null>(null);
   const [analysisRoute, setAnalysisRoute] = useState('');
   const [generationRoute, setGenerationRoute] = useState('');
-  const [resolution, setResolution] = useState<Resolution>('2K');
+  const [resolution, setResolution] = useState<Resolution>('4K');
   const [layerCountMode, setLayerCountMode] = useState<LayerCountMode>('auto');
   const [targetLayerCount, setTargetLayerCount] = useState(5);
   const [plan, setPlan] = useState<LayeringPlan | null>(null);
@@ -122,7 +122,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
         : '请保留背景层，并至少包含一个透明前景层。';
 
   useEffect(() => {
-    if (resolutionOptions.length > 0 && !resolutionOptions.includes(resolution)) setResolution(resolutionOptions.includes('2K') ? '2K' : resolutionOptions[0]!);
+    if (resolutionOptions.length > 0 && !resolutionOptions.includes(resolution)) setResolution(resolutionOptions[resolutionOptions.length - 1]!);
   }, [resolution, resolutionOptions]);
 
   useEffect(() => {
@@ -266,7 +266,7 @@ export function LayeringDialog({ sourceAsset, onAnalyze, onCreateGroup, onStart,
 
           {step === 'review' && activePlan && <section ref={reviewRef} className="image-layering-dialog__section image-layering-dialog__review" aria-label="生成确认摘要">
             <div className="image-layering-dialog__section-heading"><div><span className="image-layering-dialog__eyebrow">STEP 03 / 03</span><h3>确认任务</h3></div><span className="image-layering-dialog__badge">确认后生成</span></div>
-            <label className="image-layering-dialog__field"><span>GPT 图像模型</span><select aria-label="GPT 图像模型" value={selectedGptProfile ? routeKey(selectedGptProfile) : ''} disabled={visibleGptProfiles.length === 0 || busy} onChange={(event) => { setGenerationRoute(event.target.value); const selected = visibleGptProfiles.find((profile) => routeKey(profile) === event.target.value); const family = selected && availableGptProfiles.filter((profile) => profile.provider === selected.provider && imageResolutionFamilyKey(profile) === imageResolutionFamilyKey(selected)); const tiers = selected && family ? IMAGE_RESOLUTION_TIERS.filter((tier) => { const route = resolveImageResolutionRoute(family, selected, tier); return route && getLayeringRouteContract(route, routeEvidence)?.resolutions.includes(tier); }) : []; if (!tiers.includes(resolution)) setResolution(tiers.includes('2K') ? '2K' : tiers[0] ?? '1K'); setCreatedGroupId(null); }}>
+            <label className="image-layering-dialog__field"><span>GPT 图像模型</span><select aria-label="GPT 图像模型" value={selectedGptProfile ? routeKey(selectedGptProfile) : ''} disabled={visibleGptProfiles.length === 0 || busy} onChange={(event) => { setGenerationRoute(event.target.value); const selected = visibleGptProfiles.find((profile) => routeKey(profile) === event.target.value); const family = selected && availableGptProfiles.filter((profile) => profile.provider === selected.provider && imageResolutionFamilyKey(profile) === imageResolutionFamilyKey(selected)); const tiers = selected && family ? IMAGE_RESOLUTION_TIERS.filter((tier) => { const route = resolveImageResolutionRoute(family, selected, tier); return route && getLayeringRouteContract(route, routeEvidence)?.resolutions.includes(tier); }) : []; setResolution(tiers[tiers.length - 1] ?? '1K'); setCreatedGroupId(null); }}>
               {availableGptProfiles.length === 0 && <option value="">请先配置支持透明编辑的 GPT Image 模型</option>}
               {visibleGptProfiles.map((profile) => <option key={routeKey(profile)} value={routeKey(profile)}>{imageModelFamilyDisplayName(profile)} · {profile.provider}</option>)}
             </select></label>
