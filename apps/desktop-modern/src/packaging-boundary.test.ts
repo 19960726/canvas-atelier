@@ -26,7 +26,7 @@ function isPathInside(parentPath: string, candidatePath: string): boolean {
 }
 
 describe('desktop packaging boundary', () => {
-  it('keeps the 1.6.170 modern installer in its own builder output and excludes legacy output', async () => {
+  it('keeps the modern installer in its own builder output and excludes legacy output', async () => {
     const modernRoot = join(process.cwd(), 'apps', 'desktop-modern');
     const packageJson = JSON.parse(await readFile(
       join(modernRoot, 'package.json'),
@@ -36,8 +36,12 @@ describe('desktop packaging boundary', () => {
       join(modernRoot, 'electron-builder.yml'),
       'utf8',
     )) as BuilderConfig;
+    const lockfile = JSON.parse(await readFile(
+      join(process.cwd(), 'package-lock.json'),
+      'utf8',
+    )) as { packages: Record<string, { version?: string }> };
 
-    expect(packageJson.version).toBe('1.6.170');
+    expect(packageJson.version).toBe(lockfile.packages['apps/desktop-modern']?.version);
     expect(builderConfig.directories?.output).toBe('dist-builder/desktop-modern');
     expect(builderConfig.artifactName).toBe('CanvasAtelier-Win10-11-x64-${version}.exe');
 
@@ -53,7 +57,7 @@ describe('desktop packaging boundary', () => {
       modernRoot,
       'dist-builder',
       'desktop-modern',
-      'CanvasAtelier-Win10-11-x64-1.6.170.exe',
+      `CanvasAtelier-Win10-11-x64-${packageJson.version}.exe`,
     ));
     expect(isPathInside(modernOutputRoot, installerPath)).toBe(true);
     expect(isPathInside(legacyOutputRoot, installerPath)).toBe(false);

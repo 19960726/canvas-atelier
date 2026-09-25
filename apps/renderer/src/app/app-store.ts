@@ -2030,7 +2030,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return false;
       }
       releaseGenerationJobDispatch(requests);
-      void jobStore.processQueue();
+      void jobStore.run();
       return true;
     } catch (error) {
       if (jobs.length > 0) await cancelHeldGenerationJobs(jobStore, requests);

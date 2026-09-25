@@ -7,8 +7,12 @@ describe('provider inline image decoder', () => {
     expect(decodeProviderInlineImage(Buffer.from(bytes).toString('base64'))).toEqual(bytes);
   });
 
-  it('rejects malformed and empty inline results with a sanitized error', () => {
-    for (const value of ['%%%not-base64%%%', '']) {
+  it('treats an empty inline field as absent so a valid result URL can be used', () => {
+    expect(decodeProviderInlineImage('')).toBeUndefined();
+  });
+
+  it('rejects malformed non-empty inline results with a sanitized error', () => {
+    for (const value of ['%%%not-base64%%%']) {
       expect(() => decodeProviderInlineImage(value)).toThrowError(expect.objectContaining({
         code: 'PROVIDER_INVALID_RESPONSE',
         message: expect.not.stringMatching(/not-base64/iu),

@@ -2170,7 +2170,7 @@ describe('Comfly provider service', () => {
     await cleanupTempRoot(appDataRoot);
   });
 
-  it('accepts Comfly snake-case task envelopes and nested output image results', async () => {
+  it('accepts Comfly snake-case task envelopes with a valid URL and empty b64_json', async () => {
     const appDataRoot = await makeTempRoot();
     const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const fetch = vi.fn()
@@ -2179,7 +2179,7 @@ describe('Comfly provider service', () => {
         data: {
           task_id: 'raw-nested-image-task',
           status: 'SUCCESS',
-          output: { images: [{ url: 'https://assets.example/nested-generated.png', width: 1536, height: 1024 }] },
+          output: { images: [{ url: 'https://assets.example/nested-generated.png', b64_json: '', width: 1536, height: 1024 }] },
         },
       }))
       .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => imageBytes.buffer });

@@ -10459,7 +10459,7 @@ describe('GPT layering analysis app-store boundary', () => {
       .toEqual(expect.arrayContaining([expect.objectContaining({ data: expect.objectContaining({ config: expect.objectContaining({ status: 'planned' }) }) })]));
   });
 
-  it('durably binds and submits exactly one held GPT edit job per included layer', async () => {
+  it('durably binds, submits, and polls each confirmed GPT layer until it reaches a terminal state', async () => {
     const assetId = 'abcdef0123456789';
     const source = createCanvasModuleNode('job-source', 'image_input', { x: 10, y: 10 });
     source.data.config = { ...source.data.config, assetId };
@@ -10483,7 +10483,7 @@ describe('GPT layering analysis app-store boundary', () => {
     const commit = vi.fn(async (request: ProjectCommitRequest): Promise<ProjectCommitResult> => ({ ok: true, project: request.nextProject, revision: 3 }));
     replaceProjectPersistenceClientForTests(createMockClient({ commit }));
     replaceModelJobStorageForTests(createTestModelJobStorage());
-    replaceModelJobExecutorForTests({ submit, poll: vi.fn(async () => ({ status: 'running' as const })) });
+    replaceModelJobExecutorForTests({ submit, poll: vi.fn(async () => ({ status: 'failed' as const, error: 'fixture provider failure' })) });
     replaceLayeringRouteEvidenceForTests([routeEvidence]);
     window.novusDesktop = { provider: {
       getStatus: vi.fn(async () => ({ configured: true, locked: false, encryption: 'safeStorage' as const })),
@@ -10507,6 +10507,11 @@ describe('GPT layering analysis app-store boundary', () => {
         expect.objectContaining({ data: expect.objectContaining({ config: expect.objectContaining({ layerId: 'subject', status: 'queued', jobId: expect.any(String) }) }) }),
       ]));
     release.resolve();
+    await vi.waitFor(() => {
+      const layerJobs = useAppStore.getState().modelJobs.filter((job) => job.layeringGroupId === 'jobs-group');
+      expect(layerJobs).toHaveLength(2);
+      expect(layerJobs.map((job) => job.status)).toEqual(['failed', 'failed']);
+    });
   });
 
   it('rebinds a failed layer retry to its original canvas node before any fixture submission', async () => {
